@@ -11,6 +11,7 @@ from music_assistant_models.enums import ContentType, StreamType
 from music_assistant_models.media_items import AudioFormat
 
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
+from music_assistant.constants import DEFAULT_BACKGROUND_SCAN_CONCURRENCY
 from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
@@ -82,7 +83,7 @@ async def test_get_scan_concurrency_returns_default_on_unset() -> None:
     """When the config value is unset/None, fall back to DEFAULT_BACKGROUND_SCAN_CONCURRENCY."""
     controller = _make_controller()
     controller.mass.config.get_raw_core_config_value = MagicMock(return_value=None)  # type: ignore[method-assign]
-    assert controller._get_scan_concurrency() == 1
+    assert controller._get_scan_concurrency() == DEFAULT_BACKGROUND_SCAN_CONCURRENCY
 
 
 @pytest.mark.asyncio
