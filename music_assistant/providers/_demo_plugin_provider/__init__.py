@@ -193,11 +193,6 @@ class MyDemoPluginprovider(PluginProvider):
         for _ in range(100):
             yield b"dummy audio data"
 
-    # -----------------------------------------------------------------------------
-    # Cross-type feature stubs.
-    # Implement + declare the matching ProviderFeature to opt in.
-    # -----------------------------------------------------------------------------
-
     async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
         """Retrieve a list of similar tracks for the given track."""
         # OPTIONAL

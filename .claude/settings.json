@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cp music_assistant/controllers/media/artists.py /tmp/artists_after.py)",
+      "Bash(cp /tmp/artists_before.py music_assistant/controllers/media/artists.py)"
+    ],
+    "additionalDirectories": [
+      "/tmp"
+    ]
+  }
+}

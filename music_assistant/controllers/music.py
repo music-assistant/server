@@ -3166,6 +3166,8 @@ class MusicController(CoreController):
 
     def library_supported(self, provider: Provider, media_type: MediaType) -> bool:
         """Return whether the provider declares LIBRARY support for the given media type."""
+        if provider.type != ProviderType.MUSIC:
+            return False
         if media_type == MediaType.ARTIST:
             return provider.supports_feature(ProviderFeature.LIBRARY_ARTISTS)
         if media_type == MediaType.ALBUM:
@@ -3184,6 +3186,8 @@ class MusicController(CoreController):
 
     def library_edit_supported(self, provider: Provider, media_type: MediaType) -> bool:
         """Return whether the provider supports library add/remove for the given media type."""
+        if provider.type != ProviderType.MUSIC:
+            return False
         if media_type == MediaType.ARTIST:
             return provider.supports_feature(ProviderFeature.LIBRARY_ARTISTS_EDIT)
         if media_type == MediaType.ALBUM:
