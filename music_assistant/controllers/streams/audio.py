@@ -1919,7 +1919,7 @@ class StreamsAudio:
                             await asyncio.sleep(0)
                         # full tail was pre-counted and is now yielded as-is
                         crossfade_bytes_written = 0
-                        remaining_bytes = crossfade_buffer
+                        remaining_bytes = bytes(crossfade_buffer)
                     if crossfade_bytes_written:
                         # split crossfade output 50/50 between both tracks
                         fadeout_share = crossfade_bytes_written // 2
