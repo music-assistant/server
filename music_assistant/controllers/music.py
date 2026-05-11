@@ -1189,6 +1189,9 @@ class MusicController(CoreController):
             ):
                 continue
             if music_prov := self.mass.get_provider(prov_mapping.provider_instance):
+                if music_prov.type != ProviderType.MUSIC:
+                    continue
+                music_prov = cast("MusicProvider", music_prov)
                 self.mass.create_task(
                     music_prov.on_played(
                         media_type=media_item.media_type,
@@ -1262,6 +1265,9 @@ class MusicController(CoreController):
             ):
                 continue
             if music_prov := self.mass.get_provider(prov_mapping.provider_instance):
+                if music_prov.type != ProviderType.MUSIC:
+                    continue
+                music_prov = cast("MusicProvider", music_prov)
                 self.mass.create_task(
                     music_prov.on_played(
                         media_type=media_item.media_type,

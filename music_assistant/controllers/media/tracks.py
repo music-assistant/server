@@ -365,9 +365,13 @@ class TracksController(MediaControllerBase[Track]):
                 if ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
                     continue
                 # Grab similar tracks from the music provider
-                return await prov.get_similar_tracks(
-                    prov_track_id=prov_mapping.item_id, limit=limit
-                )
+                try:
+                    if result := await prov.get_similar_tracks(
+                        prov_track_id=prov_mapping.item_id, limit=limit
+                    ):
+                        return result
+                except NotImplementedError:
+                    continue
 
         # Fallback: consult metadata/plugin providers that claim SIMILAR_TRACKS
         for prov in self.mass.get_providers_supporting_feature(

@@ -205,10 +205,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             library_item.uri,
             library_item,
         )
-        # notify providers of the update so they can sync their own storage
+        # notify music providers of the update so they can sync their own storage
         for prov_mapping in library_item.provider_mappings:
             if provider := self.mass.get_provider(prov_mapping.provider_instance):
-                provider = cast("MusicProvider | PluginProvider", provider)
+                provider = cast("MusicProvider", provider)
                 await provider.on_item_updated(library_item)
         return library_item
 
