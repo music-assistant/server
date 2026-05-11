@@ -98,7 +98,11 @@ class WebsocketClientHandler:
         self._writer_task = self.mass.create_task(self._writer())
 
         # send server(version) info when client connects
+        # Use proxy-aware base_url if available (set from X-Forwarded-Host in __init__),
+        # otherwise fall back to the configured base_url
         server_info = self.mass.get_server_info()
+        if self.base_url:
+            server_info.base_url = self.base_url
         await self._send_message(server_info)
 
         # Block until onboarding is complete
