@@ -142,7 +142,14 @@ class AudioAnalysisController:
 
         self._active_sessions[session_key] = provider_ids
         queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=10)
-        self._workers[session_key] = self.mass.create_task(self._chunk_worker(session_key, queue))
+        self._workers[session_key] = self.mass.create_task(
+            self._chunk_worker(
+                session_key,
+                queue,
+                min_interval=REAL_TIME_PACE_INTERVAL_SECONDS,
+                max_interval=REAL_TIME_PACE_INTERVAL_SECONDS,
+            )
+        )
 
         finalized = False
 
@@ -406,7 +413,12 @@ class AudioAnalysisController:
                 if not providers_for_track:
                     return
 
-                await self._run_background_streaming_for_track(streamdetails, providers_for_track)
+                await self._run_background_streaming_for_track(
+                    streamdetails,
+                    providers_for_track,
+                    min_interval=REAL_TIME_PACE_INTERVAL_SECONDS,
+                    max_interval=REAL_TIME_PACE_INTERVAL_SECONDS,
+                )
                 processed += 1
 
         await asyncio.gather(*(_run_one(c) for c in candidates))
@@ -431,8 +443,17 @@ class AudioAnalysisController:
         self,
         streamdetails: StreamDetails,
         providers: list[AudioAnalysisProvider],
+        min_interval: float = REAL_TIME_PACE_INTERVAL_SECONDS,
+        max_interval: float = REAL_TIME_PACE_INTERVAL_SECONDS,
     ) -> None:
-        """Run a single track through the streaming pipeline using ffmpeg as the source."""
+        """
+        Run a single track through the streaming pipeline using ffmpeg as the source.
+
+        :param streamdetails: Stream details for the track being analyzed.
+        :param providers: Audio analysis providers to dispatch chunks to.
+        :param min_interval: Floor on wall-seconds between consecutive chunk dispatches.
+        :param max_interval: Ceiling on wall-seconds between consecutive chunk dispatches.
+        """
         session_key = streamdetails.uri
         if session_key in self._active_sessions:
             self.logger.debug(
@@ -442,7 +463,13 @@ class AudioAnalysisController:
 
         try:
             await asyncio.wait_for(
-                self._run_background_streaming_inner(session_key, streamdetails, providers),
+                self._run_background_streaming_inner(
+                    session_key,
+                    streamdetails,
+                    providers,
+                    min_interval=min_interval,
+                    max_interval=max_interval,
+                ),
                 timeout=BACKGROUND_PER_TRACK_TIMEOUT_SECONDS,
             )
         except asyncio.CancelledError:
@@ -475,8 +502,18 @@ class AudioAnalysisController:
         session_key: str,
         streamdetails: StreamDetails,
         providers: list[AudioAnalysisProvider],
+        min_interval: float = REAL_TIME_PACE_INTERVAL_SECONDS,
+        max_interval: float = REAL_TIME_PACE_INTERVAL_SECONDS,
     ) -> None:
-        """Inner body of _run_background_streaming_for_track, wrapped by wait_for."""
+        """
+        Inner body of _run_background_streaming_for_track, wrapped by wait_for.
+
+        :param session_key: Active-session key for this track.
+        :param streamdetails: Stream details for the track being analyzed.
+        :param providers: Audio analysis providers to dispatch chunks to.
+        :param min_interval: Floor on wall-seconds between consecutive chunk dispatches.
+        :param max_interval: Ceiling on wall-seconds between consecutive chunk dispatches.
+        """
         if not isinstance(streamdetails.path, str) or not streamdetails.path:
             return
 
@@ -504,7 +541,7 @@ class AudioAnalysisController:
             if now < next_allowed:
                 await asyncio.sleep(next_allowed - now)
             await self._distribute_chunk(session_key, chunk)
-            next_allowed = time.monotonic() + REAL_TIME_PACE_INTERVAL_SECONDS
+            next_allowed = time.monotonic() + min_interval
         if session_key in self._active_sessions:
             self._finalize_providers(session_key)
 
@@ -653,8 +690,21 @@ class AudioAnalysisController:
             if not provider_ids:
                 self._active_sessions.pop(session_key, None)
 
-    async def _chunk_worker(self, session_key: str, queue: asyncio.Queue[bytes | None]) -> None:
-        """Background worker that processes queued PCM chunks via _distribute_chunk."""
+    async def _chunk_worker(
+        self,
+        session_key: str,
+        queue: asyncio.Queue[bytes | None],
+        min_interval: float = REAL_TIME_PACE_INTERVAL_SECONDS,
+        max_interval: float = REAL_TIME_PACE_INTERVAL_SECONDS,
+    ) -> None:
+        """
+        Background worker that processes queued PCM chunks via _distribute_chunk.
+
+        :param session_key: Active-session key for this worker.
+        :param queue: Queue receiving raw PCM chunks from the live producer.
+        :param min_interval: Floor on wall-seconds between consecutive chunk dispatches.
+        :param max_interval: Ceiling on wall-seconds between consecutive chunk dispatches.
+        """
         next_allowed = time.monotonic()
         while True:
             chunk = await queue.get()
@@ -666,7 +716,7 @@ class AudioAnalysisController:
             if now < next_allowed:
                 await asyncio.sleep(next_allowed - now)
             await self._distribute_chunk(session_key, chunk)
-            next_allowed = time.monotonic() + REAL_TIME_PACE_INTERVAL_SECONDS
+            next_allowed = time.monotonic() + min_interval
             if session_key not in self._active_sessions:
                 # all providers evicted by _distribute_chunk
                 self._workers.pop(session_key, None)
