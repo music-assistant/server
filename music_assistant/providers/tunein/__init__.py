@@ -276,6 +276,7 @@ class TuneInProvider(MusicProvider):
                 item_id="trending",
                 provider=self.instance_id,
                 name="Trending",
+                translation_key="trending_stations",
                 items=UniqueList(stations),
             )
         ]
