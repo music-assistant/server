@@ -209,6 +209,8 @@ class SpotifyConnectProvider(PluginProvider):
         self._spotify_device_id: str | None = None
         self._last_session_connected_time: float = 0
         self._last_volume_sent_to_spotify: int | None = None
+        # Track pause state so _register_plugin_queue sends correct frontend queue state
+        self._is_paused: bool = False
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -875,6 +877,12 @@ class SpotifyConnectProvider(PluginProvider):
                         self._source_details.in_use_by,
                     )
 
+        # Track pause/play state for correct frontend queue state
+        if event_name == "paused":
+            self._is_paused = True
+        elif event_name in ("playing", "sink", "track_changed"):
+            self._is_paused = False
+
         # signal update to connected player
         if self._source_details.in_use_by:
             self.mass.call_later(0.5, self._register_plugin_queue, self._source_details.in_use_by)
@@ -926,8 +934,8 @@ class SpotifyConnectProvider(PluginProvider):
             "current_index": 0,
             "index_in_buffer": None,
             "elapsed_time": metadata.elapsed_time if metadata else 0,
-            "elapsed_time_last_updated": time.time(),
-            "state": "playing",
+            "elapsed_time_last_updated": None if self._is_paused else time.time(),
+            "state": "paused" if self._is_paused else "playing",
             "current_item": current_item,
             "next_item": None,
             "radio_source": [],
@@ -949,8 +957,9 @@ class SpotifyConnectProvider(PluginProvider):
                 data=fake_queue,
             )
         self.logger.debug(
-            "Registered frontend queue: instance_id=%s player=%s duration=%s",
+            "Registered frontend queue: instance_id=%s player=%s duration=%s state=%s",
             self.instance_id,
             player_id,
             current_item["duration"] if current_item else None,
+            fake_queue["state"],
         )
