@@ -18,7 +18,6 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from music_assistant_models.media_items import (
-        Artist,
         BrowseFolder,
         ItemMapping,
         MediaItemType,
@@ -219,19 +218,6 @@ class PluginProvider(Provider):
         :param limit: Maximum number of similar tracks to return.
         """
         if ProviderFeature.SIMILAR_TRACKS in self.supported_features:
-            raise NotImplementedError
-        return []
-
-    async def get_similar_artists(self, artist: Artist, limit: int = 25) -> list[Artist]:
-        """
-        Retrieve a list of similar artists for the given artist.
-
-        Will only be called if ProviderFeature.SIMILAR_ARTISTS is declared.
-
-        :param artist: The reference artist.
-        :param limit: Maximum number of similar artists to return.
-        """
-        if ProviderFeature.SIMILAR_ARTISTS in self.supported_features:
             raise NotImplementedError
         return []
 

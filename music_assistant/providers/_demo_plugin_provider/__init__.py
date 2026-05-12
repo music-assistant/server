@@ -50,7 +50,6 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
     from music_assistant_models.event import MassEvent
     from music_assistant_models.media_items import (
-        Artist,
         BrowseFolder,
         ItemMapping,
         MediaItemType,
@@ -199,12 +198,6 @@ class MyDemoPluginprovider(PluginProvider):
         # Will only be called if ProviderFeature.SIMILAR_TRACKS is declared.
         # Results should be Track objects with provider_mappings pointing to
         # existing music providers so MA's playback path resolves normally.
-        return []
-
-    async def get_similar_artists(self, artist: Artist, limit: int = 25) -> list[Artist]:
-        """Retrieve a list of similar artists for the given artist."""
-        # OPTIONAL
-        # Will only be called if ProviderFeature.SIMILAR_ARTISTS is declared.
         return []
 
     async def recommendations(self) -> list[RecommendationFolder]:

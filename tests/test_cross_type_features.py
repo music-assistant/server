@@ -13,7 +13,6 @@ from music_assistant.controllers.music import MusicController
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.models.plugin import PluginProvider
 
 
 def _make_prov(
@@ -147,23 +146,23 @@ async def test_similar_artists_uses_music_provider_first() -> None:
     music_prov.get_similar_artists.assert_awaited_once_with(prov_artist_id="artist_123", limit=5)
 
 
-async def test_similar_artists_falls_back_to_plugin() -> None:
-    """Falls through to plugin-tier provider when music provider doesn't support it."""
+async def test_similar_artists_falls_back_to_metadata_provider() -> None:
+    """Falls through to metadata-tier provider when music provider doesn't support it."""
     mass = Mock()
     music_prov = Mock(spec=MusicProvider)
     music_prov.instance_id = "m_a"
     music_prov.type = ProviderType.MUSIC
     music_prov.available = True
     music_prov.supported_features = set()
-    plugin_prov = Mock(spec=PluginProvider)
-    plugin_prov.instance_id = "p_a"
-    plugin_prov.type = ProviderType.PLUGIN
-    plugin_prov.available = True
-    plugin_prov.supported_features = {ProviderFeature.SIMILAR_ARTISTS}
-    plugin_prov.priority = 50
-    plugin_prov.get_similar_artists = AsyncMock(return_value=["a2"])
+    metadata_prov = Mock(spec=MetadataProvider)
+    metadata_prov.instance_id = "meta_a"
+    metadata_prov.type = ProviderType.METADATA
+    metadata_prov.available = True
+    metadata_prov.supported_features = {ProviderFeature.SIMILAR_ARTISTS}
+    metadata_prov.priority = 50
+    metadata_prov.get_similar_artists = AsyncMock(return_value=["a2"])
     mass.get_provider.return_value = music_prov
-    mass.get_providers_supporting_feature.return_value = [plugin_prov]
+    mass.get_providers_supporting_feature.return_value = [metadata_prov]
 
     ref_item = Mock()
     ref_item.provider_mappings = [
@@ -182,7 +181,7 @@ async def test_similar_artists_falls_back_to_plugin() -> None:
     result = await controller.similar_artists("artist_123", "m_a", limit=5)
 
     assert result == ["a2"]
-    plugin_prov.get_similar_artists.assert_awaited_once_with(ref_item, limit=5)
+    metadata_prov.get_similar_artists.assert_awaited_once_with(ref_item, limit=5)
 
 
 async def test_browse_root_includes_non_music_providers() -> None:

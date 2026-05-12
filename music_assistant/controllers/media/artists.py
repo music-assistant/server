@@ -30,7 +30,6 @@ from music_assistant.models.music_provider import MusicProvider
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
-    from music_assistant.models.plugin import PluginProvider
 
 
 class ArtistsController(MediaControllerBase[Artist]):
@@ -80,14 +79,14 @@ class ArtistsController(MediaControllerBase[Artist]):
                     return result
             except NotImplementedError:
                 continue
-        # Fallback: metadata / plugin providers.
+        # Fallback: metadata providers.
         for prov in self.mass.get_providers_supporting_feature(
             ProviderFeature.SIMILAR_ARTISTS,
-            priority=(ProviderType.METADATA, ProviderType.PLUGIN),
+            priority=(ProviderType.METADATA,),
         ):
             try:
-                cross_prov = cast("MetadataProvider | PluginProvider", prov)
-                if result := await cross_prov.get_similar_artists(ref_item, limit=limit):
+                metadata_prov = cast("MetadataProvider", prov)
+                if result := await metadata_prov.get_similar_artists(ref_item, limit=limit):
                     return result
             except NotImplementedError:
                 continue
