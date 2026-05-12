@@ -64,7 +64,10 @@ def build_config_entries(
     :param values: Current config values (may be empty on first setup).
     """
     base_url = getattr(mass.webserver, "base_url", "").rstrip("/")
-    mount_path = str(values.get(CONF_MOUNT_PATH) or DEFAULT_MOUNT_PATH)
+    raw_mount = str(values.get(CONF_MOUNT_PATH) or DEFAULT_MOUNT_PATH)
+    # Mirror ``MCPServerRuntime.__init__``'s normalisation so the info label
+    # always renders a valid URL even if the user dropped the leading slash.
+    mount_path = "/" + raw_mount.strip("/")
     info_label = (
         f"MCP endpoint: {base_url}{mount_path}\nCreate tokens in Settings → Security → Tokens."
     )

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from music_assistant.providers.fastmcp_server.config import build_config_entries
 from music_assistant.providers.fastmcp_server.constants import (
     CONF_DELETE_LIBRARY,
+    CONF_MOUNT_PATH,
     CONF_QUERY_LIBRARY,
     CONF_REQUIRE_AUTH,
     PERMISSION_KEYS,
@@ -70,6 +71,22 @@ def test_info_label_includes_base_url(mock_mass: MagicMock) -> None:
     info = entries[0]
     assert mock_mass.webserver.base_url in str(info.label)
     assert "/mcp/v1" in str(info.label)
+
+
+def test_info_label_normalises_mount_path_without_leading_slash(
+    mock_mass: MagicMock,
+) -> None:
+    """A user-typed ``mcp/v1`` (no leading slash) must still render a valid URL.
+
+    Regression for upstream PR #3858 Copilot comment: the runtime normalises
+    the mount path, but the info label did not — so the displayed endpoint
+    glued the host to the path with no separator (``…:8095mcp/v1``).
+    """
+    entries = build_config_entries(mock_mass, {CONF_MOUNT_PATH: "mcp/v1"})
+    label = str(entries[0].label)
+    base_url = mock_mass.webserver.base_url
+    assert f"{base_url}/mcp/v1" in label
+    assert f"{base_url}mcp" not in label
 
 
 def test_delete_library_default(mock_mass: MagicMock) -> None:
