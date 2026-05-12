@@ -384,7 +384,7 @@ class TestClearActivePlayerHandoffBookkeeping:
         provider._clear_active_player()
 
         assert provider._active_player_id is None
-        assert provider._expected_track_id is None  # type: ignore[unreachable]
+        assert provider._expected_track_id is None
         assert provider._expected_phase is HandoffPhase.IDLE
         assert provider._handoff_completion_signaled_for is None
         assert provider._drift_suppress_until == 0.0

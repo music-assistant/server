@@ -189,21 +189,21 @@ class TestPlayerSelection:
         player2.display_name = "Player 2"
         player2.state.playback_state = PlaybackState.PLAYING
 
-        provider.mass.players.all_players.return_value = [player1, player2]  # type: ignore[attr-defined]
+        provider.mass.players.all_players.return_value = [player1, player2]
 
         assert provider._get_target_player_id() == "player2"
 
     def test_specific_player_exists(self) -> None:
         """Returns configured player when it exists."""
         provider = _make_provider("my-player")
-        provider.mass.players.get_player.return_value = MagicMock()  # type: ignore[attr-defined]
+        provider.mass.players.get_player.return_value = MagicMock()
 
         assert provider._get_target_player_id() == "my-player"
 
     def test_specific_player_missing(self) -> None:
         """Returns None when configured player no longer exists."""
         provider = _make_provider("gone-player")
-        provider.mass.players.get_player.return_value = None  # type: ignore[attr-defined]
+        provider.mass.players.get_player.return_value = None
 
         assert provider._get_target_player_id() is None
 
@@ -211,7 +211,7 @@ class TestPlayerSelection:
         """Active player takes priority over auto selection."""
         provider = _make_provider()
         provider._active_player_id = "active-one"
-        provider.mass.players.get_player.return_value = MagicMock()  # type: ignore[attr-defined]
+        provider.mass.players.get_player.return_value = MagicMock()
 
         assert provider._get_target_player_id() == "active-one"
 
@@ -270,7 +270,7 @@ class TestClearActivePlayer:
         provider._clear_active_player()
 
         assert provider._active_player_id is None
-        assert provider._source_details.in_use_by is None  # type: ignore[unreachable]
+        assert provider._source_details.in_use_by is None
         provider.mass.players.trigger_player_update.assert_called_with("some-player")
 
 
@@ -289,7 +289,7 @@ class TestProviderMatching:
         mock_ym = MagicMock()
         mock_ym.domain = "yandex_music"
         mock_ym.type = ProviderType.MUSIC
-        provider.mass.get_providers.return_value = [mock_ym]  # type: ignore[attr-defined]
+        provider.mass.get_providers.return_value = [mock_ym]
 
         await provider._check_yandex_provider_match()
 
@@ -301,7 +301,7 @@ class TestProviderMatching:
         """No linked provider disables playback control."""
         provider = _make_provider()
 
-        provider.mass.get_providers.return_value = []  # type: ignore[attr-defined]
+        provider.mass.get_providers.return_value = []
         await provider._check_yandex_provider_match()
 
         assert provider._yandex_provider is None
@@ -324,8 +324,8 @@ class TestYnisonStateHandling:
         player = MagicMock()
         player.player_id = "player1"
         player.display_name = "Player 1"
-        provider.mass.players.all_players.return_value = [player]  # type: ignore[attr-defined]
-        provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+        provider.mass.players.all_players.return_value = [player]
+        provider.mass.players.get_player.return_value = player
 
         state = YnisonState(
             active_device_id=provider._device_id,
@@ -354,8 +354,8 @@ class TestYnisonStateHandling:
         player = MagicMock()
         player.player_id = "player1"
         player.display_name = "Player 1"
-        provider.mass.players.all_players.return_value = [player]  # type: ignore[attr-defined]
-        provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+        provider.mass.players.all_players.return_value = [player]
+        provider.mass.players.get_player.return_value = player
 
         # Simulate a previous session: same player still active, stream
         # stopped (needs_reselect=True), and the previous track is "old".
@@ -395,7 +395,7 @@ class TestYnisonStateHandling:
         await provider._handle_ynison_state(state)
 
         assert provider._active_player_id is None
-        assert provider._source_details.in_use_by is None  # type: ignore[unreachable]
+        assert provider._source_details.in_use_by is None
 
     async def test_seek_detected_from_ynison(self) -> None:
         """Detects seek from Yandex app via progress drift."""
@@ -403,8 +403,8 @@ class TestYnisonStateHandling:
 
         player = MagicMock()
         player.player_id = "player1"
-        provider.mass.players.all_players.return_value = [player]  # type: ignore[attr-defined]
-        provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+        provider.mass.players.all_players.return_value = [player]
+        provider.mass.players.get_player.return_value = player
 
         def _make_state(progress_ms: int) -> YnisonState:
             return YnisonState(
@@ -436,7 +436,7 @@ class TestYnisonStateHandling:
 
         # Verify force_update=True was used so the server sends a full
         # PLAYER_UPDATED event (not just a lightweight elapsed-time one)
-        provider.mass.players.trigger_player_update.assert_called_with("player1", force_update=True)  # type: ignore[attr-defined]
+        provider.mass.players.trigger_player_update.assert_called_with("player1", force_update=True)
 
     async def test_seek_grace_period_after_track_change(self) -> None:
         """Seek detection is suppressed during grace period after track change."""
@@ -444,8 +444,8 @@ class TestYnisonStateHandling:
 
         player = MagicMock()
         player.player_id = "player1"
-        provider.mass.players.all_players.return_value = [player]  # type: ignore[attr-defined]
-        provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+        provider.mass.players.all_players.return_value = [player]
+        provider.mass.players.get_player.return_value = player
 
         def _make_state(progress_ms: int) -> YnisonState:
             return YnisonState(
@@ -480,8 +480,8 @@ class TestYnisonStateHandling:
 
         player = MagicMock()
         player.player_id = "player1"
-        provider.mass.players.all_players.return_value = [player]  # type: ignore[attr-defined]
-        provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+        provider.mass.players.all_players.return_value = [player]
+        provider.mass.players.get_player.return_value = player
 
         state = YnisonState(
             active_device_id=provider._device_id,
@@ -500,7 +500,7 @@ class TestYnisonStateHandling:
 
         # First call — significant (new track) → always triggers
         await provider._handle_ynison_state(state)
-        call_count_1 = provider.mass.players.trigger_player_update.call_count  # type: ignore[attr-defined]
+        call_count_1 = provider.mass.players.trigger_player_update.call_count
 
         # Simulate same track still playing (no seek, no track change).
         # Mark as echo so the seek-detection branch stays quiet.
@@ -522,12 +522,12 @@ class TestYnisonStateHandling:
 
         # Second call shortly after — throttled, no trigger
         await provider._handle_ynison_state(state2)
-        call_count_2 = provider.mass.players.trigger_player_update.call_count  # type: ignore[attr-defined]
+        call_count_2 = provider.mass.players.trigger_player_update.call_count
 
         # Force the throttle to expire
         provider._last_player_update_time = 0.0
         await provider._handle_ynison_state(state2)
-        call_count_3 = provider.mass.players.trigger_player_update.call_count  # type: ignore[attr-defined]
+        call_count_3 = provider.mass.players.trigger_player_update.call_count
 
         # First call triggered, second was throttled, third triggered
         assert call_count_1 >= 1
@@ -535,7 +535,7 @@ class TestYnisonStateHandling:
         assert call_count_3 > call_count_2
 
         # Regular (non-seek) updates should NOT use force_update
-        provider.mass.players.trigger_player_update.assert_called_with(  # type: ignore[attr-defined]
+        provider.mass.players.trigger_player_update.assert_called_with(
             "player1", force_update=False
         )
 
@@ -558,7 +558,7 @@ class TestYnisonStateHandling:
         assert meta.duration == 185
         assert meta.elapsed_time == 30  # 30000ms → 30s
         assert provider._actual_duration_ms == 185000
-        provider.mass.players.trigger_player_update.assert_called_once_with(  # type: ignore[attr-defined]
+        provider.mass.players.trigger_player_update.assert_called_once_with(
             "player1", force_update=True
         )
         # Real duration pushed to Ynison
@@ -773,7 +773,7 @@ class TestYnisonStateHandling:
         provider._yandex_provider = mock_ym_provider
 
         # Use real create_task so prefetch coroutine actually runs
-        provider.mass.create_task = lambda coro: asyncio.get_event_loop().create_task(coro)  # type: ignore[method-assign, assignment, misc]
+        provider.mass.create_task = lambda coro: asyncio.get_event_loop().create_task(coro)
 
         # Trigger prefetch
         provider._maybe_prefetch(
@@ -1959,10 +1959,10 @@ class TestPausePlayback:
         await provider._pause_playback()
 
         assert provider._stream_stop_event.is_set()
-        provider.mass.players.cmd_stop.assert_awaited_once_with("player1")  # type: ignore[attr-defined]
+        provider.mass.players.cmd_stop.assert_awaited_once_with("player1")
         assert provider._source_details.in_use_by is None
         # Progress is preserved for resume
-        assert provider._streaming_progress_ms == 50000  # type: ignore[unreachable]
+        assert provider._streaming_progress_ms == 50000
 
     async def test_no_active_player(self) -> None:
         """Pause with no active player just sets stop event."""
@@ -1972,7 +1972,7 @@ class TestPausePlayback:
         await provider._pause_playback()
 
         assert provider._stream_stop_event.is_set()
-        provider.mass.players.cmd_stop.assert_not_called()  # type: ignore[attr-defined]
+        provider.mass.players.cmd_stop.assert_not_called()
 
 
 # ------------------------------------------------------------------
@@ -1988,8 +1988,8 @@ class TestEchoSuppression:
         player.player_id = "player1"
         player.display_name = "Player 1"
         player.state.playback_state = PlaybackState.PLAYING
-        provider.mass.players.all_players.return_value = [player]  # type: ignore[attr-defined]
-        provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+        provider.mass.players.all_players.return_value = [player]
+        provider.mass.players.get_player.return_value = player
         return player
 
     async def _prime_same_track(self, provider: YandexYnisonProvider) -> None:
@@ -2062,7 +2062,7 @@ class TestSyncProgress:
 
         meta = provider._source_details.metadata
         assert meta.elapsed_time == 5
-        provider.mass.players.trigger_player_update.assert_called_with("player1")  # type: ignore[attr-defined]
+        provider.mass.players.trigger_player_update.assert_called_with("player1")
         provider._ynison.update_playing_status.assert_awaited_once()
 
     async def test_with_seek_offset(self) -> None:
@@ -2092,7 +2092,7 @@ class TestSyncProgress:
 
         await provider._sync_progress(0, 0, None)
 
-        provider.mass.players.trigger_player_update.assert_not_called()  # type: ignore[attr-defined]
+        provider.mass.players.trigger_player_update.assert_not_called()
 
 
 # ------------------------------------------------------------------
@@ -2145,8 +2145,8 @@ class TestGetStreamDetailsWithRetry:
         assert result is sd
         mock_yp.get_stream_details.assert_awaited_once()
         # Verify cache.set was called with data field preserved
-        provider.mass.cache.set.assert_awaited_once()  # type: ignore[attr-defined]
-        cached_value = provider.mass.cache.set.call_args[0][1]  # type: ignore[attr-defined]
+        provider.mass.cache.set.assert_awaited_once()
+        cached_value = provider.mass.cache.set.call_args[0][1]
         assert cached_value["data"] == sd.data
 
     async def test_cache_hit_skips_api(self) -> None:
@@ -2154,7 +2154,7 @@ class TestGetStreamDetailsWithRetry:
         provider = _make_provider()
         cached_sd = MagicMock()
         cached_sd.expiration = 600
-        provider.mass.cache.get = AsyncMock(return_value=cached_sd)  # type: ignore[method-assign]
+        provider.mass.cache.get = AsyncMock(return_value=cached_sd)
         mock_yp = MagicMock()
         mock_yp.get_stream_details = AsyncMock()
         provider._yandex_provider = mock_yp
@@ -2339,15 +2339,15 @@ class TestActivatePlayback:
         player.player_id = "player1"
         player.display_name = "Player 1"
         player.state.playback_state = PlaybackState.IDLE
-        provider.mass.players.all_players.return_value = [player]  # type: ignore[attr-defined]
-        provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+        provider.mass.players.all_players.return_value = [player]
+        provider.mass.players.get_player.return_value = player
 
         state = _make_ynison_state(progress_ms=0, paused=False)
 
         await provider._activate_playback(state)
 
         assert provider._active_player_id == "player1"
-        provider.mass.create_task.assert_called()  # type: ignore[attr-defined]
+        provider.mass.create_task.assert_called()
 
     async def test_detects_track_change(self) -> None:
         """Detects track change and updates streaming track id."""
@@ -2356,8 +2356,8 @@ class TestActivatePlayback:
 
         player = MagicMock()
         player.player_id = "player1"
-        provider.mass.players.all_players.return_value = [player]  # type: ignore[attr-defined]
-        provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+        provider.mass.players.all_players.return_value = [player]
+        provider.mass.players.get_player.return_value = player
         provider._active_player_id = "player1"
 
         state = _make_ynison_state(
@@ -2380,7 +2380,7 @@ class TestActivatePlayback:
 
         player = MagicMock()
         player.player_id = "player1"
-        provider.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+        provider.mass.players.get_player.return_value = player
 
         state = _make_ynison_state(
             progress_ms=50000,
@@ -2396,8 +2396,8 @@ class TestActivatePlayback:
     async def test_no_target_player_returns(self) -> None:
         """Returns early when no target player is available."""
         provider = _make_provider()
-        provider.mass.players.all_players.return_value = []  # type: ignore[attr-defined]
-        provider.mass.players.get_player.return_value = None  # type: ignore[attr-defined]
+        provider.mass.players.all_players.return_value = []
+        provider.mass.players.get_player.return_value = None
 
         state = _make_ynison_state()
 

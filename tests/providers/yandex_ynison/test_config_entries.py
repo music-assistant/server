@@ -297,7 +297,7 @@ async def test_stale_ym_selection_normalizes_to_own() -> None:
     """
     mass = _make_mock_mass({"ym-b": {"domain": "yandex_music", "name": "B"}})
     values: dict[str, object] = {CONF_YM_INSTANCE: "ym-removed"}
-    entries = await get_config_entries(mass, values=values)  # type: ignore[arg-type]
+    entries = await get_config_entries(mass, values=values)
     by_key = _entries_by_key(entries)
 
     ym_source = by_key[CONF_YM_INSTANCE]

@@ -1097,7 +1097,7 @@ class TestMessageLoop:
         )
         await self._run_loop_with_messages(client, [error_msg, valid_msg])
 
-        client._logger.warning.assert_called()  # type: ignore[attr-defined]
+        client._logger.warning.assert_called()
 
     async def test_rebalance_error_breaks_loop(
         self,
@@ -1169,7 +1169,7 @@ class TestMessageLoop:
         )
         await self._run_loop_with_messages(client, [bad_msg, valid_msg])
 
-        client._logger.warning.assert_called()  # type: ignore[attr-defined]
+        client._logger.warning.assert_called()
 
     async def test_callback_exception_continues(
         self,
@@ -1201,7 +1201,7 @@ class TestMessageLoop:
         )
         await self._run_loop_with_messages(client, [bin_msg, valid_msg])
 
-        client._logger.debug.assert_called()  # type: ignore[attr-defined]
+        client._logger.debug.assert_called()
 
     async def test_error_message_breaks_and_reconnects(self, client: YnisonClient) -> None:
         """ERROR message breaks loop and schedules reconnect."""
@@ -1308,7 +1308,7 @@ class TestMessageLoop:
         msg = _make_ws_msg(aiohttp.WSMsgType.TEXT, "")
         # Empty string → json.loads will fail → warning logged
         await self._run_loop_with_messages(client, [msg])
-        client._logger.warning.assert_called()  # type: ignore[attr-defined]
+        client._logger.warning.assert_called()
 
     async def test_no_ws_raises_runtime_error(self, client: YnisonClient) -> None:
         """_message_loop raises RuntimeError when ws is None."""
@@ -1344,7 +1344,7 @@ class TestReconnect:
         ):
             await client._reconnect()
 
-        client._logger.info.assert_any_call("Ynison reconnected successfully")  # type: ignore[attr-defined]
+        client._logger.info.assert_any_call("Ynison reconnected successfully")
 
     async def test_retries_indefinitely_until_stopped(self, client: YnisonClient) -> None:
         """Reconnect keeps retrying past the old 5-attempt cap until stop_event."""
@@ -1644,9 +1644,7 @@ class TestTokenRefreshOnReconnect:
 
         on_auth_failure.assert_awaited_once()
         assert client._token == SecretStr("new-token")
-        client._logger.info.assert_any_call(  # type: ignore[attr-defined]
-            "Token refreshed, will retry with new token"
-        )
+        client._logger.info.assert_any_call("Token refreshed, will retry with new token")
 
     async def test_auth_failure_no_callback(self) -> None:
         """LoginFailed without on_auth_failure keeps retrying on the same token."""
