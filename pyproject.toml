@@ -26,7 +26,7 @@ dependencies = [
   "ifaddr==0.2.0",
   "getmac==0.9.5",
   "mashumaro==3.20",
-  "music-assistant-frontend==2.17.154",
+  "music-assistant-frontend==2.17.155",
   "music-assistant-models==1.1.117",
   "mutagen==1.47.0",
   "orjson==3.11.6",
@@ -56,7 +56,7 @@ version = "0.0.0"
 [project.optional-dependencies]
 test = [
   "codespell==2.4.1",
-  "mypy==1.19.1",
+  "mypy==2.1.0",
   "pre-commit==4.5.1",
   "pre-commit-hooks==6.0.0",
   "pytest==9.0.3",
