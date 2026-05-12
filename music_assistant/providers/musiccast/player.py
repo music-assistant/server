@@ -535,13 +535,26 @@ class MusicCastPlayer(Player):
         player_id = self._get_player_id_from_zone_device(zone_player)
         assert player_id is not None  # for TYPE_CHECKING
 
-        # skip zone handling if disabled.
+        mass_player = self.mass.players.get_player(player_id)
+        if mass_player is None:
+            # Do not assert here, should the player not yet exist
+            return
+
+        # skip zone handling if player is disabled globally
+        if not mass_player.enabled:
+            self.logger.debug("Ignoring zone handling for disabled player %s.", player_id)
+            return
+
+        # skip zone handling if disabled via setting
         if bool(
             await self.mass.config.get_player_config_value(
                 player_id, CONF_PLAYER_HANDLE_SOURCE_DISABLED
             )
         ):
+            self.logger.debug("Ignoring zone handling for player %s.", player_id)
             return
+
+        self.logger.debug("Handling zone for player %s.", player_id)
 
         _source = str(
             await self.mass.config.get_player_config_value(
@@ -550,10 +563,6 @@ class MusicCastPlayer(Player):
         )
         # verify that this source actually exists and is non net
         _allowed_sources = self._get_allowed_sources_zone_switch(zone_player)
-        mass_player = self.mass.players.get_player(player_id)
-        if mass_player is None:
-            # Do not assert here, should the player not yet exist
-            return
         if _source not in _allowed_sources:
             msg = (
                 "The switch source you specified for "
