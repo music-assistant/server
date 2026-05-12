@@ -8,6 +8,7 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
 from .constants import (
+    CONF_CONNECT_EXTERNAL_URL,
     CONF_CONTROL_MEDIA,
     CONF_CONTROL_PLAYBACK,
     CONF_CONTROL_PLAYERS,
@@ -160,6 +161,23 @@ def build_config_entries(
                 "reverse-proxy hostname). By default the server only accepts "
                 "`localhost`, `127.0.0.1`, the MA `base_url` host, and `publish_ip`. "
                 "Mismatching Origins are rejected with 403 to mitigate DNS rebinding."
+            ),
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_CONNECT_EXTERNAL_URL,
+            type=ConfigEntryType.STRING,
+            label="Connect Wizard external URL (fallback)",
+            default_value="",
+            category="Server",
+            advanced=True,
+            description=(
+                "Optional explicit base URL the Connect Wizard should open at "
+                "(e.g. `https://ha.example.com/<addon-slug>` for Home Assistant "
+                "add-on ingress). Used only when the wizard cannot auto-detect "
+                "the external URL from the active client connection — set it "
+                "if your reverse proxy strips the `X-Forwarded-Host` / "
+                "`X-Ingress-Path` headers."
             ),
             required=False,
         ),

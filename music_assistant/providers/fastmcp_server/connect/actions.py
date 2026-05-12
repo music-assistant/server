@@ -25,8 +25,9 @@ async def handle_open_connect_action(
     *,
     current_user: Any,
     mount_path: str,
-    base_url: str,
+    base_url: str = "",
     session_id: str | None = None,
+    external_base_url: str | None = None,
 ) -> None:
     """Open the Connect Wizard in the user's browser via MA's auth-session signal.
 
@@ -35,12 +36,19 @@ async def handle_open_connect_action(
         ``None`` when no user context is available — in which case the wizard
         is opened without a bootstrap token and falls back to its login form.
     :param mount_path: HTTP path prefix where the MCP server is mounted.
-    :param base_url: Public base URL of MA (no trailing slash).
+    :param base_url: Deprecated — kept in the signature for backwards
+        compatibility; ignored. Pass ``external_base_url`` instead.
     :param session_id: ``session_id`` echoed by the MA frontend in the action's
         ``values``. Must be passed back verbatim as the ``AUTH_SESSION`` event
         ``object_id`` so the EditProvider view actually opens the URL — frontend
         ignores AUTH_SESSION events whose object_id does not match its session.
+    :param external_base_url: Externally reachable base URL (scheme + host +
+        optional ingress path prefix) to prepend to the wizard URL. When
+        omitted, falls back to a path-only URL that the browser resolves
+        against its own origin.
     """
+    del base_url  # kept in signature for backwards compatibility; ignored
+
     bootstrap: str | None = None
     if current_user is not None:
         try:
@@ -53,14 +61,16 @@ async def handle_open_connect_action(
             LOGGER.exception("Connect Wizard: failed to mint bootstrap token")
             bootstrap = None
 
-    # Path-only URL — the MA frontend assigns this to ``<a href>`` and the
-    # browser resolves it against the current location (the user's URL bar
-    # origin). Using ``base_url`` here would break in Docker / HA add-on
-    # deployments where MA reports an internal IP (e.g. ``http://172.21.0.2``)
-    # that the user's browser cannot reach.
-    del base_url  # kept in signature for backwards compatibility; ignored
     mount = "/" + mount_path.strip("/")
-    url = f"{mount}/connect"
+    if external_base_url:
+        # Fully-qualified URL — required under HA add-on ingress, where the
+        # MA frontend lives at ``https://<ha>/<slug>/`` and ``window.open``
+        # on a path starting with ``/`` would drop the ingress prefix.
+        url = f"{external_base_url.rstrip('/')}{mount}/connect"
+    else:
+        # Path-only fallback — browser resolves against its own origin. Works
+        # for direct access; loses any reverse-proxy / ingress path prefix.
+        url = f"{mount}/connect"
     if bootstrap:
         url = f"{url}?{urlencode({'bootstrap': bootstrap})}"
 

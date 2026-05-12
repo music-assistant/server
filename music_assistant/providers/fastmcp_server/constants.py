@@ -8,6 +8,7 @@ CONF_MOUNT_PATH = "mount_path"
 CONF_EXTRA_ALLOWED_ORIGINS = "extra_allowed_origins"
 CONF_ENFORCE_AUDIENCE = "enforce_audience"
 CONF_REQUIRE_CONFIRMATION = "require_confirmation"
+CONF_CONNECT_EXTERNAL_URL = "connect_external_url"
 
 DEFAULT_MOUNT_PATH = "/mcp/v1"
 
