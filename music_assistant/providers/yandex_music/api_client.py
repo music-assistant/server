@@ -221,9 +221,7 @@ class YandexMusicClient:
         LOGGER.warning("Yandex Music %s captcha cooldown engaged: %.0fs", kind, cooldown)
         return int(cooldown)
 
-    def _maybe_handle_429(
-        self, err: Exception, kind: str
-    ) -> ResourceTemporarilyUnavailable | None:
+    def _maybe_handle_429(self, err: Exception, kind: str) -> ResourceTemporarilyUnavailable | None:
         """Classify a 429 error and build the user-facing exception.
 
         Returns the prepared `ResourceTemporarilyUnavailable` to raise, or
@@ -260,9 +258,7 @@ class YandexMusicClient:
         self._file_info_cache.move_to_end(key)
         return value
 
-    def _file_info_cache_put(
-        self, key: tuple[str, str, str, str], value: dict[str, Any]
-    ) -> None:
+    def _file_info_cache_put(self, key: tuple[str, str, str, str], value: dict[str, Any]) -> None:
         self._file_info_cache[key] = (
             time.monotonic() + FILE_INFO_CACHE_TTL_S,
             value,
@@ -558,9 +554,7 @@ class YandexMusicClient:
             LOGGER.warning("Rotor session POST %s rate-limited: %s", path, err)
             return None
         except (NetworkError, ProviderUnavailableError) as err:
-            LOGGER.warning(
-                "Rotor session POST %s failed: %s", path, self._truncate_err_msg(err)
-            )
+            LOGGER.warning("Rotor session POST %s failed: %s", path, self._truncate_err_msg(err))
             return None
 
     async def rotor_session_new(

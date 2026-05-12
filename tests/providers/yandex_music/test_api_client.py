@@ -825,7 +825,7 @@ async def test_get_dashboard_stations_skips_user_type() -> None:
 
 
 _CAPTCHA_HTML_SNIPPET = (
-    'HTTPError (429): <!DOCTYPE html><html><head><title>429</title></head>'
+    "HTTPError (429): <!DOCTYPE html><html><head><title>429</title></head>"
     '<body class="smart-captcha">'
     '<script src="/captcha_smart_qrcode.min.js"></script>'
     'See <a href="https://yandex.ru/support/smart-captcha/about-429.html">'
@@ -987,9 +987,7 @@ async def test_captcha_during_bypass_still_engages_block() -> None:
     """
     client, underlying = _make_client()
     underlying._request = mock.MagicMock()
-    underlying._request.get = mock.AsyncMock(
-        side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET)
-    )
+    underlying._request.get = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
     underlying.base_url = "https://api.music.yandex.net"
 
     # Pre-condition: file_info kind is NOT blocked.
