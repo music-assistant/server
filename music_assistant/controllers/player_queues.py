@@ -518,10 +518,9 @@ class PlayerQueuesController(CoreController):
             called from a shared context (like a web hook or automation).
         :param sort_by: Optional sort key to order tracks before applying start_item.
         """
-        self._check_player_permission(queue_id)
+        # Resolve plugin source queue_id to real player queue BEFORE permission check,
+        # since player_filter contains player_ids not plugin instance_ids
         if not self.get(queue_id):
-            # Check if queue_id is an active plugin source - if so, reroute to the
-            # player's real MA queue and let the player controller handle source takeover
             for player in self.mass.players.all_players():
                 if player.state.active_source == queue_id and player.player_id in self._queues:
                     self.logger.debug(
@@ -533,6 +532,7 @@ class PlayerQueuesController(CoreController):
                     break
             else:
                 raise PlayerUnavailableError(f"Queue {queue_id} is not available")
+        self._check_player_permission(queue_id)
         # Lock is acquired by the @handle_play_action decorator on the internal handler
         await self._handle_play_media(
             queue_id, media, option, radio_mode, start_item, username, sort_by
