@@ -91,12 +91,12 @@ def test_to_brief_radio() -> None:
     assert to_brief_radio(radio) == RadioBrief(uri="library://radio/1", name="R", description="d")
 
 
-def test_to_brief_player_state_enum_value() -> None:
-    """``to_brief_player`` unwraps StrEnum-like state via ``.value``."""
+def test_to_brief_player_reads_playback_state() -> None:
+    """``to_brief_player`` reads the canonical ``Player.playback_state`` enum."""
     player = SimpleNamespace(
         player_id="kitchen",
-        display_name="Kitchen",
-        state=SimpleNamespace(value="playing"),
+        name="Kitchen",
+        playback_state=SimpleNamespace(value="playing"),
         volume_level=42,
         powered=True,
         current_media=None,
@@ -105,6 +105,61 @@ def test_to_brief_player_state_enum_value() -> None:
     assert brief == PlayerBrief(
         player_id="kitchen", name="Kitchen", state="playing", volume_level=42, powered=True
     )
+
+
+def test_to_brief_player_falls_back_to_legacy_state_attr() -> None:
+    """When only the legacy ``state`` attr exists, ``to_brief_player`` still resolves it.
+
+    Kept for back-compat with older shims / hand-built test stubs.
+    """
+    player = SimpleNamespace(
+        player_id="kitchen",
+        name="Kitchen",
+        state=SimpleNamespace(value="paused"),
+        volume_level=10,
+        powered=True,
+        current_media=None,
+    )
+    assert to_brief_player(player).state == "paused"
+
+
+def test_to_brief_player_current_item_prefers_title() -> None:
+    """``current_item`` uses :class:`PlayerMedia.title` when available."""
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=50,
+        powered=True,
+        current_media=SimpleNamespace(uri="spotify://track/x", title="Song Name"),
+    )
+    assert to_brief_player(player).current_item == "Song Name"
+
+
+def test_to_brief_player_current_item_falls_back_to_uri() -> None:
+    """No title → ``current_item`` falls back to URI (always present on PlayerMedia)."""
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=50,
+        powered=True,
+        current_media=SimpleNamespace(uri="spotify://track/x", title=None),
+    )
+    assert to_brief_player(player).current_item == "spotify://track/x"
+
+
+def test_to_brief_player_no_current_media() -> None:
+    """``current_item`` is ``None`` when the player is idle (no current media)."""
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=0,
+        powered=False,
+        current_media=None,
+    )
+    assert to_brief_player(player).current_item is None
 
 
 def test_to_brief_queue_with_items() -> None:

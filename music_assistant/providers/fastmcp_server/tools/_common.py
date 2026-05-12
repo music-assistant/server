@@ -126,15 +126,31 @@ def to_brief_radio(radio: Any) -> RadioBrief:
 
 def to_brief_player(player: Any) -> PlayerBrief:
     """Convert a Player-like object to ``PlayerBrief``."""
-    state = getattr(player, "state", None)
-    state_value = str(getattr(state, "value", state)) if state is not None else "unknown"
+    # MA's :class:`Player` exposes ``playback_state`` (an enum); ``state`` is
+    # only a serialisation alias and is not present on the Python object.
+    # Read both so test stubs and any older shim still resolve.
+    state_obj = getattr(player, "playback_state", None) or getattr(player, "state", None)
+    state_value = (
+        str(getattr(state_obj, "value", state_obj)) if state_obj is not None else "unknown"
+    )
+
+    current_media = getattr(player, "current_media", None)
+    current_item: str | None = None
+    if current_media is not None:
+        # Prefer the human-readable title; fall back to the URI (always
+        # present on ``PlayerMedia``). Avoids stringifying the whole dataclass
+        # which produces noisy ``PlayerMedia(uri=…, media_type=…, …)`` blobs.
+        current_item = _str_or_none(getattr(current_media, "title", None)) or _str_or_none(
+            getattr(current_media, "uri", None)
+        )
+
     return PlayerBrief(
         player_id=str(getattr(player, "player_id", "")),
         name=str(getattr(player, "display_name", None) or getattr(player, "name", "")),
         state=state_value,
         volume_level=_int(getattr(player, "volume_level", None)),
         powered=bool(getattr(player, "powered", True)),
-        current_item=_str_or_none(getattr(player, "current_media", None)),
+        current_item=current_item,
     )
 
 

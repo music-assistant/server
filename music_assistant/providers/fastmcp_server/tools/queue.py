@@ -15,6 +15,9 @@ from ._common import TIMEOUT_FAST, TIMEOUT_MUTATION, confirm_or_raise, to_brief_
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
+# Matches MA's default queue page size (and the ``queue://`` resource cap).
+MAX_QUEUE_ITEMS = 500
+
 
 def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = True) -> FastMCP:
     """Construct the ``queue/*`` sub-server."""
@@ -32,15 +35,19 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         timeout=TIMEOUT_FAST,
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def get_active_queue(player_id: str, include_items: int = 25) -> QueueBrief | None:
-        """Return the active queue for a player, or ``None`` if the player is idle."""
+        """Return the active queue for a player, or ``None`` if the player is idle.
+
+        :param include_items: How many lookahead items to materialise. Clamped
+            to the ``[0, 500]`` range — 500 matches MA's own queue page size
+            and the ``queue://`` resource cap, preventing a hostile or
+            sloppy client from forcing the server to load thousands of rows
+            on every call.
+        """
         queue = mass.player_queues.get_active_queue(player_id)
         if queue is None:
             return None
-        items = (
-            mass.player_queues.items(queue.queue_id, limit=max(1, include_items))
-            if include_items > 0
-            else []
-        )
+        limit = min(max(include_items, 0), MAX_QUEUE_ITEMS)
+        items = mass.player_queues.items(queue.queue_id, limit=limit) if limit > 0 else []
         return to_brief_queue(queue, items=list(items))
 
     @sub.tool(

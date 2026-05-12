@@ -83,6 +83,40 @@ async def test_no_confirmation_when_disabled(mock_mass: MagicMock) -> None:
     mock_mass.player_queues.clear.assert_called_once_with("q1")
 
 
+async def test_get_active_queue_clamps_include_items(mock_mass: MagicMock) -> None:
+    """A client-supplied ``include_items`` is clamped to 500 to bound memory.
+
+    Without the clamp a hostile or sloppy caller could pass ``include_items=10**6``
+    and force MA to materialise the entire queue per request.
+    """
+    queue = MagicMock(queue_id="q1")
+    mock_mass.player_queues.get_active_queue = MagicMock(return_value=queue)
+    mock_mass.player_queues.items = MagicMock(return_value=[])
+    mcp = _server(mock_mass, require_confirmation=False)
+
+    async with Client(mcp) as client:
+        await client.call_tool(
+            "queue_get_active_queue",
+            {"player_id": "p1", "include_items": 10_000},
+        )
+    mock_mass.player_queues.items.assert_called_once_with("q1", limit=500)
+
+
+async def test_get_active_queue_passes_small_limit_through(mock_mass: MagicMock) -> None:
+    """A reasonable ``include_items`` is forwarded verbatim — no over-cap."""
+    queue = MagicMock(queue_id="q1")
+    mock_mass.player_queues.get_active_queue = MagicMock(return_value=queue)
+    mock_mass.player_queues.items = MagicMock(return_value=[])
+    mcp = _server(mock_mass, require_confirmation=False)
+
+    async with Client(mcp) as client:
+        await client.call_tool(
+            "queue_get_active_queue",
+            {"player_id": "p1", "include_items": 10},
+        )
+    mock_mass.player_queues.items.assert_called_once_with("q1", limit=10)
+
+
 async def test_remove_from_library_confirms(mock_mass: MagicMock) -> None:
     """media.remove_from_library also triggers elicitation."""
     # MA's MusicController takes (media_type, library_item_id), not a URI —
