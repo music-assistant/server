@@ -3224,6 +3224,7 @@ class PlayerQueuesController(CoreController):
                 fully_played=fully_played,
                 is_playing=is_playing,
                 userid=queue.userid,
+                player_id=queue.queue_id,
             ),
         )
 
