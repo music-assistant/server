@@ -1050,7 +1050,7 @@ class TestCachedProtocolParentRestore:
         controller._try_link_protocols_to_native(native_player)
 
         assert protocol_player.protocol_parent_id == native_player.player_id
-        assert any(
+        assert any(  # type: ignore[unreachable]
             link.output_protocol_id == protocol_player.player_id
             for link in native_player.linked_output_protocols
         )
