@@ -91,7 +91,7 @@ class YandexMusicClient:
         # smart-captcha page sets a deadline; plain 429 leaves these at 0.
         self._block_until: dict[str, float] = dict.fromkeys(self._throttlers, 0.0)
         # Short-TTL cache for /get-file-info results, keyed by
-        # (track_id, quality, transport). Bounded by FILE_INFO_CACHE_MAX (LRU).
+        # (track_id, quality, codecs, transport). Bounded by FILE_INFO_CACHE_MAX (LRU).
         self._file_info_cache: OrderedDict[
             tuple[str, str, str, str], tuple[float, dict[str, Any]]
         ] = OrderedDict()
