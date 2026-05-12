@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+import json
 from typing import TYPE_CHECKING, Any
 
 from fastmcp.exceptions import ToolError
@@ -134,7 +136,21 @@ def to_brief_player(player: Any) -> PlayerBrief:
         str(getattr(state_obj, "value", state_obj)) if state_obj is not None else "unknown"
     )
 
-    current_media = getattr(player, "current_media", None)
+    # ``Player.state`` (the :class:`PlayerState` dataclass) holds the canonical
+    # final values that MA serialises in its REST API — ``__final_power_state``
+    # and ``__final_current_media``. The raw ``Player.powered`` /
+    # ``Player.current_media`` properties read internal ``_attr_*`` caches that
+    # lag (powered stays False on virtual players, current_media isn't cleared
+    # on stop). Detect a PlayerState dataclass by the presence of ``powered``
+    # on it; fall back to the legacy direct attributes otherwise.
+    player_state = getattr(player, "state", None)
+    if player_state is not None and hasattr(player_state, "powered"):
+        powered_val = bool(player_state.powered) if player_state.powered is not None else True
+        current_media = getattr(player_state, "current_media", None)
+    else:
+        powered_val = bool(getattr(player, "powered", True))
+        current_media = getattr(player, "current_media", None)
+
     current_item: str | None = None
     if current_media is not None:
         # Prefer the human-readable title; fall back to the URI (always
@@ -149,7 +165,7 @@ def to_brief_player(player: Any) -> PlayerBrief:
         name=str(getattr(player, "display_name", None) or getattr(player, "name", "")),
         state=state_value,
         volume_level=_int(getattr(player, "volume_level", None)),
-        powered=bool(getattr(player, "powered", True)),
+        powered=powered_val,
         current_item=current_item,
     )
 
@@ -222,3 +238,23 @@ def _str_or_none(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def to_resource_text(value: Any) -> str | None:
+    """Serialize a resource handler's return value as JSON text.
+
+    FastMCP's resource read API requires handlers to return
+    ``str | bytes | list[ResourceContents]``. MA domain objects expose
+    ``to_dict()``; our brief dataclasses are converted via
+    :func:`dataclasses.asdict`. ``None`` is returned unchanged so FastMCP
+    serialises it as a ``"null"`` ``TextResourceContents`` block.
+
+    :param value: handler return value (None, MA domain object, or Brief).
+    """
+    if value is None:
+        return None
+    if hasattr(value, "to_dict"):
+        return json.dumps(value.to_dict(), ensure_ascii=False, default=str)
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return json.dumps(dataclasses.asdict(value), ensure_ascii=False, default=str)
+    return json.dumps(value, ensure_ascii=False, default=str)

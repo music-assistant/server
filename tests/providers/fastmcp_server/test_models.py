@@ -162,6 +162,48 @@ def test_to_brief_player_no_current_media() -> None:
     assert to_brief_player(player).current_item is None
 
 
+def test_to_brief_player_reads_powered_from_player_state() -> None:
+    """``powered`` is sourced from ``Player.state.powered``.
+
+    MA core builds ``_state.powered`` from ``__final_power_state`` and
+    serialises it in the REST API; the raw ``Player.powered`` property
+    returns ``_attr_powered`` which lags behind (and stays ``False`` for
+    some virtual player types). The brief must match what
+    ``Player.state.to_dict()`` would emit.
+    """
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=100,
+        powered=False,
+        current_media=None,
+        state=SimpleNamespace(powered=True, current_media=None),
+    )
+    assert to_brief_player(player).powered is True
+
+
+def test_to_brief_player_current_item_uses_state_current_media() -> None:
+    """``current_item`` is cleared when ``Player.state.current_media`` is None.
+
+    After ``stop`` MA core clears ``_state.current_media``, but the raw
+    ``_attr_current_media`` may persist until the next playback. The brief
+    must reflect the canonical state so the LLM doesn't think a track is
+    still playing.
+    """
+    stale = SimpleNamespace(uri="library://track/48", title="07")
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=0,
+        powered=True,
+        current_media=stale,
+        state=SimpleNamespace(powered=True, current_media=None),
+    )
+    assert to_brief_player(player).current_item is None
+
+
 def test_to_brief_queue_with_items() -> None:
     """``to_brief_queue`` builds a ``QueueBrief`` with item summaries."""
     queue = SimpleNamespace(

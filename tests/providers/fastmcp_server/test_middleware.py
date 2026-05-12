@@ -7,6 +7,7 @@ import pytest
 from fastmcp import Client, FastMCP
 
 from music_assistant.providers.fastmcp_server.middleware import TagFilterMiddleware
+from music_assistant.providers.fastmcp_server.server import build_tag_lookup
 
 
 def _build_server(allowed: set[str]) -> FastMCP:
@@ -38,23 +39,7 @@ def _build_server(allowed: set[str]) -> FastMCP:
         """Return a sample prompt template."""
         return "Pick something."
 
-    async def lookup(kind: str, key: str) -> set[str] | None:
-        try:
-            if kind == "tool":
-                obj = await mcp.get_tool(key)
-            elif kind == "resource":
-                obj = await mcp.get_resource(key)
-            elif kind == "prompt":
-                obj = await mcp.get_prompt(key)
-            else:
-                return None
-        except Exception:
-            return None
-        if obj is None:
-            return None
-        return {str(t) for t in (getattr(obj, "tags", None) or set())}
-
-    mcp.add_middleware(TagFilterMiddleware(lambda: allowed, lookup))
+    mcp.add_middleware(TagFilterMiddleware(lambda: allowed, build_tag_lookup(mcp)))
     return mcp
 
 
@@ -100,6 +85,21 @@ async def test_disabled_resource_blocked_on_read() -> None:
     async with Client(mcp) as client:
         with pytest.raises(Exception):  # noqa: B017,PT011
             await client.read_resource("data://thing/42")
+
+
+async def test_template_resource_read_via_concrete_uri() -> None:
+    """A concrete URI matched by a template resource is readable when its tag is enabled.
+
+    The middleware lookup must fall back from ``get_resource`` (statically
+    registered URIs only) to ``get_resource_template`` (URI-template matching);
+    otherwise every ``@mcp.resource("scheme://{var}")``-backed URI gets blocked
+    as not-found even though the tag is enabled.
+    """
+    mcp = _build_server(allowed={"query"})
+    async with Client(mcp) as client:
+        contents = await client.read_resource("data://thing/42")
+    text_blocks = [c for c in contents if hasattr(c, "text")]
+    assert any("thing:42" in c.text for c in text_blocks)
 
 
 async def test_disabled_prompt_blocked_on_get() -> None:

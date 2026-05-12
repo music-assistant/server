@@ -16,7 +16,7 @@ from .constants import (
 from .tags import enabled_tags
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from music_assistant_models.config_entries import ProviderConfig
 
@@ -256,27 +256,43 @@ class MCPServerRuntime:
         # apply_permission_change mutates the same set later, so the
         # middleware sees the new permissions without rebuilding FastMCP.
         self._allowed_tags = {str(t) for t in allowed}
+        mcp.add_middleware(TagFilterMiddleware(lambda: self._allowed_tags, build_tag_lookup(mcp)))
 
-        async def lookup(kind: str, key: str) -> set[str] | None:
-            """Resolve component name/URI back to its tag set via FastMCP public API.
 
-            Returns ``None`` if the component is unknown — middleware then blocks
-            the call with NotFoundError, preventing a client that cached a name
-            from a prior permission set from invoking a now-hidden tool.
-            """
-            try:
-                if kind == "tool":
-                    obj = await mcp.get_tool(key)
-                elif kind == "resource":
-                    obj = await mcp.get_resource(key)
-                elif kind == "prompt":
-                    obj = await mcp.get_prompt(key)
-                else:  # pragma: no cover - kind is Literal-typed at the caller
-                    return None
-            except Exception:
-                return None
+async def _tag_lookup(mcp: Any, kind: str, key: str) -> set[str] | None:
+    """Resolve component name/URI back to its tag set via FastMCP public API.
+
+    Returns ``None`` if the component is unknown — middleware then blocks
+    the call with NotFoundError, preventing a client that cached a name
+    from a prior permission set from invoking a now-hidden tool. For
+    resources the concrete-URI lookup falls back to template matching:
+    ``FastMCP.get_resource`` only finds statically-registered resources,
+    so a request for a concrete URI backed by a
+    ``@mcp.resource("scheme://{x}")`` template would otherwise be
+    misreported as not-found.
+    """
+    try:
+        if kind == "tool":
+            obj = await mcp.get_tool(key)
+        elif kind == "resource":
+            obj = await mcp.get_resource(key)
             if obj is None:
-                return None
-            return {str(t) for t in (getattr(obj, "tags", None) or set())}
+                obj = await mcp.get_resource_template(key)
+        elif kind == "prompt":
+            obj = await mcp.get_prompt(key)
+        else:  # pragma: no cover - kind is Literal-typed at the caller
+            return None
+    except Exception:
+        return None
+    if obj is None:
+        return None
+    return {str(t) for t in (getattr(obj, "tags", None) or set())}
 
-        mcp.add_middleware(TagFilterMiddleware(lambda: self._allowed_tags, lookup))
+
+def build_tag_lookup(mcp: Any) -> Callable[[str, str], Awaitable[set[str] | None]]:
+    """Return a closure suitable for :class:`TagFilterMiddleware`'s ``lookup``."""
+
+    async def lookup(kind: str, key: str) -> set[str] | None:
+        return await _tag_lookup(mcp, kind, key)
+
+    return lookup
