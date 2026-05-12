@@ -39,7 +39,7 @@ def _origin_helpers() -> tuple[Any, Any]:
         msg = "Connect Wizard: cannot resolve parent package for http_bridge import"
         raise RuntimeError(msg)
     module = importlib.import_module(f"{parent}.http_bridge")
-    return module._compute_origin_allowlist, module._is_origin_allowed
+    return module._compute_origin_allowlist, module._is_origin_allowed_for_request
 
 
 async def mount_connect_wizard(
@@ -63,14 +63,14 @@ async def mount_connect_wizard(
         accept beyond the auto-derived loopback + base_url + publish_ip set.
     :return: Callable that, when invoked, unregisters every wizard route.
     """
-    compute_allowlist, is_origin_allowed = _origin_helpers()
+    compute_allowlist, is_origin_allowed_for_request = _origin_helpers()
     allowlist = compute_allowlist(mass, extra_origins_csv)
     ctx = WizardContext(
         mass=mass,
         mount_path=mount_path,
         version=version,
         enabled_tags_provider=enabled_tags_provider,
-        origin_check=lambda origin: is_origin_allowed(origin, allowlist),
+        origin_check=lambda request: is_origin_allowed_for_request(request, allowlist),
     )
 
     base = "/" + mount_path.strip("/")

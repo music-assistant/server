@@ -145,6 +145,70 @@ def _is_origin_allowed(origin: str | None, allowlist: frozenset[str]) -> bool:
     return norm in allowlist
 
 
+def _is_origin_allowed_for_request(
+    request: web.Request,
+    allowlist: frozenset[str],
+) -> bool:
+    """Origin check with a Home-Assistant-ingress fallback.
+
+    Applies :func:`_is_origin_allowed` first. When that rejects, accept the
+    request if **all** of the following hold:
+
+    * the request arrived on the trusted ingress socket Music Assistant
+      verifies via :func:`is_request_from_ingress` (so we are not trusting
+      attacker-supplied headers); and
+    * the request carries an ``X-Forwarded-Host`` set by HA; and
+    * the browser's ``Origin`` matches
+      ``<X-Forwarded-Proto or request.scheme>://<X-Forwarded-Host>``.
+
+    This removes the need for HA add-on users to copy their public hostname
+    into the ``extra_allowed_origins`` config every time the URL changes.
+    """
+    origin = request.headers.get("Origin")
+    if _is_origin_allowed(origin, allowlist):
+        return True
+    if origin is None:
+        return False  # _is_origin_allowed already returned True above; defensive
+
+    forwarded_host = request.headers.get("X-Forwarded-Host")
+    if not forwarded_host:
+        return False
+
+    try:
+        from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
+            is_request_from_ingress,
+        )
+    except (ImportError, ModuleNotFoundError):
+        # ``music_assistant`` is a dev-only / test-extras dep here; absent in
+        # the bare provider venv. Fail closed without log noise.
+        return False
+    except Exception:
+        # Anything else (e.g. partial module init breakage upstream) is a real
+        # surprise — log so it's debuggable, then fail closed.
+        LOGGER.exception("Connect Wizard: unexpected error importing ingress helper")
+        return False
+    try:
+        if not is_request_from_ingress(request):
+            return False
+    except Exception:
+        # MA may evolve the request-app shape; log so a future breakage isn't
+        # silently a 403 with no hint as to why.
+        LOGGER.exception("Connect Wizard: is_request_from_ingress raised")
+        return False
+
+    # Default to the aiohttp transport scheme (canonical aiohttp API) rather
+    # than a hard-coded "https" so an unsecured local HA installation still
+    # works when X-Forwarded-Proto is omitted. Multi-value X-Forwarded-Host
+    # (``ha.example.com, internal.lan``) intentionally fails normalisation
+    # below → reject; supporting it would mean trusting whichever hop the
+    # proxy listed last, which is rarely what you want.
+    forwarded_proto = request.headers.get("X-Forwarded-Proto", request.scheme)
+    forwarded_origin = _normalize_origin(f"{forwarded_proto}://{forwarded_host}")
+    if forwarded_origin is None:
+        return False
+    return _normalize_origin(origin) == forwarded_origin
+
+
 async def mount_into_mass(
     mass: MusicAssistant,
     mcp: Any,
@@ -177,11 +241,10 @@ async def mount_into_mass(
     lifespan_state = await _start_asgi_lifespan(asgi_app)
 
     async def handler(request: web.Request) -> web.StreamResponse:
-        origin = request.headers.get("Origin")
-        if not _is_origin_allowed(origin, allowlist):
+        if not _is_origin_allowed_for_request(request, allowlist):
             LOGGER.warning(
                 "MCP: rejected request with Origin=%r from %s (not in allowlist)",
-                origin,
+                request.headers.get("Origin"),
                 request.remote,
             )
             return web.Response(status=403, text="Forbidden Origin")

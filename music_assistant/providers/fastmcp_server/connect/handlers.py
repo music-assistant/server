@@ -37,16 +37,15 @@ class WizardContext:
     mount_path: str
     version: str
     enabled_tags_provider: Callable[[], list[str]]
-    origin_check: Callable[[str | None], bool]
+    origin_check: Callable[[web.Request], bool]
 
 
 def _origin_guard(ctx: WizardContext, request: web.Request) -> web.Response | None:
     """Return a 403 response if the request's ``Origin`` is not allowlisted."""
-    origin = request.headers.get("Origin")
-    if not ctx.origin_check(origin):
+    if not ctx.origin_check(request):
         LOGGER.warning(
             "Connect Wizard: rejected request with Origin=%r from %s",
-            origin,
+            request.headers.get("Origin"),
             request.remote,
         )
         return web.Response(status=403, text="Forbidden Origin")

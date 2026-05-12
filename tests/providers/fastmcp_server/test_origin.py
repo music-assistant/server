@@ -12,6 +12,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from music_assistant.providers.fastmcp_server.http_bridge import (
     _compute_origin_allowlist,
     _is_origin_allowed,
+    _is_origin_allowed_for_request,
     _normalize_origin,
     build_protected_resource_metadata,
     mount_into_mass,
@@ -137,6 +138,171 @@ def test_garbage_origin_rejected() -> None:
     allow = _compute_origin_allowlist(_fake_mass())
     assert _is_origin_allowed("not-a-url", allow) is False
     assert _is_origin_allowed("http://", allow) is False
+
+
+# ── HA-ingress fallback in `_is_origin_allowed_for_request` ─────────────────
+
+
+def _fake_request(
+    headers: dict[str, str] | None = None,
+    *,
+    scheme: str = "http",
+) -> Any:
+    """Build a minimal stand-in for ``aiohttp.web.Request`` for origin checks."""
+    return SimpleNamespace(
+        headers=headers or {},
+        remote="172.30.32.1",
+        scheme=scheme,
+    )
+
+
+def _install_ingress_stub(monkeypatch: pytest.MonkeyPatch, *, is_ingress: bool) -> None:
+    """Inject ``is_request_from_ingress`` lazily into ``sys.modules``."""
+    import sys  # noqa: PLC0415
+    import types  # noqa: PLC0415
+
+    pkg = types.ModuleType("music_assistant")
+    pkg.__path__ = []
+    controllers = types.ModuleType("music_assistant.controllers")
+    controllers.__path__ = []
+    webserver_pkg = types.ModuleType("music_assistant.controllers.webserver")
+    webserver_pkg.__path__ = []
+    helpers_pkg = types.ModuleType("music_assistant.controllers.webserver.helpers")
+    helpers_pkg.__path__ = []
+    auth_mod = types.ModuleType("music_assistant.controllers.webserver.helpers.auth_middleware")
+    auth_mod.is_request_from_ingress = lambda _req: is_ingress  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(sys.modules, "music_assistant", pkg)
+    monkeypatch.setitem(sys.modules, "music_assistant.controllers", controllers)
+    monkeypatch.setitem(sys.modules, "music_assistant.controllers.webserver", webserver_pkg)
+    monkeypatch.setitem(sys.modules, "music_assistant.controllers.webserver.helpers", helpers_pkg)
+    monkeypatch.setitem(
+        sys.modules,
+        "music_assistant.controllers.webserver.helpers.auth_middleware",
+        auth_mod,
+    )
+
+
+def test_request_origin_allowed_via_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Falls through to the legacy allowlist when the basic check accepts."""
+    _install_ingress_stub(monkeypatch, is_ingress=False)
+    allow = _compute_origin_allowlist(_fake_mass())
+    req = _fake_request({"Origin": "http://localhost:8095"})
+    assert _is_origin_allowed_for_request(req, allow) is True
+
+
+def test_request_origin_accepts_ingress_forwarded_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ingress request whose Origin matches X-Forwarded-Host is accepted.
+
+    Reproduces the HA add-on case where the user opens the Connect Wizard at
+    ``https://<ha>/<slug>/…`` and the browser sends ``Origin: https://<ha>``,
+    which is never on the static allowlist.
+    """
+    _install_ingress_stub(monkeypatch, is_ingress=True)
+    allow = _compute_origin_allowlist(_fake_mass())
+    req = _fake_request(
+        {
+            "Origin": "https://ha.example.com",
+            "X-Forwarded-Host": "ha.example.com",
+            "X-Forwarded-Proto": "https",
+        }
+    )
+    assert _is_origin_allowed_for_request(req, allow) is True
+
+
+def test_request_origin_rejects_forwarded_host_without_ingress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without the trusted-ingress signal, ``X-Forwarded-Host`` is not trusted."""
+    _install_ingress_stub(monkeypatch, is_ingress=False)
+    allow = _compute_origin_allowlist(_fake_mass())
+    req = _fake_request(
+        {
+            "Origin": "https://attacker.example",
+            "X-Forwarded-Host": "attacker.example",
+            "X-Forwarded-Proto": "https",
+        }
+    )
+    assert _is_origin_allowed_for_request(req, allow) is False
+
+
+def test_request_origin_rejects_mismatched_forwarded_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Origin must equal the forwarded host — a mismatch is rejected even via ingress."""
+    _install_ingress_stub(monkeypatch, is_ingress=True)
+    allow = _compute_origin_allowlist(_fake_mass())
+    req = _fake_request(
+        {
+            "Origin": "https://attacker.example",
+            "X-Forwarded-Host": "ha.example.com",
+            "X-Forwarded-Proto": "https",
+        }
+    )
+    assert _is_origin_allowed_for_request(req, allow) is False
+
+
+def test_request_origin_no_forward_header_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ingress without ``X-Forwarded-Host`` falls through to the strict allowlist."""
+    _install_ingress_stub(monkeypatch, is_ingress=True)
+    allow = _compute_origin_allowlist(_fake_mass())
+    req = _fake_request({"Origin": "https://ha.example.com"})
+    assert _is_origin_allowed_for_request(req, allow) is False
+
+
+def test_request_origin_missing_proto_falls_back_to_transport_scheme(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When ``X-Forwarded-Proto`` is absent, the aiohttp ``scheme`` fills in.
+
+    Inside an HA add-on the transport scheme is plain ``http`` because the
+    container is reached over the docker network. A proxy that forwards the
+    host header but omits the proto header should still validate against the
+    actual transport's scheme rather than guess ``https``.
+    """
+    _install_ingress_stub(monkeypatch, is_ingress=True)
+    allow = _compute_origin_allowlist(_fake_mass())
+    req = _fake_request(
+        {
+            "Origin": "http://ha.local:8123",
+            "X-Forwarded-Host": "ha.local:8123",
+        },
+        scheme="http",
+    )
+    assert _is_origin_allowed_for_request(req, allow) is True
+
+
+def test_request_origin_accepts_case_insensitive_origin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``Origin`` matching is case-insensitive on host (RFC 3986)."""
+    _install_ingress_stub(monkeypatch, is_ingress=True)
+    allow = _compute_origin_allowlist(_fake_mass())
+    req = _fake_request(
+        {
+            "Origin": "HTTPS://Ha.Example.COM",
+            "X-Forwarded-Host": "ha.example.com",
+            "X-Forwarded-Proto": "https",
+        }
+    )
+    assert _is_origin_allowed_for_request(req, allow) is True
+
+
+def test_request_origin_handles_missing_ma_module() -> None:
+    """When ``music_assistant`` is unavailable, never auto-accept (fail closed)."""
+    allow = _compute_origin_allowlist(_fake_mass())
+    req = _fake_request(
+        {
+            "Origin": "https://ha.example.com",
+            "X-Forwarded-Host": "ha.example.com",
+        }
+    )
+    # No stub installed; the import inside the helper raises, caught → reject.
+    assert _is_origin_allowed_for_request(req, allow) is False
 
 
 # ── End-to-end bridge enforcement (C2) ──────────────────────────────────────
