@@ -91,13 +91,3 @@ class MetadataProvider(Provider):
         a string with an http(s) URL or local path that is accessible from the server.
         """
         return path
-
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """
-        Retrieve a list of recommendation folders from this metadata provider.
-
-        Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
-        """
-        if ProviderFeature.RECOMMENDATIONS in self.supported_features:
-            raise NotImplementedError
-        return []
