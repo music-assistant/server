@@ -449,6 +449,11 @@ class WebsocketClientHandler:
                 and event.object_id
                 and event.object_id not in self._authenticated_user.player_filter
                 and event.object_id != self._sendspin_player_id
+                and not any(
+                    player.state.active_source == event.object_id
+                    for player in self.mass.players.all_players()
+                    if player.player_id in self._authenticated_user.player_filter
+                )
             ):
                 return
 
