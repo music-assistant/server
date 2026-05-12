@@ -88,6 +88,51 @@ class TestSmartPlaylistRules:
         )
         assert LOGIC_OR in rules.human_readable()
 
+    def test_from_dict_null_list_fields_treated_as_empty(self) -> None:
+        """from_dict treats null for list fields as empty list."""
+        rules = SmartPlaylistRules.from_dict(
+            {"genre_ids": None, "artist_ids": None, "album_ids": None}
+        )
+        assert rules.genre_ids == []
+        assert rules.artist_ids == []
+        assert rules.album_ids == []
+
+    def test_from_dict_null_dict_fields_treated_as_empty(self) -> None:
+        """from_dict treats null for dict fields as empty dict."""
+        rules = SmartPlaylistRules.from_dict(
+            {"genre_names": None, "artist_names": None, "album_names": None}
+        )
+        assert rules.genre_names == {}
+        assert rules.artist_names == {}
+        assert rules.album_names == {}
+
+    def test_from_dict_non_numeric_id_raises(self) -> None:
+        """from_dict raises InvalidDataError for non-numeric ids."""
+        with pytest.raises(InvalidDataError):
+            SmartPlaylistRules.from_dict({"genre_ids": ["abc"]})
+
+    def test_from_dict_wrong_type_for_names_dict_raises(self) -> None:
+        """from_dict raises InvalidDataError when a names field is not a dict."""
+        with pytest.raises(InvalidDataError):
+            SmartPlaylistRules.from_dict({"genre_names": "invalid"})
+
+    def test_from_dict_excluded_null_fields_treated_as_empty(self) -> None:
+        """from_dict treats null for excluded_* fields as empty."""
+        rules = SmartPlaylistRules.from_dict(
+            {
+                "excluded_artist_ids": None,
+                "excluded_album_ids": None,
+                "excluded_track_uris": None,
+                "excluded_artist_names": None,
+                "excluded_album_names": None,
+            }
+        )
+        assert rules.excluded_artist_ids == []
+        assert rules.excluded_album_ids == []
+        assert rules.excluded_track_uris == []
+        assert rules.excluded_artist_names == {}
+        assert rules.excluded_album_names == {}
+
 
 # ---------------------------------------------------------------------------
 # Plugin validation tests

@@ -33,6 +33,36 @@ def _coerce_optional_int(value: Any, field_name: str) -> int | None:
         raise InvalidDataError(f"Invalid value for {field_name}: {value!r}") from err
 
 
+def _coerce_id_list(value: Any, field_name: str) -> list[int]:
+    """Coerce a value to a list of ints, raising InvalidDataError on bad input."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise InvalidDataError(f"Expected list for {field_name}, got {type(value).__name__}")
+    result = []
+    for item in value:
+        try:
+            result.append(int(item))
+        except (TypeError, ValueError) as err:
+            raise InvalidDataError(f"Invalid id in {field_name}: {item!r}") from err
+    return result
+
+
+def _coerce_int_keyed_dict(value: Any, field_name: str) -> dict[int, str]:
+    """Coerce a value to a dict[int, str], raising InvalidDataError on bad input."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise InvalidDataError(f"Expected dict for {field_name}, got {type(value).__name__}")
+    result = {}
+    for k, v in value.items():
+        try:
+            result[int(k)] = str(v)
+        except (TypeError, ValueError) as err:
+            raise InvalidDataError(f"Invalid key in {field_name}: {k!r}") from err
+    return result
+
+
 @dataclass
 class SmartPlaylistRules:
     """Rules that define which tracks are included in a smart playlist."""
@@ -94,13 +124,10 @@ class SmartPlaylistRules:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SmartPlaylistRules:
         """Deserialize from dictionary."""
-        raw_genre_names: dict[str, str] = data.get("genre_names", {})
-        raw_artist_names: dict[str, str] = data.get("artist_names", {})
-        raw_album_names: dict[str, str] = data.get("album_names", {})
         return cls(
-            genre_ids=[int(x) for x in data.get("genre_ids", [])],
-            artist_ids=[int(x) for x in data.get("artist_ids", [])],
-            album_ids=[int(x) for x in data.get("album_ids", [])],
+            genre_ids=_coerce_id_list(data.get("genre_ids"), "genre_ids"),
+            artist_ids=_coerce_id_list(data.get("artist_ids"), "artist_ids"),
+            album_ids=_coerce_id_list(data.get("album_ids"), "album_ids"),
             favorites_only=data.get("favorites_only", False),
             seed_track_uri=data.get("seed_track_uri"),
             seed_track_name=data.get("seed_track_name"),
@@ -108,23 +135,27 @@ class SmartPlaylistRules:
             logic=data.get("logic", LOGIC_AND),
             limit=_coerce_int(data.get("limit", DEFAULT_TRACK_LIMIT), "limit"),
             is_dynamic=data.get("is_dynamic", True),
-            genre_names={int(k): v for k, v in raw_genre_names.items()},
-            artist_names={int(k): v for k, v in raw_artist_names.items()},
-            album_names={int(k): v for k, v in raw_album_names.items()},
+            genre_names=_coerce_int_keyed_dict(data.get("genre_names"), "genre_names"),
+            artist_names=_coerce_int_keyed_dict(data.get("artist_names"), "artist_names"),
+            album_names=_coerce_int_keyed_dict(data.get("album_names"), "album_names"),
             year_from=_coerce_optional_int(data.get("year_from"), "year_from"),
             year_to=_coerce_optional_int(data.get("year_to"), "year_to"),
             seed_artist_uri=data.get("seed_artist_uri"),
             seed_artist_name=data.get("seed_artist_name"),
             seed_artist_library_only=data.get("seed_artist_library_only", False),
-            excluded_artist_ids=[int(x) for x in data.get("excluded_artist_ids", [])],
-            excluded_album_ids=[int(x) for x in data.get("excluded_album_ids", [])],
-            excluded_track_uris=list(data.get("excluded_track_uris", [])),
-            excluded_artist_names={
-                int(k): v for k, v in data.get("excluded_artist_names", {}).items()
-            },
-            excluded_album_names={
-                int(k): v for k, v in data.get("excluded_album_names", {}).items()
-            },
+            excluded_artist_ids=_coerce_id_list(
+                data.get("excluded_artist_ids"), "excluded_artist_ids"
+            ),
+            excluded_album_ids=_coerce_id_list(
+                data.get("excluded_album_ids"), "excluded_album_ids"
+            ),
+            excluded_track_uris=list(data.get("excluded_track_uris") or []),
+            excluded_artist_names=_coerce_int_keyed_dict(
+                data.get("excluded_artist_names"), "excluded_artist_names"
+            ),
+            excluded_album_names=_coerce_int_keyed_dict(
+                data.get("excluded_album_names"), "excluded_album_names"
+            ),
             dedup_hours=_coerce_optional_int(data.get("dedup_hours"), "dedup_hours"),
         )
 
