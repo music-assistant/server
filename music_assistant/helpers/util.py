@@ -137,6 +137,8 @@ artist_pattern = re.compile(r"artist=\"(?P<artist>.*?)\"")
 dot_com_pattern = re.compile(r"(?P<netloc>\(?\w+\.(?:\w+\.)?(\w{2,3})\)?)")
 ad_pattern = re.compile(r"((ad|advertisement)_)|^AD\s\d+$|ADBREAK", flags=re.IGNORECASE)
 title_artist_order_pattern = re.compile(r"(?P<title>.+)\sBy:\s(?P<artist>.+)", flags=re.IGNORECASE)
+# German format used by some stations: "Track" von Artist
+german_von_pattern = re.compile(r'^"(?P<title>[^"]+)"\s+von\s+(?P<artist>.+)$', flags=re.IGNORECASE)
 multi_space_pattern = re.compile(r"\s{2,}")
 end_junk_pattern = re.compile(r"(.+?)(\s\W+)$")
 
@@ -335,6 +337,11 @@ def clean_stream_title(line: str) -> str:
     artist: str = ""
 
     if not keyword_pattern.search(line):
+        if german_match := german_von_pattern.match(line.strip()):
+            title = multi_strip(german_match.group("title"))
+            artist = multi_strip(german_match.group("artist")).strip('"')
+            if title and artist:
+                return f"{artist} - {title}"
         return multi_strip(line)
 
     if match := title_pattern.search(line):
