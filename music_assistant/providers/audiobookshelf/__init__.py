@@ -977,6 +977,8 @@ for more details.
         )
         # only the progress object has a timestamp of the progress (not the session)
         # last_update is in ms epoch
+        # If there is an open session, that session might have the old progress time,
+        # whereas the explicit progress call above gives the most recent time.
         timestamp = from_utc_timestamp(progress.last_update / 1000) if progress else None
         current_time = (
             progress.current_time
@@ -984,7 +986,7 @@ for more details.
             else session.current_time
         )
         finished = current_time > session.duration - PLAYBACK_REPORT_INTERVAL_SECONDS
-        self.logger.debug("Resume position %s: obtained.", session.current_time)
+        self.logger.debug("Resume position %s: obtained.", current_time)
         return (
             finished,
             int(current_time * 1000),
