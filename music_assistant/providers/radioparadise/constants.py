@@ -1,7 +1,8 @@
 """Constants for Radio Paradise provider."""
 
-from typing import Any
+from typing import TypedDict
 
+import aiohttp
 from music_assistant_models.enums import ContentType
 
 # Base URL for station icons
@@ -9,8 +10,32 @@ STATION_ICONS_BASE_URL = (
     "https://raw.githubusercontent.com/music-assistant/music-assistant.io/main/public/assets/icons"
 )
 
-# Radio Paradise channel configurations with hardcoded channels
-RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
+# API base URLs
+API_BASE_URL = "https://api.radioparadise.com/api"
+PLAY_API_URL = f"{API_BASE_URL}/play?bitrate=4&info=true&chan="
+NOWPLAYING_API_URL = f"{API_BASE_URL}/now_playing?chan="
+COVER_BASE_URL = "https://img.radioparadise.com"
+
+# How often the player queue calls back into _update_stream_metadata while a stream is active.
+STREAM_METADATA_UPDATE_INTERVAL = 10
+
+# Per-request timeout for Radio Paradise API calls.
+API_TIMEOUT = aiohttp.ClientTimeout(total=10)
+
+
+class RadioParadiseChannel(TypedDict):
+    """Type definition for a Radio Paradise channel."""
+
+    name: str
+    description: str
+    stream_url: str
+    content_type: ContentType
+    station_icon: str
+
+
+# Channels 0-4 stream FLAC; channel 5 (Serenity) is AAC because Radio Paradise
+# doesn't publish a FLAC variant for it.
+RADIO_PARADISE_CHANNELS: dict[str, RadioParadiseChannel] = {
     "0": {
         "name": "Radio Paradise - Main Mix",
         "description": "Eclectic mix of music - hand-picked by real humans",
@@ -54,8 +79,3 @@ RADIO_PARADISE_CHANNELS: dict[str, dict[str, Any]] = {
         "station_icon": "radioparadise-logo-serenity.png",
     },
 }
-
-# API base URLs
-API_BASE_URL = "https://api.radioparadise.com/api"
-PLAY_API_URL = f"{API_BASE_URL}/play?bitrate=4&info=true&chan="
-NOWPLAYING_API_URL = f"{API_BASE_URL}/now_playing?chan="

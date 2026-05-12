@@ -54,7 +54,7 @@
         'item_id': '300',
         'provider_domain': 'kion_music',
         'provider_instance': 'kion_music_instance',
-        'url': 'https://music.mts.ru/album/300',
+        'url': 'https://music.yandex.ru/album/300',
       }),
     ]),
     'sort_name': 'test album',
@@ -66,6 +66,7 @@
 # ---
 # name: test_parse_artist_snapshot[minimal]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
     ]),
@@ -116,7 +117,7 @@
         'item_id': '100',
         'provider_domain': 'kion_music',
         'provider_instance': 'kion_music_instance',
-        'url': 'https://music.mts.ru/artist/100',
+        'url': 'https://music.yandex.ru/artist/100',
       }),
     ]),
     'sort_name': 'test artist',
@@ -127,6 +128,7 @@
 # ---
 # name: test_parse_artist_snapshot[with_cover]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
     ]),
@@ -184,7 +186,7 @@
         'item_id': '200',
         'provider_domain': 'kion_music',
         'provider_instance': 'kion_music_instance',
-        'url': 'https://music.mts.ru/artist/200',
+        'url': 'https://music.yandex.ru/artist/200',
       }),
     ]),
     'sort_name': 'artist with cover',
@@ -248,7 +250,7 @@
         'item_id': '12345:3',
         'provider_domain': 'kion_music',
         'provider_instance': 'kion_music_instance',
-        'url': 'https://music.mts.ru/users/12345/playlists/3',
+        'url': 'https://music.yandex.ru/users/12345/playlists/3',
       }),
     ]),
     'sort_name': 'my playlist',
@@ -315,7 +317,7 @@
         'item_id': '99999:1',
         'provider_domain': 'kion_music',
         'provider_instance': 'kion_music_instance',
-        'url': 'https://music.mts.ru/users/99999/playlists/1',
+        'url': 'https://music.yandex.ru/users/99999/playlists/1',
       }),
     ]),
     'sort_name': 'shared playlist',
@@ -385,7 +387,7 @@
         'item_id': '400',
         'provider_domain': 'kion_music',
         'provider_instance': 'kion_music_instance',
-        'url': 'https://music.mts.ru/track/400',
+        'url': 'https://music.yandex.ru/track/400',
       }),
     ]),
     'sort_name': 'test track',
@@ -458,7 +460,7 @@
           'item_id': '20',
           'provider_domain': 'kion_music',
           'provider_instance': 'kion_music_instance',
-          'url': 'https://music.mts.ru/album/20',
+          'url': 'https://music.yandex.ru/album/20',
         }),
       ]),
       'sort_name': 'track album',
@@ -469,6 +471,7 @@
     }),
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -519,7 +522,7 @@
             'item_id': '10',
             'provider_domain': 'kion_music',
             'provider_instance': 'kion_music_instance',
-            'url': 'https://music.mts.ru/artist/10',
+            'url': 'https://music.yandex.ru/artist/10',
           }),
         ]),
         'sort_name': 'track artist',
@@ -588,7 +591,7 @@
         'item_id': '500',
         'provider_domain': 'kion_music',
         'provider_instance': 'kion_music_instance',
-        'url': 'https://music.mts.ru/track/500',
+        'url': 'https://music.yandex.ru/track/500',
       }),
     ]),
     'sort_name': 'track with album',

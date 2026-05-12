@@ -47,6 +47,42 @@ class MetadataProvider(Provider):
             raise NotImplementedError
         return None
 
+    async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
+        """
+        Retrieve a list of similar tracks for the given track.
+
+        Will only be called if ProviderFeature.SIMILAR_TRACKS is declared.
+
+        :param track: The reference track.
+        :param limit: Maximum number of similar tracks to return.
+        """
+        if ProviderFeature.SIMILAR_TRACKS in self.supported_features:
+            raise NotImplementedError
+        return []
+
+    async def get_similar_artists(self, artist: Artist, limit: int = 25) -> list[Artist]:
+        """
+        Retrieve a list of similar artists for the given artist.
+
+        Will only be called if ProviderFeature.SIMILAR_ARTISTS is declared.
+
+        :param artist: The reference artist.
+        :param limit: Maximum number of similar artists to return.
+        """
+        if ProviderFeature.SIMILAR_ARTISTS in self.supported_features:
+            raise NotImplementedError
+        return []
+
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """
+        Retrieve a list of recommendation folders from this metadata provider.
+
+        Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
+        """
+        if ProviderFeature.RECOMMENDATIONS in self.supported_features:
+            raise NotImplementedError
+        return []
+
     async def resolve_image(self, path: str) -> str | bytes:
         """
         Resolve an image from an image path.

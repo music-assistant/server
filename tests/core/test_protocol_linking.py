@@ -139,7 +139,18 @@ def mock_mass() -> MagicMock:
     mass.closing = False
     mass.config = MagicMock()
     mass.config.get = MagicMock(return_value=[])
-    mass.config.get_raw_player_config_value = MagicMock(return_value="auto")
+
+    def _get_raw_player_config_value(
+        _player_id: str, key: str, default: str | int | None = None
+    ) -> str | int | None:
+        """Return appropriate defaults for player config values."""
+        if key == "min_volume":
+            return 0
+        if key == "max_volume":
+            return 100
+        return default if default is not None else "auto"
+
+    mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_player_config_value)
     # Return "GLOBAL" for log level config (standard default)
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
     mass.config.set = MagicMock()
@@ -956,10 +967,10 @@ class TestCachedProtocolParentRestore:
             for link in native_player.linked_output_protocols
         )
 
-    def test_protocol_parent_id_prevents_universal_player_creation(
+    def test_missing_cached_parent_schedules_protocol_evaluation(
         self, mock_mass: MagicMock
     ) -> None:
-        """Test that cached protocol_parent_id prevents creating universal player."""
+        """Test that a missing cached parent does not block delayed protocol evaluation."""
         controller = PlayerController(mock_mass)
 
         # Mock config to return cached parent_id (parent not yet registered)
@@ -982,13 +993,72 @@ class TestCachedProtocolParentRestore:
         # No native player registered yet
         controller._players = {}
 
-        # Try to link protocol - should set parent_id and skip evaluation
+        with patch.object(controller, "_schedule_protocol_evaluation") as mock_schedule:
+            controller._try_link_protocol_to_native(protocol_player)
+
+        # A cached parent that is not registered yet should be handled by the
+        # delayed evaluation path, not by assigning a dangling in-memory parent.
+        assert protocol_player.protocol_parent_id is None
+        mock_schedule.assert_called_once_with(protocol_player)
+
+    @pytest.mark.asyncio
+    async def test_cached_parent_registers_before_delayed_eval_links_without_universal(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test cached parent startup grace still links when native registers during delay."""
+        controller = PlayerController(mock_mass)
+
+        def mock_config_get(
+            key: str, default: str | list[str] | None = None
+        ) -> str | list[str] | None:
+            if "protocol_parent_id" in str(key):
+                return "native_player_id"
+            return default
+
+        mock_mass.config.get.side_effect = mock_config_get
+
+        dlna_provider = MockProvider("dlna", mass=mock_mass)
+        protocol_player = MockPlayer(
+            dlna_provider,
+            "uuid:RINCON_AABBCCDDEEFF_MR",
+            "Sonos DLNA",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        protocol_player.set_initialized()
+        controller._players = {protocol_player.player_id: protocol_player}
+        controller._player_throttlers = {
+            protocol_player.player_id: Throttler(1, 0.05),
+        }
+
         controller._try_link_protocol_to_native(protocol_player)
 
-        # Verify protocol_parent_id was set
-        assert protocol_player.protocol_parent_id == "native_player_id"
+        assert protocol_player.protocol_parent_id is None
+        assert mock_mass.loop.call_later.call_args.args[0] == 45.0
 
-        # Since parent_id is set, delayed evaluation won't create a universal player
+        native_provider = MockProvider("sonos", mass=mock_mass)
+        native_player = MockPlayer(
+            native_provider,
+            "native_player_id",
+            "Sonos Speaker",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        native_player.set_initialized()
+        controller._players[native_player.player_id] = native_player
+        controller._player_throttlers[native_player.player_id] = Throttler(1, 0.05)
+
+        controller._try_link_protocols_to_native(native_player)
+
+        assert protocol_player.protocol_parent_id == native_player.player_id
+        assert any(  # type: ignore[unreachable]
+            link.output_protocol_id == protocol_player.player_id
+            for link in native_player.linked_output_protocols
+        )
+
+        with patch.object(controller, "_create_or_update_universal_player") as mock_create_up:
+            await controller._delayed_protocol_evaluation(protocol_player.player_id)
+
+        mock_create_up.assert_not_called()
 
 
 class TestSelectBestOutputProtocol:
@@ -996,8 +1066,18 @@ class TestSelectBestOutputProtocol:
 
     def test_select_native_when_preferred_is_native(self, mock_mass: MagicMock) -> None:
         """Test that native protocol is selected when user prefers native."""
-        # Mock config to return "native" as preferred
-        mock_mass.config.get_raw_player_config_value = MagicMock(return_value="native")
+
+        # Mock config to return "native" as preferred, but still handle min/max volume
+        def _get_raw_config(
+            _player_id: str, key: str, _default: str | int | None = None
+        ) -> str | int | None:
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            return "native"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_config)
 
         controller = PlayerController(mock_mass)
         provider = MockProvider("sonos", mass=mock_mass)
@@ -1027,8 +1107,18 @@ class TestSelectBestOutputProtocol:
 
     def test_select_dlna_when_preferred_is_dlna(self, mock_mass: MagicMock) -> None:
         """Test that DLNA protocol is selected when user prefers DLNA."""
-        # Mock config to return the full player ID as preferred
-        mock_mass.config.get_raw_player_config_value = MagicMock(return_value="dlna_AABBCCDDEEFF")
+
+        # Mock config to return the full player ID as preferred, but still handle min/max volume
+        def _get_raw_config(
+            _player_id: str, key: str, _default: str | int | None = None
+        ) -> str | int | None:
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            return "dlna_AABBCCDDEEFF"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_config)
 
         controller = PlayerController(mock_mass)
 
@@ -1084,10 +1174,18 @@ class TestSelectBestOutputProtocol:
 
     def test_select_airplay_when_preferred_is_airplay(self, mock_mass: MagicMock) -> None:
         """Test that AirPlay protocol is selected when user prefers AirPlay."""
-        # Mock config to return the full player ID as preferred
-        mock_mass.config.get_raw_player_config_value = MagicMock(
-            return_value="airplay_AABBCCDDEEFF"
-        )
+
+        # Mock config to return the full player ID as preferred, but still handle min/max volume
+        def _get_raw_config(
+            _player_id: str, key: str, _default: str | int | None = None
+        ) -> str | int | None:
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            return "airplay_AABBCCDDEEFF"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_config)
 
         controller = PlayerController(mock_mass)
 
@@ -1161,8 +1259,18 @@ class TestSelectBestOutputProtocol:
 
     def test_fallback_to_native_when_auto(self, mock_mass: MagicMock) -> None:
         """Test that native playback is used when preference is auto."""
-        # Mock config to return "auto" as preferred
-        mock_mass.config.get_raw_player_config_value = MagicMock(return_value="auto")
+
+        # Mock config to return "auto" as preferred, but still handle min/max volume
+        def _get_raw_config(
+            _player_id: str, key: str, _default: str | int | None = None
+        ) -> str | int | None:
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            return "auto"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_config)
 
         controller = PlayerController(mock_mass)
         provider = MockProvider("sonos", mass=mock_mass)

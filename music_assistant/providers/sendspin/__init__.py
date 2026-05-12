@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
 from music_assistant.providers.sendspin.provider import SendspinProvider
 
 if TYPE_CHECKING:
@@ -39,4 +40,4 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return ()
+    return (CONF_ENTRY_MANUAL_DISCOVERY_IPS,)

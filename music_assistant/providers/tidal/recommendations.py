@@ -17,7 +17,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from .constants import CACHE_CATEGORY_RECOMMENDATIONS
+from .constants import CACHE_CATEGORY_RECOMMENDATIONS, WEB_BASE_URL
 from .tidal_page_parser import TidalPageParser
 
 if TYPE_CHECKING:
@@ -114,8 +114,8 @@ class TidalRecommendationManager:
                     )
                 )
 
-        except Exception as err:
-            self.logger.warning("Error fetching recommendations: %s", err)
+        except Exception:
+            self.logger.exception("Error fetching recommendations")
 
         return results
 
@@ -128,7 +128,7 @@ class TidalRecommendationManager:
             locale = self.mass.metadata.locale.replace("_", "-")
             api_result = await self.api.get(
                 page_path,
-                base_url="https://listen.tidal.com/v1",
+                base_url=WEB_BASE_URL,
                 params={
                     "locale": locale,
                     "deviceType": "BROWSER",
@@ -153,4 +153,5 @@ class TidalRecommendationManager:
             )
             return parser
         except Exception:
+            self.logger.exception("Error fetching Tidal page %s", page_path)
             return TidalPageParser(self.provider)
