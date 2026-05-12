@@ -1451,7 +1451,7 @@ class StreamsAudio:
             "true" if crossfade_data else "false",
         )
 
-        buffer = b""
+        buffer = bytearray()
         bytes_written = 0
         # calculate crossfade buffer size
         crossfade_buffer_duration = (
@@ -1529,13 +1529,16 @@ class StreamsAudio:
                 del chunk
                 continue
 
-            buffer += chunk
+            buffer.extend(chunk)
             del chunk
+            if len(buffer) < crossfade_buffer_size:
+                await asyncio.sleep(0)
+                continue
             # yield everything above the crossfade buffer
             while len(buffer) > crossfade_buffer_size:
-                yield buffer[: pcm_format.pcm_sample_size]
+                yield bytes(buffer[: pcm_format.pcm_sample_size])
                 bytes_written += pcm_format.pcm_sample_size
-                buffer = buffer[pcm_format.pcm_sample_size :]
+                del buffer[: pcm_format.pcm_sample_size]
                 await asyncio.sleep(0)
 
         #### HANDLE END OF TRACK
@@ -1581,14 +1584,14 @@ class StreamsAudio:
         if not crossfade_allowed:
             # no crossfade enabled/allowed, just yield the buffer last part
             bytes_written += len(buffer)
-            for pcm_slice in iter_pcm_slices(buffer, pcm_format, 1000):
+            for pcm_slice in iter_pcm_slices(bytes(buffer), pcm_format, 1000):
                 yield pcm_slice
                 await asyncio.sleep(0)
         else:
             assert next_queue_item is not None
             # the remaining buffer is the fade-out tail of the current track
-            fade_out_data = buffer
-            buffer = b""
+            fade_out_data = bytes(buffer)
+            buffer = bytearray()
             try:
                 # wrap the next track's stream in a counting generator that caps
                 # at crossfade_buffer_size and tracks how many bytes were consumed
@@ -1832,7 +1835,7 @@ class StreamsAudio:
             warmup_size = int(pcm_format.pcm_sample_size * WARMUP_DURATION)
 
             bytes_written = 0
-            crossfade_buffer = b""
+            crossfade_buffer = bytearray()
             warmup_bytes = 0
             first_chunk_received = False
 
@@ -1882,15 +1885,16 @@ class StreamsAudio:
                     continue
 
                 # smart fades enabled: accumulate chunks in crossfade buffer
-                crossfade_buffer += chunk
+                crossfade_buffer.extend(chunk)
                 del chunk
                 if len(crossfade_buffer) < crossfade_buffer_size:
+                    await asyncio.sleep(0)
                     continue
 
                 # handle crossfade of previous track and new track
                 if last_fadeout_part and last_streamdetails:
-                    fadein_part = crossfade_buffer[:crossfade_buffer_size]
-                    remaining_bytes = crossfade_buffer[crossfade_buffer_size:]
+                    fadein_part = bytes(crossfade_buffer[:crossfade_buffer_size])
+                    remaining_bytes = bytes(crossfade_buffer[crossfade_buffer_size:])
                     try:
                         crossfade_bytes_written = 0
                         async for mix_chunk in self.smart_fades_mixer.mix(
@@ -1915,7 +1919,7 @@ class StreamsAudio:
                             await asyncio.sleep(0)
                         # full tail was pre-counted and is now yielded as-is
                         crossfade_bytes_written = 0
-                        remaining_bytes = crossfade_buffer
+                        remaining_bytes = bytes(crossfade_buffer)
                     if crossfade_bytes_written:
                         # split crossfade output 50/50 between both tracks
                         fadeout_share = crossfade_bytes_written // 2
@@ -1935,14 +1939,14 @@ class StreamsAudio:
                         del remaining_bytes
                     last_fadeout_part = b""
                     last_streamdetails = None
-                    crossfade_buffer = b""
+                    crossfade_buffer = bytearray()
                     warmup_bytes = 0
 
                 # yield everything above the crossfade buffer size
                 while len(crossfade_buffer) > crossfade_buffer_size:
-                    yield crossfade_buffer[:pcm_sample_size]
+                    yield bytes(crossfade_buffer[:pcm_sample_size])
                     bytes_written += pcm_sample_size
-                    crossfade_buffer = crossfade_buffer[pcm_sample_size:]
+                    del crossfade_buffer[:pcm_sample_size]
                     await asyncio.sleep(0)
 
             #### HANDLE END OF TRACK
@@ -1970,10 +1974,10 @@ class StreamsAudio:
                 player_id=queue.queue_id,
                 flow_mode=True,
             ):
-                last_fadeout_part = crossfade_buffer[-crossfade_buffer_size:]
+                last_fadeout_part = bytes(crossfade_buffer[-crossfade_buffer_size:])
                 last_streamdetails = queue_track.streamdetails
                 last_play_log_entry = play_log_entry
-                remaining_bytes = crossfade_buffer[:-crossfade_buffer_size]
+                remaining_bytes = bytes(crossfade_buffer[:-crossfade_buffer_size])
                 if remaining_bytes:
                     for pcm_slice in iter_pcm_slices(remaining_bytes, pcm_format, 1000):
                         yield pcm_slice
@@ -1982,10 +1986,10 @@ class StreamsAudio:
                 del remaining_bytes
             elif smart_fades_mode != SmartFadesMode.DISABLED and crossfade_buffer:
                 bytes_written += len(crossfade_buffer)
-                for pcm_slice in iter_pcm_slices(crossfade_buffer, pcm_format, 1000):
+                for pcm_slice in iter_pcm_slices(bytes(crossfade_buffer), pcm_format, 1000):
                     yield pcm_slice
                     await asyncio.sleep(0)
-            crossfade_buffer = b""
+            crossfade_buffer = bytearray()
 
             # update duration details based on the actual pcm data we sent
             # this also accounts for crossfade and silence stripping

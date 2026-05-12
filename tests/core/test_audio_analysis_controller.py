@@ -402,7 +402,8 @@ async def test_slow_provider_removed_after_timeout(
     mock_mass.get_provider = MagicMock(side_effect=_get_prov)
 
     with unittest.mock.patch(
-        "music_assistant.controllers.streams.audio_analysis.CHUNK_PROCESS_TIMEOUT_SECONDS", 0.1
+        "music_assistant.controllers.streams.audio_analysis.REAL_TIME_PACE_INTERVAL_SECONDS_CEILING",
+        0.1,
     ):
         await controller.start_analysis(audio_buffer, mock_stream_details)
         await _send_chunks(audio_buffer, 3)
