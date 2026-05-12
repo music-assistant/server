@@ -13,11 +13,11 @@ aiohttp-socks==0.11.0
 aiojellyfin==0.14.1
 aiomusiccast==0.15.0
 aiortc>=1.6.0
-aiosendspin[server]==5.1.1
+aiosendspin[server]==5.2.0
 aioslimproto==3.1.8
 aiosonos==0.1.12
 aiosqlite==0.22.1
-aiovban==0.6.3
+aiovban==1.1.0
 alexapy==1.29.17
 async-upnp-client==0.46.2
 audible==0.10.0
@@ -44,8 +44,8 @@ liblistenbrainz==0.7.0
 librosa==0.11.0
 lyricsgenius==3.11.0
 mashumaro==3.20
-music-assistant-frontend==2.17.153
-music-assistant-models==1.1.116
+music-assistant-frontend==2.17.155
+music-assistant-models==1.1.117
 mutagen==1.47.0
 niconico.py-ma==2.1.0.post2
 nnAudio==0.3.3
@@ -64,7 +64,7 @@ pycryptodome==3.23.0
 pyheos==1.0.6
 pyjwt[crypto]>=2.10.1
 pylast==7.0.2
-python-fullykiosk==0.0.14
+python-fullykiosk==0.0.15
 python-mpd2>=3.1.1
 python-slugify==8.0.4
 pytz==2025.2
@@ -74,7 +74,7 @@ radios==0.3.2
 rokuecp==0.19.5
 shortuuid==1.0.13
 snapcast==2.3.7
-soco==0.30.14
+soco==0.31.0
 soundcloudpy==0.1.4
 sounddevice==0.5.5
 srptools>=1.0.0
