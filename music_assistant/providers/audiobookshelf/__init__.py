@@ -968,22 +968,28 @@ for more details.
         # this method is called _before_ get_stream_details, so the playback session
         # is created here.
         session = await self._get_playback_session(mass_item_id=item_id)
-        finished = session.current_time > session.duration - PLAYBACK_REPORT_INTERVAL_SECONDS
 
         item_ids = item_id.split(" ")
         abs_item_id = item_ids[0]
         episode_id = item_ids[1] if len(item_ids) == 2 else None
-        timestamp = None
-        if progress := await self._client.get_my_media_progress(
+        progress = await self._client.get_my_media_progress(
             item_id=abs_item_id, episode_id=episode_id
-        ):
-            # only the progress object has a timestamp of the progress (not the session)
-            # last_update is in ms epoch
-            timestamp = from_utc_timestamp(progress.last_update / 1000)
-        self.logger.debug("Resume position %s: obtained.", session.current_time)
+        )
+        # only the progress object has a timestamp of the progress (not the session)
+        # last_update is in ms epoch
+        # If there is an open session, that session might have the old progress time,
+        # whereas the explicit progress call above gives the most recent time.
+        timestamp = from_utc_timestamp(progress.last_update / 1000) if progress else None
+        current_time = (
+            progress.current_time
+            if progress is not None and progress.current_time is not None
+            else session.current_time
+        )
+        finished = current_time > session.duration - PLAYBACK_REPORT_INTERVAL_SECONDS
+        self.logger.debug("Resume position %s: obtained.", current_time)
         return (
             finished,
-            int(session.current_time * 1000),
+            int(current_time * 1000),
             timestamp,
         )
 
