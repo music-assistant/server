@@ -38,7 +38,9 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
             search_result.tracks = tracks
 
         # Search for both playlists and albums in a single API call for efficiency
-        list_media_types = [mt for mt in media_types if mt in (MediaType.PLAYLIST, MediaType.ALBUM)]
+        list_media_types: list[MediaType] = [
+            mt for mt in media_types if mt in (MediaType.PLAYLIST, MediaType.ALBUM)
+        ]
 
         if list_media_types:
             await self.service_manager.search.search_playlists_and_albums_by_keyword(
