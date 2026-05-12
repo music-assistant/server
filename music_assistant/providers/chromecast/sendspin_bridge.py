@@ -589,11 +589,15 @@ class SendspinBridgeManager:
                 return
 
             bridge_client_id = get_bridge_client_id(cast_player)
-            assert bridge_client_id is not None  # validated by _should_have_bridge
+            sendspin_server = self.sendspin_server
+            if bridge_client_id is None or sendspin_server is None:
+                self.logger.debug(
+                    "Skipping bridge setup for %s — preconditions changed since evaluation",
+                    cast_player.display_name,
+                )
+                return
             manufacturer = cast_player.device_info.manufacturer or ""
             model = cast_player.device_info.model or ""
-            sendspin_server = self.sendspin_server
-            assert sendspin_server is not None  # validated by _should_have_bridge
 
             existing_client_id = self._find_existing_sendspin_client(
                 sendspin_server, bridge_client_id, cast_player
@@ -668,7 +672,10 @@ class SendspinBridgeManager:
                     unsub()
             target_id = client_id or claimed_client_id
             if target_id:
-                await self.mass.players.unregister(target_id, permanent=True)
+                if self.mass.players.get_player(target_id):
+                    await self.mass.players.unregister(target_id, permanent=True)
+                else:
+                    self.mass.players.delete_player_config(target_id)
             if bridge:
                 await bridge.stop()
             elif claimed_client_id and (sendspin_server := self.sendspin_server):
