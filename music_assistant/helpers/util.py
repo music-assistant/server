@@ -412,15 +412,12 @@ def clean_stream_title(line: str) -> str:
     title: str = ""
     artist: str = ""
 
-    if german_match := german_von_pattern.match(line.strip()):
-        title = multi_strip(german_match.group("title"))
-        artist = multi_strip(german_match.group("artist")).strip('"')
-        if title and artist:
-            return f"{artist} - {title}"
-        title = ""
-        artist = ""
-
     if not keyword_pattern.search(line):
+        if german_match := german_von_pattern.match(line.strip()):
+            title = multi_strip(german_match.group("title"))
+            artist = multi_strip(german_match.group("artist")).strip('"')
+            if title and artist:
+                return f"{artist} - {title}"
         return multi_strip(line)
 
     if match := title_pattern.search(line):
