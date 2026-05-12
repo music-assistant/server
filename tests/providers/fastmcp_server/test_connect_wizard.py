@@ -659,6 +659,24 @@ def test_cursor_template_round_trips() -> None:
     assert server["headers"]["Authorization"] == "Bearer TOK-123"
 
 
+def test_claude_code_template_uses_positional_url() -> None:
+    """``claude mcp add`` takes the URL as a positional argument, not via ``--url``.
+
+    Regression for the v0.3.x wizard shipping ``claude mcp add ma --transport http
+    --url <URL>`` — the CLI ignored ``--url`` and registered an unreachable server.
+    """
+    spec = lookup_client("claude-code")
+    assert spec is not None
+    rendered = spec.template.replace("{{URL}}", "http://localhost:8095/mcp/v1").replace(
+        "{{TOKEN}}", "TOK-123"
+    )
+    assert "--url" not in rendered, "claude mcp add does not accept a --url flag"
+    # URL must appear right after the server name (the positional slot).
+    assert "claude mcp add ma http://localhost:8095/mcp/v1" in rendered
+    assert "--transport http" in rendered
+    assert '--header "Authorization: Bearer TOK-123"' in rendered
+
+
 def test_all_clients_have_required_fields() -> None:
     """Every client spec has the fields the JS UI relies on."""
     seen_ids: set[str] = set()

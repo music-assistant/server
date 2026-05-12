@@ -39,8 +39,8 @@ CLIENTS: tuple[ClientSpec, ...] = (
         label="Claude Code",
         kind="shell",
         template=(
-            "claude mcp add ma --transport http \\\n"
-            "  --url {{URL}} \\\n"
+            "claude mcp add ma {{URL}} \\\n"
+            "  --transport http \\\n"
             '  --header "Authorization: Bearer {{TOKEN}}"'
         ),
         config_path_hint="Run this in any terminal.",
