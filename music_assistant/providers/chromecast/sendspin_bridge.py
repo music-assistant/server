@@ -978,13 +978,16 @@ class SendspinBridgeManager:
         """Re-evaluate bridge state for cast players affected by a player update."""
         if not event.object_id:
             return
-        affected: list[ChromecastPlayer] = []
+        updated_player = self.mass.players.get_player(event.object_id)
+        match_ids = {event.object_id}
+        if updated_player and updated_player.protocol_parent_id:
+            match_ids.add(updated_player.protocol_parent_id)
         for player in self.provider.players:
             cast_player = cast("ChromecastPlayer", player)
-            if event.object_id in {cast_player.player_id, cast_player.protocol_parent_id}:
-                affected.append(cast_player)
-        for cast_player in affected:
-            await self.evaluate_bridge(cast_player)
+            if cast_player.player_id in match_ids or (
+                cast_player.protocol_parent_id and cast_player.protocol_parent_id in match_ids
+            ):
+                await self.evaluate_bridge(cast_player)
 
     async def _on_providers_updated(self, event: MassEvent) -> None:
         """Re-evaluate cast bridges when the airplay provider availability flips."""
