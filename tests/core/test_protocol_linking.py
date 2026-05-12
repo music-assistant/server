@@ -6180,7 +6180,14 @@ class TestProtocolParentIdPersistence:
     def test_parent_id_saved_for_universal_parent(self, mock_mass: MagicMock) -> None:
         """protocol_parent_id should be saved when linking to a universal player."""
         controller = PlayerController(mock_mass)
-        mock_mass.config.get = MagicMock(return_value=[])
+
+        def _config_get(key: str, default: object = None) -> object:
+            # Protocol player config must exist for _save_protocol_parent_id to write
+            if key == "players/airplay_test":
+                return {"enabled": True}
+            return default if default is not None else []
+
+        mock_mass.config.get = MagicMock(side_effect=_config_get)
 
         universal_provider = create_mock_universal_provider(mock_mass)
         parent = UniversalPlayer(
