@@ -374,6 +374,13 @@ async def get_config_entries(  # noqa: PLR0915 — flow naturally returns ~12 Co
                 "is active (the click is routed to a queue id the backend "
                 "doesn't own, and errors), and may cause brief signal-chain "
                 "flicker at track start before the source format is known.\n\n"
+                "Multi-user limitation: for users with a restricted "
+                "`player_filter` on their websocket session, MA's event gate "
+                "drops QUEUE_* events whose `object_id` is not one of the "
+                "allowed player ids. Our fake-queue events use the plugin "
+                "instance id as `object_id`, so the player card may render "
+                "empty for restricted users. Admin / unrestricted users are "
+                "unaffected.\n\n"
                 "Ignored in handoff mode — MA already owns a real queue there."
             ),
             default_value=False,

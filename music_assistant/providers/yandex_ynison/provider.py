@@ -1065,6 +1065,20 @@ class YandexYnisonProvider(PluginProvider):
         Stream-mode only — handoff has a real `play_media` queue and
         doesn't need the impostor. Also gated by
         `CONF_ENABLE_UI_INTEGRATION` (off by default).
+
+        Multi-user limitation: MA's websocket gate
+        (`controllers/webserver/websocket_client.py`) drops QUEUE_* events
+        whose `event.object_id` is not in the user's `player_filter`.
+        Our events use `instance_id` (the only key under which the
+        frontend stores and looks up the fake queue — `player.active_source`
+        points at `instance_id`, not `player_id`), so restricted users
+        miss them. Switching `object_id` to `player_id` would pass the
+        filter but break the frontend's queue lookup for everyone
+        (storage key would no longer match `player.active_source`). A
+        clean fix needs an MA-core carve-out for plugin source ids
+        (similar to the existing `_sendspin_player_id` exception) or a
+        frontend change to route by `data.queue_id` — both out of scope
+        for this plugin.
         """
         if not self._ui_integration_active:
             return
