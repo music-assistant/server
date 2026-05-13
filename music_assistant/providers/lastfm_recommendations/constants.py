@@ -56,13 +56,6 @@ TOP_TAGS_LIMIT = 1
 # Search limit for provider API calls (workaround for Spotify API bug with limit=1)
 PROVIDER_SEARCH_LIMIT = 2
 
-# Image processing
-# Priority order for selecting Last.fm images (largest to smallest)
-IMAGE_SIZE_PRIORITY = ["mega", "extralarge", "large", "medium", "small"]
-
-# Suffix used to identify Last.fm placeholder images to filter out
-IMAGE_PLACEHOLDER_SUFFIX = "/default.png"
-
 # Curated list of popular countries for Last.fm geo charts.
 # Last.fm API expects full country names (not ISO codes).
 # Covers major music markets and can be expanded based on user requests.

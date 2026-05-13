@@ -6,15 +6,13 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import ExternalID, ImageType, MediaType, ProviderFeature
+from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import MusicAssistantError
-from music_assistant_models.media_items import Album, Artist, ItemMapping, MediaItemImage, Track
+from music_assistant_models.media_items import Album, Artist, ItemMapping, Track
 
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.providers.lastfm_recommendations.constants import (
-    IMAGE_PLACEHOLDER_SUFFIX,
-    IMAGE_SIZE_PRIORITY,
     PROVIDER_SEARCH_LIMIT,
     SEARCH_CONCURRENCY_LIMIT,
 )
@@ -45,25 +43,6 @@ def _has_matching_external_ids(
         return False
 
     return bool(item_mapping.external_ids & media_item.external_ids)
-
-
-def _extract_image_url(image_array: list[dict[str, Any]]) -> str | None:
-    """
-    Extract the largest available image URL from Last.fm's image array.
-
-    :param image_array: List of image dicts from Last.fm API.
-    """
-    if not image_array:
-        return None
-
-    for size in IMAGE_SIZE_PRIORITY:
-        for img in image_array:
-            if img.get("size") == size and img.get("#text"):
-                url = str(img["#text"]).strip()
-                if url and not url.endswith(IMAGE_PLACEHOLDER_SUFFIX):
-                    return url
-
-    return None
 
 
 def _get_streaming_providers(
@@ -305,21 +284,12 @@ async def parse_artist(
     if mbid:
         external_ids.add((ExternalID.MB_ARTIST, mbid))
 
-    image = None
-    if image_url := _extract_image_url(lastfm_artist.get("image", [])):
-        image = MediaItemImage(
-            type=ImageType.THUMB,
-            path=image_url,
-            provider="lastfm",
-        )
-
     item_mapping = ItemMapping(
         media_type=MediaType.ARTIST,
         item_id="temp",
         provider="lastfm_recommendations",
         name=name,
         external_ids=external_ids,
-        image=image,
     )
 
     return cast("Artist | None", await _resolve_item(item_mapping, mass, provider_instance))
@@ -367,21 +337,12 @@ async def parse_track(
     else:
         LOGGER.debug("Track has no MBID, cannot resolve ISRCs")
 
-    image = None
-    if image_url := _extract_image_url(lastfm_track.get("image", [])):
-        image = MediaItemImage(
-            type=ImageType.THUMB,
-            path=image_url,
-            provider="lastfm",
-        )
-
     item_mapping = ItemMapping(
         media_type=MediaType.TRACK,
         item_id="temp",
         provider="lastfm_recommendations",
         name=f"{artist_name} - {name}",
         external_ids=external_ids,
-        image=image,
     )
 
     return cast("Track | None", await _resolve_item(item_mapping, mass, provider_instance))
@@ -410,21 +371,12 @@ async def parse_album(
     if mbid:
         external_ids.add((ExternalID.MB_ALBUM, mbid))
 
-    image = None
-    if image_url := _extract_image_url(lastfm_album.get("image", [])):
-        image = MediaItemImage(
-            type=ImageType.THUMB,
-            path=image_url,
-            provider="lastfm",
-        )
-
     item_mapping = ItemMapping(
         media_type=MediaType.ALBUM,
         item_id="temp",
         provider="lastfm_recommendations",
         name=f"{artist_name} - {name}",
         external_ids=external_ids,
-        image=image,
     )
 
     return cast("Album | None", await _resolve_item(item_mapping, mass, provider_instance))
