@@ -1977,12 +1977,21 @@ class YandexYnisonProvider(PluginProvider):
             self.logger.info("Handoff: resuming paused queue on %s", expected_uri)
             # Open a short drift-suppress window — cmd_play takes 100-500ms
             # to land, during which `_apply_same_track_sync` could see a
-            # stale Ynison progress echo and fire a spurious seek.
+            # stale Ynison progress echo and fire a spurious seek. Saved
+            # for rollback on failure — symmetric with the REPLACE branches
+            # below; otherwise a failed cmd_play would leave
+            # _expected_phase=ACTIVATING + an open drift window pointing at
+            # a resume that never happened, and the heartbeat would report
+            # paused=False forever.
+            prev_drift = self._drift_suppress_until
+            prev_phase = self._expected_phase
             self._drift_suppress_until = time.monotonic() + _DRIFT_SUPPRESS_PERIOD
             self._expected_phase = HandoffPhase.ACTIVATING
             try:
                 await self.mass.players.cmd_play(target_player_id)
             except Exception:
+                self._drift_suppress_until = prev_drift
+                self._expected_phase = prev_phase
                 self.logger.exception("Handoff resume cmd_play failed on %s", target_player_id)
             else:
                 self._expected_track_id = new_track
