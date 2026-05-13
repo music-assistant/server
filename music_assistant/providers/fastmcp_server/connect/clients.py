@@ -142,10 +142,14 @@ CLIENTS: tuple[ClientSpec, ...] = (
         template=(
             "[mcp_servers.ma]\n"
             'url = "{{URL}}"\n'
-            "[mcp_servers.ma.headers]\n"
+            "[mcp_servers.ma.http_headers]\n"
             'Authorization = "Bearer {{TOKEN}}"'
         ),
         config_path_hint="~/.codex/config.toml",
+        notes=(
+            "Codex's streamable_http transport reads custom headers from "
+            "`http_headers` (not `headers`)."
+        ),
         filename="config.toml",
     ),
     ClientSpec(
@@ -174,8 +178,7 @@ CLIENTS: tuple[ClientSpec, ...] = (
             '  "mcpServers": {\n'
             '    "ma": {\n'
             '      "url": "{{URL}}",\n'
-            '      "headers": { "Authorization": "Bearer {{TOKEN}}" },\n'
-            '      "transportType": "streamableHttp"\n'
+            '      "headers": { "Authorization": "Bearer {{TOKEN}}" }\n'
             "    }\n"
             "  }\n"
             "}"
@@ -191,20 +194,14 @@ CLIENTS: tuple[ClientSpec, ...] = (
             "{\n"
             '  "context_servers": {\n'
             '    "ma": {\n'
-            '      "command": {\n'
-            '        "path": "npx",\n'
-            '        "args": [\n'
-            '          "-y", "mcp-remote",\n'
-            '          "{{URL}}",\n'
-            '          "--header", "Authorization: Bearer {{TOKEN}}"\n'
-            "        ]\n"
-            "      }\n"
+            '      "url": "{{URL}}",\n'
+            '      "headers": { "Authorization": "Bearer {{TOKEN}}" }\n'
             "    }\n"
             "  }\n"
             "}"
         ),
         config_path_hint="~/.config/zed/settings.json",
-        notes="Zed has no native HTTP transport — uses mcp-remote stdio bridge.",
+        notes="Requires a recent Zed build with native remote-MCP support.",
         filename="settings.json",
     ),
 )

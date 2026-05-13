@@ -68,9 +68,7 @@ def build_config_entries(
     # Mirror ``MCPServerRuntime.__init__``'s normalisation so the info label
     # always renders a valid URL even if the user dropped the leading slash.
     mount_path = "/" + raw_mount.strip("/")
-    info_label = (
-        f"MCP endpoint: {base_url}{mount_path}\nCreate tokens in Settings → Security → Tokens."
-    )
+    info_label = f"MCP endpoint: {base_url}{mount_path}\nCreate tokens in Profile → Long-lived access tokens."
 
     return (
         ConfigEntry(
@@ -88,7 +86,7 @@ def build_config_entries(
                 "One-click setup for Claude Desktop, Claude Code, Cursor, "
                 "Windsurf, VSCode, ChatGPT and other MCP clients. Mints a "
                 "per-client token labelled `MCP — <Client>` (revocable in "
-                "Settings → Security → Tokens) and copies the ready-to-paste "
+                "Profile → Long-lived access tokens) and copies the ready-to-paste "
                 "snippet for you."
             ),
             action="open_connect",
