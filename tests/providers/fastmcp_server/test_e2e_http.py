@@ -119,6 +119,21 @@ async def test_get_method_reaches_asgi(method_echo_client: TestClient) -> None:
     assert (await resp.read()) == b"GET"
 
 
+async def test_bare_mount_path_without_trailing_slash_reaches_asgi(
+    method_echo_client: TestClient,
+) -> None:
+    """``/mcp/v1`` (no trailing slash) must hit the ASGI bridge too.
+
+    This is the URL the wizard advertises and that MCP clients connect to.
+    MA's real ``_handle_catch_all`` (``helpers/webserver.py``) matches a
+    ``"/mcp/v1/*"`` registration against both the bare stem and any
+    descendant; ``build_aiohttp_app`` must mirror that.
+    """
+    resp = await method_echo_client.post("/mcp/v1", headers={"Origin": "http://localhost:8095"})
+    assert resp.status == 200
+    assert (await resp.read()) == b"POST"
+
+
 async def test_well_known_alongside_mcp_mount() -> None:
     """Both /mcp/v1/* and /.well-known/oauth-protected-resource are reachable."""
     ws = FakeWebserver()

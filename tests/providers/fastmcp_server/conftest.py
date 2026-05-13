@@ -72,13 +72,24 @@ class FakeWebserver:
 
 
 def build_aiohttp_app(fake_ws: FakeWebserver) -> Any:
-    """Translate captured ``(path, handler, method)`` tuples into an aiohttp app."""
+    """Translate captured ``(path, handler, method)`` tuples into an aiohttp app.
+
+    Mirrors MA's real dynamic-route matching
+    (``helpers/webserver.py::_handle_catch_all``): a path registered as
+    ``"<stem>/*"`` matches BOTH the bare ``<stem>`` (no trailing slash) and
+    any descendant ``<stem>/...``. Aiohttp's ``{tail:.*}`` pattern requires
+    the slash, so we add an explicit route for the bare stem alongside the
+    wildcard. Without that, the harness silently misses the
+    wizard-advertised MCP entry-point URL (``<base_url>/mcp/v1`` — no
+    trailing slash) that real clients connect to.
+    """
     from aiohttp import web  # noqa: PLC0415 - aiohttp only needed by HTTP-level tests
 
     app = web.Application()
     for path, handler, method in fake_ws.routes:
         if path.endswith("/*"):
             stem = path[:-2]
+            app.router.add_route(method, stem, handler)
             app.router.add_route(method, f"{stem}/{{tail:.*}}", handler)
         else:
             app.router.add_route(method, path, handler)
