@@ -55,6 +55,8 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
+FETCH_LIMIT = 2000
+
 SUPPORTED_FEATURES: set[ProviderFeature] = {
     ProviderFeature.BROWSE,
     ProviderFeature.RECOMMENDATIONS,
@@ -665,7 +667,7 @@ class SmartPlaylistProvider(PluginProvider):
     async def _evaluate_or(self, rules: SmartPlaylistRules) -> list[Track]:
         """Evaluate rules with OR logic: track must match ANY active filter."""
         track_sets: dict[str, Track] = {}
-        fetch_limit = min(rules.limit * 5, 2000)
+        fetch_limit = min(rules.limit * 5, FETCH_LIMIT)
 
         if rules.favorites_only:
             for track in await self._get_library_tracks(favorite=True, limit=fetch_limit):
@@ -680,7 +682,7 @@ class SmartPlaylistProvider(PluginProvider):
                     track_sets[track.uri] = track
 
         if rules.artist_ids or rules.album_ids:
-            all_tracks = await self._get_library_tracks(limit=fetch_limit * 2)
+            all_tracks = await self._get_library_tracks(limit=min(fetch_limit * 2, FETCH_LIMIT))
             if rules.artist_ids:
                 artist_id_set = set(rules.artist_ids)
                 for track in all_tracks:
@@ -837,14 +839,8 @@ class SmartPlaylistProvider(PluginProvider):
         try:
             data = await read_json(rules_file)
             for playlist_id, entry in data.items():
-                if isinstance(entry, dict) and "rules" in entry:
-                    # New format: {"name": "...", "rules": {...}}
-                    self._rules_store[playlist_id] = SmartPlaylistRules.from_dict(entry["rules"])
-                    self._names_store[playlist_id] = entry.get("name", playlist_id)
-                else:
-                    # Legacy format: entry is the rules dict directly
-                    self._rules_store[playlist_id] = SmartPlaylistRules.from_dict(entry)
-                    self._names_store[playlist_id] = playlist_id
+                self._rules_store[playlist_id] = SmartPlaylistRules.from_dict(entry["rules"])
+                self._names_store[playlist_id] = entry.get("name", playlist_id)
         except Exception as exc:
             self.logger.warning("Failed to load smart playlist rules: %s", exc)
 
