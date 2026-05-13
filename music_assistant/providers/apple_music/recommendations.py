@@ -6,11 +6,17 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import ItemMapping, Playlist, RecommendationFolder, Track
+from music_assistant_models.media_items import (
+    Artist,
+    ItemMapping,
+    Playlist,
+    RecommendationFolder,
+    Track,
+)
 
 from music_assistant.controllers.cache import use_cache
 
-from .parsers import parse_station_as_playlist, parse_track
+from .parsers import parse_artist, parse_station_as_playlist, parse_track
 
 if TYPE_CHECKING:
     from .provider import AppleMusicProvider
@@ -47,6 +53,25 @@ class AppleMusicRecommendationManager:
                         parse_track(self.provider, track, rating_response.get(track["id"]))
                     )
         return found_tracks
+
+    @use_cache(3600 * 24)
+    async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
+        """Retrieve a list of artists similar to the provided artist via Apple Music similar-artists view."""
+        storefront = self.provider._storefront
+        response = await self.api.get_data(
+            f"catalog/{storefront}/artists/{prov_artist_id}",
+            views="similar-artists",
+        )
+        data = response.get("data", [])
+        if not data:
+            return []
+        similar = data[0].get("views", {}).get("similar-artists", {}).get("data", [])
+        artists: list[Artist] = []
+        for artist_obj in similar[:limit]:
+            parsed = parse_artist(self.provider, artist_obj)
+            if isinstance(parsed, Artist):
+                artists.append(parsed)
+        return artists
 
     async def get_station_playlist(self, station_id: str) -> Playlist:
         """Fetch name and artwork for a radio station and return it as a dynamic Playlist."""
