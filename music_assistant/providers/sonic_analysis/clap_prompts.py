@@ -142,6 +142,3 @@ def validate_calibration_freshness(
             CALIBRATION_PROMPTS_HASH,
             actual,
         )
-
-
-validate_calibration_freshness()
