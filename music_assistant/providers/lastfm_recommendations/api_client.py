@@ -13,8 +13,12 @@ from music_assistant_models.errors import (
     ResourceTemporarilyUnavailable,
 )
 
+from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
 from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.lastfm_recommendations.constants import CONF_API_KEY
+
+# Built-in Last.fm API key (read-only access, no secret needed)
+_DEFAULT_API_KEY: str = app_var(12)
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession
@@ -55,10 +59,11 @@ class LastFMAPIClient:
         :param params: Additional query parameters.
         """
         async with self.throttler.acquire():
+            api_key = self.provider.config.get_value(CONF_API_KEY) or _DEFAULT_API_KEY
             params.update(
                 {
                     "method": method,
-                    "api_key": self.provider.config.get_value(CONF_API_KEY),
+                    "api_key": api_key,
                     "format": "json",
                 }
             )

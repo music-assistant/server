@@ -74,9 +74,10 @@ async def get_config_entries(
             key=CONF_API_KEY,
             type=ConfigEntryType.SECURE_STRING,
             label="Last.fm API Key",
-            required=True,
-            description="Get your API key from https://www.last.fm/api/authentication",
+            required=False,
+            description="Optional. Override the built-in API key.",
             value=values.get(CONF_API_KEY) if values else None,
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_USERNAME,
