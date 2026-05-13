@@ -134,9 +134,6 @@ class TidalPageParser:
                     type_counts[MediaType.PLAYLIST] += 1
                 except (KeyError, ValueError, TypeError) as err:
                     self.logger.warning("Error parsing playlist: %s", err)
-            else:
-                # Skip non-dict items
-                pass
 
     def _process_track_list(
         self,
@@ -153,9 +150,6 @@ class TidalPageParser:
                     type_counts[MediaType.TRACK] += 1
                 except (KeyError, ValueError, TypeError) as err:
                     self.logger.warning("Error parsing track: %s", err)
-            else:
-                # Skip non-dict items
-                pass
 
     def _process_album_list(
         self,
@@ -172,9 +166,6 @@ class TidalPageParser:
                     type_counts[MediaType.ALBUM] += 1
                 except (KeyError, ValueError, TypeError) as err:
                     self.logger.warning("Error parsing album: %s", err)
-            else:
-                # Skip non-dict items
-                pass
 
     def _process_artist_list(
         self,
@@ -191,9 +182,6 @@ class TidalPageParser:
                     type_counts[MediaType.ARTIST] += 1
                 except (KeyError, ValueError, TypeError) as err:
                     self.logger.warning("Error parsing artist: %s", err)
-            else:
-                # Skip non-dict items
-                pass
 
     def _process_mix_list(
         self,
@@ -210,9 +198,6 @@ class TidalPageParser:
                     type_counts[MediaType.PLAYLIST] += 1
                 except (KeyError, ValueError, TypeError) as err:
                     self.logger.warning("Error parsing mix: %s", err)
-            else:
-                # Skip non-dict items
-                pass
 
     def _process_generic_items(
         self,
@@ -230,9 +215,6 @@ class TidalPageParser:
                         result.append(parsed_item)
                 except (KeyError, ValueError, TypeError) as err:
                     self.logger.warning("Error parsing generic item: %s", err)
-            else:
-                # Skip non-dict items
-                pass
 
     def _log_module_results(
         self,
@@ -299,7 +281,7 @@ class TidalPageParser:
                 continue
 
             # Use inferred type if no explicit type
-            item_type = item.get("type", inferred_type)
+            item_type = item.get("type", inferred_type) or ""
             if parsed_item := self._parse_item(item, type_counts, item_type):
                 result.append(parsed_item)
 

@@ -72,9 +72,36 @@ CONF_LIKED_TRACKS_MAX_TRACKS: Final[str] = "liked_tracks_max_tracks"
 
 # Hardcoded default values for removed config entries
 MY_WAVE_BATCH_SIZE: Final[int] = 3
-TRACK_BATCH_SIZE: Final[int] = 50
+TRACK_BATCH_SIZE: Final[int] = 100
 DISCOVERY_INITIAL_TRACKS: Final[int] = 20
 BROWSE_INITIAL_TRACKS: Final[int] = 15
+
+# Rate-limit / smart-captcha handling.
+# Yandex's smart-captcha edge protection is per-endpoint-family. When it triggers
+# (HTML body with smart-captcha markers), the corresponding throttler "kind" is
+# put in a quarantine for CAPTCHA_COOLDOWN_S. Plain 429 (no captcha markers)
+# only signals backoff_time on the failing request — no kind-wide block.
+CAPTCHA_COOLDOWN_S: Final[float] = 600.0
+RATE_LIMIT_COOLDOWN_S: Final[float] = 60.0
+
+# Per-kind request budgets (requests per second). Tuned by endpoint cost:
+# - file_info is signed + most aggressively rate-limited at Yandex's edge
+# - rotor sits in the middle
+# - everything else (likes, tracks, search, albums, ...) shares the default bucket
+THROTTLE_DEFAULT_RPS: Final[int] = 5
+THROTTLE_FILE_INFO_RPS: Final[int] = 2
+THROTTLE_ROTOR_RPS: Final[int] = 3
+
+# get-file-info LRU cache. Bounded TTL so we never serve a URL after its CDN
+# expiry (Yandex stream URLs live ~60s) but still absorb same-track replays
+# from MA's streaming retry loop.
+FILE_INFO_CACHE_TTL_S: Final[float] = 30.0
+FILE_INFO_CACHE_MAX: Final[int] = 256
+
+# Inter-batch jitter when hydrating large lists (liked tracks/albums).
+# Spreads requests so a 5-batch burst looks like a human, not a bot.
+LIKED_BATCH_JITTER_MIN_S: Final[float] = 0.15
+LIKED_BATCH_JITTER_SPAN_S: Final[float] = 0.20
 
 # Image sizes
 IMAGE_SIZE_SMALL = "200x200"

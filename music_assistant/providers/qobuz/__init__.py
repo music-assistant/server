@@ -402,10 +402,6 @@ class QobuzProvider(MusicProvider):
             )
         ]
 
-    async def get_similar_artists(self, prov_artist_id: str) -> None:
-        """Get similar artists for given artist."""
-        # https://www.qobuz.com/api.json/0.2/artist/getSimilarArtists?artist_id=220020&offset=0&limit=3
-
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
         result = None
