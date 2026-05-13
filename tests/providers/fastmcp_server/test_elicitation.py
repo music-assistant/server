@@ -121,7 +121,7 @@ async def test_remove_from_library_confirms(mock_mass: MagicMock) -> None:
     """media.remove_from_library also triggers elicitation."""
     # MA's MusicController takes (media_type, library_item_id), not a URI —
     # the tool resolves the URI via get_item_by_uri first.
-    resolved = MagicMock(media_type=MagicMock(), item_id=42)
+    resolved = MagicMock(media_type=MagicMock(), item_id="42", provider="library")
     mock_mass.music.get_item_by_uri = AsyncMock(return_value=resolved)
     mock_mass.music.remove_item_from_library = AsyncMock()
     mcp = _server(mock_mass, require_confirmation=True)
@@ -129,4 +129,56 @@ async def test_remove_from_library_confirms(mock_mass: MagicMock) -> None:
     async with Client(mcp, elicitation_handler=_accepter()) as client:
         await client.call_tool("media_remove_from_library", {"uri": "lib://t/42"})
     mock_mass.music.get_item_by_uri.assert_awaited_once_with("lib://t/42")
-    mock_mass.music.remove_item_from_library.assert_awaited_once_with(resolved.media_type, 42)
+    mock_mass.music.remove_item_from_library.assert_awaited_once_with(resolved.media_type, "42")
+
+
+async def test_remove_from_favorites_resolves_provider_uri_to_library(
+    mock_mass: MagicMock,
+) -> None:
+    """A provider URI is resolved to the matching library item before removal.
+
+    ``MusicController.remove_item_from_*`` expects a library item id; passing the
+    provider's native item id silently targets the wrong item (or raises on a
+    non-numeric ``int()`` cast). The tool now looks up the library counterpart via
+    ``get_library_item_by_prov_id``.
+    """
+    provider_item = MagicMock(media_type=MagicMock(), item_id="prov-abc", provider="yandex_music")
+    library_item = MagicMock(media_type=provider_item.media_type, item_id="99")
+    mock_mass.music.get_item_by_uri = AsyncMock(return_value=provider_item)
+    mock_mass.music.get_library_item_by_prov_id = AsyncMock(return_value=library_item)
+    mock_mass.music.remove_item_from_favorites = AsyncMock()
+    mcp = _server(mock_mass, require_confirmation=False)
+
+    async with Client(mcp) as client:
+        await client.call_tool(
+            "media_remove_from_favorites", {"uri": "yandex_music://track/prov-abc"}
+        )
+    mock_mass.music.get_library_item_by_prov_id.assert_awaited_once_with(
+        provider_item.media_type, "prov-abc", "yandex_music"
+    )
+    mock_mass.music.remove_item_from_favorites.assert_awaited_once_with(
+        library_item.media_type, "99"
+    )
+
+
+async def test_remove_from_library_raises_when_not_in_library(
+    mock_mass: MagicMock,
+) -> None:
+    """When the URI's library counterpart cannot be resolved, the tool raises.
+
+    Without this, the tool would silently call ``remove_item_from_library`` with
+    a provider-native item id, which either fails on ``int()`` cast or targets
+    the wrong item.
+    """
+    provider_item = MagicMock(media_type=MagicMock(), item_id="prov-abc", provider="yandex_music")
+    mock_mass.music.get_item_by_uri = AsyncMock(return_value=provider_item)
+    mock_mass.music.get_library_item_by_prov_id = AsyncMock(return_value=None)
+    mock_mass.music.remove_item_from_library = AsyncMock()
+    mcp = _server(mock_mass, require_confirmation=False)
+
+    async with Client(mcp) as client:
+        with pytest.raises(Exception):  # noqa: B017,PT011
+            await client.call_tool(
+                "media_remove_from_library", {"uri": "yandex_music://track/prov-abc"}
+            )
+    mock_mass.music.remove_item_from_library.assert_not_awaited()

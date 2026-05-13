@@ -211,19 +211,29 @@ class MCPServerRuntime:
             self._unmount_connect = None
         self._mcp = None
 
-    async def apply_permission_change(self, new_config: ProviderConfig) -> None:
-        """Hot-swap the allowed-tag set without rebuilding FastMCP / remounting.
+    async def apply_permission_change(
+        self, new_config: ProviderConfig, changed_keys: set[str]
+    ) -> None:
+        """Hot-swap the allowed-tag set, or restart when resources are involved.
 
         Resource toggles (``CONF_RES_*``) require a rebuild because resource
-        registration is decided at ``register_resources`` time; permission flags
-        flip the tag set in the closure read by :class:`TagFilterMiddleware` and
-        take effect on the next request.
+        registration is decided at :meth:`start` time; permission flags flip the
+        tag set in the closure read by :class:`TagFilterMiddleware` and take
+        effect on the next request without a restart.
+
+        :param new_config: the new provider config; assigned to ``self._config``
+            before any restart so ``start`` reads the updated values.
+        :param changed_keys: keys that changed (already stripped of any
+            ``values/`` prefix by the caller). MA mutates ``ProviderConfig``
+            in place during ``config.update(values)``, so re-diffing ``old`` vs
+            ``new`` here would always be empty — the caller's set is the only
+            reliable signal.
         """
         from .constants import PERMISSION_KEYS  # noqa: PLC0415
 
-        permission_only = {
-            key for key in self._diff_keys(self._config, new_config) if key in PERMISSION_KEYS
-        } == set(self._diff_keys(self._config, new_config))
+        # ``set().issubset(...)`` is True, so an empty ``changed_keys`` (no-op
+        # call) classifies as permission-only and skips a pointless restart.
+        permission_only = changed_keys.issubset(PERMISSION_KEYS)
 
         self._config = new_config
         if permission_only and hasattr(self, "_allowed_tags"):
@@ -236,17 +246,6 @@ class MCPServerRuntime:
 
         await self.stop()
         await self.start()
-
-    @staticmethod
-    def _diff_keys(old: ProviderConfig, new: ProviderConfig) -> set[str]:
-        """Return the set of config keys whose values differ between two configs."""
-        try:
-            old_values = old.values if hasattr(old, "values") else {}
-            new_values = new.values if hasattr(new, "values") else {}
-        except (AttributeError, TypeError):
-            return set()
-        keys = set(old_values) | set(new_values)
-        return {k for k in keys if old_values.get(k) != new_values.get(k)}
 
     def _apply_tag_filter(self, mcp: Any, allowed: set[Any]) -> None:
         """Install the tag-filter middleware on the given FastMCP server."""

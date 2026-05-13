@@ -33,6 +33,30 @@ async def _resolve_uri(mass: MusicAssistant, uri: str) -> Any:
         raise ToolError(msg) from exc
 
 
+async def _resolve_to_library_item(mass: MusicAssistant, uri: str) -> Any:
+    """Resolve a URI to its library counterpart, raising ToolError when not in library.
+
+    MA's :meth:`MusicController.remove_item_from_favorites` and
+    :meth:`remove_item_from_library` expect a library item id. When the
+    caller passes a provider-native URI (e.g. ``yandex_music://track/abc``),
+    :func:`_resolve_uri` returns a MediaItem with the provider's id —
+    feeding that into the controller silently targets the wrong row (or
+    fails on ``int(...)``). This helper looks up the library counterpart
+    via :meth:`get_library_item_by_prov_id` and raises if the item isn't
+    in the library.
+    """
+    item = await _resolve_uri(mass, uri)
+    if getattr(item, "provider", None) == "library":
+        return item
+    lib_item = await mass.music.get_library_item_by_prov_id(
+        item.media_type, item.item_id, item.provider
+    )
+    if lib_item is None:
+        msg = f"URI {uri!r} is not in the library"
+        raise ToolError(msg)
+    return lib_item
+
+
 def build_media_server(mass: MusicAssistant, *, require_confirmation: bool = True) -> FastMCP:
     """Construct the ``media/*`` sub-server."""
     sub: FastMCP = FastMCP(name="media")
@@ -71,8 +95,8 @@ def build_media_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
             f"Remove {uri!r} from favorites?",
             enabled=require_confirmation,
         )
-        item = await _resolve_uri(mass, uri)
-        await mass.music.remove_item_from_favorites(item.media_type, int(item.item_id))
+        item = await _resolve_to_library_item(mass, uri)
+        await mass.music.remove_item_from_favorites(item.media_type, item.item_id)
 
     @sub.tool(
         tags={Tag.EDIT_LIBRARY},
@@ -108,8 +132,8 @@ def build_media_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
             f"Remove {uri!r} from the library? This cannot be undone.",
             enabled=require_confirmation,
         )
-        item = await _resolve_uri(mass, uri)
-        await mass.music.remove_item_from_library(item.media_type, int(item.item_id))
+        item = await _resolve_to_library_item(mass, uri)
+        await mass.music.remove_item_from_library(item.media_type, item.item_id)
 
     @sub.tool(
         tags={Tag.CONTROL_MEDIA},
