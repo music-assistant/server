@@ -727,10 +727,33 @@ class ConfigController:
                 return raw_value
         conf = await self.get_player_config(player_id)
         if key not in conf.values:
-            if default is not None:
+            # Universal players that wrap a protocol player (DLNA, Sonos, etc.) store
+            # per-protocol settings such as ``sample_rates`` and ``http_profile`` under
+            # ``<protocol_id>||protocol||<key>`` rather than at the top level of the
+            # player config. When such a key is requested without the prefix (as the
+            # universal_group flow stream handler does), the bare lookup raises here
+            # and no audio is served to any DLNA-backed group member. Fall back to
+            # the active output protocol's namespaced key when present.
+            scoped_player = self.mass.players.get_player(player_id)
+            active_protocol = (
+                getattr(scoped_player, "active_output_protocol", None)
+                if scoped_player is not None
+                else None
+            )
+            if active_protocol:
+                scoped_key = f"{active_protocol}{CONF_PROTOCOL_KEY_SPLITTER}{key}"
+                if scoped_key in conf.values:
+                    key = scoped_key
+                elif default is not None:
+                    return default
+                else:
+                    msg = f"Config key {key} not found for player {player_id}"
+                    raise KeyError(msg)
+            elif default is not None:
                 return default
-            msg = f"Config key {key} not found for player {player_id}"
-            raise KeyError(msg)
+            else:
+                msg = f"Config key {key} not found for player {player_id}"
+                raise KeyError(msg)
         if unpack_splitted_values:
             return conf.values[key].get_splitted_values()
         return (
