@@ -99,6 +99,8 @@ class SmartPlaylistRules:
     excluded_track_uris: list[str] = field(default_factory=list)
     excluded_artist_names: dict[int, str] = field(default_factory=dict)
     excluded_album_names: dict[int, str] = field(default_factory=dict)
+    excluded_genre_ids: list[int] = field(default_factory=list)
+    excluded_genre_names: dict[int, str] = field(default_factory=dict)
     dedup_hours: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -127,6 +129,8 @@ class SmartPlaylistRules:
             "excluded_track_uris": self.excluded_track_uris,
             "excluded_artist_names": {str(k): v for k, v in self.excluded_artist_names.items()},
             "excluded_album_names": {str(k): v for k, v in self.excluded_album_names.items()},
+            "excluded_genre_ids": self.excluded_genre_ids,
+            "excluded_genre_names": {str(k): v for k, v in self.excluded_genre_names.items()},
             "dedup_hours": self.dedup_hours,
         }
 
@@ -167,6 +171,12 @@ class SmartPlaylistRules:
             excluded_album_names=_coerce_int_keyed_dict(
                 data.get("excluded_album_names"), "excluded_album_names"
             ),
+            excluded_genre_ids=_coerce_id_list(
+                data.get("excluded_genre_ids"), "excluded_genre_ids"
+            ),
+            excluded_genre_names=_coerce_int_keyed_dict(
+                data.get("excluded_genre_names"), "excluded_genre_names"
+            ),
             dedup_hours=_coerce_optional_int(data.get("dedup_hours"), "dedup_hours"),
         )
 
@@ -200,6 +210,11 @@ class SmartPlaylistRules:
                 self.excluded_album_names.get(aid, str(aid)) for aid in self.excluded_album_ids
             ]
             parts.append(f"Excl. albums: {', '.join(names)}")
+        if self.excluded_genre_ids:
+            names = [
+                self.excluded_genre_names.get(gid, str(gid)) for gid in self.excluded_genre_ids
+            ]
+            parts.append(f"Excl. genres: {', '.join(names)}")
         if self.excluded_track_uris:
             parts.append(f"Excl. {len(self.excluded_track_uris)} track(s)")
         if self.dedup_hours is not None:

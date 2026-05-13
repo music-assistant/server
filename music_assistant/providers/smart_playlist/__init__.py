@@ -2,6 +2,10 @@
 
 Allows creating rule-based playlists (dynamic or fixed) from library tracks,
 filtered by genres, artists, albums, favorites, popularity and similar tracks.
+
+# TODO (future PR): refactor this file into a package (e.g. __init__.py + evaluator.py +
+# filters.py) — it is growing large and the evaluation / filter logic would benefit from
+# being split into separate modules.
 """
 
 from __future__ import annotations
@@ -515,7 +519,8 @@ class SmartPlaylistProvider(PluginProvider):
                 ]
 
         # Apply exclusions and dedup regardless of source mode
-        tracks = self._apply_exclusions(tracks, rules)
+        excluded_genre_names = await self._resolve_excluded_genre_names(rules)
+        tracks = self._apply_exclusions(tracks, rules, excluded_genre_names)
         if rules.dedup_hours is not None:
             deduped = self._apply_dedup(tracks, rules.dedup_hours)
             if len(deduped) >= rules.limit:
@@ -586,14 +591,23 @@ class SmartPlaylistProvider(PluginProvider):
                     and (rules.year_to is None or t.album.year <= rules.year_to)
                 )
             ]
+        if rules.excluded_genre_ids:
+            excluded_genre_names = await self._resolve_excluded_genre_names(rules)
+            tracks = self._apply_exclusions(tracks, rules, excluded_genre_names)
         return tracks
 
-    def _apply_exclusions(self, tracks: list[Track], rules: SmartPlaylistRules) -> list[Track]:
-        """Filter out tracks whose artist, album, or URI is in the exclusion lists."""
+    def _apply_exclusions(
+        self,
+        tracks: list[Track],
+        rules: SmartPlaylistRules,
+        excluded_genre_names: set[str] | None = None,
+    ) -> list[Track]:
+        """Filter out tracks whose artist, album, URI, or genre is in the exclusion lists."""
         if (
             not rules.excluded_artist_ids
             and not rules.excluded_album_ids
             and not rules.excluded_track_uris
+            and not excluded_genre_names
         ):
             return tracks
         excl_artists = set(rules.excluded_artist_ids)
@@ -619,8 +633,27 @@ class SmartPlaylistProvider(PluginProvider):
                 and int(track.album.item_id) in excl_albums
             ):
                 continue
+            if (
+                excluded_genre_names
+                and track.metadata
+                and track.metadata.genres
+                and any(g.lower() in excluded_genre_names for g in track.metadata.genres)
+            ):
+                continue
             result.append(track)
         return result
+
+    async def _resolve_excluded_genre_names(self, rules: SmartPlaylistRules) -> set[str]:
+        """Resolve excluded_genre_ids to a lowercase name set for matching."""
+        if not rules.excluded_genre_ids:
+            return set()
+        genre_id_to_name = dict(rules.excluded_genre_names)
+        for genre_id in rules.excluded_genre_ids:
+            if genre_id not in genre_id_to_name:
+                with suppress(Exception):
+                    genre = await self.mass.music.genres.get_library_item(genre_id)
+                    genre_id_to_name[genre_id] = genre.name
+        return {v.lower() for v in genre_id_to_name.values() if v}
 
     def _apply_dedup(self, tracks: list[Track], dedup_hours: int) -> list[Track]:
         """Filter out tracks last played within dedup_hours hours."""
