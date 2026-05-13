@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 from aiohttp import web
 
-from ._revoke import revoke_token_by_id
+from ._revoke import list_user_tokens, revoke_token_by_id
 from .clients import clients_to_json, lookup_client
 from .page import HTML
 
@@ -144,16 +144,16 @@ def make_exchange(ctx: WizardContext) -> Callable[[web.Request], Any]:
 
         # Make the bootstrap single-use: revoke it BEFORE minting the session
         # so a partial failure (revoke ok, mint fails) cannot leave both the
-        # bootstrap and a session valid. If get_token_id can't extract a jti
-        # (legacy/unknown shape) we skip the revoke — no regression vs prior
-        # behaviour.
+        # bootstrap and a session valid. ``get_token_id_from_token`` handles
+        # both JWTs and legacy hash tokens; if it cannot resolve a token_id
+        # we skip the revoke — no regression vs prior behaviour.
         try:
-            bootstrap_id = ctx.mass.webserver.auth.jwt_helper.get_token_id(bootstrap)
+            bootstrap_id = await ctx.mass.webserver.auth.get_token_id_from_token(bootstrap)
         except Exception:
-            LOGGER.exception("Connect Wizard: get_token_id raised for bootstrap")
+            LOGGER.exception("Connect Wizard: get_token_id_from_token raised for bootstrap")
             bootstrap_id = None
         if bootstrap_id:
-            await revoke_token_by_id(ctx.mass, bootstrap_id)
+            await revoke_token_by_id(ctx.mass, user, bootstrap_id)
 
         try:
             session = await ctx.mass.webserver.auth.create_token(
@@ -246,34 +246,16 @@ def make_mint_token(ctx: WizardContext) -> Callable[[web.Request], Any]:
             return web.json_response({"error": "session invalid"}, status=401)
 
         new_name = f"MCP — {spec.label}"
-        prev_id = str(body.get("prev_token_id") or "")
-        revoked_ids: set[str] = set()
 
-        # Fast path: honor the explicit prev_token_id the frontend persists per
-        # client. The hint is client-supplied, so scope the revoke to the
-        # authenticated user — without this, a caller could name another
-        # user's token_id and DoS them. Only mark the id as "already handled"
-        # when the helper actually deleted the row — otherwise the name-dedup
-        # loop below should still get a chance to revoke the user's real
-        # prior row.
-        if prev_id and await revoke_token_by_id(ctx.mass, prev_id, user_id=user.user_id):
-            revoked_ids.add(prev_id)
-
-        # Server-side dedup: revoke any other rows with this exact client-token
-        # name for this user. Makes /connect/token idempotent across browser
-        # and server restarts, where the prev_token_id hint cannot survive.
-        try:
-            rows = await ctx.mass.webserver.auth.database.get_rows(
-                "auth_tokens", {"user_id": user.user_id}, limit=500
-            )
-        except Exception:
-            LOGGER.exception("Connect Wizard: prior-name dedup lookup failed for %r", new_name)
-            rows = []
-        for row in rows:
-            tid = row.get("token_id")
-            if row.get("name") == new_name and tid and tid not in revoked_ids:
-                await revoke_token_by_id(ctx.mass, tid)
-                revoked_ids.add(tid)
+        # Server-side dedup: revoke any existing tokens with this exact
+        # client-token name for the session user, via the sanctioned
+        # auth.get_user_tokens / auth.revoke_token API. Yields typed
+        # AuthToken dataclasses — no raw sqlite rows leak in. Idempotent
+        # across browser/server restarts: a stale `MCP — <Client>` row
+        # from any prior wizard session is reclaimed before the new mint.
+        for tok in await list_user_tokens(ctx.mass, user):
+            if tok.name == new_name:
+                await revoke_token_by_id(ctx.mass, user, tok.token_id)
 
         try:
             token = await ctx.mass.webserver.auth.create_token(
@@ -285,14 +267,7 @@ def make_mint_token(ctx: WizardContext) -> Callable[[web.Request], Any]:
             LOGGER.exception("Connect Wizard: per-client token mint failed")
             return web.json_response({"error": "mint failed"}, status=500)
 
-        new_token_id: str | None
-        try:
-            new_token_id = ctx.mass.webserver.auth.jwt_helper.get_token_id(token)
-        except Exception:
-            LOGGER.exception("Connect Wizard: get_token_id failed; response will omit token_id")
-            new_token_id = None
-
-        return web.json_response({"token": token, "token_id": new_token_id})
+        return web.json_response({"token": token})
 
     return handler
 

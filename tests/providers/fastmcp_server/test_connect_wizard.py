@@ -56,15 +56,11 @@ def wizard_mass(mock_user: MagicMock) -> MagicMock:
         create_token=AsyncMock(return_value="jwt-xyz"),
         authenticate_with_token=AsyncMock(return_value=mock_user),
         get_current_user=MagicMock(return_value=mock_user),
-        database=SimpleNamespace(
-            delete=AsyncMock(),
-            get_rows=AsyncMock(return_value=[]),
-        ),
-        jwt_helper=SimpleNamespace(
-            get_token_id=MagicMock(side_effect=lambda t: f"tid:{t}"),
-        ),
+        # Sanctioned auth-API surface that provider/connect/_revoke.py drives.
+        revoke_token=AsyncMock(),
+        get_user_tokens=AsyncMock(return_value=[]),
+        get_token_id_from_token=AsyncMock(side_effect=lambda t: f"tid:{t}"),
     )
-    fake_ws.disconnect_websockets_for_token = MagicMock()  # type: ignore[attr-defined]
     mass = MagicMock()
     mass.webserver = fake_ws
     mass.signal_event = MagicMock()
@@ -184,7 +180,7 @@ async def test_exchange_bootstrap_invalid_401(
 async def test_exchange_revokes_bootstrap_on_success(
     wizard_client: TestClient, wizard_mass: MagicMock
 ) -> None:
-    """Successful exchange deletes the bootstrap row and drops any WS bound to it."""
+    """Successful exchange revokes the bootstrap via ``auth.revoke_token``."""
     auth = wizard_mass.webserver.auth
 
     resp = await wizard_client.post(
@@ -194,8 +190,7 @@ async def test_exchange_revokes_bootstrap_on_success(
     )
     assert resp.status == 200
 
-    auth.database.delete.assert_awaited_once_with("auth_tokens", {"token_id": "tid:boot-1"})
-    wizard_mass.webserver.disconnect_websockets_for_token.assert_called_once_with("tid:boot-1")
+    auth.revoke_token.assert_awaited_once_with("tid:boot-1")
 
 
 async def test_exchange_invalid_bootstrap_does_not_revoke(
@@ -210,15 +205,15 @@ async def test_exchange_invalid_bootstrap_does_not_revoke(
         headers={"Origin": "http://localhost:8095"},
     )
     assert resp.status == 401
-    wizard_mass.webserver.auth.database.delete.assert_not_called()
+    wizard_mass.webserver.auth.revoke_token.assert_not_called()
 
 
 async def test_exchange_revoke_failure_still_returns_session(
     wizard_client: TestClient, wizard_mass: MagicMock
 ) -> None:
-    """A delete exception is swallowed; the exchange still issues a session_token."""
+    """A ``revoke_token`` exception is swallowed; the exchange still issues a session_token."""
     auth = wizard_mass.webserver.auth
-    auth.database.delete = AsyncMock(side_effect=RuntimeError("delete failed"))
+    auth.revoke_token = AsyncMock(side_effect=RuntimeError("revoke failed"))
 
     resp = await wizard_client.post(
         "/mcp/v1/connect/exchange",
@@ -234,9 +229,9 @@ async def test_exchange_revoke_failure_still_returns_session(
 async def test_exchange_get_token_id_none_skips_revoke(
     wizard_client: TestClient, wizard_mass: MagicMock
 ) -> None:
-    """When ``get_token_id`` returns ``None`` the revoke is skipped, mint still happens."""
+    """When ``get_token_id_from_token`` returns ``None`` the revoke is skipped, mint still happens."""
     auth = wizard_mass.webserver.auth
-    auth.jwt_helper.get_token_id = MagicMock(return_value=None)
+    auth.get_token_id_from_token = AsyncMock(return_value=None)
 
     resp = await wizard_client.post(
         "/mcp/v1/connect/exchange",
@@ -244,7 +239,7 @@ async def test_exchange_get_token_id_none_skips_revoke(
         headers={"Origin": "http://localhost:8095"},
     )
     assert resp.status == 200
-    auth.database.delete.assert_not_called()
+    auth.revoke_token.assert_not_called()
     auth.create_token.assert_awaited_once()
 
 
@@ -335,32 +330,21 @@ async def test_token_endpoint_invalid_session_401(
     wizard_mass.webserver.auth.create_token.assert_not_called()
 
 
-async def test_token_endpoint_returns_token_id(wizard_client: TestClient) -> None:
-    """Mint response carries the new ``token_id`` derived via ``jwt_helper.get_token_id``."""
-    resp = await wizard_client.post(
-        "/mcp/v1/connect/token",
-        json={"session_token": "sess-1", "client_id": "cursor"},
-        headers={"Origin": "http://localhost:8095"},
-    )
-    assert resp.status == 200
-    data = await resp.json()
-    assert data["token"] == "jwt-xyz"
-    assert data["token_id"] == "tid:jwt-xyz"
-
-
 async def test_token_endpoint_server_dedup_revokes_same_name(
     wizard_client: TestClient, wizard_mass: MagicMock
 ) -> None:
-    """Prior rows with the same client-token name for the same user are revoked.
+    """Prior tokens with the same client-token name for the user are revoked.
 
-    Rows with other names are left alone; ``create_token`` is still called once.
+    Tokens with other names are left alone; ``create_token`` is still called
+    once. Asserts the call against ``auth.revoke_token`` (sanctioned API),
+    not the underlying DB.
     """
     auth = wizard_mass.webserver.auth
-    auth.database.get_rows = AsyncMock(
+    auth.get_user_tokens = AsyncMock(
         return_value=[
-            {"token_id": "old-1", "name": "MCP — Cursor", "user_id": "u1"},
-            {"token_id": "old-2", "name": "MCP — Cursor", "user_id": "u1"},
-            {"token_id": "keep", "name": "MCP — Other", "user_id": "u1"},
+            SimpleNamespace(token_id="old-1", name="MCP — Cursor", user_id="u1"),
+            SimpleNamespace(token_id="old-2", name="MCP — Cursor", user_id="u1"),
+            SimpleNamespace(token_id="keep", name="MCP — Other", user_id="u1"),
         ]
     )
 
@@ -371,111 +355,17 @@ async def test_token_endpoint_server_dedup_revokes_same_name(
     )
     assert resp.status == 200
 
-    deleted_ids = sorted(call.args[1]["token_id"] for call in auth.database.delete.await_args_list)
-    assert deleted_ids == ["old-1", "old-2"]
-    disconnected = sorted(
-        c.args[0] for c in wizard_mass.webserver.disconnect_websockets_for_token.call_args_list
-    )
-    assert disconnected == ["old-1", "old-2"]
-    auth.create_token.assert_awaited_once()
-
-
-async def test_token_endpoint_prev_id_fast_path_revokes_first(
-    wizard_client: TestClient, wizard_mass: MagicMock
-) -> None:
-    """``prev_token_id`` is revoked once; same id in ``get_rows`` does not double-delete."""
-    auth = wizard_mass.webserver.auth
-    auth.database.get_rows = AsyncMock(
-        return_value=[{"token_id": "hot", "name": "MCP — Cursor", "user_id": "u1"}]
-    )
-
-    resp = await wizard_client.post(
-        "/mcp/v1/connect/token",
-        json={
-            "session_token": "sess-1",
-            "client_id": "cursor",
-            "prev_token_id": "hot",
-        },
-        headers={"Origin": "http://localhost:8095"},
-    )
-    assert resp.status == 200
-
-    deleted_ids = [c.args[1]["token_id"] for c in auth.database.delete.await_args_list]
-    assert deleted_ids == ["hot"]
-
-
-async def test_token_endpoint_prev_id_foreign_user_ignored(
-    wizard_client: TestClient, wizard_mass: MagicMock
-) -> None:
-    """A ``prev_token_id`` whose row does not belong to the session user is silently ignored.
-
-    The ownership check returns no row → no delete, no WS disconnect; the
-    mint still proceeds.
-    """
-    auth = wizard_mass.webserver.auth
-    # get_rows returns [] regardless of match — emulates "no row owned by
-    # this user with that token_id" for the ownership check AND no priors
-    # for the name-dedup query.
-    auth.database.get_rows = AsyncMock(return_value=[])
-
-    resp = await wizard_client.post(
-        "/mcp/v1/connect/token",
-        json={
-            "session_token": "sess-1",
-            "client_id": "cursor",
-            "prev_token_id": "foreign-id",
-        },
-        headers={"Origin": "http://localhost:8095"},
-    )
-    assert resp.status == 200
-    auth.database.delete.assert_not_called()
-    wizard_mass.webserver.disconnect_websockets_for_token.assert_not_called()
-    auth.create_token.assert_awaited_once()
-
-
-async def test_token_endpoint_foreign_prev_id_does_not_block_name_dedup(
-    wizard_client: TestClient, wizard_mass: MagicMock
-) -> None:
-    """A foreign (or otherwise no-op) ``prev_token_id`` must not poison the dedup set.
-
-    If the fast-path revoke no-ops, the name-dedup loop is still required to
-    pick up the user's real prior row at a different token_id.
-    """
-    auth = wizard_mass.webserver.auth
-
-    def _get_rows(_table: str, match: dict, **_kw: object) -> list[dict]:
-        # Ownership-check query (carries token_id) → foreign id has no row
-        # owned by this user.
-        if "token_id" in match:
-            return []
-        # Name-dedup query (user-id only) → user does have a real prior
-        # token at a different id.
-        return [{"token_id": "real-prior", "name": "MCP — Cursor", "user_id": "u1"}]
-
-    auth.database.get_rows = AsyncMock(side_effect=_get_rows)
-
-    resp = await wizard_client.post(
-        "/mcp/v1/connect/token",
-        json={
-            "session_token": "sess-1",
-            "client_id": "cursor",
-            "prev_token_id": "foreign-id",
-        },
-        headers={"Origin": "http://localhost:8095"},
-    )
-    assert resp.status == 200
-
-    deleted_ids = [c.args[1]["token_id"] for c in auth.database.delete.await_args_list]
-    assert deleted_ids == ["real-prior"]
+    revoked_ids = sorted(call.args[0] for call in auth.revoke_token.await_args_list)
+    assert revoked_ids == ["old-1", "old-2"]
     auth.create_token.assert_awaited_once()
 
 
 async def test_token_endpoint_dedup_lookup_failure_does_not_fail_mint(
     wizard_client: TestClient, wizard_mass: MagicMock
 ) -> None:
-    """A ``get_rows`` exception is logged but the mint still succeeds."""
+    """A ``get_user_tokens`` exception is logged but the mint still succeeds."""
     auth = wizard_mass.webserver.auth
-    auth.database.get_rows = AsyncMock(side_effect=RuntimeError("db down"))
+    auth.get_user_tokens = AsyncMock(side_effect=RuntimeError("api down"))
 
     resp = await wizard_client.post(
         "/mcp/v1/connect/token",
@@ -489,7 +379,7 @@ async def test_token_endpoint_dedup_lookup_failure_does_not_fail_mint(
 async def test_token_endpoint_no_prior_no_revoke(
     wizard_client: TestClient, wizard_mass: MagicMock
 ) -> None:
-    """Empty prior rows + no ``prev_token_id`` → no revoke side effects."""
+    """No prior tokens → ``auth.revoke_token`` is never called."""
     auth = wizard_mass.webserver.auth
 
     resp = await wizard_client.post(
@@ -498,19 +388,18 @@ async def test_token_endpoint_no_prior_no_revoke(
         headers={"Origin": "http://localhost:8095"},
     )
     assert resp.status == 200
-    auth.database.delete.assert_not_called()
-    wizard_mass.webserver.disconnect_websockets_for_token.assert_not_called()
+    auth.revoke_token.assert_not_called()
 
 
 async def test_token_endpoint_revoke_failure_does_not_fail_mint(
     wizard_client: TestClient, wizard_mass: MagicMock
 ) -> None:
-    """A ``database.delete`` exception is swallowed; the new mint still happens."""
+    """A ``revoke_token`` exception is swallowed; the new mint still happens."""
     auth = wizard_mass.webserver.auth
-    auth.database.get_rows = AsyncMock(
-        return_value=[{"token_id": "old", "name": "MCP — Cursor", "user_id": "u1"}]
+    auth.get_user_tokens = AsyncMock(
+        return_value=[SimpleNamespace(token_id="old", name="MCP — Cursor", user_id="u1")]
     )
-    auth.database.delete = AsyncMock(side_effect=RuntimeError("delete failed"))
+    auth.revoke_token = AsyncMock(side_effect=RuntimeError("revoke failed"))
 
     resp = await wizard_client.post(
         "/mcp/v1/connect/token",
@@ -519,23 +408,6 @@ async def test_token_endpoint_revoke_failure_does_not_fail_mint(
     )
     assert resp.status == 200
     auth.create_token.assert_awaited_once()
-
-
-async def test_token_endpoint_get_token_id_none_returns_null(
-    wizard_client: TestClient, wizard_mass: MagicMock
-) -> None:
-    """``get_token_id`` returning ``None`` surfaces as ``token_id: null`` in the JSON."""
-    wizard_mass.webserver.auth.jwt_helper.get_token_id = MagicMock(return_value=None)
-
-    resp = await wizard_client.post(
-        "/mcp/v1/connect/token",
-        json={"session_token": "sess-1", "client_id": "cursor"},
-        headers={"Origin": "http://localhost:8095"},
-    )
-    assert resp.status == 200
-    data = await resp.json()
-    assert data["token"] == "jwt-xyz"
-    assert data["token_id"] is None
 
 
 # ── Origin & mount ───────────────────────────────────────────────────────────
@@ -686,16 +558,17 @@ async def test_action_handler_empty_external_base_url_falls_back_to_path(
 async def test_open_connect_gcs_prior_wizard_tokens(
     wizard_mass: MagicMock, mock_user: MagicMock
 ) -> None:
-    """Prior MCP — wizard bootstrap/session rows are deleted before the new bootstrap is minted.
+    """Prior MCP — wizard bootstrap/session tokens are revoked before the new bootstrap is minted.
 
-    Per-client rows (``MCP — Cursor`` etc.) are left untouched.
+    Per-client tokens (``MCP — Cursor`` etc.) are left untouched. Asserts
+    against the sanctioned ``auth.revoke_token`` API.
     """
     auth = wizard_mass.webserver.auth
-    auth.database.get_rows = AsyncMock(
+    auth.get_user_tokens = AsyncMock(
         return_value=[
-            {"token_id": "boot-old", "name": "MCP — wizard bootstrap", "user_id": "u1"},
-            {"token_id": "sess-old", "name": "MCP — wizard session", "user_id": "u1"},
-            {"token_id": "cursor-keep", "name": "MCP — Cursor", "user_id": "u1"},
+            SimpleNamespace(token_id="boot-old", name="MCP — wizard bootstrap", user_id="u1"),
+            SimpleNamespace(token_id="sess-old", name="MCP — wizard session", user_id="u1"),
+            SimpleNamespace(token_id="cursor-keep", name="MCP — Cursor", user_id="u1"),
         ]
     )
 
@@ -705,12 +578,8 @@ async def test_open_connect_gcs_prior_wizard_tokens(
         mount_path="/mcp/v1",
     )
 
-    deleted_ids = sorted(c.args[1]["token_id"] for c in auth.database.delete.await_args_list)
-    assert deleted_ids == ["boot-old", "sess-old"]
-    disconnected = sorted(
-        c.args[0] for c in wizard_mass.webserver.disconnect_websockets_for_token.call_args_list
-    )
-    assert disconnected == ["boot-old", "sess-old"]
+    revoked_ids = sorted(call.args[0] for call in auth.revoke_token.await_args_list)
+    assert revoked_ids == ["boot-old", "sess-old"]
     auth.create_token.assert_awaited_once_with(
         user=mock_user,
         name="MCP — wizard bootstrap",
@@ -722,9 +591,9 @@ async def test_open_connect_gcs_prior_wizard_tokens(
 async def test_open_connect_gc_lookup_failure_does_not_block(
     wizard_mass: MagicMock, mock_user: MagicMock
 ) -> None:
-    """A ``get_rows`` exception is swallowed; the new bootstrap mint still happens."""
+    """A ``get_user_tokens`` exception is swallowed; the new bootstrap mint still happens."""
     auth = wizard_mass.webserver.auth
-    auth.database.get_rows = AsyncMock(side_effect=RuntimeError("db down"))
+    auth.get_user_tokens = AsyncMock(side_effect=RuntimeError("api down"))
 
     await handle_open_connect_action(
         wizard_mass,
@@ -737,7 +606,7 @@ async def test_open_connect_gc_lookup_failure_does_not_block(
 
 
 async def test_open_connect_no_user_skips_gc(wizard_mass: MagicMock) -> None:
-    """Without a current user there is no row lookup and nothing is deleted."""
+    """Without a current user there is no token listing and nothing is revoked."""
     auth = wizard_mass.webserver.auth
 
     await handle_open_connect_action(
@@ -746,8 +615,8 @@ async def test_open_connect_no_user_skips_gc(wizard_mass: MagicMock) -> None:
         mount_path="/mcp/v1",
     )
 
-    auth.database.get_rows.assert_not_called()
-    auth.database.delete.assert_not_called()
+    auth.get_user_tokens.assert_not_called()
+    auth.revoke_token.assert_not_called()
 
 
 # ── Dispatch: WS-client auto-detect + config-override fallback ───────────────

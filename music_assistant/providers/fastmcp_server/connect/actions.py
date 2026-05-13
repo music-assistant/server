@@ -14,7 +14,7 @@ import secrets
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
-from ._revoke import revoke_token_by_id
+from ._revoke import list_user_tokens, revoke_token_by_id
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -58,22 +58,14 @@ async def handle_open_connect_action(
 
     bootstrap: str | None = None
     if current_user is not None:
-        # GC any prior wizard plumbing rows for this user before minting a new
-        # bootstrap. Best-effort: lookup or individual delete failures must
-        # not block the new mint. Per-client tokens (MCP — <Client>) are not
-        # touched — only the ephemeral wizard ones.
-        try:
-            rows = await mass.webserver.auth.database.get_rows(
-                "auth_tokens", {"user_id": current_user.user_id}, limit=500
-            )
-        except Exception:
-            LOGGER.exception("Connect Wizard: wizard-token GC lookup failed")
-            rows = []
-        for row in rows:
-            if row.get("name") in _GC_NAMES:
-                tid = row.get("token_id")
-                if tid:
-                    await revoke_token_by_id(mass, tid)
+        # GC any prior wizard plumbing rows for this user before minting a
+        # new bootstrap, via the sanctioned auth API. Best-effort: lookup
+        # failures inside list_user_tokens return []; individual revoke
+        # failures are swallowed inside revoke_token_by_id. Per-client
+        # tokens (MCP — <Client>) are not touched.
+        for tok in await list_user_tokens(mass, current_user):
+            if tok.name in _GC_NAMES:
+                await revoke_token_by_id(mass, current_user, tok.token_id)
 
         try:
             bootstrap = await mass.webserver.auth.create_token(
