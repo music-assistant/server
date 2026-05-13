@@ -735,6 +735,51 @@ class TestYnisonStateHandling:
         # Cannot advance — no provider to fetch tracks
         mock_ynison.update_player_state.assert_not_called()
 
+    async def test_send_progress_suppresses_paused_false_on_empty_queue(self) -> None:
+        """paused=False with empty server-side queue is dropped (would trigger 400030001)."""
+        provider = _make_provider()
+        mock_ynison = MagicMock()
+        mock_ynison.connected = True
+        mock_ynison.update_playing_status = AsyncMock()
+        # Server-side queue is empty (typical after reconnect lands on a stale
+        # session, or after the user closed the Yandex Music app while we
+        # were still streaming): no playable_list, index=-1.
+        mock_ynison.state = YnisonState(
+            player_state={
+                "status": {"paused": False, "progress_ms": 5000, "duration_ms": 180000},
+                "player_queue": {
+                    "current_playable_index": -1,
+                    "playable_list": [],
+                },
+            },
+        )
+        provider._ynison = mock_ynison
+
+        await provider._send_progress_to_ynison(progress_ms=5000, duration_ms=180000, paused=False)
+        mock_ynison.update_playing_status.assert_not_awaited()
+
+    async def test_send_progress_still_sends_paused_true_on_empty_queue(self) -> None:
+        """paused=True is still sent even with empty server-side queue (guard is one-sided)."""
+        provider = _make_provider()
+        mock_ynison = MagicMock()
+        mock_ynison.connected = True
+        mock_ynison.update_playing_status = AsyncMock()
+        mock_ynison.state = YnisonState(
+            player_state={
+                "status": {"paused": True, "progress_ms": 5000, "duration_ms": 180000},
+                "player_queue": {
+                    "current_playable_index": -1,
+                    "playable_list": [],
+                },
+            },
+        )
+        provider._ynison = mock_ynison
+
+        await provider._send_progress_to_ynison(progress_ms=5000, duration_ms=180000, paused=True)
+        mock_ynison.update_playing_status.assert_awaited_once_with(
+            progress_ms=5000, duration_ms=180000, paused=True
+        )
+
     async def test_prefetch_on_second_to_last_track(self) -> None:
         """Pre-fetches tracks when playing second-to-last item in queue."""
         provider = _make_provider()

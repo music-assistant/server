@@ -1326,6 +1326,21 @@ class YandexYnisonProvider(PluginProvider):
             return
         if not self._ynison or not self._ynison.connected:
             return
+        # Server-side empty-queue guard: Ynison rejects `paused=False` when
+        # its queue is empty (currentIndex=-1, size=0) with the same 400030001
+        # code and closes the WebSocket. Observed live when the user closes
+        # the Yandex Music app while we're still streaming, or shortly after
+        # a reconnect lands on a stale session. The next `_sync_progress`
+        # tick would then fire a fresh error and disconnect again, ping-
+        # ponging through reconnects until the server eventually rebalances
+        # us elsewhere. Suppress the outbound update when paused=False but
+        # the server has no current track for us.
+        if not paused and self._ynison.state.current_track_id is None:
+            self.logger.debug(
+                "Skipping paused=False update — server-side queue is empty "
+                "(would trigger 400030001 and disconnect)"
+            )
+            return
         progress_ms = min(progress_ms, duration_ms)
         await self._ynison.update_playing_status(
             progress_ms=progress_ms,
