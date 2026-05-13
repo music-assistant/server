@@ -38,7 +38,7 @@ from music_assistant.providers.lastfm_recommendations.recommendations import (
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.media_items import Artist, RecommendationFolder
+    from music_assistant_models.media_items import Artist, RecommendationFolder, Track
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 SUPPORTED_FEATURES = {
     ProviderFeature.RECOMMENDATIONS,
     ProviderFeature.SIMILAR_ARTISTS,
+    ProviderFeature.SIMILAR_TRACKS,
 }
 
 
@@ -221,5 +222,21 @@ class LastFMRecommendationsProvider(MetadataProvider):
         results: list[Artist] = []
         for raw in similar_raw:
             if resolved := await self.recommendations_manager._get_or_resolve_artist(raw):
+                results.append(resolved)
+        return results
+
+    async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
+        """Retrieve similar tracks from Last.fm.
+
+        :param track: The reference track.
+        :param limit: Maximum number of similar tracks to return.
+        """
+        artist_name = track.artists[0].name if track.artists else "Unknown Artist"
+        track_mbid = track.get_external_id(ExternalID.MB_RECORDING)
+        similar_raw = await self.api.get_similar_tracks(artist_name, track.name, track_mbid, limit)
+
+        results: list[Track] = []
+        for raw in similar_raw:
+            if resolved := await self.recommendations_manager._get_or_resolve_track(raw):
                 results.append(resolved)
         return results
