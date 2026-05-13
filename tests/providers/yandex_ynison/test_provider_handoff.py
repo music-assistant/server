@@ -1,4 +1,4 @@
-# mypy: disable-error-code="attr-defined,method-assign"
+# mypy: disable-error-code="attr-defined,method-assign,unreachable"
 """Tests for handoff playback mode.
 
 `mass` and `player_queues` are heavily mocked here via MagicMock —

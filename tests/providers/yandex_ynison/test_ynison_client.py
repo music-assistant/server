@@ -1,3 +1,4 @@
+# mypy: disable-error-code="attr-defined"
 """Tests for the Ynison WebSocket client."""
 
 from __future__ import annotations
