@@ -180,8 +180,8 @@ class LastFMRecommendationManager:
 
         # Daily seed keeps recommendations stable within the day and rotates them overnight.
         seed = f"{datetime.datetime.now(tz=datetime.UTC).date().isoformat()}_{seed_suffix}"
-        random.seed(seed)
-        random_items = random.sample(remaining, min(random_count, len(remaining)))
+        rng = random.Random(seed)
+        random_items = rng.sample(remaining, min(random_count, len(remaining)))
 
         return top_items + random_items
 
