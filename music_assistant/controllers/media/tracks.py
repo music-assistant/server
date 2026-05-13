@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import urllib.parse
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
 from music_assistant_models.errors import (
     InvalidDataError,
     MusicAssistantError,
@@ -42,6 +42,8 @@ from .base import MediaControllerBase
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
+    from music_assistant.models.metadata_provider import MetadataProvider
+    from music_assistant.models.plugin import PluginProvider
 
 
 class TracksController(MediaControllerBase[Track]):
@@ -258,7 +260,7 @@ class TracksController(MediaControllerBase[Track]):
             provider = self.mass.get_provider(provider_id)
             if not isinstance(provider, MusicProvider):
                 continue
-            if not provider.library_supported(MediaType.TRACK):
+            if not self.mass.music.library_supported(provider, MediaType.TRACK):
                 continue
             result.extend(
                 prov_item
@@ -363,16 +365,29 @@ class TracksController(MediaControllerBase[Track]):
                 if ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
                     continue
                 # Grab similar tracks from the music provider
-                return await prov.get_similar_tracks(
-                    prov_track_id=prov_mapping.item_id, limit=limit
-                )
+                try:
+                    if result := await prov.get_similar_tracks(
+                        prov_track_id=prov_mapping.item_id, limit=limit
+                    ):
+                        return result
+                except NotImplementedError:
+                    continue
+
+        # Fallback: consult metadata/plugin providers that claim SIMILAR_TRACKS
+        for prov in self.mass.get_providers_supporting_feature(
+            ProviderFeature.SIMILAR_TRACKS,
+            priority=(ProviderType.METADATA, ProviderType.PLUGIN),
+        ):
+            try:
+                cross_prov = cast("MetadataProvider | PluginProvider", prov)
+                if result := await cross_prov.get_similar_tracks(ref_item, limit=limit):
+                    return result
+            except NotImplementedError:
+                continue
 
         if not allow_lookup:
             return []
 
-        # check if we have any provider that supports dynamic tracks
-        # TODO: query metadata provider(s) (such as lastfm?)
-        # to get similar tracks (or tracks from similar artists)
         music_prov: MusicProvider | None = None
         for prov in self.mass.music.providers:
             if ProviderFeature.SIMILAR_TRACKS in prov.supported_features:
@@ -494,7 +509,7 @@ class TracksController(MediaControllerBase[Track]):
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
-            if not provider.library_supported(MediaType.TRACK):
+            if not self.mass.music.library_supported(provider, MediaType.TRACK):
                 continue
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA
