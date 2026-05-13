@@ -428,7 +428,6 @@ class PlayerQueuesController(CoreController):
             )
         queue = self._queues[queue_id]
         queue.dont_stop_the_music_enabled = dont_stop_the_music_enabled
-        self.signal_update(queue_id=queue_id)
         # if this happens to be the last track in the queue, fill the radio source
         if (
             queue.dont_stop_the_music_enabled
@@ -437,8 +436,10 @@ class PlayerQueuesController(CoreController):
             and (queue.items - queue.current_index) <= 1
         ):
             queue.radio_source = queue.enqueued_media_items
+            queue.is_dynamic = self._calc_is_dynamic(queue.radio_source)
             task_id = f"fill_radio_tracks_{queue_id}"
             self.mass.call_later(5, self._fill_radio_tracks, queue_id, task_id=task_id)
+        self.signal_update(queue_id=queue_id)
 
     @api_command("player_queues/repeat")
     def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
@@ -611,6 +612,7 @@ class PlayerQueuesController(CoreController):
         """Clear all items in the queue."""
         queue = self._queues[queue_id]
         queue.radio_source = []
+        queue.is_dynamic = False
         if queue.state != PlaybackState.IDLE and not skip_stop:
             self.mass.create_task(self.stop(queue_id))
         queue.current_index = None
@@ -1029,6 +1031,7 @@ class PlayerQueuesController(CoreController):
         target_queue.shuffle_enabled = source_queue.shuffle_enabled
         target_queue.dont_stop_the_music_enabled = source_queue.dont_stop_the_music_enabled
         target_queue.radio_source = source_queue.radio_source
+        target_queue.is_dynamic = source_queue.is_dynamic
         target_queue.enqueued_media_items = source_queue.enqueued_media_items
         target_queue.resume_pos = source_resume_pos
         target_queue.current_index = source_current_index
@@ -1385,6 +1388,7 @@ class PlayerQueuesController(CoreController):
             queue.radio_source = radio_source
         else:
             queue.radio_source += radio_source
+        queue.is_dynamic = self._calc_is_dynamic(queue.radio_source)
         # Use collected media items to calculate the radio if radio mode is on
         if radio_mode:
             radio_tracks = await self._get_radio_tracks(
@@ -2864,6 +2868,7 @@ class PlayerQueuesController(CoreController):
                     ", ".join([x.uri for x in queue.enqueued_media_items]),  # type: ignore[misc]  # uri set in __post_init__
                 )
                 queue.radio_source = queue.enqueued_media_items
+                queue.is_dynamic = self._calc_is_dynamic(queue.radio_source)
             # auto fill radio tracks if less than 5 tracks left in the queue
             if (
                 queue.radio_source
@@ -2872,6 +2877,15 @@ class PlayerQueuesController(CoreController):
             ):
                 task_id = f"fill_radio_tracks_{queue_id}"
                 self.mass.call_later(5, self._fill_radio_tracks, queue_id, task_id=task_id)
+
+    @staticmethod
+    def _calc_is_dynamic(radio_source: list[MediaItemType]) -> bool:
+        """Return True if radio_source is a single dynamic playlist."""
+        return (
+            len(radio_source) == 1
+            and isinstance(radio_source[0], Playlist)
+            and radio_source[0].is_dynamic
+        )
 
     def _get_flow_queue_stream_index(
         self, queue: PlayerQueue, player: Player
