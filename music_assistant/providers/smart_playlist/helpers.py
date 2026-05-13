@@ -48,6 +48,15 @@ def _coerce_id_list(value: Any, field_name: str) -> list[int]:
     return result
 
 
+def _coerce_str_list(value: Any, field_name: str) -> list[str]:
+    """Coerce a value to a list of strs, raising InvalidDataError on bad input."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise InvalidDataError(f"Expected list for {field_name}, got {type(value).__name__}")
+    return [str(item) for item in value]
+
+
 def _coerce_int_keyed_dict(value: Any, field_name: str) -> dict[int, str]:
     """Coerce a value to a dict[int, str], raising InvalidDataError on bad input."""
     if value is None:
@@ -149,7 +158,9 @@ class SmartPlaylistRules:
             excluded_album_ids=_coerce_id_list(
                 data.get("excluded_album_ids"), "excluded_album_ids"
             ),
-            excluded_track_uris=list(data.get("excluded_track_uris") or []),
+            excluded_track_uris=_coerce_str_list(
+                data.get("excluded_track_uris"), "excluded_track_uris"
+            ),
             excluded_artist_names=_coerce_int_keyed_dict(
                 data.get("excluded_artist_names"), "excluded_artist_names"
             ),
