@@ -145,10 +145,7 @@ HTML: str = """<!doctype html>
   </section>
 
   <section class="panel">
-    <div class="row" style="justify-content:space-between">
-      <strong>Active permissions</strong>
-      <span class="small" id="version-tag"></span>
-    </div>
+    <strong>Active permissions</strong>
     <div id="perms" class="perm-list" style="margin-top:8px"></div>
     <details>
       <summary>What if my AI says "permission denied"?</summary>
@@ -430,7 +427,6 @@ HTML: str = """<!doctype html>
       return false;
     }
     state.info = data;
-    $("version-tag").textContent = "v" + data.version;
     return true;
   }
 

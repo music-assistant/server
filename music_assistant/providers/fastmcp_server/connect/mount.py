@@ -46,7 +46,6 @@ async def mount_connect_wizard(
     mass: MusicAssistant,
     mount_path: str,
     *,
-    version: str,
     enabled_tags_provider: Callable[[], list[str]],
     extra_origins_csv: str = "",
 ) -> Callable[[], None]:
@@ -55,7 +54,6 @@ async def mount_connect_wizard(
     :param mass: MusicAssistant instance.
     :param mount_path: HTTP path prefix where the MCP server is mounted
         (e.g. ``/mcp/v1``); wizard routes nest under ``<mount_path>/connect``.
-    :param version: Provider version string surfaced in ``/connect/info``.
     :param enabled_tags_provider: Zero-arg callable returning the list of
         currently-enabled permission tag strings; called per-request so
         permission hot-swaps surface in the UI without remount.
@@ -68,7 +66,6 @@ async def mount_connect_wizard(
     ctx = WizardContext(
         mass=mass,
         mount_path=mount_path,
-        version=version,
         enabled_tags_provider=enabled_tags_provider,
         origin_check=lambda request: is_origin_allowed_for_request(request, allowlist),
     )

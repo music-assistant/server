@@ -15,8 +15,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-__version__ = "0.3.10"
-
 LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:

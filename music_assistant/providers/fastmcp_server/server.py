@@ -169,13 +169,11 @@ class MCPServerRuntime:
         # Mount the Connect Wizard. Failure here is non-fatal — the MCP server
         # itself is unaffected; the user just falls back to manual onboarding.
         try:
-            from . import __version__  # noqa: PLC0415
             from .connect import mount_connect_wizard  # noqa: PLC0415
 
             self._unmount_connect = await mount_connect_wizard(
                 self._mass,
                 self._mount_path,
-                version=__version__,
                 enabled_tags_provider=lambda: [str(t) for t in enabled_tags(self._config)],
                 extra_origins_csv=extra_origins,
             )

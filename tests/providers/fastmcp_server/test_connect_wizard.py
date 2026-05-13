@@ -69,7 +69,6 @@ async def wizard_client(wizard_mass: MagicMock) -> AsyncIterator[TestClient]:
     unmount = await mount_connect_wizard(
         wizard_mass,
         mount_path="/mcp/v1",
-        version="0.3.0",
         enabled_tags_provider=lambda: ["query:library", "control:playback"],
         extra_origins_csv="",
     )
@@ -99,7 +98,6 @@ async def test_info_endpoint_shape(wizard_client: TestClient) -> None:
     assert resp.status == 200
     data = await resp.json()
     for key in (
-        "version",
         "mount_path",
         "mcp_url_loopback",
         "mcp_url_advertised",
@@ -121,7 +119,6 @@ async def test_info_reflects_enabled_tags(wizard_mass: MagicMock) -> None:
     unmount = await mount_connect_wizard(
         wizard_mass,
         mount_path="/mcp/v1",
-        version="0.3.0",
         enabled_tags_provider=lambda: ["control:playback", "edit:queue"],
         extra_origins_csv="",
     )
@@ -281,7 +278,6 @@ async def test_mount_unmount_cycle(wizard_mass: MagicMock) -> None:
     unmount = await mount_connect_wizard(
         wizard_mass,
         mount_path="/mcp/v1",
-        version="0.3.0",
         enabled_tags_provider=list,
         extra_origins_csv="",
     )
@@ -295,7 +291,6 @@ async def test_mount_path_relative(wizard_mass: MagicMock) -> None:
     unmount = await mount_connect_wizard(
         wizard_mass,
         mount_path="/custom",
-        version="0.3.0",
         enabled_tags_provider=list,
         extra_origins_csv="",
     )

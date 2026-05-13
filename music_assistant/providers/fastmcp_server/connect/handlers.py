@@ -35,7 +35,6 @@ class WizardContext:
 
     mass: MusicAssistant
     mount_path: str
-    version: str
     enabled_tags_provider: Callable[[], list[str]]
     origin_check: Callable[[web.Request], bool]
 
@@ -107,7 +106,6 @@ def make_info(ctx: WizardContext) -> Callable[[web.Request], Any]:
 
         return web.json_response(
             {
-                "version": ctx.version,
                 "mount_path": ctx.mount_path,
                 "mcp_url_loopback": loopback,
                 "mcp_url_advertised": advertised,
