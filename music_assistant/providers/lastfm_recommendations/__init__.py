@@ -177,6 +177,13 @@ class LastFMRecommendationsProvider(MetadataProvider):
             translation_key="background_task.refresh_lastfm_recommendations",
         )
 
+        # Populate on every startup so the UI isn't empty until the next scheduled refresh.
+        self.mass.call_later(
+            20,
+            self._refresh_recommendations,
+            task_id=f"{REFRESH_TASK_ID}_initial_{self.instance_id}",
+        )
+
     async def unload(self, is_removed: bool = False) -> None:
         """Unload the provider."""
         self.mass.tasks.unregister_scheduled_task(
