@@ -4,7 +4,7 @@
   "name": "Last.fm Recommendations",
   "description": "Get music recommendations from Last.fm based on your listening history",
   "codeowners": [
-    "ozGav"
+    "@ozGav"
   ],
   "stage": "beta",
   "documentation": "https://music-assistant.io/metadata/lastfm_recommendations"
