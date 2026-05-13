@@ -1881,9 +1881,14 @@ class YandexYnisonProvider(PluginProvider):
         if is_track_change:
             # Pre-fetch primes MA's stream-detail cache. Cosmetic in
             # handoff (MA fetches its own details), keeps logs/duration
-            # consistent during the transition.
+            # consistent during the transition. Fired in the background
+            # so it doesn't block `play_media` — `_PREFETCH_FORMAT_TIMEOUT`
+            # is 2.5s and awaiting it would add that much latency to
+            # every handoff track change. The cache prime races with MA's
+            # own stream-detail resolution; whichever finishes first is
+            # used, both paths are correct.
             if self._yandex_provider:
-                await self._prefetch_format_for_track(new_track)
+                self.mass.create_task(self._prefetch_format_for_track(new_track))
             await self._apply_track_change(state, target_player_id, new_track, expected_uri)
             return
 
@@ -2025,7 +2030,13 @@ class YandexYnisonProvider(PluginProvider):
             self._re_issue_debounce_until = now + _REISSUE_DEBOUNCE_PERIOD
             self._expected_phase = HandoffPhase.ACTIVATING
             try:
-                self._play_media_task = asyncio.create_task(
+                # Use mass.create_task so the task is tracked by the
+                # MusicAssistant instance (auto-cancelled on stop/reload,
+                # standard exception logging). We still keep a reference
+                # in `_play_media_task` so `_cancel_pending_play_media`
+                # can supersede an in-flight activation on rapid track
+                # changes.
+                self._play_media_task = self.mass.create_task(
                     self.mass.player_queues.play_media(
                         target_player_id, expected_uri, option=QueueOption.REPLACE
                     )

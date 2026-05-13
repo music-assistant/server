@@ -64,9 +64,17 @@ def _make_mock_mass() -> MagicMock:
     mass = MagicMock()
     mass.cache_path = "/var/cache/test-cache"
 
-    def _create_task(coro: object) -> MagicMock:
+    def _create_task(coro: object) -> object:
+        # Mirror MA's behaviour: schedule the coroutine on the running
+        # loop and return a real `asyncio.Task` so callers can both
+        # `await` it (e.g. `_play_media_task`) and `task.cancel()` it.
+        # When invoked outside an async test (no running loop), fall
+        # back to closing the coroutine and returning a sentinel mock.
         if asyncio.iscoroutine(coro):
-            coro.close()
+            try:
+                return asyncio.create_task(coro)
+            except RuntimeError:
+                coro.close()
         return MagicMock()
 
     mass.create_task = MagicMock(side_effect=_create_task)
