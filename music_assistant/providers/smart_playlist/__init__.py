@@ -378,6 +378,8 @@ class SmartPlaylistProvider(PluginProvider):
         """
         parsed_rules = SmartPlaylistRules.from_dict(rules)
         self._validate_rules(parsed_rules)
+        # Override limit so count reflects all matching tracks, not just the playback limit.
+        parsed_rules.limit = FETCH_LIMIT
         tracks = await self._evaluate_rules(parsed_rules)
         duration = sum(t.duration or 0 for t in tracks)
         return {"count": len(tracks), "duration_seconds": duration}
@@ -591,9 +593,6 @@ class SmartPlaylistProvider(PluginProvider):
                     and (rules.year_to is None or t.album.year <= rules.year_to)
                 )
             ]
-        if rules.excluded_genre_ids:
-            excluded_genre_names = await self._resolve_excluded_genre_names(rules)
-            tracks = self._apply_exclusions(tracks, rules, excluded_genre_names)
         return tracks
 
     def _apply_exclusions(
@@ -688,12 +687,18 @@ class SmartPlaylistProvider(PluginProvider):
             base_tracks = [
                 t
                 for t in base_tracks
-                if {int(a.item_id) for a in t.artists if a.item_id} & artist_id_set
+                if {int(a.item_id) for a in t.artists if a.item_id and str(a.item_id).isdigit()}
+                & artist_id_set
             ]
         if has_album:
             album_id_set = set(rules.album_ids)
             base_tracks = [
-                t for t in base_tracks if t.album and int(t.album.item_id) in album_id_set
+                t
+                for t in base_tracks
+                if t.album
+                and t.album.item_id
+                and str(t.album.item_id).isdigit()
+                and int(t.album.item_id) in album_id_set
             ]
         return base_tracks
 
@@ -720,13 +725,21 @@ class SmartPlaylistProvider(PluginProvider):
                 artist_id_set = set(rules.artist_ids)
                 for track in all_tracks:
                     if {
-                        int(a.item_id) for a in track.artists if a.item_id
+                        int(a.item_id)
+                        for a in track.artists
+                        if a.item_id and str(a.item_id).isdigit()
                     } & artist_id_set and track.uri:
                         track_sets[track.uri] = track
             if rules.album_ids:
                 album_id_set = set(rules.album_ids)
                 for track in all_tracks:
-                    if track.album and int(track.album.item_id) in album_id_set and track.uri:
+                    if (
+                        track.album
+                        and track.album.item_id
+                        and str(track.album.item_id).isdigit()
+                        and int(track.album.item_id) in album_id_set
+                        and track.uri
+                    ):
                         track_sets[track.uri] = track
 
         no_filters = (
@@ -734,7 +747,6 @@ class SmartPlaylistProvider(PluginProvider):
             and not rules.genre_ids
             and not rules.artist_ids
             and not rules.album_ids
-            and not rules.seed_track_uri
         )
         if no_filters:
             for track in await self._get_library_tracks(limit=fetch_limit):
@@ -775,7 +787,7 @@ class SmartPlaylistProvider(PluginProvider):
             return []
 
     async def _get_similar_artists_tracks(
-        self, seed_artist_uri: str, limit: int, library_only: bool = True
+        self, seed_artist_uri: str, limit: int, library_only: bool
     ) -> list[Track]:
         """Get tracks for artists similar to the given seed artist URI."""
         try:
