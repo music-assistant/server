@@ -1290,3 +1290,122 @@ async def test_retry_path_classifies_captcha_after_reconnect() -> None:
     cause = exc_info.value.__cause__
     assert cause is not None
     assert str(cause).endswith("...[truncated]")
+
+
+async def test_retry_path_re_checks_block_before_retry() -> None:
+    """A retry after reconnect must re-check the per-kind block.
+
+    Another concurrent task may engage the cooldown while the reconnect is
+    in flight; without a re-check, the retry would still hit Yandex during
+    the cooldown and prolong the edge ban.
+    """
+    client, underlying = _make_client()
+
+    async def _fake_reconnect() -> None:
+        # Simulate that while this task is reconnecting, another concurrent
+        # task hits captcha on the same kind and engages the cooldown.
+        client._block_until["default"] = time.monotonic() + 600
+
+    client._reconnect = _fake_reconnect  # type: ignore[method-assign]
+    underlying.tracks = mock.AsyncMock(side_effect=NetworkError("Server disconnected"))
+
+    with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
+        await client.get_tracks(["42"])
+
+    # The retry must have bailed BEFORE making a second network call.
+    assert underlying.tracks.await_count == 1
+    # And the surfaced error must reflect the cooldown, not the connection error.
+    assert "cooldown" in str(exc_info.value).lower()
+
+
+async def test_file_info_cache_hit_blocked_during_cooldown() -> None:
+    """A populated cache must not be served while the file_info kind is blocked.
+
+    Otherwise the streaming layer would happily replay a pre-cooldown URL
+    while Yandex is actively rate-limiting our IP/account, defeating the
+    fail-fast guarantee.
+    """
+    client, underlying = _make_client()
+    underlying._request = mock.MagicMock()
+    underlying._request.get = mock.AsyncMock(return_value=_make_file_info_response())
+    underlying.base_url = "https://api.music.yandex.net"
+
+    # Populate cache.
+    await client.get_track_file_info("42")
+    assert ("42", "lossless", GET_FILE_INFO_CODECS, "raw") in client._file_info_cache
+    assert underlying._request.get.await_count == 1
+
+    # Engage the file_info cooldown.
+    client._block_until["file_info"] = time.monotonic() + 600
+
+    # Subsequent call must NOT serve the cached URL.
+    result = await client.get_track_file_info("42")
+    assert result is None
+    # And no extra network call (block fast-fails before the cache lookup).
+    assert underlying._request.get.await_count == 1
+
+
+async def test_bypass_refresh_replaces_cached_entry() -> None:
+    """BYPASS_THROTTLER refresh must overwrite the existing cache entry.
+
+    Otherwise the next non-bypass caller keeps receiving the old URL until
+    the TTL expires, even though refresh has just proven that entry stale.
+    """
+    client, underlying = _make_client()
+    underlying._request = mock.MagicMock()
+    underlying.base_url = "https://api.music.yandex.net"
+
+    # First call: populate cache with the OLD URL.
+    underlying._request.get = mock.AsyncMock(
+        return_value=_make_file_info_response(url="https://example.com/old")
+    )
+    first = await client.get_track_file_info("42")
+    assert first is not None
+    assert first["url"] == "https://example.com/old"
+
+    # Refresh under BYPASS_THROTTLER with a fresh URL.
+    underlying._request.get = mock.AsyncMock(
+        return_value=_make_file_info_response(url="https://example.com/new")
+    )
+    token = BYPASS_THROTTLER.set(True)
+    try:
+        refreshed = await client.get_track_file_info("42")
+    finally:
+        BYPASS_THROTTLER.reset(token)
+    assert refreshed is not None
+    assert refreshed["url"] == "https://example.com/new"
+
+    # Now a non-bypass caller must get the REFRESHED URL from cache, not the old one.
+    underlying._request.get = mock.AsyncMock(
+        side_effect=AssertionError("should hit cache, not network")
+    )
+    cached = await client.get_track_file_info("42")
+    assert cached is not None
+    assert cached["url"] == "https://example.com/new"
+
+
+async def test_file_info_cache_invalidated_on_unauthorized() -> None:
+    """UnauthorizedError on a refresh must clear the cached entry for the track.
+
+    Otherwise post-re-auth callers could be served a URL tied to the
+    expired session.
+    """
+    client, underlying = _make_client()
+    underlying._request = mock.MagicMock()
+    underlying.base_url = "https://api.music.yandex.net"
+    cache_key = ("42", "lossless", GET_FILE_INFO_CODECS, "raw")
+
+    # Populate cache.
+    underlying._request.get = mock.AsyncMock(return_value=_make_file_info_response())
+    await client.get_track_file_info("42")
+    assert cache_key in client._file_info_cache
+
+    # UnauthorizedError on a bypass refresh — must invalidate.
+    underlying._request.get = mock.AsyncMock(side_effect=UnauthorizedError("token expired"))
+    token = BYPASS_THROTTLER.set(True)
+    try:
+        result = await client.get_track_file_info("42")
+    finally:
+        BYPASS_THROTTLER.reset(token)
+    assert result is None
+    assert cache_key not in client._file_info_cache

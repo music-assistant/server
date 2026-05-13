@@ -305,6 +305,12 @@ class YandexMusicClient:
             except Exception as recon_err:
                 raise ProviderUnavailableError("Reconnect failed") from recon_err
             client = cast("ClientAsync", self._client)
+            # Re-check the block before the retry: while we were reconnecting,
+            # another concurrent task may have engaged the kind cooldown
+            # (e.g. captcha 429). BYPASS_THROTTLER paths skip this so an
+            # in-flight stream refresh can still attempt the retry.
+            if not BYPASS_THROTTLER.get():
+                self._check_block(kind)
             # Reconnect-retry must also go through 429 classification —
             # otherwise a captcha on the retry attempt bypasses the cooldown
             # logic and propagates the raw HTML body.
@@ -1195,7 +1201,7 @@ class YandexMusicClient:
             LOGGER.error("Error fetching download info for track %s: %s", track_id, err)
             return []
 
-    async def get_track_file_info(
+    async def get_track_file_info(  # noqa: PLR0915
         self,
         track_id: str,
         quality: str = "lossless",
@@ -1231,6 +1237,19 @@ class YandexMusicClient:
         # share a cache slot.
         cache_key = (track_id, quality, codecs, transport)
         if not BYPASS_THROTTLER.get():
+            # Check the file_info circuit-breaker BEFORE the cache lookup —
+            # otherwise a cooldown-period caller could be served a stale URL
+            # from before the block was engaged. Fail fast (return None) so
+            # MA's streaming layer treats the track as unavailable.
+            try:
+                self._check_block("file_info")
+            except ResourceTemporarilyUnavailable as err:
+                LOGGER.debug(
+                    "get-file-info for track %s: file_info cooldown active (%s)",
+                    track_id,
+                    err,
+                )
+                return None
             cached = self._file_info_cache_get(cache_key)
             if cached is not None:
                 LOGGER.debug(
@@ -1304,8 +1323,11 @@ class YandexMusicClient:
                     parsed.get("codec"),
                     transport,
                 )
-                if not BYPASS_THROTTLER.get():
-                    self._file_info_cache_put(cache_key, parsed)
+                # Always store the freshest URL — including under BYPASS_THROTTLER.
+                # A successful refresh proves the previously cached entry was
+                # stale, so replacing it avoids serving the old URL to the next
+                # non-bypass caller until its TTL expires.
+                self._file_info_cache_put(cache_key, parsed)
                 return parsed
         except BadRequestError as err:
             # 4xx is terminal for this URL/quality. Drop any cached entry so we
