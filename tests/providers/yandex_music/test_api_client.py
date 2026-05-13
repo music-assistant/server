@@ -1199,3 +1199,94 @@ async def test_file_info_cache_lru_eviction(monkeypatch: pytest.MonkeyPatch) -> 
     assert ("1", "lossless", GET_FILE_INFO_CODECS, "raw") not in client._file_info_cache
     assert ("2", "lossless", GET_FILE_INFO_CODECS, "raw") in client._file_info_cache
     assert ("3", "lossless", GET_FILE_INFO_CODECS, "raw") in client._file_info_cache
+
+
+# -- regression tests for upstream Copilot review (PR #3882) -----------------
+
+
+async def test_check_block_runs_again_after_throttler_acquire() -> None:
+    """A concurrent request that passed the pre-check must bail after acquire().
+
+    Without the post-acquire re-check, requests already queued in the
+    throttler when another request engages the cooldown would proceed to
+    the network and prolong Yandex's edge ban.
+    """
+    client, underlying = _make_client()
+    underlying.tracks = mock.AsyncMock(return_value=[])
+
+    # Simulate the race: while we're queued in acquire(), another request
+    # engages the captcha block. Model this by setting _block_until as a
+    # side effect of the throttler's acquire().
+    async def _engage_block_during_queue() -> None:
+        client._block_until["default"] = time.monotonic() + 600
+
+    default_acquire = cast("mock.AsyncMock", client._throttlers["default"].acquire)
+    default_acquire.side_effect = _engage_block_during_queue
+
+    with pytest.raises(ResourceTemporarilyUnavailable):
+        await client.get_tracks(["42"])
+
+    # The actual network call must NEVER have fired.
+    underlying.tracks.assert_not_awaited()
+
+
+async def test_rotor_feedback_no_retry_propagates_429_to_engage_block() -> None:
+    """Rotor session feedback (with_retry=False) must propagate 429s.
+
+    The inner `_do` swallows ordinary NetworkErrors for fire-and-forget
+    paths, but a captcha 429 must reach `_call_no_retry` so the rotor
+    cooldown is engaged; otherwise feedback events keep hammering Yandex
+    during an active edge ban.
+    """
+    client, underlying = _make_client()
+    underlying._request = mock.MagicMock()
+    underlying._request.post = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
+    underlying.base_url = "https://api.music.yandex.net"
+
+    # Pre-condition: rotor kind not blocked.
+    assert client._block_until["rotor"] == 0.0
+
+    result = await client.rotor_session_feedback(
+        "session-xyz",
+        "trackStarted",
+        track_id="42",
+    )
+
+    # Feedback is fire-and-forget — caller gets False, no raise.
+    assert result is False
+    # But the rotor cooldown MUST have been engaged.
+    assert client._block_until["rotor"] > time.monotonic() + 500
+    # Other kinds untouched.
+    assert client._block_until["default"] == 0.0
+    assert client._block_until["file_info"] == 0.0
+
+
+async def test_retry_path_classifies_captcha_after_reconnect() -> None:
+    """A captcha 429 on the reconnect-retry attempt must engage the block.
+
+    Without classification on the retry, the raw NetworkError propagates
+    with the full HTML body and the kind cooldown is never set.
+    """
+    client, underlying = _make_client()
+    # First attempt: connection error → triggers reconnect.
+    # Retry attempt: captcha 429 → must be classified.
+    underlying.tracks = mock.AsyncMock(
+        side_effect=[
+            NetworkError("Server disconnected"),
+            NetworkError(_CAPTCHA_HTML_SNIPPET),
+        ]
+    )
+
+    with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
+        await client.get_tracks(["42"])
+
+    # Should have backed off for the captcha cooldown duration, not 60s.
+    assert exc_info.value.backoff_time == 600
+    # Block engaged on default kind.
+    assert client._block_until["default"] > time.monotonic() + 500
+    # Both attempts ran (connection error + retry).
+    assert underlying.tracks.await_count == 2
+    # The HTML body must be truncated in the chain, not propagated raw.
+    cause = exc_info.value.__cause__
+    assert cause is not None
+    assert str(cause).endswith("...[truncated]")

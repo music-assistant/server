@@ -284,8 +284,12 @@ class YandexMusicClient:
         :return: The result of the API call.
         """
         if not BYPASS_THROTTLER.get():
+            # Fast path: short-circuit before queueing if the kind is already
+            # blocked. Re-check after acquire() — another concurrent request
+            # may have engaged the cooldown while we were queued.
             self._check_block(kind)
             await self._get_throttler(kind).acquire()
+            self._check_block(kind)
         client = await self._ensure_connected()
         try:
             return await func(client)
@@ -301,7 +305,16 @@ class YandexMusicClient:
             except Exception as recon_err:
                 raise ProviderUnavailableError("Reconnect failed") from recon_err
             client = cast("ClientAsync", self._client)
-            return await func(client)
+            # Reconnect-retry must also go through 429 classification —
+            # otherwise a captcha on the retry attempt bypasses the cooldown
+            # logic and propagates the raw HTML body.
+            try:
+                return await func(client)
+            except Exception as retry_err:
+                retry_exc = self._maybe_handle_429(retry_err, kind)
+                if retry_exc is not None:
+                    raise retry_exc from NetworkError(self._truncate_err_msg(retry_err))
+                raise
 
     async def _call_no_retry(
         self,
@@ -322,8 +335,10 @@ class YandexMusicClient:
         :return: The result of the API call.
         """
         if not BYPASS_THROTTLER.get():
+            # Same dual check as _call_with_retry — see comment there.
             self._check_block(kind)
             await self._get_throttler(kind).acquire()
+            self._check_block(kind)
         client = await self._ensure_connected()
         try:
             return await func(client)
@@ -523,10 +538,13 @@ class YandexMusicClient:
             LOGGER.debug("Rotor session POST %s body_keys=%s", path, list(body.keys()))
             try:
                 result = await c._request.post(url, json=body)
-            except NetworkError:
+            except NetworkError as err:
                 # Let the outer retry wrapper see transient drops. On the
-                # no-retry path the outer `except` below swallows it silently.
-                if with_retry:
+                # no-retry path swallow ordinary network blips silently, but
+                # 429/captcha errors MUST propagate so _call_no_retry can
+                # engage the rotor cooldown — otherwise feedback keeps
+                # hammering Yandex during an active edge ban.
+                if with_retry or self._is_rate_limit_error(err):
                     raise
                 LOGGER.debug("Rotor session POST %s: network error (no retry)", path)
                 return None
