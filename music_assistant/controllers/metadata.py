@@ -55,6 +55,7 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.constants import (
     CONF_LANGUAGE,
     DB_TABLE_ARTISTS,
+    DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_PLAYLISTS,
     VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
@@ -1214,6 +1215,14 @@ class MetaDataController(CoreController):
         except MusicAssistantError:
             pass
 
+    async def _has_derived_genre_mappings(self, media_type: MediaType, item_id: str | int) -> bool:
+        """Return True if this item has propagated (derived) genre mappings."""
+        row = await self.mass.music.database.get_row(
+            DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+            {"media_type": media_type.value, "media_id": int(item_id), "is_derived": 1},
+        )
+        return row is not None
+
     async def _update_artist_metadata(self, artist: Artist, force_refresh: bool = False) -> None:
         """Get/update rich metadata for an artist."""
         # collect metadata from all (online) music + metadata providers
@@ -1257,9 +1266,11 @@ class MetaDataController(CoreController):
             if mbid := await self._get_artist_mbid(artist):
                 artist.mbid = mbid
 
-        # don't merge online genres on top of source-supplied ones
-        prefer_local_genres = self.config.get_value(CONF_PREFER_LOCAL_GENRES) and bool(
-            artist.metadata.genres
+        # don't merge online genres on top of source-supplied ones; propagation-derived
+        # genres also count as a local source so they survive metadata refreshes
+        prefer_local_genres = self.config.get_value(CONF_PREFER_LOCAL_GENRES) and (
+            bool(artist.metadata.genres)
+            or await self._has_derived_genre_mappings(MediaType.ARTIST, artist.item_id)
         )
 
         # collect metadata from all (online)[metadata] providers
@@ -1317,9 +1328,11 @@ class MetaDataController(CoreController):
                 if album.album_type == AlbumType.UNKNOWN:
                     album.album_type = prov_item.album_type
 
-        # don't merge online genres on top of source-supplied ones
-        prefer_local_genres = self.config.get_value(CONF_PREFER_LOCAL_GENRES) and bool(
-            album.metadata.genres
+        # don't merge online genres on top of source-supplied ones; propagation-derived
+        # genres also count as a local source so they survive metadata refreshes
+        prefer_local_genres = self.config.get_value(CONF_PREFER_LOCAL_GENRES) and (
+            bool(album.metadata.genres)
+            or await self._has_derived_genre_mappings(MediaType.ALBUM, album.item_id)
         )
 
         # collect metadata from all (online) [metadata] providers
