@@ -101,7 +101,7 @@ class ListenBrainzEventHandler(ScrobblerHelper):
         # https://pylistenbrainz.readthedocs.io/en/latest/api_ref.html#class-listen
         return Listen(
             track_name=self.get_name(report),
-            artist_name=report.artist,
+            artist_name=report.artists[0] if report.artists else report.artist,
             artist_mbids=report.artist_mbids,
             release_name=report.album,
             release_mbid=report.album_mbid,
