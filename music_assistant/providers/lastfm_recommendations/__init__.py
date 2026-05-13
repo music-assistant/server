@@ -10,7 +10,7 @@ from music_assistant_models.config_entries import (
     ConfigValueOption,
     ConfigValueType,
 )
-from music_assistant_models.enums import ConfigEntryType, ProviderFeature
+from music_assistant_models.enums import ConfigEntryType, ExternalID, ProviderFeature
 from music_assistant_models.errors import (
     AuthenticationFailed,
     InvalidToken,
@@ -38,7 +38,7 @@ from music_assistant.providers.lastfm_recommendations.recommendations import (
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.media_items import RecommendationFolder
+    from music_assistant_models.media_items import Artist, RecommendationFolder
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 
 SUPPORTED_FEATURES = {
     ProviderFeature.RECOMMENDATIONS,
+    ProviderFeature.SIMILAR_ARTISTS,
 }
 
 
@@ -207,3 +208,18 @@ class LastFMRecommendationsProvider(MetadataProvider):
     async def recommendations(self) -> list[RecommendationFolder]:
         """Return this provider's recommendation folders."""
         return self._recommendation_folders
+
+    async def get_similar_artists(self, artist: Artist, limit: int = 25) -> list[Artist]:
+        """Retrieve similar artists from Last.fm.
+
+        :param artist: The reference artist.
+        :param limit: Maximum number of similar artists to return.
+        """
+        artist_mbid = artist.get_external_id(ExternalID.MB_ARTIST)
+        similar_raw = await self.api.get_similar_artists(artist.name, artist_mbid, limit)
+
+        results: list[Artist] = []
+        for raw in similar_raw:
+            if resolved := await self.recommendations_manager._get_or_resolve_artist(raw):
+                results.append(resolved)
+        return results
