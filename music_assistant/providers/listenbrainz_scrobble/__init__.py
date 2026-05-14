@@ -94,15 +94,20 @@ class ListenBrainzEventHandler(ScrobblerHelper):
         super().__init__(logger, ScrobblerConfig.create_from_config(config))
         self._client = client
 
+    def _get_artist_name(self, report: MediaItemPlaybackProgressReport) -> str:
+        """Return the best available artist name for the ListenBrainz payload."""
+        if report.artists:
+            return ", ".join(artist for artist in report.artists)
+        return report.artist
+        
     def _make_listen(self, report: MediaItemPlaybackProgressReport) -> Listen:
         # album artist and track number are not available without an extra API call
         # so they won't be scrobbled
 
         # https://pylistenbrainz.readthedocs.io/en/latest/api_ref.html#class-listen
-        artist_combined_name = ", ".join(a for a in report.artists)
         return Listen(
             track_name=self.get_name(report),
-            artist_name=artist_combined_name,
+            artist_name=self._get_artist_name(report),
             artist_mbids=report.artist_mbids,
             release_name=report.album,
             release_mbid=report.album_mbid,
