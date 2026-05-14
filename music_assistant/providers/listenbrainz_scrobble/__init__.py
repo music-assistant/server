@@ -99,9 +99,10 @@ class ListenBrainzEventHandler(ScrobblerHelper):
         # so they won't be scrobbled
 
         # https://pylistenbrainz.readthedocs.io/en/latest/api_ref.html#class-listen
+        artist_combined_name = ", ".join(a for a in report.artists)
         return Listen(
             track_name=self.get_name(report),
-            artist_name=report.artists[0] if report.artists else report.artist,
+            artist_name=artist_combined_name,
             artist_mbids=report.artist_mbids,
             release_name=report.album,
             release_mbid=report.album_mbid,
