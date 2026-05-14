@@ -17,7 +17,7 @@ from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 from music_assistant_models.provider import ProviderManifest
 
-from music_assistant.const import UNKNOWN_ARTIST
+from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
