@@ -6,7 +6,7 @@ import asyncio
 import json
 from collections.abc import AsyncGenerator
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
@@ -14,6 +14,7 @@ from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import AudioFormat
 
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
+from music_assistant.constants import DEFAULT_BACKGROUND_SCAN_CONCURRENCY
 from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
@@ -38,7 +39,7 @@ async def test_distribute_chunk_calls_all_providers() -> None:
 
 @pytest.mark.asyncio
 async def test_distribute_chunk_evicts_provider_on_timeout() -> None:
-    """A provider whose process_pcm_chunk exceeds CHUNK_PROCESS_TIMEOUT_SECONDS is evicted."""
+    """A provider whose process_pcm_chunk exceeds max_interval is evicted."""
     controller = _make_controller()
     session_key = "track://provider/abc"
     controller._active_sessions[session_key] = {"slow", "fast"}
@@ -51,8 +52,7 @@ async def test_distribute_chunk_evicts_provider_on_timeout() -> None:
     provider_map = {"slow": slow, "fast": fast}
     controller.mass.get_provider = MagicMock(side_effect=provider_map.get)  # type: ignore[method-assign]
 
-    with patch.object(audio_analysis_mod, "CHUNK_PROCESS_TIMEOUT_SECONDS", 0.05):
-        await controller._distribute_chunk(session_key, b"\x00" * 1024)
+    await controller._distribute_chunk(session_key, b"\x00" * 1024, max_interval=0.05)
 
     assert "slow" not in controller._active_sessions[session_key]
     assert "fast" in controller._active_sessions[session_key]
@@ -84,7 +84,7 @@ def test_get_scan_concurrency_returns_default_on_unset() -> None:
     """When the config value is unset/None, fall back to DEFAULT_BACKGROUND_SCAN_CONCURRENCY."""
     controller = _make_controller()
     controller.mass.config.get_raw_core_config_value = MagicMock(return_value=None)  # type: ignore[method-assign]
-    assert controller._get_scan_concurrency() == 1
+    assert controller._get_scan_concurrency() == DEFAULT_BACKGROUND_SCAN_CONCURRENCY
 
 
 def test_get_scan_concurrency_clamps_to_max() -> None:
@@ -97,7 +97,9 @@ def test_get_scan_concurrency_clamps_to_max() -> None:
 def test_get_scan_concurrency_clamps_to_min() -> None:
     """Values below 1 are clamped to 1."""
     controller = _make_controller()
-    controller.mass.config.get_raw_core_config_value = MagicMock(return_value=0)  # type: ignore[method-assign]
+    # Use a truthy negative value so the controller's `value or DEFAULT` fallback
+    # doesn't swap us out for the default before the min-clamp runs.
+    controller.mass.config.get_raw_core_config_value = MagicMock(return_value=-1)  # type: ignore[method-assign]
     assert controller._get_scan_concurrency() == 1
 
 
@@ -263,7 +265,9 @@ async def test_run_background_scan_uses_union_candidate_query(
 
     streaming_calls: list[str] = []
 
-    async def _track_streaming(streamdetails: MagicMock, _providers: object) -> None:
+    async def _track_streaming(
+        streamdetails: MagicMock, _providers: object, **_kwargs: object
+    ) -> None:
         streaming_calls.append(streamdetails.item_id)
 
     monkeypatch.setattr(controller, "_run_background_streaming_for_track", _track_streaming)
@@ -372,7 +376,9 @@ async def test_run_background_scan_concurrency_semaphore(
     max_in_flight = 0
     barrier = asyncio.Barrier(2)
 
-    async def _track_streaming(_streamdetails: MagicMock, _providers: object) -> None:
+    async def _track_streaming(
+        _streamdetails: MagicMock, _providers: object, **_kwargs: object
+    ) -> None:
         nonlocal in_flight, max_in_flight
         in_flight += 1
         max_in_flight = max(max_in_flight, in_flight)
@@ -398,7 +404,9 @@ async def test_background_streaming_cancellation_cleans_up(
 
     session_key = streamdetails.uri
 
-    async def _inner_cancelled(_session_key: str, _sd: object, _providers: object) -> None:
+    async def _inner_cancelled(
+        _session_key: str, _sd: object, _providers: object, **_kwargs: object
+    ) -> None:
         # Simulate the inner having registered the session before being cancelled.
         controller._active_sessions[session_key] = {"p1"}
         raise asyncio.CancelledError
@@ -445,7 +453,7 @@ async def test_run_background_scan_defers_past_run_budget(
 
     streaming_called = False
 
-    async def _track_streaming(_sd: object, _providers: object) -> None:
+    async def _track_streaming(_sd: object, _providers: object, **_kwargs: object) -> None:
         nonlocal streaming_called
         streaming_called = True
 

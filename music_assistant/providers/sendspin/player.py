@@ -49,6 +49,7 @@ from music_assistant_models.enums import (
     PlayerType,
     RepeatMode,
 )
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import Album, Artist, is_track
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
@@ -57,6 +58,7 @@ from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player, PlayerMedia
 
 from .constants import (
+    CONF_CAST_AUDIO_UNSUPPORTED,
     CONF_SENDSPIN_STATIC_DELAY,
     DEFAULT_SENDSPIN_STATIC_DELAY,
 )
@@ -131,6 +133,8 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
+
+    from music_assistant.providers.chromecast.sendspin_bridge import SendspinBridgeManager
 
     from .provider import SendspinProvider
 
@@ -614,23 +618,55 @@ class SendspinPlayer(SendspinBasePlayer):
         await self.playback_session.cancel("stop command")
         await self.api.group.stop()
 
+    def _get_cast_bridge_manager(self) -> SendspinBridgeManager | None:
+        """Return the Chromecast provider's Sendspin bridge manager, if loaded."""
+        chromecast_provider = self.mass.get_provider("chromecast")
+        if chromecast_provider is None:
+            return None
+        manager = getattr(chromecast_provider, "bridge_manager", None)
+        if manager is None:
+            return None
+        return cast("SendspinBridgeManager", manager)
+
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
         self.logger.debug(
             "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
         )
 
-        # Set current media; elapsed_time will be updated once audio actually commits.
         self._attr_current_media = media
         self._attr_elapsed_time = None
         self._attr_elapsed_time_last_updated = None
-        # playback_state will be set by the group state change event
 
-        # Stop previous stream in case we were already playing something.
-        # Do not call group.stop() here to avoid STOPPED-event races with next-track transitions.
         await self.playback_session.cancel("new media requested")
+
+        # Cast-only: reset future before start() to avoid racing _on_stream_start
+        # and to cancel any stale pending future from a previous timed-out attempt.
+        cast_app_ready: asyncio.Future[None] | None = None
+        if (mgr := self._get_cast_bridge_manager()) and (
+            bridge := mgr.get_bridge_by_client_id(self.player_id)
+        ):
+            cast_app_ready = bridge.reset_cast_app_ready()
+
         await self.playback_session.start(media)
         self.update_state()
+
+        if cast_app_ready is None:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(cast_app_ready), timeout=30.0)
+        except BaseException as exc:
+            if not cast_app_ready.done():
+                cast_app_ready.cancel()
+            # Cancel the playback session so we don't keep streaming to a
+            # device that never reported ready.
+            with suppress(Exception):
+                await self.playback_session.cancel("cast app readiness failed")
+            if isinstance(exc, TimeoutError):
+                raise PlayerCommandFailed(
+                    f"Cast app on {self.display_name} did not report ready within 30s"
+                ) from None
+            raise
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
@@ -714,10 +750,41 @@ class SendspinPlayer(SendspinBasePlayer):
                         self.playback_session = SendspinPlaybackSession(self)
 
             await self.api.group.remove_client(member_player.api)
-        for player_id in player_ids_to_add or []:
-            member_player = self.mass.players.get_player(player_id, True)
-            member_player = cast("SendspinPlayer", member_player)
-            await self.api.group.add_client(member_player.api)
+        # Cast-only: reset futures before add so a fatal error on a Cast-bridged
+        # member (e.g. AudioContext unsupported) raises PlayerCommandFailed.
+        bridge_manager = self._get_cast_bridge_manager()
+        pending_cast: list[tuple[SendspinPlayer, asyncio.Future[None]]] = []
+        try:
+            for player_id in player_ids_to_add or []:
+                member_player = cast(
+                    "SendspinPlayer", self.mass.players.get_player(player_id, True)
+                )
+                if bridge_manager and (bridge := bridge_manager.get_bridge_by_client_id(player_id)):
+                    pending_cast.append((member_player, bridge.reset_cast_app_ready()))
+                await self.api.group.add_client(member_player.api)
+
+            if pending_cast:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*(asyncio.shield(f) for _, f in pending_cast)),
+                        timeout=30.0,
+                    )
+                except TimeoutError:
+                    stuck = [m.display_name for m, f in pending_cast if not f.done()]
+                    raise PlayerCommandFailed(
+                        f"Cast app on {', '.join(stuck)} did not report ready within 30s"
+                    ) from None
+        except BaseException:
+            # Roll back Cast members we just added so a failed group operation
+            # doesn't leave dead members in the Sendspin group.
+            for member, _ in pending_cast:
+                with suppress(Exception):
+                    await self.api.group.remove_client(member.api)
+            raise
+        finally:
+            for _, f in pending_cast:
+                if not f.done():
+                    f.cancel()
         # self.group_members will be updated by the group event callback
 
     async def _send_album_artwork(self, current_item: QueueItem) -> str | None:
@@ -891,6 +958,19 @@ class SendspinPlayer(SendspinBasePlayer):
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         entries: list[ConfigEntry] = []
+        # Show alert if this Cast device is known to lack AudioContext support
+        if self.mass.config.get_raw_player_config_value(
+            self.player_id, CONF_CAST_AUDIO_UNSUPPORTED
+        ):
+            entries.append(
+                ConfigEntry(
+                    key="cast_audio_unsupported",
+                    type=ConfigEntryType.ALERT,
+                    label="Sendspin isn't supported on this Cast device. "
+                    "Use the standard Cast protocol instead.",
+                    required=False,
+                )
+            )
         # Build dynamic format options from player's supported formats
         player_role = self._player_role
         if player_role is not None:
