@@ -1,7 +1,7 @@
 """Recently Played Plugin Provider for Music Assistant.
 
 Tracks songs heard on radio streams via ICY metadata and surfaces them
-as recommendations alongside forgotten library tracks and albums.
+as a recommendations folder on the home screen.
 """
 
 from __future__ import annotations
@@ -33,23 +33,11 @@ if TYPE_CHECKING:
 
 HISTORY_FILENAME = "recently_played.json"
 MAX_HISTORY = 50
-# Fire a RECOMMENDATIONS event (and invalidate the recommendations cache)
-# after this many ICY tracks have been successfully resolved, so the frontend
-# refreshes without waiting for the full 5-minute cache TTL.
+# Invalidate the recommendations cache after this many newly resolved ICY tracks
+# so the frontend refreshes without waiting for the full 5-minute cache TTL.
 RESOLVED_EVENT_THRESHOLD = 5
 
-CONF_FORGOTTEN_TRACKS = "forgotten_tracks"
-CONF_FORGOTTEN_ALBUMS = "forgotten_albums"
-CONF_FORGOTTEN_ARTISTS = "forgotten_artists"
 CONF_RECENTLY_PLAYED_RADIO = "recently_played_radio"
-CONF_MOST_PLAYED_TRACKS = "most_played_tracks"
-CONF_RECENTLY_ADDED = "recently_added"
-CONF_NEVER_PLAYED = "never_played"
-CONF_RANDOM_ARTISTS = "random_artists"
-CONF_RANDOM_ALBUMS = "random_albums"
-CONF_FAVORITED_TRACKS = "favorited_tracks"
-CONF_FAVORITED_ALBUMS = "favorited_albums"
-
 
 SUPPORTED_FEATURES: set[ProviderFeature] = {
     ProviderFeature.RECOMMENDATIONS,
@@ -78,76 +66,6 @@ async def get_config_entries(
             description="Track songs heard on radio streams via ICY metadata and show them as recommendations.",
             default_value=True,
         ),
-        ConfigEntry(
-            key=CONF_FORGOTTEN_TRACKS,
-            type=ConfigEntryType.BOOLEAN,
-            label="Show Forgotten Tracks recommendations",
-            description="Surface library tracks that have never been played or were played the longest time ago.",
-            default_value=True,
-        ),
-        ConfigEntry(
-            key=CONF_FORGOTTEN_ALBUMS,
-            type=ConfigEntryType.BOOLEAN,
-            label="Show Forgotten Albums recommendations",
-            description="Surface library albums that have never been played or were played the longest time ago.",
-            default_value=True,
-        ),
-        ConfigEntry(
-            key=CONF_FORGOTTEN_ARTISTS,
-            type=ConfigEntryType.BOOLEAN,
-            label="Show Forgotten Artists recommendations",
-            description="Surface library artists that were not listened to for the longest time.",
-            default_value=True,
-        ),
-        ConfigEntry(
-            key=CONF_MOST_PLAYED_TRACKS,
-            type=ConfigEntryType.BOOLEAN,
-            label="Show Most Played Tracks recommendations",
-            description="Surface library tracks with the highest play count.",
-            default_value=True,
-        ),
-        ConfigEntry(
-            key=CONF_NEVER_PLAYED,
-            type=ConfigEntryType.BOOLEAN,
-            label="Show Never / Rarely Played Tracks recommendations",
-            description="Surface library tracks that have never or rarely been played.",
-            default_value=True,
-        ),
-        ConfigEntry(
-            key=CONF_FAVORITED_TRACKS,
-            type=ConfigEntryType.BOOLEAN,
-            label="Show Recently Favorited Tracks recommendations",
-            description="Surface library tracks that were recently added to favorites. Disable if the builtin provider already shows this.",
-            default_value=False,
-        ),
-        ConfigEntry(
-            key=CONF_FAVORITED_ALBUMS,
-            type=ConfigEntryType.BOOLEAN,
-            label="Show Recently Favorited Albums recommendations",
-            description="Surface library albums that were recently added to favorites. Disable if the builtin provider already shows this.",
-            default_value=False,
-        ),
-        ConfigEntry(
-            key=CONF_RECENTLY_ADDED,
-            type=ConfigEntryType.BOOLEAN,
-            label="Show Recently Added Tracks recommendations",
-            description="Surface library tracks that were recently added. Disable if the builtin provider already shows this.",
-            default_value=False,
-        ),
-        ConfigEntry(
-            key=CONF_RANDOM_ARTISTS,
-            type=ConfigEntryType.BOOLEAN,
-            label="Show Random Artists recommendations",
-            description="Surface a random selection of library artists. Disable if the builtin provider already shows this.",
-            default_value=False,
-        ),
-        ConfigEntry(
-            key=CONF_RANDOM_ALBUMS,
-            type=ConfigEntryType.BOOLEAN,
-            label="Show Random Albums recommendations",
-            description="Surface a random selection of library albums. Disable if the builtin provider already shows this.",
-            default_value=False,
-        ),
     )
 
 
@@ -158,7 +76,7 @@ class RecentlyPlayedProvider(PluginProvider):
     _history_file: Path
     _unregister_handles: list[Any]
     _last_stream_titles: dict[str, str]  # queue_id -> last recorded stream_title
-    _resolved_since_event: int  # counts resolved ICY tracks since last RECOMMENDATIONS event
+    _resolved_since_event: int  # counts resolved ICY tracks since last cache invalidation
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -185,160 +103,24 @@ class RecentlyPlayedProvider(PluginProvider):
                 self._history_file.unlink()
 
     async def recommendations(self) -> list[RecommendationFolder]:
-        """Return recommendation folders for recently played, forgotten tracks and albums."""
-        folders: list[RecommendationFolder] = []
-
-        if self._history:
-            recently_played = await self._build_recently_played_items()
-            if recently_played:
-                folders.append(
-                    RecommendationFolder(
-                        item_id="recently_played",
-                        provider=self.domain,
-                        name="Recently Played on Radio Station",
-                        items=recently_played,  # type: ignore[arg-type]
-                    )
-                )
-
-        if self.config.get_value(CONF_FORGOTTEN_TRACKS):
-            forgotten_tracks = await self.mass.music.tracks.library_items(
-                order_by="last_played", limit=25
+        """Return recently played radio tracks as a recommendation folder."""
+        if not self.config.get_value(CONF_RECENTLY_PLAYED_RADIO):
+            return []
+        if not self._history:
+            return []
+        recently_played = await self._build_recently_played_items()
+        if not recently_played:
+            return []
+        return [
+            RecommendationFolder(
+                item_id="recently_played_radio",
+                provider=self.domain,
+                name="Recently Played on Radio Station",
+                translation_key="recommendation.recently_played_radio",
+                icon="mdi-radio",
+                items=recently_played,  # type: ignore[arg-type]
             )
-            if forgotten_tracks:
-                folders.append(
-                    RecommendationFolder(
-                        item_id="forgotten_tracks",
-                        provider=self.domain,
-                        name="Forgotten Tracks",
-                        items=forgotten_tracks,  # type: ignore[arg-type]
-                    )
-                )
-
-        if self.config.get_value(CONF_FORGOTTEN_ALBUMS):
-            forgotten_albums = await self.mass.music.albums.library_items(
-                order_by="last_played", limit=25
-            )
-            if forgotten_albums:
-                folders.append(
-                    RecommendationFolder(
-                        item_id="forgotten_albums",
-                        provider=self.domain,
-                        name="Forgotten Albums",
-                        items=forgotten_albums,  # type: ignore[arg-type]
-                    )
-                )
-
-        if self.config.get_value(CONF_FORGOTTEN_ARTISTS):
-            forgotten_artists = await self.mass.music.artists.library_items(
-                order_by="last_played", limit=25
-            )
-            if forgotten_artists:
-                folders.append(
-                    RecommendationFolder(
-                        item_id="forgotten_artists",
-                        provider=self.domain,
-                        name="Forgotten Artists",
-                        items=forgotten_artists,  # type: ignore[arg-type]
-                    )
-                )
-
-        if self.config.get_value(CONF_MOST_PLAYED_TRACKS):
-            most_played = await self.mass.music.tracks.library_items(
-                order_by="play_count_desc", limit=25
-            )
-            if most_played:
-                folders.append(
-                    RecommendationFolder(
-                        item_id="most_played_tracks",
-                        provider=self.domain,
-                        name="Most Played Tracks",
-                        items=most_played,  # type: ignore[arg-type]
-                    )
-                )
-
-        if self.config.get_value(CONF_NEVER_PLAYED):
-            never_played = await self.mass.music.tracks.library_items(
-                order_by="play_count", limit=25
-            )
-            if never_played:
-                folders.append(
-                    RecommendationFolder(
-                        item_id="never_played",
-                        provider=self.domain,
-                        name="Never / Rarely Played",
-                        items=never_played,  # type: ignore[arg-type]
-                    )
-                )
-
-        if self.config.get_value(CONF_FAVORITED_TRACKS):
-            favorited_tracks = await self.mass.music.tracks.library_items(
-                favorite=True, order_by="timestamp_modified_desc", limit=25
-            )
-            if favorited_tracks:
-                folders.append(
-                    RecommendationFolder(
-                        item_id="favorited_tracks",
-                        provider=self.domain,
-                        name="Recently Favorited Tracks",
-                        items=favorited_tracks,  # type: ignore[arg-type]
-                    )
-                )
-
-        if self.config.get_value(CONF_FAVORITED_ALBUMS):
-            favorited_albums = await self.mass.music.albums.library_items(
-                favorite=True, order_by="timestamp_modified_desc", limit=25
-            )
-            if favorited_albums:
-                folders.append(
-                    RecommendationFolder(
-                        item_id="favorited_albums",
-                        provider=self.domain,
-                        name="Recently Favorited Albums",
-                        items=favorited_albums,  # type: ignore[arg-type]
-                    )
-                )
-
-        if self.config.get_value(CONF_RECENTLY_ADDED):
-            recently_added = await self.mass.music.tracks.library_items(
-                order_by="timestamp_added_desc", limit=25
-            )
-            if recently_added:
-                folders.append(
-                    RecommendationFolder(
-                        item_id="recently_added",
-                        provider=self.domain,
-                        name="Recently Added",
-                        items=recently_added,  # type: ignore[arg-type]
-                    )
-                )
-
-        if self.config.get_value(CONF_RANDOM_ARTISTS):
-            random_artists = await self.mass.music.artists.library_items(
-                order_by="random", limit=25
-            )
-            if random_artists:
-                folders.append(
-                    RecommendationFolder(
-                        item_id="random_artists",
-                        provider=self.domain,
-                        name="Random Artists",
-                        items=random_artists,  # type: ignore[arg-type]
-                    )
-                )
-
-        if self.config.get_value(CONF_RANDOM_ALBUMS):
-            random_albums = await self.mass.music.albums.library_items(order_by="random", limit=25)
-            if random_albums:
-                folders.append(
-                    RecommendationFolder(
-                        item_id="random_albums",
-                        provider=self.domain,
-                        name="Random Albums",
-                        items=random_albums,  # type: ignore[arg-type]
-                    )
-                )
-
-        return folders
+        ]
 
     async def _on_queue_updated(self, event: MassEvent) -> None:
         """Handle QUEUE_UPDATED event to track ICY radio stream metadata changes."""
@@ -404,7 +186,6 @@ class RecentlyPlayedProvider(PluginProvider):
                 if title.lower() in track.name.lower() and (
                     not artist or artist.lower() in track_artist.lower()
                 ):
-                    # Update the history entry with the resolved URI
                     for entry in self._history:
                         if f"{entry.get('artist', '')}|{entry.get('name', '')}" == dedup_key:
                             entry["resolved_uri"] = track.uri
@@ -415,9 +196,6 @@ class RecentlyPlayedProvider(PluginProvider):
                             self._resolved_since_event += 1
                             if self._resolved_since_event >= RESOLVED_EVENT_THRESHOLD:
                                 self._resolved_since_event = 0
-                                # Invalidate the recommendations cache so the next
-                                # frontend request gets fresh data without waiting
-                                # for the full 5-minute TTL.
                                 await self.mass.cache.delete(
                                     key="recommendations", provider=self.instance_id
                                 )

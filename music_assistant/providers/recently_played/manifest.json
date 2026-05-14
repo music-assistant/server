@@ -3,7 +3,7 @@
   "stage": "experimental",
   "domain": "recently_played",
   "name": "Recently Played",
-  "description": "Surfaces recommendations based on your listening history: tracks heard on radio streams (via ICY metadata), forgotten library tracks and forgotten albums.",
+  "description": "Tracks songs heard on radio streams via ICY metadata and surfaces them as a recommendations folder on the home screen.",
   "codeowners": ["@dmoo500"],
   "requirements": [],
   "documentation": "",
