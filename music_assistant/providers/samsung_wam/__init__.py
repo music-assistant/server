@@ -64,17 +64,11 @@ async def setup(
     # Configure dependency log levels to match the provider's configured verbosity
     if prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
         logging.getLogger("pywam").setLevel(logging.DEBUG)
-        logging.getLogger("async_upnp_client").setLevel(logging.DEBUG)
     elif prov.logger.isEnabledFor(logging.DEBUG):
         logging.getLogger("pywam").setLevel(logging.DEBUG)
         logging.getLogger("pywam.client").setLevel(logging.INFO)
-        logging.getLogger("async_upnp_client").setLevel(logging.DEBUG)
-        logging.getLogger("async_upnp_client.traffic").setLevel(logging.INFO)
-        logging.getLogger("async_upnp_client.advertisement").setLevel(logging.INFO)
-        logging.getLogger("async_upnp_client.search").setLevel(logging.INFO)
     else:
         logging.getLogger("pywam").setLevel(logging.CRITICAL)
-        logging.getLogger("async_upnp_client").setLevel(logging.CRITICAL)
 
     return prov
 
