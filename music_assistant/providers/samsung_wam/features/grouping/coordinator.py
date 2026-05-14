@@ -143,10 +143,12 @@ class GroupingCoordinator(WamProviderFeatureBase):
                 ungroup_tasks = [child.grouping.leave_group() for child in children_to_remove]
                 await asyncio.gather(*ungroup_tasks)
 
-                if children_after:
+                new_members = set(children_after) - set(children_before)
+                if new_members:
+                    # Adding members requires a full group command to the leader
                     group_name = f"{leader.log_name} Group"
                     await leader.grouping.form_group(children_after, group_name)
-                else:
+                elif not children_after:
                     await leader.grouping.leave_group()
             except Exception as err:
                 self.logger.warning("Group operation failed; resyncing state: %s", err)
