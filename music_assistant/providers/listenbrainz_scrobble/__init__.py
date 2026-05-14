@@ -100,7 +100,7 @@ class ListenBrainzEventHandler(ScrobblerHelper):
         if report.artists:
             return ", ".join(artist for artist in report.artists)
         return report.artist or UNKNOWN_ARTIST
-        
+
     def _make_listen(self, report: MediaItemPlaybackProgressReport) -> Listen:
         # album artist and track number are not available without an extra API call
         # so they won't be scrobbled
