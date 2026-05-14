@@ -17,6 +17,7 @@ from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 from music_assistant_models.provider import ProviderManifest
 
+from music_assistant.const import UNKNOWN_ARTIST
 from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
@@ -98,7 +99,7 @@ class ListenBrainzEventHandler(ScrobblerHelper):
         """Return the best available artist name for the ListenBrainz payload."""
         if report.artists:
             return ", ".join(artist for artist in report.artists)
-        return report.artist
+        return report.artist or UNKNOWN_ARTIST
         
     def _make_listen(self, report: MediaItemPlaybackProgressReport) -> Listen:
         # album artist and track number are not available without an extra API call
