@@ -61,12 +61,15 @@ def _make_audio_format(
     )
 
 
-def _make_streamdetails(item_id: str = "track-1") -> MagicMock:
+def _make_streamdetails(
+    item_id: str = "track-1",
+    duration: float | None = 60.0,
+) -> MagicMock:
     """Return a minimal streamdetails mock."""
     sd = MagicMock()
     sd.item_id = item_id
     sd.provider = "test_provider"
-    sd.duration = None
+    sd.duration = duration
     return sd
 
 
@@ -284,6 +287,37 @@ async def test_start_analysis_proceeds_when_clap_loaded() -> None:
 
     assert result is True
     assert "session-ok" in provider._sessions
+
+
+# ---------------------------------------------------------------------------
+# Test 7b: _start_analysis returns False when streamdetails.duration is missing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duration", [None, 0, 0.0])
+async def test_start_analysis_returns_false_without_duration(
+    duration: float | None,
+) -> None:
+    """``_start_analysis`` must decline tracks without a usable duration.
+
+    Without duration, CLAP windows can't be planned and the resulting record
+    would be librosa-only. Rejecting at start keeps the retry path open for a
+    later analysis attempt once duration is known.
+    """
+    provider = _make_provider()
+    provider._clap_model = MagicMock(name="clap_model")
+
+    af = _make_audio_format()
+    sd = _make_streamdetails(item_id="no-duration", duration=duration)
+
+    result = await provider._start_analysis("session-no-duration", sd, af)
+
+    assert result is False
+    assert provider._sessions == {}
+
+    debug_msgs = [str(c) for c in provider.logger.debug.call_args_list]  # type: ignore[attr-defined]
+    assert any("duration missing or zero" in c for c in debug_msgs)
 
 
 # ---------------------------------------------------------------------------

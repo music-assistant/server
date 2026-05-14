@@ -414,6 +414,16 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
                 streamdetails.item_id,
             )
             return False
+        if not streamdetails.duration:
+            # Without a known duration we can't plan CLAP windows, and the result
+            # would be librosa-only — unusable for similarity. Reject so the next
+            # analysis attempt (with duration filled in) can succeed instead of
+            # caching an incomplete record.
+            self.logger.debug(
+                "Skipping analysis for %s: streamdetails.duration missing or zero",
+                streamdetails.item_id,
+            )
+            return False
         bytes_per_sample = audio_format.bit_depth // 8
         block_bytes = (
             audio_format.sample_rate * bytes_per_sample * audio_format.channels * BLOCK_SECONDS
@@ -428,13 +438,11 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
                 audio_format.channels,
             )
             return False
-        target_starts: list[int] = []
-        if self._clap_model is not None and streamdetails.duration:
-            preset = str(self.config.get_value(CONF_CLAP_SAMPLING, CLAP_SAMPLING_FAST))
-            preset_n = CLAP_WINDOW_COUNTS.get(preset, 1)
-            target_starts = compute_clap_target_starts(
-                streamdetails.duration, preset_n, audio_format.sample_rate
-            )
+        preset = str(self.config.get_value(CONF_CLAP_SAMPLING, CLAP_SAMPLING_FAST))
+        preset_n = CLAP_WINDOW_COUNTS.get(preset, 1)
+        target_starts = compute_clap_target_starts(
+            streamdetails.duration, preset_n, audio_format.sample_rate
+        )
 
         resampler: soxr.ResampleStream | None = None
         if audio_format.sample_rate != ANALYSIS_SAMPLE_RATE:
