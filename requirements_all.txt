@@ -98,6 +98,7 @@ unidecode==1.4.0
 usearch==2.25.3
 uv>=0.8.0
 websocket-client==1.9.0
+websockets==15.0.1
 wiim==0.1.4
 xmltodict==1.0.4
 ya-passport-auth==1.4.1
