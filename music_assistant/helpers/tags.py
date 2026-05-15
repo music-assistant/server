@@ -18,7 +18,10 @@ from music_assistant_models.enums import AlbumType
 from music_assistant_models.errors import InvalidDataError
 from mutagen._vorbis import VCommentDict
 from mutagen.apev2 import APEv2
-from mutagen.id3 import ID3, TXXX  # type: ignore[attr-defined]
+
+# TXXX and UFID are ID3 frame classes pulled into mutagen.id3 via a dynamic
+# frames-table import that mypy's stubs do not follow, hence the attr-defined ignore.
+from mutagen.id3 import ID3, TXXX, UFID  # type: ignore[attr-defined]
 from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags
 
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
@@ -1466,4 +1469,122 @@ def _write_replaygain_track_gain_sync(path: str, track_gain_db: float) -> bool:
         return False
     except Exception as err:
         LOGGER.warning("unexpected failure writing replaygain tag to %s: %s", path, err)
+        return False
+
+
+async def write_acoustid_tag(path: str, acoustid: str) -> bool:
+    """
+    Write the AcoustID identifier tag to an audio file.
+
+    Returns True when the tag was successfully written and saved, False
+    when the file format is unsupported or the file cannot be written to.
+
+    :param path: Absolute path to the audio file.
+    :param acoustid: AcoustID UUID string to persist.
+    """
+    return await asyncio.to_thread(_write_acoustid_tag_sync, path, acoustid)
+
+
+async def write_musicbrainz_recording_id_tag(path: str, recording_id: str) -> bool:
+    """
+    Write the MusicBrainz Recording ID tag to an audio file.
+
+    Returns True when the tag was successfully written and saved, False
+    when the file format is unsupported or the file cannot be written to.
+
+    :param path: Absolute path to the audio file.
+    :param recording_id: MusicBrainz recording UUID to persist.
+    """
+    return await asyncio.to_thread(_write_musicbrainz_recording_id_tag_sync, path, recording_id)
+
+
+def _open_mutagen_for_write(path: str) -> Any | None:
+    """Open a file for tag writing, returning the mutagen object or None on failure."""
+    try:
+        audio = mutagen.File(path)  # type: ignore[attr-defined]
+    except Exception as err:
+        LOGGER.debug("mutagen could not open %s: %s", path, err)
+        return None
+    if audio is None:
+        return None
+    if audio.tags is None:
+        try:
+            audio.add_tags()
+        except Exception as err:
+            LOGGER.debug("could not initialise tags on %s: %s", path, err)
+            return None
+    return audio
+
+
+def _write_acoustid_tag_sync(path: str, acoustid: str) -> bool:
+    audio = _open_mutagen_for_write(path)
+    if audio is None:
+        return False
+    tags = audio.tags
+
+    try:
+        if isinstance(tags, ID3):
+            tags.delall("TXXX:Acoustid Id")  # type: ignore[no-untyped-call]
+            tags.add(  # type: ignore[no-untyped-call]
+                TXXX(  # type: ignore[no-untyped-call]
+                    encoding=3, desc="Acoustid Id", text=acoustid
+                )
+            )
+        elif isinstance(tags, MP4Tags):
+            tags["----:com.apple.iTunes:Acoustid Id"] = [
+                MP4FreeForm(  # type: ignore[no-untyped-call]
+                    acoustid.encode("utf-8"), dataformat=AtomDataType.UTF8
+                )
+            ]
+        elif isinstance(tags, (VCommentDict, APEv2)):
+            # Picard tag map: ACOUSTID_ID for both Vorbis Comments and APEv2.
+            tags["ACOUSTID_ID"] = acoustid
+        else:
+            return False
+        audio.save()
+        return True
+    except (OSError, PermissionError) as err:
+        LOGGER.debug("could not write Acoustid Id tag to %s: %s", path, err)
+        return False
+    except Exception as err:
+        LOGGER.warning("unexpected failure writing Acoustid Id tag to %s: %s", path, err)
+        return False
+
+
+def _write_musicbrainz_recording_id_tag_sync(path: str, recording_id: str) -> bool:
+    audio = _open_mutagen_for_write(path)
+    if audio is None:
+        return False
+    tags = audio.tags
+
+    try:
+        if isinstance(tags, ID3):
+            # MusicBrainz Recording Id lives in a UFID frame (Picard convention).
+            tags.delall("UFID:http://musicbrainz.org")  # type: ignore[no-untyped-call]
+            tags.add(  # type: ignore[no-untyped-call]
+                UFID(  # type: ignore[no-untyped-call]
+                    owner="http://musicbrainz.org", data=recording_id.encode("ascii")
+                )
+            )
+        elif isinstance(tags, MP4Tags):
+            tags["----:com.apple.iTunes:MusicBrainz Track Id"] = [
+                MP4FreeForm(  # type: ignore[no-untyped-call]
+                    recording_id.encode("utf-8"), dataformat=AtomDataType.UTF8
+                )
+            ]
+        elif isinstance(tags, (VCommentDict, APEv2)):
+            # historic naming: this key holds the MusicBrainz Recording UUID, not the
+            # track-in-release ID despite being spelled MUSICBRAINZ_TRACKID.
+            tags["MUSICBRAINZ_TRACKID"] = recording_id
+        else:
+            return False
+        audio.save()
+        return True
+    except (OSError, PermissionError) as err:
+        LOGGER.debug("could not write MusicBrainz Recording Id tag to %s: %s", path, err)
+        return False
+    except Exception as err:
+        LOGGER.warning(
+            "unexpected failure writing MusicBrainz Recording Id tag to %s: %s", path, err
+        )
         return False

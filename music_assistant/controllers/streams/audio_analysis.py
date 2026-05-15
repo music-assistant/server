@@ -12,17 +12,24 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 from music_assistant_models.background_task import TaskSchedule
-from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
+from music_assistant_models.enums import (
+    ContentType,
+    ExternalID,
+    MediaType,
+    ProviderType,
+    StreamType,
+)
 
 from music_assistant.constants import (
     CONF_BACKGROUND_SCAN_CONCURRENCY,
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_PROVIDER_MAPPINGS,
+    DB_TABLE_TRACKS,
     DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
     LOUDNESS_MEASUREMENT_MIN_LUFS,
 )
 from music_assistant.helpers.datetime import local_clock_time_to_utc
-from music_assistant.helpers.json import json_dumps, json_loads
+from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.models.music_provider import MusicProvider
@@ -318,6 +325,64 @@ class AudioAnalysisController:
             aa_provider_domain=LOUDNESS_ANALYSIS_DOMAIN,
             analysis=analysis,
             media_type=media_type,
+        )
+
+    async def set_track_identifiers(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        mbid: str | None = None,
+        acoustid: str | None = None,
+        media_type: MediaType = MediaType.TRACK,
+    ) -> None:
+        """
+        Persist MBID / AcoustID onto the library track row, filling only empty fields.
+
+        Currently-set values are left untouched: this is intended for audio-analysis
+        enrichment (e.g. AcoustID lookup), which must not clobber tag-sourced IDs.
+
+        :param item_id: Provider-native track ID from streamdetails.item_id.
+        :param provider_instance_id_or_domain: Music provider instance ID or domain.
+        :param mbid: MusicBrainz recording ID to fill in (only if currently empty).
+        :param acoustid: AcoustID UUID to add to external_ids (only if not present).
+        :param media_type: The media type of the item (only TRACK is supported).
+        """
+        if media_type != MediaType.TRACK:
+            return
+        if not mbid and not acoustid:
+            return
+        try:
+            track = await self.mass.music.tracks.get_library_item_by_prov_id(
+                item_id, provider_instance_id_or_domain
+            )
+        except Exception as err:
+            self.logger.debug(
+                "set_track_identifiers: failed to load library track %s/%s: %s",
+                provider_instance_id_or_domain,
+                item_id,
+                err,
+            )
+            return
+        if track is None:
+            return
+
+        changed = False
+        if mbid and not track.mbid:
+            track.mbid = mbid
+            changed = True
+        if acoustid and not any(
+            ext_id[0] == ExternalID.ACOUSTID and ext_id[1] == acoustid
+            for ext_id in track.external_ids
+        ):
+            track.add_external_id(ExternalID.ACOUSTID, acoustid)
+            changed = True
+        if not changed:
+            return
+
+        await self.mass.music.database.update(
+            DB_TABLE_TRACKS,
+            {"item_id": int(track.item_id)},
+            {"external_ids": serialize_to_json(track.external_ids)},
         )
 
     async def get_audio_analysis_version(
