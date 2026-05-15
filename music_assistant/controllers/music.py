@@ -69,6 +69,7 @@ from music_assistant.constants import (
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
     DEFAULT_GENRE_MAPPING,
+    HOMEASSISTANT_SYSTEM_USER,
     LOUDNESS_MEASUREMENT_MIN_LUFS,
     PROVIDERS_WITH_SHAREABLE_URLS,
 )
@@ -632,8 +633,20 @@ class MusicController(CoreController):
             query += "AND userid = :userid "
             params["userid"] = userid
         elif user := get_current_user():
-            query += "AND userid = :userid "
-            params["userid"] = user.user_id
+            # Also include rows owned by the HA system user: when the MA web UI
+            # is opened via HA ingress, playback initiated through HA-owned
+            # players scrobbles under that shared system identity rather than
+            # the viewing user.
+            system_user = await self.mass.webserver.auth.get_user_by_username(
+                HOMEASSISTANT_SYSTEM_USER
+            )
+            if system_user and system_user.user_id != user.user_id:
+                query += "AND userid IN (:userid, :system_userid) "
+                params["userid"] = user.user_id
+                params["system_userid"] = system_user.user_id
+            else:
+                query += "AND userid = :userid "
+                params["userid"] = user.user_id
         if queue_id:
             query += "AND queue_id = :queue_id "
             params["queue_id"] = queue_id
@@ -701,6 +714,17 @@ class MusicController(CoreController):
             filter_for_str = available_providers_str
             if user.provider_filter:
                 filter_for_str = "(" + ",".join(f'"{x}"' for x in user.provider_filter) + ")"
+            # Also include rows owned by the HA system user: when the MA web UI
+            # is opened via HA ingress, playback initiated through HA-owned
+            # players scrobbles under that shared system identity rather than
+            # the viewing user.
+            allowed_user_ids = [user.user_id]
+            system_user = await self.mass.webserver.auth.get_user_by_username(
+                HOMEASSISTANT_SYSTEM_USER
+            )
+            if system_user and system_user.user_id != user.user_id:
+                allowed_user_ids.append(system_user.user_id)
+            allowed_userids_str = "(" + ",".join(f"'{uid}'" for uid in allowed_user_ids) + ")"
             query += (
                 f"AND m.provider_instance IN {filter_for_str} "
                 f"AND m.provider_instance IN {available_providers_str} "
@@ -708,7 +732,7 @@ class MusicController(CoreController):
                 f"ELSE (p.provider IN {filter_for_str} AND p.provider IN {available_providers_str})"
                 "END "
                 ") "
-                f"AND p.userid = '{user.user_id}' "
+                f"AND p.userid IN {allowed_userids_str} "
             )
         else:
             # for a library item, we still have to verify via the provider mapping table
