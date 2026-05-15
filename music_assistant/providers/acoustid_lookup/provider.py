@@ -87,6 +87,32 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         super().__init__(mass, manifest, config, supported_features)
         self._data: dict[str, _AcoustidSessionData] = {}
 
+    async def start_analysis(
+        self,
+        session_id: str,
+        streamdetails: StreamDetails,
+        audio_format: AudioFormat,
+    ) -> bool:
+        """
+        Short-circuit before the version-gate when the library track already has an MBID.
+
+        :param session_id: Session ID assigned by the AudioAnalysisController.
+        :param streamdetails: Stream details for the track being analysed.
+        :param audio_format: PCM format of the incoming audio stream.
+        """
+        # Re-checked every call so clearing the MBID (e.g. Refresh Item with
+        # overwrite=True) lets the next analysis run pick it up again.
+        try:
+            track = await self.mass.music.tracks.get_library_item_by_prov_id(
+                streamdetails.item_id, streamdetails.provider
+            )
+        except MusicAssistantError:
+            track = None
+        if track is not None and track.mbid:
+            self.logger.debug("acoustid: skip %s — track already has mbid", session_id)
+            return False
+        return await super().start_analysis(session_id, streamdetails, audio_format)
+
     async def _start_analysis(
         self,
         session_id: str,
@@ -117,20 +143,6 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
                 err,
             )
             track = None
-
-        if track is not None and track.mbid:
-            # Sentinel row makes the version-gate skip this provider on the next
-            # scan without decoding the file.
-            self.logger.debug("acoustid: skip %s — track already has mbid", session_id)
-            await self.mass.streams.audio_analysis.set_audio_analysis(
-                item_id=streamdetails.item_id,
-                provider_instance_id_or_domain=streamdetails.provider,
-                aa_provider_domain=self.domain,
-                analysis=AudioAnalysisData(extra_data={"skipped": "mbid_present"}),
-                analysis_version=self.analysis_version,
-                media_type=streamdetails.media_type,
-            )
-            return False
 
         fingerprinter = self._create_fingerprinter(audio_format.sample_rate, audio_format.channels)
         if fingerprinter is None:

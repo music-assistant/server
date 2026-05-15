@@ -210,27 +210,47 @@ def _rg(
 
 
 @pytest.mark.asyncio
-async def test_skip_when_mbid_already_present(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A track that already has an MBID short-circuits and writes the sentinel row."""
+async def test_skip_when_mbid_already_present() -> None:
+    """A track that already has an MBID short-circuits without persisting anything."""
     provider = _make_provider()
     track = MagicMock()
     track.mbid = "00000000-0000-0000-0000-000000000001"
     cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
         return_value=track
     )
-    _install_fake_chromaprint(monkeypatch, _FakeFingerprinter())
 
-    accepted = await provider._start_analysis(
+    accepted = await provider.start_analysis(
         "session-1", _make_streamdetails(), _make_audio_format()
     )
 
     assert accepted is False
-    set_aa = cast("AsyncMock", provider.mass.streams.audio_analysis.set_audio_analysis)
-    set_aa.assert_awaited_once()
-    call = set_aa.await_args
-    assert call is not None
-    assert call.kwargs["analysis"].extra_data == {"skipped": "mbid_present"}
-    assert call.kwargs["analysis_version"] == provider.analysis_version
+    # No sentinel row — re-evaluated every call so clearing the MBID re-enables analysis.
+    cast("AsyncMock", provider.mass.streams.audio_analysis.set_audio_analysis).assert_not_awaited()
+    # MBID check short-circuits before the base class consults the version-gate.
+    cast(
+        "AsyncMock", provider.mass.streams.audio_analysis.get_audio_analysis_version
+    ).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_proceeds_when_mbid_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A track with no MBID falls through to the base version-gate and arms the session."""
+    provider = _make_provider()
+    track = MagicMock()
+    track.mbid = None
+    cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
+        return_value=track
+    )
+    _install_fake_chromaprint(monkeypatch, _FakeFingerprinter())
+
+    accepted = await provider.start_analysis(
+        "session-2", _make_streamdetails(), _make_audio_format()
+    )
+
+    assert accepted is True
+    cast(
+        "AsyncMock", provider.mass.streams.audio_analysis.get_audio_analysis_version
+    ).assert_awaited_once()
 
 
 @pytest.mark.asyncio
