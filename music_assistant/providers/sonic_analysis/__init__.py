@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import soxr
-import torch
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ContentType
 
@@ -273,6 +272,8 @@ def _pcm_bytes_to_audio(audio_format: AudioFormat, pcm_chunk: bytes) -> np.ndarr
     :param audio_format: The audio format describing the PCM data.
     :param pcm_chunk: Raw PCM audio data.
     """
+    import torch  # noqa: PLC0415
+
     content_type = audio_format.content_type
     writable = bytearray(pcm_chunk)
 
@@ -391,6 +392,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         self,
     ) -> tuple[Any, Any, list[tuple[str, tuple[str, str]]]]:
         """Load and return the CLAP model, text embeddings, and prompt ordering."""
+        import torch  # noqa: PLC0415
+
         from .vendored_clap import CLAP  # noqa: PLC0415
 
         prompt_order: list[tuple[str, tuple[str, str]]] = list(SCALAR_PROMPT_PAIRS.items())
@@ -685,6 +688,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         :param source_sr: Sample rate of window_audio.
         :returns: (1024-dim embedding, similarity logit row), or None if the model is unloaded.
         """
+        import torch  # noqa: PLC0415
+
         model = self._clap_model
         text_embeddings = self._clap_text_embeddings
         if model is None or text_embeddings is None:
