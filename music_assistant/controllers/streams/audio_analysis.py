@@ -19,6 +19,7 @@ from music_assistant_models.enums import (
     ProviderType,
     StreamType,
 )
+from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.constants import (
     CONF_BACKGROUND_SCAN_CONCURRENCY,
@@ -355,7 +356,7 @@ class AudioAnalysisController:
             track = await self.mass.music.tracks.get_library_item_by_prov_id(
                 item_id, provider_instance_id_or_domain
             )
-        except Exception as err:
+        except MusicAssistantError as err:
             self.logger.debug(
                 "set_track_identifiers: failed to load library track %s/%s: %s",
                 provider_instance_id_or_domain,
@@ -450,7 +451,7 @@ class AudioAnalysisController:
             return
         try:
             album = await self.mass.music.albums.get_library_item(album_item_id)
-        except Exception as err:
+        except MusicAssistantError as err:
             self.logger.debug(
                 "set_album_release_group: cannot load album %s: %s", album_item_id, err
             )

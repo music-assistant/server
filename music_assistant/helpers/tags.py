@@ -1522,6 +1522,8 @@ def _open_mutagen_for_write(path: str) -> Any | None:
     """Open a file for tag writing, returning the mutagen object or None on failure."""
     try:
         audio = mutagen.File(path)  # type: ignore[attr-defined]
+    # Broad: mutagen.File can raise format-specific parse errors, struct errors,
+    # and IOError variants whose hierarchy is not stable across mutagen versions.
     except Exception as err:
         LOGGER.debug("mutagen could not open %s: %s", path, err)
         return None
@@ -1530,6 +1532,7 @@ def _open_mutagen_for_write(path: str) -> Any | None:
     if audio.tags is None:
         try:
             audio.add_tags()
+        # Broad: add_tags() can raise per-format exceptions that don't share a base class.
         except Exception as err:
             LOGGER.debug("could not initialise tags on %s: %s", path, err)
             return None
@@ -1566,6 +1569,8 @@ def _write_acoustid_tag_sync(path: str, acoustid: str) -> bool:
     except (OSError, PermissionError) as err:
         LOGGER.debug("could not write Acoustid Id tag to %s: %s", path, err)
         return False
+    # Broad boundary: mutagen exposes untyped tag APIs and per-format save() paths;
+    # logged as warning so unexpected surprises are visible but never crash the scan.
     except Exception as err:
         LOGGER.warning("unexpected failure writing Acoustid Id tag to %s: %s", path, err)
         return False
@@ -1603,6 +1608,8 @@ def _write_musicbrainz_recording_id_tag_sync(path: str, recording_id: str) -> bo
     except (OSError, PermissionError) as err:
         LOGGER.debug("could not write MusicBrainz Recording Id tag to %s: %s", path, err)
         return False
+    # Broad boundary: mutagen exposes untyped tag APIs and per-format save() paths;
+    # logged as warning so unexpected surprises are visible but never crash the scan.
     except Exception as err:
         LOGGER.warning(
             "unexpected failure writing MusicBrainz Recording Id tag to %s: %s", path, err
@@ -1639,6 +1646,8 @@ def _write_isrc_tag_sync(path: str, isrcs: list[str]) -> bool:
     except (OSError, PermissionError) as err:
         LOGGER.debug("could not write ISRC tag to %s: %s", path, err)
         return False
+    # Broad boundary: mutagen exposes untyped tag APIs and per-format save() paths;
+    # logged as warning so unexpected surprises are visible but never crash the scan.
     except Exception as err:
         LOGGER.warning("unexpected failure writing ISRC tag to %s: %s", path, err)
         return False
@@ -1676,6 +1685,8 @@ def _write_musicbrainz_artist_id_tag_sync(path: str, artist_ids: list[str]) -> b
     except (OSError, PermissionError) as err:
         LOGGER.debug("could not write MusicBrainz Artist Id tag to %s: %s", path, err)
         return False
+    # Broad boundary: mutagen exposes untyped tag APIs and per-format save() paths;
+    # logged as warning so unexpected surprises are visible but never crash the scan.
     except Exception as err:
         LOGGER.warning("unexpected failure writing MusicBrainz Artist Id tag to %s: %s", path, err)
         return False

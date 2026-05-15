@@ -460,6 +460,8 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         # what unblocks CoverArtArchive / fanart.tv / TheAudioDB).
         try:
             await self._maybe_set_album_release_group(streamdetails)
+        # Broad safety net: per-track persistence already succeeded above and must
+        # not be rolled back by a failure in the best-effort consensus path.
         except Exception as err:
             self.logger.warning("acoustid: album consensus failed: %s", err, exc_info=True)
 
