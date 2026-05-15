@@ -151,11 +151,8 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             expected_album_title=expected_album_title,
         )
         self.logger.debug(
-            "acoustid: armed %s (sr=%d ch=%d bit_depth=%d track_duration=%ds track=%r album=%r)",
+            "acoustid: armed %s (track_duration=%ds track=%r album=%r)",
             session_id,
-            audio_format.sample_rate,
-            audio_format.channels,
-            audio_format.bit_depth or 16,
             track_duration,
             expected_track_title,
             expected_album_title,
@@ -370,11 +367,7 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         """
         params = {
             "client": api_key,
-            # Space-separated so aiohttp encodes the selectors as '+' in the URL;
-            # passing '+' here would be re-encoded as %2B and AcoustID would treat the
-            # value as a single unknown token, returning a result with no recordings.
-            # 'releasegroups' surfaces per-recording release-group entries used by the
-            # album-level consensus in post_analysis.
+            # Selectors must be space-separated; AcoustID rejects '+'-joined values.
             "meta": "recordings releases releasegroups",
             "fingerprint": fingerprint,
             "duration": str(duration),
