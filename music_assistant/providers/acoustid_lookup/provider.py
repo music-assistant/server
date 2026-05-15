@@ -17,6 +17,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.tags import (
     write_acoustid_tag,
     write_isrc_tag,
@@ -425,13 +426,10 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         if not mbid and not acoustid:
             return
 
-        # Pull ISRCs (DB + file tag) and, when tag write is on, artist MBIDs
-        # (file tag only) from MB. Artist MBID resolution lives in the
-        # filesystem provider's tag-parsing path (entity matching, multi-artist
-        # credits, conflict resolution); we write the tag here and rely on the
-        # next filesystem rescan to fold the MBID into the library Artist row
-        # rather than reproducing that logic in audio analysis. This means
-        # artist MBID enrichment is only effective when write_tags_back is on.
+        # Pull ISRCs and (when write_tags_back is on) artist MBIDs from MB.
+        # ISRCs go to the DB and file tag; artist MBIDs are file-tag only —
+        # the filesystem tag-parser handles the artist-row update on next sync
+        # rather than us reproducing its entity-matching here.
         want_artist_mbids = bool(self.config.get_value(CONF_WRITE_TAGS_BACK))
         isrcs, artist_mbids = (
             await self._fetch_mb_extras(mbid, include_artist_mbids=want_artist_mbids)
@@ -646,11 +644,10 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             title = rg_data[rg_id].get("title") or ""
             return bool(album_name_norm) and _normalize_for_match(title) == album_name_norm
 
-        # When the library has an album name, refuse to promote any RG whose title
-        # doesn't match it: the coverage check alone only proves the RG contains
-        # the played tracks, not that it is the album the user has tagged. Writing
-        # a coverage-correct-but-name-wrong RG would feed downstream metadata
-        # providers art and details for the wrong album.
+        # Refuse to promote an RG whose title doesn't match the library album:
+        # coverage alone proves the RG contains the played tracks, not that it
+        # is the album the user has tagged. A coverage-correct, name-wrong RG
+        # would feed metadata providers art for the wrong album.
         if album_name_norm:
             title_matched = [rg_id for rg_id in survivors if _title_matches(rg_id)]
             if not title_matched:
@@ -894,12 +891,13 @@ def _titles_match(a_norm: str, b_norm: str) -> bool:
 
 
 def _normalize_for_match(value: str) -> str:
-    """Casefold, treat non-alphanumeric runs as spaces, collapse whitespace."""
-    # MB/AcoustID titles differ on punctuation (colon vs dash, apostrophes,
-    # parens), so drop everything that isn't a letter or digit. Titles that
-    # differ only in their separator characters collapse to the same key.
-    cleaned = "".join(c if c.isalnum() or c.isspace() else " " for c in value.casefold())
-    return " ".join(cleaned.split())
+    """Return a casefolded, accent-stripped, punctuation-free form for title comparison."""
+    # Delegated to helpers/compare.create_safe_string so unidecode handles
+    # accents (Björk → bjork) and the SPECIAL_COMPARE map handles stylised
+    # spellings (P!nk → pink, KoЯn → korn). Non-alphanumerics are pre-spaced
+    # so separator variation ("AC/DC" vs "AC DC") doesn't break the match.
+    spaced = "".join(c if c.isalnum() else " " for c in value)
+    return " ".join(create_safe_string(spaced).split())
 
 
 def _extract_album_title(track: Any) -> str | None:

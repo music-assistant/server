@@ -24,12 +24,11 @@ from music_assistant.constants import (
     CONF_BACKGROUND_SCAN_CONCURRENCY,
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_PROVIDER_MAPPINGS,
-    DB_TABLE_TRACKS,
     DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
     LOUDNESS_MEASUREMENT_MIN_LUFS,
 )
 from music_assistant.helpers.datetime import local_clock_time_to_utc
-from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
+from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.models.music_provider import MusicProvider
@@ -384,11 +383,7 @@ class AudioAnalysisController:
         if not changed:
             return
 
-        await self.mass.music.database.update(
-            DB_TABLE_TRACKS,
-            {"item_id": int(track.item_id)},
-            {"external_ids": serialize_to_json(track.external_ids)},
-        )
+        await self.mass.music.tracks.update_item_in_library(int(track.item_id), track)
 
     async def get_acoustid_extra_data_for_album_tracks(
         self,

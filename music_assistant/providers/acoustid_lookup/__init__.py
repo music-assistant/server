@@ -73,10 +73,11 @@ async def get_config_entries(
             label="Write AcoustID/MusicBrainz tags back to files",
             description=(
                 "When the audio-analysis scan identifies a track via AcoustID, also "
-                "write the Acoustid Id and MusicBrainz Track Id tags back into the "
-                "source audio file. Useful if other apps on your network rely on "
-                "these tags for their own metadata. Requires write access to the "
-                "file; read-only files are silently skipped."
+                "write the Acoustid Id, MusicBrainz Recording Id, ISRC, and (where "
+                "resolvable) MusicBrainz Artist Id tags back into the source audio "
+                "file. Useful if other apps on your network rely on these tags for "
+                "their own metadata. Requires write access to the file; read-only "
+                "files are silently skipped."
             ),
             default_value=False,
             required=False,
