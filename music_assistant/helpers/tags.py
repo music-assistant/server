@@ -21,7 +21,7 @@ from mutagen.apev2 import APEv2
 
 # TXXX and UFID are ID3 frame classes pulled into mutagen.id3 via a dynamic
 # frames-table import that mypy's stubs do not follow, hence the attr-defined ignore.
-from mutagen.id3 import ID3, TXXX, UFID  # type: ignore[attr-defined]
+from mutagen.id3 import ID3, TSRC, TXXX, UFID  # type: ignore[attr-defined]
 from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags
 
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
@@ -1485,6 +1485,16 @@ async def write_acoustid_tag(path: str, acoustid: str) -> bool:
     return await asyncio.to_thread(_write_acoustid_tag_sync, path, acoustid)
 
 
+async def write_isrc_tag(path: str, isrcs: list[str]) -> bool:
+    """
+    Write one or more ISRC codes to an audio file.
+
+    :param path: Absolute path to the audio file.
+    :param isrcs: ISRC codes to persist.
+    """
+    return await asyncio.to_thread(_write_isrc_tag_sync, path, isrcs)
+
+
 async def write_musicbrainz_recording_id_tag(path: str, recording_id: str) -> bool:
     """
     Write the MusicBrainz Recording ID tag to an audio file.
@@ -1496,6 +1506,16 @@ async def write_musicbrainz_recording_id_tag(path: str, recording_id: str) -> bo
     :param recording_id: MusicBrainz recording UUID to persist.
     """
     return await asyncio.to_thread(_write_musicbrainz_recording_id_tag_sync, path, recording_id)
+
+
+async def write_musicbrainz_artist_id_tag(path: str, artist_ids: list[str]) -> bool:
+    """
+    Write one or more MusicBrainz Artist ID tags to an audio file.
+
+    :param path: Absolute path to the audio file.
+    :param artist_ids: MusicBrainz artist UUIDs to persist.
+    """
+    return await asyncio.to_thread(_write_musicbrainz_artist_id_tag_sync, path, artist_ids)
 
 
 def _open_mutagen_for_write(path: str) -> Any | None:
@@ -1587,4 +1607,75 @@ def _write_musicbrainz_recording_id_tag_sync(path: str, recording_id: str) -> bo
         LOGGER.warning(
             "unexpected failure writing MusicBrainz Recording Id tag to %s: %s", path, err
         )
+        return False
+
+
+def _write_isrc_tag_sync(path: str, isrcs: list[str]) -> bool:
+    if not isrcs:
+        return False
+    audio = _open_mutagen_for_write(path)
+    if audio is None:
+        return False
+    tags = audio.tags
+
+    try:
+        if isinstance(tags, ID3):
+            # TSRC is ID3's dedicated ISRC frame; ID3v2.4 supports multiple values.
+            tags.delall("TSRC")  # type: ignore[no-untyped-call]
+            tags.add(TSRC(encoding=3, text=list(isrcs)))  # type: ignore[no-untyped-call]
+        elif isinstance(tags, MP4Tags):
+            tags["----:com.apple.iTunes:ISRC"] = [
+                MP4FreeForm(  # type: ignore[no-untyped-call]
+                    isrc.encode("utf-8"), dataformat=AtomDataType.UTF8
+                )
+                for isrc in isrcs
+            ]
+        elif isinstance(tags, (VCommentDict, APEv2)):
+            tags["ISRC"] = list(isrcs)
+        else:
+            return False
+        audio.save()
+        return True
+    except (OSError, PermissionError) as err:
+        LOGGER.debug("could not write ISRC tag to %s: %s", path, err)
+        return False
+    except Exception as err:
+        LOGGER.warning("unexpected failure writing ISRC tag to %s: %s", path, err)
+        return False
+
+
+def _write_musicbrainz_artist_id_tag_sync(path: str, artist_ids: list[str]) -> bool:
+    if not artist_ids:
+        return False
+    audio = _open_mutagen_for_write(path)
+    if audio is None:
+        return False
+    tags = audio.tags
+
+    try:
+        if isinstance(tags, ID3):
+            tags.delall("TXXX:MusicBrainz Artist Id")  # type: ignore[no-untyped-call]
+            tags.add(  # type: ignore[no-untyped-call]
+                TXXX(  # type: ignore[no-untyped-call]
+                    encoding=3, desc="MusicBrainz Artist Id", text=list(artist_ids)
+                )
+            )
+        elif isinstance(tags, MP4Tags):
+            tags["----:com.apple.iTunes:MusicBrainz Artist Id"] = [
+                MP4FreeForm(  # type: ignore[no-untyped-call]
+                    artist_id.encode("utf-8"), dataformat=AtomDataType.UTF8
+                )
+                for artist_id in artist_ids
+            ]
+        elif isinstance(tags, (VCommentDict, APEv2)):
+            tags["MUSICBRAINZ_ARTISTID"] = list(artist_ids)
+        else:
+            return False
+        audio.save()
+        return True
+    except (OSError, PermissionError) as err:
+        LOGGER.debug("could not write MusicBrainz Artist Id tag to %s: %s", path, err)
+        return False
+    except Exception as err:
+        LOGGER.warning("unexpected failure writing MusicBrainz Artist Id tag to %s: %s", path, err)
         return False

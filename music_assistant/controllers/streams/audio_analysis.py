@@ -333,23 +333,24 @@ class AudioAnalysisController:
         provider_instance_id_or_domain: str,
         mbid: str | None = None,
         acoustid: str | None = None,
+        isrcs: list[str] | None = None,
         media_type: MediaType = MediaType.TRACK,
     ) -> None:
         """
-        Persist MBID / AcoustID onto the library track row, filling only empty fields.
+        Persist MBID / AcoustID / ISRCs onto the library track row.
 
-        Currently-set values are left untouched: this is intended for audio-analysis
-        enrichment (e.g. AcoustID lookup), which must not clobber tag-sourced IDs.
-
-        :param item_id: Provider-native track ID from streamdetails.item_id.
+        :param item_id: Provider-native track ID.
         :param provider_instance_id_or_domain: Music provider instance ID or domain.
-        :param mbid: MusicBrainz recording ID to fill in (only if currently empty).
-        :param acoustid: AcoustID UUID to add to external_ids (only if not present).
-        :param media_type: The media type of the item (only TRACK is supported).
+        :param mbid: MusicBrainz recording ID.
+        :param acoustid: AcoustID UUID.
+        :param isrcs: ISRC codes.
+        :param media_type: Media type of the item.
         """
+        # MBID is filled only when empty; AcoustID/ISRCs are appended via
+        # external_ids without clobbering tag-sourced values.
         if media_type != MediaType.TRACK:
             return
-        if not mbid and not acoustid:
+        if not mbid and not acoustid and not isrcs:
             return
         try:
             track = await self.mass.music.tracks.get_library_item_by_prov_id(
@@ -376,6 +377,10 @@ class AudioAnalysisController:
         ):
             track.add_external_id(ExternalID.ACOUSTID, acoustid)
             changed = True
+        for isrc in isrcs or ():
+            if isrc:
+                track.add_external_id(ExternalID.ISRC, isrc)
+                changed = True
         if not changed:
             return
 
@@ -383,6 +388,89 @@ class AudioAnalysisController:
             DB_TABLE_TRACKS,
             {"item_id": int(track.item_id)},
             {"external_ids": serialize_to_json(track.external_ids)},
+        )
+
+    async def get_acoustid_extra_data_for_album_tracks(
+        self,
+        track_item_ids: list[str],
+        provider_instance_id_or_domain: str,
+    ) -> list[dict[str, Any]]:
+        """
+        Return the AcoustID provider's ``extra_data`` for each given track that has one.
+
+        :param track_item_ids: Provider-native track IDs to look up.
+        :param provider_instance_id_or_domain: Music provider instance ID or domain.
+        """
+        if not track_item_ids:
+            return []
+        provider = self.mass.get_provider(
+            provider_instance_id_or_domain, provider_type=MusicProvider
+        )
+        if provider is None:
+            return []
+        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
+
+        placeholders = ",".join(f":id{i}" for i in range(len(track_item_ids)))
+        params: dict[str, Any] = {f"id{i}": tid for i, tid in enumerate(track_item_ids)}
+        params["provider"] = prov_key
+        params["domain"] = "acoustid_lookup"
+        params["media_type"] = MediaType.TRACK.value
+
+        query = (
+            f"SELECT analysis_data FROM {DB_TABLE_AUDIO_ANALYSIS} "
+            f"WHERE aa_provider_domain = :domain "
+            f"AND media_type = :media_type "
+            f"AND provider = :provider "
+            f"AND item_id IN ({placeholders})"
+        )
+        rows = await self.mass.music.database.get_rows_from_query(
+            query, params, limit=len(track_item_ids)
+        )
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                data = json_loads(row["analysis_data"])
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            extra = data.get("extra_data")
+            if isinstance(extra, dict):
+                results.append(extra)
+        return results
+
+    async def set_album_release_group(
+        self,
+        album_item_id: int,
+        release_group_mbid: str,
+    ) -> None:
+        """
+        Persist a MusicBrainz release-group ID on a library album, idempotently.
+
+        :param album_item_id: Library album item_id (database id).
+        :param release_group_mbid: MusicBrainz release-group UUID to set.
+        """
+        if not release_group_mbid:
+            return
+        try:
+            album = await self.mass.music.albums.get_library_item(album_item_id)
+        except Exception as err:
+            self.logger.debug(
+                "set_album_release_group: cannot load album %s: %s", album_item_id, err
+            )
+            return
+        # Refuse to overwrite — keeps tag-sourced or already-enriched IDs authoritative.
+        if album.get_external_id(ExternalID.MB_RELEASEGROUP):
+            self.logger.debug(
+                "set_album_release_group: album %s already has MB_RELEASEGROUP — keeping",
+                album_item_id,
+            )
+            return
+        album.add_external_id(ExternalID.MB_RELEASEGROUP, release_group_mbid)
+        await self.mass.music.albums.update_item_in_library(album_item_id, album)
+        self.logger.debug(
+            "set_album_release_group: wrote %s onto album %s", release_group_mbid, album_item_id
         )
 
     async def get_audio_analysis_version(
