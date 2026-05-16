@@ -159,7 +159,7 @@ class SyncGroupPlayer(Player):
 
     def _is_member_allowed(self, player_id: str) -> bool:
         """Return whether a player is allowed to join this group given the configured filter."""
-        # Preset members bypass the allow-list (they're explicitly configured).
+        # preset members should always be allowed to re-join
         preset_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []) or [])
         if player_id in preset_members:
             return True
