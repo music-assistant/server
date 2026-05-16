@@ -105,6 +105,9 @@ class AppleMusicRecommendationManager:
         )
         seen: set[str] = set()
         folders: dict[str, RecommendationFolder] = {}
+        # Reset maps so stale entries from previous fetches are not kept.
+        self._station_id_to_name.clear()
+        self._station_name_to_id.clear()
         for recommendation in response.get("data", []):
             rec_id = recommendation.get("id", "")
             title = (
@@ -150,7 +153,11 @@ class AppleMusicRecommendationManager:
         """
         station_name = self._station_id_to_name.get(stale_id)
         if not station_name:
-            return None
+            # Map may be empty after a process restart; populate from the cache first.
+            await self.get_personal_recommendations()
+            station_name = self._station_id_to_name.get(stale_id)
+            if not station_name:
+                return None
         token = BYPASS_CACHE.set(True)
         try:
             await self.get_personal_recommendations()
