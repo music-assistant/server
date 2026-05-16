@@ -183,6 +183,21 @@ class AppleMusicMediaManager:
 
     async def _get_station_tracks(self, station_id: str) -> list[Track]:
         """Fetch the next batch of tracks for a radio station."""
+        tracks = await self._fetch_station_tracks(station_id)
+        if not tracks:
+            # Apple may rotate station IDs for personal stations; try to resolve the current one.
+            fresh_id = await self.provider.recommendation_manager.resolve_station_id(station_id)
+            if fresh_id and fresh_id != station_id:
+                self.logger.debug(
+                    "Station ID %s appears stale, retrying with refreshed ID %s",
+                    station_id,
+                    fresh_id,
+                )
+                tracks = await self._fetch_station_tracks(fresh_id)
+        return tracks
+
+    async def _fetch_station_tracks(self, station_id: str) -> list[Track]:
+        """Fetch tracks for a station ID from the Apple Music API."""
         response = await self.api.post_data(
             f"me/stations/next-tracks/{station_id}", include="artists"
         )

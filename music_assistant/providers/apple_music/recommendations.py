@@ -15,7 +15,7 @@ from music_assistant_models.media_items import (
     Track,
 )
 
-from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.cache import BYPASS_CACHE, use_cache
 
 from .parsers import parse_artist, parse_station_as_playlist, parse_track
 
@@ -38,6 +38,8 @@ class AppleMusicRecommendationManager:
     def __init__(self, provider: AppleMusicProvider) -> None:
         """Initialize recommendation manager."""
         self.provider = provider
+        self._station_id_to_name: dict[str, str] = {}
+        self._station_name_to_id: dict[str, str] = {}
         self.mass = provider.mass
         self.instance_id = provider.instance_id
         self.domain = provider.domain
@@ -128,6 +130,9 @@ class AppleMusicRecommendationManager:
                     playlist = await self.provider.get_playlist(station_id)
                     if playlist.name == station_id:
                         continue
+                if playlist.name and playlist.name != station_id:
+                    self._station_id_to_name[station_id] = playlist.name
+                    self._station_name_to_id[playlist.name] = station_id
                 if title not in folders:
                     folders[title] = RecommendationFolder(
                         item_id=_slugify_title(title),
@@ -136,6 +141,22 @@ class AppleMusicRecommendationManager:
                     )
                 folders[title].items.append(playlist)
         return list(folders.values())
+
+    async def resolve_station_id(self, stale_id: str) -> str | None:
+        """
+        Return the current station ID for a stale one.
+
+        :param stale_id: The outdated station ID that may have been rotated by Apple.
+        """
+        station_name = self._station_id_to_name.get(stale_id)
+        if not station_name:
+            return None
+        token = BYPASS_CACHE.set(True)
+        try:
+            await self.get_personal_recommendations()
+        finally:
+            BYPASS_CACHE.reset(token)
+        return self._station_name_to_id.get(station_name)
 
     async def browse_stations(self) -> list[ItemMapping | Playlist]:
         """Return recommended radio stations from personal recommendations."""
