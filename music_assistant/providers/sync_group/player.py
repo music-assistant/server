@@ -250,9 +250,7 @@ class SyncGroupPlayer(Player):
                 multi_value=True,
                 label="Group members",
                 default_value=[],
-                description="Select the members of this sync group. "
-                "These members will always be part of the group and can never be unjoined "
-                "from the group. ",
+                description="Select the members of this sync group. ",
                 required=False,  # needed for dynamic members (which allows empty members list)
                 options=possible_players,
             ),
