@@ -59,7 +59,7 @@ class UniversalPlayerProvider(PlayerProvider):
                 # The stored protocol IDs enable fast matching when protocols register
                 await self._restore_player(player_conf.player_id)
 
-    async def _restore_player(self, player_id: str) -> None:
+    async def _restore_player(self, player_id: str) -> None:  # noqa: PLR0915
         """
         Restore a universal player from config.
 
@@ -78,7 +78,7 @@ class UniversalPlayerProvider(PlayerProvider):
         stored_identifiers = values.get(CONF_DEVICE_IDENTIFIERS, {})
         stored_device_info = values.get(CONF_DEVICE_INFO, {})
 
-        # Filter out protocol IDs that are no longer PROTOCOL type players
+        # Filter out protocol IDs that are no longer valid for this universal
         valid_protocol_ids = []
         for protocol_id in stored_protocol_ids:
             protocol_config = self.mass.config.get(f"{CONF_PLAYERS}/{protocol_id}")
@@ -87,15 +87,27 @@ class UniversalPlayerProvider(PlayerProvider):
                 valid_protocol_ids.append(protocol_id)
                 continue
             protocol_player_type = protocol_config.get("player_type")
-            if protocol_player_type == "protocol":
-                valid_protocol_ids.append(protocol_id)
-            else:
+            if protocol_player_type != "protocol":
                 self.logger.info(
                     "Removing %s from universal player %s - player type changed to %s",
                     protocol_id,
                     player_id,
                     protocol_player_type,
                 )
+                continue
+            protocol_values = protocol_config.get("values") or {}
+            if not protocol_values.get("protocol_parent_id"):
+                self.logger.info(
+                    "Deleting orphaned protocol player config %s (was linked to %s)",
+                    protocol_id,
+                    player_id,
+                )
+                if self.mass.players.get_player(protocol_id):
+                    await self.mass.players.unregister(protocol_id, permanent=True)
+                else:
+                    self.mass.players.delete_player_config(protocol_id)
+                continue
+            valid_protocol_ids.append(protocol_id)
 
         # If no valid protocol IDs remain, delete this stale universal player
         if not valid_protocol_ids:
