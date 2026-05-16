@@ -204,9 +204,9 @@ class AppleMusicMediaManager:
         tracks = response.get("data", [])
         if not tracks:
             self.logger.debug(
-                "No tracks returned for station_id=%s, raw response keys: %s",
+                "No tracks returned for station_id=%s; errors=%s",
                 station_id,
-                list(response.keys()),
+                response.get("errors"),
             )
             return []
         track_ids = [t["id"] for t in tracks if t and t.get("id")]

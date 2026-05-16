@@ -28,7 +28,7 @@ def _slugify_title(title: str) -> str:
     slug = "".join(c for c in title.lower().replace(" ", "_") if c.isalnum() or c == "_")
     if not slug:
         # Fall back to a hash for titles that yield no alphanumeric characters.
-        slug = hashlib.md5(title.encode()).hexdigest()[:12]
+        slug = hashlib.md5(title.encode(), usedforsecurity=False).hexdigest()[:12]
     return slug
 
 
