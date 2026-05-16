@@ -70,10 +70,7 @@ class SyncGroupPlayer(Player):
         preset_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
         if self.is_dynamic:
             # In dynamic mode the configured members act as a preset: they are
-            # pulled in when the group plays (see _form_syncgroup) but the user
-            # can temporarily unjoin them via the OSD. Keeping
-            # _attr_static_group_members empty signals "no locked members" so
-            # the frontend doesn't gray out the checkboxes.
+            # pulled in when the group plays
             self._attr_static_group_members = []
             self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
         else:
@@ -180,34 +177,34 @@ class SyncGroupPlayer(Player):
         # A sync group can accommodate protocol switches, so a player compatible with
         # ANY current member is a valid candidate to join.
         member_ids = self._attr_group_members if self._attr_group_members else []
-        can_group_with: set[str] = set()
+        # current members bypass the allow-list filter (filter constrains joiners only)
+        current_members = set(member_ids)
         if member_ids:
+            can_group_with: set[str] = set()
             for member_id in member_ids:
                 member_player = self.mass.players.get_player(member_id)
                 if member_player and member_player.state.available:
                     can_group_with.add(member_player.player_id)
                     can_group_with.update(member_player.state.can_group_with)
-        else:
-            # Empty dynamic groups can potentially group with any compatible players.
-            # Actual compatibility is validated when adding members.
-            for player in self.mass.players.all_players(return_unavailable=False):
-                if not player.available or player.type == PlayerType.GROUP:
-                    # let's avoid showing group players as options to group with
-                    continue
-                if (
-                    PlayerFeature.SET_MEMBERS in player.state.supported_features
-                    and player.state.can_group_with
-                    and not player.state.active_group
-                ):
-                    can_group_with.add(player.player_id)
-        # Apply allow-list filters to the candidate set. Current members of the
-        # group are exempt - the filters constrain who can JOIN, not who is
-        # already a member (otherwise enabling a filter that doesn't list a
-        # current member would hide every candidate via the seed step).
-        current_members = set(member_ids)
-        return {
-            pid for pid in can_group_with if pid in current_members or self._is_member_allowed(pid)
-        }
+            return {
+                pid
+                for pid in can_group_with
+                if pid in current_members or self._is_member_allowed(pid)
+            }
+        # Empty dynamic groups can potentially group with any compatible players
+        # Actual compatibility is validated when adding members
+        can_group_with = set()
+        for player in self.mass.players.all_players(return_unavailable=False):
+            if not player.available or player.type == PlayerType.GROUP:
+                # let's avoid showing group players as options to group with
+                continue
+            if (
+                PlayerFeature.SET_MEMBERS in player.state.supported_features
+                and player.state.can_group_with
+                and not player.state.active_group
+            ):
+                can_group_with.add(player.player_id)
+        return {pid for pid in can_group_with if self._is_member_allowed(pid)}
 
     @property
     def group_members(self) -> list[str]:
@@ -494,9 +491,7 @@ class SyncGroupPlayer(Player):
             self.sync_leader.display_name if self.sync_leader else None,
         )
         # always ensure the configured preset/permanent members are part of
-        # the group members, even if they were (temporarily) removed by an
-        # unjoin. In dynamic mode they act as a preset (re-added each form);
-        # in static mode they are locked and can not be removed at all.
+        # the group members, even if they were (temporarily) removed by an unjoin
         preset_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
         self._attr_group_members = [
             *preset_members,
