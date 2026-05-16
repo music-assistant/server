@@ -119,8 +119,11 @@ class AppleMusicRecommendationManager:
                     if playlist.name == station_id:
                         continue
                 if title not in folders:
+                    stable_id = "".join(
+                        c for c in title.lower().replace(" ", "_") if c.isalnum() or c == "_"
+                    )
                     folders[title] = RecommendationFolder(
-                        item_id=rec_id,
+                        item_id=stable_id,
                         provider=self.provider.instance_id,
                         name=title,
                     )
