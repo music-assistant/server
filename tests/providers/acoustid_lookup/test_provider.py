@@ -231,6 +231,22 @@ async def test_skip_when_mbid_already_present() -> None:
 
 
 @pytest.mark.asyncio
+async def test_skip_when_no_api_key() -> None:
+    """No API key configured → bail before touching the library or the version-gate."""
+    provider = _make_provider(api_key=None)
+
+    accepted = await provider.start_analysis(
+        "session-no-key", _make_streamdetails(), _make_audio_format()
+    )
+
+    assert accepted is False
+    cast("AsyncMock", provider.mass.music.tracks.get_library_item_by_prov_id).assert_not_awaited()
+    cast(
+        "AsyncMock", provider.mass.streams.audio_analysis.get_audio_analysis_version
+    ).assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_proceeds_when_mbid_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     """A track with no MBID falls through to the base version-gate and arms the session."""
     provider = _make_provider()

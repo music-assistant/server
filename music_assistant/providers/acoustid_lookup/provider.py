@@ -94,12 +94,16 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         audio_format: AudioFormat,
     ) -> bool:
         """
-        Short-circuit before the version-gate when the library track already has an MBID.
+        Return before the version-gate when the lookup cannot succeed.
 
         :param session_id: Session ID assigned by the AudioAnalysisController.
         :param streamdetails: Stream details for the track being analysed.
         :param audio_format: PCM format of the incoming audio stream.
         """
+        # No API key → no lookup possible; return before decoding any audio.
+        if not self.config.get_value(CONF_API_KEY):
+            self.logger.debug("acoustid: skip %s — no API key configured", session_id)
+            return False
         # Re-checked every call so clearing the MBID (e.g. Refresh Item with
         # overwrite=True) lets the next analysis run pick it up again.
         try:
@@ -284,10 +288,6 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             return None
 
         api_key = self.config.get_value(CONF_API_KEY)
-        if not api_key:
-            self.logger.debug("acoustid: no API key configured; skipping lookup")
-            return None
-
         duration_for_lookup = data.track_duration or round(data.pcm_seconds_fed)
         if duration_for_lookup <= 0:
             self.logger.debug("acoustid: no usable duration for lookup")
