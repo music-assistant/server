@@ -442,7 +442,7 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             else ([], [])
         )
 
-        await self.mass.streams.audio_analysis.set_track_identifiers(
+        await self.mass.metadata.set_track_identifiers(
             item_id=streamdetails.item_id,
             provider_instance_id_or_domain=streamdetails.provider,
             mbid=mbid,
@@ -578,8 +578,8 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
                     native_ids.append(pm.item_id)
                     break
 
-        extras = await self.mass.streams.audio_analysis.get_acoustid_extra_data_for_album_tracks(
-            native_ids, streamdetails.provider
+        extras = await self.mass.streams.audio_analysis.get_extra_data_for_album_tracks(
+            native_ids, streamdetails.provider, aa_provider_domain=self.domain
         )
         voting_rows = [
             extra
@@ -603,7 +603,7 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             top_coverage,
             len(voting_rows),
         )
-        await self.mass.streams.audio_analysis.set_album_release_group(album_item_id, winner_id)
+        await self.mass.metadata.set_album_release_group(album_item_id, winner_id)
 
     def _pick_consensus_winner(
         self,
