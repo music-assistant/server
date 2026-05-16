@@ -618,7 +618,9 @@ class PlayerQueuesController(CoreController):
         queue.elapsed_time = 0
         queue.elapsed_time_last_updated = time.time()
         queue.index_in_buffer = None
-        self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
+        self.mass.create_task(
+            self._cleanup_queue_audio_data(queue_id, self._queue_items.get(queue_id, []).copy())
+        )
         self.update_items(queue_id, [])
 
     @api_command("player_queues/save_as_playlist")
@@ -839,13 +841,36 @@ class PlayerQueuesController(CoreController):
         if not queue.current_item:
             raise InvalidCommand(f"Queue {queue_player.state.name} has no item(s) loaded.")
         if not queue.current_item.duration:
+            await self._ensure_current_item_duration(queue_id, queue.current_item)
+        if not queue.current_item.duration:
             raise InvalidCommand("Can not seek items without duration.")
         position = max(0, int(position))
         if position > queue.current_item.duration:
             raise InvalidCommand("Can not seek outside of duration range.")
         if queue.current_index is None:
             raise InvalidCommand(f"Queue {queue_player.state.name} has no current index.")
+        if queue.current_item.streamdetails and queue.current_item.streamdetails.buffer:
+            await queue.current_item.streamdetails.buffer.clear()
+            queue.current_item.streamdetails.buffer = None
         await self.play_index(queue_id, queue.current_index, seek_position=position)
+
+    async def _ensure_current_item_duration(self, queue_id: str, queue_item: QueueItem) -> None:
+        """Try to populate a missing duration before rejecting queue seek."""
+        if queue_item.duration:
+            return
+        try:
+            queue_item.streamdetails = await self.mass.streams.audio.get_stream_details(
+                queue_item=queue_item,
+                seek_position=0,
+            )
+        except MusicAssistantError:
+            return
+        if queue_item.streamdetails.duration:
+            if not queue_item.duration:
+                queue_item.duration = queue_item.streamdetails.duration
+            if queue_item.media_item and not queue_item.media_item.duration:
+                queue_item.media_item.duration = queue_item.streamdetails.duration
+            self.signal_update(queue_id, items_changed=True)
 
     @api_command("player_queues/resume")
     @handle_play_action
@@ -1605,8 +1630,11 @@ class PlayerQueuesController(CoreController):
             prefer_album_loudness=bool(playing_album_tracks),
         )
         # update queue_item.duration from streamdetails if we got a better value
-        if queue_item.streamdetails.duration and not queue_item.duration:
-            queue_item.duration = queue_item.streamdetails.duration
+        if queue_item.streamdetails.duration:
+            if not queue_item.duration:
+                queue_item.duration = queue_item.streamdetails.duration
+            if queue_item.media_item and not queue_item.media_item.duration:
+                queue_item.media_item.duration = queue_item.streamdetails.duration
             self.signal_update(queue_id, items_changed=True)
 
         # pre-initialize the AudioBuffer so audio is ready
@@ -3257,7 +3285,9 @@ class PlayerQueuesController(CoreController):
                 cleanup_threshold + 1,
             )
 
-    async def _cleanup_queue_audio_data(self, queue_id: str) -> None:
+    async def _cleanup_queue_audio_data(
+        self, queue_id: str, queue_items: list[QueueItem] | None = None
+    ) -> None:
         """Clean up all audio-related data for a queue when it is stopped or cleared.
 
         This clears:
@@ -3268,7 +3298,8 @@ class PlayerQueuesController(CoreController):
         """
         self.mass.streams.audio.clear_crossfade_data(queue_id)
 
-        queue_items = self._queue_items.get(queue_id, [])
+        if queue_items is None:
+            queue_items = self._queue_items.get(queue_id, [])
         buffers_cleared = 0
 
         for item in queue_items:
