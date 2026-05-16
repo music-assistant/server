@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType
@@ -20,6 +21,15 @@ from .parsers import parse_artist, parse_station_as_playlist, parse_track
 
 if TYPE_CHECKING:
     from .provider import AppleMusicProvider
+
+
+def _slugify_title(title: str) -> str:
+    """Return a stable, alphanumeric slug for a recommendation folder title."""
+    slug = "".join(c for c in title.lower().replace(" ", "_") if c.isalnum() or c == "_")
+    if not slug:
+        # Fall back to a hash for titles that yield no alphanumeric characters.
+        slug = hashlib.md5(title.encode()).hexdigest()[:12]
+    return slug
 
 
 class AppleMusicRecommendationManager:
@@ -119,11 +129,8 @@ class AppleMusicRecommendationManager:
                     if playlist.name == station_id:
                         continue
                 if title not in folders:
-                    stable_id = "".join(
-                        c for c in title.lower().replace(" ", "_") if c.isalnum() or c == "_"
-                    )
                     folders[title] = RecommendationFolder(
-                        item_id=stable_id,
+                        item_id=_slugify_title(title),
                         provider=self.provider.instance_id,
                         name=title,
                     )
