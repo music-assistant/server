@@ -13,6 +13,7 @@ from music_assistant.constants import CONF_LOG_LEVEL
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AnalysisSessionData
 from music_assistant.providers.acoustid_lookup.provider import (
+    CONF_ANALYSE_STREAMING,
     CONF_API_KEY,
     CONF_MIN_SCORE,
     CONF_WRITE_TAGS_BACK,
@@ -30,6 +31,7 @@ def _make_provider(
     api_key: str | None = "TESTKEY",
     min_score: float = 0.85,
     write_tags_back: bool = False,
+    analyse_streaming: bool = True,
 ) -> AcoustidLookupProvider:
     """Build a provider with a mocked MusicAssistant infrastructure."""
     mass = MagicMock()
@@ -57,6 +59,7 @@ def _make_provider(
         CONF_API_KEY: api_key,
         CONF_MIN_SCORE: min_score,
         CONF_WRITE_TAGS_BACK: write_tags_back,
+        CONF_ANALYSE_STREAMING: analyse_streaming,
     }
     config.get_value = MagicMock(side_effect=lambda key: config_lookup.get(key, "GLOBAL"))
 
@@ -208,63 +211,63 @@ def _rg(
 
 
 @pytest.mark.asyncio
-async def test_skip_when_mbid_already_present() -> None:
-    """A track that already has an MBID short-circuits without persisting anything."""
-    provider = _make_provider()
-    track = MagicMock()
-    track.mbid = "00000000-0000-0000-0000-000000000001"
-    cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
-        return_value=track
-    )
-
-    accepted = await provider.start_analysis(
-        "session-1", _make_streamdetails(), _make_audio_format()
-    )
-
-    assert accepted is False
-    # No sentinel row — re-evaluated every call so clearing the MBID re-enables analysis.
-    cast("AsyncMock", provider.mass.streams.audio_analysis.set_audio_analysis).assert_not_awaited()
-    # MBID check short-circuits before the base class consults the version-gate.
-    cast(
-        "AsyncMock", provider.mass.streams.audio_analysis.get_audio_analysis_version
-    ).assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_skip_when_no_api_key() -> None:
-    """No API key configured → bail before touching the library or the version-gate."""
-    provider = _make_provider(api_key=None)
-
-    accepted = await provider.start_analysis(
-        "session-no-key", _make_streamdetails(), _make_audio_format()
-    )
-
-    assert accepted is False
-    cast("AsyncMock", provider.mass.music.tracks.get_library_item_by_prov_id).assert_not_awaited()
-    cast(
-        "AsyncMock", provider.mass.streams.audio_analysis.get_audio_analysis_version
-    ).assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_proceeds_when_mbid_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A track with no MBID falls through to the base version-gate and arms the session."""
-    provider = _make_provider()
-    track = MagicMock()
-    track.mbid = None
-    cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
-        return_value=track
-    )
+@pytest.mark.parametrize(
+    ("provider_kwargs", "streamdetails_kwargs", "track_mbid", "track_in_library", "expected"),
+    [
+        pytest.param({}, {}, "0000-mbid", True, False, id="mbid_already_present"),
+        pytest.param({}, {}, None, False, False, id="no_library_row"),
+        pytest.param(
+            {},
+            {"media_type": MediaType.PODCAST_EPISODE},
+            None,
+            False,
+            False,
+            id="non_track_media",
+        ),
+        pytest.param(
+            {"analyse_streaming": False},
+            {"stream_type": StreamType.HTTP},
+            None,
+            True,
+            False,
+            id="streaming_toggle_off",
+        ),
+        pytest.param(
+            {"analyse_streaming": True},
+            {"stream_type": StreamType.HTTP},
+            None,
+            True,
+            True,
+            id="streaming_toggle_on",
+        ),
+        pytest.param({}, {}, None, True, True, id="local_file_mbid_missing"),
+        pytest.param({"api_key": None}, {}, None, False, False, id="no_api_key"),
+    ],
+)
+async def test_start_analysis_gates(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    provider_kwargs: dict[str, Any],
+    streamdetails_kwargs: dict[str, Any],
+    track_mbid: str | None,
+    track_in_library: bool,
+    expected: bool,
+) -> None:
+    """start_analysis accepts the session or skips for each precondition."""
+    provider = _make_provider(**provider_kwargs)
+    if track_in_library:
+        track = MagicMock()
+        track.mbid = track_mbid
+        cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
+            return_value=track
+        )
     _install_fake_chromaprint(monkeypatch, _FakeFingerprinter())
 
     accepted = await provider.start_analysis(
-        "session-2", _make_streamdetails(), _make_audio_format()
+        "session", _make_streamdetails(**streamdetails_kwargs), _make_audio_format()
     )
 
-    assert accepted is True
-    cast(
-        "AsyncMock", provider.mass.streams.audio_analysis.get_audio_analysis_version
-    ).assert_awaited_once()
+    assert accepted is expected
 
 
 @pytest.mark.asyncio
@@ -313,7 +316,13 @@ async def test_finalize_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.extra_data["acoustid"] == "acoustid-1"
     assert result.extra_data["match_score"] == pytest.approx(0.97)
     assert result.extra_data["release_groups"] == [
-        {"id": "rg-a", "title": "Album", "primary_type": "Album", "secondary_types": []}
+        {
+            "id": "rg-a",
+            "title": "Album",
+            "primary_type": "Album",
+            "secondary_types": [],
+            "artists": [],
+        }
     ]
     assert result.extra_data["candidates"][0]["acoustid"] == "acoustid-1"
 
@@ -384,7 +393,7 @@ async def test_post_analysis_persists_and_writes_tags(
 
     consensus_calls: list[Any] = []
 
-    async def fake_consensus(_self: AcoustidLookupProvider, sd: Any) -> None:
+    async def fake_consensus(_self: AcoustidLookupProvider, sd: Any, **_kwargs: Any) -> None:
         consensus_calls.append(sd)
 
     monkeypatch.setattr(AcoustidLookupProvider, "_maybe_set_album_release_group", fake_consensus)
@@ -488,7 +497,7 @@ async def test_post_analysis_consensus_silent_failure(monkeypatch: pytest.Monkey
     """A crash in the consensus helper must not lose the per-track persistence."""
     provider = _make_provider()
 
-    async def boom(_self: AcoustidLookupProvider, _streamdetails: Any) -> None:
+    async def boom(_self: AcoustidLookupProvider, _streamdetails: Any, **_kwargs: Any) -> None:
         raise RuntimeError("synthetic")
 
     monkeypatch.setattr(AcoustidLookupProvider, "_maybe_set_album_release_group", boom)
@@ -508,72 +517,199 @@ async def test_post_analysis_consensus_silent_failure(monkeypatch: pytest.Monkey
 # ---------------------------------------------------------------------------
 
 
+_NEWS_OF_THE_WORLD_QUEEN_RGS = [
+    {
+        "id": "rg-future-boy",
+        "title": "News of the World",
+        "primary_type": "Album",
+        "secondary_types": [],
+        "artists": ["Future Boy"],
+    },
+    {
+        "id": "rg-queen",
+        "title": "News of the World",
+        "primary_type": "Album",
+        "secondary_types": [],
+        "artists": ["Queen"],
+    },
+]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("track_count", "extras"),
+    (
+        "album_name",
+        "track_provider_instances",
+        "extras",
+        "track_artist",
+        "expected_rg_id",
+    ),
     [
-        # full coverage: 10 tracks all vote for rg-st, name-matching
+        # Strong coverage: every analysed track votes for the same RG.
         pytest.param(
-            10, [{"release_groups": [_rg("rg-st")]} for _ in range(10)], id="full_coverage"
+            "Silver Thunderbird",
+            ["filesystem_local_test"] * 10,
+            [{"release_groups": [_rg("rg-st")]}] * 10,
+            None,
+            "rg-st",
+            id="full_coverage",
         ),
-        # singleton: 1 track with a name-matching RG
-        pytest.param(1, [{"release_groups": [_rg("rg-st")]}], id="singleton_with_match"),
-        # tolerance: 5 of 6 tracks vote for rg-st; one outlier with a different RG
+        # Singleton voter with a name-matching RG.
         pytest.param(
-            6,
-            [{"release_groups": [_rg("rg-st")]} for _ in range(5)]
+            "Silver Thunderbird",
+            ["filesystem_local_test"],
+            [{"release_groups": [_rg("rg-st")]}],
+            None,
+            "rg-st",
+            id="singleton_with_match",
+        ),
+        # 5 of 6 voters agree; one outlier on a different RG.
+        pytest.param(
+            "Silver Thunderbird",
+            ["filesystem_local_test"] * 6,
+            [{"release_groups": [_rg("rg-st")]}] * 5
             + [{"release_groups": [_rg("rg-other", title="Other")]}],
+            None,
+            "rg-st",
             id="tolerates_one_missing",
+        ),
+        # Quorum denominator excludes tracks served by a different provider.
+        pytest.param(
+            "Silver Thunderbird",
+            ["filesystem_local_test"] * 2 + ["some_other_provider"] * 2,
+            [{"release_groups": [_rg("rg-st")]}] * 2,
+            None,
+            "rg-st",
+            id="quorum_scoped_to_this_provider",
+        ),
+        # Asymmetric substring: user "The Platinum Collection" vs MB's longer form.
+        pytest.param(
+            "The Platinum Collection",
+            ["filesystem_local_test"] * 2,
+            [
+                {
+                    "release_groups": [
+                        _rg(
+                            "rg-platinum",
+                            title="Greatest Hits I, II & III: The Platinum Collection",
+                        )
+                    ]
+                }
+            ]
+            * 2,
+            None,
+            "rg-platinum",
+            id="asymmetric_substring_match",
+        ),
+        # Exact title beats substring when both survive.
+        pytest.param(
+            "The Platinum Collection",
+            ["filesystem_local_test"] * 2,
+            [
+                {
+                    "release_groups": [
+                        _rg(
+                            "rg-substring",
+                            title="Greatest Hits I, II & III: The Platinum Collection",
+                        ),
+                        _rg("rg-exact", title="The Platinum Collection"),
+                    ]
+                }
+            ]
+            * 2,
+            None,
+            "rg-exact",
+            id="exact_beats_substring",
+        ),
+        # Same-titled RGs from different artists; expected_artist picks the matching one.
+        pytest.param(
+            "News Of The World",
+            ["filesystem_local_test"],
+            [{"release_groups": list(_NEWS_OF_THE_WORLD_QUEEN_RGS)}],
+            "Queen",
+            "rg-queen",
+            id="artist_filter_picks_matching_artist",
+        ),
+        # RG with no captured artist info is treated as compatible — older payload shape.
+        pytest.param(
+            "News Of The World",
+            ["filesystem_local_test"],
+            [
+                {
+                    "release_groups": [
+                        {
+                            "id": "rg-unknown-artist",
+                            "title": "News of the World",
+                            "primary_type": "Album",
+                            "secondary_types": [],
+                        }
+                    ]
+                }
+            ],
+            "Queen",
+            "rg-unknown-artist",
+            id="artist_filter_lets_unknown_artist_pass",
         ),
     ],
 )
 async def test_consensus_writes_release_group(
     *,
-    track_count: int,
+    album_name: str,
+    track_provider_instances: list[str],
     extras: list[dict[str, Any]],
+    track_artist: str | None,
+    expected_rg_id: str,
 ) -> None:
-    """Coverage reaches the floor with a name-matching survivor → album row gets MB_RELEASEGROUP."""
+    """Each consensus path that produces a winner writes the RG to the album row."""
     provider = _make_provider()
-    album = _make_library_album(name="Silver Thunderbird")
-    album_tracks = _make_album_tracks(track_count)
+    album = _make_library_album(name=album_name)
+    album_tracks = [
+        _make_album_tracks(1, provider_instance=inst)[0] for inst in track_provider_instances
+    ]
     _wire_album_for_consensus(provider, album=album, album_tracks=album_tracks, extras=extras)
+    if track_artist is not None:
+        _wire_track_for_mb_lookup(provider, track_name="any", artist_name=track_artist)
 
     await provider._maybe_set_album_release_group(_make_streamdetails())
 
     cast("AsyncMock", provider.mass.metadata.set_album_release_group).assert_awaited_once_with(
-        42, "rg-st"
+        42, expected_rg_id
     )
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("album_kwargs", "track_count", "extras"),
+    ("album_name", "album_kwargs", "track_provider_instances", "extras"),
     [
-        # 1) album already has a release-group — idempotent skip before tally.
+        # Album already has a release-group — idempotent skip before tally.
         pytest.param(
+            "Silver Thunderbird",
             {"existing_rg": "rg-pre-existing"},
-            6,
-            [{"release_groups": [_rg("rg-st")]} for _ in range(6)],
+            ["filesystem_local_test"] * 6,
+            [{"release_groups": [_rg("rg-st")]}] * 6,
             id="album_already_has_releasegroup",
         ),
-        # 2) below 50% quorum — 4 of 12 voted.
+        # Below 50% quorum — 4 of 12 voted.
         pytest.param(
+            "Silver Thunderbird",
             {},
-            12,
-            [{"release_groups": [_rg("rg-st")]} for _ in range(4)],
+            ["filesystem_local_test"] * 12,
+            [{"release_groups": [_rg("rg-st")]}] * 4,
             id="below_50pct_quorum",
         ),
-        # 3) top coverage below required — 8 voters split 2/2/2/2 across distinct RGs.
+        # Top coverage below required — 8 voters split 2/2/2/2 across distinct RGs.
         pytest.param(
+            "Silver Thunderbird",
             {},
-            8,
+            ["filesystem_local_test"] * 8,
             [{"release_groups": [_rg(f"rg-{i // 2}", title=f"Title {i // 2}")]} for i in range(8)],
             id="top_coverage_below_required",
         ),
-        # 4) no survivor title matches the album — voting tracks share RGs, all wrong names.
+        # No survivor title matches the album — voting tracks share RGs, all wrong names.
         pytest.param(
+            "Silver Thunderbird",
             {},
-            6,
+            ["filesystem_local_test"] * 6,
             [
                 {
                     "release_groups": [
@@ -581,27 +717,202 @@ async def test_consensus_writes_release_group(
                         _rg("rg-box", title="Box Set"),
                     ]
                 }
-                for _ in range(6)
-            ],
+            ]
+            * 6,
             id="no_survivor_title_matches",
+        ),
+        # User tag is more specific than MB title — asymmetric substring rejects.
+        pytest.param(
+            "Greatest Hits: 40 Trips Around The Sun",
+            {},
+            ["filesystem_local_test"],
+            [{"release_groups": [_rg("rg-generic", title="Greatest Hits")]}],
+            id="user_longer_substring_rejected",
+        ),
+        # Album has zero library tracks served by this provider.
+        pytest.param(
+            "Silver Thunderbird",
+            {},
+            ["some_other_provider"] * 3,
+            [],
+            id="no_tracks_served_by_this_provider",
         ),
     ],
 )
 async def test_consensus_abstains(
     *,
+    album_name: str,
     album_kwargs: dict[str, Any],
-    track_count: int,
+    track_provider_instances: list[str],
     extras: list[dict[str, Any]],
 ) -> None:
     """Each guard refuses to write the release-group for the right reason."""
     provider = _make_provider()
-    album = _make_library_album(name="Silver Thunderbird", **album_kwargs)
-    album_tracks = _make_album_tracks(track_count)
+    album = _make_library_album(name=album_name, **album_kwargs)
+    album_tracks = [
+        _make_album_tracks(1, provider_instance=inst)[0] for inst in track_provider_instances
+    ]
     _wire_album_for_consensus(provider, album=album, album_tracks=album_tracks, extras=extras)
 
     await provider._maybe_set_album_release_group(_make_streamdetails())
 
     cast("AsyncMock", provider.mass.metadata.set_album_release_group).assert_not_awaited()
+
+
+def _wire_track_for_mb_lookup(
+    provider: AcoustidLookupProvider, *, track_name: str, artist_name: str
+) -> None:
+    """Give the library track stub a name and a single named artist."""
+    library_track = MagicMock()
+    library_track.name = track_name
+    library_track.album = MagicMock(item_id="42")
+    library_track.artists = [MagicMock(name=artist_name)]
+    library_track.artists[0].name = artist_name
+    cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
+        return_value=library_track
+    )
+
+
+def _install_mb_search(
+    provider: AcoustidLookupProvider,
+    *,
+    rg_id: str | None,
+    rg_title: str | None,
+) -> MagicMock:
+    """Wire mass.get_provider('musicbrainz', ...) to a mock with a fake search()."""
+    mb_provider = MagicMock()
+    if rg_id is None:
+        mb_provider.search = AsyncMock(return_value=None)
+    else:
+        rg = MagicMock(id=rg_id, title=rg_title)
+        artist = MagicMock()
+        recording = MagicMock()
+        mb_provider.search = AsyncMock(return_value=(artist, rg, recording))
+    cast("MagicMock", provider.mass).get_provider = MagicMock(return_value=mb_provider)
+    return mb_provider
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "album_name",
+        "track_name",
+        "artist_name",
+        "extras",
+        "mb_result",
+        "expected_mb_kwargs",
+        "expected_rg",
+    ),
+    [
+        # Consensus has nothing to vote on; MB.search supplies the RG.
+        pytest.param(
+            "Alive and Kicking",
+            "Alive and Kicking",
+            "Simple Minds",
+            [{"release_groups": [_rg("rg-unrelated", title="Some Compilation")]}],
+            ("rg-mb-fallback", "Alive and Kicking"),
+            {
+                "artistname": "Simple Minds",
+                "albumname": "Alive and Kicking",
+                "trackname": "Alive and Kicking",
+            },
+            "rg-mb-fallback",
+            id="consensus_abstains_mb_writes_rg",
+        ),
+        # Hyphen / colon / parens in the album name are flattened before the
+        # MB query so Lucene's phrase match lines up with MB's stored variant.
+        pytest.param(
+            "My Love - Ultimate Essential Collection",
+            "Beauty and the Beast",
+            "Céline Dion",
+            [{"release_groups": [_rg("rg-unrelated", title="Some Compilation")]}],
+            ("rg-mylove", "My Love: Ultimate Essential Collection"),
+            {
+                "artistname": "Céline Dion",
+                "albumname": "My Love Ultimate Essential Collection",
+                "trackname": "Beauty and the Beast",
+            },
+            "rg-mylove",
+            id="separators_flattened_for_lucene",
+        ),
+        # Consensus has already supplied the right RG; MB.search must not run.
+        pytest.param(
+            "Silver Thunderbird",
+            "Whatever",
+            "Mary Chapin Carpenter",
+            [{"release_groups": [_rg("rg-st")]}, {"release_groups": [_rg("rg-st")]}],
+            ("rg-decoy", "Decoy"),
+            None,
+            "rg-st",
+            id="consensus_succeeds_mb_skipped",
+        ),
+        # MB.search returns an RG whose title doesn't match; refuse the write.
+        pytest.param(
+            "Alive and Kicking",
+            "Alive and Kicking",
+            "Simple Minds",
+            [{"release_groups": [_rg("rg-unrelated", title="Some Compilation")]}],
+            ("rg-wrong", "Something Entirely Different"),
+            {
+                "artistname": "Simple Minds",
+                "albumname": "Alive and Kicking",
+                "trackname": "Alive and Kicking",
+            },
+            None,
+            id="mb_returns_wrong_title_refused",
+        ),
+        # No artist on the library track; MB query is skipped cleanly.
+        pytest.param(
+            "Alive and Kicking",
+            "Alive and Kicking",
+            None,
+            [{"release_groups": [_rg("rg-unrelated", title="Some Compilation")]}],
+            ("rg-decoy", "Decoy"),
+            None,
+            None,
+            id="no_artist_mb_skipped",
+        ),
+    ],
+)
+async def test_mb_fallback(
+    *,
+    album_name: str,
+    track_name: str,
+    artist_name: str | None,
+    extras: list[dict[str, Any]],
+    mb_result: tuple[str, str],
+    expected_mb_kwargs: dict[str, str] | None,
+    expected_rg: str | None,
+) -> None:
+    """MB.search runs only when consensus abstains and only writes a title-matching RG."""
+    provider = _make_provider()
+    album = _make_library_album(name=album_name)
+    album_tracks = _make_album_tracks(len(extras))
+    _wire_album_for_consensus(provider, album=album, album_tracks=album_tracks, extras=extras)
+    if artist_name is not None:
+        _wire_track_for_mb_lookup(provider, track_name=track_name, artist_name=artist_name)
+    else:
+        # Library track stub with empty artists — drives the "no artist" skip path.
+        library_track = MagicMock()
+        library_track.name = track_name
+        library_track.album = MagicMock(item_id="42")
+        library_track.artists = []
+        cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
+            return_value=library_track
+        )
+    mb = _install_mb_search(provider, rg_id=mb_result[0], rg_title=mb_result[1])
+
+    await provider._maybe_set_album_release_group(_make_streamdetails())
+
+    if expected_mb_kwargs is None:
+        cast("AsyncMock", mb.search).assert_not_awaited()
+    else:
+        cast("AsyncMock", mb.search).assert_awaited_once_with(**expected_mb_kwargs)
+    rg_writer = cast("AsyncMock", provider.mass.metadata.set_album_release_group)
+    if expected_rg is None:
+        rg_writer.assert_not_awaited()
+    else:
+        rg_writer.assert_awaited_once_with(42, expected_rg)
 
 
 # ---------------------------------------------------------------------------
@@ -821,6 +1132,79 @@ def test_parse_response_aggregates_release_groups() -> None:
             "rec-history",
             "acoustid-history",
             id="prefers_album_match_when_track_matches_tie",
+        ),
+        # Remaster suffix stripping — user tag and MB title differ only by a
+        # version qualifier; pre-normalise strip should make them match.
+        *(
+            pytest.param(
+                user_title,
+                None,
+                {
+                    "status": "ok",
+                    "results": [
+                        {
+                            "id": "acoustid-x",
+                            "score": 0.99,
+                            "recordings": [{"id": "rec-africa", "title": mb_title}],
+                        }
+                    ],
+                },
+                "rec-africa",
+                "acoustid-x",
+                id=f"remaster_strip_{case_id}",
+            )
+            for case_id, user_title, mb_title in (
+                ("user_year_paren", "Africa (2016 Remaster)", "Africa"),
+                ("mb_year_paren", "Africa", "Africa (2018 Remaster)"),
+                ("user_remastered_year", "Africa (Remastered 2011)", "Africa"),
+                ("user_hyphen", "Africa - Remastered", "Africa"),
+                ("user_hyphen_year", "Africa - 2018 Remaster", "Africa"),
+                ("both_variants", "Africa (Remaster)", "Africa (2018 Remaster)"),
+                ("ampersand_user_word", "Alive And Kicking", "Alive & Kicking"),
+                ("ampersand_user_amp", "Alive & Kicking", "Alive And Kicking"),
+            )
+        ),
+        # Tiered album match: when one recording's release exactly matches the
+        # user's specific album and another only substring-matches a generic
+        # release, the exact match wins despite a lower fingerprint score.
+        pytest.param(
+            "Africa",
+            "Greatest Hits: 40 Trips Around The Sun",
+            {
+                "status": "ok",
+                "results": [
+                    {
+                        "id": "acoustid-substring",
+                        "score": 0.99,
+                        "recordings": [
+                            {
+                                "id": "rec-substring",
+                                "title": "Africa",
+                                "releases": [{"id": "rel-gh", "title": "Greatest Hits"}],
+                            }
+                        ],
+                    },
+                    {
+                        "id": "acoustid-exact",
+                        "score": 0.85,
+                        "recordings": [
+                            {
+                                "id": "rec-exact",
+                                "title": "Africa",
+                                "releases": [
+                                    {
+                                        "id": "rel-40trips",
+                                        "title": "Greatest Hits: 40 Trips Around The Sun",
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                ],
+            },
+            "rec-exact",
+            "acoustid-exact",
+            id="exact_album_match_beats_substring",
         ),
     ],
 )

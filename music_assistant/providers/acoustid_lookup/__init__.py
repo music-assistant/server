@@ -8,6 +8,7 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
 from .provider import (
+    CONF_ANALYSE_STREAMING,
     CONF_API_KEY,
     CONF_MIN_SCORE,
     CONF_WRITE_TAGS_BACK,
@@ -65,6 +66,18 @@ async def get_config_entries(
             ),
             default_value=DEFAULT_MIN_SCORE,
             range=(0, 1),
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_ANALYSE_STREAMING,
+            type=ConfigEntryType.BOOLEAN,
+            label="Analyse tracks from streaming providers",
+            description=(
+                "When enabled, also fingerprint and identify tracks played from "
+                "streaming providers (Spotify, Tidal, Qobuz, …) that are present "
+                "in your library but lack a MusicBrainz Recording Id."
+            ),
+            default_value=True,
             required=False,
         ),
         ConfigEntry(
