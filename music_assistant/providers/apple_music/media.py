@@ -203,6 +203,11 @@ class AppleMusicMediaManager:
         )
         tracks = response.get("data", [])
         if not tracks:
+            self.logger.debug(
+                "No tracks returned for station_id=%s, raw response keys: %s",
+                station_id,
+                list(response.keys()),
+            )
             return []
         track_ids = [t["id"] for t in tracks if t and t.get("id")]
         rating_response = await self.api.get_ratings(track_ids, MediaType.TRACK)
