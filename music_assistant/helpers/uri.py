@@ -81,7 +81,7 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
                     raise KeyError
             else:
                 raise KeyError
-        elif "deezer.com/" in uri and uri.startswith("https://"):
+        elif uri.startswith(("https://www.deezer.com/", "https://deezer.com/")):
             # Deezer share URL
             # https://www.deezer.com/track/123456
             # https://www.deezer.com/en/track/123456 (with locale)
