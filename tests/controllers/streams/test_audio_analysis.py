@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -1214,3 +1215,10 @@ async def test_count_candidates_missing_analysis_queries_with_available_filesyst
     assert "NOT EXISTS" in sql
     assert f"'{domain}'" in sql
     assert params == {"media_type": MediaType.TRACK.value, "aa_domain": "sonic_analysis"}
+
+
+def test_controller_has_no_provider_specific_extra_data_keys() -> None:
+    """Generic controller must not reference any provider extra_data key names."""
+    source = inspect.getsource(audio_analysis_mod)
+    assert "_EXPORT_STRIP_EXTRA_DATA_KEYS" not in source
+    assert "clap_embedding" not in source
