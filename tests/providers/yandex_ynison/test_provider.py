@@ -2156,7 +2156,7 @@ class TestActivatePlayback:
         await provider._activate_playback(state)
 
         assert provider._active_player_id == "player1"
-        provider.mass.create_task.assert_called()  # type: ignore[attr-defined]
+        provider.mass.create_task.assert_called()  # type: ignore[unreachable]
 
     async def test_detects_track_change(self) -> None:
         """Detects track change and updates streaming track id."""

@@ -48,7 +48,7 @@ async def test_parse_metadata_from_id3tags() -> None:
     assert _tags.disc is None
     _tags.tags["disc"] = "1"
     assert _tags.disc == 1
-    _tags.tags["disc"] = "1/1"
+    _tags.tags["disc"] = "1/1"  # type: ignore[unreachable]
     assert _tags.disc == 1
     # test parsing album year
     _tags.tags["date"] = "blah"

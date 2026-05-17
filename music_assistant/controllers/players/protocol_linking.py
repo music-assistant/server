@@ -1007,6 +1007,9 @@ class ProtocolLinkingMixin:
 
     def _save_protocol_parent_id(self, protocol_player_id: str, parent_id: str) -> None:
         """Save the parent ID for a protocol player for persistence across restarts."""
+        # Only save if the player config still exists to avoid creating partial entries
+        if not self.mass.config.get(f"{CONF_PLAYERS}/{protocol_player_id}"):
+            return
         conf_key = f"{CONF_PLAYERS}/{protocol_player_id}/values/{CONF_PROTOCOL_PARENT_ID}"
         self.mass.config.set(conf_key, parent_id)
 
@@ -1134,6 +1137,9 @@ class ProtocolLinkingMixin:
                         )
                     else:
                         parent_player.update_state()
+                else:
+                    # Parent not registered yet — still purge the cached id
+                    self._remove_protocol_id_from_cache(parent_id, player.player_id)
         else:
             # Native/universal player being removed: handle all linked protocol players.
             # Collect all known protocol IDs from both active links and cached state,

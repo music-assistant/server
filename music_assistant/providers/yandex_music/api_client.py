@@ -7,11 +7,13 @@ import base64
 import hashlib
 import hmac
 import logging
+import random
 import re
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, TypeVar, cast
 
 from music_assistant_models.errors import (
     LoginFailed,
@@ -38,7 +40,20 @@ if TYPE_CHECKING:
     from yandex_music.rotor.dashboard import Dashboard
     from yandex_music.rotor.station_result import StationResult
 
-from .constants import DEFAULT_LIMIT
+from .constants import (
+    CAPTCHA_COOLDOWN_S,
+    DEFAULT_LIMIT,
+    FILE_INFO_CACHE_MAX,
+    FILE_INFO_CACHE_TTL_S,
+    LIKED_BATCH_JITTER_MIN_S,
+    LIKED_BATCH_JITTER_SPAN_S,
+    RATE_LIMIT_COOLDOWN_S,
+    THROTTLE_DEFAULT_RPS,
+    THROTTLE_FILE_INFO_RPS,
+    THROTTLE_ROTOR_RPS,
+)
+
+_CAPTCHA_MARKERS: Final = ("smart-captcha", "captcha_smart_qrcode", "about-429.html")
 
 # get-file-info with quality=lossless returns FLAC; default /tracks/.../download-info often does not
 # Prefer flac-mp4/aac-mp4 (Yandex API moved to these formats around 2025)
@@ -64,7 +79,25 @@ class YandexMusicClient:
         self._user_id: int | None = None
         self._last_reconnect_at: float = -30.0  # allow first reconnect immediately
         self._reconnect_lock = asyncio.Lock()
-        self._throttler = Throttler(rate_limit=5, period=1.0)
+        # Per-kind throttlers. Yandex's smart-captcha quota is per-endpoint-family,
+        # so we keep a separate token bucket per logical class and let one kind
+        # back off independently of the others.
+        self._throttlers: dict[str, Throttler] = {
+            "default": Throttler(rate_limit=THROTTLE_DEFAULT_RPS, period=1.0),
+            "file_info": Throttler(rate_limit=THROTTLE_FILE_INFO_RPS, period=1.0),
+            "rotor": Throttler(rate_limit=THROTTLE_ROTOR_RPS, period=1.0),
+        }
+        # Per-kind captcha quarantine deadlines (monotonic). Only the explicit
+        # smart-captcha page sets a deadline; plain 429 leaves these at 0.
+        self._block_until: dict[str, float] = dict.fromkeys(self._throttlers, 0.0)
+        # Short-TTL cache for /get-file-info results, keyed by
+        # (track_id, quality, codecs, transport). Bounded by FILE_INFO_CACHE_MAX (LRU).
+        self._file_info_cache: OrderedDict[
+            tuple[str, str, str, str], tuple[float, dict[str, Any]]
+        ] = OrderedDict()
+
+    def _get_throttler(self, kind: str) -> Throttler:
+        return self._throttlers.get(kind, self._throttlers["default"])
 
     @property
     def user_id(self) -> int:
@@ -123,12 +156,29 @@ class YandexMusicClient:
         msg = str(err).lower()
         return "disconnect" in msg or "connection" in msg or "timeout" in msg
 
+    def _classify_429(self, err: Exception) -> Literal["captcha", "rate_limit", "other"]:
+        """Classify a 429-ish error: smart-captcha edge block vs plain rate-limit.
+
+        Yandex returns an HTML smart-captcha page when its anti-bot edge layer
+        decides an endpoint family is too hot. That page is per-endpoint, not
+        per-IP, and warrants a longer cooldown than an ordinary 429.
+        """
+        if not isinstance(err, NetworkError):
+            return "other"
+        low = str(err).lower()
+        if not ("429" in low or "too many requests" in low or "rate limit" in low):
+            return "other"
+        return "captcha" if any(m in low for m in _CAPTCHA_MARKERS) else "rate_limit"
+
     def _is_rate_limit_error(self, err: Exception) -> bool:
         """Return True if the exception indicates a rate-limit response from Yandex."""
-        if not isinstance(err, NetworkError):
-            return False
-        msg = str(err).lower()
-        return "429" in msg or "too many requests" in msg or "rate limit" in msg
+        return self._classify_429(err) != "other"
+
+    @staticmethod
+    def _truncate_err_msg(err: Exception, limit: int = 200) -> str:
+        """Cap a NetworkError message so the captcha HTML body never lands in logs."""
+        msg = str(err)
+        return msg if len(msg) <= limit else msg[:limit] + "...[truncated]"
 
     async def _reconnect(self) -> None:
         """Disconnect and connect again to recover from Server disconnected / connection errors.
@@ -144,22 +194,109 @@ class YandexMusicClient:
             await self.disconnect()
             await self.connect()
 
-    async def _call_with_retry(self, func: Callable[[ClientAsync], Awaitable[_T]]) -> _T:
+    def _check_block(self, kind: str) -> None:
+        """Raise immediately if `kind` is under a captcha quarantine.
+
+        BYPASS_THROTTLER callers (stream URL refresh) must skip this check so a
+        currently playing track isn't dropped mid-stream when an unrelated
+        endpoint family trips smart-captcha.
+        """
+        deadline = self._block_until.get(kind, 0.0)
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            raise ResourceTemporarilyUnavailable(
+                f"Yandex Music {kind} cooldown active",
+                backoff_time=int(remaining) + 1,
+            )
+
+    def _trigger_captcha_block(self, kind: str) -> int:
+        """Quarantine the given throttler kind for CAPTCHA_COOLDOWN_S.
+
+        Only called when _classify_429 == "captcha". Plain rate-limit responses
+        do NOT trigger this, since Yandex's smart-captcha bucket is per
+        endpoint family and we don't want to gate unrelated traffic.
+        """
+        cooldown = CAPTCHA_COOLDOWN_S
+        self._block_until[kind] = max(self._block_until.get(kind, 0.0), time.monotonic() + cooldown)
+        LOGGER.warning("Yandex Music %s captcha cooldown engaged: %.0fs", kind, cooldown)
+        return int(cooldown)
+
+    def _maybe_handle_429(self, err: Exception, kind: str) -> ResourceTemporarilyUnavailable | None:
+        """Classify a 429 error and build the user-facing exception.
+
+        Returns the prepared `ResourceTemporarilyUnavailable` to raise, or
+        ``None`` if the error isn't a 429 (caller should re-raise or fall
+        through to connection-error handling). Always truncates the message
+        so the smart-captcha HTML body never lands in logs.
+
+        Side effect: a captcha-classified result engages the per-kind block
+        deadline. Plain 429 leaves block deadlines untouched.
+        """
+        classified = self._classify_429(err)
+        if classified == "captcha":
+            backoff = self._trigger_captcha_block(kind)
+            return ResourceTemporarilyUnavailable(
+                f"Yandex Music captcha ({kind})",
+                backoff_time=backoff,
+            )
+        if classified == "rate_limit":
+            LOGGER.debug("Yandex Music plain 429 on kind=%s", kind)
+            return ResourceTemporarilyUnavailable(
+                "Yandex Music rate limit",
+                backoff_time=int(RATE_LIMIT_COOLDOWN_S),
+            )
+        return None
+
+    def _file_info_cache_get(self, key: tuple[str, str, str, str]) -> dict[str, Any] | None:
+        entry = self._file_info_cache.get(key)
+        if entry is None:
+            return None
+        expires_at, value = entry
+        if time.monotonic() >= expires_at:
+            self._file_info_cache.pop(key, None)
+            return None
+        self._file_info_cache.move_to_end(key)
+        return value
+
+    def _file_info_cache_put(self, key: tuple[str, str, str, str], value: dict[str, Any]) -> None:
+        self._file_info_cache[key] = (
+            time.monotonic() + FILE_INFO_CACHE_TTL_S,
+            value,
+        )
+        self._file_info_cache.move_to_end(key)
+        while len(self._file_info_cache) > FILE_INFO_CACHE_MAX:
+            self._file_info_cache.popitem(last=False)
+
+    def _file_info_cache_invalidate(self, track_id: str) -> None:
+        for k in [k for k in self._file_info_cache if k[0] == track_id]:
+            self._file_info_cache.pop(k, None)
+
+    async def _call_with_retry(
+        self,
+        func: Callable[[ClientAsync], Awaitable[_T]],
+        *,
+        kind: str = "default",
+    ) -> _T:
         """Execute an async API call with throttling and one reconnect attempt on connection error.
 
         :param func: Async callable that takes a ClientAsync and returns a result.
+        :param kind: Throttler bucket — "default", "file_info" or "rotor".
         :return: The result of the API call.
         """
         if not BYPASS_THROTTLER.get():
-            await self._throttler.acquire()
+            # Fast path: short-circuit before queueing if the kind is already
+            # blocked. Re-check after acquire() — another concurrent request
+            # may have engaged the cooldown while we were queued.
+            self._check_block(kind)
+            await self._get_throttler(kind).acquire()
+            self._check_block(kind)
         client = await self._ensure_connected()
         try:
             return await func(client)
         except Exception as err:
-            if self._is_rate_limit_error(err):
-                raise ResourceTemporarilyUnavailable(
-                    "Yandex Music rate limit", backoff_time=60
-                ) from err
+            rate_limit_exc = self._maybe_handle_429(err, kind)
+            if rate_limit_exc is not None:
+                raise rate_limit_exc from NetworkError(self._truncate_err_msg(err))
             if not self._is_connection_error(err):
                 raise
             LOGGER.warning("Connection error, reconnecting and retrying: %s", err)
@@ -168,9 +305,29 @@ class YandexMusicClient:
             except Exception as recon_err:
                 raise ProviderUnavailableError("Reconnect failed") from recon_err
             client = cast("ClientAsync", self._client)
-            return await func(client)
+            # Re-check the block before the retry: while we were reconnecting,
+            # another concurrent task may have engaged the kind cooldown
+            # (e.g. captcha 429). BYPASS_THROTTLER paths skip this so an
+            # in-flight stream refresh can still attempt the retry.
+            if not BYPASS_THROTTLER.get():
+                self._check_block(kind)
+            # Reconnect-retry must also go through 429 classification —
+            # otherwise a captcha on the retry attempt bypasses the cooldown
+            # logic and propagates the raw HTML body.
+            try:
+                return await func(client)
+            except Exception as retry_err:
+                retry_exc = self._maybe_handle_429(retry_err, kind)
+                if retry_exc is not None:
+                    raise retry_exc from NetworkError(self._truncate_err_msg(retry_err))
+                raise
 
-    async def _call_no_retry(self, func: Callable[[ClientAsync], Awaitable[_T]]) -> _T:
+    async def _call_no_retry(
+        self,
+        func: Callable[[ClientAsync], Awaitable[_T]],
+        *,
+        kind: str = "default",
+    ) -> _T:
         """Execute an async API call without reconnect retry on call failure.
 
         Used for fire-and-forget calls (e.g. rotor feedback) where a failed request
@@ -180,12 +337,27 @@ class YandexMusicClient:
         path is skipped.
 
         :param func: Async callable that takes a ClientAsync and returns a result.
+        :param kind: Throttler bucket — "default", "file_info" or "rotor".
         :return: The result of the API call.
         """
         if not BYPASS_THROTTLER.get():
-            await self._throttler.acquire()
+            # Same dual check as _call_with_retry — see comment there.
+            self._check_block(kind)
+            await self._get_throttler(kind).acquire()
+            self._check_block(kind)
         client = await self._ensure_connected()
-        return await func(client)
+        try:
+            return await func(client)
+        except Exception as err:
+            # Even on the fire-and-forget path we want to classify 429s: a
+            # captcha hit on rotor feedback must still quarantine the rotor
+            # kind so the rest of the provider stops poking Yandex's edge
+            # while it's hot. Truncation also prevents callers' broad
+            # `except NetworkError` from logging multi-KB HTML payloads.
+            rate_limit_exc = self._maybe_handle_429(err, kind)
+            if rate_limit_exc is not None:
+                raise rate_limit_exc from NetworkError(self._truncate_err_msg(err))
+            raise
 
     # Rotor (radio station) methods
 
@@ -202,7 +374,8 @@ class YandexMusicClient:
         """
         try:
             result = await self._call_with_retry(
-                lambda c: c.rotor_station_tracks(station_id, settings2=True, queue=queue)
+                lambda c: c.rotor_station_tracks(station_id, settings2=True, queue=queue),
+                kind="rotor",
             )
         except BadRequestError as err:
             LOGGER.warning("Error fetching rotor station %s tracks: %s", station_id, err)
@@ -311,7 +484,7 @@ class YandexMusicClient:
             )
 
         try:
-            result = await self._call_no_retry(_send)
+            result = await self._call_no_retry(_send, kind="rotor")
             LOGGER.debug(
                 "Rotor feedback %s track_id=%s total_played_seconds=%s",
                 feedback_type,
@@ -322,8 +495,16 @@ class YandexMusicClient:
         except BadRequestError as err:
             LOGGER.warning("Rotor feedback %s failed: %s", feedback_type, err)
             return False
+        except ResourceTemporarilyUnavailable as err:
+            # 429/captcha already truncated + block engaged inside _call_no_retry.
+            LOGGER.warning("Rotor feedback %s rate-limited: %s", feedback_type, err)
+            return False
         except (NetworkError, ProviderUnavailableError) as err:
-            LOGGER.warning("Rotor feedback %s failed: %s", feedback_type, err)
+            LOGGER.warning(
+                "Rotor feedback %s failed: %s",
+                feedback_type,
+                self._truncate_err_msg(err),
+            )
             return False
 
     # Rotor session API (new session-based endpoints)
@@ -363,10 +544,13 @@ class YandexMusicClient:
             LOGGER.debug("Rotor session POST %s body_keys=%s", path, list(body.keys()))
             try:
                 result = await c._request.post(url, json=body)
-            except NetworkError:
+            except NetworkError as err:
                 # Let the outer retry wrapper see transient drops. On the
-                # no-retry path the outer `except` below swallows it silently.
-                if with_retry:
+                # no-retry path swallow ordinary network blips silently, but
+                # 429/captcha errors MUST propagate so _call_no_retry can
+                # engage the rotor cooldown — otherwise feedback keeps
+                # hammering Yandex during an active edge ban.
+                if with_retry or self._is_rate_limit_error(err):
                     raise
                 LOGGER.debug("Rotor session POST %s: network error (no retry)", path)
                 return None
@@ -383,15 +567,18 @@ class YandexMusicClient:
 
         runner = self._call_with_retry if with_retry else self._call_no_retry
         try:
-            return await runner(_do)
+            return await runner(_do, kind="rotor")
         except UnauthorizedError as err:
             # Expired/invalidated token. Surface as LoginFailed so MA prompts
             # for re-auth instead of the raw yandex_music exception bubbling
             # through browse / play and crashing the caller.
             LOGGER.warning("Rotor session POST %s: token no longer valid", path)
             raise LoginFailed("Invalid Yandex Music token") from err
+        except ResourceTemporarilyUnavailable as err:
+            LOGGER.warning("Rotor session POST %s rate-limited: %s", path, err)
+            return None
         except (NetworkError, ProviderUnavailableError) as err:
-            LOGGER.warning("Rotor session POST %s failed: %s", path, err)
+            LOGGER.warning("Rotor session POST %s failed: %s", path, self._truncate_err_msg(err))
             return None
 
     async def rotor_session_new(
@@ -644,6 +831,11 @@ class YandexMusicClient:
                 for like in result:
                     if like.album is not None and like.album.id and str(like.album.id) in batch_set:
                         full_albums.append(like.album)
+            # Spread bursts: small jittered pause before next batch.
+            if i + batch_size < len(album_ids):
+                await asyncio.sleep(
+                    LIKED_BATCH_JITTER_MIN_S + random.random() * LIKED_BATCH_JITTER_SPAN_S
+                )
         return full_albums
 
     async def get_liked_artists(self) -> list[YandexArtist]:
@@ -1009,7 +1201,7 @@ class YandexMusicClient:
             LOGGER.error("Error fetching download info for track %s: %s", track_id, err)
             return []
 
-    async def get_track_file_info(
+    async def get_track_file_info(  # noqa: PLR0915
         self,
         track_id: str,
         quality: str = "lossless",
@@ -1034,6 +1226,38 @@ class YandexMusicClient:
         """
         # Normalize codecs: strip whitespace from each token to prevent HMAC mismatches
         codecs = ",".join(c.strip() for c in codecs.split(",") if c.strip())
+
+        # Short-TTL cache to absorb repeat calls from MA's streaming retry loop.
+        # Bypass when refresh is in progress (BYPASS_THROTTLER): a refresh fires
+        # specifically because the previous URL expired on the CDN side, so the
+        # cached entry is useless.
+        # Include `codecs` in the key: the server may pick a different codec
+        # (and URL) based on the codec preference order, so two calls with the
+        # same (track, quality, transport) but different codec lists must not
+        # share a cache slot.
+        cache_key = (track_id, quality, codecs, transport)
+        if not BYPASS_THROTTLER.get():
+            # Check the file_info circuit-breaker BEFORE the cache lookup —
+            # otherwise a cooldown-period caller could be served a stale URL
+            # from before the block was engaged. Fail fast (return None) so
+            # MA's streaming layer treats the track as unavailable.
+            try:
+                self._check_block("file_info")
+            except ResourceTemporarilyUnavailable as err:
+                LOGGER.debug(
+                    "get-file-info for track %s: file_info cooldown active (%s)",
+                    track_id,
+                    err,
+                )
+                return None
+            cached = self._file_info_cache_get(cache_key)
+            if cached is not None:
+                LOGGER.debug(
+                    "get-file-info for track %s: cache hit (transport=%s)",
+                    track_id,
+                    transport,
+                )
+                return cached
 
         def _build_signed_params(client: ClientAsync) -> tuple[str, dict[str, Any]]:
             """Build URL and signed params using current client and timestamp.
@@ -1090,7 +1314,7 @@ class YandexMusicClient:
             return await c._request.get(url, params=params)  # type: ignore[no-any-return]
 
         try:
-            result = await self._call_with_retry(_do_request)
+            result = await self._call_with_retry(_do_request, kind="file_info")
             parsed = _parse_file_info_result(result)
             if parsed:
                 LOGGER.debug(
@@ -1099,9 +1323,22 @@ class YandexMusicClient:
                     parsed.get("codec"),
                     transport,
                 )
+                # Always store the freshest URL — including under BYPASS_THROTTLER.
+                # A successful refresh proves the previously cached entry was
+                # stale, so replacing it avoids serving the old URL to the next
+                # non-bypass caller until its TTL expires.
+                self._file_info_cache_put(cache_key, parsed)
                 return parsed
+        except BadRequestError as err:
+            # 4xx is terminal for this URL/quality. Drop any cached entry so we
+            # don't replay a now-rejected response.
+            self._file_info_cache_invalidate(track_id)
+            LOGGER.debug(
+                "get-file-info for track %s: BadRequestError %s",
+                track_id,
+                getattr(err, "message", str(err)) or repr(err),
+            )
         except (
-            BadRequestError,
             NetworkError,
             ProviderUnavailableError,
             ResourceTemporarilyUnavailable,
@@ -1113,6 +1350,9 @@ class YandexMusicClient:
                 getattr(err, "message", str(err)) or repr(err),
             )
         except UnauthorizedError as err:
+            # Auth expired — invalidate any cached URL so the post-re-auth call
+            # doesn't replay a stale entry tied to the old session.
+            self._file_info_cache_invalidate(track_id)
             LOGGER.debug(
                 "get-file-info for track %s: UnauthorizedError %s",
                 track_id,
@@ -1326,7 +1566,8 @@ class YandexMusicClient:
         """
         try:
             results: list[StationResult] = await self._call_with_retry(
-                lambda c: c.rotor_stations_list(language)
+                lambda c: c.rotor_stations_list(language),
+                kind="rotor",
             )
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.warning("Error fetching wave stations: %s", err)
@@ -1373,7 +1614,8 @@ class YandexMusicClient:
         """
         try:
             dashboard: Dashboard | None = await self._call_with_retry(
-                lambda c: c.rotor_stations_dashboard()
+                lambda c: c.rotor_stations_dashboard(),
+                kind="rotor",
             )
         except (BadRequestError, NetworkError, ProviderUnavailableError) as err:
             LOGGER.warning("Error fetching dashboard stations: %s", err)
