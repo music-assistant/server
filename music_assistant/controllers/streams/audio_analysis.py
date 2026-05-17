@@ -667,6 +667,43 @@ class AudioAnalysisController:
         except (ValueError, TypeError, KeyError):
             return None
 
+    @api_command("audio_analysis/coverage")
+    async def coverage(self, aa_domain: str) -> dict[str, Any]:
+        """
+        Return analysis-coverage health counts for an AA provider.
+
+        :param aa_domain: AA provider domain to query.
+        """
+        provider = self.mass.get_provider(
+            aa_domain,
+            provider_type=AudioAnalysisProvider,  # type: ignore[type-abstract]
+        )
+        if provider is None:
+            raise ProviderUnavailableError(f"{aa_domain} is not available")
+
+        analyzed = await self.get_audio_analysis_count(aa_domain)
+        pending = await self._count_candidates_missing_analysis(aa_domain)
+        stale_query = (
+            f"SELECT id FROM {DB_TABLE_AUDIO_ANALYSIS} "
+            f"WHERE aa_provider_domain = :aa_domain "
+            f"  AND media_type = :media_type "
+            f"  AND analysis_version < :current_version"
+        )
+        stale_version = await self.mass.music.database.get_count_from_query(
+            stale_query,
+            {
+                "aa_domain": aa_domain,
+                "media_type": MediaType.TRACK.value,
+                "current_version": provider.analysis_version,
+            },
+        )
+        return {
+            "analyzed": analyzed,
+            "pending": pending,
+            "stale_version": stale_version,
+            "analysis_version": provider.analysis_version,
+        }
+
     async def _run_background_scan(self) -> None:
         """Run the scan as decode-once-fan-out streaming over candidate tracks."""
         providers = self.providers
@@ -923,6 +960,36 @@ class AudioAnalysisController:
                 }
             )
         return results
+
+    async def _count_candidates_missing_analysis(self, aa_domain: str) -> int:
+        """Count filesystem candidate tracks with no analysis row for aa_domain."""
+        filesystem_domains = tuple(
+            domain
+            for domain in FILESYSTEM_PROVIDER_DOMAINS
+            if any(
+                p.domain == domain and p.available
+                for p in self.mass.get_providers(ProviderType.MUSIC)
+            )
+        )
+        if not filesystem_domains:
+            return 0
+        fs_inline = ", ".join(f"'{d}'" for d in filesystem_domains)
+        query = (
+            f"SELECT pm.provider_item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} pm "
+            f"WHERE pm.media_type = :media_type "
+            f"  AND pm.provider_domain IN ({fs_inline}) "
+            f"  AND NOT EXISTS ("
+            f"    SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS} aa "
+            f"    WHERE aa.item_id = pm.provider_item_id "
+            f"      AND aa.provider = pm.provider_instance "
+            f"      AND aa.aa_provider_domain = :aa_domain "
+            f"      AND aa.media_type = :media_type"
+            f"  )"
+        )
+        return await self.mass.music.database.get_count_from_query(
+            query,
+            {"media_type": MediaType.TRACK.value, "aa_domain": aa_domain},
+        )
 
     async def _start_analysis_on_providers(
         self,

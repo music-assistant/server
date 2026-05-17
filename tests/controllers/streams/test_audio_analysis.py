@@ -1155,3 +1155,42 @@ async def test_track_raises_for_unknown_aa_domain() -> None:
             item_id="a",
             provider_instance_id_or_domain="filesystem_local",
         )
+
+
+@pytest.mark.asyncio
+async def test_coverage_returns_three_counts_and_version() -> None:
+    """coverage() reports analyzed, pending, stale_version, analysis_version."""
+    c, _ = _stub_controller()
+    p = _make_aa_provider_with_domain("sonic_analysis", analysis_version=3)
+    c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
+    c.get_audio_analysis_count = AsyncMock(return_value=100)  # type: ignore[method-assign]
+    c._count_candidates_missing_analysis = AsyncMock(return_value=20)  # type: ignore[method-assign]
+    c.mass.music.database.get_count_from_query = AsyncMock(return_value=5)
+
+    result = await c.coverage(aa_domain="sonic_analysis")
+
+    assert result == {
+        "analyzed": 100,
+        "pending": 20,
+        "stale_version": 5,
+        "analysis_version": 3,
+    }
+
+
+@pytest.mark.asyncio
+async def test_coverage_raises_for_unknown_aa_domain() -> None:
+    """Unloaded AA provider raises ProviderUnavailableError."""
+    c, _ = _stub_controller()
+    c.mass.get_provider = MagicMock(return_value=None)  # type: ignore[method-assign]
+
+    with pytest.raises(ProviderUnavailableError):
+        await c.coverage(aa_domain="nope")
+
+
+@pytest.mark.asyncio
+async def test_count_candidates_missing_analysis_zero_without_filesystem() -> None:
+    """No available filesystem music providers -> 0 pending (no DB query)."""
+    c, _ = _stub_controller()
+    c.mass.get_providers = MagicMock(return_value=[])  # type: ignore[method-assign]
+
+    assert await c._count_candidates_missing_analysis("sonic_analysis") == 0
