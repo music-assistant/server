@@ -616,6 +616,56 @@ class AudioAnalysisController:
 
         return {"total": total, "offset": offset, "limit": limit, "items": items}
 
+    @api_command("audio_analysis/track")
+    async def track(
+        self,
+        aa_domain: str,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+    ) -> dict[str, Any] | None:
+        """
+        Return the complete stored analysis record for a single track.
+
+        Includes all canonical scalar fields and the full, unmodified
+        extra_data (embedding included). Returns None when the track has no
+        stored analysis for this AA provider yet.
+
+        :param aa_domain: AA provider domain to query.
+        :param item_id: Provider-native item ID from streamdetails.item_id.
+        :param provider_instance_id_or_domain: Music provider instance ID or domain.
+        """
+        provider = self.mass.get_provider(
+            aa_domain,
+            provider_type=AudioAnalysisProvider,  # type: ignore[type-abstract]
+        )
+        if provider is None:
+            raise ProviderUnavailableError(f"{aa_domain} is not available")
+        music_provider = self.mass.get_provider(
+            provider_instance_id_or_domain, provider_type=MusicProvider
+        )
+        if music_provider is None:
+            return None
+        prov_key = (
+            music_provider.domain
+            if music_provider.is_streaming_provider
+            else music_provider.instance_id
+        )
+        row = await self.mass.music.database.get_row(
+            DB_TABLE_AUDIO_ANALYSIS,
+            {
+                "item_id": item_id,
+                "provider": prov_key,
+                "aa_provider_domain": aa_domain,
+                "media_type": MediaType.TRACK.value,
+            },
+        )
+        if not row:
+            return None
+        try:
+            return json_loads(row["analysis_data"])
+        except (ValueError, TypeError, KeyError):
+            return None
+
     async def _run_background_scan(self) -> None:
         """Run the scan as decode-once-fan-out streaming over candidate tracks."""
         providers = self.providers

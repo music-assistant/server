@@ -1048,3 +1048,66 @@ async def test_export_rounds_float_fields_to_four_decimals() -> None:
     item = result["items"][0]
     assert item["energy"] == 0.1235
     assert item["danceability"] == 0.9877
+
+
+@pytest.mark.asyncio
+async def test_track_returns_full_record_including_extra_data() -> None:
+    """track() returns the complete parsed analysis dict, embedding included."""
+    full = {"bpm": 120, "extra_data": {"clap_embedding": [0.1, 0.2, 0.3]}}
+    c, _ = _stub_controller()
+    p = _make_aa_provider_with_domain("sonic_analysis")
+    music_prov = MagicMock()
+    music_prov.is_streaming_provider = False
+    music_prov.instance_id = "filesystem_local"
+
+    def _get_provider(dom: str, provider_type: object = None) -> MagicMock:  # noqa: ARG001
+        return p if dom == "sonic_analysis" else music_prov
+
+    c.mass.get_provider = MagicMock(side_effect=_get_provider)  # type: ignore[method-assign]
+    c.mass.music.database.get_row = AsyncMock(return_value={"analysis_data": json.dumps(full)})
+
+    result = await c.track(
+        aa_domain="sonic_analysis",
+        item_id="a",
+        provider_instance_id_or_domain="filesystem_local",
+    )
+
+    assert result == full
+
+
+@pytest.mark.asyncio
+async def test_track_returns_none_when_no_row() -> None:
+    """No stored analysis row -> None (not an error)."""
+    c, _ = _stub_controller()
+    p = _make_aa_provider_with_domain("sonic_analysis")
+    music_prov = MagicMock()
+    music_prov.is_streaming_provider = False
+    music_prov.instance_id = "filesystem_local"
+
+    def _get_provider(dom: str, provider_type: object = None) -> MagicMock:  # noqa: ARG001
+        return p if dom == "sonic_analysis" else music_prov
+
+    c.mass.get_provider = MagicMock(side_effect=_get_provider)  # type: ignore[method-assign]
+    c.mass.music.database.get_row = AsyncMock(return_value=None)
+
+    result = await c.track(
+        aa_domain="sonic_analysis",
+        item_id="missing",
+        provider_instance_id_or_domain="filesystem_local",
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_track_raises_for_unknown_aa_domain() -> None:
+    """Unloaded AA provider raises ProviderUnavailableError."""
+    c, _ = _stub_controller()
+    c.mass.get_provider = MagicMock(return_value=None)  # type: ignore[method-assign]
+
+    with pytest.raises(ProviderUnavailableError):
+        await c.track(
+            aa_domain="nope",
+            item_id="a",
+            provider_instance_id_or_domain="filesystem_local",
+        )
