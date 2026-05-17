@@ -588,7 +588,7 @@ class DeezerMediaManager:
             cache_key = f"podcast_episode.{eid}"
             cached = await cache.get(cache_key, provider=self.instance_id)
             if cached is not None:
-                cached_episodes[eid] = PodcastEpisode(**cached)
+                cached_episodes[eid] = PodcastEpisode.from_dict(cached)
             else:
                 uncached_ids.append(eid)
 
