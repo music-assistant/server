@@ -1220,5 +1220,8 @@ async def test_count_candidates_missing_analysis_queries_with_available_filesyst
 def test_controller_has_no_provider_specific_extra_data_keys() -> None:
     """Generic controller must not reference any provider extra_data key names."""
     source = inspect.getsource(audio_analysis_mod)
+    # Deliberately a raw source-substring guard: the generic controller must never
+    # name provider specifics, even in a comment. The brittleness is intentional --
+    # do not weaken this to an import/attribute check.
     assert "_EXPORT_STRIP_EXTRA_DATA_KEYS" not in source
     assert "clap_embedding" not in source
