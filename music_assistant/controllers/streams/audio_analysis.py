@@ -578,7 +578,7 @@ class AudioAnalysisController:
         :param limit: Max items per page.
         :param offset: Pagination offset.
         :param include_extra_data: When True, include each row's full,
-            unmodified extra_data blob (embeddings included). Callers should
+            unmodified non-empty extra_data blob (embeddings included). Callers should
             lower limit when opting in, since payloads grow substantially.
         """
         provider = self.mass.get_provider(

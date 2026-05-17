@@ -16,7 +16,6 @@ from music_assistant_models.media_items import AudioFormat
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
 from music_assistant.constants import DEFAULT_BACKGROUND_SCAN_CONCURRENCY
 from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
-from music_assistant.helpers.json import json_dumps
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
 
@@ -921,7 +920,7 @@ async def test_export_omits_extra_data_by_default() -> None:
         {
             "item_id": "a",
             "provider": "filesystem_local",
-            "analysis_data": json_dumps(
+            "analysis_data": json.dumps(
                 {"bpm": 120, "extra_data": {"clap_embedding": [0.1, 0.2], "foo": 1}}
             ),
         }
@@ -943,7 +942,7 @@ async def test_export_includes_full_unmodified_extra_data_when_opted_in() -> Non
         {
             "item_id": "a",
             "provider": "filesystem_local",
-            "analysis_data": json_dumps(
+            "analysis_data": json.dumps(
                 {"bpm": 120, "extra_data": {"clap_embedding": [0.1, 0.2], "foo": 1}}
             ),
         }
