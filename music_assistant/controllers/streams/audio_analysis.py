@@ -562,7 +562,6 @@ class AudioAnalysisController:
         "arousal",
         "acousticness",
     )
-    _EXPORT_STRIP_EXTRA_DATA_KEYS: frozenset[str] = frozenset({"clap_embedding"})
 
     @api_command("audio_analysis/export")
     async def export(
@@ -570,16 +569,17 @@ class AudioAnalysisController:
         aa_domain: str,
         limit: int = 100,
         offset: int = 0,
+        include_extra_data: bool = False,
     ) -> dict[str, Any]:
         """
         Return a paginated dump of canonical scalar fields for analyzed tracks.
 
-        Strips known-oversized extra_data keys (e.g., clap_embedding) from the
-        response to keep payloads bounded.
-
         :param aa_domain: AA provider domain to query.
         :param limit: Max items per page.
         :param offset: Pagination offset.
+        :param include_extra_data: When True, include each row's full,
+            unmodified extra_data blob (embeddings included). Callers should
+            lower limit when opting in, since payloads grow substantially.
         """
         provider = self.mass.get_provider(
             aa_domain,
@@ -608,13 +608,10 @@ class AudioAnalysisController:
                 if isinstance(val, float):
                     val = round(val, 4)
                 item[field_name] = val
-            extras = data.get("extra_data") or {}
-            if isinstance(extras, dict):
-                stripped = {
-                    k: v for k, v in extras.items() if k not in self._EXPORT_STRIP_EXTRA_DATA_KEYS
-                }
-                if stripped:
-                    item["extra_data"] = stripped
+            if include_extra_data:
+                extras = data.get("extra_data")
+                if isinstance(extras, dict) and extras:
+                    item["extra_data"] = extras
             items.append(item)
 
         return {"total": total, "offset": offset, "limit": limit, "items": items}

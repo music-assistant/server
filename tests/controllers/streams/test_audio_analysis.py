@@ -16,6 +16,7 @@ from music_assistant_models.media_items import AudioFormat
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
 from music_assistant.constants import DEFAULT_BACKGROUND_SCAN_CONCURRENCY
 from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
+from music_assistant.helpers.json import json_dumps
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
 
@@ -914,17 +915,14 @@ async def test_export_returns_fixed_scalar_field_set() -> None:
 
 
 @pytest.mark.asyncio
-async def test_export_strips_clap_embedding_from_extra_data() -> None:
-    """The 1024-dim CLAP embedding is removed from the response; other extra_data keys survive."""
+async def test_export_omits_extra_data_by_default() -> None:
+    """Default export response carries no extra_data key at all."""
     rows = [
         {
-            "item_id": "t1",
+            "item_id": "a",
             "provider": "filesystem_local",
-            "analysis_data": json.dumps(
-                {
-                    "bpm": 100.0,
-                    "extra_data": {"clap_embedding": [0.0] * 1024, "other_key": "kept"},
-                }
+            "analysis_data": json_dumps(
+                {"bpm": 120, "extra_data": {"clap_embedding": [0.1, 0.2], "foo": 1}}
             ),
         }
     ]
@@ -932,10 +930,31 @@ async def test_export_strips_clap_embedding_from_extra_data() -> None:
     p = _make_aa_provider_with_domain("sonic_analysis")
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
-    result = await c.export(aa_domain="sonic_analysis", limit=10, offset=0)
-    item = result["items"][0]
-    assert "clap_embedding" not in item.get("extra_data", {})
-    assert item["extra_data"] == {"other_key": "kept"}
+    result = await c.export(aa_domain="sonic_analysis")
+
+    assert "extra_data" not in result["items"][0]
+    assert result["items"][0]["bpm"] == 120
+
+
+@pytest.mark.asyncio
+async def test_export_includes_full_unmodified_extra_data_when_opted_in() -> None:
+    """include_extra_data=True returns the full extra_data blob, embedding included."""
+    rows = [
+        {
+            "item_id": "a",
+            "provider": "filesystem_local",
+            "analysis_data": json_dumps(
+                {"bpm": 120, "extra_data": {"clap_embedding": [0.1, 0.2], "foo": 1}}
+            ),
+        }
+    ]
+    c, _ = _stub_controller(count_result=1, list_result=rows)
+    p = _make_aa_provider_with_domain("sonic_analysis")
+    c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
+
+    result = await c.export(aa_domain="sonic_analysis", include_extra_data=True)
+
+    assert result["items"][0]["extra_data"] == {"clap_embedding": [0.1, 0.2], "foo": 1}
 
 
 @pytest.mark.asyncio
