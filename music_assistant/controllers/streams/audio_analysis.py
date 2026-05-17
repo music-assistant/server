@@ -899,6 +899,17 @@ class AudioAnalysisController:
         if session_key in self._active_sessions:
             self._finalize_providers(session_key)
 
+    def _available_filesystem_domains(self) -> tuple[str, ...]:
+        """Return configured filesystem provider domains that are currently available."""
+        return tuple(
+            domain
+            for domain in FILESYSTEM_PROVIDER_DOMAINS
+            if any(
+                p.domain == domain and p.available
+                for p in self.mass.get_providers(ProviderType.MUSIC)
+            )
+        )
+
     async def _find_candidates_missing_analysis(
         self,
         aa_provider_domains: list[str],
@@ -908,14 +919,7 @@ class AudioAnalysisController:
         if not aa_provider_domains:
             return []
 
-        filesystem_domains = tuple(
-            domain
-            for domain in FILESYSTEM_PROVIDER_DOMAINS
-            if any(
-                p.domain == domain and p.available
-                for p in self.mass.get_providers(ProviderType.MUSIC)
-            )
-        )
+        filesystem_domains = self._available_filesystem_domains()
         if not filesystem_domains:
             return []
 
@@ -963,14 +967,7 @@ class AudioAnalysisController:
 
     async def _count_candidates_missing_analysis(self, aa_domain: str) -> int:
         """Count filesystem candidate tracks with no analysis row for aa_domain."""
-        filesystem_domains = tuple(
-            domain
-            for domain in FILESYSTEM_PROVIDER_DOMAINS
-            if any(
-                p.domain == domain and p.available
-                for p in self.mass.get_providers(ProviderType.MUSIC)
-            )
-        )
+        filesystem_domains = self._available_filesystem_domains()
         if not filesystem_domains:
             return 0
         fs_inline = ", ".join(f"'{d}'" for d in filesystem_domains)

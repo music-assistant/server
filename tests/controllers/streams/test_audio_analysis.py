@@ -1194,3 +1194,23 @@ async def test_count_candidates_missing_analysis_zero_without_filesystem() -> No
     c.mass.get_providers = MagicMock(return_value=[])  # type: ignore[method-assign]
 
     assert await c._count_candidates_missing_analysis("sonic_analysis") == 0
+
+
+@pytest.mark.asyncio
+async def test_count_candidates_missing_analysis_queries_with_available_filesystem() -> None:
+    """With an available filesystem provider, the NOT EXISTS count query runs with bound params."""
+    c, db = _stub_controller(count_result=7)
+    domain = next(iter(audio_analysis_mod.FILESYSTEM_PROVIDER_DOMAINS))
+    fs_prov = MagicMock()
+    fs_prov.domain = domain
+    fs_prov.available = True
+    c.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
+
+    result = await c._count_candidates_missing_analysis("sonic_analysis")
+
+    assert result == 7
+    db.get_count_from_query.assert_awaited_once()
+    sql, params = db.get_count_from_query.await_args.args
+    assert "NOT EXISTS" in sql
+    assert f"'{domain}'" in sql
+    assert params == {"media_type": MediaType.TRACK.value, "aa_domain": "sonic_analysis"}
