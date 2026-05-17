@@ -13,7 +13,11 @@ from typing import TYPE_CHECKING, Any, cast
 from mashumaro import DataClassDictMixin
 from mashumaro.exceptions import MissingField
 from music_assistant_models.enums import ExternalID, ProviderFeature
-from music_assistant_models.errors import InvalidDataError, ResourceTemporarilyUnavailable
+from music_assistant_models.errors import (
+    InvalidDataError,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+)
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import compare_strings
@@ -321,6 +325,28 @@ class MusicbrainzProvider(MetadataProvider):
                 raise InvalidDataError from err
         msg = "Invalid MusicBrainz Artist ID provided"
         raise InvalidDataError(msg)
+
+    async def resolve_artists_from_mbids(
+        self, mbids: tuple[str, ...]
+    ) -> list[tuple[str, str, str] | None]:
+        """
+        Look up canonical artist names for a sequence of MusicBrainz artist IDs.
+
+        :param mbids: MusicBrainz artist IDs to look up.
+        :return: One entry per input MBID, in the same order, as a
+            ``(name, mbid, sort_name)`` tuple. ``None`` at a position means
+            that MBID could not be resolved.
+        """
+        results: list[tuple[str, str, str] | None] = []
+        for mbid in mbids:
+            try:
+                artist = await self.get_artist_details(mbid)
+                results.append((artist.name, mbid, artist.sort_name))
+            except (InvalidDataError, RetriesExhausted) as err:
+                # transport errors propagate; they signal a broken mirror, not a per-artist issue
+                self.logger.warning("Failed to lookup MusicBrainz artist %s: %s", mbid, err)
+                results.append(None)
+        return results
 
     async def get_recording_details(self, recording_id: str) -> MusicBrainzRecording:
         """Get Recording details by providing a MusicBrainz Recording Id."""
