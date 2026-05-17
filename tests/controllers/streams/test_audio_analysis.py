@@ -1100,6 +1100,50 @@ async def test_track_returns_none_when_no_row() -> None:
 
 
 @pytest.mark.asyncio
+async def test_track_returns_none_when_music_provider_unresolved() -> None:
+    """AA provider resolves but the music provider lookup returns None -> None."""
+    c, _ = _stub_controller()
+    p = _make_aa_provider_with_domain("sonic_analysis")
+
+    def _get_provider(dom: str, provider_type: object = None) -> MagicMock | None:  # noqa: ARG001
+        return p if dom == "sonic_analysis" else None
+
+    c.mass.get_provider = MagicMock(side_effect=_get_provider)  # type: ignore[method-assign]
+
+    result = await c.track(
+        aa_domain="sonic_analysis",
+        item_id="a",
+        provider_instance_id_or_domain="filesystem_local",
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_track_returns_none_when_analysis_data_unparseable() -> None:
+    """A stored row with unparseable analysis_data -> None (not an error)."""
+    c, _ = _stub_controller()
+    p = _make_aa_provider_with_domain("sonic_analysis")
+    music_prov = MagicMock()
+    music_prov.is_streaming_provider = False
+    music_prov.instance_id = "filesystem_local"
+
+    def _get_provider(dom: str, provider_type: object = None) -> MagicMock:  # noqa: ARG001
+        return p if dom == "sonic_analysis" else music_prov
+
+    c.mass.get_provider = MagicMock(side_effect=_get_provider)  # type: ignore[method-assign]
+    c.mass.music.database.get_row = AsyncMock(return_value={"analysis_data": "not valid json {"})
+
+    result = await c.track(
+        aa_domain="sonic_analysis",
+        item_id="a",
+        provider_instance_id_or_domain="filesystem_local",
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
 async def test_track_raises_for_unknown_aa_domain() -> None:
     """Unloaded AA provider raises ProviderUnavailableError."""
     c, _ = _stub_controller()

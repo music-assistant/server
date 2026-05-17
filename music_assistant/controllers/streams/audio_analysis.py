@@ -627,8 +627,9 @@ class AudioAnalysisController:
         Return the complete stored analysis record for a single track.
 
         Includes all canonical scalar fields and the full, unmodified
-        extra_data (embedding included). Returns None when the track has no
-        stored analysis for this AA provider yet.
+        extra_data (embedding included). Returns None when no usable analysis
+        exists for this track (unknown music provider, no stored row, or an
+        unreadable stored record).
 
         :param aa_domain: AA provider domain to query.
         :param item_id: Provider-native item ID from streamdetails.item_id.
