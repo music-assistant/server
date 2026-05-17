@@ -7,6 +7,7 @@ dicts into Music Assistant media item models.
 from __future__ import annotations
 
 import contextlib
+import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -244,7 +245,7 @@ def parse_artist(
         images.append(img)
     metadata = MediaItemMetadata(images=images) if images else MediaItemMetadata()
     if bio := getattr(artist, "bio", None):
-        metadata.description = bio.summary or bio.full
+        metadata.description = re.sub(r"<[^>]+>", "", bio.full).strip()
     if (fans_count := getattr(artist, "fans_count", None)) is not None:
         metadata.popularity = int(fans_count)
     item = Artist(

@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+from deezer_python_gql.base_client import GraphQLClientGraphQLMultiError
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
@@ -51,6 +52,11 @@ if TYPE_CHECKING:
 
 # Page size for cursor-based pagination
 FAVORITES_PAGE_SIZE = 50
+
+
+def _is_complexity_error(err: GraphQLClientGraphQLMultiError) -> bool:
+    """Check if a GraphQL error is a query complexity limit violation."""
+    return any("complexity" in e.message.lower() for e in err.errors)
 
 
 class DeezerMediaManager:
@@ -248,19 +254,32 @@ class DeezerMediaManager:
         need_albums = MediaType.ALBUM in media_types
         need_audiobooks = MediaType.AUDIOBOOK in media_types
 
-        # Deezer Pipe API enforces a query complexity limit of 25,000.
-        # Cap per-type limit to stay within budget regardless of how many types are requested.
-        capped = min(limit, 25)
-
-        result = await self.provider.gql_client.search(
-            query=search_query,
-            tracks_first=capped if MediaType.TRACK in media_types else 0,
-            albums_first=capped if (need_albums or need_audiobooks) else 0,
-            artists_first=capped if MediaType.ARTIST in media_types else 0,
-            playlists_first=capped if MediaType.PLAYLIST in media_types else 0,
-            livestreams_first=capped if MediaType.RADIO in media_types else 0,
-            podcasts_first=capped if MediaType.PODCAST in media_types else 0,
-        )
+        # Try with full limit first; on complexity error, retry with reduced limits.
+        attempts = [limit, max(limit // 2, 5), 5]
+        result = None
+        for idx, attempt_limit in enumerate(attempts):
+            try:
+                result = await self.provider.gql_client.search(
+                    query=search_query,
+                    tracks_first=attempt_limit if MediaType.TRACK in media_types else 0,
+                    albums_first=attempt_limit if (need_albums or need_audiobooks) else 0,
+                    artists_first=attempt_limit if MediaType.ARTIST in media_types else 0,
+                    playlists_first=attempt_limit if MediaType.PLAYLIST in media_types else 0,
+                    livestreams_first=attempt_limit if MediaType.RADIO in media_types else 0,
+                    podcasts_first=attempt_limit if MediaType.PODCAST in media_types else 0,
+                )
+                break
+            except GraphQLClientGraphQLMultiError as err:
+                if not _is_complexity_error(err):
+                    raise
+                if idx == len(attempts) - 1:
+                    self.logger.warning("Search complexity exceeded even at minimum limit")
+                    raise
+                self.logger.debug(
+                    "Search complexity exceeded at limit=%d, retrying with %d",
+                    attempt_limit,
+                    attempts[idx + 1],
+                )
         search_results = SearchResults()
         if result is None:
             return search_results
@@ -655,6 +674,22 @@ class DeezerMediaManager:
         if result is None:
             return []
         return [parse_track(self.provider, t) for t in result.recommended_tracks if t is not None]
+
+    @use_cache(3600 * 24)  # type: ignore[type-var]
+    async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
+        """Retrieve a list of artists similar to the provided artist."""
+        if prov_artist_id.startswith("personal_artist_"):
+            return []
+        result = await self.provider.gql_client.get_similar_artists(
+            artist_id=prov_artist_id, first=limit
+        )
+        if result is None or result.related_artist is None:
+            return []
+        return [
+            parse_artist(self.provider, edge.node)
+            for edge in result.related_artist.edges
+            if edge.node is not None
+        ]
 
     # -- Library mutations --
 

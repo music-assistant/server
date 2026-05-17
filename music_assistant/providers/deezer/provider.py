@@ -61,6 +61,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.PLAYLIST_CREATE,
     ProviderFeature.RECOMMENDATIONS,
     ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.SIMILAR_ARTISTS,
     ProviderFeature.LYRICS,
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.LIBRARY_PODCASTS_EDIT,
@@ -208,6 +209,10 @@ class DeezerProvider(MusicProvider):
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         return await self.media_manager.get_similar_tracks(prov_track_id, limit)
+
+    async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
+        """Retrieve a list of artists similar to the provided artist."""
+        return await self.media_manager.get_similar_artists(prov_artist_id, limit)
 
     # -- Library mutations --
 
