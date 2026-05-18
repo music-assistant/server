@@ -143,7 +143,7 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             return False
 
         bit_depth = audio_format.bit_depth
-        if bit_depth is None:
+        if not bit_depth:
             return False
         sample_width = max(1, bit_depth // 8)
         track_duration = int(streamdetails.duration or 0)
