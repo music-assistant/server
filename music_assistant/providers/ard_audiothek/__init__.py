@@ -36,6 +36,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_PASSWORD
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.datetime import from_utc_timestamp, future_timestamp, utc
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.ard_audiothek.database_queries import (
     get_history_query,
@@ -257,7 +258,7 @@ class ARDAudiothek(MusicProvider):
         if (
             _email is not None
             and _password is not None
-            and (self.token is None or self.user_id is None or self.token_expire < datetime.now())
+            and (self.token is None or self.user_id is None or self.token_expire < utc())
         ):
             self.token, self.user_id, _display_name = await _login(
                 self.mass.http_session, str(_email), str(_password)
@@ -265,9 +266,7 @@ class ARDAudiothek(MusicProvider):
             self._update_config_value(CONF_TOKEN_BEARER, self.token, encrypted=True)
             self._update_config_value(CONF_USERID, self.user_id, encrypted=True)
             self._update_config_value(CONF_DISPLAY_NAME, _display_name)
-            self._update_config_value(
-                CONF_EXPIRY_TIME, str((datetime.now() + timedelta(hours=1)).timestamp())
-            )
+            self._update_config_value(CONF_EXPIRY_TIME, str(future_timestamp(hours=1)))
             self._client_initialized = False
 
         if not self._client_initialized:
