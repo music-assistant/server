@@ -6,12 +6,10 @@ import asyncio
 import logging
 import socket
 import struct
-from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-import pytest_asyncio
 
 from music_assistant.providers.wled_audiosync.constants import WLED_V2_PACKET_SIZE
 from music_assistant.providers.wled_audiosync.wled_audiosync_bridge.transport import (
@@ -20,71 +18,10 @@ from music_assistant.providers.wled_audiosync.wled_audiosync_bridge.transport im
     classify_destination,
 )
 
+from .conftest import LoopbackUdpListener
+
 # 44-byte sentinel payload — fixed bytes so the assertions are unambiguous.
 SAMPLE_PACKET = b"00002\x00\x00\x00" + bytes(range(36))
-
-
-class _Listener:
-    """Tiny asyncio UDP listener that records every datagram received."""
-
-    def __init__(self) -> None:
-        self.received: list[bytes] = []
-        self._event = asyncio.Event()
-        self._transport: asyncio.DatagramTransport | None = None
-        self.host: str = ""
-        self.port: int = 0
-
-    async def start(self, host: str = "127.0.0.1", port: int = 0) -> tuple[str, int]:
-        """Bind and start receiving. Returns the bound (host, port)."""
-        loop = asyncio.get_running_loop()
-        transport, _proto = await loop.create_datagram_endpoint(
-            lambda: self._Protocol(self),
-            local_addr=(host, port),
-        )
-        self._transport = transport
-        sock = transport.get_extra_info("socket")
-        bound_host, bound_port = sock.getsockname()[:2]
-        self.host = bound_host
-        self.port = bound_port
-        return bound_host, bound_port
-
-    async def wait_for(self, count: int, timeout: float = 1.0) -> None:
-        """Wait until at least `count` packets have been received."""
-        deadline = asyncio.get_running_loop().time() + timeout
-        while len(self.received) < count:
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
-                msg = f"only received {len(self.received)}/{count} packets in {timeout}s"
-                raise AssertionError(msg)
-            self._event.clear()
-            try:
-                await asyncio.wait_for(self._event.wait(), timeout=remaining)
-            except TimeoutError:
-                continue
-
-    def close(self) -> None:
-        if self._transport is not None:
-            self._transport.close()
-            self._transport = None
-
-    class _Protocol(asyncio.DatagramProtocol):
-        def __init__(self, owner: _Listener) -> None:
-            self._owner = owner
-
-        def datagram_received(self, data: bytes, _addr: tuple[str, int]) -> None:
-            self._owner.received.append(data)
-            self._owner._event.set()
-
-
-@pytest_asyncio.fixture
-async def listener() -> AsyncIterator[_Listener]:
-    """Provide a bound loopback UDP listener that's torn down after the test."""
-    lis = _Listener()
-    await lis.start()
-    try:
-        yield lis
-    finally:
-        lis.close()
 
 
 @pytest.mark.parametrize(
@@ -104,7 +41,7 @@ def test_classify_destination(address: str, expected: DestinationKind) -> None:
     assert classify_destination(address) is expected
 
 
-async def test_unicast_send_roundtrip(listener: _Listener) -> None:
+async def test_unicast_send_roundtrip(listener: LoopbackUdpListener) -> None:
     """A single packet sent to a loopback listener is received intact."""
     host, port = listener.host, listener.port
     transport = WledV2Transport(host, port, duplicate_transmit=False)
@@ -117,7 +54,7 @@ async def test_unicast_send_roundtrip(listener: _Listener) -> None:
     assert len(SAMPLE_PACKET) == WLED_V2_PACKET_SIZE
 
 
-async def test_duplicate_transmit_sends_two_packets(listener: _Listener) -> None:
+async def test_duplicate_transmit_sends_two_packets(listener: LoopbackUdpListener) -> None:
     """With duplicate_transmit=True, each send() produces two identical datagrams."""
     host, port = listener.host, listener.port
     transport = WledV2Transport(host, port, duplicate_transmit=True)
@@ -129,7 +66,7 @@ async def test_duplicate_transmit_sends_two_packets(listener: _Listener) -> None
     assert listener.received == [SAMPLE_PACKET, SAMPLE_PACKET]
 
 
-async def test_transport_reopens_after_close(listener: _Listener) -> None:
+async def test_transport_reopens_after_close(listener: LoopbackUdpListener) -> None:
     """A transport whose endpoint was closed reopens on the next send()."""
     host, port = listener.host, listener.port
     transport = WledV2Transport(host, port, duplicate_transmit=False)
@@ -241,7 +178,7 @@ async def _force_sendto_to_fail(transport: WledV2Transport) -> None:
     )
 
 
-async def test_successful_send_resets_error_counter(listener: _Listener) -> None:
+async def test_successful_send_resets_error_counter(listener: LoopbackUdpListener) -> None:
     """A successful send returns the consecutive_errors counter to 0."""
     transport = WledV2Transport(listener.host, listener.port, duplicate_transmit=False)
     try:
@@ -254,7 +191,7 @@ async def test_successful_send_resets_error_counter(listener: _Listener) -> None
 
 
 async def test_failed_send_increments_consecutive_error_counter(
-    listener: _Listener,
+    listener: LoopbackUdpListener,
 ) -> None:
     """Each failing sendto bumps the counter while the transport stays alive."""
     transport = WledV2Transport(
@@ -275,7 +212,7 @@ async def test_failed_send_increments_consecutive_error_counter(
 
 
 async def test_transport_resets_after_consecutive_error_threshold(
-    listener: _Listener,
+    listener: LoopbackUdpListener,
 ) -> None:
     """After the configured threshold, the endpoint is torn down for reopen."""
     transport = WledV2Transport(
@@ -296,7 +233,7 @@ async def test_transport_resets_after_consecutive_error_threshold(
 
 
 async def test_transport_recovers_after_failures_when_send_succeeds(
-    listener: _Listener,
+    listener: LoopbackUdpListener,
 ) -> None:
     """A successful send after a streak of failures resets the counters."""
     transport = WledV2Transport(
@@ -326,7 +263,7 @@ async def test_transport_recovers_after_failures_when_send_succeeds(
 
 
 async def test_on_reset_callback_fires_when_threshold_hit(
-    listener: _Listener,
+    listener: LoopbackUdpListener,
 ) -> None:
     """When auto-reset triggers, the configured on_reset coroutine is scheduled."""
     reset_event = asyncio.Event()
@@ -352,7 +289,7 @@ async def test_on_reset_callback_fires_when_threshold_hit(
 
 
 async def test_on_reset_callback_not_fired_before_threshold(
-    listener: _Listener,
+    listener: LoopbackUdpListener,
 ) -> None:
     """on_reset must NOT fire if the failure streak stays under the threshold."""
     reset_event = asyncio.Event()
@@ -380,7 +317,7 @@ async def test_on_reset_callback_not_fired_before_threshold(
 
 
 async def test_error_logging_is_throttled(
-    listener: _Listener, caplog: pytest.LogCaptureFixture
+    listener: LoopbackUdpListener, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Sustained errors must not emit a WARNING per send (would flood the log)."""
     transport = WledV2Transport(

@@ -27,48 +27,7 @@ from music_assistant.providers.wled_audiosync.wled_audiosync_bridge import (
 )
 from music_assistant.providers.wled_audiosync.wled_audiosync_bridge.encoder import V2_STRUCT_FORMAT
 
-# --- Loopback UDP listener ---
-
-
-class _UdpListener:
-    """A simple loopback UDP listener that records every received datagram."""
-
-    def __init__(self) -> None:
-        """Start with an empty receive log and no live transport."""
-        self.received: list[bytes] = []
-        self._transport: asyncio.DatagramTransport | None = None
-        self.host: str = ""
-        self.port: int = 0
-
-    async def start(self) -> tuple[str, int]:
-        """Bind to an ephemeral loopback port and return (host, port)."""
-        loop = asyncio.get_running_loop()
-        transport, _proto = await loop.create_datagram_endpoint(
-            lambda: self._Protocol(self),
-            local_addr=("127.0.0.1", 0),
-        )
-        self._transport = transport
-        sock = transport.get_extra_info("socket")
-        self.host, self.port = sock.getsockname()[:2]
-        return self.host, self.port
-
-    def close(self) -> None:
-        """Close the underlying datagram endpoint."""
-        if self._transport is not None:
-            self._transport.close()
-            self._transport = None
-
-    class _Protocol(asyncio.DatagramProtocol):
-        """Append every received datagram to the owner's buffer."""
-
-        def __init__(self, owner: _UdpListener) -> None:
-            """Wire the protocol to its owner so it can record packets."""
-            self._owner = owner
-
-        def datagram_received(self, data: bytes, _addr: tuple[str, int]) -> None:
-            """Record one inbound datagram (no parsing — that's the test's job)."""
-            self._owner.received.append(data)
-
+from .conftest import LoopbackUdpListener
 
 # --- Helpers: VisualizerFrame builders + wire-packet decoder ---
 
@@ -143,7 +102,7 @@ async def _drive_frames(
 
 async def test_analyzer_encoder_transport_emits_well_formed_v2_packets() -> None:
     """End-to-end: VisualizerFrames → analyzer → encoder → UDP → listener captures bytes."""
-    listener = _UdpListener()
+    listener = LoopbackUdpListener()
     host, port = await listener.start()
     transport = WledV2Transport(address=host, port=port, duplicate_transmit=False, multicast_ttl=1)
     analyzer = WledAudioAnalyzer()
@@ -173,7 +132,7 @@ async def test_analyzer_encoder_transport_emits_well_formed_v2_packets() -> None
 
 async def test_silent_visualizer_frames_produce_zero_band_wire_packets() -> None:
     """All-zero VisualizerFrames must yield zero bands / zero magnitude on the wire."""
-    listener = _UdpListener()
+    listener = LoopbackUdpListener()
     host, port = await listener.start()
     transport = WledV2Transport(address=host, port=port, duplicate_transmit=False, multicast_ttl=1)
     analyzer = WledAudioAnalyzer()
@@ -197,7 +156,7 @@ async def test_silent_visualizer_frames_produce_zero_band_wire_packets() -> None
 
 async def test_loudness_and_peak_pass_through_to_wire() -> None:
     """A VisualizerFrame with non-zero loudness / f_peak surfaces on the wire."""
-    listener = _UdpListener()
+    listener = LoopbackUdpListener()
     host, port = await listener.start()
     transport = WledV2Transport(address=host, port=port, duplicate_transmit=False, multicast_ttl=1)
     analyzer = WledAudioAnalyzer()
@@ -241,7 +200,7 @@ async def test_loudness_and_peak_pass_through_to_wire() -> None:
 
 async def test_duplicate_transmit_doubles_packet_count_on_wire() -> None:
     """Each encoded frame emits exactly two wire packets when duplicate_transmit=True."""
-    listener = _UdpListener()
+    listener = LoopbackUdpListener()
     host, port = await listener.start()
     transport = WledV2Transport(address=host, port=port, duplicate_transmit=True, multicast_ttl=1)
     analyzer = WledAudioAnalyzer()
@@ -271,7 +230,7 @@ async def test_duplicate_transmit_doubles_packet_count_on_wire() -> None:
 
 async def test_transport_reopens_after_close_and_continues_emitting() -> None:
     """A bridge that closes its transport mid-session can reopen and emit again."""
-    listener = _UdpListener()
+    listener = LoopbackUdpListener()
     host, port = await listener.start()
     transport = WledV2Transport(address=host, port=port, duplicate_transmit=False, multicast_ttl=1)
     analyzer = WledAudioAnalyzer()
