@@ -46,8 +46,8 @@ def _make_provider(
     mass.get_provider = MagicMock(side_effect=_default_get_provider)
     mass.streams.audio_analysis.get_audio_analysis_version = AsyncMock(return_value=None)
     mass.streams.audio_analysis.set_audio_analysis = AsyncMock()
-    mass.metadata.set_track_identifiers = AsyncMock()
-    mass.metadata.set_album_release_group = AsyncMock()
+    mass.music.tracks.set_identifiers = AsyncMock()
+    mass.music.albums.set_release_group = AsyncMock()
     mass.streams.audio_analysis.get_extra_data_for_album_tracks = AsyncMock(return_value=[])
     mass.music.tracks.get_library_item_by_prov_id = AsyncMock(return_value=None)
     mass.music.albums.get_library_item = AsyncMock(return_value=None)
@@ -403,7 +403,7 @@ async def test_post_analysis_persists_and_writes_tags(
 
     await provider.post_analysis(streamdetails, analysis)
 
-    cast("AsyncMock", provider.mass.metadata.set_track_identifiers).assert_awaited_once_with(
+    cast("AsyncMock", provider.mass.music.tracks.set_identifiers).assert_awaited_once_with(
         item_id=streamdetails.item_id,
         provider_instance_id_or_domain=streamdetails.provider,
         mbid="mbid-x",
@@ -478,7 +478,7 @@ async def test_post_analysis_mb_enrichment(
         AudioAnalysisData(extra_data={"mbid": "mbid-x", "acoustid": "acoustid-x"}),
     )
 
-    set_ids = cast("AsyncMock", provider.mass.metadata.set_track_identifiers)
+    set_ids = cast("AsyncMock", provider.mass.music.tracks.set_identifiers)
     assert set_ids.await_args is not None
     assert set_ids.await_args.kwargs["isrcs"] == expected_isrcs
     write_tags.assert_awaited_once_with(
@@ -507,7 +507,7 @@ async def test_post_analysis_consensus_silent_failure(monkeypatch: pytest.Monkey
         ),
     )
 
-    cast("AsyncMock", provider.mass.metadata.set_track_identifiers).assert_awaited_once()
+    cast("AsyncMock", provider.mass.music.tracks.set_identifiers).assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -670,7 +670,7 @@ async def test_consensus_writes_release_group(
 
     await provider._maybe_set_album_release_group(_make_streamdetails())
 
-    cast("AsyncMock", provider.mass.metadata.set_album_release_group).assert_awaited_once_with(
+    cast("AsyncMock", provider.mass.music.albums.set_release_group).assert_awaited_once_with(
         42, expected_rg_id
     )
 
@@ -754,7 +754,7 @@ async def test_consensus_abstains(
 
     await provider._maybe_set_album_release_group(_make_streamdetails())
 
-    cast("AsyncMock", provider.mass.metadata.set_album_release_group).assert_not_awaited()
+    cast("AsyncMock", provider.mass.music.albums.set_release_group).assert_not_awaited()
 
 
 def _wire_track_for_mb_lookup(
@@ -906,7 +906,7 @@ async def test_mb_fallback(
         cast("AsyncMock", mb.search).assert_not_awaited()
     else:
         cast("AsyncMock", mb.search).assert_awaited_once_with(**expected_mb_kwargs)
-    rg_writer = cast("AsyncMock", provider.mass.metadata.set_album_release_group)
+    rg_writer = cast("AsyncMock", provider.mass.music.albums.set_release_group)
     if expected_rg is None:
         rg_writer.assert_not_awaited()
     else:

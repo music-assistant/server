@@ -421,7 +421,7 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             else ([], [])
         )
 
-        await self.mass.metadata.set_track_identifiers(
+        await self.mass.music.tracks.set_identifiers(
             item_id=streamdetails.item_id,
             provider_instance_id_or_domain=streamdetails.provider,
             mbid=mbid,
@@ -730,7 +730,7 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             rg_title,
             source,
         )
-        await self.mass.metadata.set_album_release_group(album_item_id, rg_id)
+        await self.mass.music.albums.set_release_group(album_item_id, rg_id)
 
     def _pick_consensus_winner(
         self,
