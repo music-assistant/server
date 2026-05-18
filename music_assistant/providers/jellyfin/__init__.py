@@ -58,8 +58,6 @@ CONF_URL = "url"
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
 CONF_VERIFY_SSL = "verify_ssl"
-FAKE_ARTIST_PREFIX = "_fake://"
-
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
     ProviderFeature.LIBRARY_ALBUMS,
@@ -429,8 +427,6 @@ class JellyfinProvider(MusicProvider):
     @use_cache(3600)  # Cache for 1 hour
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of albums for the given artist."""
-        if not prov_artist_id.startswith(FAKE_ARTIST_PREFIX):
-            return []
         albums = (
             await self._client.albums.parent(prov_artist_id)
             .fields(*ALBUM_FIELDS)

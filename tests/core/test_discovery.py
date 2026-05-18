@@ -3,7 +3,7 @@
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from zeroconf import InterfaceChoice, IPVersion
+from zeroconf import IPVersion
 from zeroconf.asyncio import AsyncZeroconf
 
 from music_assistant.mass import MusicAssistant
@@ -69,6 +69,17 @@ async def test_discovery_controller_owns_async_zeroconf(mass_minimal: MusicAssis
     mock_zc.async_unregister_service = AsyncMock()
     mock_zc.async_close = AsyncMock()
 
+    # Mock a dual-stack adapter so get_zeroconf_args returns predictable results
+    mock_adapter = MagicMock()
+    mock_adapter.nice_name = "eth0"
+    mock_ipv4 = MagicMock()
+    mock_ipv4.is_IPv6 = False
+    mock_ipv4.ip = "192.168.1.10"
+    mock_ipv6 = MagicMock()
+    mock_ipv6.is_IPv6 = True
+    mock_ipv6.ip = ("fd00::1", 0, 2)
+    mock_adapter.ips = [mock_ipv4, mock_ipv6]
+
     with (
         patch(
             "music_assistant.controllers.discovery.controller.AsyncZeroconf",
@@ -78,14 +89,17 @@ async def test_discovery_controller_owns_async_zeroconf(mass_minimal: MusicAssis
             "music_assistant.controllers.discovery.controller.get_ip_pton",
             new=AsyncMock(return_value=b"\x7f\x00\x00\x01"),
         ),
+        patch(
+            "music_assistant.helpers.util.ifaddr.get_adapters",
+            return_value=[mock_adapter],
+        ),
     ):
         await mass_minimal.discovery.setup(await mass_minimal.config.get_core_config("discovery"))
-        assert mass_minimal.discovery.aiozc is mock_zc
         assert mass_minimal.discovery.aiozc is mock_zc
 
     await mass_minimal.discovery.close()
 
     mock_async_zeroconf.assert_called_once_with(
         ip_version=IPVersion.All,
-        interfaces=InterfaceChoice.All,
+        interfaces=["192.168.1.10", "fd00::1%2"],
     )

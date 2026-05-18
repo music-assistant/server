@@ -8,7 +8,21 @@ from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError, ResourceTemporarilyUnavailable
 
-from .parsers import parse_album, parse_artist, parse_playlist, parse_track
+from .constants import (
+    BASE_URL_V2,
+    FAVORITES_ALBUMS,
+    FAVORITES_ARTISTS,
+    FAVORITES_MIXES,
+    FAVORITES_PLAYLISTS,
+    FAVORITES_TRACKS,
+)
+from .parsers import (
+    parse_album,
+    parse_artist,
+    parse_favorite_tracks_playlist,
+    parse_playlist,
+    parse_track,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -30,21 +44,21 @@ class TidalLibraryManager:
 
     async def get_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists."""
-        path = f"users/{self.auth.user_id}/favorites/artists"
+        path = f"users/{self.auth.user_id}/{FAVORITES_ARTISTS}"
         async for item in self.api.paginate(path):
             if item and item.get("item") and item["item"].get("id"):
                 yield parse_artist(self.provider, item)
 
     async def get_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve library albums."""
-        path = f"users/{self.auth.user_id}/favorites/albums"
+        path = f"users/{self.auth.user_id}/{FAVORITES_ALBUMS}"
         async for item in self.api.paginate(path):
             if item and item.get("item") and item["item"].get("id"):
                 yield parse_album(self.provider, item)
 
     async def get_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks."""
-        path = f"users/{self.auth.user_id}/favorites/tracks"
+        path = f"users/{self.auth.user_id}/{FAVORITES_TRACKS}"
         async for item in self.api.paginate(path):
             if item and item.get("item") and item["item"].get("id"):
                 yield parse_track(self.provider, item)
@@ -53,7 +67,7 @@ class TidalLibraryManager:
         """Retrieve library playlists."""
         # 1. Get favorite mixes
         async for item in self.api.paginate(
-            "favorites/mixes", item_key="items", base_url=self.api.BASE_URL_V2, cursor_based=True
+            FAVORITES_MIXES, item_key="items", base_url=BASE_URL_V2, cursor_based=True
         ):
             if item and item.get("id"):
                 yield parse_playlist(self.provider, item, is_mix=True)
@@ -63,6 +77,9 @@ class TidalLibraryManager:
         async for item in self.api.paginate(path):
             if item and item.get("playlist") and item["playlist"].get("uuid"):
                 yield parse_playlist(self.provider, item)
+
+        # 3. Get the virtual favorite tracks playlist
+        yield parse_favorite_tracks_playlist(self.provider)
 
     async def add_item(self, item: MediaItemType) -> bool:
         """Add item to library."""
@@ -104,7 +121,7 @@ class TidalLibraryManager:
             mix_id = item_id[4:]
             if operation == "add":
                 return (
-                    "favorites/mixes/add",
+                    f"{FAVORITES_MIXES}/add",
                     {
                         "mixIds": mix_id,
                         "onArtifactNotFound": "FAIL",
@@ -113,34 +130,34 @@ class TidalLibraryManager:
                     True,
                 )
             return (
-                "favorites/mixes/remove",
+                f"{FAVORITES_MIXES}/remove",
                 {"mixIds": mix_id, "deviceType": "BROWSER"},
                 True,
             )
 
         if media_type == MediaType.ARTIST:
             return (
-                ("favorites/artists", {"artistId": item_id}, False)
+                (FAVORITES_ARTISTS, {"artistId": item_id}, False)
                 if operation == "add"
-                else (f"favorites/artists/{item_id}", {}, False)
+                else (f"{FAVORITES_ARTISTS}/{item_id}", {}, False)
             )
         if media_type == MediaType.ALBUM:
             return (
-                ("favorites/albums", {"albumId": item_id}, False)
+                (FAVORITES_ALBUMS, {"albumId": item_id}, False)
                 if operation == "add"
-                else (f"favorites/albums/{item_id}", {}, False)
+                else (f"{FAVORITES_ALBUMS}/{item_id}", {}, False)
             )
         if media_type == MediaType.TRACK:
             return (
-                ("favorites/tracks", {"trackId": item_id}, False)
+                (FAVORITES_TRACKS, {"trackId": item_id}, False)
                 if operation == "add"
-                else (f"favorites/tracks/{item_id}", {}, False)
+                else (f"{FAVORITES_TRACKS}/{item_id}", {}, False)
             )
         if media_type == MediaType.PLAYLIST:
             return (
-                ("favorites/playlists", {"uuids": item_id}, False)
+                (FAVORITES_PLAYLISTS, {"uuids": item_id}, False)
                 if operation == "add"
-                else (f"favorites/playlists/{item_id}", {}, False)
+                else (f"{FAVORITES_PLAYLISTS}/{item_id}", {}, False)
             )
 
         return None, {}, False

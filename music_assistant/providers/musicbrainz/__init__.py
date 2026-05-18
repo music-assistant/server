@@ -140,6 +140,7 @@ class MusicBrainzReleaseGroup(DataClassDictMixin):
     secondary_types: list[str] | None = None
     secondary_type_ids: list[str] | None = None
     artist_credit: list[MusicBrainzArtistCredit] | None = None
+    barcode: str | None = None
 
     @classmethod
     def from_raw(cls, data: Any) -> MusicBrainzReleaseGroup:
@@ -475,26 +476,48 @@ class MusicbrainzProvider(MetadataProvider):
         # Sort by first-release-date to find the earliest (likely original studio recording)
         matches.sort(key=lambda x: x[2] if x[2] else "9999")
 
-        # Try recordings in order, looking for one with release groups
+        # Aggregate release groups from ALL matching recordings
+        # This ensures we find albums even if the first recording only has singles
+        all_release_groups: dict[str, tuple[MusicBrainzReleaseGroup, str]] = {}
+        first_artist = None
         for recording, artist, first_release_date in matches:
-            release_groups = self._get_release_groups_by_date(recording, first_release_date)
-            if release_groups:
-                return (MusicBrainzArtist.from_raw(artist), release_groups)
+            if first_artist is None:
+                first_artist = artist
+            for rg, release_date in self._get_release_groups_with_dates(recording, track_name):
+                rg_id = rg.id
+                if rg_id in all_release_groups:
+                    existing_rg, existing_date = all_release_groups[rg_id]
+                    if release_date and (not existing_date or release_date < existing_date):
+                        if not rg.barcode:
+                            rg.barcode = existing_rg.barcode
+                        all_release_groups[rg_id] = (rg, release_date)
+                    elif rg.barcode and not existing_rg.barcode:
+                        existing_rg.barcode = rg.barcode
+                else:
+                    all_release_groups[rg_id] = (rg, release_date)
+
+        if all_release_groups:
+            # Sort by release date
+            sorted_groups = sorted(
+                all_release_groups.values(), key=lambda x: x[1] if x[1] else "9999"
+            )
+            return (MusicBrainzArtist.from_raw(first_artist), [rg for rg, _ in sorted_groups])
 
         # Fall back to the earliest recording (for artist lookup at least)
         recording, artist, _ = matches[0]
         return (MusicBrainzArtist.from_raw(artist), [])
 
-    def _get_release_groups_by_date(
-        self, recording: dict[str, Any], first_release_date: str
-    ) -> list[MusicBrainzReleaseGroup]:
-        """Collect release groups for a recording, sorted by release date.
+    def _get_release_groups_with_dates(
+        self, recording: dict[str, Any], track_name: str
+    ) -> list[tuple[MusicBrainzReleaseGroup, str]]:
+        """Collect release groups for a recording with their release dates.
 
         Filters out compilations and other secondary-type releases.
-        Returns singles and studio albums sorted chronologically.
+        For singles, only includes those where the title matches the track name.
+        Returns list of (release_group, release_date) tuples for singles and studio albums.
 
         :param recording: MusicBrainz recording dict.
-        :param first_release_date: The recording's first-release-date (e.g. "1982-03-29").
+        :param track_name: Track name to match against single titles.
         """
         releases = recording.get("releases", [])
         if not releases:
@@ -504,6 +527,11 @@ class MusicbrainzProvider(MetadataProvider):
         seen: dict[str, tuple[MusicBrainzReleaseGroup, str]] = {}
 
         for release in releases:
+            # Skip bootleg and pseudo-releases
+            release_status = release.get("status", "")
+            if release_status in ("Bootleg", "Pseudo-Release"):
+                continue
+
             rg = release.get("release-group", {})
             rg_id = rg.get("id")
             if not rg_id:
@@ -518,19 +546,30 @@ class MusicbrainzProvider(MetadataProvider):
             if secondary_types:
                 continue
 
+            # For singles, only include if the title matches the track name
+            # (avoid B-sides and bonus tracks on unrelated singles)
+            if primary_type == "Single":
+                if not compare_strings(rg.get("title", ""), track_name, strict=False):
+                    continue
+
             release_date = release.get("date", "") or ""
+            barcode = release.get("barcode") or None
 
             # Keep the earliest release date per release group
             if rg_id in seen:
-                _, existing_date = seen[rg_id]
+                existing_rg, existing_date = seen[rg_id]
                 if release_date and (not existing_date or release_date < existing_date):
-                    seen[rg_id] = (MusicBrainzReleaseGroup.from_raw(rg), release_date)
+                    mb_rg = MusicBrainzReleaseGroup.from_raw(rg)
+                    mb_rg.barcode = barcode or existing_rg.barcode
+                    seen[rg_id] = (mb_rg, release_date)
+                elif barcode and not existing_rg.barcode:
+                    existing_rg.barcode = barcode
             else:
-                seen[rg_id] = (MusicBrainzReleaseGroup.from_raw(rg), release_date)
+                mb_rg = MusicBrainzReleaseGroup.from_raw(rg)
+                mb_rg.barcode = barcode
+                seen[rg_id] = (mb_rg, release_date)
 
-        # Sort by release date
-        sorted_groups = sorted(seen.values(), key=lambda x: x[1] if x[1] else "9999")
-        return [rg for rg, _ in sorted_groups]
+        return list(seen.values())
 
     @use_cache(86400 * 30)  # Cache for 30 days
     @throttle_with_retries

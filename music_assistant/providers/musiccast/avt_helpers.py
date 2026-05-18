@@ -13,6 +13,7 @@ from music_assistant.helpers.upnp import (
     get_xml_soap_stop,
     get_xml_soap_transport_info,
 )
+from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.musiccast.constants import (
     MC_DEVICE_UPNP_CTRL_ENDPOINT,
@@ -34,7 +35,7 @@ def get_headers(xml: str, soap_action: str) -> dict[str, str]:
 
 def get_upnp_ctrl_url(physical_device: MusicCastPhysicalDevice) -> str:
     """Get UPNP control URL."""
-    return f"http://{physical_device.device.device.ip}:{MC_DEVICE_UPNP_PORT}/{MC_DEVICE_UPNP_CTRL_ENDPOINT}"
+    return f"http://{format_ip_for_url(physical_device.device.device.ip)}:{MC_DEVICE_UPNP_PORT}/{MC_DEVICE_UPNP_CTRL_ENDPOINT}"
 
 
 async def avt_play(

@@ -138,6 +138,11 @@ class AudioDbMetadataProvider(MetadataProvider):
 
     throttler: Throttler
 
+    @property
+    def priority(self) -> int:
+        """Priority for this provider (lower = more preferred)."""
+        return 20
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.cache = self.mass.cache
@@ -150,6 +155,7 @@ class AudioDbMetadataProvider(MetadataProvider):
         if not artist.mbid:
             # for 100% accuracy we require the musicbrainz id for all lookups
             return None
+        self.logger.debug("Fetching metadata for Artist %s on The Audio DB", artist.name)
         if data := await self._get_data("artist-mb.php", i=artist.mbid):
             if data.get("artists"):
                 return self.__parse_artist(data["artists"][0])
@@ -159,6 +165,7 @@ class AudioDbMetadataProvider(MetadataProvider):
         """Retrieve metadata for album on theaudiodb."""
         if not self.config.get_value(CONF_ENABLE_ALBUM_METADATA):
             return None
+        self.logger.debug("Fetching metadata for Album %s on The Audio DB", album.name)
         if mbid := album.get_external_id(ExternalID.MB_RELEASEGROUP):
             result = await self._get_data("album-mb.php", i=mbid)
             if result and result.get("album"):
@@ -243,8 +250,10 @@ class AudioDbMetadataProvider(MetadataProvider):
             desc := artist_obj.get(f"strBiography{lang_code.upper()}")
         ):
             metadata.description = desc
-        else:
+        elif artist_obj.get("strBiographyEN"):
             metadata.description = artist_obj.get("strBiographyEN")
+        else:
+            metadata.description = artist_obj.get("strBiography")
         # images
         if not self.config.get_value(CONF_ENABLE_IMAGES):
             return metadata
@@ -290,8 +299,10 @@ class AudioDbMetadataProvider(MetadataProvider):
             desc := adb_album.get(f"strDescription{lang_code.upper()}")
         ):
             metadata.description = desc
-        else:
+        elif adb_album.get("strDescriptionEN"):
             metadata.description = adb_album.get("strDescriptionEN")
+        else:
+            metadata.description = adb_album.get("strDescription")
         metadata.review = adb_album.get("strReview")
         # images
         if not self.config.get_value(CONF_ENABLE_IMAGES):
@@ -345,8 +356,10 @@ class AudioDbMetadataProvider(MetadataProvider):
             desc := adb_track.get(f"strDescription{lang_code.upper()}")
         ):
             metadata.description = desc
-        else:
+        elif adb_track.get("strDescriptionEN"):
             metadata.description = adb_track.get("strDescriptionEN")
+        else:
+            metadata.description = adb_track.get("strDescription")
         # images
         if not self.config.get_value(CONF_ENABLE_IMAGES):
             return metadata

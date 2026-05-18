@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from mashumaro import field_options, pass_through
-from music_assistant_models.enums import ContentType, StreamType
+from music_assistant_models.enums import ContentType, ProviderFeature, StreamType
 from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.models.player import PlayerSource
@@ -15,7 +15,17 @@ from music_assistant.models.player import PlayerSource
 from .provider import Provider
 
 if TYPE_CHECKING:
-    from music_assistant_models.streamdetails import StreamMetadata
+    from collections.abc import Sequence
+
+    from music_assistant_models.media_items import (
+        BrowseFolder,
+        ItemMapping,
+        MediaItemType,
+        Playlist,
+        RecommendationFolder,
+        Track,
+    )
+    from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 
 @dataclass
@@ -173,6 +183,81 @@ class PluginProvider(Provider):
         Must return audio data as bytes generator (in the format specified by the audio_format).
         """
         yield b""
+        raise NotImplementedError
+
+    async def get_tts_message(self, message: str, language: str | None = None) -> StreamDetails:
+        """
+        Convert text to speech audio.
+
+        Will only be called if ProviderFeature.TTS is declared.
+
+        :param message: The text to convert to speech.
+        :param language: Optional language code.
+        :return: StreamDetails for the generated audio.
+        """
+        raise NotImplementedError
+
+    async def ai_query(self, query: str) -> str:
+        """
+        Handle an AI query.
+
+        Will only be called if ProviderFeature.AI_QUERY is declared.
+
+        :param query: The query/prompt to send.
+        :return: The AI response as a string.
+        """
+        raise NotImplementedError
+
+    async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
+        """
+        Retrieve a list of similar tracks for the given track.
+
+        Will only be called if ProviderFeature.SIMILAR_TRACKS is declared.
+
+        :param track: The reference track.
+        :param limit: Maximum number of similar tracks to return.
+        """
+        if ProviderFeature.SIMILAR_TRACKS in self.supported_features:
+            raise NotImplementedError
+        return []
+
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """
+        Retrieve a list of recommendation folders from this plugin.
+
+        Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
+        """
+        if ProviderFeature.RECOMMENDATIONS in self.supported_features:
+            raise NotImplementedError
+        return []
+
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Browse this plugin's contents.
+
+        Will only be called if ProviderFeature.BROWSE is declared.
+
+        :param path: The path to browse, in the form ``<instance_id>://<sub_path>``.
+        """
+        if ProviderFeature.BROWSE in self.supported_features:
+            raise NotImplementedError
+        return []
+
+    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
+        """
+        Return details of a single playlist owned by this plugin.
+
+        :param prov_playlist_id: Provider-scoped playlist id.
+        """
+        raise NotImplementedError
+
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
+        """
+        Return a page of tracks for a playlist owned by this plugin.
+
+        :param prov_playlist_id: Provider-scoped playlist id.
+        :param page: Zero-based page index for paginated results.
+        """
         raise NotImplementedError
 
     async def resolve_image(self, path: str) -> str | bytes:

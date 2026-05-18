@@ -25,6 +25,8 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from music_assistant_models.errors import PlayerCommandFailed
 from srptools import SRPClientSession, SRPContext
 
+from music_assistant.helpers.util import format_ip_for_url
+
 from .constants import StreamingProtocol
 
 # ============================================================================
@@ -191,7 +193,7 @@ class AirPlayPairing:
 
         # HTTP session
         self._session: aiohttp.ClientSession | None = None
-        self._base_url: str = f"http://{address}:{self.port}"
+        self._base_url: str = f"http://{format_ip_for_url(address)}:{self.port}"
 
         # Common state
         self._is_pairing: bool = False

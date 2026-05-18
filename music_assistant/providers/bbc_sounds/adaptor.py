@@ -10,7 +10,7 @@ This adaptor maps those objects to the most sensible type for MA.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, tzinfo
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
 from music_assistant_models.media_items import (
@@ -419,7 +419,7 @@ class PodcastConverter(BaseConverter):
                 audio_format=AudioFormat(content_type=ContentType.try_parse(source_obj.stream)),
                 allow_seek=True,
                 can_seek=True,
-                duration=(episode.duration if episode.duration else None),
+                duration=(episode.duration or None),
                 seek_position=(int(episode.position) if episode.position else 0),
                 seconds_streamed=(int(episode.position) if episode.position else 0),
             )
@@ -467,7 +467,7 @@ class PodcastConverter(BaseConverter):
             return await self._convert_radio_show(source_obj)
         if isinstance(source_obj, RadioClip) or self.context.force_type is Track:
             return await self._convert_radio_clip(source_obj)
-        return source_obj
+        return cast("MAPodcast | MAPodcastEpisode | Track", source_obj)
 
     async def _convert_podcast(self, podcast: Podcast | RadioSeries) -> MAPodcast:
         name = self._get_attr(podcast, "titles.primary") or self._get_attr(podcast, "title")

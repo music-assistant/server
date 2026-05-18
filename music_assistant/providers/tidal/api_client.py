@@ -13,6 +13,8 @@ from music_assistant_models.errors import (
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 
+from .constants import BASE_URL, BASE_URL_V2
+
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
@@ -23,10 +25,6 @@ if TYPE_CHECKING:
 
 class TidalAPIClient:
     """Client for interacting with Tidal API."""
-
-    BASE_URL: str = "https://api.tidal.com/v1"
-    BASE_URL_V2: str = "https://api.tidal.com/v2"
-    OPEN_API_URL: str = "https://openapi.tidal.com/v2"
 
     # Define throttler here for use by the client
     throttler = ThrottlerManager(rate_limit=1, period=2)
@@ -75,7 +73,7 @@ class TidalAPIClient:
         """Send PUT data to Tidal API."""
         # Special handling for mixes which use V2
         if "mixes" in endpoint and "base_url" not in kwargs:
-            kwargs["base_url"] = self.BASE_URL_V2
+            kwargs["base_url"] = BASE_URL_V2
 
         if as_form:
             kwargs.setdefault("headers", {})["Content-Type"] = "application/x-www-form-urlencoded"
@@ -101,7 +99,7 @@ class TidalAPIClient:
             raise LoginFailed("Failed to authenticate with Tidal")
 
         # Prepare URL
-        base_url = kwargs.pop("base_url", self.BASE_URL)
+        base_url = kwargs.pop("base_url", BASE_URL)
         url = f"{base_url}/{endpoint}"
 
         # Prepare Headers

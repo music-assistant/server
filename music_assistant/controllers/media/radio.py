@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import ProviderMapping, Radio, Track
 
 from music_assistant.constants import DB_TABLE_RADIOS
@@ -17,12 +18,14 @@ from music_assistant.helpers.compare import (
 )
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.helpers.playlists import generate_m3u, media_item_to_playlist_item
 from music_assistant.models.music_provider import MusicProvider
 
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
+    from music_assistant.providers.builtin import BuiltinProvider
 
 
 class RadioController(MediaControllerBase[Radio]):
@@ -38,6 +41,25 @@ class RadioController(MediaControllerBase[Radio]):
         # register (extra) api handlers
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/radio_versions", self.versions)
+        self.mass.register_api_command(f"music/{api_base}/export_radios", self.export_radios)
+        self.mass.register_api_command(f"music/{api_base}/import_radios", self.import_radios)
+
+    async def export_radios(self) -> str:
+        """Export all library radio stations to M3U8 format."""
+        radios = await self.library_items(limit=10000, offset=0)
+        items = [media_item_to_playlist_item(radio) for radio in radios]
+        return generate_m3u("Radio Stations", items)
+
+    async def import_radios(self, m3u_data: str) -> int:
+        """Import radio stations from M3U8 format.
+
+        :param m3u_data: The M3U8 data as a string.
+        """
+        provider = self.mass.get_provider("builtin")
+        if not provider or not isinstance(provider, MusicProvider):
+            raise ProviderUnavailableError("Builtin provider is not available")
+        builtin_prov = cast("BuiltinProvider", provider)
+        return await builtin_prov.import_radios(m3u_data)
 
     async def versions(
         self,
@@ -194,7 +216,7 @@ class RadioController(MediaControllerBase[Radio]):
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
-            if not provider.library_supported(MediaType.RADIO):
+            if not self.mass.music.library_supported(provider, MediaType.RADIO):
                 continue
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA
