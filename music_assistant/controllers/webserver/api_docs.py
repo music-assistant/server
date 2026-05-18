@@ -10,7 +10,7 @@ from dataclasses import MISSING
 from datetime import datetime
 from enum import Enum
 from types import NoneType, UnionType
-from typing import Any, Union, get_args, get_origin, get_type_hints
+from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
 
 from music_assistant_models.player import Player as PlayerState
 
@@ -317,6 +317,19 @@ def _get_type_schema(  # noqa: PLR0911, PLR0915
                 "description": f"Enum: {enum_name}. Possible values: {enum_values_str}",
             }
         return {"$ref": f"#/components/schemas/{enum_name}"}
+
+    # Handle Literal types
+    if origin is Literal:
+        args = get_args(type_hint)
+        values = [a.value if isinstance(a, Enum) else a for a in args]
+        literal_type = type(values[0]).__name__ if values else "string"
+        openapi_type = {
+            "str": "string",
+            "int": "integer",
+            "float": "number",
+            "bool": "boolean",
+        }.get(literal_type, "string")
+        return {"type": openapi_type, "enum": values}
 
     # Handle datetime
     if type_hint is datetime:
