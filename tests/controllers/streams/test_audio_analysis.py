@@ -1066,7 +1066,9 @@ async def test_track_returns_full_record_including_extra_data() -> None:
         return p if dom == "sonic_analysis" else music_prov
 
     c.mass.get_provider = MagicMock(side_effect=_get_provider)  # type: ignore[method-assign]
-    c.mass.music.database.get_row = AsyncMock(return_value={"analysis_data": json.dumps(full)})
+    c.mass.music.database.get_row = AsyncMock(  # type: ignore[method-assign]
+        return_value={"analysis_data": json.dumps(full)}
+    )
 
     result = await c.track(
         aa_domain="sonic_analysis",
@@ -1092,7 +1094,7 @@ async def test_track_returns_none_when_no_row() -> None:
         return p if dom == "sonic_analysis" else music_prov
 
     c.mass.get_provider = MagicMock(side_effect=_get_provider)  # type: ignore[method-assign]
-    c.mass.music.database.get_row = AsyncMock(return_value=None)
+    c.mass.music.database.get_row = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
     result = await c.track(
         aa_domain="sonic_analysis",
@@ -1136,7 +1138,9 @@ async def test_track_returns_none_when_analysis_data_unparsable() -> None:
         return p if dom == "sonic_analysis" else music_prov
 
     c.mass.get_provider = MagicMock(side_effect=_get_provider)  # type: ignore[method-assign]
-    c.mass.music.database.get_row = AsyncMock(return_value={"analysis_data": "not valid json {"})
+    c.mass.music.database.get_row = AsyncMock(  # type: ignore[method-assign]
+        return_value={"analysis_data": "not valid json {"}
+    )
 
     result = await c.track(
         aa_domain="sonic_analysis",
@@ -1169,7 +1173,9 @@ async def test_coverage_returns_three_counts_and_version() -> None:
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
     c.get_audio_analysis_count = AsyncMock(return_value=100)  # type: ignore[method-assign]
     c._count_candidates_missing_analysis = AsyncMock(return_value=20)  # type: ignore[method-assign]
-    c.mass.music.database.get_count_from_query = AsyncMock(return_value=5)
+    c.mass.music.database.get_count_from_query = AsyncMock(  # type: ignore[method-assign]
+        return_value=5
+    )
 
     result = await c.coverage(aa_domain="sonic_analysis")
 
