@@ -120,13 +120,12 @@ class WledAudioSyncBridge:
         self.name = name
         self.logger = _LOGGER.getChild(client_id)
         self._latency_us = latency_us
-        self._transport = WledV2Transport(
-            address=address,
-            port=port,
-            duplicate_transmit=duplicate_transmit,
-            multicast_ttl=multicast_ttl,
-            on_reset=self._on_transport_reset,
-        )
+        # Cache the transport-shaping config on the bridge so set_destination
+        # can recreate the transport without reaching into the (deliberately
+        # decoupled) wled_audiosync_bridge.transport internals.
+        self._duplicate_transmit = duplicate_transmit
+        self._multicast_ttl = multicast_ttl
+        self._transport = self._build_transport(address=address, port=port)
         self._analyzer: WledAudioAnalyzer | None = None
         self._sendspin_client: SendspinClient | None = None
         self._client_task: asyncio.Task[None] | None = None
@@ -291,14 +290,18 @@ class WledAudioSyncBridge:
             port,
         )
         old_transport = self._transport
-        self._transport = WledV2Transport(
+        self._transport = self._build_transport(address=address, port=port)
+        self.mass.create_task(old_transport.close())
+
+    def _build_transport(self, *, address: str, port: int) -> WledV2Transport:
+        """Construct a ``WledV2Transport`` using this bridge's cached config."""
+        return WledV2Transport(
             address=address,
             port=port,
-            duplicate_transmit=old_transport.duplicate_transmit,
-            multicast_ttl=old_transport._multicast_ttl,
+            duplicate_transmit=self._duplicate_transmit,
+            multicast_ttl=self._multicast_ttl,
             on_reset=self._on_transport_reset,
         )
-        self.mass.create_task(old_transport.close())
 
     async def _run_client(self) -> None:
         """Keep the Sendspin WebSocket connection alive until stopped."""
