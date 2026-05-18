@@ -67,6 +67,7 @@ async def get_config_entries(
             default_value=DEFAULT_MIN_SCORE,
             range=(0, 1),
             required=False,
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_ANALYSE_STREAMING,
@@ -89,8 +90,8 @@ async def get_config_entries(
                 "write the Acoustid Id, MusicBrainz Recording Id, ISRC, and (where "
                 "resolvable) MusicBrainz Artist Id tags back into the source audio "
                 "file. Useful if other apps on your network rely on these tags for "
-                "their own metadata. Requires write access to the file; read-only "
-                "files are silently skipped."
+                "their own metadata. Requires a Filesystem music source with write "
+                "access to the file; read-only files are silently skipped."
             ),
             default_value=False,
             required=False,

@@ -35,7 +35,15 @@ def _make_provider(
 ) -> AcoustidLookupProvider:
     """Build a provider with a mocked MusicAssistant infrastructure."""
     mass = MagicMock()
-    mass.get_provider = MagicMock(return_value=None)
+
+    def _default_get_provider(provider_id: Any, **_kwargs: Any) -> Any:
+        # Source-provider lookup feeds the write_access gate in post_analysis; default to
+        # a writeable filesystem-like source so tag-write paths are exercised by default.
+        if provider_id == "filesystem_local_test":
+            return MagicMock(write_access=True)
+        return None
+
+    mass.get_provider = MagicMock(side_effect=_default_get_provider)
     mass.streams.audio_analysis.get_audio_analysis_version = AsyncMock(return_value=None)
     mass.streams.audio_analysis.set_audio_analysis = AsyncMock()
     mass.metadata.set_track_identifiers = AsyncMock()
@@ -376,15 +384,10 @@ async def test_post_analysis_persists_and_writes_tags(
     expect_tag_writes: bool,
 ) -> None:
     """post_analysis must always persist to library, and write tags only when enabled."""
-    write_mbid = AsyncMock(return_value=True)
-    write_acoustid = AsyncMock(return_value=True)
+    write_tags = AsyncMock(return_value=True)
     monkeypatch.setattr(
-        "music_assistant.providers.acoustid_lookup.provider.write_musicbrainz_recording_id_tag",
-        write_mbid,
-    )
-    monkeypatch.setattr(
-        "music_assistant.providers.acoustid_lookup.provider.write_acoustid_tag",
-        write_acoustid,
+        "music_assistant.providers.acoustid_lookup.provider.write_identifier_tags",
+        write_tags,
     )
 
     provider = _make_provider(write_tags_back=write_tags_back)
@@ -410,11 +413,15 @@ async def test_post_analysis_persists_and_writes_tags(
     # Album consensus is a pure DB write and must run regardless of write_tags_back.
     assert consensus_calls == [streamdetails]
     if expect_tag_writes:
-        write_mbid.assert_awaited_once_with("/music/track.flac", "mbid-x")
-        write_acoustid.assert_awaited_once_with("/music/track.flac", "acoustid-x")
+        write_tags.assert_awaited_once_with(
+            "/music/track.flac",
+            mbid="mbid-x",
+            acoustid="acoustid-x",
+            isrcs=[],
+            artist_mbids=[],
+        )
     else:
-        write_mbid.assert_not_awaited()
-        write_acoustid.assert_not_awaited()
+        write_tags.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -439,40 +446,32 @@ async def test_post_analysis_mb_enrichment(
     expected_artist_mbids: list[str],
 ) -> None:
     """ISRCs and artist MBIDs from MusicBrainz get applied as DB/file tags when available."""
-    write_mbid = AsyncMock(return_value=True)
-    write_acoustid = AsyncMock(return_value=True)
-    write_isrc = AsyncMock(return_value=True)
-    write_artist_mbid = AsyncMock(return_value=True)
+    write_tags = AsyncMock(return_value=True)
     monkeypatch.setattr(
-        "music_assistant.providers.acoustid_lookup.provider.write_musicbrainz_recording_id_tag",
-        write_mbid,
-    )
-    monkeypatch.setattr(
-        "music_assistant.providers.acoustid_lookup.provider.write_acoustid_tag",
-        write_acoustid,
-    )
-    monkeypatch.setattr(
-        "music_assistant.providers.acoustid_lookup.provider.write_isrc_tag",
-        write_isrc,
-    )
-    monkeypatch.setattr(
-        "music_assistant.providers.acoustid_lookup.provider.write_musicbrainz_artist_id_tag",
-        write_artist_mbid,
+        "music_assistant.providers.acoustid_lookup.provider.write_identifier_tags",
+        write_tags,
     )
 
     provider = _make_provider(write_tags_back=True)
+    source_mock = MagicMock(write_access=True)
+    mb_provider: MagicMock | None
     if scenario == "returns":
         artist_credit = [MagicMock(artist=MagicMock(id=mbid)) for mbid in expected_artist_mbids]
         mb_recording = MagicMock(isrcs=expected_isrcs, artist_credit=artist_credit)
         mb_provider = MagicMock()
         mb_provider.get_recording_details = AsyncMock(return_value=mb_recording)
-        provider.mass.get_provider = MagicMock(return_value=mb_provider)  # type: ignore[method-assign]
     elif scenario == "missing":
-        provider.mass.get_provider = MagicMock(return_value=None)  # type: ignore[method-assign]
+        mb_provider = None
     else:
         mb_provider = MagicMock()
         mb_provider.get_recording_details = AsyncMock(side_effect=aiohttp.ClientError("synthetic"))
-        provider.mass.get_provider = MagicMock(return_value=mb_provider)  # type: ignore[method-assign]
+
+    def _get_provider(provider_id: Any, **_kwargs: Any) -> Any:
+        if provider_id == "filesystem_local_test":
+            return source_mock
+        return mb_provider
+
+    provider.mass.get_provider = MagicMock(side_effect=_get_provider)  # type: ignore[method-assign]
 
     await provider.post_analysis(
         _make_streamdetails(),
@@ -482,14 +481,13 @@ async def test_post_analysis_mb_enrichment(
     set_ids = cast("AsyncMock", provider.mass.metadata.set_track_identifiers)
     assert set_ids.await_args is not None
     assert set_ids.await_args.kwargs["isrcs"] == expected_isrcs
-    if expected_isrcs:
-        write_isrc.assert_awaited_once_with("/music/track.flac", expected_isrcs)
-    else:
-        write_isrc.assert_not_awaited()
-    if expected_artist_mbids:
-        write_artist_mbid.assert_awaited_once_with("/music/track.flac", expected_artist_mbids)
-    else:
-        write_artist_mbid.assert_not_awaited()
+    write_tags.assert_awaited_once_with(
+        "/music/track.flac",
+        mbid="mbid-x",
+        acoustid="acoustid-x",
+        isrcs=expected_isrcs,
+        artist_mbids=expected_artist_mbids,
+    )
 
 
 @pytest.mark.asyncio

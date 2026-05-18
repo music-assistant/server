@@ -20,12 +20,7 @@ from music_assistant_models.errors import (
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import create_safe_string
-from music_assistant.helpers.tags import (
-    write_acoustid_tag,
-    write_isrc_tag,
-    write_musicbrainz_artist_id_tag,
-    write_musicbrainz_recording_id_tag,
-)
+from music_assistant.helpers.tags import write_identifier_tags
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.audio_analysis import AudioAnalysisData
@@ -467,15 +462,22 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
                 "Skipping tag write — no usable file path (got %r)", streamdetails.path
             )
             return
+        source_provider = self.mass.get_provider(streamdetails.provider)
+        if not getattr(source_provider, "write_access", False):
+            self.logger.debug(
+                "Skipping tag write — source provider %s has no write access",
+                streamdetails.provider,
+            )
+            return
 
-        if mbid:
-            await write_musicbrainz_recording_id_tag(streamdetails.path, mbid)
-        if acoustid:
-            await write_acoustid_tag(streamdetails.path, acoustid)
-        if isrcs:
-            await write_isrc_tag(streamdetails.path, isrcs)
-        if artist_mbids:
-            await write_musicbrainz_artist_id_tag(streamdetails.path, artist_mbids)
+        # One open/save cycle for all identifier tags on this file.
+        await write_identifier_tags(
+            streamdetails.path,
+            mbid=mbid,
+            acoustid=acoustid,
+            isrcs=isrcs,
+            artist_mbids=artist_mbids,
+        )
 
     async def _fetch_mb_extras(
         self, mbid: str, *, include_artist_mbids: bool = True

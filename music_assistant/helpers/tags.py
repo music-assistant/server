@@ -1472,50 +1472,36 @@ def _write_replaygain_track_gain_sync(path: str, track_gain_db: float) -> bool:
         return False
 
 
-async def write_acoustid_tag(path: str, acoustid: str) -> bool:
+async def write_identifier_tags(
+    path: str,
+    *,
+    mbid: str | None = None,
+    acoustid: str | None = None,
+    isrcs: list[str] | None = None,
+    artist_mbids: list[str] | None = None,
+) -> bool:
     """
-    Write the AcoustID identifier tag to an audio file.
+    Write any combination of identifier tags to an audio file in a single open/save cycle.
 
-    Returns True when the tag was successfully written and saved, False
-    when the file format is unsupported or the file cannot be written to.
+    Supported identifiers: MusicBrainz Recording Id, AcoustID, ISRCs, MusicBrainz Artist Ids.
+    Only identifiers passed as non-empty arguments are written; the rest are left untouched.
+
+    Returns True when at least one tag was applied and the file was saved, False otherwise.
 
     :param path: Absolute path to the audio file.
-    :param acoustid: AcoustID UUID string to persist.
-    """
-    return await asyncio.to_thread(_write_acoustid_tag_sync, path, acoustid)
-
-
-async def write_isrc_tag(path: str, isrcs: list[str]) -> bool:
-    """
-    Write one or more ISRC codes to an audio file.
-
-    :param path: Absolute path to the audio file.
+    :param mbid: MusicBrainz Recording UUID to persist.
+    :param acoustid: AcoustID UUID to persist.
     :param isrcs: ISRC codes to persist.
+    :param artist_mbids: MusicBrainz Artist UUIDs to persist.
     """
-    return await asyncio.to_thread(_write_isrc_tag_sync, path, isrcs)
-
-
-async def write_musicbrainz_recording_id_tag(path: str, recording_id: str) -> bool:
-    """
-    Write the MusicBrainz Recording ID tag to an audio file.
-
-    Returns True when the tag was successfully written and saved, False
-    when the file format is unsupported or the file cannot be written to.
-
-    :param path: Absolute path to the audio file.
-    :param recording_id: MusicBrainz recording UUID to persist.
-    """
-    return await asyncio.to_thread(_write_musicbrainz_recording_id_tag_sync, path, recording_id)
-
-
-async def write_musicbrainz_artist_id_tag(path: str, artist_ids: list[str]) -> bool:
-    """
-    Write one or more MusicBrainz Artist ID tags to an audio file.
-
-    :param path: Absolute path to the audio file.
-    :param artist_ids: MusicBrainz artist UUIDs to persist.
-    """
-    return await asyncio.to_thread(_write_musicbrainz_artist_id_tag_sync, path, artist_ids)
+    return await asyncio.to_thread(
+        _write_identifier_tags_sync,
+        path,
+        mbid=mbid,
+        acoustid=acoustid,
+        isrcs=isrcs,
+        artist_mbids=artist_mbids,
+    )
 
 
 def _open_mutagen_for_write(path: str) -> Any | None:
@@ -1539,12 +1525,75 @@ def _open_mutagen_for_write(path: str) -> Any | None:
     return audio
 
 
-def _write_acoustid_tag_sync(path: str, acoustid: str) -> bool:
+def _write_identifier_tags_sync(
+    path: str,
+    *,
+    mbid: str | None,
+    acoustid: str | None,
+    isrcs: list[str] | None,
+    artist_mbids: list[str] | None,
+) -> bool:
     audio = _open_mutagen_for_write(path)
     if audio is None:
         return False
     tags = audio.tags
 
+    applied = False
+    if mbid:
+        applied = _apply_mbid_tag(tags, mbid) or applied
+    if acoustid:
+        applied = _apply_acoustid_tag(tags, acoustid) or applied
+    if isrcs:
+        applied = _apply_isrc_tag(tags, isrcs) or applied
+    if artist_mbids:
+        applied = _apply_artist_mbid_tag(tags, artist_mbids) or applied
+
+    if not applied:
+        return False
+
+    try:
+        audio.save()
+        return True
+    except (OSError, PermissionError) as err:
+        LOGGER.debug("could not save identifier tags to %s: %s", path, err)
+        return False
+    # Broad boundary: mutagen's save() can raise per-format exceptions; logged as
+    # warning so unexpected surprises are visible but never crash the scan.
+    except Exception as err:
+        LOGGER.warning("unexpected failure saving identifier tags to %s: %s", path, err)
+        return False
+
+
+def _apply_mbid_tag(tags: Any, mbid: str) -> bool:
+    try:
+        if isinstance(tags, ID3):
+            # MusicBrainz Recording Id lives in a UFID frame (Picard convention).
+            tags.delall("UFID:http://musicbrainz.org")  # type: ignore[no-untyped-call]
+            tags.add(  # type: ignore[no-untyped-call]
+                UFID(  # type: ignore[no-untyped-call]
+                    owner="http://musicbrainz.org", data=mbid.encode("ascii")
+                )
+            )
+        elif isinstance(tags, MP4Tags):
+            tags["----:com.apple.iTunes:MusicBrainz Track Id"] = [
+                MP4FreeForm(  # type: ignore[no-untyped-call]
+                    mbid.encode("utf-8"), dataformat=AtomDataType.UTF8
+                )
+            ]
+        elif isinstance(tags, (VCommentDict, APEv2)):
+            # historic naming: this key holds the MusicBrainz Recording UUID, not the
+            # track-in-release ID despite being spelled MUSICBRAINZ_TRACKID.
+            tags["MUSICBRAINZ_TRACKID"] = mbid
+        else:
+            return False
+        return True
+    # Broad: mutagen's tag APIs are untyped and per-format exceptions don't share a base.
+    except Exception as err:
+        LOGGER.warning("unexpected failure applying MusicBrainz Recording Id: %s", err)
+        return False
+
+
+def _apply_acoustid_tag(tags: Any, acoustid: str) -> bool:
     try:
         if isinstance(tags, ID3):
             tags.delall("TXXX:Acoustid Id")  # type: ignore[no-untyped-call]
@@ -1564,67 +1613,13 @@ def _write_acoustid_tag_sync(path: str, acoustid: str) -> bool:
             tags["ACOUSTID_ID"] = acoustid
         else:
             return False
-        audio.save()
         return True
-    except (OSError, PermissionError) as err:
-        LOGGER.debug("could not write Acoustid Id tag to %s: %s", path, err)
-        return False
-    # Broad boundary: mutagen exposes untyped tag APIs and per-format save() paths;
-    # logged as warning so unexpected surprises are visible but never crash the scan.
     except Exception as err:
-        LOGGER.warning("unexpected failure writing Acoustid Id tag to %s: %s", path, err)
+        LOGGER.warning("unexpected failure applying Acoustid Id: %s", err)
         return False
 
 
-def _write_musicbrainz_recording_id_tag_sync(path: str, recording_id: str) -> bool:
-    audio = _open_mutagen_for_write(path)
-    if audio is None:
-        return False
-    tags = audio.tags
-
-    try:
-        if isinstance(tags, ID3):
-            # MusicBrainz Recording Id lives in a UFID frame (Picard convention).
-            tags.delall("UFID:http://musicbrainz.org")  # type: ignore[no-untyped-call]
-            tags.add(  # type: ignore[no-untyped-call]
-                UFID(  # type: ignore[no-untyped-call]
-                    owner="http://musicbrainz.org", data=recording_id.encode("ascii")
-                )
-            )
-        elif isinstance(tags, MP4Tags):
-            tags["----:com.apple.iTunes:MusicBrainz Track Id"] = [
-                MP4FreeForm(  # type: ignore[no-untyped-call]
-                    recording_id.encode("utf-8"), dataformat=AtomDataType.UTF8
-                )
-            ]
-        elif isinstance(tags, (VCommentDict, APEv2)):
-            # historic naming: this key holds the MusicBrainz Recording UUID, not the
-            # track-in-release ID despite being spelled MUSICBRAINZ_TRACKID.
-            tags["MUSICBRAINZ_TRACKID"] = recording_id
-        else:
-            return False
-        audio.save()
-        return True
-    except (OSError, PermissionError) as err:
-        LOGGER.debug("could not write MusicBrainz Recording Id tag to %s: %s", path, err)
-        return False
-    # Broad boundary: mutagen exposes untyped tag APIs and per-format save() paths;
-    # logged as warning so unexpected surprises are visible but never crash the scan.
-    except Exception as err:
-        LOGGER.warning(
-            "unexpected failure writing MusicBrainz Recording Id tag to %s: %s", path, err
-        )
-        return False
-
-
-def _write_isrc_tag_sync(path: str, isrcs: list[str]) -> bool:
-    if not isrcs:
-        return False
-    audio = _open_mutagen_for_write(path)
-    if audio is None:
-        return False
-    tags = audio.tags
-
+def _apply_isrc_tag(tags: Any, isrcs: list[str]) -> bool:
     try:
         if isinstance(tags, ID3):
             # TSRC is ID3's dedicated ISRC frame; ID3v2.4 supports multiple values.
@@ -1641,32 +1636,19 @@ def _write_isrc_tag_sync(path: str, isrcs: list[str]) -> bool:
             tags["ISRC"] = list(isrcs)
         else:
             return False
-        audio.save()
         return True
-    except (OSError, PermissionError) as err:
-        LOGGER.debug("could not write ISRC tag to %s: %s", path, err)
-        return False
-    # Broad boundary: mutagen exposes untyped tag APIs and per-format save() paths;
-    # logged as warning so unexpected surprises are visible but never crash the scan.
     except Exception as err:
-        LOGGER.warning("unexpected failure writing ISRC tag to %s: %s", path, err)
+        LOGGER.warning("unexpected failure applying ISRC: %s", err)
         return False
 
 
-def _write_musicbrainz_artist_id_tag_sync(path: str, artist_ids: list[str]) -> bool:
-    if not artist_ids:
-        return False
-    audio = _open_mutagen_for_write(path)
-    if audio is None:
-        return False
-    tags = audio.tags
-
+def _apply_artist_mbid_tag(tags: Any, artist_mbids: list[str]) -> bool:
     try:
         if isinstance(tags, ID3):
             tags.delall("TXXX:MusicBrainz Artist Id")  # type: ignore[no-untyped-call]
             tags.add(  # type: ignore[no-untyped-call]
                 TXXX(  # type: ignore[no-untyped-call]
-                    encoding=3, desc="MusicBrainz Artist Id", text=list(artist_ids)
+                    encoding=3, desc="MusicBrainz Artist Id", text=list(artist_mbids)
                 )
             )
         elif isinstance(tags, MP4Tags):
@@ -1674,19 +1656,13 @@ def _write_musicbrainz_artist_id_tag_sync(path: str, artist_ids: list[str]) -> b
                 MP4FreeForm(  # type: ignore[no-untyped-call]
                     artist_id.encode("utf-8"), dataformat=AtomDataType.UTF8
                 )
-                for artist_id in artist_ids
+                for artist_id in artist_mbids
             ]
         elif isinstance(tags, (VCommentDict, APEv2)):
-            tags["MUSICBRAINZ_ARTISTID"] = list(artist_ids)
+            tags["MUSICBRAINZ_ARTISTID"] = list(artist_mbids)
         else:
             return False
-        audio.save()
         return True
-    except (OSError, PermissionError) as err:
-        LOGGER.debug("could not write MusicBrainz Artist Id tag to %s: %s", path, err)
-        return False
-    # Broad boundary: mutagen exposes untyped tag APIs and per-format save() paths;
-    # logged as warning so unexpected surprises are visible but never crash the scan.
     except Exception as err:
-        LOGGER.warning("unexpected failure writing MusicBrainz Artist Id tag to %s: %s", path, err)
+        LOGGER.warning("unexpected failure applying MusicBrainz Artist Id: %s", err)
         return False
