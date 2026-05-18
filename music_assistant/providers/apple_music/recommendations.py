@@ -15,7 +15,7 @@ from music_assistant_models.media_items import (
     Track,
 )
 
-from music_assistant.controllers.cache import BYPASS_CACHE, use_cache
+from music_assistant.controllers.cache import use_cache
 
 from .parsers import parse_artist, parse_station_as_playlist, parse_track
 
@@ -158,11 +158,8 @@ class AppleMusicRecommendationManager:
             station_name = self._station_id_to_name.get(stale_id)
             if not station_name:
                 return None
-        token = BYPASS_CACHE.set(True)
-        try:
+        async with self.mass.cache.handle_refresh(True):
             await self.get_personal_recommendations()
-        finally:
-            BYPASS_CACHE.reset(token)
         return self._station_name_to_id.get(station_name)
 
     async def browse_stations(self) -> list[ItemMapping | Playlist]:
