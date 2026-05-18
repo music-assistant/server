@@ -4,6 +4,7 @@
     'album_type': 'album',
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -143,6 +144,7 @@
 # ---
 # name: test_parse_artist[artist]
   dict({
+    'artist_type': 'singer',
     'date_added': '2024-06-10T12:00:00+00:00',
     'external_ids': list([
     ]),
@@ -377,6 +379,7 @@
     }),
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),

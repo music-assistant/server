@@ -11,7 +11,7 @@ from music_assistant_models.media_items import Audiobook, PodcastEpisode, Track
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 from music_assistant_models.provider import ProviderManifest
 
-from music_assistant.helpers.scrobbler import ScrobblerHelper
+from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
@@ -164,4 +164,4 @@ async def get_config_entries(
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     # ruff: noqa: ARG001
-    return ()
+    return (*await ScrobblerConfig.get_shared_config_entries(mass, values),)

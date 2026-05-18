@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
+import numpy as np
 import pytest
 from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.providers.smart_fades.provider import SmartFadesProvider
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
@@ -147,7 +149,7 @@ async def test_beat_detection(provider: SmartFadesProvider, mass_mock: Mock) -> 
     # Verify set_audio_analysis was called with correct data
     set_aa_mock = mass_mock.streams.audio_analysis.set_audio_analysis
     set_aa_mock.assert_awaited_once()
-    analysis = set_aa_mock.call_args[0][3]  # 4th positional arg: analysis
+    analysis = set_aa_mock.call_args.kwargs["analysis"]
 
     beats = analysis.beats
     downbeats = analysis.downbeats
@@ -205,7 +207,7 @@ async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock:
     await provider.finalize(session_id)
 
     set_aa_mock = mass_mock.streams.audio_analysis.set_audio_analysis
-    analysis = set_aa_mock.call_args[0][3]
+    analysis = set_aa_mock.call_args.kwargs["analysis"]
 
     # Energy curve should be 1800 bins, normalized to [0, 1]
     assert analysis.rms_energy is not None
@@ -240,3 +242,73 @@ async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock:
     # BPM and beats should still be correct
     assert analysis.bpm is not None
     assert 115 < analysis.bpm < 125
+
+
+async def test_finalize_returns_audio_analysis_data(provider: SmartFadesProvider) -> None:
+    """Test that _finalize returns an AudioAnalysisData on success."""
+    audio_format = AudioFormat(
+        content_type=ContentType.PCM_F32LE,
+        bit_depth=32,
+        sample_rate=44100,
+        channels=2,
+    )
+
+    stream_details = Mock()
+    stream_details.item_id = "test_finalize_return"
+    stream_details.provider = "test"
+    stream_details.queue_id = "test"
+    stream_details.uri = "test://finalize_return"
+    stream_details.media_type = MediaType.TRACK
+
+    session_id = "test:test:test_finalize_return"
+    await provider.start_analysis(session_id, stream_details, audio_format)
+
+    pcm_data = FIXTURE_PCM.read_bytes()
+    chunk_size = 44100 * 2 * 4
+    offset = 0
+    while offset < len(pcm_data):
+        chunk = pcm_data[offset : offset + chunk_size]
+        await provider.process_pcm_chunk(session_id, chunk)
+        offset += chunk_size
+
+    result = await provider._finalize(session_id)
+
+    assert isinstance(result, AudioAnalysisData)
+
+
+async def test_finalize_returns_none_on_early_exit(provider: SmartFadesProvider) -> None:
+    """Test that _finalize returns None when not enough beats are detected."""
+    audio_format = AudioFormat(
+        content_type=ContentType.PCM_F32LE,
+        bit_depth=32,
+        sample_rate=44100,
+        channels=2,
+    )
+
+    stream_details = Mock()
+    stream_details.item_id = "test_finalize_none"
+    stream_details.provider = "test"
+    stream_details.queue_id = "test"
+    stream_details.uri = "test://finalize_none"
+    stream_details.media_type = MediaType.TRACK
+
+    session_id = "test:test:test_finalize_none"
+    await provider.start_analysis(session_id, stream_details, audio_format)
+
+    pcm_data = FIXTURE_PCM.read_bytes()
+    chunk_size = 44100 * 2 * 4
+    offset = 0
+    while offset < len(pcm_data):
+        chunk = pcm_data[offset : offset + chunk_size]
+        await provider.process_pcm_chunk(session_id, chunk)
+        offset += chunk_size
+
+    # Patch _infer_beat_timings to return fewer than 2 beats → triggers early exit
+    with patch.object(
+        provider,
+        "_infer_beat_timings",
+        return_value=(np.array([0.5]), np.array([])),
+    ):
+        result = await provider._finalize(session_id)
+
+    assert result is None

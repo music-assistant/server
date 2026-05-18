@@ -43,6 +43,7 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.models.music_provider import MusicProvider
+    from music_assistant.models.plugin import PluginProvider
 
 
 ItemCls = TypeVar("ItemCls", bound="MediaItemType")
@@ -204,7 +205,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             library_item.uri,
             library_item,
         )
-        # notify providers of the update so they can sync their own storage
+        # notify music providers of the update so they can sync their own storage
         for prov_mapping in library_item.provider_mappings:
             if provider := self.mass.get_provider(prov_mapping.provider_instance):
                 provider = cast("MusicProvider", provider)
@@ -388,7 +389,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         prov = cast("MusicProvider", prov)
         if ProviderFeature.SEARCH not in prov.supported_features:
             return []
-        if not prov.library_supported(self.media_type):
+        if not self.mass.music.library_supported(prov, self.media_type):
             # assume library supported also means that this mediatype is supported
             return []
         searchresult = await prov.search(
@@ -583,10 +584,24 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
         if provider := self.mass.get_provider(provider_instance_id_or_domain):
-            provider = cast("MusicProvider", provider)
+            provider = cast("MusicProvider | PluginProvider", provider)
             with suppress(MediaNotFoundError):
                 async with self.mass.cache.handle_refresh(force_refresh):
-                    return cast("ItemCls", await provider.get_item(self.media_type, item_id))
+                    if self.media_type == MediaType.PLAYLIST:
+                        return cast("ItemCls", await provider.get_playlist(item_id))
+                    music_prov = cast("MusicProvider", provider)
+                    if self.media_type == MediaType.ARTIST:
+                        return cast("ItemCls", await music_prov.get_artist(item_id))
+                    if self.media_type == MediaType.ALBUM:
+                        return cast("ItemCls", await music_prov.get_album(item_id))
+                    if self.media_type == MediaType.TRACK:
+                        return cast("ItemCls", await music_prov.get_track(item_id))
+                    if self.media_type == MediaType.RADIO:
+                        return cast("ItemCls", await music_prov.get_radio(item_id))
+                    if self.media_type == MediaType.AUDIOBOOK:
+                        return cast("ItemCls", await music_prov.get_audiobook(item_id))
+                    if self.media_type == MediaType.PODCAST:
+                        return cast("ItemCls", await music_prov.get_podcast(item_id))
         # if we reach this point all possibilities failed and the item could not be found.
         # There is a possibility that the (streaming) provider changed the id of the item
         # so we return the previous details (if we have any) marked as unavailable, so

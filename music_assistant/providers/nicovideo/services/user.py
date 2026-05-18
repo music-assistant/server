@@ -108,12 +108,9 @@ class NicovideoUserService(NicovideoBaseService):
 
     async def get_user_history(self, limit: int = 30) -> list[Track]:
         """Get user's history from nicovideo."""
-        # Calculate page_size based on limit
-        page_size = min(limit, 100)  # API max is 100
         history = await self.service_manager._call_with_throttler(
             self.niconico_py_client.video.get_history,
-            page_size=page_size,
-            page=1,
+            limit=min(limit, 100),  # API max is 100
         )
         if not history or not history.items:
             return []

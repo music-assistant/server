@@ -140,11 +140,22 @@ CONF_ENABLED: Final[str] = "enabled"
 CONF_PROTOCOL_KEY_SPLITTER: Final[str] = "||protocol||"
 CONF_PROTOCOL_CATEGORY_PREFIX: Final[str] = "protocol"
 CONF_DEFAULT_PROVIDERS_SETUP: Final[str] = "default_providers_setup"
+CONF_BACKGROUND_SCAN_CONCURRENCY: Final[str] = "background_scan_concurrency"
+
+
+def _default_background_scan_concurrency() -> int:
+    cpu_count = os.process_cpu_count() or os.cpu_count() or 4
+    if cpu_count >= 16:
+        return 4
+    if cpu_count >= 8:
+        return 2
+    return 1
 
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
 DEFAULT_PORT: Final[int] = 8095
+DEFAULT_BACKGROUND_SCAN_CONCURRENCY: Final[int] = _default_background_scan_concurrency()
 
 
 # common db tables
@@ -216,7 +227,7 @@ DEFAULT_GENRES: Final[tuple[str, ...]] = tuple(entry["genre"] for entry in DEFAU
 
 # all other
 MASS_LOGO_ONLINE: Final[str] = (
-    "https://github.com/music-assistant/server/blob/dev/music_assistant/logo.png"
+    "https://raw.githubusercontent.com/music-assistant/server/refs/heads/dev/music_assistant/logo.png"
 )
 ENCRYPT_SUFFIX = "_encrypted_"
 CONFIGURABLE_CORE_CONTROLLERS = (

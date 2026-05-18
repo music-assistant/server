@@ -503,6 +503,68 @@ class TestMediaMappingOperations:
         assert len(rows) == 1
         assert rows[0]["alias"] == "Pop"
 
+    async def test_add_media_mapping_sets_is_manual(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Mappings created via add_media_mapping have is_manual = 1."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("IsManualPop"))
+        track = await _add_test_track(mass, "IsManualPop Track")
+        await genre_ctrl.add_media_mapping(
+            genre.item_id, MediaType.TRACK, track.item_id, "IsManualPop"
+        )
+        row = await mass.music.database.get_row(
+            DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+            {
+                "genre_id": int(genre.item_id),
+                "media_id": int(track.item_id),
+                "media_type": MediaType.TRACK.value,
+            },
+        )
+        assert row is not None
+        assert row["is_manual"] == 1
+
+    async def test_add_media_mapping_upgrades_existing_auto_row(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Calling add_media_mapping on a pre-existing non-manual row upgrades is_manual to 1."""
+        genre = await genre_ctrl.add_item_to_library(_make_genre("UpgradeGenre"))
+        track = await _add_test_track(mass, "Upgrade Track")
+        # insert row directly without is_manual (simulates scanner-created row)
+        await mass.music.database.insert(
+            DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+            {
+                "genre_id": int(genre.item_id),
+                "media_id": int(track.item_id),
+                "media_type": MediaType.TRACK.value,
+                "alias": "UpgradeGenre",
+            },
+        )
+        row_before = await mass.music.database.get_row(
+            DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+            {
+                "genre_id": int(genre.item_id),
+                "media_id": int(track.item_id),
+                "media_type": MediaType.TRACK.value,
+            },
+        )
+        assert row_before is not None
+        assert row_before["is_manual"] == 0
+
+        await genre_ctrl.add_media_mapping(
+            genre.item_id, MediaType.TRACK, track.item_id, "UpgradeGenre"
+        )
+
+        row_after = await mass.music.database.get_row(
+            DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+            {
+                "genre_id": int(genre.item_id),
+                "media_id": int(track.item_id),
+                "media_type": MediaType.TRACK.value,
+            },
+        )
+        assert row_after is not None
+        assert row_after["is_manual"] == 1
+
     async def test_add_media_mapping_idempotent(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
@@ -1302,14 +1364,20 @@ class TestCleanupStaleMappings:
     async def test_stale_mapping_removed_on_call(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """A stale mapping is removed when cleanup is called."""
+        """A stale scanner mapping is removed when cleanup is called."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("CsCountGenre"))
         track = await _add_test_track(mass, "CsCount Track")
         genre_id = int(genre.item_id)
         track_id = int(track.item_id)
-        # Track has no metadata.genres — mapping is immediately stale
-        await genre_ctrl.add_media_mapping(
-            genre.item_id, MediaType.TRACK, track.item_id, "CsCountGenre"
+        # insert a non-manual (scanner-style) row; track has no metadata.genres
+        await mass.music.database.insert(
+            DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+            {
+                "genre_id": genre_id,
+                "media_id": track_id,
+                "media_type": MediaType.TRACK.value,
+                "alias": "CsCountGenre",
+            },
         )
         await genre_ctrl._cleanup_stale_genre_mappings()
         rows = await mass.music.database.get_rows_from_query(
@@ -1323,13 +1391,20 @@ class TestCleanupStaleMappings:
     async def test_empty_metadata_genres_removes_mapping(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """Mapping is removed when the track has no genres in metadata."""
+        """Scanner mapping is removed when the track has no genres in metadata."""
         genre = await genre_ctrl.add_item_to_library(_make_genre("CsStale1Genre"))
         track = await _add_test_track(mass, "CsStale1 Track")
         genre_id = int(genre.item_id)
         track_id = int(track.item_id)
-        await genre_ctrl.add_media_mapping(
-            genre_id, MediaType.TRACK, track.item_id, "CsStale1Genre"
+        # insert a non-manual (scanner-style) row
+        await mass.music.database.insert(
+            DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+            {
+                "genre_id": genre_id,
+                "media_id": track_id,
+                "media_type": MediaType.TRACK.value,
+                "alias": "CsStale1Genre",
+            },
         )
 
         await genre_ctrl._cleanup_stale_genre_mappings()
@@ -1453,6 +1528,38 @@ class TestCleanupStaleMappings:
 
         row_after = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
         assert row_after is not None
+
+    async def test_manual_mapping_preserved_when_alias_not_in_metadata(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Manually-added mappings survive cleanup when alias is not in metadata.
+
+        Regression for music-assistant/support#5310: a user creates a custom
+        ("music type") genre via the UI and links an album to it. The album's
+        metadata.genres reflects only the source-file tags and never contains
+        the custom genre name, so the previous cleanup query wiped the mapping
+        — and, transitively, the empty-non-default genre row.
+        """
+        genre = await genre_ctrl.add_item_to_library(_make_genre("MyCustomTypeXYZ"))
+        genre_id = int(genre.item_id)
+        album = await _add_test_album(mass, "Custom Type Album XYZ")
+        album_id = int(album.item_id)
+        # album source tags are unrelated to the custom genre
+        await _set_album_genres(mass, album_id, ["Rock"])
+        # user links album -> custom genre (no explicit alias, matches UI flow)
+        await genre_ctrl.add_media_mapping(genre_id, MediaType.ALBUM, album_id)
+
+        await genre_ctrl._cleanup_stale_genre_mappings()
+
+        mapping_rows = await mass.music.database.get_rows_from_query(
+            f"SELECT * FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :gid AND media_id = :mid AND media_type = 'album'",
+            {"gid": genre_id, "mid": album_id},
+            limit=0,
+        )
+        assert len(mapping_rows) == 1, "manual mapping was deleted by cleanup"
+        genre_row = await mass.music.database.get_row(DB_TABLE_GENRES, {"item_id": genre_id})
+        assert genre_row is not None, "custom genre was deleted after its mapping disappeared"
 
     async def test_playlog_entries_cleaned_for_deleted_genre(
         self, mass: MusicAssistant, genre_ctrl: GenreController

@@ -15,6 +15,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.SIMILAR_ARTISTS,
     ProviderFeature.LIBRARY_ALBUMS_EDIT,
     ProviderFeature.LIBRARY_ARTISTS_EDIT,
     ProviderFeature.LIBRARY_PLAYLISTS_EDIT,

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import PlaybackState
 
+from music_assistant.helpers.images import player_image_url
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.providers.airplay.constants import AIRPLAY_PCM_FORMAT
 from music_assistant.providers.airplay.helpers import generate_active_remote_id
@@ -62,6 +63,8 @@ class AirPlayProtocol(ABC):
         self._metadata_checksum = ""
         self._last_progress_sent: int = -1
         self._elapsed_time_offset: float | None = None
+        self._cli_start_ts: float | None = None
+        self._connected_ts: float | None = None
 
     @property
     def running(self) -> bool:
@@ -165,8 +168,8 @@ class AirPlayProtocol(ABC):
 
             await self.send_cli_command(cmd)
             self._last_progress_sent = 0
-            if metadata.image_url:
-                await self.send_cli_command(f"ARTWORK={metadata.image_url}")
+            if artwork_url := player_image_url(self.mass, metadata.image_url):
+                await self.send_cli_command(f"ARTWORK={artwork_url}")
         if progress is not None and abs(progress - self._last_progress_sent) >= 2:
             self._last_progress_sent = progress
             await self.send_cli_command(f"PROGRESS={progress}")
