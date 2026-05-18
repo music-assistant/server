@@ -120,6 +120,10 @@ class AppleMusicLibraryManager:
 
     async def library_add(self, item: MediaItemType) -> None:
         """Add item to library."""
+        if item.media_type == MediaType.ARTIST:
+            # The POST /v1/me/library endpoint does not support ids[artists];
+            # artists appear in the library implicitly via their albums/songs.
+            return
         item_type = translate_media_type_to_apple_type(item.media_type)
         kwargs = {f"ids[{item_type}]": item.item_id}
         await self.api.post_data("me/library", **kwargs)
