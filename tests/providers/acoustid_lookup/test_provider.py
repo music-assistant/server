@@ -283,6 +283,9 @@ async def test_finalize_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """A high-score match yields mbid + acoustid + candidates + release_groups."""
     provider = _make_provider()
     _install_fake_chromaprint(monkeypatch, _FakeFingerprinter())
+    cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
+        return_value=MagicMock(mbid=None)
+    )
 
     session_id = "session-final"
     await provider._start_analysis(session_id, _make_streamdetails(), _make_audio_format())
@@ -340,6 +343,9 @@ async def test_finalize_rejects_low_score(monkeypatch: pytest.MonkeyPatch) -> No
     """A best-result score below the threshold yields no analysis."""
     provider = _make_provider(min_score=0.85)
     _install_fake_chromaprint(monkeypatch, _FakeFingerprinter())
+    cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
+        return_value=MagicMock(mbid=None)
+    )
 
     session_id = "session-lowscore"
     await provider._start_analysis(session_id, _make_streamdetails(), _make_audio_format())

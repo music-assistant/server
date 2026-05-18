@@ -86,14 +86,14 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         super().__init__(mass, manifest, config, supported_features)
         self._data: dict[str, _AcoustidSessionData] = {}
 
-    async def start_analysis(
+    async def _start_analysis(
         self,
         session_id: str,
         streamdetails: StreamDetails,
         audio_format: AudioFormat,
     ) -> bool:
         """
-        Accept or skip an analysis session for the given track.
+        Accept or decline an analysis session for the given track.
 
         :param session_id: Session ID assigned by the AudioAnalysisController.
         :param streamdetails: Stream details for the track being analysed.
@@ -115,14 +115,19 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
                 session_id,
             )
             return False
-        # Re-checked every call so clearing the MBID (e.g. Refresh Item with
-        # overwrite=True) lets the next analysis run pick it up again.
+
         try:
             track = await self.mass.music.tracks.get_library_item_by_prov_id(
                 streamdetails.item_id, streamdetails.provider
             )
-        except MusicAssistantError:
-            track = None
+        except MusicAssistantError as err:
+            self.logger.debug(
+                "Could not load library row for %s/%s: %s",
+                streamdetails.provider,
+                streamdetails.item_id,
+                err,
+            )
+            return False
         # No library row → nothing to persist into; skip the fingerprint work.
         if track is None:
             self.logger.debug("Skipping %s — track is not in the library", session_id)
@@ -132,33 +137,6 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
                 "Skipping %s — track already has a MusicBrainz Recording Id", session_id
             )
             return False
-        return await super().start_analysis(session_id, streamdetails, audio_format)
-
-    async def _start_analysis(
-        self,
-        session_id: str,
-        streamdetails: StreamDetails,
-        audio_format: AudioFormat,
-    ) -> bool:
-        """
-        Accept or decline an analysis session for the given track.
-
-        :param session_id: Session ID assigned by the AudioAnalysisController.
-        :param streamdetails: Stream details for the track being analysed.
-        :param audio_format: PCM format of the incoming audio stream.
-        """
-        try:
-            track = await self.mass.music.tracks.get_library_item_by_prov_id(
-                streamdetails.item_id, streamdetails.provider
-            )
-        except MusicAssistantError as err:
-            self.logger.debug(
-                "Could not load library row for %s/%s (%s); proceeding without it",
-                streamdetails.provider,
-                streamdetails.item_id,
-                err,
-            )
-            track = None
 
         fingerprinter = self._create_fingerprinter(audio_format.sample_rate, audio_format.channels)
         if fingerprinter is None:
