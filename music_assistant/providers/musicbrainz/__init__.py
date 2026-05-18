@@ -324,7 +324,7 @@ class MusicbrainzProvider(MetadataProvider):
 
     async def get_recording_details(self, recording_id: str) -> MusicBrainzRecording:
         """Get Recording details by providing a MusicBrainz Recording Id."""
-        if result := await self.get_data(f"recording/{recording_id}?inc=artists+releases"):
+        if result := await self.get_data(f"recording/{recording_id}?inc=artists+releases+isrcs"):
             if "id" not in result:
                 result["id"] = recording_id
             try:
@@ -333,6 +333,18 @@ class MusicbrainzProvider(MetadataProvider):
                 raise InvalidDataError from err
         msg = "Invalid MusicBrainz recording ID provided"
         raise InvalidDataError(msg)
+
+    async def get_isrcs_for_recording(self, recording_id: str) -> list[str]:
+        """
+        Get ISRCs for a MusicBrainz Recording ID.
+
+        :param recording_id: MusicBrainz recording ID.
+        :return: List of ISRCs, or empty list if not found or on error.
+        """
+        with suppress(InvalidDataError):
+            recording = await self.get_recording_details(recording_id)
+            return recording.isrcs or []
+        return []
 
     async def get_release_details(self, album_id: str) -> MusicBrainzRelease:
         """Get Release/Album details by providing a MusicBrainz Album id."""
