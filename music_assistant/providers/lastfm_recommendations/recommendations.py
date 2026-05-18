@@ -185,7 +185,7 @@ class LastFMRecommendationManager:
 
         return top_items + random_items
 
-    async def _get_or_resolve_artist(self, lastfm_artist: dict[str, Any]) -> Artist | None:
+    async def get_or_resolve_artist(self, lastfm_artist: dict[str, Any]) -> Artist | None:
         """
         Return an Artist from cache (in-memory or persistent) or resolve and cache it.
 
@@ -223,7 +223,7 @@ class LastFMRecommendationManager:
             )
         return artist
 
-    async def _get_or_resolve_track(self, lastfm_track: dict[str, Any]) -> Track | None:
+    async def get_or_resolve_track(self, lastfm_track: dict[str, Any]) -> Track | None:
         """
         Return a Track from cache (in-memory or persistent) or resolve and cache it.
 
@@ -366,7 +366,7 @@ class LastFMRecommendationManager:
         top_artists_raw = await self.api.get_chart_top_artists(limit=RESOLUTION_BUFFER_SMALL)
         if top_artists_raw:
             resolved_artists = await asyncio.gather(
-                *[self._get_or_resolve_artist(artist_data) for artist_data in top_artists_raw]
+                *[self.get_or_resolve_artist(artist_data) for artist_data in top_artists_raw]
             )
             all_resolved = [a for a in resolved_artists if a is not None]
             top_artists = list(UniqueList(all_resolved))[:TARGET_ITEM_COUNT]
@@ -384,7 +384,7 @@ class LastFMRecommendationManager:
         top_tracks_raw = await self.api.get_chart_top_tracks(limit=RESOLUTION_BUFFER_SMALL)
         if top_tracks_raw:
             resolved_tracks = await asyncio.gather(
-                *[self._get_or_resolve_track(track_data) for track_data in top_tracks_raw]
+                *[self.get_or_resolve_track(track_data) for track_data in top_tracks_raw]
             )
             all_resolved_tracks = [t for t in resolved_tracks if t is not None]
             top_tracks = list(UniqueList(all_resolved_tracks))[:TARGET_ITEM_COUNT]
@@ -440,7 +440,7 @@ class LastFMRecommendationManager:
             )
 
             resolved_artists = await asyncio.gather(
-                *[self._get_or_resolve_artist(artist_data) for artist_data in sampled_artists_raw]
+                *[self.get_or_resolve_artist(artist_data) for artist_data in sampled_artists_raw]
             )
             all_resolved = [a for a in resolved_artists if a is not None]
             genre_artists = list(UniqueList(all_resolved))[:TARGET_ITEM_COUNT]
@@ -504,7 +504,7 @@ class LastFMRecommendationManager:
             )
 
             resolved_tracks = await asyncio.gather(
-                *[self._get_or_resolve_track(track_data) for track_data in sampled_tracks_raw]
+                *[self.get_or_resolve_track(track_data) for track_data in sampled_tracks_raw]
             )
             all_resolved_genre_tracks = [track for track in resolved_tracks if track is not None]
             genre_tracks = list(UniqueList(all_resolved_genre_tracks))[:TARGET_ITEM_COUNT]
@@ -531,7 +531,7 @@ class LastFMRecommendationManager:
         geo_artists_raw = await self.api.get_geo_top_artists(country, limit=RESOLUTION_BUFFER_SMALL)
         if geo_artists_raw:
             resolved_artists = await asyncio.gather(
-                *[self._get_or_resolve_artist(artist_data) for artist_data in geo_artists_raw]
+                *[self.get_or_resolve_artist(artist_data) for artist_data in geo_artists_raw]
             )
             all_resolved = [artist for artist in resolved_artists if artist is not None]
             geo_artists = list(UniqueList(all_resolved))[:TARGET_ITEM_COUNT]
@@ -549,7 +549,7 @@ class LastFMRecommendationManager:
         geo_tracks_raw = await self.api.get_geo_top_tracks(country, limit=RESOLUTION_BUFFER_SMALL)
         if geo_tracks_raw:
             resolved_tracks = await asyncio.gather(
-                *[self._get_or_resolve_track(track_data) for track_data in geo_tracks_raw]
+                *[self.get_or_resolve_track(track_data) for track_data in geo_tracks_raw]
             )
             all_resolved_geo_tracks = [track for track in resolved_tracks if track is not None]
             geo_tracks = list(UniqueList(all_resolved_geo_tracks))[:TARGET_ITEM_COUNT]
@@ -622,7 +622,7 @@ class LastFMRecommendationManager:
 
         resolved_artists = await asyncio.gather(
             *[
-                self._get_or_resolve_artist(artist_data)
+                self.get_or_resolve_artist(artist_data)
                 for artist_data in unique_similar[:SIMILAR_ITEMS_BUFFER]
             ]
         )
@@ -699,6 +699,6 @@ class LastFMRecommendationManager:
         top_tracks_data = unique_similar[:TARGET_ITEM_COUNT]
 
         resolved_tracks = await asyncio.gather(
-            *[self._get_or_resolve_track(track_data) for track_data in top_tracks_data]
+            *[self.get_or_resolve_track(track_data) for track_data in top_tracks_data]
         )
         return [track for track in resolved_tracks if track is not None]

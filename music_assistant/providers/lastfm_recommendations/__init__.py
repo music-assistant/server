@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from music_assistant_models.background_task import TaskSchedule
@@ -225,12 +226,13 @@ class LastFMRecommendationsProvider(MetadataProvider):
         """
         artist_mbid = artist.get_external_id(ExternalID.MB_ARTIST)
         similar_raw = await self.api.get_similar_artists(artist.name, artist_mbid, limit)
+        if not similar_raw:
+            return []
 
-        results: list[Artist] = []
-        for raw in similar_raw:
-            if resolved := await self.recommendations_manager._get_or_resolve_artist(raw):
-                results.append(resolved)
-        return results
+        resolved = await asyncio.gather(
+            *[self.recommendations_manager.get_or_resolve_artist(raw) for raw in similar_raw]
+        )
+        return [a for a in resolved if a is not None]
 
     async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
         """Retrieve similar tracks from Last.fm.
@@ -241,9 +243,10 @@ class LastFMRecommendationsProvider(MetadataProvider):
         artist_name = track.artists[0].name if track.artists else "Unknown Artist"
         track_mbid = track.get_external_id(ExternalID.MB_RECORDING)
         similar_raw = await self.api.get_similar_tracks(artist_name, track.name, track_mbid, limit)
+        if not similar_raw:
+            return []
 
-        results: list[Track] = []
-        for raw in similar_raw:
-            if resolved := await self.recommendations_manager._get_or_resolve_track(raw):
-                results.append(resolved)
-        return results
+        resolved = await asyncio.gather(
+            *[self.recommendations_manager.get_or_resolve_track(raw) for raw in similar_raw]
+        )
+        return [t for t in resolved if t is not None]
