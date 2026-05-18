@@ -619,53 +619,56 @@ class AudioAnalysisController:
     @api_command("audio_analysis/track")
     async def track(
         self,
-        aa_domain: str,
         item_id: str,
         provider_instance_id_or_domain: str,
-    ) -> AudioAnalysisData | None:
+        aa_domain: str | None = None,
+    ) -> list[AudioAnalysisData]:
         """
-        Return the complete stored analysis record for a single track.
+        Return the stored analysis records for a single track.
 
-        Includes all canonical scalar fields and the full, unmodified
-        extra_data (embedding included). Returns None when no usable analysis
-        exists for this track (unknown music provider, no stored row, or an
-        unreadable stored record).
+        Each record includes all canonical scalar fields and the full,
+        unmodified extra_data (embedding included). When aa_domain is given,
+        the result holds at most that provider's single record; when omitted,
+        it holds one record per AA provider that has analyzed this track.
+        Returns an empty list when no usable analysis exists (unknown music
+        provider, no stored rows, or unreadable stored records).
 
-        :param aa_domain: AA provider domain to query.
         :param item_id: Provider-native item ID from streamdetails.item_id.
         :param provider_instance_id_or_domain: Music provider instance ID or domain.
+        :param aa_domain: Optional AA provider domain to restrict to one provider.
         """
-        provider = self.mass.get_provider(
-            aa_domain,
-            provider_type=AudioAnalysisProvider,  # type: ignore[type-abstract]
-        )
-        if provider is None:
-            raise ProviderUnavailableError(f"{aa_domain} is not available")
+        if aa_domain is not None:
+            provider = self.mass.get_provider(
+                aa_domain,
+                provider_type=AudioAnalysisProvider,  # type: ignore[type-abstract]
+            )
+            if provider is None:
+                raise ProviderUnavailableError(f"{aa_domain} is not available")
         music_provider = self.mass.get_provider(
             provider_instance_id_or_domain, provider_type=MusicProvider
         )
         if music_provider is None:
-            return None
+            return []
         prov_key = (
             music_provider.domain
             if music_provider.is_streaming_provider
             else music_provider.instance_id
         )
-        row = await self.mass.music.database.get_row(
-            DB_TABLE_AUDIO_ANALYSIS,
-            {
-                "item_id": item_id,
-                "provider": prov_key,
-                "aa_provider_domain": aa_domain,
-                "media_type": MediaType.TRACK.value,
-            },
-        )
-        if not row:
-            return None
-        try:
-            return AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
-        except (ValueError, TypeError, KeyError):
-            return None
+        match: dict[str, Any] = {
+            "item_id": item_id,
+            "provider": prov_key,
+            "media_type": MediaType.TRACK.value,
+        }
+        if aa_domain is not None:
+            match["aa_provider_domain"] = aa_domain
+        rows = await self.mass.music.database.get_rows(DB_TABLE_AUDIO_ANALYSIS, match)
+        results: list[AudioAnalysisData] = []
+        for row in rows:
+            try:
+                results.append(AudioAnalysisData.from_dict(json_loads(row["analysis_data"])))
+            except (ValueError, TypeError, KeyError):
+                continue
+        return results
 
     @api_command("audio_analysis/coverage")
     async def coverage(self, aa_domain: str) -> dict[str, Any]:

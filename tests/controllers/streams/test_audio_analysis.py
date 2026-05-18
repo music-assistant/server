@@ -1053,8 +1053,8 @@ async def test_export_rounds_float_fields_to_four_decimals() -> None:
 
 
 @pytest.mark.asyncio
-async def test_track_returns_full_record_including_extra_data() -> None:
-    """track() returns a typed AudioAnalysisData, embedding included."""
+async def test_track_with_aa_domain_returns_single_record() -> None:
+    """With aa_domain set, track() returns that provider's record as a 1-item list."""
     full = {"bpm": 120.0, "extra_data": {"clap_embedding": [0.1, 0.2, 0.3]}}
     c, _ = _stub_controller()
     p = _make_aa_provider_with_domain("sonic_analysis")
@@ -1066,89 +1066,105 @@ async def test_track_returns_full_record_including_extra_data() -> None:
         return p if dom == "sonic_analysis" else music_prov
 
     c.mass.get_provider = MagicMock(side_effect=_get_provider)  # type: ignore[method-assign]
-    c.mass.music.database.get_row = AsyncMock(  # type: ignore[method-assign]
-        return_value={"analysis_data": json.dumps(full)}
-    )
+    get_rows = AsyncMock(return_value=[{"analysis_data": json.dumps(full)}])
+    c.mass.music.database.get_rows = get_rows  # type: ignore[method-assign]
 
     result = await c.track(
+        item_id="a",
+        provider_instance_id_or_domain="filesystem_local",
         aa_domain="sonic_analysis",
+    )
+
+    assert len(result) == 1
+    assert isinstance(result[0], AudioAnalysisData)
+    assert result[0].bpm == 120.0
+    assert result[0].extra_data == {"clap_embedding": [0.1, 0.2, 0.3]}
+    assert get_rows.await_args is not None
+    assert get_rows.await_args.args[1]["aa_provider_domain"] == "sonic_analysis"
+
+
+@pytest.mark.asyncio
+async def test_track_without_aa_domain_returns_all_provider_records() -> None:
+    """Without aa_domain, track() returns one record per AA provider for the track."""
+    c, _ = _stub_controller()
+    music_prov = MagicMock()
+    music_prov.is_streaming_provider = False
+    music_prov.instance_id = "filesystem_local"
+    c.mass.get_provider = MagicMock(return_value=music_prov)  # type: ignore[method-assign]
+    get_rows = AsyncMock(
+        return_value=[
+            {"analysis_data": json.dumps({"bpm": 120.0})},
+            {"analysis_data": json.dumps({"loudness_integrated": -9.0})},
+        ]
+    )
+    c.mass.music.database.get_rows = get_rows  # type: ignore[method-assign]
+
+    result = await c.track(
         item_id="a",
         provider_instance_id_or_domain="filesystem_local",
     )
 
-    assert isinstance(result, AudioAnalysisData)
-    assert result.bpm == 120.0
-    assert result.extra_data == {"clap_embedding": [0.1, 0.2, 0.3]}
+    assert [type(r) for r in result] == [AudioAnalysisData, AudioAnalysisData]
+    assert result[0].bpm == 120.0
+    assert result[1].loudness_integrated == -9.0
+    assert get_rows.await_args is not None
+    assert "aa_provider_domain" not in get_rows.await_args.args[1]
 
 
 @pytest.mark.asyncio
-async def test_track_returns_none_when_no_row() -> None:
-    """No stored analysis row -> None (not an error)."""
+async def test_track_returns_empty_when_no_rows() -> None:
+    """No stored analysis rows -> empty list (not an error)."""
     c, _ = _stub_controller()
-    p = _make_aa_provider_with_domain("sonic_analysis")
     music_prov = MagicMock()
     music_prov.is_streaming_provider = False
     music_prov.instance_id = "filesystem_local"
-
-    def _get_provider(dom: str, provider_type: object = None) -> MagicMock:  # noqa: ARG001
-        return p if dom == "sonic_analysis" else music_prov
-
-    c.mass.get_provider = MagicMock(side_effect=_get_provider)  # type: ignore[method-assign]
-    c.mass.music.database.get_row = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    c.mass.get_provider = MagicMock(return_value=music_prov)  # type: ignore[method-assign]
+    c.mass.music.database.get_rows = AsyncMock(return_value=[])  # type: ignore[method-assign]
 
     result = await c.track(
-        aa_domain="sonic_analysis",
         item_id="missing",
         provider_instance_id_or_domain="filesystem_local",
     )
 
-    assert result is None
+    assert result == []
 
 
 @pytest.mark.asyncio
-async def test_track_returns_none_when_music_provider_unresolved() -> None:
-    """AA provider resolves but the music provider lookup returns None -> None."""
+async def test_track_returns_empty_when_music_provider_unresolved() -> None:
+    """The music provider lookup returns None -> empty list."""
     c, _ = _stub_controller()
-    p = _make_aa_provider_with_domain("sonic_analysis")
-
-    def _get_provider(dom: str, provider_type: object = None) -> MagicMock | None:  # noqa: ARG001
-        return p if dom == "sonic_analysis" else None
-
-    c.mass.get_provider = MagicMock(side_effect=_get_provider)  # type: ignore[method-assign]
+    c.mass.get_provider = MagicMock(return_value=None)  # type: ignore[method-assign]
 
     result = await c.track(
-        aa_domain="sonic_analysis",
         item_id="a",
-        provider_instance_id_or_domain="filesystem_local",
+        provider_instance_id_or_domain="bogus",
     )
 
-    assert result is None
+    assert result == []
 
 
 @pytest.mark.asyncio
-async def test_track_returns_none_when_analysis_data_unparsable() -> None:
-    """A stored row with unparsable analysis_data -> None (not an error)."""
+async def test_track_skips_unparsable_rows() -> None:
+    """Rows with unparsable analysis_data are skipped; good rows still returned."""
     c, _ = _stub_controller()
-    p = _make_aa_provider_with_domain("sonic_analysis")
     music_prov = MagicMock()
     music_prov.is_streaming_provider = False
     music_prov.instance_id = "filesystem_local"
-
-    def _get_provider(dom: str, provider_type: object = None) -> MagicMock:  # noqa: ARG001
-        return p if dom == "sonic_analysis" else music_prov
-
-    c.mass.get_provider = MagicMock(side_effect=_get_provider)  # type: ignore[method-assign]
-    c.mass.music.database.get_row = AsyncMock(  # type: ignore[method-assign]
-        return_value={"analysis_data": "not valid json {"}
+    c.mass.get_provider = MagicMock(return_value=music_prov)  # type: ignore[method-assign]
+    c.mass.music.database.get_rows = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            {"analysis_data": "not valid json {"},
+            {"analysis_data": json.dumps({"bpm": 100.0})},
+        ]
     )
 
     result = await c.track(
-        aa_domain="sonic_analysis",
         item_id="a",
         provider_instance_id_or_domain="filesystem_local",
     )
 
-    assert result is None
+    assert len(result) == 1
+    assert result[0].bpm == 100.0
 
 
 @pytest.mark.asyncio
