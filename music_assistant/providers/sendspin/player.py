@@ -51,10 +51,9 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import Album, Artist, is_track
-from music_assistant_models.player import DeviceInfo, OutputProtocol
+from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
-from music_assistant.constants import PROTOCOL_PRIORITY
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player, PlayerMedia
 
@@ -1057,20 +1056,6 @@ class SendspinVisualizerPlayer(SendspinBasePlayer):
         """
         super().__init__(provider, player_id, initial_hello)
         self._attr_supported_features = {PlayerFeature.SET_MEMBERS}
-        # Self-advertise the sendspin protocol so cross-provider grouping can match
-        # this visualizer against any parent that has a sendspin bridge linked.
-        self.set_linked_output_protocols(
-            [
-                OutputProtocol(
-                    output_protocol_id=player_id,
-                    name=provider.name,
-                    protocol_domain=provider.domain,
-                    priority=PROTOCOL_PRIORITY["sendspin"],
-                    is_native=True,
-                    available=True,
-                )
-            ]
-        )
 
     async def set_members(
         self,

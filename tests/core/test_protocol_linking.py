@@ -3213,19 +3213,6 @@ class TestNativeProtocolDomainPlayerGrouping:
                 )
             ]
         )
-        # The fix under test: the visualizer self-advertises a sendspin output protocol
-        hue_light.set_linked_output_protocols(
-            [
-                OutputProtocol(
-                    output_protocol_id="hue-mancave",
-                    name="Sendspin",
-                    protocol_domain="sendspin",
-                    priority=40,
-                    is_native=True,
-                    available=True,
-                )
-            ]
-        )
 
         mock_mass.players = controller
         controller._players = {
