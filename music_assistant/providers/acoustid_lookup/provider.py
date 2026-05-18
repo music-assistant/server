@@ -142,7 +142,9 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         if fingerprinter is None:
             return False
 
-        bit_depth = audio_format.bit_depth or 16
+        bit_depth = audio_format.bit_depth
+        if bit_depth is None:
+            return False
         sample_width = max(1, bit_depth // 8)
         track_duration = int(streamdetails.duration or 0)
         expected_album_title = _extract_album_title(track)
