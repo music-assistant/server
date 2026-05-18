@@ -694,8 +694,25 @@ class TestPresetMembersInDynamicGroup:
         assert set(sgp._attr_group_members) == {"a", "b", "c"}
 
     @pytest.mark.asyncio
-    async def test_form_syncgroup_re_adds_preset_members(self) -> None:
-        """After an unjoin, _form_syncgroup re-adds preset members from config."""
+    async def test_power_on_re_applies_preset_members(self) -> None:
+        """Powering on re-applies the configured preset, restoring any previously unjoined member."""
+        mass = _make_mock_mass()
+        sgp = self._make_dynamic_group_with_preset(mass, ["leader", "preset_b"])
+        await sgp.on_config_updated()
+
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        preset_b = _make_mock_player("preset_b", provider_domain="sonos")
+        mass.players.get_player = _player_lookup({"leader": leader, "preset_b": preset_b})
+        sgp._attr_group_members = ["leader"]  # preset_b was unjoined in a previous session
+
+        with patch.object(sgp, "update_state"):
+            await sgp.power(True)
+
+        assert "preset_b" in sgp._attr_group_members
+
+    @pytest.mark.asyncio
+    async def test_form_syncgroup_does_not_re_add_unjoined_preset(self) -> None:
+        """Mid-session unjoins must stick: _form_syncgroup must NOT re-add preset members."""
         mass = _make_mock_mass()
         sgp = self._make_dynamic_group_with_preset(mass, ["leader", "preset_b"])
         await sgp.on_config_updated()
@@ -705,7 +722,7 @@ class TestPresetMembersInDynamicGroup:
         preset_b = _make_mock_player("preset_b", provider_domain="sonos")
         mass.players.get_player = _player_lookup({"leader": leader, "preset_b": preset_b})
         sgp.sync_leader = leader
-        sgp._attr_group_members = ["leader"]  # preset_b was unjoined previously
+        sgp._attr_group_members = ["leader"]  # preset_b was unjoined during this session
 
         with (
             patch.object(sgp, "update_state"),
@@ -713,7 +730,7 @@ class TestPresetMembersInDynamicGroup:
         ):
             await sgp._form_syncgroup()
 
-        assert "preset_b" in sgp._attr_group_members
+        assert "preset_b" not in sgp._attr_group_members
 
     def test_preset_member_bypasses_allow_list_filter(self) -> None:
         """A preset member that was unjoined must still pass the allow-list filter.

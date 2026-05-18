@@ -70,7 +70,7 @@ class SyncGroupPlayer(Player):
         preset_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
         if self.is_dynamic:
             # In dynamic mode the configured members act as a preset: they are
-            # pulled in when the group plays
+            # pulled in when the group is powered on
             self._attr_static_group_members = []
             self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
         else:
@@ -292,6 +292,13 @@ class SyncGroupPlayer(Player):
             await self.stop()
 
         if powered:
+            # apply the configured preset members on power-on so unjoins
+            # during a powered session stick until the next power cycle
+            preset_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
+            self._attr_group_members = [
+                *preset_members,
+                *[x for x in self._attr_group_members if x not in preset_members],
+            ]
             # form syncgroup when powering on
             await self._form_syncgroup()
         else:
@@ -488,14 +495,6 @@ class SyncGroupPlayer(Player):
             self._attr_group_members,
             self.sync_leader.display_name if self.sync_leader else None,
         )
-        # always ensure the configured preset/permanent members are part of
-        # the group members, even if they were (temporarily) removed by an unjoin
-        preset_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
-        self._attr_group_members = [
-            *preset_members,
-            *[x for x in self._attr_group_members if x not in preset_members],
-        ]
-
         # select new sync leader if needed
         if not self.sync_leader:
             self.sync_leader = self._select_sync_leader()
