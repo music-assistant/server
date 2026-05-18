@@ -122,7 +122,7 @@ class AppleMusicLibraryManager:
         """Add item to library."""
         item_type = translate_media_type_to_apple_type(item.media_type)
         kwargs = {f"ids[{item_type}]": item.item_id}
-        await self.api.post_data("me/library/", **kwargs)
+        await self.api.post_data("me/library", **kwargs)
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> None:
         """Remove item from library."""
