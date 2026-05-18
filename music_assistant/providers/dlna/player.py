@@ -42,7 +42,7 @@ def catch_request_errors[DLNAPlayerT: "DLNAPlayer", **P, R](
                 func.__name__,
                 self.display_name,
             )
-        if not self.available:
+        if not self.available and func.__name__ not in ("pause", "stop"):
             self.logger.warning("Device disappeared when trying to call %s", func.__name__)
             return None
         try:
@@ -417,7 +417,14 @@ class DLNAPlayer(Player):
     async def stop(self) -> None:
         """Send STOP command to given player."""
         assert self.device is not None  # for type checking
-        await self.device.async_stop()
+        if self.device.can_stop:
+            await self.device.async_stop()
+            return
+        # Some devices report stale/empty CurrentTransportActions while still
+        # accepting AVTransport Stop. Force-call Stop when action exists.
+        action = self.device._action("AVT", "Stop")
+        if action is not None:
+            await action.async_call(InstanceID=0)
 
     @catch_request_errors
     async def play(self) -> None:
@@ -472,10 +479,28 @@ class DLNAPlayer(Player):
     async def pause(self) -> None:
         """Send PAUSE command to given player."""
         assert self.device is not None  # for type checking
+
+        replace_pause_with_stop: bool = await self.mass.config.get_player_config_value(
+            self.player_id, "replace_pause_with_stop"
+        )
+
+        if replace_pause_with_stop and self.device.can_stop:
+            await self.stop()
+            return
+
         if self.device.can_pause:
             await self.device.async_pause()
-        else:
-            await self.device.async_stop()
+            return
+
+        # Some devices expose Pause but report stale CurrentTransportActions.
+        # Force-call Pause when action exists; otherwise fallback to Stop.
+        pause_action = self.device._action("AVT", "Pause")
+        if pause_action is not None:
+            await pause_action.async_call(InstanceID=0)
+            return
+        stop_action = self.device._action("AVT", "Stop")
+        if stop_action is not None:
+            await stop_action.async_call(InstanceID=0)
 
     @catch_request_errors
     async def volume_set(self, volume_level: int) -> None:
@@ -535,6 +560,14 @@ class DLNAPlayer(Player):
                 await self.device.async_update(do_ping=do_ping)
             self.last_seen = now if do_ping else self.last_seen
         except UpnpError as err:
+            # Some devices (e.g. Denon HEOS) return SOAP responses containing
+            # non-UTF-8 bytes in track metadata, which the underlying library
+            # surfaces as a UpnpCommunicationError wrapping UnicodeDecodeError.
+            # Treat this as a transient metadata issue and keep the player
+            # connected; the next poll will likely succeed.
+            if isinstance(err.__cause__, UnicodeDecodeError):
+                self.logger.debug("Ignoring non-UTF-8 SOAP response from device: %r", err)
+                return
             self.logger.debug("Device unavailable: %r", err)
             await self._device_disconnect()
             raise PlayerUnavailableError from err

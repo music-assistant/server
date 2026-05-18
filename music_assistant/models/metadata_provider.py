@@ -9,7 +9,13 @@ from music_assistant_models.enums import ProviderFeature
 from .provider import Provider
 
 if TYPE_CHECKING:
-    from music_assistant_models.media_items import Album, Artist, MediaItemMetadata, Track
+    from music_assistant_models.media_items import (
+        Album,
+        Artist,
+        MediaItemMetadata,
+        RecommendationFolder,
+        Track,
+    )
 
 
 class MetadataProvider(Provider):
@@ -17,6 +23,11 @@ class MetadataProvider(Provider):
 
     Metadata Provider implementations should inherit from this base model.
     """
+
+    @property
+    def priority(self) -> int:
+        """Priority for this provider (lower = more preferred)."""
+        return 50
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for an artist on this Metadata provider."""
@@ -35,6 +46,42 @@ class MetadataProvider(Provider):
         if ProviderFeature.TRACK_METADATA in self.supported_features:
             raise NotImplementedError
         return None
+
+    async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
+        """
+        Retrieve a list of similar tracks for the given track.
+
+        Will only be called if ProviderFeature.SIMILAR_TRACKS is declared.
+
+        :param track: The reference track.
+        :param limit: Maximum number of similar tracks to return.
+        """
+        if ProviderFeature.SIMILAR_TRACKS in self.supported_features:
+            raise NotImplementedError
+        return []
+
+    async def get_similar_artists(self, artist: Artist, limit: int = 25) -> list[Artist]:
+        """
+        Retrieve a list of similar artists for the given artist.
+
+        Will only be called if ProviderFeature.SIMILAR_ARTISTS is declared.
+
+        :param artist: The reference artist.
+        :param limit: Maximum number of similar artists to return.
+        """
+        if ProviderFeature.SIMILAR_ARTISTS in self.supported_features:
+            raise NotImplementedError
+        return []
+
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """
+        Retrieve a list of recommendation folders from this metadata provider.
+
+        Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
+        """
+        if ProviderFeature.RECOMMENDATIONS in self.supported_features:
+            raise NotImplementedError
+        return []
 
     async def resolve_image(self, path: str) -> str | bytes:
         """

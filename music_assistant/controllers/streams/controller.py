@@ -22,14 +22,21 @@ from music_assistant_models.enums import (
     ContentType,
     MediaType,
     PlayerFeature,
+    ProviderType,
     StreamType,
     VolumeNormalizationMode,
 )
-from music_assistant_models.errors import AudioError, InvalidDataError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    AudioError,
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
+    CONF_BACKGROUND_SCAN_CONCURRENCY,
     CONF_BIND_IP,
     CONF_BIND_PORT,
     CONF_CROSSFADE_DURATION,
@@ -43,6 +50,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TRACKS,
+    DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
     DEFAULT_STREAM_HEADERS,
     DLNA_CONTENT_FEATURES,
     DLNA_CONTENT_FEATURES_REALTIME,
@@ -61,7 +69,6 @@ from music_assistant.controllers.streams.constants import (
     DEFAULT_PORT,
     BufferSize,
 )
-from music_assistant.controllers.streams.smart_fades.analyzer import SmartFadesAnalyzer
 from music_assistant.helpers.audio import (
     calculate_content_length,
     get_content_length,
@@ -110,7 +117,6 @@ class StreamsController(CoreController):
         self.announcements: dict[str, AnnounceData] = {}
         self._bind_ip: str = "0.0.0.0"
         self.audio = StreamsAudio(mass)
-        self._smart_fades_analyzer = SmartFadesAnalyzer(self)
         self._audio_analysis = AudioAnalysisController(self)
 
     @property
@@ -127,11 +133,6 @@ class StreamsController(CoreController):
     def bind_ip(self) -> str:
         """Return the IP address this streamserver is bound to."""
         return self._bind_ip
-
-    @property
-    def smart_fades_analyzer(self) -> SmartFadesAnalyzer:
-        """Return the SmartFadesAnalyzer instance."""
-        return self._smart_fades_analyzer
 
     async def get_config_entries(
         self, action: str | None = None, values: dict[str, ConfigValueType] | None = None
@@ -256,8 +257,19 @@ class StreamsController(CoreController):
                 description="Log level for the Smart Fades mixer and analyzer.",
                 options=CONF_ENTRY_LOG_LEVEL.options,
                 default_value="GLOBAL",
-                category="generic",
+                category="audio_analysis",
                 advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_BACKGROUND_SCAN_CONCURRENCY,
+                type=ConfigEntryType.INTEGER,
+                range=(1, 8),
+                default_value=DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
+                label="Background analysis concurrency",
+                description="Maximum number of tracks analyzed concurrently during the nightly "
+                "background scan. Default 1 (serial). Increase only if your hardware can handle "
+                "concurrent torch/ffmpeg work.",
+                category="audio_analysis",
             ),
         )
 
@@ -265,6 +277,7 @@ class StreamsController(CoreController):
         """Async initialize of module."""
         # initialize the audio sub-controller (needs mass.streams to be set)
         self.audio.setup()
+        self._audio_analysis.setup()
         # copy log level to audio/ffmpeg loggers
         self.audio.logger.setLevel(self.logger.level)
         FFMPEG_LOGGER.setLevel(self.logger.level)
@@ -319,6 +332,7 @@ class StreamsController(CoreController):
 
     async def close(self) -> None:
         """Cleanup on exit."""
+        await self._audio_analysis.close()
         await self._server.close()
 
     async def resolve_stream_url(self, player_id: str, media: PlayerMedia) -> str:
@@ -552,13 +566,11 @@ class StreamsController(CoreController):
                 break
         if queue_item.streamdetails.stream_error:
             self.logger.error(
-                "Error streaming QueueItem %s (%s) to %s - will try to skip to next item",
+                "Error streaming QueueItem %s (%s) to %s",
                 queue_item.name,
                 queue_item.uri,
                 queue.display_name,
             )
-            # try to skip to the next item in the queue after a short delay
-            self.mass.call_later(5, self.mass.player_queues.next(queue_id))
         elif (
             bytes_sent > 0
             and queue_item.streamdetails
@@ -944,7 +956,7 @@ class StreamsController(CoreController):
                     queue=queue, start_queue_item=start_queue_item, pcm_format=pcm_format
                 )
                 if use_flow_stream_buffering:
-                    return buffered(flow_stream, buffer_size=10)
+                    return buffered(flow_stream, buffer_size=30, min_buffer_before_yield=1)
                 return flow_stream
             # single item stream (e.g. radio or non-flow mode)
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
@@ -973,12 +985,21 @@ class StreamsController(CoreController):
         """Create a 30 seconds preview audioclip for the given media item."""
         if not (music_prov := self.mass.get_provider(provider_instance_id_or_domain)):
             raise ProviderUnavailableError
-        if TYPE_CHECKING:
-            assert isinstance(music_prov, MusicProvider)
-
-        if not await music_prov.get_item(media_type, item_id):
-            msg = f"Item {item_id} not found in provider {provider_instance_id_or_domain}"
+        if music_prov.type != ProviderType.MUSIC:
+            msg = f"{provider_instance_id_or_domain} is not a music provider"
             raise InvalidDataError(msg)
+        music_prov = cast("MusicProvider", music_prov)
+
+        try:
+            await self.mass.music.get_item(
+                media_type,
+                item_id,
+                provider_instance_id_or_domain,
+                allow_update_metadata=False,
+            )
+        except MediaNotFoundError as err:
+            msg = f"Item {item_id} not found in provider {provider_instance_id_or_domain}"
+            raise InvalidDataError(msg) from err
 
         streamdetails = await music_prov.get_stream_details(item_id, media_type)
         pcm_format = AudioFormat(
@@ -1157,8 +1178,6 @@ class StreamsController(CoreController):
         """Set up smart fades logger level."""
         log_level = str(config.get_value(CONF_SMART_FADES_LOG_LEVEL))
         if log_level == "GLOBAL":
-            self.smart_fades_analyzer.logger.setLevel(self.logger.level)
             self.audio.smart_fades_mixer.logger.setLevel(self.logger.level)
         else:
-            self.smart_fades_analyzer.logger.setLevel(log_level)
             self.audio.smart_fades_mixer.logger.setLevel(log_level)

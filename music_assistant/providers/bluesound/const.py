@@ -12,6 +12,7 @@ PLAYBACK_POLL_INTERVAL = 10
 PLAYER_FEATURES_BASE = {
     PlayerFeature.PLAY_MEDIA,
     PlayerFeature.SET_MEMBERS,
+    PlayerFeature.VOLUME_SET,
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.PAUSE,
     PlayerFeature.SELECT_SOURCE,

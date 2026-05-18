@@ -5,9 +5,10 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import MediaType, ProviderType
 from music_assistant_models.media_items import Album, AudioFormat, ProviderMapping, UniqueList
 
+from music_assistant.constants import CONF_ENTRY_LIBRARY_SYNC_BACK
 from music_assistant.controllers.media.base import MediaControllerBase
 from music_assistant.controllers.music import MusicController
 from music_assistant.models.music_provider import CACHE_CATEGORY_PREV_LIBRARY_IDS
@@ -82,8 +83,10 @@ async def test_add_item_to_library_sets_in_library_true() -> None:
     ctrl_mock.add_item_to_library = AsyncMock(return_value=album)
 
     provider_mock = Mock()
-    provider_mock.library_edit_supported.return_value = True
-    provider_mock.library_sync_back_enabled.return_value = True
+    provider_mock.type = ProviderType.MUSIC
+    provider_mock.supports_feature.return_value = True
+    provider_mock.config.values = {CONF_ENTRY_LIBRARY_SYNC_BACK.key: Mock()}
+    provider_mock.config.get_value.return_value = True
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
@@ -112,8 +115,10 @@ async def test_add_item_to_library_sets_in_library_even_when_sync_back_disabled(
     ctrl_mock.add_item_to_library = AsyncMock(return_value=album)
 
     provider_mock = Mock()
-    provider_mock.library_edit_supported.return_value = True
-    provider_mock.library_sync_back_enabled.return_value = False
+    provider_mock.type = ProviderType.MUSIC
+    provider_mock.supports_feature.return_value = True
+    provider_mock.config.values = {CONF_ENTRY_LIBRARY_SYNC_BACK.key: Mock()}
+    provider_mock.config.get_value.return_value = False
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass
@@ -143,7 +148,8 @@ async def test_add_item_to_library_sets_in_library_even_when_edit_not_supported(
     ctrl_mock.add_item_to_library = AsyncMock(return_value=album)
 
     provider_mock = Mock()
-    provider_mock.library_edit_supported.return_value = False
+    provider_mock.type = ProviderType.MUSIC
+    provider_mock.supports_feature.return_value = False
 
     music_ctrl = MusicController.__new__(MusicController)
     music_ctrl.mass = mass

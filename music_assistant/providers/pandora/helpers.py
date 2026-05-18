@@ -23,7 +23,8 @@ def generate_csrf_token() -> str:
 
 
 def handle_pandora_error(response_data: dict[str, Any]) -> None:
-    """Handle Pandora API error responses.
+    """
+    Handle Pandora API error responses.
 
     Maps Pandora API error codes to appropriate Music Assistant exceptions.
 
@@ -53,7 +54,8 @@ def handle_pandora_error(response_data: dict[str, Any]) -> None:
 
 
 async def get_csrf_token(session: aiohttp.ClientSession) -> str:
-    """Get CSRF token from Pandora website.
+    """
+    Get CSRF token from Pandora website.
 
     Attempts to retrieve CSRF token from Pandora cookies.
 
@@ -83,7 +85,8 @@ async def get_csrf_token(session: aiohttp.ClientSession) -> str:
 
 
 def create_auth_headers(csrf_token: str, auth_token: str | None = None) -> dict[str, str]:
-    """Create authentication headers for Pandora API requests.
+    """
+    Create authentication headers for Pandora API requests.
 
     Args:
         csrf_token: CSRF token for request validation

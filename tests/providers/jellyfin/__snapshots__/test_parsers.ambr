@@ -371,6 +371,7 @@
 # ---
 # name: test_parse_artists[ash]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
       list([

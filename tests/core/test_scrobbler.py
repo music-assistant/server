@@ -87,6 +87,40 @@ async def test_it_does_not_update_now_playing_on_pause() -> None:
     assert handler._now_playing == 0
 
 
+async def test_it_filters_scrobbles_by_player() -> None:
+    """Only scrobble tracks from configured players."""
+    handler = DummyHandler(
+        logging.getLogger(),
+        ScrobblerConfig(suffix_version=False, mass_playerids=["living_room"]),
+    )
+
+    await handler._on_mass_media_item_played(
+        create_report(duration=180, seconds_played=176, player_id="kitchen")
+    )
+    assert handler._now_playing == 0
+    assert handler._tracked == 0
+
+    await handler._on_mass_media_item_played(
+        create_report(duration=180, seconds_played=176, player_id="living_room")
+    )
+    assert handler._now_playing == 1
+    assert handler._tracked == 1
+
+
+async def test_it_filters_scrobbles_without_player_context() -> None:
+    """Skip scrobbling if a player filter is configured and the event has no player context."""
+    handler = DummyHandler(
+        logging.getLogger(),
+        ScrobblerConfig(suffix_version=False, mass_playerids=["living_room"]),
+    )
+
+    await handler._on_mass_media_item_played(
+        create_report(duration=180, seconds_played=176, player_id=None)
+    )
+    assert handler._now_playing == 0
+    assert handler._tracked == 0
+
+
 async def test_it_suffixes_the_version_if_enabled_and_available() -> None:
     """Test that the track version is suffixed to the track name when enabled."""
     report_with_version = create_report(version="Deluxe Edition").data
@@ -107,6 +141,7 @@ def create_report(
     is_playing: bool = True,
     uri: str = "filesystem://track/1",
     version: str | None = None,
+    player_id: str | None = "test_player",
 ) -> MassEvent:
     """Create the MediaItemPlaybackProgressReport and wrap it in a MassEvent."""
     return wrap_event(
@@ -125,6 +160,7 @@ def create_report(
             fully_played=duration - seconds_played < 5,
             is_playing=is_playing,
             version=version,
+            player_id=player_id,
         )
     )
 

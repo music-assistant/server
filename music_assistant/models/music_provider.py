@@ -32,7 +32,6 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS,
-    CONF_ENTRY_LIBRARY_SYNC_BACK,
     CONF_ENTRY_LIBRARY_SYNC_DELETIONS,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLIST_TRACKS,
     PlaylistPlayableItem,
@@ -398,6 +397,14 @@ class MusicProvider(Provider):
         """
         raise NotImplementedError
 
+    async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
+        """
+        Retrieve a dynamic list of similar artists based on the provided artist.
+
+        Only called if provider supports ProviderFeature.SIMILAR_ARTISTS.
+        """
+        raise NotImplementedError
+
     async def get_resume_position(
         self, item_id: str, media_type: MediaType
     ) -> tuple[bool, int, datetime | None]:
@@ -474,6 +481,16 @@ class MusicProvider(Provider):
         is_playing is True when the track is currently playing.
         """
 
+    async def on_item_updated(self, item: MediaItemType) -> None:
+        """
+        Handle callback when a library item's metadata has been updated.
+
+        Providers can implement this to sync changes to their own storage
+        (e.g. config entries, file tags).
+
+        :param item: The updated library item.
+        """
+
     async def resolve_image(self, path: str) -> str | bytes:
         """
         Resolve an image from an image path.
@@ -482,24 +499,6 @@ class MusicProvider(Provider):
         a string with an http(s) URL or local path that is accessible from the server.
         """
         return path
-
-    async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:
-        """Get single MediaItem from provider."""
-        if media_type == MediaType.ARTIST:
-            return await self.get_artist(prov_item_id)
-        if media_type == MediaType.ALBUM:
-            return await self.get_album(prov_item_id)
-        if media_type == MediaType.PLAYLIST:
-            return await self.get_playlist(prov_item_id)
-        if media_type == MediaType.RADIO:
-            return await self.get_radio(prov_item_id)
-        if media_type == MediaType.AUDIOBOOK:
-            return await self.get_audiobook(prov_item_id)
-        if media_type == MediaType.PODCAST:
-            return await self.get_podcast(prov_item_id)
-        if media_type == MediaType.PODCAST_EPISODE:
-            return await self.get_podcast_episode(prov_item_id)
-        return await self.get_track(prov_item_id)
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911
         """Browse this provider's items.
@@ -698,7 +697,7 @@ class MusicProvider(Provider):
         # this reference implementation may be overridden
         # with a provider specific approach if needed
 
-        if not self.library_supported(media_type):
+        if not self.mass.music.library_supported(self, media_type):
             raise UnsupportedFeaturedException("Library sync not supported for this media type")
 
         if media_type == MediaType.ARTIST:
@@ -742,17 +741,25 @@ class MusicProvider(Provider):
                             for x in library_item.provider_mappings
                             if x.provider_instance != self.instance_id and x.in_library
                         }
-                        if not remaining_providers_in_library and library_item.favorite:
-                            # unmark as favorite since no providers have it in library anymore
-                            await controller.set_favorite(db_id, False)
-                        # unmark this provider mapping as in_library = False
-                        # we keep it in the library database so we can keep the metadata
-                        for prov_map in library_item.provider_mappings:
-                            if prov_map.provider_instance == self.instance_id:
-                                prov_map.in_library = False
-                        await controller.set_provider_mappings(
-                            db_id, library_item.provider_mappings
-                        )
+                        if not remaining_providers_in_library and not self.is_streaming_provider:
+                            # for non-streaming providers (local files, library-middlemen
+                            # like subsonic/jellyfin/plex) an item removed from the provider
+                            # is actually gone; fully remove it to avoid dangling records
+                            # that stay visible in artist/album views where in_library is
+                            # not filtered on
+                            await controller.remove_item_from_library(db_id)
+                        else:
+                            if not remaining_providers_in_library and library_item.favorite:
+                                # unmark as favorite since no providers have it in library
+                                await controller.set_favorite(db_id, False)
+                            # unmark this provider mapping as in_library = False
+                            # we keep it in the library database so we can keep the metadata
+                            for prov_map in library_item.provider_mappings:
+                                if prov_map.provider_instance == self.instance_id:
+                                    prov_map.in_library = False
+                            await controller.set_provider_mappings(
+                                db_id, library_item.provider_mappings
+                            )
                         await asyncio.sleep(0)  # yield to eventloop
         # store current list of id's in cache so we can track changes
         await self.mass.cache.set(
@@ -1289,56 +1296,13 @@ class MusicProvider(Provider):
 
     # DO NOT OVERRIDE BELOW
 
-    def library_supported(self, media_type: MediaType) -> bool:
-        """Return if Library is supported for given MediaType on this provider."""
-        if media_type == MediaType.ARTIST:
-            return ProviderFeature.LIBRARY_ARTISTS in self.supported_features
-        if media_type == MediaType.ALBUM:
-            return ProviderFeature.LIBRARY_ALBUMS in self.supported_features
-        if media_type == MediaType.TRACK:
-            return ProviderFeature.LIBRARY_TRACKS in self.supported_features
-        if media_type == MediaType.PLAYLIST:
-            return ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features
-        if media_type == MediaType.RADIO:
-            return ProviderFeature.LIBRARY_RADIOS in self.supported_features
-        if media_type == MediaType.AUDIOBOOK:
-            return ProviderFeature.LIBRARY_AUDIOBOOKS in self.supported_features
-        if media_type == MediaType.PODCAST:
-            return ProviderFeature.LIBRARY_PODCASTS in self.supported_features
-        return False
-
     def get_default_library_sync_schedule(self, media_type: MediaType) -> TaskSchedule:
         """Return the default recurring schedule for library sync tasks of this provider."""
-        if not self.library_supported(media_type):
+        if not self.mass.music.library_supported(self, media_type):
             raise UnsupportedFeaturedException(
                 f"Library sync is not supported for {media_type} on {self.instance_id}"
             )
         return TaskSchedule.hourly(every=12)
-
-    def library_edit_supported(self, media_type: MediaType) -> bool:
-        """Return if Library add/remove is supported for given MediaType on this provider."""
-        if media_type == MediaType.ARTIST:
-            return ProviderFeature.LIBRARY_ARTISTS_EDIT in self.supported_features
-        if media_type == MediaType.ALBUM:
-            return ProviderFeature.LIBRARY_ALBUMS_EDIT in self.supported_features
-        if media_type == MediaType.TRACK:
-            return ProviderFeature.LIBRARY_TRACKS_EDIT in self.supported_features
-        if media_type == MediaType.PLAYLIST:
-            return ProviderFeature.LIBRARY_PLAYLISTS_EDIT in self.supported_features
-        if media_type == MediaType.RADIO:
-            return ProviderFeature.LIBRARY_RADIOS_EDIT in self.supported_features
-        if media_type == MediaType.AUDIOBOOK:
-            return ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT in self.supported_features
-        if media_type == MediaType.PODCAST:
-            return ProviderFeature.LIBRARY_PODCASTS_EDIT in self.supported_features
-        return False
-
-    def library_sync_back_enabled(self, media_type: MediaType) -> bool:
-        """Return if Library sync back is enabled for given MediaType on this provider."""
-        conf_value = self.config.get_value(
-            CONF_ENTRY_LIBRARY_SYNC_BACK.key, CONF_ENTRY_LIBRARY_SYNC_BACK.default_value
-        )
-        return bool(conf_value)
 
     def library_sync_deletions_enabled(self) -> bool:
         """Return if Library sync deletions is enabled for this provider."""
@@ -1346,24 +1310,6 @@ class MusicProvider(Provider):
             CONF_ENTRY_LIBRARY_SYNC_DELETIONS.key, CONF_ENTRY_LIBRARY_SYNC_DELETIONS.default_value
         )
         return bool(conf_value)
-
-    def library_favorites_edit_supported(self, media_type: MediaType) -> bool:
-        """Return if favorites add/remove is supported for given MediaType on this provider."""
-        if media_type == MediaType.ARTIST:
-            return ProviderFeature.FAVORITE_ARTISTS_EDIT in self.supported_features
-        if media_type == MediaType.ALBUM:
-            return ProviderFeature.FAVORITE_ALBUMS_EDIT in self.supported_features
-        if media_type == MediaType.TRACK:
-            return ProviderFeature.FAVORITE_TRACKS_EDIT in self.supported_features
-        if media_type == MediaType.PLAYLIST:
-            return ProviderFeature.FAVORITE_PLAYLISTS_EDIT in self.supported_features
-        if media_type == MediaType.RADIO:
-            return ProviderFeature.FAVORITE_RADIOS_EDIT in self.supported_features
-        if media_type == MediaType.AUDIOBOOK:
-            return ProviderFeature.FAVORITE_AUDIOBOOKS_EDIT in self.supported_features
-        if media_type == MediaType.PODCAST:
-            return ProviderFeature.FAVORITE_PODCASTS_EDIT in self.supported_features
-        return False
 
     async def iter_playlist_tracks(
         self,
