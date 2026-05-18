@@ -688,7 +688,7 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             self.logger.debug(
                 "Not enough analysed tracks to identify album %s yet — %d of %d %s "
                 "tracks analysed so far (need at least half)",
-                album_item_id,
+                library_album.name,
                 len(voting_rows),
                 total,
                 streamdetails.provider,
