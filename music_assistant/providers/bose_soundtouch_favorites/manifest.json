@@ -5,7 +5,7 @@
   "name": "Bose SoundTouch Favorites",
   "description": "Assign Music Assistant content to Bose SoundTouch favorite buttons.",
   "codeowners": ["@Odn0"],
-  "requirements": ["defusedxml==0.7.1", "websockets==15.0.1"],
+  "requirements": ["defusedxml==0.7.1"],
   "documentation": "https://example.local/bose-soundtouch-favorites",
   "multi_instance": true
 }

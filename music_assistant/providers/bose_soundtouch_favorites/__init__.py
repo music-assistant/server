@@ -8,11 +8,11 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-import websockets
+import aiohttp
 from defusedxml import ElementTree as DefusedET
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType, MediaType
-from websockets.typing import Subprotocol
+from music_assistant_models.enums import ConfigEntryType, IdentifierType, MediaType
+from music_assistant_models.errors import MusicAssistantError, SetupFailedError
 
 from music_assistant.models.plugin import PluginProvider
 
@@ -22,34 +22,32 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
+    from music_assistant.models.player import Player
 
 LOGGER = logging.getLogger("music_assistant.Bose SoundTouch Favorites")
-PLUGIN_VERSION = "0.2.42"
 PRESET_IDS = range(1, 7)
 SEARCH_RESULT_LIMIT = 25
 SEARCH_TIMEOUT = 10
 RECONNECT_DELAY = 10
 NO_SEARCH_RESULTS_VALUE = "__bose_soundtouch_favorites_no_results__"
-CATEGORY_GENERIC = "generic"
-CATEGORY_TARGET_PLAYER = "Target player"
 
-BOSE_SUBPROTOCOLS = [Subprotocol("gabbo")]
+BOSE_SUBPROTOCOLS = ("gabbo",)
 
 MEDIA_TYPE_OPTIONS = [
-    ConfigValueOption(title="Artist", value="artist"),
-    ConfigValueOption(title="Album", value="album"),
-    ConfigValueOption(title="Track", value="track"),
-    ConfigValueOption(title="Playlist", value="playlist"),
-    ConfigValueOption(title="Radio", value="radio"),
-    ConfigValueOption(title="Audiobook", value="audiobook"),
-    ConfigValueOption(title="Podcast", value="podcast"),
-    ConfigValueOption(title="Podcast episode", value="podcast_episode"),
-    ConfigValueOption(title="Folder", value="folder"),
-    ConfigValueOption(title="Announcement", value="announcement"),
-    ConfigValueOption(title="Flow stream", value="flow_stream"),
-    ConfigValueOption(title="Plugin source", value="plugin_source"),
-    ConfigValueOption(title="Sound effect", value="sound_effect"),
-    ConfigValueOption(title="Genre", value="genre"),
+    ConfigValueOption(title="Artist", value=MediaType.ARTIST.value),
+    ConfigValueOption(title="Album", value=MediaType.ALBUM.value),
+    ConfigValueOption(title="Track", value=MediaType.TRACK.value),
+    ConfigValueOption(title="Playlist", value=MediaType.PLAYLIST.value),
+    ConfigValueOption(title="Radio", value=MediaType.RADIO.value),
+    ConfigValueOption(title="Audiobook", value=MediaType.AUDIOBOOK.value),
+    ConfigValueOption(title="Podcast", value=MediaType.PODCAST.value),
+    ConfigValueOption(title="Podcast episode", value=MediaType.PODCAST_EPISODE.value),
+    ConfigValueOption(title="Folder", value=MediaType.FOLDER.value),
+    ConfigValueOption(title="Announcement", value=MediaType.ANNOUNCEMENT.value),
+    ConfigValueOption(title="Flow stream", value=MediaType.FLOW_STREAM.value),
+    ConfigValueOption(title="Plugin source", value=MediaType.PLUGIN_SOURCE.value),
+    ConfigValueOption(title="Sound effect", value=MediaType.SOUND_EFFECT.value),
+    ConfigValueOption(title="Genre", value=MediaType.GENRE.value),
 ]
 
 
@@ -64,12 +62,6 @@ class BosePlayerInfo:
     ip_address: str | None
     mac_address: str | None
     bose_uuid: str | None
-    airplay_id: str | None
-    dlna_id: str | None
-    sendspin_id: str | None
-    volume_level: int | None
-    available: bool
-    can_group: bool
 
 
 async def setup(
@@ -81,61 +73,29 @@ async def setup(
     return BoseSoundTouchFavoritesProvider(mass, manifest, config, supported_features=set())
 
 
-def _identifier_value(identifiers: dict[Any, str], key: str) -> str | None:
-    """Extract identifier value from MA IdentifierType dict."""
-    for identifier_type, value in identifiers.items():
-        if getattr(identifier_type, "value", None) == key:
-            return value
-        if key in str(identifier_type).lower():
-            return value
-    return None
-
-
-def build_bose_player_info(player: Any) -> BosePlayerInfo | None:
+def build_bose_player_info(player: Player) -> BosePlayerInfo | None:
     """Build useful Bose info from a Music Assistant player."""
-    device_info = getattr(player, "device_info", None)
-    if not device_info:
-        return None
-
-    manufacturer = getattr(device_info, "manufacturer", None)
-    model = getattr(device_info, "model", None)
+    device_info = player.device_info
+    manufacturer = device_info.manufacturer
+    model = device_info.model
 
     if not manufacturer or "bose" not in manufacturer.lower():
         return None
 
-    identifiers = getattr(device_info, "identifiers", {}) or {}
+    identifiers = device_info.identifiers
 
-    ip_address = _identifier_value(identifiers, "ip_address")
-    mac_address = _identifier_value(identifiers, "mac_address")
-    bose_uuid = _identifier_value(identifiers, "uuid")
-    airplay_id = _identifier_value(identifiers, "airplay_id")
-
-    dlna_id = None
-    sendspin_id = None
-
-    for protocol in getattr(player, "output_protocols", []) or []:
-        protocol_domain = getattr(protocol, "protocol_domain", None)
-        protocol_id = getattr(protocol, "output_protocol_id", None)
-
-        if protocol_domain == "dlna":
-            dlna_id = protocol_id
-        elif protocol_domain == "sendspin":
-            sendspin_id = protocol_id
+    ip_address = identifiers.get(IdentifierType.IP_ADDRESS)
+    mac_address = identifiers.get(IdentifierType.MAC_ADDRESS)
+    bose_uuid = identifiers.get(IdentifierType.UUID)
 
     return BosePlayerInfo(
         player_id=player.player_id,
-        name=getattr(player, "display_name", None) or getattr(player, "name", player.player_id),
+        name=player.display_name,
         model=model,
         manufacturer=manufacturer,
         ip_address=ip_address,
         mac_address=mac_address,
         bose_uuid=bose_uuid,
-        airplay_id=airplay_id,
-        dlna_id=dlna_id,
-        sendspin_id=sendspin_id,
-        volume_level=getattr(player, "volume_level", None),
-        available=getattr(player, "available", False),
-        can_group=bool(getattr(player, "can_group_with", None)),
     )
 
 
@@ -150,19 +110,6 @@ def build_bose_players(mass: MusicAssistant) -> list[BosePlayerInfo]:
             bose_players.append(info)
 
     return sorted(bose_players, key=lambda item: item.name.lower())
-
-
-def _plugin_version_entry() -> ConfigEntry:
-    """Return the read-only plugin version config entry."""
-    return ConfigEntry(
-        key="plugin_version",
-        type=ConfigEntryType.LABEL,
-        label=f"Plugin version {PLUGIN_VERSION}",
-        required=False,
-        description="Installed version of the Bose SoundTouch Favorites plugin.",
-        category=CATEGORY_GENERIC,
-        advanced=True,
-    )
 
 
 def _unknown_if_empty(value: Any) -> str:
@@ -193,18 +140,11 @@ def _target_player_detail_entries(player: BosePlayerInfo) -> tuple[ConfigEntry, 
             type=ConfigEntryType.LABEL,
             label=f"{label}: {value if value not in (None, '') else 'unknown'}",
             required=False,
-            category=CATEGORY_TARGET_PLAYER,
+            category="Target player",
             advanced=True,
         )
         for index, (label, value) in enumerate(details, start=1)
     )
-
-
-async def _resolve_maybe_awaitable(value: Any) -> Any:
-    """Return awaited value if needed."""
-    if hasattr(value, "__await__"):
-        return await value
-    return value
 
 
 def _config_value(
@@ -316,7 +256,7 @@ async def _search_media_items(
     for kwargs in kwargs_candidates:
         try:
             search_result = await asyncio.wait_for(
-                _resolve_maybe_awaitable(search(**kwargs)),
+                search(**kwargs),
                 timeout=SEARCH_TIMEOUT,
             )
             return _iter_search_result_items(search_result, media_type)
@@ -330,7 +270,7 @@ async def _search_media_items(
             return []
         except TypeError:
             continue
-        except Exception as err:
+        except (MusicAssistantError, ValueError) as err:
             LOGGER.warning("Unable to search media items: %s", err)
             break
 
@@ -341,7 +281,7 @@ async def _search_media_items(
     ):
         try:
             search_result = await asyncio.wait_for(
-                _resolve_maybe_awaitable(search(*args)),
+                search(*args),
                 timeout=SEARCH_TIMEOUT,
             )
             return _iter_search_result_items(search_result, media_type)
@@ -355,7 +295,7 @@ async def _search_media_items(
             return []
         except TypeError:
             continue
-        except Exception as err:
+        except (MusicAssistantError, ValueError) as err:
             LOGGER.warning("Unable to search media items with positional args: %s", err)
             break
 
@@ -436,14 +376,12 @@ async def get_config_entries(
             )
         )
         return (
-            _plugin_version_entry(),
             ConfigEntry(
                 key="no_bose_players_found",
                 type=ConfigEntryType.LABEL,
                 label="No configurable Bose SoundTouch speaker found",
                 required=False,
                 description=description,
-                category=CATEGORY_GENERIC,
             ),
         )
 
@@ -466,7 +404,6 @@ async def get_config_entries(
     preset_entries: list[ConfigEntry] = []
 
     for preset_id in PRESET_IDS:
-        preset_category = f"Button {preset_id}"
         media_type_key = f"preset_{preset_id}_media_type"
         search_key = f"preset_{preset_id}_search"
         selected_key = f"preset_{preset_id}_selected_media"
@@ -494,12 +431,21 @@ async def get_config_entries(
             _is_real_media_selection(str(option.value)) for option in media_options
         )
 
+        preset_entries.append(
+            ConfigEntry(
+                key=f"preset_{preset_id}_header",
+                type=ConfigEntryType.DIVIDER,
+                label=f"Favorite {preset_id}",
+                required=False,
+                category="Favorites",
+            )
+        )
         preset_entries.extend(
             (
                 ConfigEntry(
                     key=media_type_key,
                     type=ConfigEntryType.STRING,
-                    label="Media type",
+                    label=f"Favorite {preset_id} media type",
                     required=False,
                     default_value=media_type,
                     value=media_type,
@@ -507,24 +453,24 @@ async def get_config_entries(
                     description=(
                         "Type of media used for this SoundTouch favorite search and playback."
                     ),
-                    category=preset_category,
+                    category="Favorites",
                 ),
                 ConfigEntry(
                     key=search_key,
                     type=ConfigEntryType.STRING,
-                    label="Enter your search",
+                    label=f"Favorite {preset_id} search",
                     required=False,
                     default_value=query,
                     value=query,
                     description="Type a search term, then press Search.",
-                    category=preset_category,
+                    category="Favorites",
                 ),
                 ConfigEntry(
                     key=f"preset_{preset_id}_do_search",
                     type=ConfigEntryType.ACTION,
-                    label="Search 🔎",
+                    label=f"Search favorite {preset_id} 🔎",
                     action=search_action,
-                    category=preset_category,
+                    category="Favorites",
                 ),
             )
         )
@@ -535,19 +481,19 @@ async def get_config_entries(
                     ConfigEntry(
                         key=selected_key,
                         type=ConfigEntryType.STRING,
-                        label="Result selection",
+                        label=f"Favorite {preset_id} result selection",
                         required=False,
                         default_value=selected_media,
                         value=selected_media,
                         options=media_options,
-                        category=preset_category,
+                        category="Favorites",
                     ),
                     ConfigEntry(
                         key=f"preset_{preset_id}_copy_media",
                         type=ConfigEntryType.ACTION,
-                        label="Select ⭐",
+                        label=f"Select favorite {preset_id} ⭐",
                         action=copy_action,
-                        category=preset_category,
+                        category="Favorites",
                     ),
                 )
             )
@@ -558,7 +504,7 @@ async def get_config_entries(
                     type=ConfigEntryType.LABEL,
                     label=media_options[0].title,
                     required=False,
-                    category=preset_category,
+                    category="Favorites",
                 )
             )
 
@@ -571,12 +517,11 @@ async def get_config_entries(
                 default_value=media_value,
                 value=media_value,
                 description="URI copied from the selected result or manually entered.",
-                category=preset_category,
+                category="Favorites",
             )
         )
 
     return (
-        _plugin_version_entry(),
         ConfigEntry(
             key="target_player",
             type=ConfigEntryType.STRING,
@@ -586,7 +531,7 @@ async def get_config_entries(
             value=selected_target_player.player_id,
             options=player_options,
             description="Bose SoundTouch speaker detected by Music Assistant.",
-            category=CATEGORY_TARGET_PLAYER,
+            category="Target player",
             immediate_apply=bool(instance_id),
         ),
         *_target_player_detail_entries(selected_target_player),
@@ -635,45 +580,38 @@ class BoseSoundTouchFavoritesProvider(PluginProvider):
         if not target_player:
             return None
 
-        try:
-            player = self.mass.players.get_player(str(target_player))
-        except Exception:
+        player = self.mass.players.get_player(str(target_player))
+        if player is None:
             return str(target_player)
 
-        return (
-            getattr(player, "display_name", None)
-            or getattr(player, "name", None)
-            or str(target_player)
-        )
+        return player.display_name
 
     async def loaded_in_mass(self) -> None:
         """Start listening after Music Assistant loads the provider."""
         target_player = self.config.get_value("target_player")
         if not target_player:
-            raise RuntimeError("No Bose SoundTouch speaker has been configured")
+            raise SetupFailedError("No Bose SoundTouch speaker has been configured")
 
         target_player_id = str(target_player)
-        try:
-            player = self.mass.players.get_player(target_player_id)
-        except Exception as err:
-            raise RuntimeError(
+        player = self.mass.players.get_player(target_player_id)
+        if player is None:
+            raise SetupFailedError(
                 f"Configured Bose SoundTouch speaker no longer exists: {target_player_id}"
-            ) from err
+            )
 
         self._bose_player = build_bose_player_info(player)
 
         if not self._bose_player:
-            raise RuntimeError(f"Selected player is not a Bose player: {target_player_id}")
+            raise SetupFailedError(f"Selected player is not a Bose player: {target_player_id}")
 
         if not self._bose_player.ip_address:
-            raise RuntimeError(f"Unable to find IP address for player {target_player_id}")
+            raise SetupFailedError(f"Unable to find IP address for player {target_player_id}")
 
         self.logger.info(
             (
-                "Bose SoundTouch Favorites %s loaded: name=%s player_id=%s "
+                "Bose SoundTouch Favorites loaded: name=%s player_id=%s "
                 "ip=%s model=%s uuid=%s mac=%s"
             ),
-            PLUGIN_VERSION,
             self._bose_player.name,
             self._bose_player.player_id,
             self._bose_player.ip_address,
@@ -712,13 +650,28 @@ class BoseSoundTouchFavoritesProvider(PluginProvider):
             try:
                 self.logger.info("Connecting to Bose WebSocket: %s", uri)
 
-                async with websockets.connect(uri, subprotocols=BOSE_SUBPROTOCOLS) as ws:
+                async with self.mass.http_session.ws_connect(
+                    uri,
+                    protocols=BOSE_SUBPROTOCOLS,
+                ) as ws:
                     self.logger.info("Connected to Bose WebSocket: %s", uri)
 
-                    while self._stop_event and not self._stop_event.is_set():
-                        message = await ws.recv()
-                        if isinstance(message, bytes):
-                            message = message.decode()
+                    async for msg in ws:
+                        if self._stop_event and self._stop_event.is_set():
+                            break
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            message = msg.data
+                        elif msg.type == aiohttp.WSMsgType.BINARY:
+                            message = msg.data.decode()
+                        elif msg.type in (
+                            aiohttp.WSMsgType.ERROR,
+                            aiohttp.WSMsgType.CLOSE,
+                            aiohttp.WSMsgType.CLOSED,
+                        ):
+                            break
+                        else:
+                            continue
+
                         preset_id = extract_preset_id(message)
 
                         if preset_id is not None:
@@ -726,7 +679,7 @@ class BoseSoundTouchFavoritesProvider(PluginProvider):
 
             except asyncio.CancelledError:
                 raise
-            except Exception as err:
+            except (aiohttp.ClientError, OSError, TimeoutError, UnicodeDecodeError) as err:
                 self.logger.warning(
                     "Bose WebSocket error: %s. Reconnecting in %s seconds...",
                     err,
@@ -785,7 +738,7 @@ class BoseSoundTouchFavoritesProvider(PluginProvider):
                 return
             except TypeError:
                 continue
-            except Exception:
+            except MusicAssistantError:
                 self.logger.exception(
                     "Unable to play configured media for Bose SoundTouch favorite_%s",
                     preset_id,
