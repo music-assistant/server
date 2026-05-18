@@ -482,7 +482,7 @@ class MetaDataController(CoreController):
         if not image.remotely_accessible or prefer_proxy or size:
             # return imageproxy url for images that need to be resolved
             # the original path is double encoded
-            encoded_url = urllib.parse.quote_plus(urllib.parse.quote_plus(image.path))
+            encoded_url = urllib.parse.quote(urllib.parse.quote(image.path))
             base_url = (
                 self.mass.streams.base_url if prefer_stream_server else self.mass.webserver.base_url
             )

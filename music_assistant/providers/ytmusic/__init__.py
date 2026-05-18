@@ -337,7 +337,12 @@ class YoutubeMusicProvider(MusicProvider):
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
-        if album_obj := await get_album(prov_album_id=prov_album_id, language=self.language):
+        if album_obj := await get_album(
+            headers=self._headers,
+            prov_album_id=prov_album_id,
+            language=self.language,
+            user=self._yt_user,
+        ):
             return self._parse_album(album_obj=album_obj, album_id=prov_album_id)
         msg = f"Item {prov_album_id} not found"
         raise MediaNotFoundError(msg)
@@ -345,7 +350,12 @@ class YoutubeMusicProvider(MusicProvider):
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
-        album_obj = await get_album(prov_album_id=prov_album_id, language=self.language)
+        album_obj = await get_album(
+            headers=self._headers,
+            prov_album_id=prov_album_id,
+            language=self.language,
+            user=self._yt_user,
+        )
         if not album_obj.get("tracks"):
             return []
         tracks = []

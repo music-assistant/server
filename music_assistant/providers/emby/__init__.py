@@ -10,9 +10,22 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin
 
 from aiohttp import ClientResponseError
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
-from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderFeature, StreamType
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError, ProviderPermissionDenied
+from music_assistant_models.config_entries import (
+    ConfigEntry,
+    ConfigValueType,
+    ProviderConfig,
+)
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    MediaType,
+    ProviderFeature,
+    StreamType,
+)
+from music_assistant_models.errors import (
+    LoginFailed,
+    MediaNotFoundError,
+    ProviderPermissionDenied,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -535,6 +548,8 @@ class EmbyProvider(MusicProvider):
         is_playing: bool = False,
     ) -> None:
         """Handle media item played event."""
+        if media_type != MediaType.TRACK:
+            return
         if fully_played:
             await self._post(f"Users/{self._user_id}/PlayedItems/{prov_item_id}")
         if is_playing:

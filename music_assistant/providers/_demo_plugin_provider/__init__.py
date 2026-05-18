@@ -34,10 +34,14 @@ See also our general DEVELOPMENT.md guide in the repository for more information
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ContentType, EventType, ProviderFeature
+from music_assistant_models.media_items import (
+    Playlist,
+    ProviderMapping,
+)
 from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.models.plugin import PluginProvider, PluginSource
@@ -45,6 +49,13 @@ from music_assistant.models.plugin import PluginProvider, PluginSource
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
     from music_assistant_models.event import MassEvent
+    from music_assistant_models.media_items import (
+        BrowseFolder,
+        ItemMapping,
+        MediaItemType,
+        RecommendationFolder,
+        Track,
+    )
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -180,3 +191,57 @@ class MyDemoPluginprovider(PluginProvider):
         # you should replace this with your actual implementation.
         for _ in range(100):
             yield b"dummy audio data"
+
+    async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
+        """Retrieve a list of similar tracks for the given track."""
+        # OPTIONAL
+        # Will only be called if ProviderFeature.SIMILAR_TRACKS is declared.
+        # Results should be Track objects with provider_mappings pointing to
+        # existing music providers so MA's playback path resolves normally.
+        return []
+
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """Retrieve a list of recommendation folders from this plugin."""
+        # OPTIONAL
+        # Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
+        # Folders may contain Playlist items pointing back to this plugin via
+        # their provider_mappings. Users can add such a Playlist to their
+        # library through the standard add-to-library flow.
+        return []
+
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Browse this plugin's contents."""
+        # OPTIONAL
+        # Will only be called if ProviderFeature.BROWSE is declared.
+        # Plugins surfacing playlists should yield Playlist items here. Each
+        # Playlist MUST have at least one ProviderMapping pointing back to
+        # this plugin's instance_id/domain so MA can resolve get_playlist /
+        # get_playlist_tracks against the correct provider when the user adds
+        # it to their library.
+        return []
+
+    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
+        """Return details of a single playlist owned by this plugin."""
+        # OPTIONAL
+        # Implement when surfacing playlists via browse / recommendations so
+        # MA can refresh metadata once a user adds it to their library.
+        return Playlist(
+            item_id=prov_playlist_id,
+            provider=self.instance_id,
+            name="Example Playlist",
+            provider_mappings={
+                ProviderMapping(
+                    item_id=prov_playlist_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
+
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
+        """Return a page of tracks for a playlist owned by this plugin."""
+        # OPTIONAL
+        # Implement when surfacing playlists. Tracks SHOULD carry
+        # ProviderMappings pointing to real music providers so MA's playback
+        # path resolves normally.
+        return []
