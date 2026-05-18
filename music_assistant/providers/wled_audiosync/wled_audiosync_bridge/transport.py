@@ -238,9 +238,19 @@ class WledV2Transport:
         if exc is not None:
             self._last_error = exc
         self._consecutive_errors += 1
-        loop = asyncio.get_running_loop()
-        now = loop.time()
-        if self._consecutive_errors == 1 or now - self._last_error_log_ts >= self._log_interval_s:
+        # ``send()`` is the normal caller and is always async, so a running
+        # loop is the common case. Tolerate ``_record_error`` being driven
+        # from a shutdown / teardown path (no running loop) by skipping
+        # the throttle timestamp — the warning still fires.
+        try:
+            now: float | None = asyncio.get_running_loop().time()
+        except RuntimeError:
+            now = None
+        if (
+            self._consecutive_errors == 1
+            or now is None
+            or now - self._last_error_log_ts >= self._log_interval_s
+        ):
             _LOGGER.warning(
                 "WLED V2 sendto(%s:%d) failed (%d consecutive): %s",
                 self.address,
@@ -248,7 +258,8 @@ class WledV2Transport:
                 self._consecutive_errors,
                 exc or self._last_error,
             )
-            self._last_error_log_ts = now
+            if now is not None:
+                self._last_error_log_ts = now
         if self._consecutive_errors >= self._reset_after:
             _LOGGER.warning(
                 "WLED V2 transport for %s:%d resetting after %d consecutive errors",

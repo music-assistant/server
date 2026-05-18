@@ -408,3 +408,26 @@ async def test_error_logging_is_throttled(
         )
     finally:
         await transport.close()
+
+
+def test_record_error_tolerates_missing_running_loop(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``_record_error`` must not crash when invoked without a running loop.
+
+    The normal caller is ``send()`` which is always async, but a shutdown
+    / teardown path that forwards an error here from sync context should
+    log the warning rather than raise ``RuntimeError`` from
+    ``asyncio.get_running_loop()``.
+    """
+    transport = WledV2Transport(
+        "127.0.0.1", 0, duplicate_transmit=False, reset_after_consecutive_errors=1000
+    )
+    with caplog.at_level(
+        logging.WARNING, logger="music_assistant.providers.wled_audiosync.transport"
+    ):
+        transport._record_error(exc=OSError("no loop here"))
+    assert transport.consecutive_errors == 1
+    assert isinstance(transport.last_error, OSError)
+    # The first failure always logs regardless of throttle state.
+    assert any("sendto" in r.getMessage() for r in caplog.records)
