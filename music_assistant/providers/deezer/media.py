@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from deezer_python_gql.generated.base_client import GraphQLClientGraphQLMultiError
+from deezer_python_gql import GraphQLClientGraphQLMultiError
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
