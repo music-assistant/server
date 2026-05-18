@@ -59,6 +59,7 @@ class WiimPlayer(Player):
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
             PlayerFeature.ENQUEUE,
+            PlayerFeature.GAPLESS_PLAYBACK,
             PlayerFeature.SEEK,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,

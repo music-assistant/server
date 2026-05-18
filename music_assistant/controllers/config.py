@@ -1351,6 +1351,37 @@ class ConfigController:
             LOGGER.warning("Repaired corrupt tasks core configuration")
             changed = True
 
+        # Migrate sync_group members_filter (exclusion) -> allowed_members (inclusion).
+        # Inversion freezes the universe at migration time; speakers added after this
+        # point must be added by the user explicitly, which matches the new design's
+        # "limit to these" intent.
+        # TODO: remove after 2.10 release
+        all_player_configs = self._data.get(CONF_PLAYERS, {})
+        if isinstance(all_player_configs, dict):
+            group_provider_domains = {"sync_group", "universal_group"}
+            universe = {
+                pid
+                for pid, cfg in all_player_configs.items()
+                if isinstance(cfg, dict) and cfg.get("provider") not in group_provider_domains
+            }
+            for player_id, player_cfg in all_player_configs.items():
+                if not isinstance(player_cfg, dict):
+                    continue
+                if player_cfg.get("provider") != "sync_group":
+                    continue
+                values = player_cfg.setdefault("values", {})
+                old_exclude = values.get("members_filter") or []
+                if not old_exclude or values.get("allowed_members") is not None:
+                    continue
+                values["allowed_members"] = sorted(universe - set(old_exclude))
+                values["members_filter"] = []
+                LOGGER.info(
+                    "Migrated sync_group %s: members_filter (exclusion) "
+                    "-> allowed_members (inclusion)",
+                    player_id,
+                )
+                changed = True
+
         if changed:
             await self._async_save()
 

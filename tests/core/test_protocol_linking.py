@@ -6180,7 +6180,14 @@ class TestProtocolParentIdPersistence:
     def test_parent_id_saved_for_universal_parent(self, mock_mass: MagicMock) -> None:
         """protocol_parent_id should be saved when linking to a universal player."""
         controller = PlayerController(mock_mass)
-        mock_mass.config.get = MagicMock(return_value=[])
+
+        def _config_get(key: str, default: object = None) -> object:
+            # Protocol player config must exist for _save_protocol_parent_id to write
+            if key == "players/airplay_test":
+                return {"enabled": True}
+            return default if default is not None else []
+
+        mock_mass.config.get = MagicMock(side_effect=_config_get)
 
         universal_provider = create_mock_universal_provider(mock_mass)
         parent = UniversalPlayer(
@@ -6515,3 +6522,131 @@ class TestStaleConfigMigration:
         # Verify no set calls were made to clear the parent_id
         for call in mock_mass.config.set.call_args_list:
             assert "protocol_parent_id" not in str(call), "Valid parent_id should not be cleared"
+
+
+class TestUniversalPlayerRestoreOrphanCleanup:
+    """Tests for UniversalPlayerProvider._restore_player orphan cleanup behavior."""
+
+    @staticmethod
+    def _setup_config_get(
+        mock_mass: MagicMock,
+        universal_id: str,
+        linked_protocol_ids: list[str],
+        protocol_configs: dict[str, dict[str, object]],
+    ) -> None:
+        """Wire mass.config.get to return universal/protocol configs by key."""
+        universal_conf = {
+            "values": {
+                "linked_protocol_ids": list(linked_protocol_ids),
+                "device_identifiers": {},
+                "device_info": {},
+            },
+            "name": "Test Universal",
+        }
+
+        def _get(key: str, default: object = None) -> object:
+            if key == f"players/{universal_id}":
+                return universal_conf
+            for pid, conf in protocol_configs.items():
+                if key == f"players/{pid}":
+                    return conf
+            return default
+
+        mock_mass.config.get.side_effect = _get
+
+    @pytest.mark.asyncio
+    async def test_orphan_protocol_deleted_when_not_registered(self, mock_mass: MagicMock) -> None:
+        """Orphan protocol with no live registration → delete_player_config path."""
+        provider = create_mock_universal_provider(mock_mass)
+        universal_id = "up_test"
+        orphan_id = "spb_orphan"
+
+        self._setup_config_get(
+            mock_mass,
+            universal_id,
+            [orphan_id],
+            {
+                orphan_id: {
+                    "player_type": "protocol",
+                    "values": {"protocol_parent_id": None},
+                },
+            },
+        )
+        mock_mass.players = MagicMock()
+        mock_mass.players.get_player = MagicMock(return_value=None)
+        mock_mass.players.delete_player_config = MagicMock()
+        mock_mass.players.unregister = AsyncMock()
+        mock_mass.config.remove_player_config = AsyncMock()
+
+        await provider._restore_player(universal_id)
+
+        mock_mass.players.delete_player_config.assert_called_once_with(orphan_id)
+        mock_mass.players.unregister.assert_not_called()
+        # With no valid protocols left, the universal is also removed
+        mock_mass.config.remove_player_config.assert_called_once_with(universal_id)
+
+    @pytest.mark.asyncio
+    async def test_orphan_protocol_unregistered_when_active(self, mock_mass: MagicMock) -> None:
+        """Orphan protocol that is currently registered → unregister(permanent=True) path."""
+        provider = create_mock_universal_provider(mock_mass)
+        universal_id = "up_test"
+        orphan_id = "spb_orphan"
+
+        self._setup_config_get(
+            mock_mass,
+            universal_id,
+            [orphan_id],
+            {
+                orphan_id: {
+                    "player_type": "protocol",
+                    "values": {"protocol_parent_id": None},
+                },
+            },
+        )
+        mock_mass.players = MagicMock()
+        mock_mass.players.get_player = MagicMock(return_value=MagicMock())
+        mock_mass.players.delete_player_config = MagicMock()
+        mock_mass.players.unregister = AsyncMock()
+        mock_mass.config.remove_player_config = AsyncMock()
+
+        await provider._restore_player(universal_id)
+
+        mock_mass.players.unregister.assert_awaited_once_with(orphan_id, permanent=True)
+        mock_mass.players.delete_player_config.assert_not_called()
+        mock_mass.config.remove_player_config.assert_called_once_with(universal_id)
+
+    @pytest.mark.asyncio
+    async def test_valid_protocol_kept_and_no_cleanup(self, mock_mass: MagicMock) -> None:
+        """Protocol with a valid protocol_parent_id is kept and no cleanup runs."""
+        provider = create_mock_universal_provider(mock_mass)
+        universal_id = "up_test"
+        protocol_id = "spb_valid"
+
+        self._setup_config_get(
+            mock_mass,
+            universal_id,
+            [protocol_id],
+            {
+                protocol_id: {
+                    "player_type": "protocol",
+                    "values": {"protocol_parent_id": universal_id},
+                },
+            },
+        )
+        mock_mass.players = MagicMock()
+        mock_mass.players.get_player = MagicMock(return_value=None)
+        mock_mass.players.delete_player_config = MagicMock()
+        mock_mass.players.unregister = AsyncMock()
+        mock_mass.players.register_or_update = AsyncMock()
+        mock_mass.config.remove_player_config = AsyncMock()
+        mock_mass.config.get_base_player_config.return_value = create_mock_config("Test Universal")
+
+        await provider._restore_player(universal_id)
+
+        mock_mass.players.delete_player_config.assert_not_called()
+        mock_mass.players.unregister.assert_not_called()
+        mock_mass.config.remove_player_config.assert_not_called()
+        # Universal is constructed and registered with the valid protocol kept
+        mock_mass.players.register_or_update.assert_awaited_once()
+        registered = mock_mass.players.register_or_update.call_args.args[0]
+        assert protocol_id in registered._protocol_player_ids

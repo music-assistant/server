@@ -49,10 +49,10 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from plexapi.audio import Album as PlexAlbum
 from plexapi.audio import Artist as PlexArtist
-from plexapi.audio import Playlist as PlexPlaylist
 from plexapi.audio import Track as PlexTrack
 from plexapi.base import PlexObject
 from plexapi.myplex import MyPlexAccount, MyPlexPinLogin
+from plexapi.playlist import Playlist as PlexPlaylist
 from plexapi.server import PlexServer
 
 from music_assistant.constants import UNKNOWN_ARTIST
@@ -630,19 +630,19 @@ class PlexProvider(MusicProvider):
 
     async def _search_track_advanced(self, limit: int, **kwargs: Any) -> list[PlexTrack]:
         return cast(
-            "list[PlexPlaylist]",
+            "list[PlexTrack]",
             await self._run_async(self._plex_library.searchTracks, filters=kwargs, limit=limit),
         )
 
     async def _search_album_advanced(self, limit: int, **kwargs: Any) -> list[PlexAlbum]:
         return cast(
-            "list[PlexPlaylist]",
+            "list[PlexAlbum]",
             await self._run_async(self._plex_library.searchAlbums, filters=kwargs, limit=limit),
         )
 
     async def _search_artist_advanced(self, limit: int, **kwargs: Any) -> list[PlexArtist]:
         return cast(
-            "list[PlexPlaylist]",
+            "list[PlexArtist]",
             await self._run_async(self._plex_library.searchArtists, filters=kwargs, limit=limit),
         )
 

@@ -2295,10 +2295,10 @@ class PlayerQueuesController(CoreController):
                 # wait for the item that was loaded in the buffer is the actually playing item
                 # this prevents a race condition when we preload the next item too soon
                 # while the player is actually preloading the previously enqueued item.
-                retries = 120
+                if not queue.current_item:
+                    return  # guard
+                retries = max(120, (queue.current_item.duration or 0) + 10)
                 while retries > 0:
-                    if not queue.current_item:
-                        return  # guard
                     if queue.current_item.queue_item_id == item_id_in_buffer:
                         break
                     retries -= 1

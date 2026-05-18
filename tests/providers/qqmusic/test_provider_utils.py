@@ -21,6 +21,7 @@ from music_assistant.providers.qqmusic import (
 from music_assistant.providers.qqmusic.constants import (
     CONF_ACTION_CHECK_QR_AUTH,
     CONF_ACTION_START_QR_AUTH,
+    CONF_ACTION_START_WX_QR_AUTH,
     CONF_LOGIN_TYPE,
     CONF_MUSICID,
     CONF_MUSICKEY,
@@ -377,6 +378,39 @@ async def test_get_config_entries_start_qr_auth(monkeypatch: pytest.MonkeyPatch)
     entries = await get_config_entries(mass=mass, action=CONF_ACTION_START_QR_AUTH, values=values)
     qr_entry = next(entry for entry in entries if entry.key == CONF_QR_IDENTIFIER)
     assert qr_entry.value == "sig123"
+    assert mass.events
+
+
+@pytest.mark.asyncio
+async def test_get_config_entries_start_wx_qr_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    """WeChat QR action should request and store a WeChat QR login."""
+
+    class QRLoginType(Enum):
+        QQ = "qq"
+        WX = "wx"
+
+    @dataclass
+    class QR:
+        data: bytes
+        qr_type: QRLoginType
+        mimetype: str
+        identifier: str
+
+    async def get_qrcode(login_type: QRLoginType) -> QR:
+        return QR(data=b"abc", qr_type=login_type, mimetype="image/jpeg", identifier="wx123")
+
+    login_mod = SimpleNamespace(QRLoginType=QRLoginType, get_qrcode=get_qrcode)
+
+    monkeypatch.setattr("music_assistant.providers.qqmusic.qq_login_mod", login_mod)
+    mass = _DummyMass()
+    values = {"session_id": "sess1"}
+    entries = await get_config_entries(
+        mass=mass, action=CONF_ACTION_START_WX_QR_AUTH, values=values
+    )
+    qr_identifier_entry = next(entry for entry in entries if entry.key == CONF_QR_IDENTIFIER)
+    qr_type_entry = next(entry for entry in entries if entry.key == CONF_QR_TYPE)
+    assert qr_identifier_entry.value == "wx123"
+    assert qr_type_entry.value == "wx"
     assert mass.events
 
 
