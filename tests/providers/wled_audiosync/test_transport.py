@@ -180,7 +180,11 @@ async def test_multicast_socket_sets_ip_multicast_ttl() -> None:
 async def test_multicast_transport_joins_group_for_igmp_keepalive() -> None:
     """Multicast destinations must IP_ADD_MEMBERSHIP so IGMP-snooping switches keep forwarding."""
     group = "239.0.0.7"
-    expected_mreq = struct.pack("4sl", socket.inet_aton(group), socket.INADDR_ANY)
+    expected_mreq = struct.pack("=4s4s", socket.inet_aton(group), socket.inet_aton("0.0.0.0"))
+    # The ip_mreq struct on every Linux ABI is exactly two 4-byte IPv4
+    # addresses — 8 bytes total. Guard against accidentally regressing
+    # back to a platform-dependent layout.
+    assert len(expected_mreq) == 8
     original_setsockopt = socket.socket.setsockopt
     membership_calls: list[bytes] = []
 

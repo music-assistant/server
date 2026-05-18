@@ -297,7 +297,16 @@ class WledV2Transport:
                     # forwarding table doesn't prune our multicast traffic
                     # during long-running playback. The mreq's INADDR_ANY
                     # interface field defers the choice to the routing table.
-                    mreq = struct.pack("4sl", socket.inet_aton(self.address), socket.INADDR_ANY)
+                    # Use ``=4s4s`` for a stable 8-byte ip_mreq layout — the
+                    # earlier ``4sl`` produced a platform-dependent 12-byte
+                    # buffer on 64-bit Linux (long is 8 bytes plus
+                    # alignment padding) that the kernel accepted only by
+                    # leniency.
+                    mreq = struct.pack(
+                        "=4s4s",
+                        socket.inet_aton(self.address),
+                        socket.inet_aton("0.0.0.0"),
+                    )
                     try:
                         sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
                     except OSError as exc:
