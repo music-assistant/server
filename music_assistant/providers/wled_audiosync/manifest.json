@@ -1,0 +1,14 @@
+{
+  "type": "plugin",
+  "domain": "wled_audiosync",
+  "name": "WLED Audio Sync",
+  "description": "Drive WLED audio-reactive effects from Music Assistant queues over the WLED V2 audio-sync UDP protocol. Works with any WLED build that loads the AudioReactive usermod (upstream WLED v16.0.0+ or the MoonModules fork). Bridges each discovered device into MA as a sync-group-only Sendspin visualizer player.",
+  "codeowners": ["@sandymac"],
+  "stage": "experimental",
+  "requirements": [],
+  "documentation": "https://music-assistant.io/plugins/wled-audiosync/",
+  "multi_instance": false,
+  "builtin": false,
+  "icon": "led-strip-variant",
+  "mdns_discovery": ["_wled._tcp.local."]
+}
