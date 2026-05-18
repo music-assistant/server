@@ -17,6 +17,7 @@ from music_assistant_models.media_items import AudioFormat
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
 from music_assistant.constants import DEFAULT_BACKGROUND_SCAN_CONCURRENCY
 from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
+from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
 
@@ -1053,8 +1054,8 @@ async def test_export_rounds_float_fields_to_four_decimals() -> None:
 
 @pytest.mark.asyncio
 async def test_track_returns_full_record_including_extra_data() -> None:
-    """track() returns the complete parsed analysis dict, embedding included."""
-    full = {"bpm": 120, "extra_data": {"clap_embedding": [0.1, 0.2, 0.3]}}
+    """track() returns a typed AudioAnalysisData, embedding included."""
+    full = {"bpm": 120.0, "extra_data": {"clap_embedding": [0.1, 0.2, 0.3]}}
     c, _ = _stub_controller()
     p = _make_aa_provider_with_domain("sonic_analysis")
     music_prov = MagicMock()
@@ -1073,7 +1074,9 @@ async def test_track_returns_full_record_including_extra_data() -> None:
         provider_instance_id_or_domain="filesystem_local",
     )
 
-    assert result == full
+    assert isinstance(result, AudioAnalysisData)
+    assert result.bpm == 120.0
+    assert result.extra_data == {"clap_embedding": [0.1, 0.2, 0.3]}
 
 
 @pytest.mark.asyncio
@@ -1121,8 +1124,8 @@ async def test_track_returns_none_when_music_provider_unresolved() -> None:
 
 
 @pytest.mark.asyncio
-async def test_track_returns_none_when_analysis_data_unparseable() -> None:
-    """A stored row with unparseable analysis_data -> None (not an error)."""
+async def test_track_returns_none_when_analysis_data_unparsable() -> None:
+    """A stored row with unparsable analysis_data -> None (not an error)."""
     c, _ = _stub_controller()
     p = _make_aa_provider_with_domain("sonic_analysis")
     music_prov = MagicMock()

@@ -622,7 +622,7 @@ class AudioAnalysisController:
         aa_domain: str,
         item_id: str,
         provider_instance_id_or_domain: str,
-    ) -> dict[str, Any] | None:
+    ) -> AudioAnalysisData | None:
         """
         Return the complete stored analysis record for a single track.
 
@@ -663,7 +663,7 @@ class AudioAnalysisController:
         if not row:
             return None
         try:
-            return json_loads(row["analysis_data"])
+            return AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
         except (ValueError, TypeError, KeyError):
             return None
 
