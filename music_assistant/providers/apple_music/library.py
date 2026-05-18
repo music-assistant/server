@@ -123,6 +123,11 @@ class AppleMusicLibraryManager:
         if item.media_type == MediaType.ARTIST:
             # The POST /v1/me/library endpoint does not support ids[artists];
             # artists appear in the library implicitly via their albums/songs.
+            self.logger.debug(
+                "Skipping library_add for artist %s: Apple Music does not support "
+                "adding artists directly via the API.",
+                item.name,
+            )
             return
         item_type = translate_media_type_to_apple_type(item.media_type)
         kwargs = {f"ids[{item_type}]": item.item_id}
