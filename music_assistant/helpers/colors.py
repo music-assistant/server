@@ -13,11 +13,13 @@ avoids redundant extraction while the server is running.
 from __future__ import annotations
 
 import asyncio
+import io
 from collections import OrderedDict
 from typing import TYPE_CHECKING
 
 from modern_colorthief import get_palette as _mmcq_palette
 from music_assistant_models.media_items import MediaItemPalette
+from PIL import Image
 
 from music_assistant.helpers.images import (
     _create_thumb_hash,
@@ -122,10 +124,24 @@ def _adjust_with_fallback(color: _RGB, mix_toward: _RGB, refs: tuple[_RGB, ...])
     ) or _adjust_until_contrast(color, mix_toward, refs, _MIN_CONTRAST)
 
 
+def _normalize_image_bytes(image_bytes: bytes) -> bytes:
+    # modern_colorthief's Rust backend hits `unreachable!()` for any image
+    # that isn't 8-bit RGB/RGBA (grayscale, 16-bit, palette PNG, CMYK JPEG…),
+    # and that panic aborts the interpreter. Decode with Pillow first and
+    # re-encode as RGB PNG so the Rust side only ever sees a supported mode.
+    with Image.open(io.BytesIO(image_bytes)) as img:
+        img.load()
+        rgb = img if img.mode == "RGB" else img.convert("RGB")
+        buf = io.BytesIO()
+        rgb.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def _extract_candidates(image_bytes: bytes) -> list[_RGB]:
     """Extract a dominant-color palette via MMCQ (matches the colorthief JS lib)."""
+    normalized = _normalize_image_bytes(image_bytes)
     palette = _mmcq_palette(
-        image_bytes, color_count=_PALETTE_QUANTIZE_COLORS, quality=_COLORTHIEF_QUALITY
+        normalized, color_count=_PALETTE_QUANTIZE_COLORS, quality=_COLORTHIEF_QUALITY
     )
     return [(r, g, b) for r, g, b in palette]
 
