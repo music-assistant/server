@@ -21,7 +21,7 @@ dependencies = [
   "awesomeversion>=24.6.0",
   "certifi==2025.11.12",
   "colorlog==6.10.1",
-  "colorthief==0.2.1",
+  "modern_colorthief==0.2.0",
   "cryptography==46.0.7",
   "chardet>=5.2.0",
   "ifaddr==0.2.0",

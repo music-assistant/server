@@ -1,7 +1,7 @@
 """Color palette extraction from artwork.
 
 Derives a 6-field MediaItemPalette per the Sendspin color@v1 spec from an
-image: a `colorthief` MMCQ quantizer produces image candidates, then `primary`,
+image: a `modern_colorthief` MMCQ quantizer produces image candidates, then `primary`,
 `accent`, `on_dark`, `on_light`, `background_dark`, and `background_light` are
 chosen (and adjusted where needed) so that every spec-mandated contrast pair
 clears the WCAG AA 4.5:1 threshold.
@@ -14,12 +14,10 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
-from io import BytesIO
 from typing import TYPE_CHECKING
 
-from colorthief import ColorThief
+from modern_colorthief import get_palette as _mmcq_palette
 from music_assistant_models.media_items import MediaItemPalette
-from PIL import UnidentifiedImageError
 
 from music_assistant.helpers.images import (
     _create_thumb_hash,
@@ -126,8 +124,9 @@ def _adjust_with_fallback(color: _RGB, mix_toward: _RGB, refs: tuple[_RGB, ...])
 
 def _extract_candidates(image_bytes: bytes) -> list[_RGB]:
     """Extract a dominant-color palette via MMCQ (matches the colorthief JS lib)."""
-    thief = ColorThief(BytesIO(image_bytes))
-    palette = thief.get_palette(color_count=_PALETTE_QUANTIZE_COLORS, quality=_COLORTHIEF_QUALITY)
+    palette = _mmcq_palette(
+        image_bytes, color_count=_PALETTE_QUANTIZE_COLORS, quality=_COLORTHIEF_QUALITY
+    )
     return [(r, g, b) for r, g, b in palette]
 
 
@@ -219,7 +218,7 @@ def extract_palette(image_bytes: bytes) -> MediaItemPalette:
     """
     try:
         candidates = _extract_candidates(image_bytes)
-    except (UnidentifiedImageError, OSError):
+    except (ValueError, OSError):
         return MediaItemPalette()
     return _derive_palette(candidates)
 
