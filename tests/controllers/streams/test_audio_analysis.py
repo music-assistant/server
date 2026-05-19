@@ -1097,11 +1097,7 @@ def test_register_api_commands_registers_all_decorated_endpoints() -> None:
     # _make_controller() mocks mass/streams as MagicMock, which auto-vivify
     # `.api_cmd`; in production those are real objects without it. Restrict to
     # str command names -- the only registrations that occur in production.
-    registered = {
-        call.args[0]
-        for call in register.call_args_list
-        if isinstance(call.args[0], str)
-    }
+    registered = {call.args[0] for call in register.call_args_list if isinstance(call.args[0], str)}
     assert registered == {
         "audio_analysis/status",
         "audio_analysis/analyzed_tracks",
@@ -1126,10 +1122,6 @@ def test_setup_self_registers_api_commands(monkeypatch: pytest.MonkeyPatch) -> N
     controller.setup()
 
     register = cast("MagicMock", controller.mass.register_api_command)
-    registered = {
-        call.args[0]
-        for call in register.call_args_list
-        if isinstance(call.args[0], str)
-    }
+    registered = {call.args[0] for call in register.call_args_list if isinstance(call.args[0], str)}
     assert "audio_analysis/coverage" in registered
     assert "audio_analysis/status" in registered
