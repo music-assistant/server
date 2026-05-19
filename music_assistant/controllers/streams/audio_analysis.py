@@ -472,7 +472,7 @@ class AudioAnalysisController:
         return results
 
     @api_command("audio_analysis/status")
-    async def status(self, aa_domain: str) -> dict[str, Any]:
+    async def get_status(self, aa_domain: str) -> dict[str, Any]:
         """
         Return runtime state for an AA provider.
 
@@ -493,7 +493,7 @@ class AudioAnalysisController:
         }
 
     @api_command("audio_analysis/analyzed_tracks")
-    async def analyzed_tracks(
+    async def list_analyzed_tracks(
         self,
         aa_domain: str,
         search: str = "",
@@ -564,7 +564,7 @@ class AudioAnalysisController:
     )
 
     @api_command("audio_analysis/export")
-    async def export(
+    async def get_analysis_export(
         self,
         aa_domain: str,
         limit: int = 100,
@@ -617,7 +617,7 @@ class AudioAnalysisController:
         return {"total": total, "offset": offset, "limit": limit, "items": items}
 
     @api_command("audio_analysis/track")
-    async def track(
+    async def get_track(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
@@ -671,7 +671,7 @@ class AudioAnalysisController:
         return results
 
     @api_command("audio_analysis/coverage")
-    async def coverage(self, aa_domain: str) -> dict[str, Any]:
+    async def get_coverage(self, aa_domain: str) -> dict[str, Any]:
         """
         Return analysis-coverage health counts for an AA provider.
 

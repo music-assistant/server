@@ -764,12 +764,12 @@ def _make_aa_provider_with_domain(
 
 @pytest.mark.asyncio
 async def test_status_returns_common_fields_for_known_aa_domain() -> None:
-    """status() returns provider_loaded, analyzed_tracks_count, analysis_version."""
+    """get_status() returns provider_loaded, analyzed_tracks_count, analysis_version."""
     c, _ = _stub_controller(count_result=42)
     p = _make_aa_provider_with_domain("loudness_analysis", analysis_version=2)
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
-    result = await c.status(aa_domain="loudness_analysis")
+    result = await c.get_status(aa_domain="loudness_analysis")
 
     assert result["provider_loaded"] is True
     assert result["analyzed_tracks_count"] == 42
@@ -781,7 +781,7 @@ async def test_status_returns_common_fields_for_known_aa_domain() -> None:
 
 @pytest.mark.asyncio
 async def test_status_merges_provider_status_extras() -> None:
-    """status() merges the provider's get_provider_status extras into the response."""
+    """get_status() merges the provider's get_provider_status extras into the response."""
     c, _ = _stub_controller(count_result=10)
     p = _make_aa_provider_with_domain(
         "sonic_analysis",
@@ -790,7 +790,7 @@ async def test_status_merges_provider_status_extras() -> None:
     )
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
-    result = await c.status(aa_domain="sonic_analysis")
+    result = await c.get_status(aa_domain="sonic_analysis")
 
     assert result["clap_model_loaded"] is True
     assert result["analyzed_tracks_count"] == 10
@@ -804,19 +804,19 @@ async def test_status_raises_for_unknown_aa_domain() -> None:
     c.mass.get_provider = MagicMock(return_value=None)  # type: ignore[method-assign]
 
     with pytest.raises(ProviderUnavailableError):
-        await c.status(aa_domain="nope")
+        await c.get_status(aa_domain="nope")
 
 
 @pytest.mark.asyncio
 async def test_analyzed_tracks_passes_limit_and_offset_to_db() -> None:
-    """analyzed_tracks() passes limit/offset to the row helper."""
+    """list_analyzed_tracks() passes limit/offset to the row helper."""
     c, _ = _stub_controller(count_result=0, list_result=[])
     p = _make_aa_provider_with_domain("sonic_analysis")
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
     c.mass.music.tracks = MagicMock()
     c.mass.music.tracks.get = AsyncMock(side_effect=Exception("not used; no rows"))
 
-    result = await c.analyzed_tracks(aa_domain="sonic_analysis", limit=10, offset=20)
+    result = await c.list_analyzed_tracks(aa_domain="sonic_analysis", limit=10, offset=20)
 
     assert result == {"total": 0, "offset": 20, "limit": 10, "items": []}
 
@@ -839,7 +839,7 @@ async def test_analyzed_tracks_dedupes_within_page_and_resolves_metadata() -> No
     c.mass.music.tracks = MagicMock()
     c.mass.music.tracks.get = AsyncMock(return_value=fake_track)
 
-    result = await c.analyzed_tracks(aa_domain="sonic_analysis", limit=50, offset=0)
+    result = await c.list_analyzed_tracks(aa_domain="sonic_analysis", limit=50, offset=0)
 
     assert result["total"] == 3
     assert len(result["items"]) == 2
@@ -865,7 +865,9 @@ async def test_analyzed_tracks_search_is_page_scoped_substring() -> None:
     c.mass.music.tracks = MagicMock()
     c.mass.music.tracks.get = AsyncMock(return_value=fake_track)
 
-    result = await c.analyzed_tracks(aa_domain="sonic_analysis", search="rock", limit=10, offset=0)
+    result = await c.list_analyzed_tracks(
+        aa_domain="sonic_analysis", search="rock", limit=10, offset=0
+    )
 
     assert result["total"] == 4
     assert {item["item_id"] for item in result["items"]} == {"rock_track_1", "ROCK_track_3"}
@@ -878,12 +880,12 @@ async def test_analyzed_tracks_raises_for_unknown_aa_domain() -> None:
     c, _ = _stub_controller()
     c.mass.get_provider = MagicMock(return_value=None)  # type: ignore[method-assign]
     with pytest.raises(ProviderUnavailableError):
-        await c.analyzed_tracks(aa_domain="nope")
+        await c.list_analyzed_tracks(aa_domain="nope")
 
 
 @pytest.mark.asyncio
 async def test_export_returns_fixed_scalar_field_set() -> None:
-    """export() returns the canonical scalar fields from analysis_data."""
+    """get_analysis_export() returns the canonical scalar fields from analysis_data."""
     rows = [
         {
             "item_id": "track1",
@@ -904,7 +906,7 @@ async def test_export_returns_fixed_scalar_field_set() -> None:
     p = _make_aa_provider_with_domain("sonic_analysis")
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
-    result = await c.export(aa_domain="sonic_analysis", limit=10, offset=0)
+    result = await c.get_analysis_export(aa_domain="sonic_analysis", limit=10, offset=0)
 
     assert result["total"] == 1
     assert len(result["items"]) == 1
@@ -931,7 +933,7 @@ async def test_export_omits_extra_data_by_default() -> None:
     p = _make_aa_provider_with_domain("sonic_analysis")
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
-    result = await c.export(aa_domain="sonic_analysis")
+    result = await c.get_analysis_export(aa_domain="sonic_analysis")
 
     assert "extra_data" not in result["items"][0]
     assert result["items"][0]["bpm"] == 120
@@ -953,7 +955,7 @@ async def test_export_includes_full_unmodified_extra_data_when_opted_in() -> Non
     p = _make_aa_provider_with_domain("sonic_analysis")
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
-    result = await c.export(aa_domain="sonic_analysis", include_extra_data=True)
+    result = await c.get_analysis_export(aa_domain="sonic_analysis", include_extra_data=True)
 
     assert result["items"][0]["extra_data"] == {"clap_embedding": [0.1, 0.2], "foo": 1}
 
@@ -973,7 +975,7 @@ async def test_export_skips_unparseable_rows() -> None:
     p = _make_aa_provider_with_domain("sonic_analysis")
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
-    result = await c.export(aa_domain="sonic_analysis", limit=10, offset=0)
+    result = await c.get_analysis_export(aa_domain="sonic_analysis", limit=10, offset=0)
     assert result["total"] == 5
     assert len(result["items"]) == 1
     assert result["items"][0]["bpm"] == 100.0
@@ -981,11 +983,11 @@ async def test_export_skips_unparseable_rows() -> None:
 
 @pytest.mark.asyncio
 async def test_export_passes_limit_and_offset_to_db() -> None:
-    """export() forwards limit/offset to the row helper and returns an empty page when there are no rows."""
+    """get_analysis_export() forwards limit/offset to the row helper and returns an empty page when there are no rows."""
     c, _ = _stub_controller(count_result=0, list_result=[])
     p = _make_aa_provider_with_domain("sonic_analysis")
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
-    result = await c.export(aa_domain="sonic_analysis", limit=25, offset=50)
+    result = await c.get_analysis_export(aa_domain="sonic_analysis", limit=25, offset=50)
     assert result == {"total": 0, "offset": 50, "limit": 25, "items": []}
 
 
@@ -995,7 +997,7 @@ async def test_export_raises_for_unknown_aa_domain() -> None:
     c, _ = _stub_controller()
     c.mass.get_provider = MagicMock(return_value=None)  # type: ignore[method-assign]
     with pytest.raises(ProviderUnavailableError):
-        await c.export(aa_domain="nope")
+        await c.get_analysis_export(aa_domain="nope")
 
 
 @pytest.mark.asyncio
@@ -1019,7 +1021,7 @@ async def test_export_omits_null_fields() -> None:
     p = _make_aa_provider_with_domain("sonic_analysis")
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
-    result = await c.export(aa_domain="sonic_analysis", limit=10, offset=0)
+    result = await c.get_analysis_export(aa_domain="sonic_analysis", limit=10, offset=0)
     item = result["items"][0]
     assert "bpm" in item
     assert "energy" in item
@@ -1046,7 +1048,7 @@ async def test_export_rounds_float_fields_to_four_decimals() -> None:
     p = _make_aa_provider_with_domain("sonic_analysis")
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
-    result = await c.export(aa_domain="sonic_analysis", limit=10, offset=0)
+    result = await c.get_analysis_export(aa_domain="sonic_analysis", limit=10, offset=0)
     item = result["items"][0]
     assert item["energy"] == 0.1235
     assert item["danceability"] == 0.9877
@@ -1054,7 +1056,7 @@ async def test_export_rounds_float_fields_to_four_decimals() -> None:
 
 @pytest.mark.asyncio
 async def test_track_with_aa_domain_returns_single_record() -> None:
-    """With aa_domain set, track() returns that provider's record as a 1-item list."""
+    """With aa_domain set, get_track() returns that provider's record as a 1-item list."""
     full = {"bpm": 120.0, "extra_data": {"clap_embedding": [0.1, 0.2, 0.3]}}
     c, _ = _stub_controller()
     p = _make_aa_provider_with_domain("sonic_analysis")
@@ -1069,7 +1071,7 @@ async def test_track_with_aa_domain_returns_single_record() -> None:
     get_rows = AsyncMock(return_value=[{"analysis_data": json.dumps(full)}])
     c.mass.music.database.get_rows = get_rows  # type: ignore[method-assign]
 
-    result = await c.track(
+    result = await c.get_track(
         item_id="a",
         provider_instance_id_or_domain="filesystem_local",
         aa_domain="sonic_analysis",
@@ -1085,7 +1087,7 @@ async def test_track_with_aa_domain_returns_single_record() -> None:
 
 @pytest.mark.asyncio
 async def test_track_without_aa_domain_returns_all_provider_records() -> None:
-    """Without aa_domain, track() returns one record per AA provider for the track."""
+    """Without aa_domain, get_track() returns one record per AA provider for the track."""
     c, _ = _stub_controller()
     music_prov = MagicMock()
     music_prov.is_streaming_provider = False
@@ -1099,7 +1101,7 @@ async def test_track_without_aa_domain_returns_all_provider_records() -> None:
     )
     c.mass.music.database.get_rows = get_rows  # type: ignore[method-assign]
 
-    result = await c.track(
+    result = await c.get_track(
         item_id="a",
         provider_instance_id_or_domain="filesystem_local",
     )
@@ -1121,7 +1123,7 @@ async def test_track_returns_empty_when_no_rows() -> None:
     c.mass.get_provider = MagicMock(return_value=music_prov)  # type: ignore[method-assign]
     c.mass.music.database.get_rows = AsyncMock(return_value=[])  # type: ignore[method-assign]
 
-    result = await c.track(
+    result = await c.get_track(
         item_id="missing",
         provider_instance_id_or_domain="filesystem_local",
     )
@@ -1135,7 +1137,7 @@ async def test_track_returns_empty_when_music_provider_unresolved() -> None:
     c, _ = _stub_controller()
     c.mass.get_provider = MagicMock(return_value=None)  # type: ignore[method-assign]
 
-    result = await c.track(
+    result = await c.get_track(
         item_id="a",
         provider_instance_id_or_domain="bogus",
     )
@@ -1158,7 +1160,7 @@ async def test_track_skips_unparsable_rows() -> None:
         ]
     )
 
-    result = await c.track(
+    result = await c.get_track(
         item_id="a",
         provider_instance_id_or_domain="filesystem_local",
     )
@@ -1174,7 +1176,7 @@ async def test_track_raises_for_unknown_aa_domain() -> None:
     c.mass.get_provider = MagicMock(return_value=None)  # type: ignore[method-assign]
 
     with pytest.raises(ProviderUnavailableError):
-        await c.track(
+        await c.get_track(
             aa_domain="nope",
             item_id="a",
             provider_instance_id_or_domain="filesystem_local",
@@ -1183,7 +1185,7 @@ async def test_track_raises_for_unknown_aa_domain() -> None:
 
 @pytest.mark.asyncio
 async def test_coverage_returns_three_counts_and_version() -> None:
-    """coverage() reports analyzed, pending, stale_version, analysis_version."""
+    """get_coverage() reports analyzed, pending, stale_version, analysis_version."""
     c, _ = _stub_controller()
     p = _make_aa_provider_with_domain("sonic_analysis", analysis_version=3)
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
@@ -1193,7 +1195,7 @@ async def test_coverage_returns_three_counts_and_version() -> None:
         return_value=5
     )
 
-    result = await c.coverage(aa_domain="sonic_analysis")
+    result = await c.get_coverage(aa_domain="sonic_analysis")
 
     assert result == {
         "analyzed": 100,
@@ -1210,7 +1212,7 @@ async def test_coverage_raises_for_unknown_aa_domain() -> None:
     c.mass.get_provider = MagicMock(return_value=None)  # type: ignore[method-assign]
 
     with pytest.raises(ProviderUnavailableError):
-        await c.coverage(aa_domain="nope")
+        await c.get_coverage(aa_domain="nope")
 
 
 @pytest.mark.asyncio
