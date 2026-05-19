@@ -353,21 +353,16 @@ class WiimPlayer(Player):
         device_uri = media.uri if media and media.uri else ""
         play_mode = self.device.play_mode
 
-        # MA's __final_current_media nulls out our current_media when
-        # active_source matches a queue id but that queue has no current_item.
-        # Only claim ownership when MA actually has a queue item; otherwise
-        # treat playback as a passive source so the UI keeps rendering.
-        ma_queue = self.mass.player_queues.get(self.player_id)
-        has_ma_queue_item = bool(ma_queue and ma_queue.current_item)
-
         if play_mode and play_mode != SOURCE_NETWORK and play_mode in INPUT_MODE_SOURCES:
             self._attr_active_source = INPUT_MODE_SOURCES[play_mode].id
         elif play_mode == SOURCE_NETWORK:
+            ma_queue = self.mass.player_queues.get(self.player_id)
+            assert ma_queue is not None
             if device_uri == "wiimu_airplay":
                 self._attr_active_source = SOURCE_AIRPLAY
             elif device_uri.startswith("spotify:"):
                 self._attr_active_source = SOURCE_SPOTIFY
-            elif has_ma_queue_item:
+            elif ma_queue.current_item:
                 self._attr_active_source = self.player_id
             else:
                 self._attr_active_source = SOURCE_UNKNOWN
