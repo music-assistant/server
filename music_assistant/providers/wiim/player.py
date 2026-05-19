@@ -349,35 +349,50 @@ class WiimPlayer(Player):
             f"{PLAYER_ID_PREFIX}{m.udn}" for m in group_members if m.udn != self.device.udn
         ]
 
-        # Active source detection
         media = self.device.current_media
         device_uri = media.uri if media and media.uri else ""
         play_mode = self.device.play_mode
+
         if play_mode and play_mode != SOURCE_NETWORK and play_mode in INPUT_MODE_SOURCES:
             self._attr_active_source = INPUT_MODE_SOURCES[play_mode].id
         elif play_mode == SOURCE_NETWORK:
+            ma_queue = self.mass.player_queues.get(self.player_id)
+            assert ma_queue is not None
             if device_uri == "wiimu_airplay":
                 self._attr_active_source = SOURCE_AIRPLAY
             elif device_uri.startswith("spotify:"):
                 self._attr_active_source = SOURCE_SPOTIFY
-            else:
+            elif ma_queue.current_item:
                 self._attr_active_source = self.player_id
+            else:
+                self._attr_active_source = SOURCE_UNKNOWN
         else:
             self._attr_active_source = None
 
-        # Sync current_media from device state
-        if self._attr_active_source is not None and media:
-            self.set_current_media(
-                uri=media.uri or "",
-                title=media.title,
-                artist=media.artist,
-                album=media.album,
-                image_url=media.image_url,
+        source_display_name: str | None = None
+        if play_mode and play_mode in INPUT_MODE_SOURCES:
+            source_display_name = INPUT_MODE_SOURCES[play_mode].name
+        elif self._attr_active_source in PASSIVE_SOURCES:
+            source_display_name = PASSIVE_SOURCES[self._attr_active_source].name
+
+        is_ma_source = self._attr_active_source == self.player_id
+        sdk_has_metadata = bool(media and (media.title or media.artist or media.album))
+
+        if self._attr_active_source is None:
+            self._attr_current_media = None
+        elif is_ma_source and not sdk_has_metadata:
+            # Keep the metadata play_media set until the SDK catches up.
+            pass
+        else:
+            self._attr_current_media = PlayerMedia(
+                uri=(media.uri if media else None) or "",
+                title=(media.title if media else None) or source_display_name,
+                artist=media.artist if media else None,
+                album=media.album if media else None,
+                image_url=media.image_url if media else None,
+                duration=media.duration if media else None,
                 source_id=self._attr_active_source,
-                duration=media.duration,
             )
-        elif device_uri:
-            self.set_current_media(uri=device_uri)
 
         self.update_state()
 
