@@ -2,7 +2,7 @@
 
 import logging
 from collections.abc import Awaitable
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -4723,7 +4723,7 @@ class TestUniversalPlayerMerging:
         # up1 should have no more links
         assert len(up1.linked_output_protocols) == 0
 
-    async def test_merge_preserves_moved_protocols_during_parent_cleanup(
+    async def test_merge_preserves_moved_protocols_during_parent_cleanup(  # noqa: PLR0915
         self, mock_mass: MagicMock
     ) -> None:
         """Moved protocol ownership must survive the removed parent's permanent cleanup."""
@@ -4754,7 +4754,7 @@ class TestUniversalPlayerMerging:
 
         scheduled_tasks: list[Awaitable[object]] = []
 
-        def capture_task(task: Awaitable[object]) -> None:
+        def capture_task(task: Awaitable[object], *_args: Any, **_kwargs: Any) -> None:
             scheduled_tasks.append(task)
 
         mock_mass.config.get = MagicMock(side_effect=config_get)
@@ -4826,9 +4826,10 @@ class TestUniversalPlayerMerging:
 
         assert dlna_live.protocol_parent_id == "up_keep"
         assert config_store["players/dlna_cached/values/protocol_parent_id"] == "up_keep"
-        assert len(scheduled_tasks) == 1
+        unregister_tasks = [t for t in scheduled_tasks if "unregister" in repr(t)]
+        assert len(unregister_tasks) == 1
 
-        await scheduled_tasks[0]
+        await unregister_tasks[0]
 
         assert "up_remove" not in controller._players
         assert dlna_live.protocol_parent_id == "up_keep"
@@ -4945,7 +4946,7 @@ class TestUniversalPlayerReplacement:
 
         scheduled_tasks: list[Awaitable[object]] = []
 
-        def capture_task(task: Awaitable[object]) -> None:
+        def capture_task(task: Awaitable[object], *_args: Any, **_kwargs: Any) -> None:
             scheduled_tasks.append(task)
 
         mock_mass.config.get = MagicMock(side_effect=config_get)
@@ -5006,9 +5007,10 @@ class TestUniversalPlayerReplacement:
             "dlna_cached",
         }
         assert config_store["players/dlna_cached/values/protocol_parent_id"] == "sonos_1"
-        assert len(scheduled_tasks) == 1
+        unregister_tasks = [t for t in scheduled_tasks if "unregister" in repr(t)]
+        assert len(unregister_tasks) == 1
 
-        await scheduled_tasks[0]
+        await unregister_tasks[0]
 
         assert "up_old" not in controller._players
         assert ap_live.protocol_parent_id == "sonos_1"

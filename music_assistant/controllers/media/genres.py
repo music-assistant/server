@@ -189,7 +189,8 @@ class GenreController(MediaControllerBase[Genre]):
 
     @staticmethod
     def _get_genre_icon_metadata(translation_key: str | None) -> MediaItemMetadata | None:
-        """Build metadata with genre icon image if an SVG exists for the translation key.
+        """
+        Build metadata with genre icon image if an SVG exists for the translation key.
 
         :param translation_key: The genre's translation key (matches SVG filename).
         """
@@ -207,7 +208,8 @@ class GenreController(MediaControllerBase[Genre]):
 
     @staticmethod
     def _dedup_aliases(existing: list[str], new: list[str]) -> list[str]:
-        """Merge alias lists, deduplicating by normalized form (create_safe_string).
+        """
+        Merge alias lists, deduplicating by normalized form (create_safe_string).
 
         Preserves the first occurrence's original casing.
 
@@ -334,7 +336,8 @@ class GenreController(MediaControllerBase[Genre]):
         media_type: MediaType | None = None,
         **kwargs: Any,
     ) -> list[Genre]:
-        """Get genres in the library.
+        """
+        Get genres in the library.
 
         :param genre: NOT SUPPORTED - Filtering genres by genres doesn't make sense.
         :param hide_empty: Only applies when media_type is not set.
@@ -387,7 +390,8 @@ class GenreController(MediaControllerBase[Genre]):
         item: Genre,
         preferred_provider_instances: list[str] | None = None,
     ) -> list[Track]:
-        """Get the list of base tracks for a genre.
+        """
+        Get the list of base tracks for a genre.
 
         :param item: The Genre to get base tracks for.
         :param preferred_provider_instances: List of preferred provider instance IDs to use.
@@ -417,7 +421,8 @@ class GenreController(MediaControllerBase[Genre]):
         artist_limit: int | None = None,
         order_by: str | None = None,
     ) -> tuple[list[Track], list[Album], list[Artist]]:
-        """Return tracks, albums, and artists mapped to a genre.
+        """
+        Return tracks, albums, and artists mapped to a genre.
 
         :param item: The genre to fetch mapped media for.
         :param limit: Default limit applied to all media types (0 = unlimited).
@@ -477,7 +482,8 @@ class GenreController(MediaControllerBase[Genre]):
     async def get_genres_for_media_item(
         self, media_type: MediaType, media_id: str | int
     ) -> list[Genre]:
-        """Return all genres mapped to a given media item.
+        """
+        Return all genres mapped to a given media item.
 
         :param media_type: The type of media item.
         :param media_id: The database ID of the media item.
@@ -503,7 +509,8 @@ class GenreController(MediaControllerBase[Genre]):
     async def get_genre_exclusions_for_media_item(
         self, media_type: MediaType, media_id: str | int
     ) -> list[Genre]:
-        """Return all genres excluded from a given media item.
+        """
+        Return all genres excluded from a given media item.
 
         :param media_type: The type of media item.
         :param media_id: The database ID of the media item.
@@ -525,6 +532,23 @@ class GenreController(MediaControllerBase[Genre]):
                 "media_id": media_id_int,
             },
         )
+
+    async def has_derived_genre_mappings(self, media_type: MediaType, media_id: str | int) -> bool:
+        """
+        Return True if this media item has propagation-derived genre mappings.
+
+        :param media_type: The type of media item.
+        :param media_id: The database ID of the media item.
+        """
+        try:
+            media_id_int = int(media_id)
+        except (ValueError, TypeError):
+            return False
+        row = await self.mass.music.database.get_row(
+            DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+            {"media_type": media_type.value, "media_id": media_id_int, "is_derived": 1},
+        )
+        return row is not None
 
     async def get_radio_mode_base_tracks(
         self,
@@ -589,7 +613,8 @@ class GenreController(MediaControllerBase[Genre]):
         return [r for r in results if r is not None]
 
     async def get_genre_media_counts(self, genre_ids: list[str]) -> dict[str, dict[str, int]]:
-        """Return media item counts per media type for each requested genre.
+        """
+        Return media item counts per media type for each requested genre.
 
         :param genre_ids: List of genre database IDs to query.
         :return: Mapping of genre_id -> {media_type -> count}.
@@ -629,7 +654,8 @@ class GenreController(MediaControllerBase[Genre]):
         return
 
     async def restore_default_genres(self, full_restore: bool = False) -> list[Genre]:
-        """Restore default genres from genre_mapping.json.
+        """
+        Restore default genres from genre_mapping.json.
 
         :param full_restore: If True, delete all existing genres and recreate from defaults.
                             If False (default), only add missing genres and ensure aliases exist.
@@ -710,7 +736,8 @@ class GenreController(MediaControllerBase[Genre]):
         return [await self.get_library_item(item_id) for item_id in created_ids]
 
     async def _bulk_scan_media_genres(self) -> None:
-        """Bulk-scan all media items and rebuild genre mappings using CTE.
+        """
+        Bulk-scan all media items and rebuild genre mappings using CTE.
 
         Uses the same approach as the initial migration: extracts all unique genre names
         from metadata.genres across all media tables, resolves them to genre IDs via alias
@@ -824,7 +851,8 @@ class GenreController(MediaControllerBase[Genre]):
         await self._propagate_genre_mappings_to_parents()
 
     async def _cleanup_stale_genre_mappings(self) -> None:
-        """Remove genre mappings where the alias is no longer in the media item's metadata.genres.
+        """
+        Remove genre mappings where the alias is no longer in the media item's metadata.genres.
 
         A mapping is considered stale when the alias stored in the mapping is no longer present
         in the media item's current metadata.genres. This includes items where metadata.genres
@@ -904,7 +932,8 @@ class GenreController(MediaControllerBase[Genre]):
             self.logger.info("Genre scan: deleted %d empty non-default genres", genres_deleted)
 
     async def _bulk_scan_unmapped_genres(self) -> int:
-        """Scan only unmapped media items and create genre mappings using CTE.
+        """
+        Scan only unmapped media items and create genre mappings using CTE.
 
         Similar to _bulk_scan_media_genres but filters to items not yet in
         genre_media_item_mapping. Used by the incremental scanner after syncs.
@@ -1029,7 +1058,8 @@ class GenreController(MediaControllerBase[Genre]):
         return count_after - count_before
 
     async def _propagate_genre_mappings_to_parents(self) -> None:
-        """Propagate track genre mappings to albums and artists for filesystem provider instances.
+        """
+        Propagate track genre mappings to albums and artists for filesystem provider instances.
 
         Only runs when at least one filesystem_local or filesystem_smb provider instance has
         the 'propagate_track_genres' config option enabled. Albums and artists that already
@@ -1116,7 +1146,8 @@ class GenreController(MediaControllerBase[Genre]):
     async def remove_item_from_library(
         self, item_id: str | int, recursive: bool = True, exclude_globally: bool = True
     ) -> None:
-        """Delete genre record from the database.
+        """
+        Delete genre record from the database.
 
         :param item_id: Database ID of the genre to remove.
         :param recursive: Unused for genres, kept for base-class compatibility.
@@ -1142,7 +1173,8 @@ class GenreController(MediaControllerBase[Genre]):
             await super().remove_item_from_library(item_id, recursive)
 
     async def add_alias(self, genre_id: str | int, alias: str) -> Genre:
-        """Add an alias string to a genre.
+        """
+        Add an alias string to a genre.
 
         :param genre_id: Database ID of the genre.
         :param alias: Alias string to add.
@@ -1161,7 +1193,8 @@ class GenreController(MediaControllerBase[Genre]):
         return updated
 
     async def remove_alias(self, genre_id: str | int, alias: str) -> Genre:
-        """Remove an alias string from a genre.
+        """
+        Remove an alias string from a genre.
 
         :param genre_id: Database ID of the genre.
         :param alias: Alias string to remove.
@@ -1200,7 +1233,8 @@ class GenreController(MediaControllerBase[Genre]):
         media_id: str | int,
         alias: str | None = None,
     ) -> None:
-        """Map a media item to a genre.
+        """
+        Map a media item to a genre.
 
         :param genre_id: Database ID of the genre.
         :param media_type: Type of media item (track, album, artist).
@@ -1226,7 +1260,8 @@ class GenreController(MediaControllerBase[Genre]):
     async def remove_media_mapping(
         self, genre_id: str | int, media_type: MediaType, media_id: str | int
     ) -> None:
-        """Remove a media item mapping from a genre.
+        """
+        Remove a media item mapping from a genre.
 
         If the mapping was derived (propagated from child tracks), an exclusion is
         automatically inserted so the next propagation scan does not re-derive it.
@@ -1257,7 +1292,8 @@ class GenreController(MediaControllerBase[Genre]):
         media_type: MediaType,
         media_id: str | int,
     ) -> None:
-        """Permanently exclude a genre from being mapped to a media item.
+        """
+        Permanently exclude a genre from being mapped to a media item.
 
         Records the exclusion so the scanner will never re-add this mapping.
         Any existing mapping for this genre/media pair is removed immediately.
@@ -1292,7 +1328,8 @@ class GenreController(MediaControllerBase[Genre]):
         media_type: MediaType,
         media_id: str | int,
     ) -> None:
-        """Remove a genre exclusion, allowing the scanner to re-map it on the next run.
+        """
+        Remove a genre exclusion, allowing the scanner to re-map it on the next run.
 
         :param genre_id: Database ID of the genre.
         :param media_type: Type of media item (track, album, artist, etc.).
@@ -1323,7 +1360,8 @@ class GenreController(MediaControllerBase[Genre]):
         return result
 
     async def remove_global_genre_exclusion(self, genre_id: int) -> Genre:
-        """Lift a global genre exclusion, making the genre visible and scannable again.
+        """
+        Lift a global genre exclusion, making the genre visible and scannable again.
 
         :param genre_id: Database ID of the excluded genre (item_id in genres table).
         :return: The restored Genre.
@@ -1342,7 +1380,8 @@ class GenreController(MediaControllerBase[Genre]):
         return library_item
 
     async def promote_alias_to_genre(self, genre_id: str | int, alias: str) -> Genre:
-        """Promote an alias to become a standalone genre.
+        """
+        Promote an alias to become a standalone genre.
 
         Creates a new Genre with the alias's name, moves all media mappings
         for that alias to the new genre, and removes the alias from the
@@ -1397,7 +1436,8 @@ class GenreController(MediaControllerBase[Genre]):
         return await self.get_library_item(new_genre_id)
 
     async def merge_genres(self, genre_ids: list[str | int], target_genre_id: str | int) -> Genre:
-        """Merge one or more genres into a target genre.
+        """
+        Merge one or more genres into a target genre.
 
         Transfers all aliases and media mappings from the source genres to the
         target, then deletes the source genres. Aliases and mappings are
@@ -1456,7 +1496,8 @@ class GenreController(MediaControllerBase[Genre]):
     async def sync_media_item_genres(
         self, media_type: MediaType, media_id: str | int, genre_names: set[str]
     ) -> None:
-        """Sync genre mappings for a media item.
+        """
+        Sync genre mappings for a media item.
 
         Ensures genre records exist and updates genre-media mappings.
         Removes mappings that are no longer present in the incoming genre_names set.
@@ -1516,7 +1557,8 @@ class GenreController(MediaControllerBase[Genre]):
     async def _build_genre_lookup(
         self,
     ) -> tuple[dict[str, list[int]], dict[str, int]]:
-        """Build alias and primary-name lookup dicts from all genres in the database.
+        """
+        Build alias and primary-name lookup dicts from all genres in the database.
 
         :return: Tuple of (alias_to_genre, primary_name_to_genre).
             alias_to_genre maps normalised alias -> list of genre_ids (n:n).
@@ -1543,7 +1585,8 @@ class GenreController(MediaControllerBase[Genre]):
         return alias_to_genre, primary_name_to_genre
 
     async def _ensure_aliases(self, genre_id: int, aliases: list[str]) -> None:
-        """Ensure a genre has all the specified aliases in its genre_aliases JSON.
+        """
+        Ensure a genre has all the specified aliases in its genre_aliases JSON.
 
         :param genre_id: Database ID of the genre.
         :param aliases: List of alias strings that should be present.
@@ -1559,7 +1602,8 @@ class GenreController(MediaControllerBase[Genre]):
             )
 
     async def _find_genres_for_alias(self, name: str) -> list[int]:
-        """Find all genres that own the given alias name, or create a new genre.
+        """
+        Find all genres that own the given alias name, or create a new genre.
 
         An alias can map to multiple genres (n:n relationship). For example,
         "anime" could be an alias of both an "Anime" genre and an "Anime Music" genre.
@@ -1653,7 +1697,8 @@ class GenreController(MediaControllerBase[Genre]):
 
     @staticmethod
     def _normalize_genre_name(raw_name: str) -> tuple[str, str, str, str] | None:
-        """Normalize a raw genre name for storage and search.
+        """
+        Normalize a raw genre name for storage and search.
 
         :param raw_name: Raw genre name from provider.
         :return: Tuple of (name, sort_name, search_name, search_sort_name) or None if invalid.

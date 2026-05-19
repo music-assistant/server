@@ -7,7 +7,7 @@
   "codeowners": ["@SantiagoSotoC"],
   "credits": ["[python-snapcast](https://github.com/happyleavesaoc/python-snapcast)"],
   "requirements": [
-    "snapcast==2.3.7",
+    "snapcast==2.3.8",
     "bidict==0.23.1",
     "websocket-client==1.9.0"
   ],
