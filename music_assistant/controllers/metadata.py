@@ -1603,7 +1603,7 @@ class MetaDataController(CoreController):
         for ref_album in ref_albums:
             if mb_artist := await musicbrainz.get_artist_details_by_album(artist.name, ref_album):
                 return mb_artist.id
-        # last restort: track matching by name
+        # last resort: track matching by name
         for ref_track in ref_tracks:
             if not ref_track.album:
                 continue
