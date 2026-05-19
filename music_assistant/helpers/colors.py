@@ -6,21 +6,17 @@ image: a `colorthief` MMCQ quantizer produces image candidates, then `primary`,
 chosen (and adjusted where needed) so that every spec-mandated contrast pair
 clears the WCAG AA 4.5:1 threshold.
 
-A two-tier cache (in-memory FIFO + on-disk JSON) keyed on a hash of provider
-and image path avoids redundant extraction across consumers.
+A process-wide in-memory cache keyed on a hash of provider and image path
+avoids redundant extraction while the server is running.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 from collections import OrderedDict
 from io import BytesIO
-from pathlib import Path
 from typing import TYPE_CHECKING
 
-import aiofiles
 from colorthief import ColorThief
 from music_assistant_models.media_items import MediaItemPalette
 from PIL import UnidentifiedImageError
@@ -35,7 +31,6 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-_PALETTE_CACHE_DIR = "palettes"
 _PALETTE_MEMORY_CACHE_MAX = 256
 _PALETTE_QUANTIZE_COLORS = 5
 _COLORTHIEF_QUALITY = 10
@@ -229,42 +224,19 @@ def extract_palette(image_bytes: bytes) -> MediaItemPalette:
     return _derive_palette(candidates)
 
 
-async def _load_from_disk(cache_filepath: str) -> MediaItemPalette | None:
-    if not await asyncio.to_thread(os.path.isfile, cache_filepath):
-        return None
-    try:
-        async with aiofiles.open(cache_filepath, "rb") as f:
-            data = await f.read()
-        return MediaItemPalette.from_dict(json.loads(data))
-    except (OSError, ValueError):
-        return None
-
-
-async def _save_to_disk(cache_filepath: str, palette: MediaItemPalette) -> None:
-    try:
-        await asyncio.to_thread(os.makedirs, os.path.dirname(cache_filepath), exist_ok=True)
-        async with aiofiles.open(cache_filepath, "wb") as f:
-            await f.write(json.dumps(palette.to_dict()).encode())
-    except OSError:
-        pass
-
-
 async def _extract_and_cache(
-    mass: MusicAssistant,
-    path_or_url: str,
-    provider: str,
-    cache_filepath: str,
+    mass: MusicAssistant, path_or_url: str, provider: str, key: str
 ) -> MediaItemPalette:
     img_data = await get_image_data(mass, path_or_url, provider)
     palette = await asyncio.to_thread(extract_palette, img_data)
-    await _save_to_disk(cache_filepath, palette)
+    _put_in_memory_cache(key, palette)
     return palette
 
 
 async def get_palette(
     mass: MusicAssistant, path_or_url: str, provider: str
 ) -> MediaItemPalette | None:
-    """Get the color palette for an image, using a two-tier cache.
+    """Get the color palette for an image, using a process-wide memory cache.
 
     :param mass: The MusicAssistant instance.
     :param path_or_url: Image path or URL (same format as get_image_data).
@@ -277,35 +249,23 @@ async def get_palette(
     if cached := _get_from_memory_cache(key):
         return cached
 
-    cache_dir = os.path.join(mass.cache_path, _PALETTE_CACHE_DIR)
-    cache_filepath = os.path.join(cache_dir, f"{key}.json")
-    resolved = os.path.realpath(cache_filepath)
-    if not resolved.startswith(os.path.realpath(cache_dir) + os.sep):
-        return None
-    if cached := await _load_from_disk(cache_filepath):
-        _put_in_memory_cache(key, cached)
-        return cached
-
     task: asyncio.Task[MediaItemPalette] = mass.create_task(
         _extract_and_cache,
         mass,
         path_or_url,
         provider,
-        cache_filepath,
+        key,
         task_id=f"palette.{key}",
         abort_existing=False,
     )
-    palette = await asyncio.shield(task)
-    _put_in_memory_cache(key, palette)
-    return palette
+    return await asyncio.shield(task)
 
 
 def peek_palette_for_url(image_url: str | None) -> MediaItemPalette | None:
     """Return the cached palette for an image URL, or None.
 
-    Memory-cache only, does not fetch or read from disk. Use to attach a
-    palette to a PlayerMedia without blocking when a prior async fetch has
-    already populated the cache.
+    Memory-only sync lookup. Use to attach a palette to a PlayerMedia without
+    blocking when a prior async fetch has already populated the cache.
     """
     if not image_url:
         return None
@@ -331,37 +291,3 @@ async def get_palette_for_url(
         return await get_palette(mass, path, provider)
     except (FileNotFoundError, OSError):
         return None
-
-
-async def cleanup_palette_cache(cache_path: str, max_size_bytes: int) -> int:
-    """Remove oldest cached palettes when total size exceeds the limit.
-
-    :param cache_path: The base cache directory (mass.cache_path).
-    :param max_size_bytes: Maximum allowed total size in bytes.
-    :returns: Number of files removed.
-    """
-    palette_dir = os.path.join(cache_path, _PALETTE_CACHE_DIR)
-
-    def _cleanup() -> int:
-        if not os.path.isdir(palette_dir):
-            return 0
-        entries: list[tuple[str, int, float]] = []
-        for entry in os.scandir(palette_dir):
-            if entry.is_file():
-                stat = entry.stat()
-                entries.append((entry.path, stat.st_size, stat.st_mtime))
-        entries.sort(key=lambda e: e[2])
-        total_size = sum(e[1] for e in entries)
-        removed = 0
-        for filepath, file_size, _ in entries:
-            if total_size <= max_size_bytes:
-                break
-            try:
-                Path(filepath).unlink()
-                total_size -= file_size
-                removed += 1
-            except OSError:
-                pass
-        return removed
-
-    return await asyncio.to_thread(_cleanup)

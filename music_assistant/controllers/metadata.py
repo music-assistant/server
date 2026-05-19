@@ -67,7 +67,6 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_text,
 )
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.colors import cleanup_palette_cache
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.images import (
@@ -158,12 +157,10 @@ CONF_ENABLE_RADIO_METADATA_LOOKUP = "enable_radio_metadata_lookup"
 MISSING_ARTIST_METADATA_SCAN_TASK_ID = "metadata_missing_artist_metadata_scan"
 PLAYLIST_METADATA_SCAN_TASK_ID = "metadata_playlist_metadata_scan"
 THUMB_CACHE_CLEANUP_TASK_ID = "metadata_thumb_cache_cleanup"
-PALETTE_CACHE_CLEANUP_TASK_ID = "metadata_palette_cache_cleanup"
 METADATA_LOOKUP_TASK_ID_PREFIX = "metadata_lookup"
 METADATA_SCAN_BATCH_SIZE = 5
 CONF_THUMB_CACHE_MAX_SIZE = "thumb_cache_max_size"
 DEFAULT_THUMB_CACHE_MAX_SIZE_MB = 500
-PALETTE_CACHE_MAX_SIZE_MB = 10
 
 
 class MetaDataController(CoreController):
@@ -1660,15 +1657,6 @@ class MetaDataController(CoreController):
             metadata={"task_domain": "metadata_thumb_cache_cleanup"},
             allow_retry=True,
         )
-        self.mass.tasks.register_scheduled_task(
-            task_id=PALETTE_CACHE_CLEANUP_TASK_ID,
-            name="Cleanup color palette cache",
-            handler=self._cleanup_palette_cache,
-            schedule=desired_schedule,
-            translation_key="background_task.cleanup_palette_cache",
-            metadata={"task_domain": "metadata_palette_cache_cleanup"},
-            allow_retry=True,
-        )
 
     @staticmethod
     def _get_metadata_lookup_task_id(uri: str) -> str:
@@ -1756,11 +1744,3 @@ class MetaDataController(CoreController):
         removed = await cleanup_thumb_cache(self.mass.cache_path, max_size_mb * 1024 * 1024)
         if removed:
             self.logger.debug("Thumbnail cache cleanup: removed %s file(s)", removed)
-
-    async def _cleanup_palette_cache(self) -> None:
-        """Remove oldest palettes when the cache folder exceeds the hardcoded limit."""
-        removed = await cleanup_palette_cache(
-            self.mass.cache_path, PALETTE_CACHE_MAX_SIZE_MB * 1024 * 1024
-        )
-        if removed:
-            self.logger.debug("Palette cache cleanup: removed %s file(s)", removed)
