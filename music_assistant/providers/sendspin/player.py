@@ -53,7 +53,6 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import Album, Artist, is_track
-from music_assistant_models.media_items.metadata import MediaItemPalette
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
@@ -134,6 +133,7 @@ if TYPE_CHECKING:
     from aiosendspin.models.player import SupportedAudioFormat
     from aiosendspin.server.client import SendspinClient
     from music_assistant_models.config_entries import ConfigValueType
+    from music_assistant_models.media_items import MediaItemPalette
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
