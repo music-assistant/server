@@ -137,51 +137,6 @@ async def get_config_entries(
     )
 
 
-def select_clap_window(audio: np.ndarray, source_sr: int) -> np.ndarray | None:
-    """Return a deterministic 7-second slice for CLAP, or None if audio is shorter than 1s.
-
-    :param audio: Mono float32 audio at source_sr.
-    :param source_sr: Sample rate of audio in Hz.
-    """
-    skip_n = CLAP_SKIP_SECONDS * source_sr
-    window_n = CLAP_WINDOW_SECONDS * source_sr
-    needed_full = skip_n + window_n
-    n = len(audio)
-    if n >= needed_full:
-        return audio[skip_n : skip_n + window_n]
-    if n >= window_n:
-        start = (n - window_n) // 2
-        return audio[start : start + window_n]
-    if n >= source_sr:
-        return audio
-    return None
-
-
-def select_clap_windows(audio: np.ndarray, source_sr: int, n_windows: int) -> list[np.ndarray]:
-    """Return up to n_windows deterministic 7s slices spanning the track.
-
-    :param audio: Mono float32 audio at source_sr.
-    :param source_sr: Sample rate of audio in Hz.
-    :param n_windows: Target number of windows. >= 1.
-    :returns: List of window arrays (may be shorter than n_windows for short
-        tracks; empty if audio is too short for CLAP at all).
-    """
-    if n_windows <= 1:
-        single = select_clap_window(audio, source_sr)
-        return [single] if single is not None else []
-
-    window_n = CLAP_WINDOW_SECONDS * source_sr
-    skip_n = CLAP_SKIP_SECONDS * source_sr
-    usable_start = skip_n
-    usable_end = len(audio) - window_n
-    if usable_end <= usable_start:
-        single = select_clap_window(audio, source_sr)
-        return [single] if single is not None else []
-
-    positions = np.linspace(usable_start, usable_end, n_windows).astype(int)
-    return [audio[p : p + window_n] for p in positions]
-
-
 def compute_clap_target_starts(
     track_duration_s: float,
     preset_n: int,
