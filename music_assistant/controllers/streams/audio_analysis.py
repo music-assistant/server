@@ -70,7 +70,8 @@ class AudioAnalysisController:
         self._workers: dict[str, asyncio.Task[None]] = {}
 
     def setup(self) -> None:
-        """Register the nightly background scan task and apply CPU caps."""
+        """Register API commands, the nightly background scan task and apply CPU caps."""
+        self._register_api_commands()
         self._configure_thread_caps()
         utc_hour, utc_minute = local_clock_time_to_utc(0, 0)
         self.mass.tasks.register_scheduled_task(
@@ -81,6 +82,32 @@ class AudioAnalysisController:
             metadata={"task_domain": "audio_analysis"},
             allow_retry=True,
         )
+
+    def _register_api_commands(self) -> None:
+        """Register all @api_command-decorated methods on this controller.
+
+        mass._register_api_commands only scans a fixed set of top-level
+        controllers; this one is nested under StreamsController, so it must
+        self-register or its commands resolve to "Invalid command".
+        """
+        for attr_name in dir(self):
+            if attr_name.startswith("__"):
+                continue
+            # Skip properties to avoid triggering side effects on access.
+            if isinstance(getattr(type(self), attr_name, None), property):
+                continue
+            try:
+                obj = getattr(self, attr_name)
+            except (AttributeError, RuntimeError):
+                continue
+            if not hasattr(obj, "api_cmd"):
+                continue
+            self.mass.register_api_command(
+                obj.api_cmd,
+                obj,
+                getattr(obj, "api_authenticated", True),
+                getattr(obj, "api_required_role", None),
+            )
 
     async def close(self) -> None:
         """Drain in-flight sessions and chunk workers on shutdown."""
