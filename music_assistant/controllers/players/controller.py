@@ -1547,8 +1547,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if palette is None or not trigger_update:
             return
         player = self.get_player(player_id)
-        current = player.state.current_media if player else None
-        if not current or current.image_url != image_url:
+        if player is None:
+            return
+        current = player.state.current_media
+        if current is None or current.image_url != image_url:
             return  # media changed while fetching
         # Avoid trigger_player_update so a concurrent state-change debounce
         # doesn't cancel our timer via the shared player_update_state task_id.

@@ -67,9 +67,9 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_text,
 )
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.colors import cleanup_palette_cache
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.datetime import local_clock_time_to_utc
-from music_assistant.helpers.colors import cleanup_palette_cache
 from music_assistant.helpers.images import (
     cleanup_thumb_cache,
     create_collage,
