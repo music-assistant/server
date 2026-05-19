@@ -24,6 +24,7 @@ from aiosendspin.server.events import (
 )
 from aiosendspin.server.roles import (
     ArtworkGroupRole,
+    ColorGroupRole,
     ControllerEvent,
     ControllerGroupRole,
     ControllerNextEvent,
@@ -35,6 +36,7 @@ from aiosendspin.server.roles import (
     ControllerStopEvent,
     MetadataGroupRole,
 )
+from aiosendspin.server.roles.color.state import Color
 from aiosendspin.server.roles.metadata.state import Metadata
 from aiosendspin.server.roles.player.events import StaticDelayChangedEvent
 from aiosendspin.server.roles.player.types import PlayerRoleProtocol
@@ -131,6 +133,7 @@ if TYPE_CHECKING:
     from aiosendspin.models.player import SupportedAudioFormat
     from aiosendspin.server.client import SendspinClient
     from music_assistant_models.config_entries import ConfigValueType
+    from music_assistant_models.media_items import MediaItemPalette
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
@@ -239,6 +242,14 @@ class SendspinBasePlayer(Player):
         """Get the MetadataGroupRole for this player's group."""
         role = self.api.group.group_role("metadata")
         if isinstance(role, MetadataGroupRole):
+            return role
+        return None
+
+    @property
+    def _color_role(self) -> ColorGroupRole | None:
+        """Get the ColorGroupRole for this player's group."""
+        role = self.api.group.group_role("color")
+        if isinstance(role, ColorGroupRole):
             return role
         return None
 
@@ -866,6 +877,8 @@ class SendspinPlayer(SendspinBasePlayer):
         if (artwork_role := self._artwork_role) is not None:
             await artwork_role.set_album_artwork(None)
             await artwork_role.set_artist_artwork(None)
+        if (color_role := self._color_role) is not None:
+            color_role.clear()
         self.last_sent_artwork_url = None
         self.last_sent_artist_artwork_url = None
 
@@ -950,6 +963,29 @@ class SendspinPlayer(SendspinBasePlayer):
         # Send metadata to the group
         if (metadata_role := self._metadata_role) is not None:
             metadata_role.set_metadata(metadata)
+
+        # Send color palette derived from the cover art (already computed by
+        # the players controller with the Sendspin defined minimum contrast values).
+        if (color_role := self._color_role) is not None:
+            self._send_color_palette(color_role, current_media.palette)
+
+    def _send_color_palette(
+        self, color_role: ColorGroupRole, palette: MediaItemPalette | None
+    ) -> None:
+        """Push the palette already attached to current_media to the sendspin group."""
+        if palette is None:
+            color_role.clear()
+            return
+        color_role.set_color(
+            Color(
+                background_dark=palette.background_dark,
+                background_light=palette.background_light,
+                primary=palette.primary,
+                accent=palette.accent,
+                on_dark=palette.on_dark,
+                on_light=palette.on_light,
+            )
+        )
 
     async def get_config_entries(
         self,
