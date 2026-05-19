@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, cast
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import DeviceInfo
 from wiim import PlayingStatus, WiimDevice
-from wiim.consts import PlayerAttribute
 from wiim.exceptions import WiimDeviceException, WiimRequestException
 from wiim.models import WiimGroupRole
 
@@ -40,17 +39,6 @@ SDK_TO_MA_STATE: dict[PlayingStatus, PlaybackState] = {
     PlayingStatus.STOPPED: PlaybackState.IDLE,
     PlayingStatus.LOADING: PlaybackState.PLAYING,
 }
-
-
-def _decode_hex(value: str | None) -> str | None:
-    """Decode a hex-encoded UTF-8 string as returned by LinkPlay getPlayerStatusEx."""
-    if not value:
-        return None
-    try:
-        decoded = bytes.fromhex(value).decode("utf-8", errors="replace").strip()
-    except ValueError:
-        return value or None
-    return decoded or None
 
 
 class WiimPlayer(Player):
@@ -361,26 +349,14 @@ class WiimPlayer(Player):
             f"{PLAYER_ID_PREFIX}{m.udn}" for m in group_members if m.udn != self.device.udn
         ]
 
-        # Active source detection
         media = self.device.current_media
         device_uri = media.uri if media and media.uri else ""
         play_mode = self.device.play_mode
 
-        # LinkPlay getPlayerStatusEx exposes Title/Artist/Album as hex-encoded
-        # UTF-8 even when the SDK's AVTransport-derived current_media is None
-        # (typical for external sources). Fall back to those properties.
-        http_props = self.device._player_properties
-        http_title = _decode_hex(http_props.get(PlayerAttribute.TITLE))
-        http_artist = _decode_hex(http_props.get(PlayerAttribute.ARTIST))
-        http_album = _decode_hex(http_props.get(PlayerAttribute.ALBUM))
-        http_has_metadata = bool(http_title or http_artist or http_album)
-
-        # Only claim self.player_id as the active source when there's an
-        # actual MA queue item currently active. Without that, MA's player
-        # state machine forces current_media to None for "active queue but no
-        # current_item", which hides everything we set. For "single" plays
-        # (recommendations etc.) and external playback we surface a passive
-        # source so our current_media flows through to the UI.
+        # MA's __final_current_media nulls out our current_media when
+        # active_source matches a queue id but that queue has no current_item.
+        # Only claim ownership when MA actually has a queue item; otherwise
+        # treat playback as a passive source so the UI keeps rendering.
         ma_queue = self.mass.player_queues.get(self.player_id)
         has_ma_queue_item = bool(ma_queue and ma_queue.current_item)
 
@@ -394,17 +370,10 @@ class WiimPlayer(Player):
             elif has_ma_queue_item:
                 self._attr_active_source = self.player_id
             else:
-                # Network mode without an MA queue item: passive playback
-                # (single-track, recommendation, AirPlay, Spotify Connect, ...).
                 self._attr_active_source = SOURCE_UNKNOWN
         else:
             self._attr_active_source = None
 
-        # Sync current_media from device state. Build a fresh PlayerMedia each
-        # refresh (Sonos-style) so stale fields from a previous source don't
-        # survive. For external sources fall back to the source display name as
-        # title so the UI always shows something meaningful. For MA-controlled
-        # playback, keep what play_media set if the SDK hasn't caught up yet.
         source_display_name: str | None = None
         if play_mode and play_mode in INPUT_MODE_SOURCES:
             source_display_name = INPUT_MODE_SOURCES[play_mode].name
@@ -417,26 +386,14 @@ class WiimPlayer(Player):
         if self._attr_active_source is None:
             self._attr_current_media = None
         elif is_ma_source and not sdk_has_metadata:
-            # MA initiated playback; keep the metadata play_media set until the
-            # SDK's AVTransport event arrives with the device's view.
+            # Keep the metadata play_media set until the SDK catches up.
             pass
         else:
-            sdk_title = media.title if media else None
-            sdk_artist = media.artist if media else None
-            sdk_album = media.album if media else None
-            # Only fall back to LinkPlay HTTP getPlayerStatusEx fields for
-            # external/passive sources; the firmware doesn't refresh these
-            # reliably on every track change, so using them for MA playback
-            # would pollute the UI with stale metadata from a prior session.
-            use_http_fallback = not is_ma_source
-            fb_title = http_title if use_http_fallback else None
-            fb_artist = http_artist if use_http_fallback else None
-            fb_album = http_album if use_http_fallback else None
             self._attr_current_media = PlayerMedia(
                 uri=(media.uri if media else None) or "",
-                title=sdk_title or fb_title or source_display_name,
-                artist=sdk_artist or fb_artist,
-                album=sdk_album or fb_album,
+                title=(media.title if media else None) or source_display_name,
+                artist=media.artist if media else None,
+                album=media.album if media else None,
                 image_url=media.image_url if media else None,
                 duration=media.duration if media else None,
                 source_id=self._attr_active_source,
