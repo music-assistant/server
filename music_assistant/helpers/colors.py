@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 
 import aiofiles
 from colorthief import ColorThief
-from music_assistant_models.media_items.metadata import MediaItemPalette
+from music_assistant_models.media_items import MediaItemPalette
 from PIL import UnidentifiedImageError
 
 from music_assistant.helpers.images import (
