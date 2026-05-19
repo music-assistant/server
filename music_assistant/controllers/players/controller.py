@@ -1550,7 +1550,14 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         current = player.state.current_media if player else None
         if not current or current.image_url != image_url:
             return  # media changed while fetching
-        self.trigger_player_update(player_id, force_update=True)
+        # Avoid trigger_player_update so a concurrent state-change debounce
+        # doesn't cancel our timer via the shared player_update_state task_id.
+        self.mass.call_later(
+            0,
+            player.update_state,
+            force_update=True,
+            task_id=f"palette_player_update_{player_id}",
+        )
 
     def _schedule_next_queue_item_palette_prefetch(
         self, player_id: str, current_media: PlayerMedia
