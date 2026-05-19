@@ -384,16 +384,6 @@ class WiimPlayer(Player):
         ma_queue = self.mass.player_queues.get(self.player_id)
         has_ma_queue_item = bool(ma_queue and ma_queue.current_item)
 
-        self.logger.debug(
-            "sync %s: play_mode=%s device_uri=%s media=%s http_title=%s has_queue=%s",
-            self._attr_name,
-            play_mode,
-            device_uri,
-            media,
-            http_title,
-            has_ma_queue_item,
-        )
-
         if play_mode and play_mode != SOURCE_NETWORK and play_mode in INPUT_MODE_SOURCES:
             self._attr_active_source = INPUT_MODE_SOURCES[play_mode].id
         elif play_mode == SOURCE_NETWORK:
