@@ -1335,7 +1335,7 @@ class Player(ABC):
             return ""
         return (
             f"{media.uri}|{media.title}|{media.source_id}|{media.queue_item_id}|"
-            f"{media.image_url}|{media.duration}|{media.elapsed_time}"
+            f"{media.image_url}|{media.duration}|{media.elapsed_time}|{media.palette}"
         )
 
     @final
@@ -1472,6 +1472,14 @@ class Player(ABC):
             active_output_protocol=self.__attr_active_output_protocol,
             needs_setup=self.needs_setup,
         )
+
+        # Peek the cached palette so the media checksum below sees palette
+        # transitions. Lazy import to avoid the helpers.colors -> helpers.images
+        # -> models.plugin cycle.
+        if (cm := self._state.current_media) and cm.image_url:
+            from music_assistant.helpers.colors import peek_palette_for_url  # noqa: PLC0415
+
+            cm.palette = peek_palette_for_url(cm.image_url)
 
         # track stop called state
         if (
