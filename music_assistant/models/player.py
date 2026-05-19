@@ -1035,6 +1035,21 @@ class Player(ABC):
                     is_native=True,
                 )
             )
+        elif (
+            self.provider.domain in PROTOCOL_PRIORITY
+            and PlayerFeature.SET_MEMBERS in self.supported_features
+        ):
+            # Player is itself a native endpoint of a known protocol domain.
+            result.append(
+                OutputProtocol(
+                    output_protocol_id=self.player_id,
+                    name=self.provider.name,
+                    protocol_domain=self.provider.domain,
+                    priority=PROTOCOL_PRIORITY[self.provider.domain],
+                    available=self.available,
+                    is_native=True,
+                )
+            )
 
         # Add active protocol players
         active_ids: set[str] = set()
