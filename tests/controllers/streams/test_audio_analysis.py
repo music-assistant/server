@@ -649,28 +649,28 @@ async def test_status_raises_for_unknown_aa_domain() -> None:
 
 
 @pytest.mark.asyncio
-async def test_analyzed_tracks_passes_limit_and_offset_to_db() -> None:
-    """list_analyzed_tracks() passes limit/offset to the row helper."""
-    c, _ = _stub_controller(count_result=0, list_result=[])
+async def test_analyzed_tracks_empty_yields_nothing() -> None:
+    """No analyzed rows -> the stream yields nothing."""
+    c, _ = _stub_controller(list_result=[])
     p = _make_aa_provider_with_domain("sonic_analysis")
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
     c.mass.music.tracks = MagicMock()
     c.mass.music.tracks.get = AsyncMock(side_effect=Exception("not used; no rows"))
 
-    result = await c.list_analyzed_tracks(aa_domain="sonic_analysis", limit=10, offset=20)
+    items = [item async for item in c.list_analyzed_tracks(aa_domain="sonic_analysis")]
 
-    assert result == {"total": 0, "offset": 20, "limit": 10, "items": []}
+    assert items == []
 
 
 @pytest.mark.asyncio
-async def test_analyzed_tracks_dedupes_within_page_and_resolves_metadata() -> None:
+async def test_analyzed_tracks_dedupes_and_resolves_metadata() -> None:
     """Rows duplicated by (item_id, provider) are deduped; surviving entries get track lookup."""
     rows = [
         {"item_id": "a", "provider": "filesystem_local"},
         {"item_id": "a", "provider": "filesystem_local"},
         {"item_id": "b", "provider": "filesystem_local"},
     ]
-    c, _ = _stub_controller(count_result=3, list_result=rows)
+    c, _ = _stub_controller(list_result=rows)
     p = _make_aa_provider_with_domain("sonic_analysis")
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
@@ -680,23 +680,22 @@ async def test_analyzed_tracks_dedupes_within_page_and_resolves_metadata() -> No
     c.mass.music.tracks = MagicMock()
     c.mass.music.tracks.get = AsyncMock(return_value=fake_track)
 
-    result = await c.list_analyzed_tracks(aa_domain="sonic_analysis", limit=50, offset=0)
+    items = [item async for item in c.list_analyzed_tracks(aa_domain="sonic_analysis")]
 
-    assert result["total"] == 3
-    assert len(result["items"]) == 2
-    assert {item["item_id"] for item in result["items"]} == {"a", "b"}
+    assert len(items) == 2
+    assert {item["item_id"] for item in items} == {"a", "b"}
 
 
 @pytest.mark.asyncio
-async def test_analyzed_tracks_search_is_page_scoped_substring() -> None:
-    """Search filters page rows on item_id substring (case-insensitive)."""
+async def test_analyzed_tracks_search_filters_whole_stream() -> None:
+    """Search filters every row on item_id substring (case-insensitive), not just one page."""
     rows = [
         {"item_id": "rock_track_1", "provider": "filesystem_local"},
         {"item_id": "jazz_track_2", "provider": "filesystem_local"},
         {"item_id": "ROCK_track_3", "provider": "filesystem_local"},
         {"item_id": "pop_track_4", "provider": "filesystem_local"},
     ]
-    c, _ = _stub_controller(count_result=4, list_result=rows)
+    c, _ = _stub_controller(list_result=rows)
     p = _make_aa_provider_with_domain("sonic_analysis")
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
@@ -706,27 +705,27 @@ async def test_analyzed_tracks_search_is_page_scoped_substring() -> None:
     c.mass.music.tracks = MagicMock()
     c.mass.music.tracks.get = AsyncMock(return_value=fake_track)
 
-    result = await c.list_analyzed_tracks(
-        aa_domain="sonic_analysis", search="rock", limit=10, offset=0
-    )
+    items = [
+        item async for item in c.list_analyzed_tracks(aa_domain="sonic_analysis", search="rock")
+    ]
 
-    assert result["total"] == 4
-    assert {item["item_id"] for item in result["items"]} == {"rock_track_1", "ROCK_track_3"}
+    assert {item["item_id"] for item in items} == {"rock_track_1", "ROCK_track_3"}
     assert c.mass.music.tracks.get.await_count == 2
 
 
 @pytest.mark.asyncio
 async def test_analyzed_tracks_raises_for_unknown_aa_domain() -> None:
-    """Unknown aa_domain raises ProviderUnavailableError."""
+    """Unknown aa_domain raises ProviderUnavailableError when the stream is consumed."""
     c, _ = _stub_controller()
     c.mass.get_provider = MagicMock(return_value=None)  # type: ignore[method-assign]
     with pytest.raises(ProviderUnavailableError):
-        await c.list_analyzed_tracks(aa_domain="nope")
+        async for _ in c.list_analyzed_tracks(aa_domain="nope"):
+            pass
 
 
 @pytest.mark.asyncio
 async def test_export_returns_fixed_scalar_field_set() -> None:
-    """get_analysis_export() returns the canonical scalar fields from analysis_data."""
+    """get_analysis_export() yields the canonical scalar fields from analysis_data."""
     rows = [
         {
             "item_id": "track1",
@@ -743,15 +742,14 @@ async def test_export_returns_fixed_scalar_field_set() -> None:
             ),
         }
     ]
-    c, _ = _stub_controller(count_result=1, list_result=rows)
+    c, _ = _stub_controller(list_result=rows)
     p = _make_aa_provider_with_domain("sonic_analysis")
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
-    result = await c.get_analysis_export(aa_domain="sonic_analysis", limit=10, offset=0)
+    items = [i async for i in c.get_analysis_export(aa_domain="sonic_analysis")]
 
-    assert result["total"] == 1
-    assert len(result["items"]) == 1
-    item = result["items"][0]
+    assert len(items) == 1
+    item = items[0]
     assert item["bpm"] == 120.5
     assert item["key"] == "C"
     assert item["danceability"] == 0.7
@@ -770,14 +768,14 @@ async def test_export_omits_extra_data_by_default() -> None:
             ),
         }
     ]
-    c, _ = _stub_controller(count_result=1, list_result=rows)
+    c, _ = _stub_controller(list_result=rows)
     p = _make_aa_provider_with_domain("sonic_analysis")
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
-    result = await c.get_analysis_export(aa_domain="sonic_analysis")
+    items = [i async for i in c.get_analysis_export(aa_domain="sonic_analysis")]
 
-    assert "extra_data" not in result["items"][0]
-    assert result["items"][0]["bpm"] == 120
+    assert "extra_data" not in items[0]
+    assert items[0]["bpm"] == 120
 
 
 @pytest.mark.asyncio
@@ -792,18 +790,20 @@ async def test_export_includes_full_unmodified_extra_data_when_opted_in() -> Non
             ),
         }
     ]
-    c, _ = _stub_controller(count_result=1, list_result=rows)
+    c, _ = _stub_controller(list_result=rows)
     p = _make_aa_provider_with_domain("sonic_analysis")
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
-    result = await c.get_analysis_export(aa_domain="sonic_analysis", include_extra_data=True)
+    items = [
+        i async for i in c.get_analysis_export(aa_domain="sonic_analysis", include_extra_data=True)
+    ]
 
-    assert result["items"][0]["extra_data"] == {"clap_embedding": [0.1, 0.2], "foo": 1}
+    assert items[0]["extra_data"] == {"clap_embedding": [0.1, 0.2], "foo": 1}
 
 
 @pytest.mark.asyncio
 async def test_export_skips_unparseable_rows() -> None:
-    """Rows with corrupt JSON are skipped from items but counted in total."""
+    """Rows with corrupt JSON are skipped from the stream; good rows still yielded."""
     rows = [
         {"item_id": "a", "provider": "filesystem_local", "analysis_data": "not json"},
         {
@@ -812,33 +812,33 @@ async def test_export_skips_unparseable_rows() -> None:
             "analysis_data": json.dumps({"bpm": 100.0}),
         },
     ]
-    c, _ = _stub_controller(count_result=5, list_result=rows)
+    c, _ = _stub_controller(list_result=rows)
     p = _make_aa_provider_with_domain("sonic_analysis")
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
-    result = await c.get_analysis_export(aa_domain="sonic_analysis", limit=10, offset=0)
-    assert result["total"] == 5
-    assert len(result["items"]) == 1
-    assert result["items"][0]["bpm"] == 100.0
+    items = [i async for i in c.get_analysis_export(aa_domain="sonic_analysis")]
+    assert len(items) == 1
+    assert items[0]["bpm"] == 100.0
 
 
 @pytest.mark.asyncio
-async def test_export_passes_limit_and_offset_to_db() -> None:
-    """get_analysis_export() forwards limit/offset to the row helper and returns an empty page when there are no rows."""
-    c, _ = _stub_controller(count_result=0, list_result=[])
+async def test_export_empty_yields_nothing() -> None:
+    """No analyzed rows -> the export stream yields nothing."""
+    c, _ = _stub_controller(list_result=[])
     p = _make_aa_provider_with_domain("sonic_analysis")
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
-    result = await c.get_analysis_export(aa_domain="sonic_analysis", limit=25, offset=50)
-    assert result == {"total": 0, "offset": 50, "limit": 25, "items": []}
+    items = [i async for i in c.get_analysis_export(aa_domain="sonic_analysis")]
+    assert items == []
 
 
 @pytest.mark.asyncio
 async def test_export_raises_for_unknown_aa_domain() -> None:
-    """Unknown aa_domain raises ProviderUnavailableError."""
+    """Unknown aa_domain raises ProviderUnavailableError when the stream is consumed."""
     c, _ = _stub_controller()
     c.mass.get_provider = MagicMock(return_value=None)  # type: ignore[method-assign]
     with pytest.raises(ProviderUnavailableError):
-        await c.get_analysis_export(aa_domain="nope")
+        async for _ in c.get_analysis_export(aa_domain="nope"):
+            pass
 
 
 @pytest.mark.asyncio
@@ -858,12 +858,12 @@ async def test_export_omits_null_fields() -> None:
             ),
         }
     ]
-    c, _ = _stub_controller(count_result=1, list_result=rows)
+    c, _ = _stub_controller(list_result=rows)
     p = _make_aa_provider_with_domain("sonic_analysis")
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
-    result = await c.get_analysis_export(aa_domain="sonic_analysis", limit=10, offset=0)
-    item = result["items"][0]
+    items = [i async for i in c.get_analysis_export(aa_domain="sonic_analysis")]
+    item = items[0]
     assert "bpm" in item
     assert "energy" in item
     assert "key" not in item
@@ -885,12 +885,12 @@ async def test_export_rounds_float_fields_to_four_decimals() -> None:
             ),
         }
     ]
-    c, _ = _stub_controller(count_result=1, list_result=rows)
+    c, _ = _stub_controller(list_result=rows)
     p = _make_aa_provider_with_domain("sonic_analysis")
     c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
-    result = await c.get_analysis_export(aa_domain="sonic_analysis", limit=10, offset=0)
-    item = result["items"][0]
+    items = [i async for i in c.get_analysis_export(aa_domain="sonic_analysis")]
+    item = items[0]
     assert item["energy"] == 0.1235
     assert item["danceability"] == 0.9877
 

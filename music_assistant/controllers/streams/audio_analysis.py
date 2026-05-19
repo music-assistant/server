@@ -7,7 +7,7 @@ import contextlib
 import dataclasses
 import os
 import time
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, Mapping
 from math import inf
 from typing import TYPE_CHECKING, Any
 
@@ -426,16 +426,16 @@ class AudioAnalysisController:
         self,
         aa_domain: str,
         search: str = "",
-        limit: int = 50,
-        offset: int = 0,
-    ) -> dict[str, Any]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """
-        Return a paginated list of tracks analyzed by the given AA provider.
+        Stream the tracks analyzed by the given AA provider.
+
+        Pagination is handled transparently by the websocket layer; one
+        entry is yielded per unique analyzed (item_id, provider).
 
         :param aa_domain: AA provider domain to query.
-        :param search: Case-insensitive substring filter on item_id within the current page.
-        :param limit: Max results per page.
-        :param offset: Pagination offset (in DB rows).
+        :param search: Case-insensitive substring filter on item_id, applied
+            across all results.
         """
         provider = self.mass.get_provider(
             aa_domain,
@@ -444,21 +444,7 @@ class AudioAnalysisController:
         if provider is None:
             raise ProviderUnavailableError(f"{aa_domain} is not available")
 
-        total = await self.get_audio_analysis_count(aa_domain)
-        rows = await self.get_audio_analysis_rows(aa_domain, limit=limit, offset=offset)
-
-        seen: set[tuple[str, str]] = set()
-        entries: list[tuple[str, str]] = []
-        for row in rows:
-            key = (row["item_id"], row["provider"])
-            if key in seen:
-                continue
-            seen.add(key)
-            entries.append(key)
-
-        if search:
-            q = search.lower()
-            entries = [(iid, prov) for iid, prov in entries if q in iid.lower()]
+        q = search.lower()
 
         async def _resolve(item_id: str, provider_id: str) -> dict[str, Any]:
             try:
@@ -469,8 +455,27 @@ class AudioAnalysisController:
                 self.logger.debug("Failed to resolve track %s/%s: %s", provider_id, item_id, err)
                 return {"item_id": item_id, "name": "(unknown)", "artist": ""}
 
-        items = list(await asyncio.gather(*[_resolve(iid, prov) for iid, prov in entries]))
-        return {"total": total, "offset": offset, "limit": limit, "items": items}
+        seen: set[tuple[str, str]] = set()
+        page_size = 500
+        offset = 0
+        while True:
+            rows = await self.get_audio_analysis_rows(aa_domain, limit=page_size, offset=offset)
+            if not rows:
+                break
+            entries: list[tuple[str, str]] = []
+            for row in rows:
+                key = (row["item_id"], row["provider"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                if q and q not in key[0].lower():
+                    continue
+                entries.append(key)
+            for item in await asyncio.gather(*[_resolve(iid, prov) for iid, prov in entries]):
+                yield item
+            if len(rows) < page_size:
+                break
+            offset += page_size
 
     _EXPORT_SCALAR_FIELDS: tuple[str, ...] = (
         "bpm",
@@ -496,19 +501,16 @@ class AudioAnalysisController:
     async def get_analysis_export(
         self,
         aa_domain: str,
-        limit: int = 100,
-        offset: int = 0,
         include_extra_data: bool = False,
-    ) -> dict[str, Any]:
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """
-        Return a paginated dump of canonical scalar fields for analyzed tracks.
+        Stream canonical scalar fields for analyzed tracks.
+
+        Pagination is handled transparently by the websocket layer.
 
         :param aa_domain: AA provider domain to query.
-        :param limit: Max items per page.
-        :param offset: Pagination offset.
         :param include_extra_data: When True, include each row's full,
-            unmodified non-empty extra_data blob (embeddings included). Callers should
-            lower limit when opting in, since payloads grow substantially.
+            unmodified non-empty extra_data blob (embeddings included).
         """
         provider = self.mass.get_provider(
             aa_domain,
@@ -517,33 +519,36 @@ class AudioAnalysisController:
         if provider is None:
             raise ProviderUnavailableError(f"{aa_domain} is not available")
 
-        total = await self.get_audio_analysis_count(aa_domain)
-        rows = await self.get_audio_analysis_rows(aa_domain, limit=limit, offset=offset)
-
-        items: list[dict[str, Any]] = []
-        for row in rows:
-            try:
-                data = json_loads(row["analysis_data"])
-            except (ValueError, TypeError, KeyError):
-                continue
-            item: dict[str, Any] = {
-                "item_id": row["item_id"],
-                "provider": row["provider"],
-            }
-            for field_name in self._EXPORT_SCALAR_FIELDS:
-                val = data.get(field_name)
-                if val is None:
+        page_size = 500
+        offset = 0
+        while True:
+            rows = await self.get_audio_analysis_rows(aa_domain, limit=page_size, offset=offset)
+            if not rows:
+                break
+            for row in rows:
+                try:
+                    data = json_loads(row["analysis_data"])
+                except (ValueError, TypeError, KeyError):
                     continue
-                if isinstance(val, float):
-                    val = round(val, 4)
-                item[field_name] = val
-            if include_extra_data:
-                extras = data.get("extra_data")
-                if isinstance(extras, dict) and extras:
-                    item["extra_data"] = extras
-            items.append(item)
-
-        return {"total": total, "offset": offset, "limit": limit, "items": items}
+                item: dict[str, Any] = {
+                    "item_id": row["item_id"],
+                    "provider": row["provider"],
+                }
+                for field_name in self._EXPORT_SCALAR_FIELDS:
+                    val = data.get(field_name)
+                    if val is None:
+                        continue
+                    if isinstance(val, float):
+                        val = round(val, 4)
+                    item[field_name] = val
+                if include_extra_data:
+                    extras = data.get("extra_data")
+                    if isinstance(extras, dict) and extras:
+                        item["extra_data"] = extras
+                yield item
+            if len(rows) < page_size:
+                break
+            offset += page_size
 
     @api_command("audio_analysis/track")
     async def get_track(
