@@ -156,12 +156,7 @@ class HeosPlayer(Player):
             case const.EVENT_PLAYER_STATE_CHANGED:
                 self._update_player_state()
                 self._update_player_current_media()
-
-                if (
-                    self._ma_controls_playback
-                    and self._attr_playback_state == PlaybackState.PLAYING
-                ):
-                    self._schedule_queue_cleanup()
+                self._schedule_queue_cleanup()
 
             case const.EVENT_PLAYER_NOW_PLAYING_CHANGED:
                 self._update_player_current_media()
@@ -331,7 +326,11 @@ class HeosPlayer(Player):
 
     def _schedule_queue_cleanup(self) -> None:
         """Debounce queue cleanup so rapid queue changes only trigger one follow-up."""
-        if not self._ma_controls_playback or not self._queue_cleanup_pending:
+        if (
+            not self._ma_controls_playback
+            or not self._queue_cleanup_pending
+            or self._attr_playback_state != PlaybackState.PLAYING
+        ):
             return
 
         self.mass.call_later(
