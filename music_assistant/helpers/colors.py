@@ -129,6 +129,10 @@ def _normalize_image_bytes(image_bytes: bytes) -> bytes:
     # that isn't 8-bit RGB/RGBA (grayscale, 16-bit, palette PNG, CMYK JPEG…),
     # and that panic aborts the interpreter. Decode with Pillow first and
     # re-encode as RGB PNG so the Rust side only ever sees a supported mode.
+    # TODO: once https://github.com/baseplate-admin/modern_colorthief gains
+    # safe handling for non-RGB inputs (e.g. via `to_rgb8()` instead of
+    # `unreachable!()`), bump the dep, drop this helper, and pass
+    # `image_bytes` straight to `_mmcq_palette`.
     with Image.open(io.BytesIO(image_bytes)) as img:
         img.load()
         rgb = img if img.mode == "RGB" else img.convert("RGB")
