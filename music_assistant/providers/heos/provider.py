@@ -33,6 +33,7 @@ class HeosPlayerProvider(PlayerProvider):
     """Player provided for Denon HEOS."""
 
     _heos: Heos | None = None
+    _heos_queue: Heos | None = None
     _music_source_list: list[PlayerSource] = []
     _input_source_list: list[MediaItem] = []
     _player_discovery_running: bool = False
@@ -95,6 +96,21 @@ class HeosPlayerProvider(PlayerProvider):
         except HeosError as err:
             self.logger.error("Unexpected error setting up HEOS controller: %s", err)
             raise SetupFailedError("Unexpected error setting up HEOS controller") from err
+
+        try:
+            self._heos_queue = Heos(
+                HeosOptions(
+                    controller_ip,
+                    timeout=cast("int", self.config.get_value(CONF_TIMEOUT)),
+                    auto_reconnect=True,
+                    auto_failover=True,
+                    events=False,
+                )
+            )
+            await self._heos_queue.connect()
+        except HeosError as err:
+            self.logger.error("Failed to set up HEOS queue: %s", err)
+            raise SetupFailedError("Failed to set up HEOS queue") from err
 
     async def _connect_controller(self, controller_ip: str) -> None:
         """Connect to the HEOS controller with a few retries for early mDNS announcements."""
@@ -185,6 +201,10 @@ class HeosPlayerProvider(PlayerProvider):
         if self._heos:
             self._heos.dispatcher.disconnect_all()  # Remove all event connections
             await self._heos.disconnect()
+
+        if self._heos_queue:
+            self._heos_queue.dispatcher.disconnect_all()  # Remove all event connections
+            await self._heos_queue.disconnect()
 
         for player in self.players:
             self.logger.debug("Unloading player %s", player.name)
