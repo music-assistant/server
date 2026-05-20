@@ -126,6 +126,25 @@ class SmartFadesMixer:
                     "Smart crossfade failed: %s, falling back to standard crossfade", e
                 )
 
+        # Log why we are falling back to standard crossfade
+        if mode == SmartFadesMode.SMART_CROSSFADE:
+            missing: list[str] = []
+            if not fade_out_analysis:
+                missing.append("no analysis for outgoing track")
+            elif not fade_out_analysis.bpm:
+                missing.append("outgoing BPM unknown")
+            elif fade_out_analysis.beats is None:
+                missing.append("outgoing beats missing")
+            if not fade_in_analysis:
+                missing.append("no analysis for incoming track")
+            elif not fade_in_analysis.bpm:
+                missing.append("incoming BPM unknown")
+            elif fade_in_analysis.beats is None:
+                missing.append("incoming beats missing")
+            self.logger.debug(
+                "Falling back to standard crossfade (%s)",
+                "; ".join(missing) if missing else "unknown reason",
+            )
         # Always fallback to Standard Crossfade in case something goes wrong
         # StandardCrossFade needs full bytes for slicing
         fade_in_bytes = await self._ensure_bytes(fade_in_part)

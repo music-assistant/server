@@ -285,6 +285,17 @@ class SmartCrossFade(SmartFade):
         if is_stretched:
             self._apply_gradual_time_stretch(bpm_ratio, bpm_diff_percent, crossfade_duration)
 
+        self.logger.debug(
+            "SmartCrossFade: out=%.1f BPM, in=%.1f BPM (diff=%.1f%%), bars=%d, "
+            "duration=%.1fs, beat_align=%s, time_stretch=%s",
+            self.fade_out_bpm,
+            self.fade_in_bpm,
+            bpm_diff_percent,
+            crossfade_bars,
+            crossfade_duration,
+            f"{fadein_start_pos:.2f}s" if fadein_start_pos is not None else "none",
+            f"ratio={bpm_ratio:.4f}" if is_stretched else "off",
+        )
         if (
             fadein_start_pos is not None
             and fadein_start_pos + crossfade_duration <= SMART_CROSSFADE_DURATION
