@@ -167,18 +167,17 @@ class LastFMRecommendationsProvider(MetadataProvider):
 
         self._recommendation_folders: list[RecommendationFolder] = []
 
-        # Register recurring refresh task (default: every 6 hours).
-        # Initial delay of 20s allows streaming providers to finish loading first.
+        # Register recurring refresh task (runs every 6 hours).
         self.mass.tasks.register_scheduled_task(
             task_id=f"{REFRESH_TASK_ID}_{self.instance_id}",
             name="Refresh Last.fm recommendations",
             handler=self._refresh_recommendations,
             schedule=TaskSchedule.hourly(every=6),
-            initial_delay=20,
             translation_key="background_task.refresh_lastfm_recommendations",
         )
 
         # Populate on every startup so the UI isn't empty until the next scheduled refresh.
+        # Delayed 20s to let streaming providers finish loading first.
         self.mass.call_later(
             20,
             self._refresh_recommendations,
