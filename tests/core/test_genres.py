@@ -876,6 +876,82 @@ class TestPromoteAlias:
         assert "PromAlias" not in updated_parent.genre_aliases
         assert "PromComplete" in updated_parent.genre_aliases
 
+    async def test_promote_alias_shared_across_genres(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Promotion is global across genres that share the alias.
+
+        When an alias is owned by multiple genres, promotion moves mappings and
+        strips the alias from every genre that claimed it, not just the one passed.
+        """
+        folk = await genre_ctrl.add_item_to_library(_make_genre("PromFolk"))
+        pop = await genre_ctrl.add_item_to_library(_make_genre("PromPop"))
+        await genre_ctrl.add_alias(folk.item_id, "PromManele")
+        await genre_ctrl.add_alias(pop.item_id, "PromManele")
+        track = await _add_test_track(mass, "Manele Track")
+        # Track is mapped to both genres via the same alias (n:n).
+        await genre_ctrl.add_media_mapping(
+            folk.item_id, MediaType.TRACK, track.item_id, "PromManele"
+        )
+        await genre_ctrl.add_media_mapping(
+            pop.item_id, MediaType.TRACK, track.item_id, "PromManele"
+        )
+
+        # Invoke from one of the owning genres; both should be cleared.
+        new_genre = await genre_ctrl.promote_alias_to_genre(folk.item_id, "PromManele")
+
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT genre_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_id = :mid AND media_type = 'track'",
+            {"mid": int(track.item_id)},
+            limit=0,
+        )
+        genre_ids = {int(r["genre_id"]) for r in rows}
+        assert genre_ids == {int(new_genre.item_id)}
+
+        updated_folk = await genre_ctrl.get_library_item(int(folk.item_id))
+        updated_pop = await genre_ctrl.get_library_item(int(pop.item_id))
+        assert "PromManele" not in (updated_folk.genre_aliases or [])
+        assert "PromManele" not in (updated_pop.genre_aliases or [])
+
+    async def test_promote_rebuilds_derived_album_mappings(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """Derived album mappings follow the alias to the new genre.
+
+        Reproduces the 'albums remained Hip Hop' case: a propagation-derived
+        album row (alias=NULL, is_derived=1) lingers on the source genre after
+        promotion unless we re-run propagation.
+        """
+        parent = await genre_ctrl.add_item_to_library(_make_genre("PromHipHop"))
+        await genre_ctrl.add_alias(parent.item_id, "PromRap")
+        track = await _add_test_track(mass, "Rap Track")
+        album = await _add_test_album(mass, "Rap Album")
+        # Track gets a direct mapping via the alias.
+        await genre_ctrl.add_media_mapping(
+            parent.item_id, MediaType.TRACK, track.item_id, "PromRap"
+        )
+        # Simulate a propagation-derived album row (alias=NULL, is_derived=1).
+        await mass.music.database.execute(
+            f"INSERT INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "(genre_id, media_id, media_type, alias, is_derived) "
+            "VALUES (:gid, :mid, 'album', NULL, 1)",
+            {"gid": int(parent.item_id), "mid": int(album.item_id)},
+        )
+
+        await genre_ctrl.promote_alias_to_genre(parent.item_id, "PromRap")
+
+        # The stale derived row on the source genre must be gone — propagation
+        # wipes is_derived=1 rows. (Without an active filesystem provider with
+        # propagate_track_genres enabled, nothing re-derives, which is correct.)
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT genre_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_id = :mid AND media_type = 'album'",
+            {"mid": int(album.item_id)},
+            limit=0,
+        )
+        assert all(int(r["genre_id"]) != int(parent.item_id) for r in rows)
+
 
 # ===================================================================
 # Group F2: merge_genres (7 tests)
