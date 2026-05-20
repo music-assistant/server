@@ -358,6 +358,7 @@ class HeosPlayer(Player):
                 return
             try:
                 self.logger.debug("[%s] Queue cleanup started", self._device.name)
+                queue_items = await self._heos_queue.player_get_queue(self._device.player_id)
                 now_playing = await self._heos_queue.get_now_playing_media(self._device.player_id)
                 current_queue_id = now_playing.queue_id
                 if current_queue_id is None:
@@ -368,7 +369,6 @@ class HeosPlayer(Player):
                     self._schedule_queue_cleanup()
                     return
 
-                queue_items = await self._heos_queue.player_get_queue(self._device.player_id)
                 queue_ids_to_remove = [
                     item.queue_id for item in queue_items if item.queue_id != current_queue_id
                 ]
