@@ -44,6 +44,7 @@ class HeosPlayer(Player):
     """HeosPlayer in Music Assistant."""
 
     _heos: Heos
+    _heos_queue: Heos
     _device: PyHeosPlayer
 
     @property
@@ -63,8 +64,12 @@ class HeosPlayer(Player):
         if self._device.heos is None:
             raise SetupFailedError("HEOS device has no controller assigned")
 
+        if provider._heos_queue is None:
+            raise SetupFailedError("HEOS queue controller is not set up")
+
         # Keep internal reference so we don't need to check None on each call
         self._heos = self._device.heos
+        self._heos_queue = provider._heos_queue
 
         self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = PLAYER_FEATURES
@@ -365,7 +370,7 @@ class HeosPlayer(Player):
                 return
             try:
                 self.logger.debug("[%s] Queue cleanup started", self._device.name)
-                queue_items = await self._device.get_queue()
+                queue_items = await self._heos_queue.player_get_queue(self._device.player_id)
                 current_queue_id = self._device.now_playing_media.queue_id
                 if current_queue_id is None:
                     self.logger.debug(
@@ -385,7 +390,9 @@ class HeosPlayer(Player):
                     current_queue_id,
                 )
                 if queue_ids_to_remove:
-                    await self._device.remove_from_queue(queue_ids_to_remove)
+                    await self._heos_queue.player_remove_from_queue(
+                        self._device.player_id, queue_ids_to_remove
+                    )
                 self._queue_cleanup_pending = False
 
             except HeosError as err:
