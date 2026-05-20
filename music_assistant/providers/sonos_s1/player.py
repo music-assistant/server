@@ -274,6 +274,21 @@ class SonosPlayer(Player):
         await asyncio.to_thread(add_to_queue)
         self.mass.call_later(2, self.poll)
 
+    async def select_source(self, source: str) -> None:
+        """Handle SELECT SOURCE command on the player."""
+        if source in LINEIN_SOURCE_IDS:
+
+            def _switch_to_linein() -> None:
+                if source == "TV":
+                    self.soco.switch_to_tv()
+                else:
+                    self.soco.switch_to_line_in()
+
+            await asyncio.to_thread(_switch_to_linein)
+        else:
+            await self.stop()
+        self.mass.call_later(2, self.poll)
+
     @soco_error()
     async def set_members(
         self,
