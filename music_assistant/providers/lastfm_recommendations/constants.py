@@ -41,7 +41,7 @@ TOP_ITEMS_TO_TAKE = 3
 SIMILAR_ITEMS_BUFFER = 12
 
 # Number of similar items to fetch for each seed artist/track
-SIMILAR_ITEMS_PER_SEED = 3
+SIMILAR_ITEMS_PER_SEED = 5
 
 # Number of top artists to use as seeds for personalized recommendations
 TOP_ARTISTS_LIMIT = 5
