@@ -879,10 +879,12 @@ class TestPromoteAlias:
     async def test_promote_alias_shared_across_genres(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """Promotion is global across genres that share the alias.
+        """
+        Promotion handles aliases shared across multiple genres.
 
-        When an alias is owned by multiple genres, promotion moves mappings and
-        strips the alias from every genre that claimed it, not just the one passed.
+        Every genre that claimed the alias loses it and all mappings made via
+        the alias are moved to the new genre, regardless of which source the
+        caller invoked the promotion from.
         """
         folk = await genre_ctrl.add_item_to_library(_make_genre("PromFolk"))
         pop = await genre_ctrl.add_item_to_library(_make_genre("PromPop"))
@@ -917,21 +919,22 @@ class TestPromoteAlias:
     async def test_promote_rebuilds_derived_album_mappings(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """Derived album mappings follow the alias to the new genre.
+        """
+        Derived album rows are cleared from the source genre after promotion.
 
-        Reproduces the 'albums remained Hip Hop' case: a propagation-derived
-        album row (alias=NULL, is_derived=1) lingers on the source genre after
-        promotion unless we re-run propagation.
+        Without this, propagation-derived (alias=NULL, is_derived=1) rows would
+        still link the album to the source genre even though the underlying
+        tracks have moved to the new one.
         """
         parent = await genre_ctrl.add_item_to_library(_make_genre("PromHipHop"))
         await genre_ctrl.add_alias(parent.item_id, "PromRap")
         track = await _add_test_track(mass, "Rap Track")
         album = await _add_test_album(mass, "Rap Album")
-        # Track gets a direct mapping via the alias.
         await genre_ctrl.add_media_mapping(
             parent.item_id, MediaType.TRACK, track.item_id, "PromRap"
         )
-        # Simulate a propagation-derived album row (alias=NULL, is_derived=1).
+        # Seed a propagation-derived album row (alias=NULL, is_derived=1) as if
+        # it had been written by _propagate_genre_mappings_to_parents.
         await mass.music.database.execute(
             f"INSERT INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
             "(genre_id, media_id, media_type, alias, is_derived) "
@@ -941,9 +944,6 @@ class TestPromoteAlias:
 
         await genre_ctrl.promote_alias_to_genre(parent.item_id, "PromRap")
 
-        # The stale derived row on the source genre must be gone — propagation
-        # wipes is_derived=1 rows. (Without an active filesystem provider with
-        # propagate_track_genres enabled, nothing re-derives, which is correct.)
         rows = await mass.music.database.get_rows_from_query(
             f"SELECT genre_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
             "WHERE media_id = :mid AND media_type = 'album'",

@@ -1222,8 +1222,7 @@ class GenreController(MediaControllerBase[Genre]):
             "WHERE genre_id = :genre_id AND LOWER(alias) = LOWER(:alias)",
             {"genre_id": db_id, "alias": alias},
         )
-        # Rebuild propagated album/artist rows: the track rows we just removed may have
-        # fed them, so a derived row on this genre would otherwise linger past the alias.
+        # Derived album/artist rows can be left orphaned by the deleted track rows.
         await self._propagate_genre_mappings_to_parents()
         updated = await self.get_library_item(db_id)
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, updated.uri, updated)
@@ -1386,13 +1385,10 @@ class GenreController(MediaControllerBase[Genre]):
         """
         Promote an alias to become a standalone genre.
 
-        An alias can be claimed by multiple genres (n:n). Promotion moves every
-        direct mapping that was created via this alias to the new genre and strips
-        the alias from each genre that owned it, regardless of which one the user
-        invoked the action from. Derived album/artist mappings are rebuilt against
-        the moved track mappings so propagated genres follow.
+        Every genre that claimed the alias loses it, and all media mapped via
+        the alias is moved to the new genre.
 
-        :param genre_id: Database ID of the source genre the user invoked this on.
+        :param genre_id: Database ID of the source genre.
         :param alias: The alias string to promote.
         :return: The newly created Genre.
         """
@@ -1407,14 +1403,10 @@ class GenreController(MediaControllerBase[Genre]):
             )
             raise ValueError(msg)
 
-        # Find every non-excluded genre that owns this alias (n:n). LOWER() catches the
-        # common case; create_safe_string() catches normalisation gaps like
-        # "Synth-Pop" vs "synthpop".
         owning_ids = await self._find_genre_ids_for_alias(alias_norm)
         if db_genre_id not in owning_ids:
             owning_ids.append(db_genre_id)
 
-        # Create new genre with the alias as its name
         new_genre = Genre(
             item_id="0",
             provider="library",
@@ -1427,9 +1419,8 @@ class GenreController(MediaControllerBase[Genre]):
         created_genre = await self.add_item_to_library(new_genre)
         new_genre_id = int(created_genre.item_id)
 
-        # Move every direct mapping created via this alias to the new genre. UPDATE OR
-        # REPLACE resolves the rare case where the new genre already has a mapping for
-        # the same (media_id, media_type) by keeping the moved row.
+        # UPDATE OR REPLACE drops any pre-existing mapping on the new genre for
+        # the same (media_id, media_type) so the moved row wins.
         placeholders = ", ".join(str(g) for g in owning_ids)
         await self.mass.music.database.execute(
             f"UPDATE OR REPLACE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
@@ -1438,12 +1429,10 @@ class GenreController(MediaControllerBase[Genre]):
             {"new_id": new_genre_id, "alias": alias},
         )
 
-        # Strip the alias from every genre that claimed it (other than any genre whose
-        # own primary name happens to equal the alias — those would fail the self-alias
-        # invariant; in practice they shouldn't appear because primary-name match takes
-        # priority in the scanner, so an alias never co-exists with a same-named genre).
         for owning_id in owning_ids:
             owning = await self.get_library_item(owning_id)
+            # Defensive: a genre whose primary name equals the alias would hit
+            # the self-alias guard in remove_alias; skip rather than raise.
             if create_safe_string(owning.name, True, True) == alias_norm:
                 continue
             owning_aliases = list(owning.genre_aliases) if owning.genre_aliases else []
@@ -1457,16 +1446,17 @@ class GenreController(MediaControllerBase[Genre]):
                     {"genre_aliases": serialize_to_json(filtered)},
                 )
 
-        # Rebuild derived album/artist rows so they follow the moved track mappings.
+        # Derived album/artist rows still point at the old source genres; rebuild
+        # them from the moved track mappings.
         await self._propagate_genre_mappings_to_parents()
 
         return await self.get_library_item(new_genre_id)
 
     async def _find_genre_ids_for_alias(self, alias_norm: str) -> list[int]:
         """
-        Return every non-excluded genre id that claims the alias in its aliases list.
+        Return ids of non-excluded genres that claim the given alias.
 
-        :param alias_norm: Normalised alias (via create_safe_string).
+        :param alias_norm: Alias normalised via ``create_safe_string``.
         """
         rows = await self.mass.music.database.get_rows_from_query(
             f"SELECT item_id, genre_aliases FROM {DB_TABLE_GENRES} WHERE is_excluded = 0",
@@ -1533,7 +1523,7 @@ class GenreController(MediaControllerBase[Genre]):
         for source_id in source_ids:
             await self.remove_item_from_library(source_id, exclude_globally=False)
 
-        # Rebuild derived album/artist rows so they reflect the merged track mappings.
+        # Rebuild derived album/artist rows against the merged track mappings.
         await self._propagate_genre_mappings_to_parents()
 
         updated = await self.get_library_item(target_id)
