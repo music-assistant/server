@@ -31,6 +31,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_SYNC_ADJUST,
+    CONF_OUTPUT_CODEC,
     INTERNAL_PCM_FORMAT,
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
@@ -278,8 +279,23 @@ class SqueezelitePlayer(Player):
         self.multi_client_stream = stream = MultiClientStream(
             audio_source=audio_source, audio_format=master_audio_format
         )
+        # Honor each sync client's configured output_codec; use the most
+        # conservative one so classic firmware that can't decode FLAC gets audio.
+        sync_codec = self.mass.config.get_raw_player_config_value(
+            self.player_id, CONF_OUTPUT_CODEC, "flac"
+        )
+        if sync_codec == "flac":
+            for slimplayer in self._get_sync_clients():
+                if slimplayer.player_id == self.player_id:
+                    continue
+                player_codec = self.mass.config.get_raw_player_config_value(
+                    slimplayer.player_id, CONF_OUTPUT_CODEC, "flac"
+                )
+                if player_codec != "flac":
+                    sync_codec = player_codec
+                    break
         base_url = (
-            f"{self.mass.streams.base_url}/slimproto/multi?player_id={self.player_id}&fmt=flac"
+            f"{self.mass.streams.base_url}/slimproto/multi?player_id={self.player_id}&fmt={sync_codec}"
         )
 
         # Count how many clients will connect
