@@ -165,7 +165,6 @@ class HeosPlayer(Player):
             case const.EVENT_PLAYER_NOW_PLAYING_CHANGED:
                 self._update_player_current_media()
                 self._update_player_playing_progress()
-                self._schedule_queue_cleanup()
 
             case const.EVENT_PLAYER_QUEUE_CHANGED:
                 self._schedule_queue_cleanup()
