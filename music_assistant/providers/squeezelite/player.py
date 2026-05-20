@@ -7,8 +7,8 @@ import statistics
 import struct
 import time
 from collections import deque
-from collections.abc import Iterator
-from typing import TYPE_CHECKING, cast
+from collections.abc import Iterable, Iterator
+from typing import TYPE_CHECKING, Final, cast
 
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import PlayerState as SlimPlayerState
@@ -31,6 +31,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_SYNC_ADJUST,
+    CONF_OUTPUT_CODEC,
     INTERNAL_PCM_FORMAT,
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
@@ -72,6 +73,54 @@ PLAYER_DEVICE_TYPES = {
     "controller",
     "boom",
 }
+
+# Codec resolution for the multi-client sync URL `fmt=` query parameter.
+# Slimproto HELO advertises 3-letter codes; the URL/stream subsystem uses the
+# project-wide ContentType strings. Mapping is intentionally narrow — only
+# codecs that appear in practice on slimproto devices.
+_SLIM_HELO_TO_URL_CODEC: Final = {
+    "flc": "flac",
+    "mp3": "mp3",
+    "pcm": "wav",
+}
+
+# Preference order when picking from HELO capabilities: lossless first, then
+# the slimproto baseline mp3, then uncompressed wav (high bandwidth — last resort).
+_CODEC_PREFERENCE: Final = ("flac", "mp3", "wav")
+
+# Slimproto guaranteed baseline codec. Reached when no config is set and the
+# HELO list is empty (offline player) or contains no codecs we recognise.
+_BASELINE_CODEC: Final = "mp3"
+
+
+def _resolve_child_codec(
+    config_codec: str | None,
+    helo_codecs: Iterable[str],
+) -> str:
+    """
+    Pick the URL ``fmt=`` codec for a single sync-group child.
+
+    :param config_codec: The child's ``output_codec`` config value, or ``None``
+        when no per-player override is set. When provided, this wins
+        unconditionally — symmetric with the solo-path resolver, which treats
+        the per-player config as authoritative even if it disagrees with the
+        device's advertised capabilities.
+    :param helo_codecs: Slimproto codec codes from the child's HELO capability
+        list (e.g. ``("pcm", "mp3")`` for a classic Squeezebox Boom,
+        ``("pcm", "mp3", "flc")`` for a modern Squeezelite client).
+    :return: A URL-safe codec string accepted by the multi-client handler's
+        ``fmt`` query parameter — one of ``"flac"``, ``"mp3"``, ``"wav"``,
+        or whatever the config value is when set.
+    """
+    if config_codec:
+        return config_codec
+    translated = {
+        _SLIM_HELO_TO_URL_CODEC[code] for code in helo_codecs if code in _SLIM_HELO_TO_URL_CODEC
+    }
+    for codec in _CODEC_PREFERENCE:
+        if codec in translated:
+            return codec
+    return _BASELINE_CODEC
 
 
 class SqueezelitePlayer(Player):
@@ -278,9 +327,7 @@ class SqueezelitePlayer(Player):
         self.multi_client_stream = stream = MultiClientStream(
             audio_source=audio_source, audio_format=master_audio_format
         )
-        base_url = (
-            f"{self.mass.streams.base_url}/slimproto/multi?player_id={self.player_id}&fmt=flac"
-        )
+        base_url = f"{self.mass.streams.base_url}/slimproto/multi?player_id={self.player_id}"
 
         # Count how many clients will connect
         expected_clients = len(list(self._get_sync_clients()))
@@ -289,7 +336,20 @@ class SqueezelitePlayer(Player):
         # forward to downstream play_media commands
         async with TaskManager(self.mass) as tg:
             for slimplayer in self._get_sync_clients():
-                url = f"{base_url}&child_player_id={slimplayer.player_id}"
+                # Resolve the output codec per child rather than hardcoding one
+                # codec for the group: classic Squeezeboxes (Boom/Radio/Touch)
+                # advertise only `pcm, mp3` via HELO and silently emit no audio
+                # when handed a FLAC stream.
+                child_codec = _resolve_child_codec(
+                    cast(
+                        "str | None",
+                        self.mass.config.get_raw_player_config_value(
+                            slimplayer.player_id, CONF_OUTPUT_CODEC
+                        ),
+                    ),
+                    slimplayer.supported_codecs,
+                )
+                url = f"{base_url}&child_player_id={slimplayer.player_id}&fmt={child_codec}"
                 tg.create_task(
                     self._handle_play_url_for_slimplayer(
                         slimplayer,
