@@ -28,7 +28,7 @@ def test_cleaning_streamtitle() -> None:
     stream_title = clean_stream_title(line)
     assert stream_title == advert
 
-    line = 'title="Thirty Seconds To Mars - Closer to the Edge",artist="Thirty Seconds To Mars - Closer to the Edge",url="https://nowplaying.scahw.com.au/c/fd8ee07bed6a5e4e9824a11aa02dd34a.jpg?t=1714568458&l=250"'  # noqa: E501
+    line = 'title="Thirty Seconds To Mars - Closer to the Edge",artist="Thirty Seconds To Mars - Closer to the Edge",url="https://nowplaying.scahw.com.au/c/fd8ee07bed6a5e4e9824a11aa02dd34a.jpg?t=1714568458&l=250"'
     stream_title = clean_stream_title(line)
     assert stream_title == tstm
 
@@ -36,7 +36,7 @@ def test_cleaning_streamtitle() -> None:
     stream_title = clean_stream_title(line)
     assert stream_title == ""
 
-    line = 'title="Thirty Seconds To Mars - Closer to the Edge https://nowplaying.scahw.com.au/",artist="Thirty Seconds To Mars - Closer to the Edge",url="https://nowplaying.scahw.com.au/c/fd8ee07bed6a5e4e9824a11aa02dd34a.jpg?t=1714568458&l=250"'  # noqa: E501
+    line = 'title="Thirty Seconds To Mars - Closer to the Edge https://nowplaying.scahw.com.au/",artist="Thirty Seconds To Mars - Closer to the Edge",url="https://nowplaying.scahw.com.au/c/fd8ee07bed6a5e4e9824a11aa02dd34a.jpg?t=1714568458&l=250"'
     stream_title = clean_stream_title(line)
     assert stream_title == tstm
 
@@ -69,3 +69,14 @@ def test_cleaning_streamtitle() -> None:
     line = "Mohammed Rafi(Jatt.fm) - Rang Aur Noor Ki Baraat (Ghazal)(Jatt.fm)"
     stream_title = clean_stream_title(line)
     assert stream_title == "Mohammed Rafi - Rang Aur Noor Ki Baraat (Ghazal)"
+
+
+def test_cleaning_streamtitle_german_format() -> None:
+    """Test normalisation of the German "Track" von Artist format."""
+    line = '"Cornflake Girl" von Tori Amos'
+    stream_title = clean_stream_title(line)
+    assert stream_title == "Tori Amos - Cornflake Girl"
+
+    line = '"Closer to the Edge" von "Thirty Seconds To Mars"'
+    stream_title = clean_stream_title(line)
+    assert stream_title == "Thirty Seconds To Mars - Closer to the Edge"

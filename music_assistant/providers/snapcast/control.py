@@ -20,6 +20,8 @@ from typing import Any
 
 import shortuuid
 
+from music_assistant.helpers.util import format_ip_for_url
+
 LOOP_STATUS_MAP = {
     "all": "playlist",
     "one": "track",
@@ -283,7 +285,7 @@ class MusicAssistantControl:
                 image_url = (
                     # we prefer the streamserver for the imageproxy because it is enabled by default
                     # where the api server is by default protected
-                    f"http://{self.streamserver_ip}:{self.streamserver_port}/imageproxy?path={image_path_encoded}"
+                    f"http://{format_ip_for_url(self.streamserver_ip)}:{self.streamserver_port}/imageproxy?path={image_path_encoded}"
                     f"&provider={current_queue_item['image']['provider']}"
                     "&size=512"
                 )

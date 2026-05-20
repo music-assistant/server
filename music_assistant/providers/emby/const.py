@@ -1,5 +1,7 @@
 """Constants for Emby provider."""
 
+from typing import Final
+
 # Emby API item keys
 AUTH_ACCESS_TOKEN = "AccessToken"
 AUTH_USER = "User"
@@ -25,11 +27,15 @@ ITEM_KEY_TYPE = "Type"
 ITEM_KEY_CONTAINER = "Container"
 ITEM_KEY_INDEX_NUMBER = "IndexNumber"
 ITEM_KEY_PARENT_INDEX_NUMBER = "ParentIndexNumber"
+ITEM_KEY_USER_DATA: Final = "UserData"
+
+USER_DATA_KEY_IS_FAVORITE: Final = "IsFavorite"
 
 AUDIO_STREAM_CODEC = "Codec"
 AUDIO_STREAM_SAMPLE_RATE = "SampleRate"
 AUDIO_STREAM_BIT_DEPTH = "BitDepth"
 AUDIO_STREAM_CHANNELS = "Channels"
+AUDIO_STREAM_BIT_RATE = "BitRate"
 
 # Field lists for API requests
 TRACK_FIELDS = [
@@ -60,6 +66,3 @@ ARTIST_FIELDS = [
     "ImageTags",
     "DateCreated",
 ]
-
-# Supported audio containers for streaming
-SUPPORTED_CONTAINER_FORMATS = ["mp3", "flac", "aac", "opus", "wav", "m4a"]

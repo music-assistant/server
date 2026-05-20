@@ -17,10 +17,14 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     AudioFormat,
+    BrowseFolder,
+    ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
+    MediaItemType,
     ProviderMapping,
     Radio,
+    SearchResults,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -29,7 +33,7 @@ from music_assistant.helpers.playlists import PlaylistItem, fetch_playlist
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import Sequence
 
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
@@ -38,8 +42,8 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 SUPPORTED_FEATURES = {
-    ProviderFeature.LIBRARY_RADIOS,
     ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
 }
 
 CONF_QUALITY = "quality"
@@ -84,13 +88,38 @@ class SomaFMProvider(MusicProvider):
         """Return True if the provider is a streaming provider."""
         return True
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
-        """Retrieve library/subscribed radio stations from the provider."""
-        stations = await self._get_stations()  # May be cached
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Browse this provider's radio stations."""
+        stations = await self._get_stations()
         if stations:
-            for channel_info in stations.values():
-                radio = self._parse_channel(channel_info)
-                yield radio
+            return [self._parse_channel(channel_info) for channel_info in stations.values()]
+        return []
+
+    async def search(
+        self,
+        search_query: str,
+        media_types: list[MediaType],
+        limit: int = 5,
+    ) -> SearchResults:
+        """Perform search on SomaFM channels."""
+        results = SearchResults()
+        if MediaType.RADIO not in media_types:
+            return results
+        search_query_lower = search_query.lower().strip()
+        if not search_query_lower:
+            return results
+        stations = await self._get_stations()
+        if not stations:
+            return results
+        radios: list[Radio] = []
+        for channel_info in stations.values():
+            channel_name = str(channel_info.get("title", "")).lower()
+            if search_query_lower in channel_name:
+                radios.append(self._parse_channel(channel_info))
+                if len(radios) >= limit:
+                    break
+        results.radio = radios
+        return results
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get radio station details."""

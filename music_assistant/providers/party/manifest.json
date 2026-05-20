@@ -1,6 +1,6 @@
 {
   "type": "plugin",
-  "stage": "beta",
+  "stage": "stable",
   "domain": "party",
   "name": "Party",
   "description": "Enable guest access with a shareable URL for party, allowing guests to add songs to the queue with rate limiting.",

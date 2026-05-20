@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import warnings
 from asyncio import Task, TaskGroup
 from collections.abc import Awaitable
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import plexapi.exceptions
 import requests
+import urllib3.exceptions
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -47,10 +49,10 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from plexapi.audio import Album as PlexAlbum
 from plexapi.audio import Artist as PlexArtist
-from plexapi.audio import Playlist as PlexPlaylist
 from plexapi.audio import Track as PlexTrack
 from plexapi.base import PlexObject
 from plexapi.myplex import MyPlexAccount, MyPlexPinLogin
+from plexapi.playlist import Playlist as PlexPlaylist
 from plexapi.server import PlexServer
 
 from music_assistant.constants import UNKNOWN_ARTIST
@@ -439,17 +441,13 @@ class PlexProvider(MusicProvider):
         """Set up the music provider by connecting to the server."""
         # silence loggers
         logging.getLogger("plexapi").setLevel(self.logger.level + 10)
-        # silence urllib3 InsecureRequestWarning when certificate verification is disabled
-        # this is expected when connecting to Plex servers using their wildcard certificates
-        # that don't validate against LAN IP addresses
-        logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
         _, library_name = str(self.config.get_value(CONF_LIBRARY_ID)).split(" / ", 1)
 
         def connect() -> PlexServer:
             try:
                 session = requests.Session()
                 session.verify = (
-                    self.config.get_value(CONF_LOCAL_SERVER_VERIFY_CERT)
+                    bool(self.config.get_value(CONF_LOCAL_SERVER_VERIFY_CERT))
                     if self.config.get_value(CONF_LOCAL_SERVER_SSL)
                     else False
                 )
@@ -470,15 +468,22 @@ class PlexProvider(MusicProvider):
                     f"{local_server_protocol}://{self.config.get_value(CONF_LOCAL_SERVER_IP)}"
                     f":{self.config.get_value(CONF_LOCAL_SERVER_PORT)}"
                 )
-                if token == AUTH_TOKEN_UNAUTH:
-                    # Doing local connection, not via plex.tv.
-                    plex_server = PlexServer(plex_url, session=session)
-                else:
-                    plex_server = PlexServer(
-                        plex_url,
-                        token,
-                        session=session,
+                # silence urllib3 InsecureRequestWarning from Plex connections
+                # using wildcard certificates that don't validate against LAN IPs
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        category=urllib3.exceptions.InsecureRequestWarning,
                     )
+                    if token == AUTH_TOKEN_UNAUTH:
+                        # Doing local connection, not via plex.tv.
+                        plex_server = PlexServer(plex_url, session=session)
+                    else:
+                        plex_server = PlexServer(
+                            plex_url,
+                            token,
+                            session=session,
+                        )
                 # I don't think PlexAPI intends for this to be accessible, but we need it.
                 self._baseurl = plex_server._baseurl
 
@@ -625,19 +630,19 @@ class PlexProvider(MusicProvider):
 
     async def _search_track_advanced(self, limit: int, **kwargs: Any) -> list[PlexTrack]:
         return cast(
-            "list[PlexPlaylist]",
+            "list[PlexTrack]",
             await self._run_async(self._plex_library.searchTracks, filters=kwargs, limit=limit),
         )
 
     async def _search_album_advanced(self, limit: int, **kwargs: Any) -> list[PlexAlbum]:
         return cast(
-            "list[PlexPlaylist]",
+            "list[PlexAlbum]",
             await self._run_async(self._plex_library.searchAlbums, filters=kwargs, limit=limit),
         )
 
     async def _search_artist_advanced(self, limit: int, **kwargs: Any) -> list[PlexArtist]:
         return cast(
-            "list[PlexPlaylist]",
+            "list[PlexArtist]",
             await self._run_async(self._plex_library.searchArtists, filters=kwargs, limit=limit),
         )
 
@@ -1279,7 +1284,8 @@ class PlexProvider(MusicProvider):
             ContentType.try_parse(media.container) if media.container else ContentType.UNKNOWN
         )
         media_part: PlexMediaPart = media.parts[0]
-        audio_stream: PlexAudioStream = media_part.audioStreams()[0]
+        audio_streams = media_part.audioStreams()
+        audio_stream: PlexAudioStream | None = audio_streams[0] if audio_streams else None
 
         stream_details = StreamDetails(
             item_id=plex_track.key,
@@ -1295,17 +1301,18 @@ class PlexProvider(MusicProvider):
             allow_seek=True,
         )
 
+        download_url = self._plex_server.url(f"{media_part.key}?download=1", True)
+
         if content_type != ContentType.M4A:
-            stream_details.path = self._plex_server.url(media_part.key, True)
-            if audio_stream.samplingRate:
+            stream_details.path = download_url
+            if audio_stream and audio_stream.samplingRate:
                 stream_details.audio_format.sample_rate = audio_stream.samplingRate
-            if audio_stream.bitDepth:
+            if audio_stream and audio_stream.bitDepth:
                 stream_details.audio_format.bit_depth = audio_stream.bitDepth
 
         else:
-            url = plex_track.getStreamURL()
-            media_info = await async_parse_tags(url)
-            stream_details.path = url
+            media_info = await async_parse_tags(download_url)
+            stream_details.path = download_url
             stream_details.audio_format.channels = media_info.channels
             stream_details.audio_format.content_type = ContentType.try_parse(media_info.format)
             stream_details.audio_format.sample_rate = media_info.sample_rate

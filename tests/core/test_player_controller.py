@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import PlayerFeature
+from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import UnsupportedFeaturedException
 
 from music_assistant.controllers.players import PlayerController
@@ -30,7 +30,18 @@ def mock_mass() -> MagicMock:
     mass.loop = None
     mass.config = MagicMock()
     mass.config.get = MagicMock(return_value=[])
-    mass.config.get_raw_player_config_value = MagicMock(return_value="auto")
+
+    def _get_raw_player_config_value(
+        _player_id: str, key: str, default: str | int | None = None
+    ) -> str | int | None:
+        """Return appropriate defaults for player config values."""
+        if key == "min_volume":
+            return 0
+        if key == "max_volume":
+            return 100
+        return default if default is not None else "auto"
+
+    mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_player_config_value)
     # Return "GLOBAL" for log level config (standard default)
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
     mass.config.set = MagicMock()
@@ -184,7 +195,9 @@ class TestGroupUngroup:
         leader.set_members = mock_set_members  # type: ignore[method-assign]
 
         # Mock power handling to skip power control (focus is on grouping logic)
-        async def mock_handle_cmd_power(player_id: str, powered: bool) -> None:
+        async def mock_handle_cmd_power(
+            player_id: str, powered: bool, skip_auto_play: bool = False
+        ) -> None:
             pass
 
         controller._handle_cmd_power = mock_handle_cmd_power  # type: ignore[method-assign]
@@ -225,6 +238,188 @@ class TestPlayerAvailability:
         # This should either skip the unavailable player or raise an exception
         with contextlib.suppress(Exception):
             asyncio.run(controller.cmd_set_members("leader", player_ids_to_add=["member"]))
+
+
+class TestStateForwarding:
+    """Test forwarding of player state changes to related players."""
+
+    def test_sync_leader_updates_are_forwarded_to_sync_children(self, mock_mass: MagicMock) -> None:
+        """A regular sync leader must notify children via the sync-parent callback."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+        leader = MockPlayer(provider, "leader", "Leader")
+        child = MockPlayer(provider, "child", "Child")
+
+        controller._players = {"leader": leader, "child": child}
+        controller._player_throttlers = {
+            "leader": Throttler(1, 0.05),
+            "child": Throttler(1, 0.05),
+        }
+        mock_mass.players = controller
+
+        leader._attr_group_members = ["leader", "child"]
+        leader.update_state(signal_event=False)
+        child.update_state(signal_event=False)
+
+        with (
+            patch.object(child, "on_sync_parent_updated") as on_sync_parent_updated,
+            patch.object(child, "on_group_updated") as on_group_updated,
+        ):
+            controller._forward_state_update(
+                leader,
+                {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)},
+            )
+
+        on_sync_parent_updated.assert_called_once_with(
+            leader,
+            {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)},
+        )
+        on_group_updated.assert_not_called()
+
+    def test_group_updates_are_forwarded_to_children_via_group_callback(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A group player must continue to notify children via the group callback."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+        group_player = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
+        child = MockPlayer(provider, "child", "Child")
+
+        controller._players = {"group": group_player, "child": child}
+        controller._player_throttlers = {
+            "group": Throttler(1, 0.05),
+            "child": Throttler(1, 0.05),
+        }
+        mock_mass.players = controller
+
+        group_player._attr_group_members = ["group", "child"]
+        group_player.update_state(signal_event=False)
+        child.update_state(signal_event=False)
+
+        with (
+            patch.object(child, "on_group_updated") as on_group_updated,
+            patch.object(child, "on_sync_parent_updated") as on_sync_parent_updated,
+        ):
+            controller._forward_state_update(
+                group_player,
+                {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)},
+            )
+
+        on_group_updated.assert_called_once_with(
+            group_player,
+            {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)},
+        )
+        on_sync_parent_updated.assert_not_called()
+
+
+class TestUnregisterCleanup:
+    """Test that unregister cleans up leaked internal state."""
+
+    def test_throttler_removed(self, mock_mass: MagicMock) -> None:
+        """Unregistering a player removes its throttler entry."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+
+        controller._players = {"player_1": player}
+        controller._player_throttlers = {"player_1": Throttler(1, 0.05)}
+
+        asyncio.run(controller.unregister("player_1"))
+
+        assert "player_1" not in controller._player_throttlers
+
+    def test_command_locks_removed(self, mock_mass: MagicMock) -> None:
+        """Unregistering a player removes its command lock entries."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+
+        controller._players = {"player_1": player}
+        controller._player_throttlers = {"player_1": Throttler(1, 0.05)}
+        controller._player_command_locks = {
+            "playback_player_1": asyncio.Lock(),
+            "volume_player_1": asyncio.Lock(),
+        }
+
+        asyncio.run(controller.unregister("player_1"))
+
+        assert "playback_player_1" not in controller._player_command_locks
+        assert "volume_player_1" not in controller._player_command_locks
+
+    def test_other_players_state_untouched(self, mock_mass: MagicMock) -> None:
+        """Unregistering one player does not affect another player's state."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player_a = MockPlayer(provider, "player_a", "Player A")
+        player_b = MockPlayer(provider, "player_b", "Player B")
+
+        controller._players = {"player_a": player_a, "player_b": player_b}
+        controller._player_throttlers = {
+            "player_a": Throttler(1, 0.05),
+            "player_b": Throttler(1, 0.05),
+        }
+        controller._player_command_locks = {
+            "playback_player_a": asyncio.Lock(),
+            "playback_player_b": asyncio.Lock(),
+        }
+
+        asyncio.run(controller.unregister("player_a"))
+
+        assert "player_b" in controller._player_throttlers
+        assert "playback_player_b" in controller._player_command_locks
+        assert "player_a" not in controller._player_throttlers
+        assert "playback_player_a" not in controller._player_command_locks
+
+    def test_suffix_player_id_not_over_matched(self, mock_mass: MagicMock) -> None:
+        """Removing player 'b' must not remove locks for player 'a_b' (no suffix matching)."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player_b = MockPlayer(provider, "b", "Player B")
+        player_a_b = MockPlayer(provider, "a_b", "Player A_B")
+
+        controller._players = {"b": player_b, "a_b": player_a_b}
+        controller._player_throttlers = {
+            "b": Throttler(1, 0.05),
+            "a_b": Throttler(1, 0.05),
+        }
+        controller._player_command_locks = {
+            "playback_b": asyncio.Lock(),
+            "playback_a_b": asyncio.Lock(),
+        }
+
+        asyncio.run(controller.unregister("b"))
+
+        assert "playback_a_b" in controller._player_command_locks
+        assert "playback_b" not in controller._player_command_locks
+
+    def test_pending_protocol_evaluation_cancelled(self, mock_mass: MagicMock) -> None:
+        """Unregistering a player cancels and removes its pending protocol evaluation."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+
+        mock_handle = MagicMock()
+        controller._players = {"player_1": player}
+        controller._player_throttlers = {"player_1": Throttler(1, 0.05)}
+        controller._pending_protocol_evaluations = {"player_1": mock_handle}
+
+        asyncio.run(controller.unregister("player_1"))
+
+        mock_handle.cancel.assert_called_once()
+        assert "player_1" not in controller._pending_protocol_evaluations
+
+    def test_unregister_nonexistent_player_is_noop(self, mock_mass: MagicMock) -> None:
+        """Unregistering a player that doesn't exist is silently ignored."""
+        controller = PlayerController(mock_mass)
+        controller._player_throttlers = {"other": Throttler(1, 0.05)}
+        controller._player_command_locks = {"set_members_other": asyncio.Lock()}
+
+        asyncio.run(controller.unregister("nonexistent"))
+
+        assert "other" in controller._player_throttlers
+        assert "set_members_other" in controller._player_command_locks
 
 
 if __name__ == "__main__":

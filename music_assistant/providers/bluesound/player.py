@@ -7,7 +7,7 @@ import time
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
+from music_assistant_models.enums import IdentifierType, PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 from pyblu import Player as BluosPlayer
 from pyblu import Status, SyncStatus
@@ -86,10 +86,7 @@ class BluesoundPlayer(Player):
 
     async def setup(self) -> None:
         """Set up the player."""
-        # Add volume support if available
         await self.update_attributes()
-        if self.discovery_info.get("zs"):
-            self._attr_supported_features.add(PlayerFeature.VOLUME_SET)
         await self.mass.players.register_or_update(self)
 
     async def get_config_entries(
@@ -318,12 +315,12 @@ class BluesoundPlayer(Player):
             image_url = None
 
         self._attr_current_media = PlayerMedia(
-            uri=self.status.stream_url if self.status.stream_url else self.status.name,
+            uri=self.status.stream_url or self.status.name,
             title=self.status.name,
             artist=self.status.artist,
             album=self.status.album,
             image_url=image_url,
-            duration=self.status.total_seconds if self.status.total_seconds else None,
+            duration=self.status.total_seconds or None,
         )
 
     async def update_attributes(self) -> None:

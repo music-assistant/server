@@ -42,7 +42,7 @@ def catch_request_errors[DLNAPlayerT: "DLNAPlayer", **P, R](
                 func.__name__,
                 self.display_name,
             )
-        if not self.available:
+        if not self.available and func.__name__ not in ("pause", "stop"):
             self.logger.warning("Device disappeared when trying to call %s", func.__name__)
             return None
         try:
@@ -348,7 +348,17 @@ class DLNAPlayer(Player):
         self._attr_playback_state = _playback_state
 
         _device_uri = self.device.current_track_uri or ""
-        self.set_current_media(uri=_device_uri, clear_all=True)
+        self.set_current_media(
+            uri=_device_uri,
+            clear_all=True,
+            title=self.device.media_title,
+            artist=self.device.media_artist,
+            album=self.device.media_album_name,
+            image_url=self.device.media_image_url,
+            duration=int(self.device.media_duration)
+            if self.device.media_duration is not None
+            else None,
+        )
 
         # Let player controller determine active source, only override for known external sources
         if _device_uri and _device_uri.startswith(self.mass.streams.base_url):
@@ -407,7 +417,14 @@ class DLNAPlayer(Player):
     async def stop(self) -> None:
         """Send STOP command to given player."""
         assert self.device is not None  # for type checking
-        await self.device.async_stop()
+        if self.device.can_stop:
+            await self.device.async_stop()
+            return
+        # Some devices report stale/empty CurrentTransportActions while still
+        # accepting AVTransport Stop. Force-call Stop when action exists.
+        action = self.device._action("AVT", "Stop")
+        if action is not None:
+            await action.async_call(InstanceID=0)
 
     @catch_request_errors
     async def play(self) -> None:
@@ -422,9 +439,9 @@ class DLNAPlayer(Player):
         # always clear queue (by sending stop) first
         if self.device.can_stop:
             await self.stop()
-        didl_metadata = create_didl_metadata(media)
-        title = media.title or media.uri
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        didl_metadata = create_didl_metadata(media, url)
+        title = media.title or media.uri
         # optimistically set the state here to help in case of a player
         # that is slow or failing to report state changes.
         prev_state = self._attr_playback_state
@@ -445,9 +462,9 @@ class DLNAPlayer(Player):
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
         assert self.device is not None  # for type checking
-        didl_metadata = create_didl_metadata(media)
-        title = media.title or media.uri
         url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+        didl_metadata = create_didl_metadata(media, url)
+        title = media.title or media.uri
         try:
             await self.device.async_set_next_transport_uri(url, title, didl_metadata)
         except UpnpError:
@@ -462,22 +479,66 @@ class DLNAPlayer(Player):
     async def pause(self) -> None:
         """Send PAUSE command to given player."""
         assert self.device is not None  # for type checking
+
+        replace_pause_with_stop: bool = await self.mass.config.get_player_config_value(
+            self.player_id, "replace_pause_with_stop"
+        )
+
+        if replace_pause_with_stop and self.device.can_stop:
+            await self.stop()
+            return
+
         if self.device.can_pause:
             await self.device.async_pause()
-        else:
-            await self.device.async_stop()
+            return
+
+        # Some devices expose Pause but report stale CurrentTransportActions.
+        # Force-call Pause when action exists; otherwise fallback to Stop.
+        pause_action = self.device._action("AVT", "Pause")
+        if pause_action is not None:
+            await pause_action.async_call(InstanceID=0)
+            return
+        stop_action = self.device._action("AVT", "Stop")
+        if stop_action is not None:
+            await stop_action.async_call(InstanceID=0)
 
     @catch_request_errors
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
         assert self.device is not None  # for type checking
         await self.device.async_set_volume_level(volume_level / 100)
+        self.mass.call_later(
+            0.25,
+            self._poll_volume_state,
+            task_id=f"dlna_poll_volume_{self.player_id}",
+        )
 
     @catch_request_errors
     async def volume_mute(self, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
         assert self.device is not None  # for type checking
         await self.device.async_mute_volume(muted)
+        await self._poll_volume_state()
+
+    async def _poll_volume_state(self) -> None:
+        """Poll the device for current volume/mute state and update player.
+
+        Some DLNA devices don't send RenderingControl events for
+        volume/mute changes initiated via UPnP actions, and the library
+        skips polling RC state variables when subscribed to events.
+        This forces a targeted poll to keep state in sync.
+        """
+        if not self.device:
+            return
+        actions: list[str] = []
+        if self.device.has_volume_level:
+            actions.append("GetVolume")
+        if self.device.has_volume_mute:
+            actions.append("GetMute")
+        if not actions:
+            return
+        await self.device._async_poll_state_variables("RC", actions, InstanceID=0, Channel="Master")
+        await self._update_player()
 
     async def poll(self) -> None:
         """Poll player for state updates."""
@@ -499,6 +560,14 @@ class DLNAPlayer(Player):
                 await self.device.async_update(do_ping=do_ping)
             self.last_seen = now if do_ping else self.last_seen
         except UpnpError as err:
+            # Some devices (e.g. Denon HEOS) return SOAP responses containing
+            # non-UTF-8 bytes in track metadata, which the underlying library
+            # surfaces as a UpnpCommunicationError wrapping UnicodeDecodeError.
+            # Treat this as a transient metadata issue and keep the player
+            # connected; the next poll will likely succeed.
+            if isinstance(err.__cause__, UnicodeDecodeError):
+                self.logger.debug("Ignoring non-UTF-8 SOAP response from device: %r", err)
+                return
             self.logger.debug("Device unavailable: %r", err)
             await self._device_disconnect()
             raise PlayerUnavailableError from err

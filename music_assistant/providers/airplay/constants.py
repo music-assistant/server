@@ -24,6 +24,7 @@ class StreamingProtocol(IntEnum):
 CONF_ENCRYPTION: Final[str] = "encryption"
 CONF_ALAC_ENCODE: Final[str] = "alac_encode"
 CONF_VOLUME_START: Final[str] = "volume_start"
+CONF_SESSION_ESTABLISHMENT_LATENCY: Final[str] = "session_establishment_latency"
 CONF_PASSWORD: Final[str] = "password"
 CONF_AP2PASSWORD: Final[str] = "ap2password"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
@@ -35,14 +36,19 @@ AIRPLAY_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
+# Time allowance for MA processing and OS spawning of the binary. Helps reduce initial audio loss.
+AIRPLAY_DEFAULT_SESSION_DELAY_MS: Final[int] = 900
 # Read ahead buffer for cliraop. Default output buffer duration.
 AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS: Final[int] = 1000
-# Minimum output buffer duration permitted.
-AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS: Final[int] = 500
-# Maximum output buffer duration permitted.
-AIRPLAY_OUTPUT_BUFFER_MAX_DURATION_MS: Final[int] = 5000
+# Default session establishment latency i.e. expected duration to pair with AirPlay device and negotiate session
+AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_DEFAULT_MS: Final[int] = 500
+AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MIN_MS: Final[int] = (
+    150  # Minimum session establishment latency permitted
+)
+AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MAX_MS: Final[int] = (
+    4000  # Maximum session establishment latency permitted
+)
 AIRPLAY2_MIN_LOG_LEVEL: Final[int] = 3  # Min loglevel to ensure stderr output contains what we need
-AIRPLAY2_CONNECT_TIME_MS: Final[int] = 4000  # Time in ms to allow AirPlay2 device to connect
 RAOP_CONNECT_TIME_MS: Final[int] = 1500  # Time in ms to allow RAOP device to connect
 
 # Per-protocol credential storage keys
@@ -59,13 +65,11 @@ CONF_ACTION_FINISH_PAIRING: Final[str] = "finish_pairing"
 CONF_ACTION_RESET_PAIRING: Final[str] = "reset_pairing"
 CONF_PAIRING_PIN: Final[str] = "pairing_pin"
 CONF_PAIRING_PASSWORD: Final[str] = "pairing_password"
-CONF_ENABLE_LATE_JOIN: Final[str] = "enable_late_join"
-
 BACKOFF_TIME_LOWER_LIMIT: Final[int] = 15  # seconds
 BACKOFF_TIME_UPPER_LIMIT: Final[int] = 300  # Five minutes
-ENABLE_LATE_JOIN_DEFAULT: Final[bool] = True
 
 FALLBACK_VOLUME: Final[int] = 20
+AIRPLAY_VOLUME_MUTE: Final[float] = -144.0
 
 AIRPLAY_FLOW_PCM_FORMAT = AudioFormat(
     content_type=INTERNAL_PCM_FORMAT.content_type,
@@ -78,6 +82,7 @@ AIRPLAY_PCM_FORMAT = AudioFormat(
 
 BROKEN_AIRPLAY_MODELS = (
     # Samsung has been repeatedly being reported as having issues with AirPlay (raop and AP2)
+    # Samsung will work with AirPlay2 once PTP timing is implemented for the MA build
     ("Samsung", "*"),
 )
 

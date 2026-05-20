@@ -7,6 +7,7 @@ import os
 import re
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Final, cast
+from urllib.parse import urlparse
 
 import aiofiles
 from music_assistant_models.background_task import TaskSchedule
@@ -23,10 +24,10 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
-from music_assistant_models.helpers import create_uri
 from music_assistant_models.media_items import (
     Artist,
     AudioFormat,
+    MediaItem,
     MediaItemImage,
     MediaItemMetadata,
     MediaItemType,
@@ -46,16 +47,28 @@ from music_assistant.constants import (
     PlaylistPlayableItem,
 )
 from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.tasks.context import (
+    get_current_task_id,
+    report_current_task_failure,
+    update_current_task_progress_from_index,
+    update_current_task_progress_text,
+)
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.playlists import (
-    ImageInfo,
+    IsHLSPlaylist,
     PlaylistItem,
     ProviderMappingInfo,
     construct_media_item_from_playlist_item,
+    fetch_playlist,
     generate_m3u,
+    media_item_to_playlist_item,
+    parse_extinf_title,
     parse_m3u,
+    parse_m3u_playlist_image,
     parse_m3u_playlist_name,
 )
 from music_assistant.helpers.tags import AudioTags, async_parse_tags
+from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
@@ -72,6 +85,9 @@ from .constants import (
     CONF_KEY_TRACKS,
     DEFAULT_FANART,
     DEFAULT_THUMB,
+    DYNAMIC_BUILTIN_PLAYLISTS,
+    INFINITE_MIX,
+    INFINITE_MIX_FAVORITES,
     RANDOM_ALBUM,
     RANDOM_ARTIST,
     RANDOM_TRACKS,
@@ -154,8 +170,16 @@ class BuiltinProvider(MusicProvider):
         await super().loaded_in_mass()
         # migrate old-style playlists in the background to avoid blocking startup
         # TODO: remove after MA 2.9
-        if self.mass.config.get(CONF_KEY_PLAYLISTS, []):
-            self.mass.create_task(self._migrate_playlists())
+        self.mass.tasks.register_scheduled_task(
+            task_id="migrate_builtin_playlists",
+            name="Builtin provider playlist migration",
+            handler=self._migrate_playlists,
+            schedule=TaskSchedule.hourly(every=24),
+            initial_delay=60,
+        )
+        # register API commands for manual item management
+        self.mass.register_api_command("builtin/add_radio", self.add_radio)
+        self.mass.register_api_command("builtin/add_track", self.add_track)
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -238,6 +262,7 @@ class BuiltinProvider(MusicProvider):
                 },
                 owner="Music Assistant",
                 is_editable=False,
+                is_dynamic=prov_playlist_id in DYNAMIC_BUILTIN_PLAYLISTS,
                 metadata=MediaItemMetadata(
                     images=UniqueList([DEFAULT_THUMB])
                     if prov_playlist_id in COLLAGE_IMAGE_PLAYLISTS
@@ -248,9 +273,21 @@ class BuiltinProvider(MusicProvider):
         playlist_file = os.path.join(self._playlists_dir, f"{prov_playlist_id}.m3u")
         if not await asyncio.to_thread(os.path.isfile, playlist_file):
             raise MediaNotFoundError(f"Playlist file not found: {prov_playlist_id}")
-        # read playlist name from M3U #PLAYLIST directive, fall back to filename
+        # read playlist name and image from M3U
         m3u_data = await self._read_m3u_file(prov_playlist_id)
         playlist_name = parse_m3u_playlist_name(m3u_data) or prov_playlist_id
+        metadata = MediaItemMetadata()
+        if image_url := parse_m3u_playlist_image(m3u_data):
+            metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=image_url,
+                        provider=self.domain,
+                        remotely_accessible=image_url.startswith("http"),
+                    )
+                ]
+            )
         return Playlist(
             item_id=prov_playlist_id,
             provider=self.instance_id,
@@ -270,21 +307,8 @@ class BuiltinProvider(MusicProvider):
                 MediaType.TRACK,
             },
             is_editable=True,
+            metadata=metadata,
         )
-
-    async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:
-        """Get single MediaItem from provider."""
-        if media_type == MediaType.ARTIST:
-            return await self.get_artist(prov_item_id)
-        if media_type == MediaType.TRACK:
-            return await self.get_track(prov_item_id)
-        if media_type == MediaType.RADIO:
-            return await self.get_radio(prov_item_id)
-        if media_type == MediaType.PLAYLIST:
-            return await self.get_playlist(prov_item_id)
-        if media_type == MediaType.UNKNOWN:
-            return await self.parse_item(prov_item_id)
-        raise NotImplementedError
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from the provider."""
@@ -379,11 +403,122 @@ class BuiltinProvider(MusicProvider):
         self.mass.config.set(key, stored_items)
         return True
 
+    async def on_item_updated(self, item: MediaItemType) -> None:
+        """
+        Update stored item config when a library item is edited.
+
+        :param item: The updated media item with new metadata.
+        """
+        # find the builtin provider mapping to get the item_id
+        builtin_mapping = next(
+            (pm for pm in item.provider_mappings if pm.provider_domain == self.domain),
+            None,
+        )
+        if not builtin_mapping:
+            return
+
+        if item.media_type == MediaType.PLAYLIST:
+            image_url = item.image.path if item.image else None
+            await self._update_playlist_metadata(builtin_mapping.item_id, item.name, image_url)
+            return
+
+        if item.media_type == MediaType.RADIO:
+            key = CONF_KEY_RADIOS
+        elif item.media_type == MediaType.TRACK:
+            key = CONF_KEY_TRACKS
+        else:
+            return
+
+        # TODO: also allow updating description and other image types
+        stored_items: list[StoredItem] = self.mass.config.get(key, [])
+        for stored_item in stored_items:
+            if stored_item["item_id"] == builtin_mapping.item_id:
+                stored_item["name"] = item.name
+                if item.image:
+                    stored_item["image_url"] = item.image.path
+                elif "image_url" in stored_item:
+                    del stored_item["image_url"]
+                break
+        self.mass.config.set(key, stored_items)
+
+    @staticmethod
+    def _get_playlist_image_url(playlist: Playlist) -> str | None:
+        """Return the playlist-level image URL to persist in the M3U header."""
+        return playlist.image.path if playlist.image else None
+
+    async def _update_playlist_metadata(
+        self, playlist_id: str, new_name: str, image_url: str | None
+    ) -> None:
+        """Update the name and image of a playlist in its M3U file."""
+        if playlist_id in BUILTIN_PLAYLISTS:
+            # builtin playlists are not editable
+            return
+        m3u_data = await self._read_m3u_file(playlist_id)
+        if not m3u_data:
+            return
+        existing_items = parse_m3u(m3u_data)
+        try:
+            await self._write_m3u_file(playlist_id, new_name, list(existing_items), image_url)
+        except OSError as err:
+            self.logger.warning("Failed to update playlist metadata: %s", err)
+
+    async def add_radio(self, url: str, name: str, image_url: str | None = None) -> Radio:
+        """
+        Add a radio station.
+
+        :param url: Stream URL.
+        :param name: Display name.
+        :param image_url: Image URL.
+        """
+        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_RADIOS, [])
+        # Remove existing entry with same URL if present
+        stored_items = [x for x in stored_items if x["item_id"] != url]
+        stored_item = StoredItem(item_id=url, name=name)
+        if image_url:
+            stored_item["image_url"] = image_url
+        stored_items.append(stored_item)
+        self.mass.config.set(CONF_KEY_RADIOS, stored_items)
+        # Trigger library sync
+        self.mass.call_later(
+            1,
+            self.mass.music.start_sync,
+            [MediaType.RADIO],
+            [self.instance_id],
+        )
+        return await self.get_radio(url)
+
+    async def add_track(self, url: str, name: str, image_url: str | None = None) -> Track:
+        """
+        Add a track.
+
+        :param url: URL or local path.
+        :param name: Display name.
+        :param image_url: Image URL.
+        """
+        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_TRACKS, [])
+        # Remove existing entry with same URL if present
+        stored_items = [x for x in stored_items if x["item_id"] != url]
+        stored_item = StoredItem(item_id=url, name=name)
+        if image_url:
+            stored_item["image_url"] = image_url
+        stored_items.append(stored_item)
+        self.mass.config.set(CONF_KEY_TRACKS, stored_items)
+        # Trigger library sync
+        self.mass.call_later(
+            1,
+            self.mass.music.start_sync,
+            [MediaType.TRACK],
+            [self.instance_id],
+        )
+        return await self.get_track(url)
+
     async def get_playlist_tracks(
         self, prov_playlist_id: str, page: int = 0
     ) -> list[PlaylistPlayableItem]:
         """Get playlist tracks (paginated, 500 items per page)."""
         if prov_playlist_id in BUILTIN_PLAYLISTS:
+            if page > 0:
+                return []
             return list(await self._get_builtin_playlist_tracks(prov_playlist_id))
         return await self._get_user_playlist_tracks(prov_playlist_id, page)
 
@@ -417,7 +552,12 @@ class BuiltinProvider(MusicProvider):
                 entries.append(entry)
             # write updated M3U file
             playlist = await self.get_playlist(prov_playlist_id)
-            await self._write_m3u_file(prov_playlist_id, playlist.name, entries)
+            await self._write_m3u_file(
+                prov_playlist_id,
+                playlist.name,
+                entries,
+                self._get_playlist_image_url(playlist),
+            )
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
@@ -430,7 +570,12 @@ class BuiltinProvider(MusicProvider):
             for i in sorted(positions_to_remove, reverse=True):
                 del existing_items[i - 1]
             playlist = await self.get_playlist(prov_playlist_id)
-            await self._write_m3u_file(prov_playlist_id, playlist.name, list(existing_items))
+            await self._write_m3u_file(
+                prov_playlist_id,
+                playlist.name,
+                list(existing_items),
+                self._get_playlist_image_url(playlist),
+            )
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name.
@@ -449,6 +594,334 @@ class BuiltinProvider(MusicProvider):
         # create empty M3U file with header
         await self._write_m3u_file(playlist_id, name, [])
         return await self.get_playlist(playlist_id)
+
+    async def export_radios(self) -> str:
+        """Export all stored radio stations to M3U8 format."""
+        stored_radios: list[StoredItem] = self.mass.config.get(CONF_KEY_RADIOS, [])
+        items: list[PlaylistItem] = [
+            PlaylistItem(
+                path=radio["item_id"],
+                title=radio["name"],
+                length="-1",
+                metadata={"media_type": "radio"},
+            )
+            for radio in stored_radios
+        ]
+        return generate_m3u("Radio Stations", items)
+
+    async def import_playlist(self, m3u_data: str) -> Playlist:
+        """Import a playlist from M3U8 format.
+
+        Creates a new playlist and populates it with items from the M3U data.
+        Items with valid MA URIs are added directly. Plain URLs or unresolvable
+        URIs are stored as-is for later matching.
+
+        :param m3u_data: The M3U8 playlist data as a string.
+        """
+        parsed_items = parse_m3u(m3u_data)
+        if not parsed_items:
+            msg = "No items found in M3U data"
+            raise InvalidDataError(msg)
+        playlist_name = parse_m3u_playlist_name(m3u_data) or "Imported Playlist"
+        playlist = await self.create_playlist(
+            playlist_name,
+            media_types={MediaType.TRACK, MediaType.RADIO},
+        )
+        playlist_image_url = parse_m3u_playlist_image(m3u_data)
+        # Write the parsed items directly as the M3U file, preserving all
+        # metadata from the source. This avoids re-resolving items that
+        # already have rich metadata (e.g. exported from another MA instance).
+        await self._write_m3u_file(
+            playlist.item_id,
+            playlist_name,
+            parsed_items,
+            playlist_image_url,
+        )
+        return await self.get_playlist(playlist.item_id)
+
+    async def import_radios(self, m3u_data: str) -> int:
+        """Import radio stations from M3U8 format.
+
+        :param m3u_data: The M3U8 data as a string.
+        """
+        parsed_items = parse_m3u(m3u_data)
+        if not parsed_items:
+            msg = "No items found in M3U data"
+            raise InvalidDataError(msg)
+        stored_radios: list[StoredItem] = self.mass.config.get(CONF_KEY_RADIOS, [])
+        existing_ids = {r["item_id"] for r in stored_radios}
+        count = 0
+        for item in parsed_items:
+            if item.path in existing_ids:
+                continue
+            name = item.title or item.path
+            stored_radios.append(StoredItem(item_id=item.path, name=name))
+            count += 1
+        if count > 0:
+            self.mass.config.set(CONF_KEY_RADIOS, stored_radios)
+            self.mass.call_later(
+                1,
+                self.mass.music.start_sync,
+                [MediaType.RADIO],
+                [self.instance_id],
+            )
+        return count
+
+    async def match_imported_playlist_tracks(
+        self,
+        prov_playlist_id: str,
+        match_providers: list[str] | None = None,
+    ) -> None:
+        """Match imported playlist tracks against available providers.
+
+        Iterates through playlist items whose provider is unavailable,
+        searching other providers for matches using metadata stored in
+        the M3U file. Matched tracks are replaced in-place.
+
+        :param prov_playlist_id: The provider-side playlist ID.
+        :param match_providers: Optional list of provider instance IDs or
+            domains to search. When None, all providers are searched.
+        """
+        m3u_data = await self._read_m3u_file(prov_playlist_id)
+        parsed_items = parse_m3u(m3u_data)
+        if not parsed_items:
+            return
+
+        total = len(parsed_items)
+        matched_count = 0
+        unmatched_count = 0
+        changed = False
+
+        for index, item in enumerate(parsed_items):
+            update_current_task_progress_from_index(
+                index, total, f"Matching track {index + 1}/{total}"
+            )
+            if not item.title:
+                continue
+            # check if the URI's provider is available
+            needs_matching = False
+            media_type = MediaType.TRACK
+            try:
+                media_type, prov_instance, _item_id = await parse_uri(item.path)
+                if media_type == MediaType.RADIO:
+                    continue
+                if not self.mass.get_provider(prov_instance):
+                    needs_matching = True
+            except Exception:
+                needs_matching = True
+
+            if not needs_matching:
+                continue
+
+            matched_uri = await self._match_track_by_metadata(item, match_providers=match_providers)
+            if matched_uri:
+                item.path = matched_uri
+                changed = True
+                matched_count += 1
+            else:
+                report_current_task_failure(f"No match found for: {item.title}")
+                unmatched_count += 1
+
+        if changed:
+            playlist = await self.get_playlist(prov_playlist_id)
+            await self._write_m3u_file(
+                prov_playlist_id,
+                playlist.name,
+                parsed_items,
+                self._get_playlist_image_url(playlist),
+            )
+
+        self.logger.info(
+            "Import matching: %d matched, %d unmatched out of %d items",
+            matched_count,
+            unmatched_count,
+            total,
+        )
+        update_current_task_progress_from_index(total, total, "Matching complete")
+
+    async def _match_track_by_metadata(
+        self,
+        item: PlaylistItem,
+        match_providers: list[str] | None = None,
+    ) -> str | None:
+        """Search providers for a track matching the given PlaylistItem metadata.
+
+        Uses ISRC/MusicBrainz ID for exact matching first, then falls back
+        to fuzzy title/artist/duration matching.
+
+        :param item: The PlaylistItem with metadata from the M3U file.
+        :param match_providers: Optional list of provider instance IDs or
+            domains to limit the search.
+        """
+        artist_name, track_name = parse_extinf_title(item.title)
+        if not track_name:
+            return None
+
+        search_query = f"{artist_name} - {track_name}" if artist_name else track_name
+
+        all_providers = self.mass.music.get_unique_providers()
+        if match_providers:
+            provider_domains: dict[str, str] = {}
+            for pid in all_providers:
+                prov = self.mass.get_provider(pid)
+                if prov:
+                    provider_domains[pid] = prov.domain
+            all_providers = [
+                pid
+                for pid in all_providers
+                if pid in match_providers or provider_domains.get(pid) in match_providers
+            ]
+
+        best_match: tuple[int, str] | None = None
+
+        for provider_id in all_providers:
+            try:
+                results = await self.mass.music.tracks.search(search_query, provider_id, limit=5)
+            except Exception:
+                self.logger.debug(
+                    "Search failed on provider %s for '%s'", provider_id, search_query
+                )
+                continue
+
+            for result in results:
+                if not result.uri:
+                    continue
+                score = self._score_track_match(result, item)
+                if score >= 10:
+                    self.logger.debug("Exact ID match for '%s' -> %s", search_query, result.uri)
+                    return result.uri
+                if score > 0 and (best_match is None or score > best_match[0]):
+                    best_match = (score, result.uri)
+
+        if best_match:
+            self.logger.debug(
+                "Matched '%s' -> %s (score=%d)",
+                search_query,
+                best_match[1],
+                best_match[0],
+            )
+            return best_match[1]
+
+        self.logger.info("No match found for '%s'", search_query)
+        return None
+
+    def _score_track_match(
+        self,
+        candidate: Track,
+        item: PlaylistItem,
+    ) -> int:
+        """Score how well a candidate track matches the PlaylistItem metadata.
+
+        Returns 0 for no match, higher scores for better matches.
+        ISRC or MusicBrainz Recording ID match returns 10 (maximum).
+
+        :param candidate: The track from search results.
+        :param item: The PlaylistItem with metadata from the M3U file.
+        """
+        metadata = item.metadata or {}
+        artist_name, track_name = parse_extinf_title(item.title)
+        if not track_name:
+            return 0
+
+        isrc = metadata.get("isrc")
+        mbid = metadata.get("mbid")
+
+        # exact ID matches (cross-provider definitive match)
+        if isrc:
+            candidate_isrc = candidate.get_external_id(ExternalID.ISRC)
+            if candidate_isrc and candidate_isrc.upper() == isrc.upper():
+                return 10
+        if mbid:
+            candidate_mbid = candidate.get_external_id(ExternalID.MB_RECORDING)
+            if candidate_mbid and candidate_mbid.lower() == mbid.lower():
+                return 10
+
+        # media type gate
+        if metadata.get("media_type"):
+            candidate_type = getattr(candidate, "media_type", None)
+            if candidate_type and candidate_type.value != metadata["media_type"]:
+                return 0
+
+        return self._score_fuzzy_metadata(candidate, artist_name, track_name, metadata, item)
+
+    def _score_fuzzy_metadata(
+        self,
+        candidate: Track,
+        artist_name: str | None,
+        track_name: str,
+        metadata: dict[str, str],
+        item: PlaylistItem,
+    ) -> int:
+        """Score fuzzy metadata fields (title, artist, album, duration, version).
+
+        :param candidate: The track from search results.
+        :param artist_name: Parsed artist name from EXTINF, or None.
+        :param track_name: Parsed track title from EXTINF.
+        :param metadata: The #EXTMA metadata dict.
+        :param item: The PlaylistItem (for duration from item.length).
+        """
+        if not compare_strings(candidate.name, track_name, strict=False):
+            return 0
+        score = 1
+
+        if artist_name:
+            candidate_artists = [a.name for a in candidate.artists] if candidate.artists else []
+            if not any(compare_strings(a, artist_name, strict=False) for a in candidate_artists):
+                return 0
+            score += 2
+
+        score += self._score_bonus_fields(candidate, metadata)
+        score += self._score_duration(candidate, item)
+        return score
+
+    @staticmethod
+    def _score_bonus_fields(candidate: Track, metadata: dict[str, str]) -> int:
+        """Score bonus metadata fields: podcast, authors, album, version."""
+        score = 0
+        if metadata.get("podcast"):
+            candidate_podcast = getattr(candidate, "podcast", None)
+            if candidate_podcast and hasattr(candidate_podcast, "name"):
+                if compare_strings(candidate_podcast.name, metadata["podcast"], strict=False):
+                    score += 2
+
+        if metadata.get("authors"):
+            candidate_authors = getattr(candidate, "authors", None)
+            if candidate_authors:
+                if compare_strings("; ".join(candidate_authors), metadata["authors"], strict=False):
+                    score += 2
+
+        if metadata.get("album"):
+            candidate_album = getattr(candidate, "album", None)
+            if candidate_album and hasattr(candidate_album, "name"):
+                if compare_strings(candidate_album.name, metadata["album"], strict=False):
+                    score += 1
+
+        if metadata.get("version"):
+            candidate_version = getattr(candidate, "version", None) or ""
+            if candidate_version and compare_strings(
+                candidate_version, metadata["version"], strict=False
+            ):
+                score += 1
+            elif candidate_version:
+                score -= 1
+
+        return score
+
+    @staticmethod
+    def _score_duration(candidate: Track, item: PlaylistItem) -> int:
+        """Score duration proximity between candidate and playlist item."""
+        try:
+            duration = int(item.length) if item.length else None
+        except ValueError:
+            return 0
+        if duration is None or duration <= 0 or candidate.duration <= 0:
+            return 0
+        diff = abs(candidate.duration - duration)
+        if diff <= 2:
+            return 2
+        if diff <= 5:
+            return 1
+        return 0
 
     async def parse_item(
         self,
@@ -522,6 +995,31 @@ class BuiltinProvider(MusicProvider):
             return VARIOUS_ARTISTS_FANART
         return path
 
+    async def _resolve_url(self, url: str) -> str:
+        """Resolve a URL to the actual stream URL.
+
+        ffprobe cannot analyze PLS/M3U files directly as it sees them as text.
+        This method extracts the actual audio stream URL from playlist files.
+
+        :param url: The URL to check and potentially resolve.
+        :returns: The resolved stream URL, or the original URL if not a playlist.
+        """
+        parsed = urlparse(url)
+        path_lower = parsed.path.lower()
+        is_playlist = path_lower.endswith(".pls")
+        if not is_playlist:
+            return url
+
+        try:
+            playlist_items = await fetch_playlist(self.mass, url, raise_on_hls=False)
+            for item in playlist_items:
+                if item.is_url:
+                    return item.path
+        except (InvalidDataError, IsHLSPlaylist) as err:
+            self.logger.debug("Failed to resolve playlist URL %s: %s", url, err)
+
+        return url
+
     async def _get_media_info(self, url: str, force_refresh: bool = False) -> AudioTags:
         """Retrieve mediainfo for url."""
         # do we have some cached info for this url ?
@@ -530,8 +1028,9 @@ class BuiltinProvider(MusicProvider):
         )
         if cached_info and not force_refresh:
             return AudioTags.parse(cached_info)
+        resolved_url = await self._resolve_url(url)
         # parse info with ffprobe (and store in cache)
-        media_info = await async_parse_tags(url)
+        media_info = await async_parse_tags(resolved_url)
         if "authSig" in url:
             media_info.has_cover_image = False
         await self.mass.cache.set(
@@ -648,6 +1147,27 @@ class BuiltinProvider(MusicProvider):
             result.append(track)
         return result
 
+    async def _get_builtin_playlist_infinite_mix(self) -> list[Track]:
+        """Return 25 random library tracks for the Infinite Mix dynamic playlist."""
+        result: list[Track] = []
+        for idx, track in enumerate(
+            await self.mass.music.tracks.library_items(limit=25, order_by="random"), 1
+        ):
+            track.position = idx
+            result.append(track)
+        return result
+
+    async def _get_builtin_playlist_infinite_mix_favorites(self) -> list[Track]:
+        """Return 25 random favorited tracks for the Infinite Mix (favorites) dynamic playlist."""
+        result: list[Track] = []
+        for idx, track in enumerate(
+            await self.mass.music.tracks.library_items(favorite=True, limit=25, order_by="random"),
+            1,
+        ):
+            track.position = idx
+            result.append(track)
+        return result
+
     async def _get_builtin_playlist_tracks(
         self, builtin_playlist_id: str
     ) -> list[Track] | UniqueList[Track]:
@@ -660,6 +1180,8 @@ class BuiltinProvider(MusicProvider):
                 RANDOM_ARTIST: self._get_builtin_playlist_random_artist,
                 RECENTLY_PLAYED: self._get_builtin_playlist_recently_played,
                 RECENTLY_ADDED_TRACKS: self._get_builtin_playlist_recently_added_tracks,
+                INFINITE_MIX: self._get_builtin_playlist_infinite_mix,
+                INFINITE_MIX_FAVORITES: self._get_builtin_playlist_infinite_mix_favorites,
             }[builtin_playlist_id]()
         except KeyError:
             raise MediaNotFoundError(f"No built in playlist: {builtin_playlist_id}")
@@ -681,9 +1203,10 @@ class BuiltinProvider(MusicProvider):
         playlist_id: str,
         playlist_name: str,
         entries: list[PlaylistItem],
+        playlist_image_url: str | None = None,
     ) -> None:
         """Write an M3U playlist file to disk."""
-        m3u_content = generate_m3u(playlist_name, entries)
+        m3u_content = generate_m3u(playlist_name, entries, playlist_image_url)
         playlist_file = os.path.join(self._playlists_dir, f"{playlist_id}.m3u")
         async with (
             self._playlist_lock,
@@ -705,6 +1228,8 @@ class BuiltinProvider(MusicProvider):
         falls back to a library lookup by domain.
         """
         media_item = construct_media_item_from_playlist_item(item, self.mass)
+        if media_item is None:
+            return None
         # if at least one provider mapping is available, we're done
         if any(pm.available for pm in media_item.provider_mappings):
             return media_item
@@ -718,9 +1243,9 @@ class BuiltinProvider(MusicProvider):
                 )
                 if library_item is not None:
                     return library_item
-            except (InvalidDataError, KeyError):
+            except (InvalidDataError, KeyError, NotImplementedError):
                 continue
-        # return with unavailable mappings so the item still shows in the playlist
+        # return unresolved media item so the entry still shows in the playlist
         return media_item
 
     async def _get_user_playlist_tracks(
@@ -767,15 +1292,18 @@ class BuiltinProvider(MusicProvider):
             async with semaphore:
                 try:
                     media_item = await self._resolve_playlist_item(item)
-                    if media_item is not None and media_item.media_type in PLAYLIST_MEDIA_TYPES:
-                        playlist_item = cast("PlaylistPlayableItem", media_item)
-                        playlist_item.position = index
-                        return playlist_item
-                    self.logger.warning(
-                        "Unsupported media type in playlist %s: %s",
-                        prov_playlist_id,
-                        type(media_item),
-                    )
+                    if media_item is None:
+                        return None
+                    if media_item.media_type not in PLAYLIST_MEDIA_TYPES:
+                        self.logger.warning(
+                            "Unsupported media type in playlist %s: %s",
+                            prov_playlist_id,
+                            type(media_item),
+                        )
+                        return None
+                    playlist_item = cast("PlaylistPlayableItem", media_item)
+                    playlist_item.position = index
+                    return playlist_item
                 except (
                     MediaNotFoundError,
                     InvalidDataError,
@@ -806,90 +1334,10 @@ class BuiltinProvider(MusicProvider):
     async def _build_m3u_entry_from_uri(self, uri: str) -> PlaylistItem:
         """Fetch a media item by URI and convert it to a PlaylistItem with full metadata."""
         full_item = await self.mass.music.get_item_by_uri(uri, allow_update_metadata=False)
-        if not hasattr(full_item, "provider_mappings"):
+        if not isinstance(full_item, MediaItem):
             msg = f"Unsupported media type for playlist: {uri}"
             raise InvalidDataError(msg)
-
-        # build EXTINF title
-        title = full_item.name
-        if hasattr(full_item, "artists") and full_item.artists:
-            artist_names = ", ".join(a.name for a in full_item.artists)
-            title = f"{artist_names} - {title}"
-
-        duration = getattr(full_item, "duration", None) or 0
-
-        # build EXTMA metadata
-        metadata: dict[str, str] = {"media_type": full_item.media_type.value}
-        if hasattr(full_item, "album") and full_item.album:
-            metadata["album"] = full_item.album.name
-        if hasattr(full_item, "podcast") and full_item.podcast:
-            metadata["podcast"] = full_item.podcast.name
-        if hasattr(full_item, "authors") and full_item.authors:
-            metadata["authors"] = "; ".join(full_item.authors)
-        if hasattr(full_item, "narrators") and full_item.narrators:
-            metadata["narrators"] = "; ".join(full_item.narrators)
-        if full_item.version:
-            metadata["version"] = full_item.version
-        if isrc := full_item.get_external_id(ExternalID.ISRC):
-            metadata["isrc"] = isrc
-        if mbid := full_item.get_external_id(ExternalID.MB_RECORDING):
-            metadata["mbid"] = mbid
-
-        # collect one provider mapping per domain (highest quality)
-        prov_infos: list[ProviderMappingInfo] = []
-        seen_domains: set[str] = set()
-        sorted_mappings = sorted(full_item.provider_mappings, key=lambda x: x.quality, reverse=True)
-        for prov_mapping in sorted_mappings:
-            if not prov_mapping.available:
-                continue
-            item_prov = self.mass.get_provider(prov_mapping.provider_instance)
-            if not item_prov:
-                continue
-            domain = item_prov.domain
-            if domain in seen_domains:
-                continue
-            seen_domains.add(domain)
-            prov_infos.append(
-                ProviderMappingInfo(
-                    domain=domain,
-                    item_id=prov_mapping.item_id,
-                    instance_id=item_prov.instance_id,
-                    content_type=prov_mapping.audio_format.content_type.value,
-                    sample_rate=prov_mapping.audio_format.sample_rate,
-                    bit_depth=prov_mapping.audio_format.bit_depth,
-                    bit_rate=prov_mapping.audio_format.bit_rate or 0,
-                )
-            )
-
-        if not prov_infos:
-            msg = f"No available provider for: {uri}"
-            raise ProviderUnavailableError(msg)
-
-        # primary URI = highest quality provider
-        primary = prov_infos[0]
-        primary_uri = create_uri(full_item.media_type, primary.domain, primary.item_id)
-
-        # collect images
-        images: list[ImageInfo] = []
-        if hasattr(full_item, "metadata") and full_item.metadata and full_item.metadata.images:
-            for img in full_item.metadata.images:
-                images.append(
-                    ImageInfo(
-                        type=img.type.value,
-                        path=img.path,
-                        provider=img.provider,
-                        remotely_accessible=img.remotely_accessible,
-                    )
-                )
-
-        return PlaylistItem(
-            path=primary_uri,
-            title=title,
-            length=str(duration),
-            metadata=metadata,
-            providers=prov_infos,
-            images=images,
-        )
+        return media_item_to_playlist_item(full_item)
 
     @staticmethod
     def _sanitize_playlist_id(name: str) -> str:
@@ -900,16 +1348,18 @@ class BuiltinProvider(MusicProvider):
         sanitized = sanitized.strip(" .")
         return sanitized or "untitled"
 
-    async def _migrate_playlists(self) -> None:
+    async def _migrate_playlists(self) -> None:  # noqa: PLR0915
         """Migrate old-style playlists (config + plain URI files) to M3U files."""
+        # migrate playlists stored in config to M3U files on disk with enriched metadata
         stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_PLAYLISTS, [])
-        if not stored_items:
-            return
-        self.logger.info("Migrating %d playlist(s) to M3U format...", len(stored_items))
         for stored_item in stored_items:
             # keep the original item_id as filename so library DB references stay valid
             playlist_id = stored_item["item_id"]
             playlist_name = stored_item["name"]
+            self.logger.info("Migrating playlist '%s' to M3U format...", playlist_name)
+            update_current_task_progress_text(
+                f"Migrating playlist '{playlist_name}' to M3U format..."
+            )
             old_file = os.path.join(self._playlists_dir, playlist_id)
             # read old URI file and enrich each entry with full metadata
             uris: list[str] = []
@@ -941,5 +1391,61 @@ class BuiltinProvider(MusicProvider):
                 await asyncio.to_thread(os.remove, old_file)
             self.logger.debug("Migrated playlist '%s' -> %s.m3u", playlist_name, playlist_id)
         # clear old config entries
-        self.mass.config.set(CONF_KEY_PLAYLISTS, [])
-        self.logger.info("Playlist migration complete")
+        self.mass.config.remove(CONF_KEY_PLAYLISTS)
+        # fix (already migrated) user playlists that have unresolved URIs
+        # by re-saving them with enriched metadata
+        errors = 0
+        for filename in await asyncio.to_thread(os.listdir, self._playlists_dir):
+            if not filename.endswith(".m3u"):
+                continue
+            playlist_id = filename[:-4]  # strip .m3u extension
+            m3u_data = await self._read_m3u_file(playlist_id)
+            playlist = await self.get_playlist(playlist_id)
+            self.logger.debug("Checking playlist '%s' for unresolved entries...", playlist.name)
+            update_current_task_progress_text(f"Checking playlist '{playlist.name}'")
+            all_items = parse_m3u(m3u_data)
+            has_changes = False
+            for item in all_items:
+                force_migration = item.metadata and item.metadata.get("album") and not item.album
+                if item.title and item.providers and item.metadata and not force_migration:
+                    continue
+                self.logger.debug(
+                    "Found unresolved entry in playlist '%s': %s", playlist_id, item.path
+                )
+                try:
+                    enriched = await self._build_m3u_entry_from_uri(item.path)
+                    item.length = enriched.length
+                    item.title = enriched.title
+                    item.images = enriched.images
+                    item.providers = enriched.providers
+                    item.metadata = enriched.metadata
+                    item.album = enriched.album
+                    item.artists = enriched.artists
+                    item.podcast = enriched.podcast
+                except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
+                    self.logger.warning(
+                        "Could not enrich playlist entry %s during migration: %s", item.path, err
+                    )
+                    report_current_task_failure(f"Could not enrich playlist entry: {item.path}")
+                    errors += 1
+                else:
+                    has_changes = True
+                    self.logger.debug(
+                        "Enriched playlist entry %s",
+                        item.path,
+                    )
+            if has_changes:
+                await self._write_m3u_file(
+                    playlist_id,
+                    playlist.name,
+                    list(all_items),
+                    self._get_playlist_image_url(playlist),
+                )
+                self.logger.info("Updated playlist '%s' with enriched metadata", playlist.name)
+            if errors > 25:
+                raise RuntimeError("Too many errors during playlist migration")
+        self.logger.info("Playlist migration completed with %d errors", errors)
+        # if there were no errors, we can safely unregister the migration task
+        if errors == 0 and (current_task_id := get_current_task_id()):
+            # defer unregistering the scheduled task to avoid cancelling the current task
+            self.mass.call_later(0, self.mass.tasks.unregister_scheduled_task, current_task_id)

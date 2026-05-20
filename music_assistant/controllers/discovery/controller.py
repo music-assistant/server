@@ -15,8 +15,6 @@ from aiohttp import ClientTimeout
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 from zeroconf import (
-    InterfaceChoice,
-    IPVersion,
     NonUniqueNameException,
     ServiceStateChange,
     Zeroconf,
@@ -29,7 +27,7 @@ from music_assistant.constants import (
     INGRESS_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.helpers.util import get_ip_pton
+from music_assistant.helpers.util import get_ip_pton, get_zeroconf_args
 from music_assistant.models.core_controller import CoreController
 
 if TYPE_CHECKING:
@@ -71,6 +69,7 @@ class DiscoveryController(CoreController):
         self._mdns_locks: dict[str, asyncio.Lock] = {}
         self._upnp_locks: dict[str, asyncio.Lock] = {}
         self._upnp_run_lock = asyncio.Lock()
+        self._mdns_waiters: list[asyncio.Event] = []
 
     @property
     def aiozc(self) -> AsyncZeroconf:
@@ -146,6 +145,46 @@ class DiscoveryController(CoreController):
         self._upnp_locks.pop(instance_id, None)
         self._schedule_periodic_upnp_discovery()
 
+    async def async_find_mdns_service(
+        self, service_type: str, name_filter: str, timeout: float = 3.0
+    ) -> AsyncServiceInfo | None:
+        """Find an mDNS service by partial name match, checking cache first then waiting.
+
+        :param service_type: The mDNS service type (e.g., "_raop._tcp.local.").
+        :param name_filter: Substring that must appear in the service name.
+        :param timeout: Maximum time to wait in seconds.
+        """
+        deadline = asyncio.get_event_loop().time() + timeout
+        # Cache keys are lowercased DNS names, so we must match case-insensitively
+        name_filter_lower = name_filter.lower()
+        service_type_lower = service_type.lower()
+        event = asyncio.Event()
+        self._mdns_waiters.append(event)
+        try:
+            while True:
+                # Clear before scanning so events arriving during the scan are not lost
+                event.clear()
+                # Check cache for a matching entry
+                for mdns_name in set(self.aiozc.zeroconf.cache.cache):
+                    if (
+                        service_type_lower in mdns_name
+                        and name_filter_lower in mdns_name
+                        and mdns_name != service_type_lower
+                    ):
+                        info = AsyncServiceInfo(service_type, mdns_name)
+                        if await info.async_request(self.aiozc.zeroconf, 3000):
+                            return info
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    return None
+                # Wait for the next mDNS state change event, then re-check the cache
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=remaining)
+                except TimeoutError:
+                    return None
+        finally:
+            self._mdns_waiters.remove(event)
+
     def _configure_library_loggers(self) -> None:
         """Align third-party discovery logging with the discovery controller log level."""
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
@@ -156,11 +195,12 @@ class DiscoveryController(CoreController):
     def _create_aiozc(self, config: CoreConfig) -> AsyncZeroconf:
         """Create the shared AsyncZeroconf instance for the discovery controller."""
         zeroconf_interfaces = str(config.get_value(CONF_ZEROCONF_INTERFACES, "default"))
-        # IPv6 requires InterfaceChoice.All, so only enable when all interfaces are used.
         use_all_interfaces = zeroconf_interfaces == "all"
+        zc_args = get_zeroconf_args(use_all_interfaces)
+        self.logger.debug("Zeroconf configuration: %s", zc_args)
         return AsyncZeroconf(
-            ip_version=IPVersion.All if use_all_interfaces else IPVersion.V4Only,
-            interfaces=InterfaceChoice.All if use_all_interfaces else InterfaceChoice.Default,
+            ip_version=zc_args["ip_version"],
+            interfaces=zc_args["interfaces"],
         )
 
     async def _setup_mdns_browser(self) -> None:
@@ -248,6 +288,9 @@ class DiscoveryController(CoreController):
             service_type,
             state_change,
         )
+        # Notify any waiters that a new mDNS event arrived
+        for waiter in self._mdns_waiters:
+            waiter.set()
         for provider in list(self.mass.providers):
             if not provider.available or not provider.manifest.mdns_discovery:
                 continue

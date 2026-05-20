@@ -23,7 +23,8 @@ def generate_csrf_token() -> str:
 
 
 def handle_pandora_error(response_data: dict[str, Any]) -> None:
-    """Handle Pandora API error responses.
+    """
+    Handle Pandora API error responses.
 
     Maps Pandora API error codes to appropriate Music Assistant exceptions.
 
@@ -53,7 +54,8 @@ def handle_pandora_error(response_data: dict[str, Any]) -> None:
 
 
 async def get_csrf_token(session: aiohttp.ClientSession) -> str:
-    """Get CSRF token from Pandora website.
+    """
+    Get CSRF token from Pandora website.
 
     Attempts to retrieve CSRF token from Pandora cookies.
 
@@ -83,7 +85,8 @@ async def get_csrf_token(session: aiohttp.ClientSession) -> str:
 
 
 def create_auth_headers(csrf_token: str, auth_token: str | None = None) -> dict[str, str]:
-    """Create authentication headers for Pandora API requests.
+    """
+    Create authentication headers for Pandora API requests.
 
     Args:
         csrf_token: CSRF token for request validation
@@ -96,11 +99,7 @@ def create_auth_headers(csrf_token: str, auth_token: str | None = None) -> dict[
         "Content-Type": "application/json;charset=utf-8",
         "X-CsrfToken": csrf_token,
         "Cookie": f"csrftoken={csrf_token}",
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/131.0.0.0 Safari/537.36"
-        ),
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:148.0) Gecko/20100101 Firefox/148.0",
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
         "Origin": "https://www.pandora.com",

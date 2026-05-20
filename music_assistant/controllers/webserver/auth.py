@@ -1476,7 +1476,7 @@ class AuthenticationManager:
         :param player_filter: List of player IDs user has access to (set by admin only, optional).
         :param provider_filter: List of provider instance IDs user has access to (set by admin only, optional).
         :return: Updated user object.
-        """  # noqa: E501
+        """
         current_user_obj = get_current_user()
         if not current_user_obj:
             raise AuthenticationRequired("Not authenticated")

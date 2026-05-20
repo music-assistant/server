@@ -11,3 +11,7 @@ CONF_DEVICE_IDENTIFIERS: Final[str] = "device_identifiers"
 
 # Config key for storing device info (model, manufacturer)
 CONF_DEVICE_INFO: Final[str] = "device_info"
+
+# Protocols where external sources (e.g. Spotify Connect) can play
+# independently of Music Assistant.
+EXTERNAL_SOURCE_PROTOCOLS = {"chromecast", "dlna"}

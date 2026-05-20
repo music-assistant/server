@@ -1,15 +1,22 @@
 """Tests for parsing audio file tags (ID3, MP4/AAC, Vorbis, APEv2, etc.)."""
 
 import pathlib
+import shutil
 from unittest.mock import MagicMock
+
+import mutagen
+import pytest
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers import tags
 from music_assistant.helpers.tags import (
     _parse_apev2_tags,
+    _parse_id3_tags,
+    _parse_mp4_tags,
     _parse_vorbis_tags,
     parse_tags_mutagen,
     split_artists,
+    write_replaygain_track_gain,
 )
 
 RESOURCES_DIR = pathlib.Path(__file__).parent.parent.resolve().joinpath("fixtures")
@@ -18,6 +25,7 @@ FILE_MP3 = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.mp3"))
 FILE_MP3_ID3V24_MULTIVALUE = str(RESOURCES_DIR.joinpath("MultiArtist-ID3v24-NullSeparated.mp3"))
 FILE_M4A = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.m4a"))
 FILE_FLAC = str(RESOURCES_DIR.joinpath("MultipleArtists.flac"))
+FILE_FLAC_SEMICOLON = str(RESOURCES_DIR.joinpath("ArtistWithSemicolon.flac"))
 FILE_WV = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.wv"))
 
 
@@ -40,7 +48,7 @@ async def test_parse_metadata_from_id3tags() -> None:
     assert _tags.disc is None
     _tags.tags["disc"] = "1"
     assert _tags.disc == 1
-    _tags.tags["disc"] = "1/1"
+    _tags.tags["disc"] = "1/1"  # type: ignore[unreachable]
     assert _tags.disc == 1
     # test parsing album year
     _tags.tags["date"] = "blah"
@@ -371,6 +379,13 @@ def test_parse_vorbis_tags_musicbrainz_ids() -> None:
     assert result.get("musicbrainzrecordingid") == "mb-track-id"
 
 
+def test_parse_vorbis_multi_value_releasetype() -> None:
+    """Repeated RELEASETYPE Vorbis fields are joined into a single value."""
+    mock_tags = _create_mock_vorbis_tags({"RELEASETYPE": ["album", "live"]})
+    result = _parse_vorbis_tags(mock_tags)
+    assert result.get("musicbrainzalbumtype") == "album;live"
+
+
 def _create_mock_apev2_tags(tag_dict: dict[str, str]) -> MagicMock:
     r"""Create a mock APEv2 tags object.
 
@@ -421,6 +436,13 @@ def test_parse_apev2_tags_musicbrainz_ids() -> None:
     assert result.get("musicbrainzreleasegroupid") == "mb-rg-id"
 
 
+def test_parse_apev2_multi_value_musicbrainz_albumtype() -> None:
+    """Null-separated MUSICBRAINZ_ALBUMTYPE values are joined into a single value."""
+    mock_tags = _create_mock_apev2_tags({"MUSICBRAINZ_ALBUMTYPE": "album\x00live"})
+    result = _parse_apev2_tags(mock_tags)
+    assert result.get("musicbrainzalbumtype") == "album;live"
+
+
 def test_parse_apev2_tags_genre_multi_value() -> None:
     """Test that APEv2 genre with multiple values is parsed correctly."""
     mock_tags = _create_mock_apev2_tags(
@@ -432,3 +454,331 @@ def test_parse_apev2_tags_genre_multi_value() -> None:
     result = _parse_apev2_tags(mock_tags)
 
     assert result.get("genre") == ["Rock", "Pop", "Jazz"]
+
+
+def test_parse_apev2_tags_null_separated_artists() -> None:
+    """Test that APEv2 null-separated Artist field is parsed as multiple artists."""
+    mock_tags = _create_mock_apev2_tags(
+        {
+            "Artist": "ave;new\x00佐倉紗織",
+            "Album Artist": "Album Artist A\x00Album Artist B",
+        }
+    )
+
+    result = _parse_apev2_tags(mock_tags)
+
+    # Multiple null-separated values should be stored as "artists" (plural)
+    assert result.get("artists") == ["ave;new", "佐倉紗織"]
+    assert result.get("albumartists") == ["Album Artist A", "Album Artist B"]
+    # Singular keys should not be set
+    assert "artist" not in result
+    assert "albumartist" not in result
+
+
+def test_parse_apev2_tags_single_artist() -> None:
+    """Test that APEv2 single Artist field is parsed as singular."""
+    mock_tags = _create_mock_apev2_tags(
+        {
+            "Artist": "Single Artist",
+            "Album Artist": "Single Album Artist",
+        }
+    )
+
+    result = _parse_apev2_tags(mock_tags)
+
+    # Single value should be stored as "artist" (singular)
+    assert result.get("artist") == "Single Artist"
+    assert result.get("albumartist") == "Single Album Artist"
+    # Plural keys should not be set
+    assert "artists" not in result
+    assert "albumartists" not in result
+
+
+def test_parse_mp4_multi_value_musicbrainz_albumtype() -> None:
+    """Multi-value MP4 freeform album type entries are joined into a single value."""
+    mock_tags = MagicMock()
+    mock_tags.__contains__ = lambda _, key: key == "----:com.apple.iTunes:MusicBrainz Album Type"
+    mock_tags.__getitem__ = lambda _, _k: [b"album", b"live"]
+    result = _parse_mp4_tags(mock_tags)
+    assert result.get("musicbrainzalbumtype") == "album;live"
+
+
+def test_parse_id3_multi_value_musicbrainz_albumtype() -> None:
+    """Multi-value TXXX:MusicBrainz Album Type frame entries are joined into a single value."""
+    frame = MagicMock()
+    frame.text = ["album", "live"]
+    result = _parse_id3_tags({"TXXX:MusicBrainz Album Type": frame})
+    assert result.get("musicbrainzalbumtype") == "album;live"
+
+
+def test_vorbis_multiple_artist_fields_semicolon_in_name() -> None:
+    """Test that multiple ARTIST fields in Vorbis with semicolons are handled correctly.
+
+    Regression test for the "ave;new" edge case per the Vorbis spec:
+    - Japanese artist "ave;new" has a semicolon in their name
+    - Vorbis allows multiple ARTIST (singular) fields for multi-artist tracks
+    - The semicolon within "ave;new" must NOT cause additional splitting
+
+    Correct Vorbis tagging (per https://xiph.org/vorbis/doc/v-comment.html):
+        ARTIST=ave;new
+        ARTIST=佐倉紗織
+        MUSICBRAINZ_ARTISTID=2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba
+        MUSICBRAINZ_ARTISTID=822c07bd-1f8a-4fef-acdb-8acfe82fbef5
+
+    See: https://musicbrainz.org/artist/2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba
+    """
+    # Simulate Vorbis tags with multiple ARTIST fields (correct per Vorbis spec)
+    mock_tags = _create_mock_vorbis_tags(
+        {
+            "TITLE": ["Call My Dears"],
+            "ALBUM": ["Lovable"],
+            "ARTIST": ["ave;new", "佐倉紗織"],  # Multiple ARTIST fields
+            "ARTISTSORT": ["ave;new feat.Sakura, Saori"],
+            "MUSICBRAINZ_ARTISTID": [
+                "2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba",
+                "822c07bd-1f8a-4fef-acdb-8acfe82fbef5",
+            ],
+        }
+    )
+
+    result = _parse_vorbis_tags(mock_tags)
+
+    # Multiple ARTIST fields should be stored as "artists" (plural key)
+    assert result.get("artists") == ["ave;new", "佐倉紗織"]
+    # MusicBrainz Artist IDs should be preserved
+    assert result.get("musicbrainzartistid") == [
+        "2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba",
+        "822c07bd-1f8a-4fef-acdb-8acfe82fbef5",
+    ]
+
+    # Now test that AudioTags.artists property correctly handles the multiple fields
+    audio_tags = tags.AudioTags(
+        raw={},
+        sample_rate=44100,
+        channels=2,
+        bits_per_sample=16,
+        format="flac",
+        bit_rate=None,
+        duration=180.0,
+        tags=result,
+        has_cover_image=False,
+        filename="01 - ave;new feat.佐倉紗織 - Call My Dears.flac",
+    )
+
+    # The artists property must return exactly 2 artists
+    assert audio_tags.artists == ("ave;new", "佐倉紗織")
+    # The semicolon in "ave;new" must NOT cause it to be split
+    assert "ave" not in audio_tags.artists
+    assert "new" not in audio_tags.artists
+    # MusicBrainz Artist IDs should match the artist count
+    assert audio_tags.musicbrainz_artistids == (
+        "2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba",
+        "822c07bd-1f8a-4fef-acdb-8acfe82fbef5",
+    )
+    assert len(audio_tags.artists) == len(audio_tags.musicbrainz_artistids)
+
+
+async def test_flac_multiple_artist_fields_semicolon_e2e() -> None:
+    """End-to-end test: FLAC with multiple ARTIST fields, one containing semicolon.
+
+    Tests real file parsing to ensure the full pipeline correctly handles
+    artist names with semicolons when using multiple ARTIST fields per Vorbis spec.
+
+    See: https://xiph.org/vorbis/doc/v-comment.html
+    See: https://musicbrainz.org/artist/2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba
+    """
+    audio_tags = await tags.async_parse_tags(FILE_FLAC_SEMICOLON)
+
+    # Verify the artists are correctly parsed without splitting on semicolons
+    assert audio_tags.artists == ("ave;new", "佐倉紗織")
+    assert "ave" not in audio_tags.artists
+    assert "new" not in audio_tags.artists
+
+    # Verify MB Artist IDs match
+    assert audio_tags.musicbrainz_artistids == (
+        "2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba",
+        "822c07bd-1f8a-4fef-acdb-8acfe82fbef5",
+    )
+    assert len(audio_tags.artists) == len(audio_tags.musicbrainz_artistids)
+
+    # Verify other tags
+    assert audio_tags.title == "Call My Dears"
+    assert audio_tags.album == "Lovable"
+
+
+def test_id3_artist_tag_semicolon_single_mbid() -> None:
+    """Test that single ARTIST tag with semicolon is not split when 1 MB ID exists.
+
+    Regression test for formats without multi-value ARTISTS tag support (ID3, etc.):
+    - Artist name "ave;new" contains a semicolon
+    - Single MUSICBRAINZ_ARTISTID confirms this is one artist
+    - The semicolon must NOT cause the name to be split into "ave" and "new"
+
+    See: https://musicbrainz.org/artist/2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba
+    """
+    # Simulate ID3 tags: single ARTIST field with semicolon, single MB ID
+    audio_tags = tags.AudioTags(
+        raw={},
+        sample_rate=44100,
+        channels=2,
+        bits_per_sample=16,
+        format="mp3",
+        bit_rate=None,
+        duration=180.0,
+        tags={
+            "title": "Colorful",
+            "album": "Lovable",
+            "artist": "ave;new",
+            "musicbrainzartistid": "2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba",
+        },
+        has_cover_image=False,
+        filename="01 - ave;new - Colorful.mp3",
+    )
+
+    # Single MB ID = single artist, no splitting
+    assert audio_tags.artists == ("ave;new",)
+    assert audio_tags.musicbrainz_artistids == ("2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba",)
+    # Verify the semicolon did NOT cause incorrect splitting
+    assert "ave" not in audio_tags.artists
+    assert "new" not in audio_tags.artists
+
+
+def test_artists_tag_semicolon_single_mbid() -> None:
+    """Test that ARTISTS tag with semicolon is not split when 1 MB ID exists.
+
+    Regression test for the ARTISTS (plural) tag path:
+    - Artist name "ave;new" contains a semicolon
+    - Single MUSICBRAINZ_ARTISTID confirms this is one artist
+    - The semicolon must NOT cause the name to be split
+
+    Based on real tags from ave;new's "Lovable" album track "eve".
+    See: https://musicbrainz.org/artist/2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba
+    """
+    audio_tags = tags.AudioTags(
+        raw={},
+        sample_rate=44100,
+        channels=2,
+        bits_per_sample=16,
+        format="flac",
+        bit_rate=None,
+        duration=180.0,
+        tags={
+            "title": "eve",
+            "album": "Lovable",
+            "artist": "ave;new",
+            "artists": "ave;new",  # ARTISTS tag with semicolon
+            "artistsort": "ave;new",
+            "musicbrainzartistid": "2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba",
+            "musicbrainzrecordingid": "0389384e-3015-45ba-8a09-d949ff68f9d9",
+        },
+        has_cover_image=False,
+        filename="04 - ave;new - eve.flac",
+    )
+
+    # Single MB ID = single artist, ARTISTS tag should NOT be split on semicolon
+    assert audio_tags.artists == ("ave;new",)
+    assert audio_tags.musicbrainz_artistids == ("2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba",)
+    # Verify the semicolon did NOT cause incorrect splitting
+    assert "ave" not in audio_tags.artists
+    assert "new" not in audio_tags.artists
+
+
+def test_id3_artist_tag_semicolon_multiple_mbids() -> None:
+    """Test that ARTIST tag with semicolon IS split when multiple MB IDs exist.
+
+    When multiple MusicBrainz Artist IDs are present, the semicolon should be
+    treated as a separator between artists.
+    """
+    audio_tags = tags.AudioTags(
+        raw={},
+        sample_rate=44100,
+        channels=2,
+        bits_per_sample=16,
+        format="mp3",
+        bit_rate=None,
+        duration=180.0,
+        # musicbrainzartistid can be list[str] from mutagen (dict type is str for ffprobe compat)
+        tags={
+            "artist": "Artist A;Artist B",
+            "musicbrainzartistid": ["id-a", "id-b"],  # type: ignore[dict-item]
+        },
+        has_cover_image=False,
+        filename="test.mp3",
+    )
+
+    # Multiple MB IDs = semicolon should split
+    assert audio_tags.artists == ("Artist A", "Artist B")
+    assert audio_tags.musicbrainz_artistids == ("id-a", "id-b")
+
+
+def test_id3_albumartist_tag_semicolon_single_mbid() -> None:
+    """Test that ALBUMARTIST tag with semicolon is not split when 1 MB Album Artist ID exists."""
+    audio_tags = tags.AudioTags(
+        raw={},
+        sample_rate=44100,
+        channels=2,
+        bits_per_sample=16,
+        format="mp3",
+        bit_rate=None,
+        duration=180.0,
+        tags={
+            "albumartist": "ave;new",
+            "musicbrainzalbumartistid": "2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba",
+        },
+        has_cover_image=False,
+        filename="test.mp3",
+    )
+
+    # Single MB Album Artist ID = single artist, no splitting
+    assert audio_tags.album_artists == ("ave;new",)
+    assert audio_tags.musicbrainz_albumartistids == ("2ade7b3c-a6f1-4d00-b7f7-fc60abf25dba",)
+
+
+def _read_replaygain_track_gain(path: str) -> str | None:
+    """Read REPLAYGAIN_TRACK_GAIN from a file using mutagen (format-agnostic)."""
+    audio = mutagen.File(path)  # type: ignore[attr-defined]
+    if audio is None or audio.tags is None:
+        return None
+    tag_key_mp4 = "----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN"
+    if tag_key_mp4 in audio.tags:
+        val = audio.tags[tag_key_mp4][0]
+        return val.decode("utf-8") if isinstance(val, bytes) else str(val)
+    if "TXXX:REPLAYGAIN_TRACK_GAIN" in audio.tags:
+        return str(audio.tags["TXXX:REPLAYGAIN_TRACK_GAIN"].text[0])
+    if "REPLAYGAIN_TRACK_GAIN" in audio.tags:
+        return str(audio.tags["REPLAYGAIN_TRACK_GAIN"][0])
+    return None
+
+
+@pytest.mark.parametrize(
+    "source",
+    [FILE_MP3, FILE_M4A, FILE_FLAC, FILE_WV],
+)
+async def test_write_replaygain_track_gain_roundtrip(tmp_path: pathlib.Path, source: str) -> None:
+    """Write a REPLAYGAIN_TRACK_GAIN tag and verify the value is read back."""
+    dest = tmp_path / pathlib.Path(source).name
+    shutil.copy(source, dest)
+
+    assert await write_replaygain_track_gain(str(dest), -5.3) is True
+    assert _read_replaygain_track_gain(str(dest)) == "-5.30 dB"
+
+    # verify overwrite replaces the previous value
+    assert await write_replaygain_track_gain(str(dest), -2.1) is True
+    assert _read_replaygain_track_gain(str(dest)) == "-2.10 dB"
+
+
+async def test_write_replaygain_track_gain_missing_file(tmp_path: pathlib.Path) -> None:
+    """Return False if the file does not exist or cannot be opened."""
+    assert await write_replaygain_track_gain(str(tmp_path / "nope.mp3"), -5.0) is False
+
+
+async def test_write_replaygain_track_gain_read_only(tmp_path: pathlib.Path) -> None:
+    """Return False if the file cannot be written to."""
+    dest = tmp_path / "readonly.mp3"
+    shutil.copy(FILE_MP3, dest)
+    dest.chmod(0o444)
+    try:
+        assert await write_replaygain_track_gain(str(dest), -5.0) is False
+    finally:
+        # restore permissions so tmp_path cleanup can remove the file
+        dest.chmod(0o644)
