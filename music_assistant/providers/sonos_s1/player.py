@@ -285,9 +285,9 @@ class SonosPlayer(Player):
                     self.soco.switch_to_line_in()
 
             await asyncio.to_thread(_switch_to_linein)
+            self.mass.call_later(2, self.poll)
         else:
             await self.stop()
-        self.mass.call_later(2, self.poll)
 
     @soco_error()
     async def set_members(
