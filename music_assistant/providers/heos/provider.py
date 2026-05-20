@@ -97,6 +97,7 @@ class HeosPlayerProvider(PlayerProvider):
             self.logger.error("Unexpected error setting up HEOS controller: %s", err)
             raise SetupFailedError("Unexpected error setting up HEOS controller") from err
 
+        # Set up up dedicated queue controller, queue commands can be slow and we don't want them to interfere with event processing on the main controller connection
         try:
             self._heos_queue = Heos(
                 HeosOptions(
@@ -109,8 +110,8 @@ class HeosPlayerProvider(PlayerProvider):
             )
             await self._heos_queue.connect()
         except HeosError as err:
-            self.logger.error("Failed to set up HEOS queue: %s", err)
-            raise SetupFailedError("Failed to set up HEOS queue") from err
+            self.logger.error("Failed to set up HEOS queue controller: %s", err)
+            raise SetupFailedError("Failed to set up HEOS queue controller") from err
 
     async def _connect_controller(self, controller_ip: str) -> None:
         """Connect to the HEOS controller with a few retries for early mDNS announcements."""

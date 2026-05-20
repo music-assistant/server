@@ -355,7 +355,10 @@ class HeosPlayer(Player):
 
     async def _cleanup_heos_queue(self) -> None:
         async with self._queue_cleanup_lock:
-            if not self._ma_controls_playback or not self._queue_cleanup_pending:
+            if not self._ma_controls_playback:
+                self._queue_cleanup_pending = False
+                return
+            if not self._queue_cleanup_pending:
                 return
             if self._attr_playback_state != PlaybackState.PLAYING:
                 self.logger.debug(
