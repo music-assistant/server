@@ -151,6 +151,11 @@ class OpenSonicProvider(MusicProvider):
         self._pagination_size = min(self._pagination_size, 500)
         self._raw_file = bool(self.config.get_value(CONF_RAW_FILE))
 
+    async def unload(self, is_removed: bool = False) -> None:
+        """Unload the provider."""
+        await super().unload(is_removed)
+        await self.conn.close()
+
     @property
     def is_streaming_provider(self) -> bool:
         """
