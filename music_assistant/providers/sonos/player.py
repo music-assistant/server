@@ -63,6 +63,7 @@ SUPPORTED_FEATURES = {
     PlayerFeature.SELECT_SOURCE,
     PlayerFeature.SET_MEMBERS,
     PlayerFeature.GAPLESS_PLAYBACK,
+    PlayerFeature.MULTI_DEVICE_DSP,
 }
 
 
