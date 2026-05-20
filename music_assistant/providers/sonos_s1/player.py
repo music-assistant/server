@@ -34,7 +34,9 @@ from .constants import (
     POSITION_SECONDS,
     RESUB_COOLDOWN_SECONDS,
     SONOS_STATE_TRANSITIONING,
+    SOURCE_LINEIN,
     SOURCE_MAPPING,
+    SOURCE_TV,
     SUBSCRIPTION_SERVICES,
     SUBSCRIPTION_TIMEOUT,
 )
@@ -279,9 +281,9 @@ class SonosPlayer(Player):
         if source in LINEIN_SOURCE_IDS:
 
             def _switch_to_linein() -> None:
-                if source == "TV":
+                if source == SOURCE_TV:
                     self.soco.switch_to_tv()
-                else:
+                elif source == SOURCE_LINEIN:
                     self.soco.switch_to_line_in()
 
             await asyncio.to_thread(_switch_to_linein)
