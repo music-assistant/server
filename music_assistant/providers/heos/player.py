@@ -11,6 +11,7 @@ from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature
 from music_assistant_models.errors import PlayerCommandFailed, SetupFailedError
 from music_assistant_models.player import DeviceInfo, PlayerSource
 from pyheos import Heos, HeosError, const
+from pyheos import PlayState as HeosPlayState
 
 from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
@@ -200,6 +201,13 @@ class HeosPlayer(Player):
     def _update_player_current_media(self) -> None:
         """Update current media properties."""
         now_playing = self._device.now_playing_media
+        if self._device.state == HeosPlayState.STOP:
+            self.logger.debug(
+                "[%s] Ignoring now playing change while stopped: %s",
+                self._device.name,
+                now_playing,
+            )
+            return
 
         # Only update if we're not playing from our queue
         # HEOS does not make a distinction on source ID when playing from a DLNA server, USB stick,
