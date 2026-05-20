@@ -150,6 +150,8 @@ class HeosPlayer(Player):
         match event:
             case const.EVENT_PLAYER_STATE_CHANGED:
                 self._update_player_state()
+                self._update_player_current_media()
+
                 if (
                     self._ma_controls_playback
                     and self._attr_playback_state == PlaybackState.PLAYING
