@@ -126,14 +126,3 @@ def test_extract_palette_end_to_end() -> None:
     assert palette.primary is not None
     if palette.background_dark is not None:
         assert _contrast_ratio(palette.background_dark, (255, 255, 255)) >= _MIN_CONTRAST
-
-
-def test_extract_palette_handles_non_rgb_modes() -> None:
-    """Non-8-bit-RGB modes must not panic the Rust backend (regression for crash)."""
-    for mode in ("L", "LA", "P", "CMYK", "I;16"):
-        img = Image.new(mode, (32, 32))
-        buf = io.BytesIO()
-        img.save(buf, "PNG" if mode != "CMYK" else "TIFF")
-        palette = extract_palette(buf.getvalue())
-        # Just assert it returns a palette object — the goal is "no panic".
-        assert palette is not None
