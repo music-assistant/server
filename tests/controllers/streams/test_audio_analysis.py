@@ -9,6 +9,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.audio_analysis import AudioAnalysisCoverage
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import AudioFormat
@@ -16,7 +17,6 @@ from music_assistant_models.media_items import AudioFormat
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
 from music_assistant.constants import DEFAULT_BACKGROUND_SCAN_CONCURRENCY
 from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
-from music_assistant.models.audio_analysis import AudioAnalysisCoverage
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
 
