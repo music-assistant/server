@@ -202,7 +202,12 @@ class MyDemoPluginprovider(PluginProvider):
                         item_id=AUDIO_SOURCE_ID,
                         provider_domain=self.domain,
                         provider_instance=self.instance_id,
-                        audio_format=AudioFormat(content_type=ContentType.MP3),
+                        audio_format=AudioFormat(
+                            content_type=ContentType.PCM_S16LE,
+                            sample_rate=44100,
+                            bit_depth=16,
+                            channels=2,
+                        ),
                     )
                 },
                 can_play_pause=False,
@@ -237,7 +242,12 @@ class MyDemoPluginprovider(PluginProvider):
         return StreamDetails(
             provider=self.instance_id,
             item_id=source_id,
-            audio_format=AudioFormat(content_type=ContentType.MP3),
+            audio_format=AudioFormat(
+                content_type=ContentType.PCM_S16LE,
+                sample_rate=44100,
+                bit_depth=16,
+                channels=2,
+            ),
             media_type=MediaType.AUDIO_SOURCE,
             stream_type=StreamType.CUSTOM,
             stream_metadata=StreamMetadata(title=self.name),
@@ -256,9 +266,12 @@ class MyDemoPluginprovider(PluginProvider):
         # other queue took over in the meantime (handled via ResourceBusyError
         # in get_stream_details).
         consumer_queue = self._in_use_by_queue
+        # 100ms of silence at 44.1kHz/16bit/stereo PCM — matches the audio_format
+        # declared in get_stream_details. Replace with your actual byte source.
+        pcm_chunk = b"\x00" * (44100 * 2 * 2 // 10)
         try:
             for _ in range(100):
-                yield b"dummy audio data"
+                yield pcm_chunk
         finally:
             if self._in_use_by_queue == consumer_queue:
                 self._in_use_by_queue = None

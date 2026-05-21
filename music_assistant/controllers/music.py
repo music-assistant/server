@@ -88,6 +88,7 @@ from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import TaskManager, parse_optional_bool, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.plugin import PluginProvider
 
 from .media.albums import AlbumsController
 from .media.artists import ArtistsController
@@ -105,7 +106,6 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
-    from music_assistant.models.plugin import PluginProvider
     from music_assistant.models.provider import Provider
 
 

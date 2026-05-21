@@ -340,19 +340,28 @@ async def audio_source_silence_keepalive(
     inner generator hasn't produced for ``idle_threshold_s`` seconds, while
     relaying real bytes immediately when they arrive.
 
+    Only meaningful for PCM streams — injecting raw zero bytes into a compressed
+    stream (MP3/AAC/etc.) would corrupt the bitstream. For non-PCM ``pcm_format``
+    inputs the wrapper degrades to a transparent pass-through.
+
     :param inner: The underlying async generator yielding raw PCM bytes.
     :param pcm_format: PCM format the inner generator emits (used to size the
         silence chunk so it lines up to a frame boundary).
     :param idle_threshold_s: Seconds without input before silence is inserted.
     :param silence_chunk_ms: Duration of each silence chunk in milliseconds.
     """
-    bytes_per_second = pcm_format.sample_rate * pcm_format.channels * (pcm_format.bit_depth // 8)
+    bytes_per_second = (
+        pcm_format.sample_rate * pcm_format.channels * (pcm_format.bit_depth // 8)
+        if pcm_format.content_type.is_pcm()
+        else 0
+    )
     if bytes_per_second <= 0:
-        # malformed format - fall back to a tiny fixed chunk
-        silence_chunk = b"\x00" * 4096
-    else:
-        silence_chunk = b"\x00" * (bytes_per_second * silence_chunk_ms // 1000)
+        # non-PCM or malformed format: pass through unchanged, no silence injection
+        async for chunk in inner:
+            yield chunk
+        return
 
+    silence_chunk = b"\x00" * (bytes_per_second * silence_chunk_ms // 1000)
     queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=8)
 
     async def _producer() -> None:
