@@ -116,10 +116,6 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
         )
         await super().unload(is_removed)
 
-    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
-        """Apply config updates without forcing a provider reload."""
-        self.config = config
-
     async def list_stations(self) -> list[dict[str, Any]]:
         """Return all configured AI Radio stations."""
         return sorted(
