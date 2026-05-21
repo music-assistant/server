@@ -295,9 +295,12 @@ class PlayerQueuesController(CoreController):
                 key=CONF_DEFAULT_ENQUEUE_OPTION_RADIO,
                 type=ConfigEntryType.STRING,
                 default_value=QueueOption.REPLACE.value,
-                label="Default enqueue option for Radio item(s).",
+                label="Default enqueue option for Radio and Live Input item(s).",
                 options=enqueue_options,
-                description="Define the default enqueue action for this mediatype.",
+                description=(
+                    "Default enqueue action for live, infinite streams — radio stations and "
+                    "plugin AudioSources (Spotify Connect, AirPlay receiver, etc.)."
+                ),
             ),
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST,
@@ -1338,9 +1341,16 @@ class PlayerQueuesController(CoreController):
 
                 # handle default enqueue option if needed
                 if option is None:
+                    # AudioSources share the radio enqueue default — they're both live
+                    # infinite streams where REPLACE is almost always the right semantic.
+                    enqueue_media_type = (
+                        MediaType.RADIO
+                        if media_item.media_type == MediaType.AUDIO_SOURCE
+                        else media_item.media_type
+                    )
                     config_value = await self.mass.config.get_core_config_value(
                         self.domain,
-                        f"default_enqueue_option_{media_item.media_type.value}",
+                        f"default_enqueue_option_{enqueue_media_type.value}",
                         return_type=str,
                     )
                     option = QueueOption(config_value)
