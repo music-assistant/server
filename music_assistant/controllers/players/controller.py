@@ -2020,9 +2020,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             audio_source, plugin_prov = active
             active_queue = self.get_active_queue(group_player)
             if active_queue is not None and active_queue.queue_id == group_player.player_id:
-                await plugin_prov.on_source_control(
-                    audio_source.item_id, SourceControl.VOLUME, volume_level
-                )
+                await plugin_prov.on_volume_change(audio_source.item_id, volume_level)
 
     def _invalidate_group_volume_snapshot(self, player_id: str) -> None:
         """Clear the cached group volume snapshot for all groups this player belongs to."""
@@ -3299,9 +3297,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             audio_source, plugin_prov = active
             active_queue = self.get_active_queue(player)
             if active_queue is not None and active_queue.queue_id == player.player_id:
-                await plugin_prov.on_source_control(
-                    audio_source.item_id, SourceControl.VOLUME, volume_level
-                )
+                await plugin_prov.on_volume_change(audio_source.item_id, volume_level)
 
         # Handle native volume control support
         if player.volume_control == PLAYER_CONTROL_NATIVE:

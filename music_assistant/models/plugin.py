@@ -123,6 +123,21 @@ class PluginProvider(Provider):
         :param queue_id: The queue that owns this playback session.
         """
 
+    async def on_volume_change(self, source_id: str, volume: int) -> None:
+        """
+        React to a volume change on the player streaming this AudioSource.
+
+        Optional hook. Override when the plugin wants to sync the upstream
+        device's volume slider with MA (e.g. Spotify Connect updating the
+        Spotify app's volume display, Yandex Ynison forwarding the new
+        level back to the Yandex device). Fired only on the direct queue
+        owner — group volume changes fire once at the group level, not
+        per child.
+
+        :param source_id: The AudioSource.item_id currently streaming.
+        :param volume: The new volume level (0-100).
+        """
+
     async def get_tts_message(self, message: str, language: str | None = None) -> StreamDetails:
         """
         Convert text to speech audio.

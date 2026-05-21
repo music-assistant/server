@@ -287,9 +287,19 @@ class MyDemoPluginprovider(PluginProvider):
         # Called when the AudioSource is the active queue item and the user
         # invokes a control whose capability flag (can_play_pause, can_seek,
         # can_next_previous) is True. value carries SEEK position in seconds
-        # or VOLUME level 0-100, and is unused for other actions.
+        # and is unused for other actions.
         # Plugins that advertise no controls do not need to override this.
+        # Volume sync (e.g. mirroring the upstream app's volume slider) lives
+        # on the separate on_volume_change hook below.
         raise NotImplementedError
+
+    async def on_volume_change(self, source_id: str, volume: int) -> None:
+        """React to a volume change on the player streaming this AudioSource."""
+        # OPTIONAL
+        # Implement when the plugin wants to sync the upstream device's volume
+        # display with MA (e.g. Spotify Connect mirroring the Spotify app slider).
+        # Fired only on the direct queue owner — group volume changes fire once
+        # at the group level, not per child.
 
     async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
         """Retrieve a list of similar tracks for the given track."""

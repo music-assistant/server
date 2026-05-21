@@ -284,8 +284,12 @@ class SpotifyConnectProvider(PluginProvider):
             await self._on_previous()
         elif action == SourceControl.SEEK and value is not None:
             await self._on_seek(value)
-        elif action == SourceControl.VOLUME and value is not None:
-            await self._on_volume(value)
+
+    async def on_volume_change(self, source_id: str, volume: int) -> None:
+        """Sync the Spotify app's volume slider with the player's new volume."""
+        if source_id != AUDIO_SOURCE_ID:
+            return
+        await self._on_volume(volume)
 
     def _build_audio_source(self) -> AudioSource:
         """Construct the AudioSource MediaItem with current capability flags."""
