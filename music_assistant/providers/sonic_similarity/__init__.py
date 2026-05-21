@@ -1,11 +1,23 @@
-"""Sonic Similarity plugin: weighted-Euclidean similarity over audio_analysis signatures.
+"""Sonic Similarity plugin.
 
-CLAP-embedding similarity (1024-dim cosine) lives in the separate sonic_clap plugin.
+Two similarity engines in one plugin, both backed by usearch HNSW:
+
+* **18-dim weighted-Euclidean** (always on): per-track signature
+  assembled from sonic_analysis scalars (BPM, energy, loudness, …) and
+  ranked with a configurable weight preset. Atomic mmap-view rebuild.
+
+* **1024-dim CLAP cosine** (opt-in via the ``enable_clap_index`` config
+  entry): builds a second usearch index over the CLAP audio embeddings
+  already stored by sonic_analysis under
+  ``audio_analysis.extra_data["clap_embedding"]``. Track-to-track
+  semantic-audio similarity, with no additional dependencies beyond
+  usearch itself.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -17,6 +29,10 @@ from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import Album
 
 from music_assistant.models.plugin import PluginProvider
+from music_assistant.providers.sonic_similarity.clap_index import (
+    CLAP_EMBEDDING_DIM,
+    ClapIndex,
+)
 from music_assistant.providers.sonic_similarity.similarity import (
     Candidate,
     apply_mmr,
@@ -44,6 +60,21 @@ if TYPE_CHECKING:
 USEARCH_INDEX_FILENAME_TPL = "sonic_signatures_{domain}_v{version}.usearch"
 USEARCH_INDEX_FILENAME_GLOB = "sonic_signatures_{domain}_v*.usearch"
 CONF_AA_PROVIDER = "aa_provider_domain"
+CONF_ENABLE_CLAP_INDEX = "enable_clap_index"
+EXTRA_DATA_CLAP_EMBEDDING = "clap_embedding"
+
+
+def _parse_clap_embedding(raw: Any) -> np.ndarray | None:
+    """Coerce a stored embedding (list/tuple) into a 1024-dim float32 array, or None."""
+    if raw is None:
+        return None
+    try:
+        arr = np.asarray(raw, dtype=np.float32).reshape(-1)
+    except (TypeError, ValueError):
+        return None
+    if arr.shape != (CLAP_EMBEDDING_DIM,):
+        return None
+    return arr
 
 # Genre/year reranking bonus scale. Raw genre Jaccard + year-proximity terms reach
 # magnitudes ~10-20x the audio-distance dynamic range; without scaling they dominate
@@ -288,6 +319,16 @@ async def get_config_entries(
             description="Which audio analysis provider's data to use for similarity vectors. "
             "Default: sonic_analysis (librosa + CLAP, on-device).",
         ),
+        ConfigEntry(
+            key=CONF_ENABLE_CLAP_INDEX,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=False,
+            label="Enable CLAP embedding index",
+            description="Also build a second usearch index over the 1024-dim CLAP audio "
+            "embeddings already stored by sonic_analysis. Enables track-to-track semantic "
+            "similarity via the sonic_similarity/similar_clap API. Requires no extra "
+            "downloads — uses embeddings already on disk.",
+        ),
     )
 
 
@@ -317,6 +358,9 @@ class SonicSimilarityPlugin(PluginProvider):
         self._search_index: Any = None
         self._unregister_handles: list[Callable[[], None]] = []
         self._rebuild_lock = asyncio.Lock()
+        # CLAP index — only populated when CONF_ENABLE_CLAP_INDEX is true.
+        self._clap_index: ClapIndex | None = None
+        self._clap_rebuild_lock = asyncio.Lock()
 
     async def loaded_in_mass(self) -> None:
         """Register similarity API commands and build the search index."""
@@ -343,11 +387,28 @@ class SonicSimilarityPlugin(PluginProvider):
             self.corpus_means is not None,
         )
 
+        if bool(self.config.get_value(CONF_ENABLE_CLAP_INDEX)):
+            self._clap_index = ClapIndex(self.mass, self.logger)
+            await self._clap_index.load()
+            self._unregister_handles.append(
+                self.mass.register_api_command(
+                    "sonic_similarity/similar_clap", self._handle_similar_clap
+                )
+            )
+            await self._rebuild_clap_index_from_database()
+            self.logger.info("CLAP index ready: %d embeddings", len(self._clap_index))
+
     async def unload(self, is_removed: bool = False) -> None:
         """Unregister API commands; delete on-disk indexes when the provider is uninstalled."""
         for unregister in self._unregister_handles:
             unregister()
         self._unregister_handles.clear()
+        if self._clap_index is not None:
+            try:
+                await self._clap_index.close()
+            except Exception as err:  # noqa: BLE001
+                self.logger.debug("CLAP index close failed: %s", err)
+            self._clap_index = None
         if is_removed:
             self._search_index = None
             await asyncio.to_thread(self._delete_all_index_files)
@@ -622,18 +683,28 @@ class SonicSimilarityPlugin(PluginProvider):
     async def _handle_status(self) -> dict[str, Any]:
         """Return current analysis status."""
         index_size = len(self._search_index) if self._search_index is not None else 0
-        return {
+        status: dict[str, Any] = {
             "index_size": index_size,
             "has_corpus_stats": self.corpus_means is not None,
             "cached_signatures": len(self._signature_cache),
             "aa_provider_domain": self._aa_domain,
+            "clap_index_enabled": self._clap_index is not None,
         }
+        if self._clap_index is not None:
+            status["clap_index_size"] = len(self._clap_index)
+        return status
 
     async def _handle_rebuild_index(self) -> dict[str, Any]:
-        """Rebuild the USearch index from stored analysis data."""
+        """Rebuild the USearch index(es) from stored analysis data."""
         await self._rebuild_search_index()
-        index_size = len(self._search_index) if self._search_index is not None else 0
-        return {"status": "rebuilt", "index_size": index_size}
+        result: dict[str, Any] = {
+            "status": "rebuilt",
+            "index_size": len(self._search_index) if self._search_index is not None else 0,
+        }
+        if self._clap_index is not None:
+            await self._rebuild_clap_index_from_database()
+            result["clap_index_size"] = len(self._clap_index)
+        return result
 
     def _existing_index_files(self) -> list[Path]:
         """List on-disk index files for the active aa_domain, oldest first."""
@@ -963,3 +1034,93 @@ class SonicSimilarityPlugin(PluginProvider):
                 *[_resolve_one(cid, prov, dist, gen) for cid, prov, dist, gen in items]
             )
         )
+
+    # ------------------------------------------------------------------
+    # Optional CLAP index (1024-dim cosine over sonic_analysis embeddings)
+    # ------------------------------------------------------------------
+
+    async def _rebuild_clap_index_from_database(self) -> None:
+        """Add any audio_analysis rows with clap_embedding that aren't yet indexed.
+
+        Idempotent and incremental: existing entries are skipped via the
+        index's contains() check, so a rebuild after no new analyses is
+        cheap. Guarded by _clap_rebuild_lock so a manual rebuild_index
+        cannot interleave with a scheduled refresh.
+        """
+        if self._clap_index is None:
+            return
+        async with self._clap_rebuild_lock:
+            rows = await self.mass.streams.audio_analysis.get_audio_analysis_rows(self._aa_domain)
+            added = 0
+            seen: set[tuple[str, str]] = set()
+            for row in rows:
+                key = (row["provider"], row["item_id"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                if self._clap_index.contains(row["provider"], row["item_id"]):
+                    continue
+                try:
+                    raw = json.loads(row["analysis_data"])
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                emb = _parse_clap_embedding((raw.get("extra_data") or {}).get(
+                    EXTRA_DATA_CLAP_EMBEDDING
+                ))
+                if emb is None:
+                    continue
+                try:
+                    await self._clap_index.add(row["provider"], row["item_id"], emb)
+                    added += 1
+                except Exception as err:  # noqa: BLE001
+                    self.logger.debug(
+                        "Add to CLAP index failed for %s/%s: %s",
+                        row["provider"],
+                        row["item_id"],
+                        err,
+                    )
+            if added > 0:
+                await self._clap_index.save()
+                self.logger.info("Added %d new embeddings to CLAP index", added)
+
+    async def _handle_similar_clap(
+        self, item_id: str, limit: int = 25
+    ) -> dict[str, Any]:
+        """Return tracks whose CLAP audio embedding is closest to the seed track's.
+
+        :param item_id: Seed track identifier (provider-agnostic). The first
+            label whose reverse-map entry matches is used.
+        :param limit: Max number of neighbours to return.
+        """
+        if self._clap_index is None:
+            return {
+                "analyzed": False,
+                "reason": "clap_index_disabled",
+                "seed_track_id": item_id,
+                "items": [],
+            }
+        lookup = self._clap_index.get_embedding_by_item_id(item_id)
+        if lookup is None:
+            return {
+                "analyzed": False,
+                "reason": "seed_not_in_index",
+                "seed_track_id": item_id,
+                "items": [],
+            }
+        _seed_provider, seed_embedding = lookup
+        # +1 because the seed itself is the nearest neighbour; we drop it after.
+        raw_results = await self._clap_index.search(seed_embedding, limit + 1)
+        items: list[dict[str, Any]] = []
+        for provider, found_item_id, distance in raw_results:
+            if found_item_id == item_id:
+                continue
+            items.append(
+                {"item_id": found_item_id, "provider": provider, "distance": distance}
+            )
+            if len(items) >= limit:
+                break
+        return {
+            "analyzed": True,
+            "seed_track_id": item_id,
+            "items": items,
+        }
