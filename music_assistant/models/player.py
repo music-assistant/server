@@ -2087,12 +2087,9 @@ class Player(ABC):
         if active_source == self.player_id:
             return False
 
-        # Check if it's a known queue ID
-        if self.mass.player_queues.get(active_source):
-            return False
-
-        # Anything else is an external (non-MA-managed) source such as a line-in or TV input
-        return True
+        # If it's a known queue ID it's MA-managed; anything else is external
+        # (line-in, TV input, etc.)
+        return self.mass.player_queues.get(active_source) is None
 
     @final
     def _expand_can_group_with(self) -> set[Player]:

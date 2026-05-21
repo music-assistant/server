@@ -388,9 +388,12 @@ class StreamsAudio:
         stream_type = streamdetails.stream_type
         if stream_type == StreamType.CUSTOM:
             # MusicProvider and PluginProvider both expose get_audio_stream with the same shape
-            provider = cast(
-                "MusicProvider | PluginProvider", mass.get_provider(streamdetails.provider)
-            )
+            provider = mass.get_provider(streamdetails.provider)
+            if provider is None:
+                raise ProviderUnavailableError(
+                    f"Provider {streamdetails.provider} for stream is no longer available"
+                )
+            provider = cast("MusicProvider | PluginProvider", provider)
             audio_source = provider.get_audio_stream(
                 streamdetails, seek_position=seek_position if streamdetails.can_seek else 0
             )

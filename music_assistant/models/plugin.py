@@ -38,7 +38,7 @@ class PluginProvider(Provider):
         Will only be called if ProviderFeature.AUDIO_SOURCE is declared.
 
         May change over time (e.g. when a paired hardware device adds/removes
-        favorites). Each AudioSource is a regular MediaItem and will be browseable
+        favorites). Each AudioSource is a regular MediaItem and will be browsable
         under the global "Live Inputs" node and playable via the standard play_media flow.
 
         :return: A list of AudioSource items. Return an empty list if the plugin
@@ -109,11 +109,11 @@ class PluginProvider(Provider):
 
     async def on_source_selected(self, source_id: str, player_id: str, queue_id: str) -> None:
         """
-        Optional hook fired when an AudioSource has been selected for playback.
+        React to an AudioSource being selected for playback.
 
-        Use this when the plugin needs to react to selection beyond what
-        get_stream_details already does (for example, transferring an
-        external session to the newly chosen player).
+        Optional hook. Override when the plugin needs to do something beyond what
+        get_stream_details already does (for example, transferring an external
+        session to the newly chosen player).
 
         :param source_id: The AudioSource.item_id that was selected.
         :param player_id: The player that will receive the stream.

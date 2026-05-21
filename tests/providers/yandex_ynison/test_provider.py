@@ -66,6 +66,10 @@ def _make_mock_config(values: dict[str, Any] | None = None) -> MagicMock:
         defaults.update(values)
     config = MagicMock()
     config.get_value.side_effect = defaults.get
+    # Provider.__init__ now caches the AudioSource which serialises name into a
+    # uri/sort_name — both expect real strings, not MagicMock attribute access.
+    config.instance_id = "yandex_ynison_test"
+    config.name = "Yandex Music Connect"
     return config
 
 
@@ -92,10 +96,15 @@ def _make_mock_mass() -> MagicMock:
     # Players
     mass.players.all_players = MagicMock(return_value=[])
     mass.players.get_player = MagicMock(return_value=None)
-    mass.players.select_source = AsyncMock()
     mass.players.cmd_stop = AsyncMock()
     mass.players.cmd_volume_set = AsyncMock()
     mass.players.trigger_player_update = MagicMock()
+
+    # Player queues — external triggers route through player_queues.play_media now
+    mass.player_queues.play_media = AsyncMock()
+
+    # Streams — live metadata updates flow through update_stream_metadata
+    mass.streams.update_stream_metadata = MagicMock()
 
     return mass
 
@@ -1867,7 +1876,6 @@ class TestSyncProgress:
         provider = _make_provider()
         provider._actual_duration_ms = 200000
         provider._ynison = _mock_ynison()
-        provider._audio_source.metadata = MagicMock()
 
         # 5 seconds of 44100Hz/16bit/2ch audio
         byte_rate = 44100 * 2 * 2
@@ -1875,8 +1883,8 @@ class TestSyncProgress:
 
         await provider._sync_progress(0, bytes_yielded, "player1")
 
-        meta = provider._audio_source.metadata
-        assert meta.elapsed_time == 5
+        # live progress lives on _stream_metadata, pushed through streamdetails
+        assert provider._stream_metadata.elapsed_time == 5
         provider.mass.players.trigger_player_update.assert_called_with("player1")  # type: ignore[attr-defined]
         provider._ynison.update_playing_status.assert_awaited_once()
 
@@ -1885,7 +1893,6 @@ class TestSyncProgress:
         provider = _make_provider()
         provider._actual_duration_ms = 200000
         provider._ynison = _mock_ynison()
-        provider._audio_source.metadata = MagicMock()
 
         byte_rate = 44100 * 2 * 2
         bytes_yielded = byte_rate * 2  # 2 seconds of audio
@@ -1893,9 +1900,8 @@ class TestSyncProgress:
 
         await provider._sync_progress(seek_ms, bytes_yielded, "player1")
 
-        meta = provider._audio_source.metadata
         # 30000ms + 2000ms = 32000ms → 32s
-        assert meta.elapsed_time == 32
+        assert provider._stream_metadata.elapsed_time == 32
         assert provider._streaming_progress_ms == 32000
 
     async def test_no_player_id_skips_trigger(self) -> None:
@@ -1903,7 +1909,6 @@ class TestSyncProgress:
         provider = _make_provider()
         provider._actual_duration_ms = 200000
         provider._ynison = _mock_ynison()
-        provider._audio_source.metadata = MagicMock()
 
         await provider._sync_progress(0, 0, None)
 

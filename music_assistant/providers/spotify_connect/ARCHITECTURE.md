@@ -78,7 +78,7 @@ Unlike traditional Spotify integrations that require Web API authentication, Spo
 
 #### 3. **AudioSource Model**
 The provider exposes an `AudioSource` MediaItem that represents the Spotify Connect audio source.
-AudioSources are browseable under the global "Live Inputs" node and are played via the
+AudioSources are browsable under the global "Live Inputs" node and are played via the
 standard ``play_media`` flow — they appear in the player's queue as a single live item,
 the same way radio stations do.
 
