@@ -49,12 +49,19 @@ class HeosPlayerProvider(PlayerProvider):
         if ip_address := self.config.get_value(CONF_IP_ADDRESS):
             # Manual IP path
             ip_address = cast("str", ip_address)
-            await self._setup_controller(ip_address)
+            try:
+                await self._setup_controllers(ip_address)
+            except SetupFailedError:
+                self.logger.error(
+                    "Failed to set up HEOS controller at configured IP %s", ip_address
+                )
+                await self._disconnect_controllers()
+                raise
 
             # Explicitly discover players now
             await self.discover_players()
 
-    async def _setup_controller(self, controller_ip: str, connect_preferred: bool = False) -> None:
+    async def _setup_controllers(self, controller_ip: str, connect_preferred: bool = False) -> None:
         """Set up the HEOS controller."""
         self.logger.debug("Attempting HEOS controller setup on IP %s", controller_ip)
 
@@ -82,7 +89,7 @@ class HeosPlayerProvider(PlayerProvider):
                     )
                     await self._heos.disconnect()
                     # Set up controller with preferred host instead
-                    return await self._setup_controller(preferred_ips[0], connect_preferred=False)
+                    return await self._setup_controllers(preferred_ips[0], connect_preferred=False)
 
                 # Just log a warning, it still works but might be less reliable
                 self.logger.warning("Configured IP %s is not a preferred HEOS host", controller_ip)
@@ -199,17 +206,25 @@ class HeosPlayerProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        if self._heos:
-            self._heos.dispatcher.disconnect_all()  # Remove all event connections
-            await self._heos.disconnect()
-
-        if self._heos_queue:
-            self._heos_queue.dispatcher.disconnect_all()  # Remove all event connections
-            await self._heos_queue.disconnect()
+        await self._disconnect_controllers()
 
         for player in self.players:
             self.logger.debug("Unloading player %s", player.name)
             await self.mass.players.unregister(player.player_id)
+
+    async def _disconnect_controllers(self) -> None:
+        """Disconnect HEOS controller connections."""
+        if self._heos:
+            self._heos.dispatcher.disconnect_all()  # Remove all event connections
+            with suppress(Exception):
+                await self._heos.disconnect()
+            self._heos = None
+
+        if self._heos_queue:
+            self._heos_queue.dispatcher.disconnect_all()  # Remove all event connections
+            with suppress(Exception):
+                await self._heos_queue.disconnect()
+            self._heos_queue = None
 
     async def discover_players(self) -> None:
         """Discover players for this provider."""
@@ -268,15 +283,12 @@ class HeosPlayerProvider(PlayerProvider):
 
         self._controller_discovery_running = True
         try:
-            await self._setup_controller(device_ip, True)
+            await self._setup_controllers(device_ip, True)
         except SetupFailedError:
             self.logger.error(
                 "Failed to set up HEOS controller at %s discovered via mDNS", device_ip
             )
-            if self._heos:
-                with suppress(Exception):
-                    await self._heos.disconnect()
-                self._heos = None
+            await self._disconnect_controllers()
         finally:
             self._controller_discovery_running = False
 
