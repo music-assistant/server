@@ -209,6 +209,8 @@ async def test_browse_root_includes_non_music_providers() -> None:
     result = await controller.browse(path=None)
 
     assert [folder.path for folder in result] == ["m_a://", "p_a://"]  # type: ignore[union-attr]
-    calls = [c.args[0] if c.args else c.kwargs["feature"]
-             for c in mass.get_providers_supporting_feature.call_args_list]
+    calls = [
+        c.args[0] if c.args else c.kwargs["feature"]
+        for c in mass.get_providers_supporting_feature.call_args_list
+    ]
     assert ProviderFeature.BROWSE in calls
