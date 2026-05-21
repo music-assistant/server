@@ -1053,19 +1053,14 @@ class AIRadioRuntimeMixin:
             if status in {TaskStatus.SUCCESS, TaskStatus.PARTIAL_SUCCESS, TaskStatus.IDLE}:
                 return
             if status in {TaskStatus.FAILED, TaskStatus.CANCELLED}:
-                self.logger.warning(
-                    "Background task %s ended with status '%s' before AI Radio post-processing",
-                    task_id,
-                    status.value,
+                raise MusicAssistantError(
+                    f"Background task {task_id} ended with status '{status.value}' "
+                    "before AI Radio post-processing"
                 )
-                return
             if asyncio.get_running_loop().time() >= deadline:
-                self.logger.warning(
-                    "Timed out waiting for background task %s (status=%s)",
-                    task_id,
-                    status.value,
+                raise MusicAssistantError(
+                    f"Timed out waiting for background task {task_id} (last status={status.value})"
                 )
-                return
             await asyncio.sleep(0.1)
 
     def _is_builtin_provider_reference(self, provider_ref: str) -> bool:
