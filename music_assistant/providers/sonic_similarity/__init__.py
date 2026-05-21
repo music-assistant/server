@@ -61,6 +61,7 @@ USEARCH_INDEX_FILENAME_TPL = "sonic_signatures_{domain}_v{version}.usearch"
 USEARCH_INDEX_FILENAME_GLOB = "sonic_signatures_{domain}_v*.usearch"
 CONF_AA_PROVIDER = "aa_provider_domain"
 CONF_ENABLE_CLAP_INDEX = "enable_clap_index"
+CONF_ENABLE_TEXT_SEARCH = "enable_text_search"
 EXTRA_DATA_CLAP_EMBEDDING = "clap_embedding"
 
 
@@ -329,6 +330,18 @@ async def get_config_entries(
             "similarity via the sonic_similarity/similar_clap API. Requires no extra "
             "downloads — uses embeddings already on disk.",
         ),
+        ConfigEntry(
+            key=CONF_ENABLE_TEXT_SEARCH,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=False,
+            label="Enable free-text search",
+            description="Enable natural-language track search (e.g. 'super dancy disco') via "
+            "the CLAP GPT2 text encoder, exposed as sonic_similarity/text_search. "
+            "First-time use lazily downloads ~500MB of GPT2 weights to the local "
+            "HuggingFace cache — the model is loaded on the first query, not at plugin "
+            "start. Implicitly enables the CLAP embedding index above (text and audio "
+            "share the same 1024-dim joint embedding space).",
+        ),
     )
 
 
@@ -358,9 +371,13 @@ class SonicSimilarityPlugin(PluginProvider):
         self._search_index: Any = None
         self._unregister_handles: list[Callable[[], None]] = []
         self._rebuild_lock = asyncio.Lock()
-        # CLAP index — only populated when CONF_ENABLE_CLAP_INDEX is true.
+        # CLAP index — only populated when CONF_ENABLE_CLAP_INDEX is true
+        # (or implicitly via CONF_ENABLE_TEXT_SEARCH, which requires it).
         self._clap_index: ClapIndex | None = None
         self._clap_rebuild_lock = asyncio.Lock()
+        # CLAP text encoder — lazy: stays None until the first text_search call.
+        self._text_encoder: Any = None
+        self._text_encoder_lock = asyncio.Lock()
 
     async def loaded_in_mass(self) -> None:
         """Register similarity API commands and build the search index."""
@@ -387,7 +404,12 @@ class SonicSimilarityPlugin(PluginProvider):
             self.corpus_means is not None,
         )
 
-        if bool(self.config.get_value(CONF_ENABLE_CLAP_INDEX)):
+        text_search_enabled = bool(self.config.get_value(CONF_ENABLE_TEXT_SEARCH))
+        # Text search requires the 1024-dim CLAP index — silently auto-enable it
+        # when text search is on, since they share the same joint embedding space.
+        clap_enabled = bool(self.config.get_value(CONF_ENABLE_CLAP_INDEX)) or text_search_enabled
+
+        if clap_enabled:
             self._clap_index = ClapIndex(self.mass, self.logger)
             await self._clap_index.load()
             self._unregister_handles.append(
@@ -397,6 +419,15 @@ class SonicSimilarityPlugin(PluginProvider):
             )
             await self._rebuild_clap_index_from_database()
             self.logger.info("CLAP index ready: %d embeddings", len(self._clap_index))
+
+        if text_search_enabled:
+            # Encoder load is deferred to the first /text_search call (lazy).
+            self._unregister_handles.append(
+                self.mass.register_api_command(
+                    "sonic_similarity/text_search", self._handle_text_search
+                )
+            )
+            self.logger.info("Text search ready (encoder will load on first query)")
 
     async def unload(self, is_removed: bool = False) -> None:
         """Unregister API commands; delete on-disk indexes when the provider is uninstalled."""
@@ -409,6 +440,8 @@ class SonicSimilarityPlugin(PluginProvider):
             except Exception as err:  # noqa: BLE001
                 self.logger.debug("CLAP index close failed: %s", err)
             self._clap_index = None
+        # Drop encoder ref so its (large) tensors can be GC'd.
+        self._text_encoder = None
         if is_removed:
             self._search_index = None
             await asyncio.to_thread(self._delete_all_index_files)
@@ -683,12 +716,15 @@ class SonicSimilarityPlugin(PluginProvider):
     async def _handle_status(self) -> dict[str, Any]:
         """Return current analysis status."""
         index_size = len(self._search_index) if self._search_index is not None else 0
+        text_search_enabled = bool(self.config.get_value(CONF_ENABLE_TEXT_SEARCH))
         status: dict[str, Any] = {
             "index_size": index_size,
             "has_corpus_stats": self.corpus_means is not None,
             "cached_signatures": len(self._signature_cache),
             "aa_provider_domain": self._aa_domain,
             "clap_index_enabled": self._clap_index is not None,
+            "text_search_enabled": text_search_enabled,
+            "text_encoder_loaded": self._text_encoder is not None,
         }
         if self._clap_index is not None:
             status["clap_index_size"] = len(self._clap_index)
@@ -1124,3 +1160,103 @@ class SonicSimilarityPlugin(PluginProvider):
             "seed_track_id": item_id,
             "items": items,
         }
+
+    # ------------------------------------------------------------------
+    # Optional natural-language text search (lazy GPT2 text encoder)
+    # ------------------------------------------------------------------
+
+    async def _get_text_encoder(self) -> Any:
+        """Return a CLAP wrapper with the text encoder loaded; lazy-load on first call.
+
+        Re-entrancy is guarded by self._text_encoder_lock so that two concurrent
+        first-callers can't both pay the ~30s download + load cost.
+        """
+        existing = self._text_encoder
+        if existing is not None:
+            return existing
+        async with self._text_encoder_lock:
+            existing = self._text_encoder
+            if existing is not None:
+                return existing
+            try:
+                self._text_encoder = await asyncio.to_thread(self._load_text_encoder)
+                self.logger.info("CLAP text encoder loaded (lazy)")
+            except Exception as err:  # noqa: BLE001
+                self.logger.warning("CLAP text encoder load failed: %s", err)
+                self._text_encoder = None
+        return self._text_encoder
+
+    @staticmethod
+    def _load_text_encoder() -> Any:
+        """Construct a CLAP wrapper with the GPT2 text encoder enabled.
+
+        Runs on a worker thread (see _get_text_encoder). First call may block
+        for tens of seconds while ~500MB of GPT2 weights download into the
+        local HuggingFace cache; subsequent calls hit the cache.
+        """
+        from music_assistant.providers.sonic_analysis.vendored_clap import (  # noqa: PLC0415
+            CLAP,
+        )
+
+        return CLAP(version="2023", use_cuda=False, text_enabled=True)
+
+    async def _handle_text_search(
+        self, query: str, limit: int = 25, resolve: bool = False
+    ) -> dict[str, Any]:
+        """Return tracks closest to a natural-language query in CLAP's joint space.
+
+        :param query: Free-text query (e.g. "super dancy disco track").
+        :param limit: Max matches to return.
+        :param resolve: When True, include track name and artist for each item.
+        """
+        if self._clap_index is None or len(self._clap_index) == 0:
+            return {
+                "analyzed": False,
+                "reason": "clap_index_empty",
+                "query": query,
+                "items": [],
+            }
+        encoder = await self._get_text_encoder()
+        if encoder is None:
+            return {
+                "analyzed": False,
+                "reason": "text_encoder_unavailable",
+                "query": query,
+                "items": [],
+            }
+        text_emb = await asyncio.to_thread(encoder.get_text_embeddings, [query])
+        emb_np = text_emb[0].detach().cpu().numpy().astype(np.float32).reshape(-1)
+        matches = await self._clap_index.search(emb_np, limit)
+
+        if not resolve:
+            return {
+                "analyzed": True,
+                "query": query,
+                "items": [
+                    {
+                        "provider": prov,
+                        "item_id": iid,
+                        "distance": round(float(dist), 4),
+                    }
+                    for prov, iid, dist in matches
+                ],
+            }
+
+        async def _resolve(provider: str, item_id: str, distance: float) -> dict[str, Any]:
+            entry: dict[str, Any] = {
+                "provider": provider,
+                "item_id": item_id,
+                "distance": round(float(distance), 4),
+                "name": "(unknown)",
+                "artist": "",
+            }
+            try:
+                track = await self.mass.music.tracks.get(item_id, provider)
+                entry["name"] = track.name
+                entry["artist"] = ", ".join(a.name for a in getattr(track, "artists", []) or [])
+            except MusicAssistantError as err:
+                self.logger.debug("Could not resolve %s/%s: %s", provider, item_id, err)
+            return entry
+
+        items = list(await asyncio.gather(*[_resolve(p, i, d) for p, i, d in matches]))
+        return {"analyzed": True, "query": query, "items": items}
