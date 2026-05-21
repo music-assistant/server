@@ -330,6 +330,10 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
             selected = self._sessions.get(session_id)
             if selected is None:
                 raise KeyError(f"Unknown session id: {session_id}")
+            if selected.status != "running":
+                raise InvalidDataError(
+                    f"Session {session_id} is not running (status={selected.status})"
+                )
             return selected
 
         running = [session for session in self._sessions.values() if session.status == "running"]
