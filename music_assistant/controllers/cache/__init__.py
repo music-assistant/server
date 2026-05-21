@@ -8,7 +8,7 @@ from .constants import (
     MAX_CACHE_DB_SIZE_MB,
     SerializableType,
 )
-from .controller import CacheController
+from .controller import CacheController, CacheEntry
 from .helpers import use_cache
 
 __all__ = [
@@ -16,6 +16,7 @@ __all__ = [
     "DEFAULT_CACHE_EXPIRATION",
     "MAX_CACHE_DB_SIZE_MB",
     "CacheController",
+    "CacheEntry",
     "SerializableType",
     "use_cache",
 ]

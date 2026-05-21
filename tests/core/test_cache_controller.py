@@ -9,7 +9,11 @@ from unittest.mock import AsyncMock, patch
 import aiofiles
 import pytest
 
-from music_assistant.controllers.cache import MAX_CACHE_DB_SIZE_MB, CacheController
+from music_assistant.controllers.cache import (
+    MAX_CACHE_DB_SIZE_MB,
+    CacheController,
+    CacheEntry,
+)
 from music_assistant.mass import MusicAssistant
 
 
@@ -369,3 +373,94 @@ async def test_skip_vacuum_when_cache_reset(
         await cache._setup_database()
 
     assert "Compacting database" not in caplog.text
+
+
+# --- get_entry (stale-while-revalidate support) ---
+
+
+async def test_get_entry_returns_none_when_missing(cache: CacheController) -> None:
+    """Test that get_entry returns None when no row exists."""
+    result = await cache.get_entry("missing", provider="test")
+    assert result is None
+
+
+async def test_get_entry_returns_fresh_entry(cache: CacheController) -> None:
+    """Test that get_entry returns is_expired=False for fresh entries."""
+    await cache.set("fresh", "data", provider="test", expiration=3600)
+    result = await cache.get_entry("fresh", provider="test")
+    assert isinstance(result, CacheEntry)
+    assert result.data == "data"
+    assert result.is_expired is False
+
+
+async def test_get_entry_returns_expired_entry(cache: CacheController) -> None:
+    """Test that get_entry returns expired data with is_expired=True."""
+    await cache.set("stale", "old_data", provider="test", expiration=-1, use_expired_cache=True)
+    result = await cache.get_entry("stale", provider="test")
+    assert isinstance(result, CacheEntry)
+    assert result.data == "old_data"
+    assert result.is_expired is True
+
+
+async def test_get_entry_with_base_class(cache: CacheController) -> None:
+    """Test that get_entry reconstructs data via base_class."""
+    await cache.set("model", {"name": "x", "value": 7}, provider="test")
+    result = await cache.get_entry("model", provider="test", base_class=_FakeModel)
+    assert result is not None
+    assert isinstance(result.data, _FakeModel)
+    assert result.data.name == "x"
+    assert result.data.value == 7
+
+
+async def test_get_entry_with_base_class_list(cache: CacheController) -> None:
+    """Test that get_entry reconstructs list items via base_class."""
+    await cache.set("models", [{"name": "a"}, {"name": "b"}], provider="test")
+    result = await cache.get_entry("models", provider="test", base_class=_FakeModel)
+    assert result is not None
+    assert isinstance(result.data, list)
+    assert all(isinstance(item, _FakeModel) for item in result.data)
+
+
+async def test_get_entry_respects_checksum_mismatch(cache: CacheController) -> None:
+    """Test that get_entry returns None when checksum mismatches."""
+    await cache.set("ck", "data", provider="test", checksum="abc")
+    result = await cache.get_entry("ck", provider="test", checksum="xyz")
+    assert result is None
+
+
+async def test_get_entry_honours_bypass_cache(cache: CacheController) -> None:
+    """Test that get_entry returns None inside a BYPASS_CACHE context."""
+    await cache.set("bp", "data", provider="test")
+    async with cache.handle_refresh(bypass=True):
+        result = await cache.get_entry("bp", provider="test")
+    assert result is None
+
+
+# --- use_expired_cache flag survives auto_cleanup ---
+
+
+async def test_auto_cleanup_removes_expired_entries(cache: CacheController) -> None:
+    """Test that auto_cleanup removes expired entries by default."""
+    await cache.set("evict", "data", provider="test", expiration=-1)
+    await cache.auto_cleanup()
+    result = await cache.get("evict", provider="test", default="gone")
+    assert result == "gone"
+
+
+async def test_auto_cleanup_keeps_use_expired_cache_entries(
+    cache: CacheController,
+) -> None:
+    """Test that auto_cleanup keeps expired entries with use_expired_cache=True."""
+    await cache.set("keep", "data", provider="test", expiration=-1, use_expired_cache=True)
+    await cache.auto_cleanup()
+    result = await cache.get_entry("keep", provider="test")
+    assert result is not None
+    assert result.is_expired is True
+    assert result.data == "data"
+
+
+async def test_auto_cleanup_keeps_fresh_entries(cache: CacheController) -> None:
+    """Test that auto_cleanup keeps fresh entries regardless of the flag."""
+    await cache.set("alive", "data", provider="test", expiration=3600)
+    await cache.auto_cleanup()
+    assert await cache.get("alive", provider="test") == "data"

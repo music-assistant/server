@@ -6,7 +6,11 @@ import functools
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast, get_type_hints
 
-from music_assistant.controllers.cache.constants import DEFAULT_CACHE_EXPIRATION, SerializableType
+from music_assistant.controllers.cache.constants import (
+    DEFAULT_CACHE_EXPIRATION,
+    LOGGER,
+    SerializableType,
+)
 from music_assistant.helpers.api import parse_value
 
 if TYPE_CHECKING:
@@ -26,6 +30,7 @@ def use_cache(
     cache_checksum: str | None = None,
     allow_bypass: bool | None = None,
     base_class: Any = None,
+    use_expired_cache: bool = False,
 ) -> Callable[
     [Callable[Concatenate[ProviderT, P], Awaitable[R]]],
     Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]],
@@ -41,6 +46,10 @@ def use_cache(
     :param base_class: If provided, reconstruct cached data using base_class.from_dict().
         Handles both single dicts and lists of dicts automatically.
         If not provided, falls back to type-annotation based reconstruction.
+    :param use_expired_cache: If True, enable stale-while-revalidate. When the cached
+        entry has expired, return it immediately and trigger a background refresh that
+        re-runs the wrapped function and updates the cache. Expired entries also
+        survive the cache auto-cleanup task so they remain available as fallback data.
     """
     if allow_bypass is None:
         allow_bypass = not persistent
@@ -48,6 +57,13 @@ def use_cache(
     def _decorator(
         func: Callable[Concatenate[ProviderT, P], Awaitable[R]],
     ) -> Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]]:
+        def _reconstruct(cachedata: Any) -> R:
+            if base_class is not None:
+                return cast("R", cachedata)
+            # fallback: reconstruct using type annotations
+            type_hints = get_type_hints(func)
+            return cast("R", parse_value(func.__name__, cachedata, type_hints["return"]))
+
         @functools.wraps(func)
         async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
             cache = self.mass.cache
@@ -58,7 +74,54 @@ def use_cache(
             for key in sorted(kwargs.keys()):
                 cache_key_parts.append(f"{key}{kwargs[key]}")
             cache_key = ".".join(map(str, cache_key_parts))
-            # try to retrieve data from the cache
+
+            def _store_task(result: R) -> Any:
+                return cache.set(
+                    key=cache_key,
+                    data=cast("SerializableType", result),
+                    expiration=expiration,
+                    provider=provider_id,
+                    category=category,
+                    checksum=cache_checksum,
+                    persistent=persistent,
+                    use_expired_cache=use_expired_cache,
+                )
+
+            if use_expired_cache:
+                entry = await cache.get_entry(
+                    cache_key,
+                    provider=provider_id,
+                    checksum=cache_checksum,
+                    category=category,
+                    base_class=base_class,
+                )
+                if entry is not None:
+                    if entry.is_expired:
+                        # serve stale data and refresh in the background;
+                        # task_id deduplicates concurrent refreshes for the same entry
+                        async def _background_refresh() -> None:
+                            try:
+                                result = await func(self, *args, **kwargs)
+                                await _store_task(result)
+                            except Exception as exc:
+                                LOGGER.warning(
+                                    "Background cache refresh failed for %s/%s: %s",
+                                    provider_id,
+                                    cache_key,
+                                    exc,
+                                )
+
+                        self.mass.create_task(
+                            _background_refresh(),
+                            task_id=f"cache_refresh.{provider_id}.{cache_key}",
+                        )
+                    return _reconstruct(entry.data)
+                # cache miss: fetch synchronously, store in background
+                result = await func(self, *args, **kwargs)
+                self.mass.create_task(_store_task(result))
+                return result
+
+            # default flow (no SWR)
             cachedata = await cache.get(
                 cache_key,
                 provider=provider_id,
@@ -68,25 +131,11 @@ def use_cache(
                 base_class=base_class,
             )
             if cachedata is not None:
-                if base_class is not None:
-                    return cast("R", cachedata)
-                # fallback: reconstruct using type annotations
-                type_hints = get_type_hints(func)
-                return cast("R", parse_value(func.__name__, cachedata, type_hints["return"]))
+                return _reconstruct(cachedata)
             # get data from method/provider
             result = await func(self, *args, **kwargs)
             # store result in cache (but don't await)
-            self.mass.create_task(
-                cache.set(
-                    key=cache_key,
-                    data=cast("SerializableType", result),
-                    expiration=expiration,
-                    provider=provider_id,
-                    category=category,
-                    checksum=cache_checksum,
-                    persistent=persistent,
-                )
-            )
+            self.mass.create_task(_store_task(result))
             return result
 
         return wrapper
