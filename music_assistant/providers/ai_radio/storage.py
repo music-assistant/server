@@ -283,6 +283,16 @@ class AIRadioStorageMixin:
             if not merge_section or str(merge_section.get("type", "")).strip().lower() != "ai_meta":
                 raise InvalidDataError("merge_section_id must reference an ai_meta section")
 
+        def _require_number(field: str, raw: Any, default: float, cast: type) -> Any:
+            if raw is None or raw == "":
+                return default
+            try:
+                return cast(raw)
+            except (TypeError, ValueError) as err:
+                raise InvalidDataError(
+                    f"Station '{name}' field {field!r} must be numeric (got {raw!r})"
+                ) from err
+
         return {
             "id": station_id,
             "name": name,
@@ -290,11 +300,30 @@ class AIRadioStorageMixin:
             "source_playlist_provider": source_playlist_provider,
             "target_playlist_provider": str(station.get("target_playlist_provider", "builtin")),
             "default_player_id": str(station.get("default_player_id", "")),
-            "max_duration_minutes": float(station.get("max_duration_minutes", 0) or 0),
-            "dynamic_batch_size": max(1, int(station.get("dynamic_batch_size", 1) or 1)),
-            "dynamic_poll_seconds": max(1, int(station.get("dynamic_poll_seconds", 5) or 5)),
+            "max_duration_minutes": max(
+                0.0,
+                _require_number(
+                    "max_duration_minutes", station.get("max_duration_minutes"), 0.0, float
+                ),
+            ),
+            "dynamic_batch_size": max(
+                1,
+                _require_number("dynamic_batch_size", station.get("dynamic_batch_size"), 1, int),
+            ),
+            "dynamic_poll_seconds": max(
+                1,
+                _require_number(
+                    "dynamic_poll_seconds", station.get("dynamic_poll_seconds"), 5, int
+                ),
+            ),
             "dynamic_prefetch_remaining_tracks": max(
-                1, int(station.get("dynamic_prefetch_remaining_tracks", 2) or 2)
+                1,
+                _require_number(
+                    "dynamic_prefetch_remaining_tracks",
+                    station.get("dynamic_prefetch_remaining_tracks"),
+                    2,
+                    int,
+                ),
             ),
             "clear_queue_on_start": bool(station.get("clear_queue_on_start", True)),
             "merge_section_id": merge_section_id,
