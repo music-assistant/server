@@ -70,8 +70,10 @@ class AIRadioStorageMixin:
         if not parsed:
             defaults = self._default_sections_template()
             parsed = {item["id"]: item for item in defaults}
+            self._sections = parsed
             await self._write_sections()
-        self._sections = parsed
+        else:
+            self._sections = parsed
 
     async def _write_sections(self) -> None:
         """Persist shared section definitions to disk."""
