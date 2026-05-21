@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import Album
 
@@ -71,6 +72,11 @@ CONF_LABEL_STATUS_TEXT = "status_label_text"
 # Action keys dispatched back into get_config_entries via the ACTION button entries.
 ACTION_REBUILD_18DIM = "rebuild_18dim_index"
 ACTION_REBUILD_CLAP = "rebuild_clap_index"
+
+# Features exposed to the cross-provider dispatcher in controllers/media/tracks.py.
+# Declared unconditionally; get_similar_tracks returns [] until the corpus is ready,
+# which the dispatcher treats as "try the next provider" via its truthy check.
+SUPPORTED_FEATURES = {ProviderFeature.SIMILAR_TRACKS}
 
 
 def _parse_clap_embedding(raw: Any) -> np.ndarray | None:
@@ -300,7 +306,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider instance with given configuration."""
-    return SonicSimilarityPlugin(mass, manifest, config)
+    return SonicSimilarityPlugin(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def _collect_status_text(
@@ -486,9 +492,10 @@ class SonicSimilarityPlugin(PluginProvider):
         mass: MusicAssistant,
         manifest: ProviderManifest,
         config: ProviderConfig,
+        supported_features: set[ProviderFeature] | None = None,
     ) -> None:
         """Initialize the Sonic Similarity plugin."""
-        super().__init__(mass, manifest, config)
+        super().__init__(mass, manifest, config, supported_features)
         self._aa_domain: str = "sonic_analysis"
         self._label_map: dict[int, tuple[str, str]] = {}
         # _signature_cache is keyed on (item_id, provider) so a track that
@@ -845,6 +852,60 @@ class SonicSimilarityPlugin(PluginProvider):
                 entry.update(debug_breakdown_map[cid])
             items.append(entry)
         return items
+
+    # ------------------------------------------------------------------
+    # Cross-provider SIMILAR_TRACKS hook (PluginProvider feature surface)
+    # ------------------------------------------------------------------
+
+    async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
+        """Implement ProviderFeature.SIMILAR_TRACKS via the 18-dim engine.
+
+        Called by mass.music.tracks.similar_tracks() when no MusicProvider
+        mapping yielded similar tracks itself (see
+        controllers/media/tracks.py:378-387). Returns [] when the corpus
+        isn't ready, when none of the track's provider mappings are
+        indexed, or when the engine returns no candidates — all three
+        states are interchangeable to the dispatcher's truthy check.
+
+        :param track: Full Track object (with provider_mappings) as
+            handed to us by the cross-provider dispatcher.
+        :param limit: Max number of similar tracks to return.
+        """
+        if self.corpus_means is None or not self._signature_cache:
+            return []
+
+        # Pick the first provider mapping that's actually indexed. Skip the
+        # library aggregator since audio_analysis is keyed on the streaming
+        # provider's item_id, not on library numeric ids — the discover row
+        # uses the same logic.
+        seed_item_id: str | None = None
+        for mapping in track.provider_mappings or ():
+            if mapping.provider_domain == "library":
+                continue
+            if (mapping.item_id, mapping.provider_instance) in self._signature_cache:
+                seed_item_id = mapping.item_id
+                break
+            # Fall back to provider_by_item_id (last-write-wins by item_id only),
+            # which is how the public /similar handler resolves seeds too.
+            if mapping.item_id in self._signatures_by_id:
+                seed_item_id = mapping.item_id
+                break
+        if seed_item_id is None:
+            return []
+
+        response = await self._handle_similar(item_id=seed_item_id, limit=limit)
+        items = response.get("items") or []
+        if not items:
+            return []
+
+        async def _resolve(entry: dict[str, Any]) -> Track | None:
+            try:
+                return await self.mass.music.tracks.get(entry["item_id"], entry["provider"])
+            except MusicAssistantError:
+                return None
+
+        resolved = await asyncio.gather(*[_resolve(e) for e in items])
+        return [t for t in resolved if t is not None]
 
     async def _handle_status(self) -> dict[str, Any]:
         """Return current analysis status."""
