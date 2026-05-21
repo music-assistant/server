@@ -910,6 +910,15 @@ class MusicController(CoreController):
     ) -> None:
         """Add an item to the favorites."""
         if isinstance(item, str):
+            # Inspect the URI's media_type first so a stale audio-source URI
+            # whose plugin is unloaded gives the honest rejection error
+            # instead of bubbling MediaNotFoundError from get_item_by_uri.
+            try:
+                uri_media_type, _, _ = await parse_uri(item)
+            except (InvalidProviderURI, InvalidProviderID):
+                uri_media_type = None
+            if uri_media_type == MediaType.AUDIO_SOURCE:
+                raise UnsupportedFeaturedException("AudioSource items can not be favorites")
             item = await self.get_item_by_uri(item)
         if item.media_type == MediaType.AUDIO_SOURCE:
             # AudioSources are dynamic plugin surfaces (existence depends on a

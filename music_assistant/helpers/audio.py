@@ -8,6 +8,7 @@ import re
 import struct
 import urllib.parse
 from collections.abc import AsyncGenerator, Iterator
+from contextlib import aclosing
 from io import BytesIO
 from typing import TYPE_CHECKING, Final
 
@@ -349,25 +350,33 @@ async def audio_source_silence_keepalive(
     :param idle_threshold_s: Seconds without input before silence is inserted.
     :param silence_chunk_ms: Duration of each silence chunk in milliseconds.
     """
+    frame_size = pcm_format.channels * (pcm_format.bit_depth // 8)
     bytes_per_second = (
-        pcm_format.sample_rate * pcm_format.channels * (pcm_format.bit_depth // 8)
-        if pcm_format.content_type.is_pcm()
-        else 0
+        pcm_format.sample_rate * frame_size if pcm_format.content_type.is_pcm() else 0
     )
-    if bytes_per_second <= 0:
+    if bytes_per_second <= 0 or frame_size <= 0:
         # non-PCM or malformed format: pass through unchanged, no silence injection
         async for chunk in inner:
             yield chunk
         return
 
-    silence_chunk = b"\x00" * (bytes_per_second * silence_chunk_ms // 1000)
+    # Round the silence chunk size DOWN to a whole-frame multiple so emitted
+    # chunks line up to PCM frame boundaries for arbitrary silence_chunk_ms /
+    # sample-rate combinations.
+    raw_silence_bytes = bytes_per_second * silence_chunk_ms // 1000
+    silence_bytes = max(frame_size, (raw_silence_bytes // frame_size) * frame_size)
+    silence_chunk = b"\x00" * silence_bytes
     # empty bytes is the end-of-stream sentinel; real PCM frames are never empty
     queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=8)
 
     async def _producer() -> None:
+        # aclosing ensures inner.aclose() runs on cancellation so the underlying
+        # generator's own finally (e.g. plugin lock release, fd cleanup) fires
+        # instead of leaking until GC.
         try:
-            async for chunk in inner:
-                await queue.put(chunk)
+            async with aclosing(inner) as managed_inner:
+                async for chunk in managed_inner:
+                    await queue.put(chunk)
         finally:
             await queue.put(b"")
 

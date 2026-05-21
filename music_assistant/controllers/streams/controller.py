@@ -454,13 +454,21 @@ class StreamsController(CoreController):
         # would also let a follow-up GET skip the claim entirely, breaking
         # subsequent metadata updates that gate on the lock being held.
         if request.method != "GET" and is_audio_source:
+            # For PCM-fmt URLs, advertise audio/wav in HEAD: most DLNA renderers
+            # key off the HEAD Content-Type to pick a decoder and do not handle
+            # raw PCM (application/octet-stream). The actual GET response will
+            # still wrap the bytes into a WAV container if needed via the same
+            # mime-type translation downstream.
+            head_fmt = request.match_info["fmt"]
+            if ContentType.try_parse(head_fmt).is_pcm():
+                head_fmt = ContentType.WAV.value
             headers = {
                 **DEFAULT_STREAM_HEADERS,
                 "icy-name": queue_item.name.replace("\n", " ")
                 .replace("\r", " ")
                 .replace("\t", " "),
                 "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_REALTIME,
-                "Content-Type": get_mime_type(request.match_info["fmt"]),
+                "Content-Type": get_mime_type(head_fmt),
             }
             resp = web.StreamResponse(status=200, reason="OK", headers=headers)
             await resp.prepare(request)

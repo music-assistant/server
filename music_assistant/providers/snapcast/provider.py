@@ -576,10 +576,12 @@ class SnapCastProvider(PlayerProvider):
             stream_name += hashlib.md5(media.uri.encode()).hexdigest()[:6]
             name_suffix = MASS_ANNOUNCEMENT_POSTFIX
         elif media.media_type == MediaType.AUDIO_SOURCE and media.source_id:
-            # AudioSource queue items: scope the stream to the queue (media.source_id)
-            # and include the source's display title so simultaneous AudioSources on
-            # different players get distinct snapcast stream names
-            stream_name += f"{media.title or ''} {media.source_id}"
+            # AudioSource queue items: scope the stream to the queue (media.source_id).
+            # The source_id (= queue id) is already unique per consumer, so the
+            # display title is not needed for uniqueness — and would be unsafe
+            # to include raw since AudioSource names may contain spaces and
+            # punctuation that snapcast stream names reject.
+            stream_name += media.source_id
             source_id = media.source_id
         elif media.source_id and media.source_id.startswith(UGP_PREFIX):
             stream_name += media.source_id

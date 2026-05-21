@@ -51,6 +51,7 @@ from music_assistant_models.errors import (
     ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
+from music_assistant_models.media_items import AudioSource
 from music_assistant_models.player import PlayerOptionValueType  # noqa: TC002
 from music_assistant_models.player_control import PlayerControl  # noqa: TC002
 
@@ -124,7 +125,6 @@ if TYPE_CHECKING:
         CoreConfig,
         PlayerConfig,
     )
-    from music_assistant_models.media_items import AudioSource
     from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant import MusicAssistant
@@ -2365,12 +2365,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if current_item is None or current_item.media_item is None:
             return None
         media_item = current_item.media_item
-        if media_item.media_type != MediaType.AUDIO_SOURCE:
+        # isinstance check defends against a non-AudioSource subclass that
+        # somehow has media_type=AUDIO_SOURCE set (mutated or constructed wrong)
+        # — the media_type guard alone would let it through and crash later.
+        if not isinstance(media_item, AudioSource):
             return None
         provider = self.mass.get_provider(media_item.provider)
         if not isinstance(provider, PluginProvider):
             return None
-        return cast("AudioSource", media_item), provider
+        return media_item, provider
 
     def _get_player_groups(
         self, player: Player, available_only: bool = True, powered_only: bool = False

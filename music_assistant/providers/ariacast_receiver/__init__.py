@@ -314,20 +314,18 @@ class AriaCastBridge(PluginProvider):
         # Check if manual player switching is allowed
         if not self._allow_player_switch:
             current_target = self._get_target_player_id()
-            if player_id != current_target:
+            if player_id != current_target and current_target:
                 self.logger.debug(
-                    "Manual player switching disabled, ignoring selection on %s",
+                    "Manual player switching disabled, redirecting selection from %s to %s",
                     player_id,
+                    current_target,
                 )
-                # bounce back to the configured target
-                if current_target:
-                    await self.mass.player_queues.play_media(
-                        current_target, str(self._audio_source.uri)
-                    )
+                await self.mass.player_queues.play_media(
+                    current_target, str(self._audio_source.uri)
+                )
                 # Raising aborts the original request so it cannot continue
-                # into get_stream_details and claim the exclusive source for
-                # the disallowed player. The redirect above (when there is a
-                # valid target) starts the stream on the configured target
+                # into get_stream_details and stream to the disallowed player.
+                # The redirect above starts the stream on the configured target
                 # via a separate request.
                 raise RuntimeError(
                     f"Player switching disabled; source must remain on {current_target}"

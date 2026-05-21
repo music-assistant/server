@@ -511,8 +511,22 @@ class SpotifyConnectProvider(PluginProvider):
     def _update_source_capabilities(self) -> None:
         """Rebuild the AudioSource so capability flags reflect Web API availability."""
         self._audio_source = self._build_audio_source()
-        # Trigger player update so the frontend re-reads capability flags
+        # The currently playing queue item carries a SNAPSHOT of the old
+        # AudioSource — overwrite it so the new capability flags reach the UI
+        # without waiting for the next play_media. Signal the queue update so
+        # the frontend re-renders the controls (play/pause, next/prev) live.
         if self._in_use_by_queue:
+            queue = self.mass.player_queues.get(self._in_use_by_queue)
+            if (
+                queue
+                and queue.current_item
+                and queue.current_item.media_item is not None
+                and queue.current_item.media_item.media_type == MediaType.AUDIO_SOURCE
+                and queue.current_item.media_item.item_id == AUDIO_SOURCE_ID
+                and queue.current_item.media_item.provider == self.instance_id
+            ):
+                queue.current_item.media_item = self._audio_source
+                self.mass.player_queues.signal_update(self._in_use_by_queue, items_changed=True)
             self.mass.players.trigger_player_update(self._in_use_by_queue)
 
     async def _on_play(self) -> None:
