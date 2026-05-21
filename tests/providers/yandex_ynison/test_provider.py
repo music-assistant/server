@@ -1785,9 +1785,13 @@ class TestPausePlayback:
 
         assert provider._stream_stop_event.is_set()
         provider.mass.players.cmd_stop.assert_awaited_once_with("player1")  # type: ignore[attr-defined]
-        assert provider._in_use_by_queue is None
+        # _pause_playback no longer pre-clears _in_use_by_queue — the lock
+        # release is owned by serve_queue_item_stream's finally calling
+        # on_source_unselected after cmd_stop's stream drain completes.
+        # Clearing here would double-write against the session-id guard.
+        assert provider._in_use_by_queue == "player1"
         # Progress is preserved for resume
-        assert provider._streaming_progress_ms == 50000  # type: ignore[unreachable]
+        assert provider._streaming_progress_ms == 50000
 
     async def test_no_active_player(self) -> None:
         """Pause with no active player just sets stop event."""

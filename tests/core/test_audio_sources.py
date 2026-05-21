@@ -478,6 +478,7 @@ class TestUpdateStreamMetadata:
         # bypass __init__ to avoid wiring the full controller
         controller = StreamsController.__new__(StreamsController)
         controller.mass = mass
+        controller.logger = MagicMock()
 
         controller.update_stream_metadata("missing", "main", "x", StreamMetadata(title="t"))
         mass.player_queues.signal_update.assert_not_called()
@@ -495,6 +496,7 @@ class TestUpdateStreamMetadata:
 
         controller = StreamsController.__new__(StreamsController)
         controller.mass = mass
+        controller.logger = MagicMock()
 
         controller.update_stream_metadata("q1", "main", "x", StreamMetadata(title="t"))
         mass.player_queues.signal_update.assert_not_called()
@@ -519,6 +521,7 @@ class TestUpdateStreamMetadata:
 
         controller = StreamsController.__new__(StreamsController)
         controller.mass = mass
+        controller.logger = MagicMock()
 
         new_meta = StreamMetadata(title="Now Playing")
         controller.update_stream_metadata("q1", "y", "x", new_meta)
@@ -547,6 +550,7 @@ class TestUpdateStreamMetadata:
 
         controller = StreamsController.__new__(StreamsController)
         controller.mass = mass
+        controller.logger = MagicMock()
 
         controller.update_stream_metadata("q1", "y", "x", StreamMetadata(title="stale"))
         assert sd.stream_metadata is None
@@ -572,6 +576,7 @@ class TestUpdateStreamMetadata:
 
         controller = StreamsController.__new__(StreamsController)
         controller.mass = mass
+        controller.logger = MagicMock()
 
         # Wrong provider
         controller.update_stream_metadata(

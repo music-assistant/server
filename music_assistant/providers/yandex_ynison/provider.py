@@ -938,15 +938,19 @@ class YandexYnisonProvider(PluginProvider):
         self._stream_stop_event.set()
         # Preserve the last known position for same-track resume.
         self._streaming_progress_ms = paused_progress_ms
+        # Don't pre-clear _in_use_by_queue here — let cmd_stop flow through to
+        # serve_queue_item_stream's finally, which fires on_source_unselected
+        # with the matching stream_session_id and clears both the lock and the
+        # session id together. Clearing the lock here while the session id
+        # stays set is exactly the double-write the session-id system was
+        # designed to prevent.
         player_id = self._in_use_by_queue
         if player_id:
             try:
                 await self.mass.players.cmd_stop(player_id)
             except Exception:
                 self.logger.debug("Failed to stop player %s on pause", player_id)
-            if self._in_use_by_queue == player_id:
-                self._in_use_by_queue = None
-                self.mass.players.trigger_player_update(player_id)
+            self.mass.players.trigger_player_update(player_id)
 
     # ------------------------------------------------------------------
     # Player selection
@@ -1206,21 +1210,29 @@ class YandexYnisonProvider(PluginProvider):
         self._audio_source = self._build_audio_source()
         # The currently playing queue item carries a SNAPSHOT of the old
         # AudioSource — overwrite it so the new capability flags reach the UI
-        # without waiting for the next play_media. Signal the queue update so
-        # the frontend re-renders the controls (play/pause, next/prev) live.
-        if self._in_use_by_queue:
-            queue = self.mass.player_queues.get(self._in_use_by_queue)
-            if (
-                queue
-                and queue.current_item
-                and queue.current_item.media_item is not None
-                and queue.current_item.media_item.media_type == MediaType.AUDIO_SOURCE
-                and queue.current_item.media_item.item_id == AUDIO_SOURCE_ID
-                and queue.current_item.media_item.provider == self.instance_id
-            ):
-                queue.current_item.media_item = self._audio_source
-                self.mass.player_queues.signal_update(self._in_use_by_queue, items_changed=True)
-            self.mass.players.trigger_player_update(self._in_use_by_queue)
+        # without waiting for the next play_media. Snapshot current_item and
+        # re-check identity before the write so a queue advance racing this
+        # callback can't stamp the new AudioSource onto an item that has
+        # already moved on. Signal the queue update so the frontend re-renders
+        # the controls (play/pause, next/prev) live.
+        if not self._in_use_by_queue:
+            return
+        queue_id = self._in_use_by_queue
+        queue = self.mass.player_queues.get(queue_id)
+        if queue is None:
+            return
+        current_item = queue.current_item
+        if (
+            current_item is not None
+            and current_item.media_item is not None
+            and current_item.media_item.media_type == MediaType.AUDIO_SOURCE
+            and current_item.media_item.item_id == AUDIO_SOURCE_ID
+            and current_item.media_item.provider == self.instance_id
+            and queue.current_item is current_item
+        ):
+            current_item.media_item = self._audio_source
+            self.mass.player_queues.signal_update(queue_id, items_changed=True)
+        self.mass.players.trigger_player_update(queue_id)
 
     def _build_audio_source(self) -> AudioSource:
         """Construct the AudioSource MediaItem with current capability flags."""

@@ -13,7 +13,6 @@ import logging
 import os
 import time
 from collections.abc import AsyncGenerator
-from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
@@ -419,6 +418,25 @@ class StreamsController(CoreController):
             or sd.provider != provider
             or sd.item_id != source_id
         ):
+            # Log at debug so misbehaving providers firing constantly are
+            # diagnosable (count alone is the signal) without spamming higher
+            # log levels for the legitimate transition cases.
+            self.logger.debug(
+                "Rejected metadata update for queue %s from provider %s source %s "
+                "(current item: %s)",
+                queue_id,
+                provider,
+                source_id,
+                sd.uri if sd else "none",
+            )
+            return
+        # Re-check identity *after* preparing the write so a queue advance that
+        # races with this callback can't slip in between the guard above and
+        # the mutation below. Plugins fire these from arbitrary executor /
+        # event-loop threads (AirPlay metadata reader, Spotify webservice
+        # handler, AriaCast WebSocket reader); the GIL keeps each attribute
+        # write atomic but not the read-then-write sequence.
+        if queue.current_item is not current_item or current_item.streamdetails is not sd:
             return
         sd.stream_metadata = stream_metadata
         sd.stream_metadata_last_updated = time.time()
@@ -714,9 +732,21 @@ class StreamsController(CoreController):
             # session (otherwise a stale teardown from a superseded same-queue
             # request would clear the live claim of its replacement).
             if audio_source_provider is not None and audio_source_id is not None:
-                with suppress(Exception):
+                # Provider teardown failures must not break the response cycle
+                # (we're already in finally for a stream that ended one way or
+                # another), but they MUST surface in logs — otherwise a buggy
+                # plugin leaks _in_use_by_queue forever and there is no trail.
+                try:
                     await audio_source_provider.on_source_unselected(
                         audio_source_id, queue_id, stream_session_id
+                    )
+                except Exception:
+                    self.logger.warning(
+                        "on_source_unselected raised for provider %s source %s queue %s",
+                        audio_source_provider.instance_id,
+                        audio_source_id,
+                        queue_id,
+                        exc_info=True,
                     )
 
     async def serve_queue_flow_stream(self, request: web.Request) -> web.StreamResponse:

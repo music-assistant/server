@@ -281,8 +281,11 @@ class VBANReceiverProvider(PluginProvider):
         # Claim ownership for this queue. The lock lives here (not in
         # get_stream_details) so preload paths can fetch streamdetails without
         # accidentally blocking a subsequent cross-queue handoff at the actual
-        # stream request. The previous stream loop notices the queue change on
-        # its 1s timeout and exits cleanly.
+        # stream request. There is no cmd_stop on a previous player like the
+        # Spotify Connect / AirPlay / Yandex receivers do: VBAN is a purely
+        # passive UDP receiver with no concept of an "active player" — the
+        # previous queue's get_audio_stream loop notices the queue change on
+        # its 1s timeout and exits cleanly on its own.
         self._in_use_by_queue = queue_id
         # Record this request's session id so a later on_source_unselected can
         # tell whether it is the live teardown or a stale callback from a
