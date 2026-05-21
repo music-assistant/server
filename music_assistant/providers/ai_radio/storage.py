@@ -385,6 +385,15 @@ class AIRadioStorageMixin:
                         if not isinstance(choice, dict):
                             raise InvalidDataError("ALTERNATIVE choice must be an object")
                         _ensure_known(str(choice.get("section", "")).strip())
+                        weight_raw = choice.get("weight", 1)
+                        try:
+                            weight = float(weight_raw)
+                        except (TypeError, ValueError) as err:
+                            raise InvalidDataError(
+                                f"ALTERNATIVE choice weight must be numeric (got {weight_raw!r})"
+                            ) from err
+                        if weight <= 0:
+                            raise InvalidDataError("ALTERNATIVE choice weight must be > 0")
 
     def _default_sections_template(self) -> list[dict[str, Any]]:
         """Return built-in shared section templates."""
