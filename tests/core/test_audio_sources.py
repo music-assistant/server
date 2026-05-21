@@ -316,6 +316,27 @@ class TestAudioSourceContract:
         assert prov._active_session_id == "session_2"
 
     @pytest.mark.asyncio
+    async def test_reconnect_with_cached_streamdetails_reclaims_lock(self) -> None:
+        """A follow-up GET that reuses cached streamdetails must re-fire the claim."""
+        # The streams controller fires on_source_selected for every AudioSource
+        # GET, regardless of whether streamdetails are cached from a previous
+        # request. So a disconnect/reconnect for the same queue item re-claims
+        # the lock with a fresh session id, even though get_stream_details is
+        # skipped via the cache. Verify the provider-level invariant: a new
+        # on_source_selected fully re-establishes ownership.
+        prov = _FakePluginProvider(_audio_source())
+        # Request 1 — full lifecycle
+        await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
+        await prov.get_stream_details("main", "queue_a")
+        await prov.on_source_unselected("main", "queue_a", "session_1")
+        assert prov._in_use_by_queue is None
+        # Request 2 — same queue/player, no fresh get_stream_details (caller
+        # has cached streamdetails). on_source_selected MUST re-claim.
+        await prov.on_source_selected("main", "player_a", "queue_a", "session_2")
+        assert prov._in_use_by_queue == "queue_a"
+        assert prov._active_session_id == "session_2"
+
+    @pytest.mark.asyncio
     async def test_preload_get_stream_details_does_not_block_handoff(self) -> None:
         """Queue preload must not claim the source and block a later handoff."""
         # Reviewer-flagged scenario: player_queues._load_item calls

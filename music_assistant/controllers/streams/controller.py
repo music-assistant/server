@@ -466,14 +466,14 @@ class StreamsController(CoreController):
             await resp.prepare(request)
             return resp
 
-        # Fire on_source_selected hook BEFORE get_stream_details so the plugin
-        # can stop any previous player and release a prior exclusive claim
-        # (e.g. _in_use_by_queue held by an earlier queue) before the new
-        # queue's get_stream_details runs. Without this ordering the
-        # exclusivity check inside get_stream_details would raise
-        # ResourceBusyError for any cross-queue handoff and the takeover path
-        # would be unreachable. Source identity comes from queue_item.media_item
-        # because streamdetails do not exist yet.
+        # Fire on_source_selected hook for every AudioSource GET — this is the
+        # single point where exclusive plugin sources claim ownership. Firing
+        # unconditionally (regardless of whether streamdetails are cached from
+        # a previous request) means a disconnect/reconnect for the same queue
+        # item re-claims the lock with a fresh session id, instead of streaming
+        # against the stale ownership of the prior request.
+        # Source identity comes from queue_item.media_item because streamdetails
+        # may not exist yet on the first request.
         # stream_session_id is a fresh per-request token threaded through to
         # on_source_unselected so the provider can distinguish a stale
         # teardown (e.g. a same-queue reconnect's first request completing
