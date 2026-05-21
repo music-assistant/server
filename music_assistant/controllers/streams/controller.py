@@ -15,6 +15,7 @@ import time
 from collections.abc import AsyncGenerator
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
+from uuid import uuid4
 
 from aiofiles.os import wrap
 from aiohttp import web
@@ -473,8 +474,14 @@ class StreamsController(CoreController):
         # ResourceBusyError for any cross-queue handoff and the takeover path
         # would be unreachable. Source identity comes from queue_item.media_item
         # because streamdetails do not exist yet.
+        # stream_session_id is a fresh per-request token threaded through to
+        # on_source_unselected so the provider can distinguish a stale
+        # teardown (e.g. a same-queue reconnect's first request completing
+        # AFTER its replacement has already started streaming) from the
+        # currently active session's real teardown.
         audio_source_provider: PluginProvider | None = None
         audio_source_id: str | None = None
+        stream_session_id = uuid4().hex
         if (
             is_audio_source
             and queue_item.media_item is not None
@@ -483,7 +490,9 @@ class StreamsController(CoreController):
         ):
             audio_source_provider = prov
             audio_source_id = queue_item.media_item.item_id
-            await audio_source_provider.on_source_selected(audio_source_id, player_id, queue_id)
+            await audio_source_provider.on_source_selected(
+                audio_source_id, player_id, queue_id, stream_session_id
+            )
 
         try:
             if not queue_item.streamdetails:
@@ -674,12 +683,16 @@ class StreamsController(CoreController):
             # Paired with on_source_selected — fires regardless of how streaming
             # ended (normal completion, client disconnect, exception). Lets
             # NAMED_PIPE plugins release ownership without depending on an
-            # external session event. Providers MUST guard against stale
-            # callbacks: clear per-queue state only if it still matches this
-            # queue_id (a handoff may have already given the source away).
+            # external session event. The stream_session_id is the same token
+            # passed to on_source_selected; the provider must reject the
+            # callback if it does not match the currently stored active
+            # session (otherwise a stale teardown from a superseded same-queue
+            # request would clear the live claim of its replacement).
             if audio_source_provider is not None and audio_source_id is not None:
                 with suppress(Exception):
-                    await audio_source_provider.on_source_unselected(audio_source_id, queue_id)
+                    await audio_source_provider.on_source_unselected(
+                        audio_source_id, queue_id, stream_session_id
+                    )
 
     async def serve_queue_flow_stream(self, request: web.Request) -> web.StreamResponse:
         """Stream Queue Flow audio to player."""

@@ -312,29 +312,49 @@ class MyDemoPluginprovider(PluginProvider):
         # Fired only on the direct queue owner — group volume changes fire once
         # at the group level, not per child.
 
-    async def on_source_selected(self, source_id: str, player_id: str, queue_id: str) -> None:
+    async def on_source_selected(
+        self, source_id: str, player_id: str, queue_id: str, stream_session_id: str
+    ) -> None:
         """React to an AudioSource being selected for playback on a player."""
         # OPTIONAL — fires BEFORE get_stream_details so the plugin can stop any
         # previous player and release a prior exclusive claim before the new
         # queue's get_stream_details runs. Without this ordering the busy check
         # in get_stream_details would reject any cross-queue handoff and the
-        # transfer path would be unreachable. Typical pattern for exclusive
+        # transfer path would be unreachable.
+        #
+        # Plugins MUST store stream_session_id so the matching
+        # on_source_unselected callback can reject stale teardowns from
+        # superseded same-queue requests. Typical pattern for exclusive
         # sources:
         #
         #     if self._in_use_by_queue and self._in_use_by_queue != queue_id:
         #         self._in_use_by_queue = None  # release prior queue
         #         await self.mass.players.cmd_stop(prev_player_id)
+        #     self._active_session_id = stream_session_id
         #     self._active_player_id = player_id
+        #
+        # If allow_player_switch is False and the requesting player is not the
+        # configured target, redirect via mass.player_queues.play_media(target,
+        # uri) and then RAISE so the original (disallowed) request does not
+        # continue into get_stream_details and claim the source for itself.
 
-    async def on_source_unselected(self, source_id: str, queue_id: str) -> None:
+    async def on_source_unselected(
+        self, source_id: str, queue_id: str, stream_session_id: str
+    ) -> None:
         """React to MA tearing down this AudioSource's stream from a queue."""
         # OPTIONAL — fires in the queue-item stream handler's finally block, so
         # it runs regardless of how streaming ended (normal completion, client
         # disconnect, exception). Lets NAMED_PIPE plugins release ownership
-        # without depending on an external session event. Guard with a queue_id
-        # match so a stale callback after a handoff doesn't clobber state that
-        # already belongs to a new queue:
+        # without depending on an external session event.
         #
+        # Guard with a stream_session_id match — NOT just a queue_id match —
+        # so a stale callback from a superseded same-queue request (player
+        # drops + reopens the same URL before the prior finally fires) cannot
+        # clear the live claim of the new stream:
+        #
+        #     if self._active_session_id != stream_session_id:
+        #         return
+        #     self._active_session_id = None
         #     if self._in_use_by_queue == queue_id:
         #         self._in_use_by_queue = None
 

@@ -205,6 +205,10 @@ class SpotifyConnectProvider(PluginProvider):
         # _in_use_by_queue is the queue currently streaming us (set in
         # get_stream_details, cleared on stop)
         self._in_use_by_queue: str | None = None
+        # _active_session_id is the controller-provided token for the current
+        # stream request — used to reject stale on_source_unselected callbacks
+        # after a same-queue reconnect supersedes the previous request.
+        self._active_session_id: str | None = None
         self._audio_buffer: asyncio.Queue[bytes] = asyncio.Queue(10)
         self._on_unload_callbacks: list[Callable[..., None]] = []
         self._runner_error_count = 0
@@ -368,6 +372,7 @@ class SpotifyConnectProvider(PluginProvider):
         source_id: str,
         player_id: str,
         queue_id: str,
+        stream_session_id: str,
     ) -> None:
         """Handle callback when this AudioSource has been selected/started on a player."""
         if source_id != AUDIO_SOURCE_ID or not player_id:
@@ -386,14 +391,20 @@ class SpotifyConnectProvider(PluginProvider):
                 await self.mass.player_queues.play_media(
                     current_target, str(self._audio_source.uri)
                 )
-                return
+                # Raising aborts the original request so it cannot continue
+                # into get_stream_details and claim the exclusive source for
+                # the disallowed player. The redirect above starts the stream
+                # on the configured target via a separate request.
+                raise RuntimeError(
+                    f"Player switching disabled; source must remain on {current_target}"
+                )
 
         # If there's already an active player and it's different, kick it out.
         # Pre-emptively release _in_use_by_queue so the new queue's
         # get_stream_details (called right after this hook by the streams
         # controller) is not rejected by the busy check. The old stream's
         # on_source_unselected may fire later for the previous queue, but its
-        # guard (queue_id match) keeps it from clobbering the new claim.
+        # session-id guard keeps it from clobbering the new claim.
         if self._active_player_id and self._active_player_id != player_id:
             prev_player_id = self._active_player_id
             self.logger.info(
@@ -407,6 +418,11 @@ class SpotifyConnectProvider(PluginProvider):
             except Exception as err:
                 self.logger.debug("Failed to stop previous player %s: %s", prev_player_id, err)
 
+        # Record this request's session id so a later on_source_unselected can
+        # tell whether it is the live teardown or a stale callback from a
+        # superseded same-queue request.
+        self._active_session_id = stream_session_id
+
         # Update the active player
         self._active_player_id = player_id
         self.logger.debug("Active player set to: %s", player_id)
@@ -415,12 +431,20 @@ class SpotifyConnectProvider(PluginProvider):
         if self._default_player_id != PLAYER_ID_AUTO:
             self._save_last_player_id(player_id)
 
-    async def on_source_unselected(self, source_id: str, queue_id: str) -> None:
+    async def on_source_unselected(
+        self, source_id: str, queue_id: str, stream_session_id: str
+    ) -> None:
         """Release the queue-scoped exclusive claim when MA tears down the stream."""
         if source_id != AUDIO_SOURCE_ID:
             return
-        # Guard against stale callbacks from a previous queue after a handoff:
-        # only clear if this queue still owns the source.
+        # Reject stale callbacks: only release if this is still the active
+        # session. A queue_id check alone is not sufficient — same-queue
+        # reconnects (player drops + reopens the same stream URL before the
+        # original request's finally fires) would otherwise let the old
+        # request's late callback clear the live claim of the new stream.
+        if self._active_session_id != stream_session_id:
+            return
+        self._active_session_id = None
         if self._in_use_by_queue == queue_id:
             self._in_use_by_queue = None
 
@@ -433,6 +457,7 @@ class SpotifyConnectProvider(PluginProvider):
         prev_player_id = self._active_player_id
         self._active_player_id = None
         self._in_use_by_queue = None
+        self._active_session_id = None
 
         if prev_player_id:
             self.logger.debug("Playback ended on player %s, clearing active player", prev_player_id)

@@ -73,6 +73,10 @@ class VBANReceiverProvider(PluginProvider):
         self._stats_reporter: VBANStatsReporter | None = None
         self._active_stream_id: str = ""
         self._in_use_by_queue: str | None = None
+        # _active_session_id is the controller-provided token for the current
+        # stream request — used to reject stale on_source_unselected callbacks
+        # after a same-queue reconnect supersedes the previous request.
+        self._active_session_id: str | None = None
 
         self._audio_format = AudioFormat(
             content_type=ContentType(self._pcm_audio_format.lower()),
@@ -267,7 +271,9 @@ class VBANReceiverProvider(PluginProvider):
                 self._in_use_by_queue = None
             self.logger.debug("Stopped VBAN PCM audio stream receiver: %s", _stream_details)
 
-    async def on_source_selected(self, source_id: str, player_id: str, queue_id: str) -> None:
+    async def on_source_selected(
+        self, source_id: str, player_id: str, queue_id: str, stream_session_id: str
+    ) -> None:
         """Release the prior queue's claim so a cross-queue handoff can proceed."""
         if source_id != AUDIO_SOURCE_ID:
             return
@@ -276,14 +282,25 @@ class VBANReceiverProvider(PluginProvider):
         # queue without ResourceBusyError.
         if self._in_use_by_queue and self._in_use_by_queue != queue_id:
             self._in_use_by_queue = None
+        # Record this request's session id so a later on_source_unselected can
+        # tell whether it is the live teardown or a stale callback from a
+        # superseded same-queue request.
+        self._active_session_id = stream_session_id
 
-    async def on_source_unselected(self, source_id: str, queue_id: str) -> None:
+    async def on_source_unselected(
+        self, source_id: str, queue_id: str, stream_session_id: str
+    ) -> None:
         """Release the queue-scoped exclusive claim when MA tears down the stream."""
         if source_id != AUDIO_SOURCE_ID:
             return
-        # Belt-and-suspenders to the get_audio_stream finally: only clear if
-        # this queue still owns the source (handoff may have already given it
-        # away to a new queue).
+        # Reject stale callbacks: only release if this is still the active
+        # session. A queue_id check alone is not sufficient — same-queue
+        # reconnects (player drops + reopens the same stream URL before the
+        # original request's finally fires) would otherwise let the old
+        # request's late callback clear the live claim of the new stream.
+        if self._active_session_id != stream_session_id:
+            return
+        self._active_session_id = None
         if self._in_use_by_queue == queue_id:
             self._in_use_by_queue = None
 

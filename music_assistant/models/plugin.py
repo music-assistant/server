@@ -133,7 +133,13 @@ class PluginProvider(Provider):
         """
         raise NotImplementedError
 
-    async def on_source_selected(self, source_id: str, player_id: str, queue_id: str) -> None:
+    async def on_source_selected(
+        self,
+        source_id: str,
+        player_id: str,
+        queue_id: str,
+        stream_session_id: str,
+    ) -> None:
         """
         React to an AudioSource being selected for playback.
 
@@ -145,12 +151,26 @@ class PluginProvider(Provider):
         ``get_stream_details`` would raise ``ResourceBusyError`` for any
         cross-queue handoff and the takeover path would be unreachable.
 
+        ``stream_session_id`` is a fresh per-request token paired with the
+        matching ``on_source_unselected`` call. Plugins should store it (and
+        replace any previously stored value) so the unselect callback can be
+        rejected as stale when a same-queue reconnect interleaves with the
+        prior request's teardown — see ``on_source_unselected`` for details.
+
         :param source_id: The AudioSource.item_id that was selected.
         :param player_id: The player that will receive the stream.
         :param queue_id: The queue that owns this playback session.
+        :param stream_session_id: Opaque controller-generated token identifying
+            this specific stream request. The matching ``on_source_unselected``
+            receives the same value.
         """
 
-    async def on_source_unselected(self, source_id: str, queue_id: str) -> None:
+    async def on_source_unselected(
+        self,
+        source_id: str,
+        queue_id: str,
+        stream_session_id: str,
+    ) -> None:
         """
         React to MA tearing down an AudioSource stream from this queue.
 
@@ -162,12 +182,18 @@ class PluginProvider(Provider):
         available to other queues without depending on an external session
         event.
 
-        Implementations should guard with ``if self._in_use_by_queue ==
-        queue_id`` (or equivalent) so a stale callback after a handoff doesn't
-        clear state that already belongs to a new queue.
+        Implementations MUST guard on ``stream_session_id`` matching the value
+        last set in ``on_source_selected``. A queue_id-only check is not
+        sufficient: same-queue reconnects (player drops + reopens the same
+        stream URL before the original request's finally fires) would
+        otherwise let the old request's late callback clear the live claim of
+        the new stream, silently dropping metadata and volume sync.
 
         :param source_id: The AudioSource.item_id whose stream ended.
         :param queue_id: The queue whose stream is being torn down.
+        :param stream_session_id: The token paired with ``on_source_selected``
+            for this specific stream request. Ignore the callback if it does
+            not match the currently stored active session id.
         """
 
     async def on_volume_change(self, source_id: str, volume: int) -> None:

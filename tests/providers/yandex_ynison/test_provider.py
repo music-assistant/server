@@ -235,11 +235,12 @@ class TestSourceSelection:
     """Tests for on_source_selected (the new PluginProvider hook)."""
 
     async def test_on_source_selected_sets_active(self) -> None:
-        """Selecting source sets the active player."""
+        """Selecting source sets the active player and records the session id."""
         provider = _make_provider()
 
-        await provider.on_source_selected("main", "new-player", "new-player")
+        await provider.on_source_selected("main", "new-player", "new-player", "session_1")
         assert provider._active_player_id == "new-player"
+        assert provider._active_session_id == "session_1"
 
     async def test_on_source_selected_switching_disabled(self) -> None:
         """Rejects source selection when player switching is disabled."""
@@ -253,7 +254,7 @@ class TestSourceSelection:
         mass.players.get_player.return_value = MagicMock()
 
         with pytest.raises(RuntimeError, match="Player switching is disabled"):
-            await provider.on_source_selected("main", "other-player", "other-player")
+            await provider.on_source_selected("main", "other-player", "other-player", "session_1")
 
         # Should have redirected to the configured default via play_media
         mass.player_queues.play_media.assert_awaited()

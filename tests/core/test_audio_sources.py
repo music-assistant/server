@@ -132,6 +132,7 @@ class _FakePluginProvider:
     def __init__(self, audio_source: AudioSource) -> None:
         self._audio_source = audio_source
         self._in_use_by_queue: str | None = None
+        self._active_session_id: str | None = None
         self.control_calls: list[tuple[SourceControl, int | None]] = []
         self.selected_calls: list[tuple[str, str]] = []
 
@@ -171,7 +172,9 @@ class _FakePluginProvider:
         assert source_id == self._audio_source.item_id
         self.control_calls.append((action, value))
 
-    async def on_source_selected(self, source_id: str, player_id: str, queue_id: str) -> None:
+    async def on_source_selected(
+        self, source_id: str, player_id: str, queue_id: str, stream_session_id: str
+    ) -> None:
         assert source_id == self._audio_source.item_id
         self.selected_calls.append((source_id, player_id))
         # Mirror the handoff pattern shared by every real plugin: release the
@@ -179,11 +182,20 @@ class _FakePluginProvider:
         # the new queue is not rejected by the busy check.
         if self._in_use_by_queue and self._in_use_by_queue != queue_id:
             self._in_use_by_queue = None
+        # Record this request's session id so a later on_source_unselected can
+        # reject stale callbacks from superseded same-queue requests.
+        self._active_session_id = stream_session_id
 
-    async def on_source_unselected(self, source_id: str, queue_id: str) -> None:
+    async def on_source_unselected(
+        self, source_id: str, queue_id: str, stream_session_id: str
+    ) -> None:
         assert source_id == self._audio_source.item_id
-        # Idempotent / stale-callback-safe clear: only release if this queue
-        # still owns the source.
+        # Reject stale callbacks: only release if this is still the active
+        # session. The queue_id-only check would let an old request's late
+        # teardown clobber the live claim of a same-queue reconnect.
+        if self._active_session_id != stream_session_id:
+            return
+        self._active_session_id = None
         if self._in_use_by_queue == queue_id:
             self._in_use_by_queue = None
 
@@ -264,39 +276,71 @@ class TestAudioSourceContract:
         # Without releasing the prior claim, the second get_stream_details would
         # raise ResourceBusyError and the takeover path would be unreachable.
         prov = _FakePluginProvider(_audio_source())
+        await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
         await prov.get_stream_details("main", "queue_a")
         assert prov._in_use_by_queue == "queue_a"
         # Different queue selects the source (cross-queue handoff).
         # The streams controller pairs this with get_stream_details for the
         # new queue, which must succeed without ResourceBusyError.
-        await prov.on_source_selected("main", "player_b", "queue_b")
+        await prov.on_source_selected("main", "player_b", "queue_b", "session_2")
         sd = await prov.get_stream_details("main", "queue_b")
         assert sd.media_type == MediaType.AUDIO_SOURCE
         assert prov._in_use_by_queue == "queue_b"
 
     @pytest.mark.asyncio
-    async def test_on_source_unselected_releases_own_queue(self) -> None:
-        """on_source_unselected releases the claim if this queue still owns it."""
+    async def test_on_source_unselected_releases_own_session(self) -> None:
+        """on_source_unselected releases the claim when the session id matches."""
         prov = _FakePluginProvider(_audio_source())
+        await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
         await prov.get_stream_details("main", "queue_a")
-        await prov.on_source_unselected("main", "queue_a")
+        await prov.on_source_unselected("main", "queue_a", "session_1")
         assert prov._in_use_by_queue is None
+        assert prov._active_session_id is None
 
     @pytest.mark.asyncio
-    async def test_on_source_unselected_ignores_stale_queue(self) -> None:
+    async def test_on_source_unselected_ignores_stale_callback_after_handoff(self) -> None:
         """A late on_source_unselected after a handoff must not clobber the new claim."""
         # Stale callback scenario: queue A's stream finally fires AFTER queue B
-        # has already taken over. The guard inside on_source_unselected must
-        # prevent it from clearing queue B's claim.
+        # has already taken over. The session-id guard must reject it.
         prov = _FakePluginProvider(_audio_source())
+        await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
         await prov.get_stream_details("main", "queue_a")
-        # Simulate handoff: B selects the source, releasing A's claim
-        await prov.on_source_selected("main", "player_b", "queue_b")
+        # Handoff: B selects the source with a fresh session id, releasing A's claim
+        await prov.on_source_selected("main", "player_b", "queue_b", "session_2")
         await prov.get_stream_details("main", "queue_b")
         assert prov._in_use_by_queue == "queue_b"
-        # Now queue A's late unselect fires — it must be a no-op
-        await prov.on_source_unselected("main", "queue_a")
+        # Now queue A's late unselect (with the OLD session id) fires — must no-op
+        await prov.on_source_unselected("main", "queue_a", "session_1")
         assert prov._in_use_by_queue == "queue_b"
+        assert prov._active_session_id == "session_2"
+
+    @pytest.mark.asyncio
+    async def test_on_source_unselected_ignores_stale_callback_same_queue_reconnect(
+        self,
+    ) -> None:
+        """A same-queue reconnect's late teardown must not clobber the live stream."""
+        # The reviewer-flagged scenario: player drops, reopens a NEW GET for the
+        # SAME queue before the first request's finally fires. Queue id matches
+        # in both, so a queue-id-only guard would let the stale callback clear
+        # the live claim. The session-id guard rejects it.
+        prov = _FakePluginProvider(_audio_source())
+        # Request 1 starts streaming
+        await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
+        await prov.get_stream_details("main", "queue_a")
+        # Request 2 (reconnect) arrives BEFORE request 1's finally runs.
+        # Same queue + same player → no handoff branch, just a fresh session id.
+        await prov.on_source_selected("main", "player_a", "queue_a", "session_2")
+        # Lock stays held (same queue, same player); only session id rolled forward
+        assert prov._in_use_by_queue == "queue_a"
+        assert prov._active_session_id == "session_2"
+        # Now request 1's late finally fires with the stale session id — no-op
+        await prov.on_source_unselected("main", "queue_a", "session_1")
+        assert prov._in_use_by_queue == "queue_a"
+        assert prov._active_session_id == "session_2"
+        # Request 2's finally then fires with the current session id — releases
+        await prov.on_source_unselected("main", "queue_a", "session_2")
+        assert prov._in_use_by_queue is None
+        assert prov._active_session_id is None
 
 
 # ---------------------------------------------------------- active source helper
