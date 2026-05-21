@@ -55,7 +55,7 @@ class FailingRuntime(DummyRuntime):
         raise RuntimeError("boom")
 
 
-def _set_runtime_mass(runtime: DummyRuntime, mass: Any) -> None:
+def _set_runtime_mass(runtime: AIRadioRuntimeMixin, mass: Any) -> None:
     """Attach lightweight test mass object while bypassing strict runtime typing."""
     cast("Any", runtime).mass = mass
 
@@ -583,10 +583,20 @@ def test_get_tts_plugin_preserves_priority_order() -> None:
     assert plugin.instance_id == "zz_high"
 
 
-async def test_run_dynamic_mode_has_watchdog_for_stalled_playback() -> None:
+async def test_run_dynamic_mode_has_watchdog_for_stalled_playback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Surface stalled dynamic playback (queue not advancing) as MusicAssistantError (P7)."""
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
+        0.2,
+    )
 
-    class StalledRuntime(DummyRuntime):
+    class StalledRuntime(AIRadioRuntimeMixin):
+        def __init__(self) -> None:
+            self.logger = logging.getLogger("tests.ai_radio.runtime.p7")
+            self._sessions: dict[str, SessionState] = {}
+
         async def _fetch_source_tracks(
             self, station: dict[str, Any]
         ) -> tuple[list[dict[str, Any]], str]:
@@ -636,7 +646,7 @@ async def test_run_dynamic_mode_has_watchdog_for_stalled_playback() -> None:
             return object()
 
     class DummyQueue:
-        current_index = 0
+        current_index = None
 
     class DummyPlayerQueues:
         def clear(self, queue_id: str) -> None:
@@ -673,4 +683,4 @@ async def test_run_dynamic_mode_has_watchdog_for_stalled_playback() -> None:
     }
 
     with pytest.raises(MusicAssistantError, match=r"stall|stopped advancing|watchdog|inactive"):
-        await asyncio.wait_for(runtime._run_dynamic_mode(session, station), timeout=0.5)
+        await asyncio.wait_for(runtime._run_dynamic_mode(session, station), timeout=3.0)

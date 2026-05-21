@@ -36,6 +36,7 @@ from music_assistant.helpers.playlists import (
 from music_assistant.helpers.uri import create_uri
 
 from .constants import (
+    DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS,
     DEFAULT_LLM_INSTRUCTIONS,
     DEFAULT_WEATHER_PROVIDER,
     DEFAULT_WEATHER_TIMEOUT_SECONDS,
@@ -431,16 +432,25 @@ class AIRadioRuntimeMixin:
                 wait_trigger_index=wait_trigger_global_index,
                 prefetch_remaining_tracks=prefetch_remaining_tracks,
             )
+            stall_timeout = DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS
+            inactivity_deadline = asyncio.get_running_loop().time() + stall_timeout
+            last_seen_index = -1
             while True:
                 queue = self.mass.player_queues.get_active_queue(player_id)
                 if not queue:
                     queue = self.mass.player_queues.get(queue_id)
-                if (
-                    queue
-                    and queue.current_index is not None
-                    and queue.current_index >= wait_trigger_global_index
-                ):
-                    break
+                current_index = queue.current_index if queue else None
+                if current_index is not None:
+                    if current_index >= wait_trigger_global_index:
+                        break
+                    if current_index > last_seen_index:
+                        last_seen_index = current_index
+                        inactivity_deadline = asyncio.get_running_loop().time() + stall_timeout
+                if asyncio.get_running_loop().time() >= inactivity_deadline:
+                    raise MusicAssistantError(
+                        f"Queue {queue_id} stopped advancing for {stall_timeout}s "
+                        f"while waiting for prefetch trigger (last_index={last_seen_index})"
+                    )
                 await asyncio.sleep(poll_seconds)
 
         return {
