@@ -9,11 +9,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from music_assistant_models.errors import MusicAssistantError
+
 from .constants import EMPTY_SECTION_ID
-
-
-class AIRadioError(RuntimeError):
-    """Raised when AI Radio encounters an unrecoverable error."""
 
 
 def utc_now_iso() -> str:
@@ -136,7 +134,7 @@ def pick_weighted_choice(choices: list[dict[str, Any]], rng: random.Random) -> s
         if section_id and weight > 0:
             valid.append((section_id, weight))
     if not valid:
-        raise AIRadioError("ALTERNATIVE has no valid section choices")
+        raise MusicAssistantError("ALTERNATIVE has no valid section choices")
     total = sum(weight for _, weight in valid)
     target = rng.random() * total
     cursor = 0.0

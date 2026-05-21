@@ -21,6 +21,7 @@ from music_assistant_models.enums import (
     QueueOption,
     TaskStatus,
 )
+from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_loads
@@ -41,7 +42,6 @@ from .constants import (
     WEB_SEARCH_MODE_RANK,
 )
 from .models import (
-    AIRadioError,
     AudioSection,
     GeneratedSection,
     PlannedSection,
@@ -145,7 +145,7 @@ class AIRadioRuntimeMixin:
         tracks, playlist_name = await self._fetch_source_tracks(station)
         tracks = self._apply_track_duration_limit(tracks, station)
         if not tracks:
-            raise AIRadioError("No source tracks available after applying station limits")
+            raise MusicAssistantError("No source tracks available after applying station limits")
         self._set_session_progress(
             session,
             "planning_sections",
@@ -193,7 +193,7 @@ class AIRadioRuntimeMixin:
                 sections=audio_sections,
             )
             if not playlist_items:
-                raise AIRadioError("No playlist entries were generated")
+                raise MusicAssistantError("No playlist entries were generated")
             self._set_session_progress(
                 session,
                 "publishing_playlist",
@@ -208,7 +208,7 @@ class AIRadioRuntimeMixin:
         else:
             entries, track_count = self._compose_entries(tracks=tracks, sections=audio_sections)
             if not entries:
-                raise AIRadioError("No playlist entries were generated")
+                raise MusicAssistantError("No playlist entries were generated")
             self._set_session_progress(
                 session,
                 "publishing_playlist",
@@ -256,14 +256,14 @@ class AIRadioRuntimeMixin:
         runtime_tokens = await self._prepare_runtime_tokens(station)
         player_id = str(station.get("default_player_id") or "").strip()
         if not player_id:
-            raise AIRadioError("Dynamic mode requires a target player_id")
+            raise MusicAssistantError("Dynamic mode requires a target player_id")
         if not self.mass.players.get_player(player_id):
-            raise AIRadioError(f"Unknown target player: {player_id}")
+            raise MusicAssistantError(f"Unknown target player: {player_id}")
 
         tracks, playlist_name = await self._fetch_source_tracks(station)
         tracks = self._apply_track_duration_limit(tracks, station)
         if not tracks:
-            raise AIRadioError("No source tracks available after applying station limits")
+            raise MusicAssistantError("No source tracks available after applying station limits")
 
         batch_size = max(1, int(station.get("dynamic_batch_size", 1) or 1))
         poll_seconds = max(1, int(station.get("dynamic_poll_seconds", 5) or 5))
@@ -370,7 +370,7 @@ class AIRadioRuntimeMixin:
             audio_sections = await self._synthesize_sections(generated_sections=generated_sections)
             entries, _track_count = self._compose_entries(batch_tracks, audio_sections)
             if not entries:
-                raise AIRadioError("Dynamic batch produced no queue entries")
+                raise MusicAssistantError("Dynamic batch produced no queue entries")
 
             self._set_session_progress(
                 session,
@@ -457,7 +457,7 @@ class AIRadioRuntimeMixin:
         playlist_id = str(station.get("source_playlist_id", "")).strip()
         provider = str(station.get("source_playlist_provider", "library")).strip() or "library"
         if not playlist_id:
-            raise AIRadioError("Station is missing source_playlist_id")
+            raise MusicAssistantError("Station is missing source_playlist_id")
 
         playlist = await self.mass.music.playlists.get(playlist_id, provider)
         playlist_name = playlist.name
@@ -556,9 +556,9 @@ class AIRadioRuntimeMixin:
         sections = station.get("sections", [])
         section_order = station.get("section_order", [])
         if not isinstance(sections, list) or not sections:
-            raise AIRadioError("Station has no sections configured")
+            raise MusicAssistantError("Station has no sections configured")
         if not isinstance(section_order, list) or not section_order:
-            raise AIRadioError("Station has no section_order configured")
+            raise MusicAssistantError("Station has no section_order configured")
 
         section_by_id = {
             str(section.get("id", "")).strip(): section
@@ -1177,7 +1177,7 @@ class AIRadioRuntimeMixin:
         )
         results = geocode.get("results", [])
         if not isinstance(results, list) or not results:
-            raise AIRadioError(f"No geocoding result for {city}, {country}")
+            raise MusicAssistantError(f"No geocoding result for {city}, {country}")
 
         selected = results[0]
         country_lc = country.lower()
@@ -1194,18 +1194,20 @@ class AIRadioRuntimeMixin:
                 break
 
         if not isinstance(selected, dict):
-            raise AIRadioError(f"No valid geocoding result for {city}, {country}")
+            raise MusicAssistantError(f"No valid geocoding result for {city}, {country}")
         latitude_value: object = selected.get("latitude")
         longitude_value: object = selected.get("longitude")
         if not isinstance(latitude_value, (int, float, str)) or not isinstance(
             longitude_value, (int, float, str)
         ):
-            raise AIRadioError(f"Geocoding result for {city}, {country} has invalid coordinates")
+            raise MusicAssistantError(
+                f"Geocoding result for {city}, {country} has invalid coordinates"
+            )
         try:
             lat = float(latitude_value)
             lon = float(longitude_value)
         except ValueError as err:
-            raise AIRadioError(
+            raise MusicAssistantError(
                 f"Geocoding result for {city}, {country} has invalid coordinates"
             ) from err
         timezone_name = str(selected.get("timezone") or "UTC")
@@ -1241,13 +1243,13 @@ class AIRadioRuntimeMixin:
         ) as response:
             payload = await response.read()
             if response.status >= 400:
-                raise AIRadioError(
+                raise MusicAssistantError(
                     f"Open-Meteo request failed ({response.status}): "
                     f"{payload.decode(errors='ignore')}"
                 )
         data = json_loads(payload)
         if not isinstance(data, dict):
-            raise AIRadioError("Open-Meteo response is not a JSON object")
+            raise MusicAssistantError("Open-Meteo response is not a JSON object")
         return data
 
     def _format_weather_strings(self, payload: dict[str, Any]) -> tuple[str, str]:
@@ -1369,7 +1371,7 @@ class AIRadioRuntimeMixin:
         """Resolve and validate section web search mode."""
         mode = str(section.get("web_search", "disabled")).strip().lower()
         if mode not in VALID_WEB_SEARCH_MODES:
-            raise AIRadioError(
+            raise MusicAssistantError(
                 f"Invalid web_search mode '{mode}' in section '{section_id}'. "
                 f"Allowed: {sorted(VALID_WEB_SEARCH_MODES)}"
             )
@@ -1407,17 +1409,17 @@ class AIRadioRuntimeMixin:
             error_name = err.__class__.__name__
             error_text = str(err).strip()
             if error_name == "NotConnected":
-                raise AIRadioError(
+                raise MusicAssistantError(
                     "AI provider "
                     f"'{plugin.instance_id}' is not connected. Reconnect the provider "
                     "(for example Home Assistant) and retry."
                 ) from err
             details = error_text or error_name
-            raise AIRadioError(
+            raise MusicAssistantError(
                 f"AI provider '{plugin.instance_id}' query failed: {details}"
             ) from err
         if not response or not str(response).strip():
-            raise AIRadioError(
+            raise MusicAssistantError(
                 f"AI provider '{plugin.instance_id}' returned an empty response for section text"
             )
         text = str(response).strip()
@@ -1444,7 +1446,7 @@ class AIRadioRuntimeMixin:
                 ).strip()
                 return create_uri(MediaType.TRACK, builtin_instance_id or "builtin", uri)
             return uri
-        raise AIRadioError(
+        raise MusicAssistantError(
             f"TTS provider '{plugin.instance_id}' returned no direct stream path in StreamDetails.path"
         )
 
@@ -1455,7 +1457,7 @@ class AIRadioRuntimeMixin:
             key=lambda plugin: plugin.instance_id,
         )
         if not plugins:
-            raise AIRadioError(
+            raise MusicAssistantError(
                 "No AI provider available. Configure a plugin with ProviderFeature.AI_QUERY "
                 "(for example Home Assistant with an ai_task entity)."
             )
@@ -1468,7 +1470,7 @@ class AIRadioRuntimeMixin:
             key=lambda plugin: plugin.instance_id,
         )
         if not plugins:
-            raise AIRadioError(
+            raise MusicAssistantError(
                 "No TTS provider available. Configure a plugin with ProviderFeature.TTS "
                 "(for example Home Assistant with a TTS entity)."
             )

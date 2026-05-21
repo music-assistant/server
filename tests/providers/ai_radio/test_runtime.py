@@ -10,10 +10,11 @@ from typing import Any, cast
 import pytest
 from music_assistant_models.background_task import BackgroundTask
 from music_assistant_models.enums import MediaType, ProviderFeature, TaskStatus
+from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.helpers.playlists import PlaylistItem, parse_m3u, parse_m3u_playlist_image
 from music_assistant.helpers.uri import create_uri
-from music_assistant.providers.ai_radio.models import AIRadioError, AudioSection, SessionState
+from music_assistant.providers.ai_radio.models import AudioSection, SessionState
 from music_assistant.providers.ai_radio.runtime import AIRadioRuntimeMixin
 
 
@@ -269,7 +270,7 @@ async def test_render_tts_converts_raw_http_path_to_builtin_track_uri() -> None:
 
 
 async def test_generate_text_wraps_not_connected_error() -> None:
-    """Raise an actionable AIRadioError when AI provider is disconnected."""
+    """Raise an actionable MusicAssistantError when AI provider is disconnected."""
 
     class NotConnected(Exception):
         """Match hass_client NotConnected exception name."""
@@ -289,7 +290,7 @@ async def test_generate_text_wraps_not_connected_error() -> None:
     runtime = DummyRuntime()
     _set_runtime_mass(runtime, DummyMass())
 
-    with pytest.raises(AIRadioError) as error:
+    with pytest.raises(MusicAssistantError) as error:
         await runtime._generate_text(
             station={"general": {"instructions": "test"}},
             prompt="test prompt",

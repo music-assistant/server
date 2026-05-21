@@ -9,6 +9,9 @@ from music_assistant_models.enums import ConfigEntryType
 
 from .constants import CONF_UI_AUTO_REFRESH_SECONDS
 
+if TYPE_CHECKING:
+    from music_assistant.mass import MusicAssistant
+
 
 async def get_config_entries(
     mass: MusicAssistant,
@@ -38,7 +41,3 @@ async def get_config_entries(
             category="advanced",
         ),
     )
-
-
-if TYPE_CHECKING:
-    from music_assistant.mass import MusicAssistant
