@@ -89,9 +89,7 @@ class AIRadioStorageMixin:
         """Load station profiles from disk."""
         stations_file_exists = await asyncio.to_thread(self._stations_file.exists)
         if not stations_file_exists:
-            default_station = self._default_station_template()
-            self._stations = {default_station["id"]: default_station}
-            await self._write_stations()
+            self._stations = {}
             return
         async with aiofiles.open(self._stations_file) as file_handle:
             content = await file_handle.read()
@@ -112,10 +110,6 @@ class AIRadioStorageMixin:
                     continue
                 parsed[normalized["id"]] = normalized
         self._stations = parsed
-        if not self._stations:
-            default_station = self._default_station_template()
-            self._stations = {default_station["id"]: default_station}
-            await self._write_stations()
         if sections_changed:
             await self._write_sections()
 
