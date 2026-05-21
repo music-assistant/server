@@ -18,6 +18,7 @@ from music_assistant_models.enums import (
     ImageType,
     MediaType,
     ProviderFeature,
+    ProviderType,
     QueueOption,
     TaskStatus,
 )
@@ -1454,9 +1455,15 @@ class AIRadioRuntimeMixin:
 
     def _get_ai_plugin(self) -> PluginProvider:
         """Return the plugin used for AI_QUERY tasks."""
-        plugins = sorted(
-            self.mass.get_plugins_by_feature(ProviderFeature.AI_QUERY),
-            key=lambda plugin: plugin.instance_id,
+        plugins = cast(
+            "list[PluginProvider]",
+            sorted(
+                self.mass.get_providers_supporting_feature(
+                    ProviderFeature.AI_QUERY,
+                    priority=(ProviderType.PLUGIN,),
+                ),
+                key=lambda plugin: plugin.instance_id,
+            ),
         )
         if not plugins:
             raise MusicAssistantError(
@@ -1467,9 +1474,15 @@ class AIRadioRuntimeMixin:
 
     def _get_tts_plugin(self) -> PluginProvider:
         """Return the plugin used for TTS tasks."""
-        plugins = sorted(
-            self.mass.get_plugins_by_feature(ProviderFeature.TTS),
-            key=lambda plugin: plugin.instance_id,
+        plugins = cast(
+            "list[PluginProvider]",
+            sorted(
+                self.mass.get_providers_supporting_feature(
+                    ProviderFeature.TTS,
+                    priority=(ProviderType.PLUGIN,),
+                ),
+                key=lambda plugin: plugin.instance_id,
+            ),
         )
         if not plugins:
             raise MusicAssistantError(

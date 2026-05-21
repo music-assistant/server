@@ -9,7 +9,7 @@ from typing import Any, cast
 
 import pytest
 from music_assistant_models.background_task import BackgroundTask
-from music_assistant_models.enums import MediaType, ProviderFeature, TaskStatus
+from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType, TaskStatus
 from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.helpers.playlists import PlaylistItem, parse_m3u, parse_m3u_playlist_image
@@ -243,7 +243,11 @@ async def test_render_tts_converts_raw_http_path_to_builtin_track_uri() -> None:
             return DummyStreamDetails("http://example.test/api/tts_proxy/abc123.mp3")
 
     class DummyMass:
-        def get_plugins_by_feature(self, feature: ProviderFeature) -> list[Any]:
+        def get_providers_supporting_feature(
+            self,
+            feature: ProviderFeature,
+            priority: tuple[ProviderType, ...] = (),
+        ) -> list[Any]:
             if feature == ProviderFeature.TTS:
                 return [DummyTTSPlugin()]
             return []
@@ -282,7 +286,11 @@ async def test_generate_text_wraps_not_connected_error() -> None:
             raise NotConnected
 
     class DummyMass:
-        def get_plugins_by_feature(self, feature: ProviderFeature) -> list[Any]:
+        def get_providers_supporting_feature(
+            self,
+            feature: ProviderFeature,
+            priority: tuple[ProviderType, ...] = (),
+        ) -> list[Any]:
             if feature == ProviderFeature.AI_QUERY:
                 return [DummyAIPlugin()]
             return []
