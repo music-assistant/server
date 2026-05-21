@@ -329,108 +329,113 @@ class YandexYnisonProvider(PluginProvider):
         session_params: dict[str, Any] = dict(self._normalized_params)
         session_fmt: AudioFormat = make_pcm_format(session_params)
 
-        while not self._stream_stop_event.is_set() and self._in_use_by_queue == player_id:
-            if not self._ynison or not self._ynison.state.current_track_id:
-                # Wait for a track to appear
-                self._track_changed_event.clear()
-                try:
-                    await asyncio.wait_for(self._track_changed_event.wait(), timeout=30.0)
-                except TimeoutError:
-                    continue
-                continue
-
-            # Clear event before reading state so any subsequent update
-            # re-sets the event instead of being silently cleared.
-            self._track_changed_event.clear()
-            track_id = self._ynison.state.current_track_id
-            self._current_streaming_track_id = track_id
-
-            # Don't start streaming if Ynison reports paused — wait for resume.
-            # Poll every 1s because a same-track resume won't trigger
-            # _track_changed_event (it only fires on track change / seek).
-            if self._ynison.state.is_paused:
-                pause_deadline = time.monotonic() + 30.0
-                while (
-                    not self._stream_stop_event.is_set()
-                    and self._in_use_by_queue == player_id
-                    and self._ynison
-                    and self._ynison.state.current_track_id == track_id
-                    and self._ynison.state.is_paused
-                    and time.monotonic() < pause_deadline
-                ):
-                    remaining = pause_deadline - time.monotonic()
-                    with suppress(TimeoutError):
-                        await asyncio.wait_for(
-                            self._track_changed_event.wait(),
-                            timeout=min(1.0, remaining),
-                        )
+        try:
+            while not self._stream_stop_event.is_set() and self._in_use_by_queue == player_id:
+                if not self._ynison or not self._ynison.state.current_track_id:
+                    # Wait for a track to appear
                     self._track_changed_event.clear()
-                continue
+                    try:
+                        await asyncio.wait_for(self._track_changed_event.wait(), timeout=30.0)
+                    except TimeoutError:
+                        continue
+                    continue
 
-            if not self._yandex_provider:
-                self.logger.warning(
-                    "No linked Yandex Music provider — cannot stream track %s", track_id
-                )
-                self._current_streaming_track_id = None
-                self._stream_stop_event.set()
-                if self._in_use_by_queue == player_id:
-                    self._in_use_by_queue = None
-                    await self.mass.players.cmd_stop(player_id)
-                return
+                # Clear event before reading state so any subsequent update
+                # re-sets the event instead of being silently cleared.
+                self._track_changed_event.clear()
+                track_id = self._ynison.state.current_track_id
+                self._current_streaming_track_id = track_id
 
-            # Stream the current track
-            seek_ms = self._seek_position_ms
-            self._seek_position_ms = 0
-            bytes_yielded = 0
-            self._streaming_progress_ms = seek_ms
-            last_progress_sync = time.monotonic()
+                # Don't start streaming if Ynison reports paused — wait for resume.
+                # Poll every 1s because a same-track resume won't trigger
+                # _track_changed_event (it only fires on track change / seek).
+                if self._ynison.state.is_paused:
+                    pause_deadline = time.monotonic() + 30.0
+                    while (
+                        not self._stream_stop_event.is_set()
+                        and self._in_use_by_queue == player_id
+                        and self._ynison
+                        and self._ynison.state.current_track_id == track_id
+                        and self._ynison.state.is_paused
+                        and time.monotonic() < pause_deadline
+                    ):
+                        remaining = pause_deadline - time.monotonic()
+                        with suppress(TimeoutError):
+                            await asyncio.wait_for(
+                                self._track_changed_event.wait(),
+                                timeout=min(1.0, remaining),
+                            )
+                        self._track_changed_event.clear()
+                    continue
 
-            track_fmt = make_pcm_format(session_params)
-            async for chunk in self._stream_track(
-                track_id, seek_ms=seek_ms, session_params=session_params
-            ):
-                yield chunk
-                bytes_yielded += len(chunk)
-                now_mono = time.monotonic()
-                if now_mono - last_progress_sync >= _PROGRESS_SYNC_INTERVAL:
-                    last_progress_sync = now_mono
-                    await self._sync_progress(seek_ms, bytes_yielded, player_id, session_fmt)
-                if (
-                    self._track_changed_event.is_set()
-                    or self._stream_stop_event.is_set()
-                    or self._in_use_by_queue != player_id
-                ):
-                    break
-
-            # Align to PCM frame boundary — prevents misalignment in MA's
-            # downstream ffmpeg when a track stream is interrupted mid-chunk.
-            # We pad with zeros (can't un-yield bytes already sent downstream).
-            frame_size = (track_fmt.bit_depth // 8) * track_fmt.channels
-            if frame_size > 0:
-                excess = bytes_yielded % frame_size
-                if excess:
-                    yield b"\x00" * (frame_size - excess)
-
-            # Don't clear _current_streaming_track_id yet — keep it set
-            # during advance/wait so Ynison echo of the same track doesn't
-            # trigger a false track-change detection in _activate_playback.
-
-            if self._stream_stop_event.is_set():
-                self._current_streaming_track_id = None
-                break
-
-            # Track finished naturally — signal completion to Ynison.
-            # Yandex controls the queue; we just wait for the next track.
-            if not self._track_changed_event.is_set() and self._ynison:
-                self.logger.info("Track %s finished, advancing to next", track_id)
-                await self._signal_track_completion()
-                if not await self._wait_for_track_change(track_id):
+                if not self._yandex_provider:
+                    self.logger.warning(
+                        "No linked Yandex Music provider — cannot stream track %s", track_id
+                    )
                     self._stream_stop_event.set()
-                    self._current_streaming_track_id = None
+                    if self._in_use_by_queue == player_id:
+                        await self.mass.players.cmd_stop(player_id)
+                    return
+
+                # Stream the current track
+                seek_ms = self._seek_position_ms
+                self._seek_position_ms = 0
+                bytes_yielded = 0
+                self._streaming_progress_ms = seek_ms
+                last_progress_sync = time.monotonic()
+
+                track_fmt = make_pcm_format(session_params)
+                async for chunk in self._stream_track(
+                    track_id, seek_ms=seek_ms, session_params=session_params
+                ):
+                    yield chunk
+                    bytes_yielded += len(chunk)
+                    now_mono = time.monotonic()
+                    if now_mono - last_progress_sync >= _PROGRESS_SYNC_INTERVAL:
+                        last_progress_sync = now_mono
+                        await self._sync_progress(seek_ms, bytes_yielded, player_id, session_fmt)
+                    if (
+                        self._track_changed_event.is_set()
+                        or self._stream_stop_event.is_set()
+                        or self._in_use_by_queue != player_id
+                    ):
+                        break
+
+                # Align to PCM frame boundary — prevents misalignment in MA's
+                # downstream ffmpeg when a track stream is interrupted mid-chunk.
+                # We pad with zeros (can't un-yield bytes already sent downstream).
+                frame_size = (track_fmt.bit_depth // 8) * track_fmt.channels
+                if frame_size > 0:
+                    excess = bytes_yielded % frame_size
+                    if excess:
+                        yield b"\x00" * (frame_size - excess)
+
+                # Don't clear _current_streaming_track_id yet — keep it set
+                # during advance/wait so Ynison echo of the same track doesn't
+                # trigger a false track-change detection in _activate_playback.
+
+                if self._stream_stop_event.is_set():
                     break
 
-            # Clear before next iteration — the new track ID will be set at
-            # the top of the loop from the latest Ynison state.
+                # Track finished naturally — signal completion to Ynison.
+                # Yandex controls the queue; we just wait for the next track.
+                if not self._track_changed_event.is_set() and self._ynison:
+                    self.logger.info("Track %s finished, advancing to next", track_id)
+                    await self._signal_track_completion()
+                    if not await self._wait_for_track_change(track_id):
+                        self._stream_stop_event.set()
+                        break
+
+                # Clear before next iteration — the new track ID will be set at
+                # the top of the loop from the latest Ynison state.
+                self._current_streaming_track_id = None
+        finally:
+            # Release ownership only if no one else has claimed the source since
+            # this session started (in which case the new owner manages its own
+            # lifecycle). Also clears the streaming track id so a fresh session
+            # doesn't see stale state.
+            if self._in_use_by_queue == player_id:
+                self._in_use_by_queue = None
             self._current_streaming_track_id = None
 
     async def _wait_for_track_change(self, old_track_id: str, timeout: float = 30.0) -> bool:
