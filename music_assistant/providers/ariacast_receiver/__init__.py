@@ -23,7 +23,7 @@ from music_assistant_models.enums import (
     SourceControl,
     StreamType,
 )
-from music_assistant_models.errors import MediaNotFoundError, ResourceBusyError
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     AudioFormat,
     AudioSource,
@@ -117,9 +117,9 @@ class AriaCastBridge(PluginProvider):
         # _active_player_id remembers the player that last consumed our stream so
         # we can reclaim it when the external app resumes after a pause.
         self._active_player_id: str | None = None
-        # _in_use_by_queue is the queue currently streaming us (used to enforce
-        # exclusivity via ResourceBusyError and to detect stream cancellation
-        # from inside get_audio_stream).
+        # _in_use_by_queue is the queue currently streaming us (set in
+        # on_source_selected, used to detect stream cancellation from inside
+        # get_audio_stream and to gate metadata pushes to the consumer queue).
         self._in_use_by_queue: str | None = None
         # _active_session_id is the controller-provided token for the current
         # stream request — used to reject stale on_source_unselected callbacks
@@ -214,12 +214,16 @@ class AriaCastBridge(PluginProvider):
         return [self._audio_source]
 
     async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
-        """Return StreamDetails for streaming the AriaCast audio to a queue."""
+        """Return StreamDetails for streaming the AriaCast audio to a queue.
+
+        Side-effect-free: ownership is claimed in on_source_selected (which the
+        streams controller fires before this method on the actual stream
+        request). Keeping this idempotent means preload paths like
+        player_queues._load_item can fetch streamdetails without claiming the
+        source and blocking a subsequent cross-queue handoff.
+        """
         if source_id != AUDIO_SOURCE_ID:
             raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
-        if self._in_use_by_queue and self._in_use_by_queue != queue_id:
-            raise ResourceBusyError(f"AriaCast is already in use by queue {self._in_use_by_queue}")
-        self._in_use_by_queue = queue_id
         return StreamDetails(
             provider=self.instance_id,
             item_id=source_id,
@@ -328,12 +332,13 @@ class AriaCastBridge(PluginProvider):
                 raise RuntimeError(
                     f"Player switching disabled; source must remain on {current_target}"
                 )
-        # Handoff: release the prior queue's claim so the new queue's
-        # get_stream_details (called right after this hook by the streams
-        # controller) is not rejected by the busy check. The previous stream's
-        # get_audio_stream loop notices the lock change and exits cleanly.
-        if self._in_use_by_queue and self._in_use_by_queue != queue_id:
-            self._in_use_by_queue = None
+        # Claim ownership for this queue. The lock lives here (not in
+        # get_stream_details) so preload paths can fetch streamdetails without
+        # accidentally blocking a subsequent cross-queue handoff at the actual
+        # stream request. Overwriting any prior claim is intentional: the
+        # previous stream's get_audio_stream loop notices the queue change and
+        # exits cleanly.
+        self._in_use_by_queue = queue_id
         # Record this request's session id so a later on_source_unselected can
         # tell whether it is the live teardown or a stale callback from a
         # superseded same-queue request.

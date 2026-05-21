@@ -54,15 +54,19 @@ class PluginProvider(Provider):
 
         Will only be called if ProviderFeature.AUDIO_SOURCE is declared.
 
+        MUST be side-effect-free. MA calls this from both the streaming path
+        and from queue preload (``_load_item``); claiming ownership here would
+        let a preload accidentally reserve an exclusive source and block a
+        subsequent cross-queue handoff at the actual stream request. Ownership
+        is claimed in ``on_source_selected`` (which fires only on the real
+        stream request, paired with ``on_source_unselected`` in the finally).
+
         The returned StreamDetails uses the standard fields:
         ``stream_type`` selects between a custom async generator and a path
         (e.g. NAMED_PIPE); ``audio_format`` describes the PCM format the source
         emits; ``stream_metadata`` carries the initial live metadata (and can
         be updated at runtime via ``mass.streams.update_stream_metadata(queue_id, ...)``,
         the same channel ICY radio metadata uses).
-
-        Must raise ResourceBusyError if the AudioSource has ``exclusive=True``
-        and is already streaming to a different consumer.
 
         Silence-during-pause contract:
         the player consuming the stream needs a continuous byte flow or it will
@@ -143,13 +147,13 @@ class PluginProvider(Provider):
         """
         React to an AudioSource being selected for playback.
 
-        Optional hook. Fired by the streams controller **before**
+        Plugins exposing an exclusive AudioSource MUST claim ownership in this
+        hook (rather than in ``get_stream_details``). This hook fires only on
+        the actual stream request — not on queue preload — so claiming here
+        keeps the preload path side-effect-free and lets cross-queue handoffs
+        succeed (the streams controller fires this **before**
         ``get_stream_details`` so the plugin can stop the previous player and
-        release any prior exclusive claim (e.g. an existing ``_in_use_by_queue``
-        held by an earlier queue) before the new queue's ``get_stream_details``
-        runs. Without this ordering the exclusivity check inside
-        ``get_stream_details`` would raise ``ResourceBusyError`` for any
-        cross-queue handoff and the takeover path would be unreachable.
+        replace its claim before the upcoming stream-details fetch).
 
         ``stream_session_id`` is a fresh per-request token paired with the
         matching ``on_source_unselected`` call. Plugins should store it (and

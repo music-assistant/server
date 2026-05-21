@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from music_assistant_models.enums import ContentType, MediaType, StreamType
-from music_assistant_models.errors import MediaNotFoundError, ResourceBusyError, SetupFailedError
+from music_assistant_models.errors import MediaNotFoundError, SetupFailedError
 from music_assistant_models.media_items import AudioFormat, AudioSource, ProviderMapping
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
@@ -168,15 +168,16 @@ class VBANReceiverProvider(PluginProvider):
         return [self._audio_source]
 
     async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
-        """Return StreamDetails for streaming the VBAN PCM audio to a queue."""
+        """Return StreamDetails for streaming the VBAN PCM audio to a queue.
+
+        Side-effect-free: ownership is claimed in on_source_selected (which the
+        streams controller fires before this method on the actual stream
+        request). Keeping this idempotent means preload paths like
+        player_queues._load_item can fetch streamdetails without claiming the
+        source and blocking a subsequent cross-queue handoff.
+        """
         if source_id != AUDIO_SOURCE_ID:
             raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
-        if self._in_use_by_queue and self._in_use_by_queue != queue_id:
-            raise ResourceBusyError(
-                f"VBAN receiver {self._vban_stream_name} is already in use by queue "
-                f"{self._in_use_by_queue}"
-            )
-        self._in_use_by_queue = queue_id
         return StreamDetails(
             provider=self.instance_id,
             item_id=source_id,
@@ -274,14 +275,15 @@ class VBANReceiverProvider(PluginProvider):
     async def on_source_selected(
         self, source_id: str, player_id: str, queue_id: str, stream_session_id: str
     ) -> None:
-        """Release the prior queue's claim so a cross-queue handoff can proceed."""
+        """Claim the source for this queue and let any prior stream wind down."""
         if source_id != AUDIO_SOURCE_ID:
             return
-        # The previous stream loop notices the queue change on its 1s timeout
-        # and exits cleanly, freeing get_stream_details to claim for the new
-        # queue without ResourceBusyError.
-        if self._in_use_by_queue and self._in_use_by_queue != queue_id:
-            self._in_use_by_queue = None
+        # Claim ownership for this queue. The lock lives here (not in
+        # get_stream_details) so preload paths can fetch streamdetails without
+        # accidentally blocking a subsequent cross-queue handoff at the actual
+        # stream request. The previous stream loop notices the queue change on
+        # its 1s timeout and exits cleanly.
+        self._in_use_by_queue = queue_id
         # Record this request's session id so a later on_source_unselected can
         # tell whether it is the live teardown or a stale callback from a
         # superseded same-queue request.

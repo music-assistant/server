@@ -44,7 +44,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import MediaNotFoundError, ResourceBusyError
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     AudioSource,
     Playlist,
@@ -141,8 +141,9 @@ class MyDemoPluginprovider(PluginProvider):
     implement the abc methods with your actual implementation.
     """
 
-    # tracks which queue currently owns the exclusive AudioSource, so a second
-    # consumer can be rejected with ResourceBusyError from get_stream_details
+    # tracks which queue currently owns the exclusive AudioSource. Set in
+    # on_source_selected (NOT in get_stream_details — that path also runs from
+    # queue preload, where claiming would block a later cross-queue handoff).
     _in_use_by_queue: str | None = None
 
     async def loaded_in_mass(self) -> None:
@@ -224,6 +225,13 @@ class MyDemoPluginprovider(PluginProvider):
         # OPTIONAL
         # Will only be called if ProviderFeature.AUDIO_SOURCE is declared.
         #
+        # MUST be side-effect-free — no exclusivity claim, no busy raise.
+        # MA calls this from both the streaming path AND from queue preload, so
+        # mutating provider state here would let a preload accidentally claim
+        # the source and block a subsequent cross-queue handoff. Ownership is
+        # claimed in on_source_selected (which fires only on the actual stream
+        # request, not on preload) — see the example below.
+        #
         # Return a StreamDetails with stream_type=CUSTOM when audio comes from
         # an async generator (get_audio_stream below), or stream_type=NAMED_PIPE
         # plus a path when audio comes from a named pipe / file. stream_metadata
@@ -241,16 +249,8 @@ class MyDemoPluginprovider(PluginProvider):
         #   shairport-sync and librespot do this in passthrough mode). If
         #   the producer actually stops writing, ffmpeg will block and the
         #   player will eventually disconnect.
-        #
-        # Raise ResourceBusyError if the source is exclusive=True and already
-        # in use by a different queue.
         if source_id != AUDIO_SOURCE_ID:
             raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
-        if self._in_use_by_queue and self._in_use_by_queue != queue_id:
-            raise ResourceBusyError(
-                f"AudioSource {source_id} is already in use by queue {self._in_use_by_queue}"
-            )
-        self._in_use_by_queue = queue_id
         return StreamDetails(
             provider=self.instance_id,
             item_id=source_id,
@@ -275,8 +275,8 @@ class MyDemoPluginprovider(PluginProvider):
         # by streamdetails.audio_format. Release any per-stream resources in a
         # try/finally — the consumer closes the generator when playback ends.
         # snapshot the consumer at start so we only release the lock if no
-        # other queue took over in the meantime (handled via ResourceBusyError
-        # in get_stream_details).
+        # other queue has overwritten the claim since (on_source_selected for a
+        # cross-queue handoff will).
         consumer_queue = self._in_use_by_queue
         # 100ms of silence at 44.1kHz/16bit/stereo PCM — matches the audio_format
         # declared in get_stream_details. Replace with your actual byte source.
@@ -317,27 +317,27 @@ class MyDemoPluginprovider(PluginProvider):
         self, source_id: str, player_id: str, queue_id: str, stream_session_id: str
     ) -> None:
         """React to an AudioSource being selected for playback on a player."""
-        # OPTIONAL — fires BEFORE get_stream_details so the plugin can stop any
-        # previous player and release a prior exclusive claim before the new
-        # queue's get_stream_details runs. Without this ordering the busy check
-        # in get_stream_details would reject any cross-queue handoff and the
-        # transfer path would be unreachable.
+        # OPTIONAL — fires only on the actual stream request (not on queue
+        # preload). This is the single point where exclusive AudioSources
+        # claim ownership: doing it here (instead of in get_stream_details)
+        # keeps the preload path side-effect-free so a player-switch handoff
+        # is not blocked at queue prep time.
         #
         # Plugins MUST store stream_session_id so the matching
         # on_source_unselected callback can reject stale teardowns from
         # superseded same-queue requests. Typical pattern for exclusive
         # sources:
         #
-        #     if self._in_use_by_queue and self._in_use_by_queue != queue_id:
-        #         self._in_use_by_queue = None  # release prior queue
-        #         await self.mass.players.cmd_stop(prev_player_id)
+        #     if self._active_player_id and self._active_player_id != player_id:
+        #         await self.mass.players.cmd_stop(self._active_player_id)
+        #     self._in_use_by_queue = queue_id  # claim (overwrites prior queue's)
         #     self._active_session_id = stream_session_id
         #     self._active_player_id = player_id
         #
         # If allow_player_switch is False and the requesting player is not the
         # configured target, redirect via mass.player_queues.play_media(target,
         # uri) and then RAISE so the original (disallowed) request does not
-        # continue into get_stream_details and claim the source for itself.
+        # continue into get_stream_details and stream to the wrong player.
 
     async def on_source_unselected(
         self, source_id: str, queue_id: str, stream_session_id: str

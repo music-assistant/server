@@ -31,7 +31,6 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import (
     MediaNotFoundError,
-    ResourceBusyError,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import AudioFormat, AudioSource, ProviderMapping
@@ -251,14 +250,16 @@ class SpotifyConnectProvider(PluginProvider):
         return [self._audio_source]
 
     async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
-        """Return StreamDetails for streaming the Spotify Connect audio."""
+        """Return StreamDetails for streaming the Spotify Connect audio.
+
+        Side-effect-free: ownership is claimed in on_source_selected (which the
+        streams controller fires before this method on the actual stream
+        request). Keeping this idempotent means preload paths like
+        player_queues._load_item can fetch streamdetails without claiming the
+        source and blocking a subsequent cross-queue handoff.
+        """
         if source_id != AUDIO_SOURCE_ID:
             raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
-        if self._in_use_by_queue and self._in_use_by_queue != queue_id:
-            raise ResourceBusyError(
-                f"Spotify Connect device {self.name} is in use by queue {self._in_use_by_queue}"
-            )
-        self._in_use_by_queue = queue_id
         return StreamDetails(
             provider=self.instance_id,
             item_id=source_id,
@@ -400,10 +401,8 @@ class SpotifyConnectProvider(PluginProvider):
                 )
 
         # If there's already an active player and it's different, kick it out.
-        # Pre-emptively release _in_use_by_queue so the new queue's
-        # get_stream_details (called right after this hook by the streams
-        # controller) is not rejected by the busy check. The old stream's
-        # on_source_unselected may fire later for the previous queue, but its
+        # The lock claim a few lines below replaces the previous queue's claim;
+        # the prior stream's on_source_unselected may fire later, but its
         # session-id guard keeps it from clobbering the new claim.
         if self._active_player_id and self._active_player_id != player_id:
             prev_player_id = self._active_player_id
@@ -412,12 +411,16 @@ class SpotifyConnectProvider(PluginProvider):
                 player_id,
                 prev_player_id,
             )
-            self._in_use_by_queue = None
             try:
                 await self.mass.players.cmd_stop(prev_player_id)
             except Exception as err:
                 self.logger.debug("Failed to stop previous player %s: %s", prev_player_id, err)
 
+        # Claim ownership for this queue. The lock lives here (not in
+        # get_stream_details) so preload paths can fetch streamdetails without
+        # accidentally blocking a subsequent cross-queue handoff at the actual
+        # stream request.
+        self._in_use_by_queue = queue_id
         # Record this request's session id so a later on_source_unselected can
         # tell whether it is the live teardown or a stale callback from a
         # superseded same-queue request.
