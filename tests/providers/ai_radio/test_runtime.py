@@ -619,24 +619,16 @@ async def test_run_dynamic_mode_has_watchdog_for_stalled_playback() -> None:
         ) -> list[dict[str, Any]]:
             return tracks
 
-        def _plan_sections(  # type: ignore[override]
-            self, *args: Any, **kwargs: Any
-        ) -> tuple[list[Any], dict[str, Any]]:
+        def _plan_sections(self, *args: Any, **kwargs: Any) -> tuple[list[Any], dict[str, Any]]:
             return [], {}
 
-        async def _generate_sections(  # type: ignore[override]
-            self, *args: Any, **kwargs: Any
-        ) -> list[Any]:
+        async def _generate_sections(self, *args: Any, **kwargs: Any) -> list[Any]:
             return []
 
-        async def _synthesize_sections(  # type: ignore[override]
-            self, *args: Any, **kwargs: Any
-        ) -> list[Any]:
+        async def _synthesize_sections(self, *args: Any, **kwargs: Any) -> list[Any]:
             return []
 
-        async def _prepare_runtime_tokens(  # type: ignore[override]
-            self, station: dict[str, Any]
-        ) -> dict[str, str]:
+        async def _prepare_runtime_tokens(self, station: dict[str, Any]) -> dict[str, str]:
             return {}
 
     class DummyPlayers:
@@ -680,5 +672,5 @@ async def test_run_dynamic_mode_has_watchdog_for_stalled_playback() -> None:
         "section_order": [],
     }
 
-    with pytest.raises(MusicAssistantError, match="stall|stopped advancing|watchdog|inactive"):
+    with pytest.raises(MusicAssistantError, match=r"stall|stopped advancing|watchdog|inactive"):
         await asyncio.wait_for(runtime._run_dynamic_mode(session, station), timeout=0.5)
