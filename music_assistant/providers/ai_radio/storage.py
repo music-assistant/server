@@ -180,7 +180,14 @@ class AIRadioStorageMixin:
             raw_constraints = section.get("constraints")
             max_chars = 0
             if isinstance(raw_constraints, dict):
-                max_chars = int(raw_constraints.get("max_chars", 0) or 0)
+                raw_max_chars = raw_constraints.get("max_chars", 0)
+                try:
+                    max_chars = max(0, int(raw_max_chars or 0))
+                except (TypeError, ValueError) as err:
+                    raise InvalidDataError(
+                        f"Section '{section_id}' has non-numeric constraints.max_chars: "
+                        f"{raw_max_chars!r}"
+                    ) from err
             if max_chars > 0:
                 normalized["constraints"] = {"max_chars": max_chars}
         for passthrough_key in ("cover_image",):
