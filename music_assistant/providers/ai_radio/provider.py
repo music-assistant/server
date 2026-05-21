@@ -252,8 +252,10 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
             if float(dynamic_source_playtime_cap_override) < 0:
                 raise InvalidDataError("dynamic_source_playtime_cap_override must be >= 0")
             station["max_duration_minutes"] = float(dynamic_source_playtime_cap_override)
-        if dynamic_batch_size_override:
-            station["dynamic_batch_size"] = max(1, int(dynamic_batch_size_override))
+        if dynamic_batch_size_override is not None:
+            if int(dynamic_batch_size_override) < 1:
+                raise InvalidDataError("dynamic_batch_size_override must be >= 1")
+            station["dynamic_batch_size"] = int(dynamic_batch_size_override)
         if selected_mode == "dynamic":
             player_id = str(station.get("default_player_id") or "").strip()
             if not player_id:
