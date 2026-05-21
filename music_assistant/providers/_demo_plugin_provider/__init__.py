@@ -145,6 +145,11 @@ class MyDemoPluginprovider(PluginProvider):
     # on_source_selected (NOT in get_stream_details — that path also runs from
     # queue preload, where claiming would block a later cross-queue handoff).
     _in_use_by_queue: str | None = None
+    # tracks the active stream_session_id for the current stream request.
+    # Paired with _in_use_by_queue: same-queue reconnects refresh this token
+    # without changing _in_use_by_queue, so stream loops and generator
+    # finallys must guard their lock release on both still matching.
+    _active_session_id: str | None = None
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -274,10 +279,16 @@ class MyDemoPluginprovider(PluginProvider):
         # stream_type=StreamType.CUSTOM. Yield bytes in the PCM format declared
         # by streamdetails.audio_format. Release any per-stream resources in a
         # try/finally — the consumer closes the generator when playback ends.
-        # snapshot the consumer at start so we only release the lock if no
-        # other queue has overwritten the claim since (on_source_selected for a
-        # cross-queue handoff will).
+        #
+        # Lock release pattern: snapshot BOTH the queue id AND the active
+        # session id at stream start, then guard the finally release on both
+        # still matching. A queue_id-only guard is unsafe for same-queue
+        # reconnects: when the player drops + reopens the same URL,
+        # on_source_selected fires again with a fresh stream_session_id (but
+        # the same queue id), and the prior generator's teardown would
+        # otherwise clear the lock that now belongs to the new session.
         consumer_queue = self._in_use_by_queue
+        captured_session_id = self._active_session_id
         # 100ms of silence at 44.1kHz/16bit/stereo PCM — matches the audio_format
         # declared in get_stream_details. Replace with your actual byte source.
         pcm_chunk = b"\x00" * (44100 * 2 * 2 // 10)
@@ -285,7 +296,10 @@ class MyDemoPluginprovider(PluginProvider):
             for _ in range(100):
                 yield pcm_chunk
         finally:
-            if self._in_use_by_queue == consumer_queue:
+            if (
+                self._in_use_by_queue == consumer_queue
+                and self._active_session_id == captured_session_id
+            ):
                 self._in_use_by_queue = None
 
     async def on_source_control(

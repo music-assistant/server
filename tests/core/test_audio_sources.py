@@ -160,13 +160,20 @@ class _FakePluginProvider:
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         del streamdetails, seek_position
+        # Snapshot BOTH the queue id and the session id at stream start. The
+        # queue-id-only guard is unsafe for same-queue reconnects: a fresh
+        # on_source_selected refreshes _active_session_id without changing
+        # _in_use_by_queue, so the prior generator's teardown would otherwise
+        # clobber the new session's claim.
         consumer_queue = self._in_use_by_queue
+        captured_session_id = self._active_session_id
         try:
             yield b"\x00" * 4096
         finally:
-            # Only release if no other queue has overwritten the claim since
-            # (on_source_selected for a cross-queue handoff will).
-            if self._in_use_by_queue == consumer_queue:
+            if (
+                self._in_use_by_queue == consumer_queue
+                and self._active_session_id == captured_session_id
+            ):
                 self._in_use_by_queue = None
 
     async def on_source_control(
@@ -317,6 +324,33 @@ class TestAudioSourceContract:
         await prov.on_source_unselected("main", "queue_a", "session_1")
         assert prov._in_use_by_queue == "queue_b"
         assert prov._active_session_id == "session_2"
+
+    @pytest.mark.asyncio
+    async def test_get_audio_stream_finally_does_not_clobber_reconnected_claim(self) -> None:
+        """The generator's finally must not release a same-queue reconnect's live claim."""
+        # Reviewer-flagged scenario: stream 1's generator close fires AFTER
+        # stream 2 (a same-queue reconnect) has already called
+        # on_source_selected with a fresh session id. Stream 1's queue id
+        # snapshot still matches _in_use_by_queue (same queue), so a
+        # queue-id-only guard would clear the lock that now belongs to
+        # stream 2. The session-id guard prevents this.
+        prov = _FakePluginProvider(_audio_source())
+        # Stream 1 starts
+        await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
+        sd = await prov.get_stream_details("main", "queue_a")
+        gen1 = prov.get_audio_stream(sd)
+        await gen1.__anext__()
+        # Same-queue reconnect arrives before stream 1's generator finishes
+        await prov.on_source_selected("main", "player_a", "queue_a", "session_2")
+        # Lock is now claimed for session_2 (same queue id, refreshed session)
+        assert prov._in_use_by_queue == "queue_a"
+        assert prov._active_session_id == "session_2"
+        # Stream 1's generator now closes — its finally MUST NOT clear the lock
+        await gen1.aclose()
+        post_release_queue: str | None = prov._in_use_by_queue
+        post_release_session: str | None = prov._active_session_id
+        assert post_release_queue == "queue_a"
+        assert post_release_session == "session_2"
 
     @pytest.mark.asyncio
     async def test_reconnect_with_cached_streamdetails_reclaims_lock(self) -> None:

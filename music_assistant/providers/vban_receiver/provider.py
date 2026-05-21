@@ -190,7 +190,7 @@ class VBANReceiverProvider(PluginProvider):
             ),
         )
 
-    async def get_audio_stream(
+    async def get_audio_stream(  # noqa: PLR0915
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Yield raw PCM chunks from the VBANIncomingStream queue."""
@@ -199,6 +199,11 @@ class VBANReceiverProvider(PluginProvider):
         _stream_id = str(uuid4())
         self._active_stream_id = _stream_id
         consumer_queue = self._in_use_by_queue
+        # Snapshot the active session id so a same-queue reconnect (which
+        # refreshes _active_session_id but not _in_use_by_queue) supersedes
+        # this stream: the loop exits and the finally release skips so it
+        # doesn't clobber the new session's claim.
+        captured_session_id = self._active_session_id
         _stream_details = (
             f"ID: {_stream_id}//Queue: {consumer_queue}//"
             f"Stream: {self._vban_stream_name}//"
@@ -223,6 +228,13 @@ class VBANReceiverProvider(PluginProvider):
                         "longer in use by queue %s",
                         _stream_details,
                         consumer_queue,
+                    )
+                    break
+                if self._active_session_id != captured_session_id:
+                    self.logger.debug(
+                        "Stopping VBAN PCM audio stream receiver: %s - Reason: same-queue "
+                        "reconnect superseded this session",
+                        _stream_details,
                     )
                     break
                 if self._active_stream_id != _stream_id:
@@ -268,7 +280,13 @@ class VBANReceiverProvider(PluginProvider):
                     break
         finally:
             self._cancel_stats_reporter(_stream_id)
-            if self._in_use_by_queue == consumer_queue:
+            # Guard release on BOTH queue id AND session id so a stale generator
+            # teardown after a same-queue reconnect doesn't clear the new
+            # session's claim.
+            if (
+                self._in_use_by_queue == consumer_queue
+                and self._active_session_id == captured_session_id
+            ):
                 self._in_use_by_queue = None
             self.logger.debug("Stopped VBAN PCM audio stream receiver: %s", _stream_details)
 

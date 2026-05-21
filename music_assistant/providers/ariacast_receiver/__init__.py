@@ -238,6 +238,11 @@ class AriaCastBridge(PluginProvider):
     ) -> AsyncGenerator[bytes, None]:
         """Stream PCM audio frames from the binary's stdout pump."""
         consumer_queue = self._in_use_by_queue
+        # Snapshot the active session id so a same-queue reconnect (which
+        # refreshes _active_session_id but not _in_use_by_queue) supersedes
+        # this stream: the loop exits and the finally release skips so it
+        # doesn't clobber the new session's claim.
+        captured_session_id = self._active_session_id
         self.logger.debug("Audio stream requested by queue %s", consumer_queue)
 
         # Pre-buffering phase for high-latency players
@@ -258,8 +263,13 @@ class AriaCastBridge(PluginProvider):
         # Stream audio frames from the queue until playback stops
         try:
             while not self._stop_called:
-                # Stop if our exclusive lock was released (pause) or another queue took over
-                if self._in_use_by_queue != consumer_queue:
+                # Stop if our exclusive lock was released (pause), another queue
+                # took over (cross-queue handoff), or a same-queue reconnect
+                # superseded this session (session id rolled forward).
+                if (
+                    self._in_use_by_queue != consumer_queue
+                    or self._active_session_id != captured_session_id
+                ):
                     self.logger.debug("Stream lock released or taken over, stopping stream")
                     break
 
@@ -280,7 +290,13 @@ class AriaCastBridge(PluginProvider):
         finally:
             self.logger.debug("Audio stream ended for queue %s", consumer_queue)
             self.frame_queue.clear()
-            if self._in_use_by_queue == consumer_queue:
+            # Guard release on BOTH queue id AND session id so a stale
+            # generator teardown after a same-queue reconnect doesn't clear
+            # the new session's claim.
+            if (
+                self._in_use_by_queue == consumer_queue
+                and self._active_session_id == captured_session_id
+            ):
                 self._in_use_by_queue = None
 
     async def on_source_control(

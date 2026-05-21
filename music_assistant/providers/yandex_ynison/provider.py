@@ -328,6 +328,11 @@ class YandexYnisonProvider(PluginProvider):
         # snapshot the consumer at session start; the rest of this generator
         # treats the queue_id as the player_id (they are the same by convention)
         player_id = self._in_use_by_queue or ""
+        # Snapshot the active session id too so a same-queue reconnect (which
+        # updates _active_session_id but not _in_use_by_queue) is treated as a
+        # superseding session: the loop exits early, and the finally clear
+        # below skips the release so it doesn't clobber the new claim.
+        captured_session_id = self._active_session_id
 
         # Freeze format for this streaming session so every inner ffmpeg
         # produces data matching the outer ffmpeg's captured input_format.
@@ -335,7 +340,11 @@ class YandexYnisonProvider(PluginProvider):
         session_fmt: AudioFormat = make_pcm_format(session_params)
 
         try:
-            while not self._stream_stop_event.is_set() and self._in_use_by_queue == player_id:
+            while (
+                not self._stream_stop_event.is_set()
+                and self._in_use_by_queue == player_id
+                and self._active_session_id == captured_session_id
+            ):
                 if not self._ynison or not self._ynison.state.current_track_id:
                     # Wait for a track to appear
                     self._track_changed_event.clear()
@@ -359,6 +368,7 @@ class YandexYnisonProvider(PluginProvider):
                     while (
                         not self._stream_stop_event.is_set()
                         and self._in_use_by_queue == player_id
+                        and self._active_session_id == captured_session_id
                         and self._ynison
                         and self._ynison.state.current_track_id == track_id
                         and self._ynison.state.is_paused
@@ -403,6 +413,7 @@ class YandexYnisonProvider(PluginProvider):
                         self._track_changed_event.is_set()
                         or self._stream_stop_event.is_set()
                         or self._in_use_by_queue != player_id
+                        or self._active_session_id != captured_session_id
                     ):
                         break
 
@@ -436,10 +447,14 @@ class YandexYnisonProvider(PluginProvider):
                 self._current_streaming_track_id = None
         finally:
             # Release ownership only if no one else has claimed the source since
-            # this session started (in which case the new owner manages its own
-            # lifecycle). Also clears the streaming track id so a fresh session
-            # doesn't see stale state.
-            if self._in_use_by_queue == player_id:
+            # this session started. Guard on BOTH the queue id AND the session
+            # id — a same-queue reconnect refreshes the session id without
+            # changing the queue id, and clearing the lock on the old
+            # generator's teardown would clobber the new session's claim.
+            if (
+                self._in_use_by_queue == player_id
+                and self._active_session_id == captured_session_id
+            ):
                 self._in_use_by_queue = None
             self._current_streaming_track_id = None
 
