@@ -22,7 +22,7 @@ from music_assistant_models.enums import (
     QueueOption,
     TaskStatus,
 )
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import InvalidDataError, MusicAssistantError
 
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_loads
@@ -33,9 +33,11 @@ from music_assistant.helpers.playlists import (
     generate_m3u,
     media_item_to_playlist_item,
 )
+from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.uri import create_uri
 
 from .constants import (
+    BUILTIN_MEDIA_INFO_CACHE_CATEGORY,
     DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS,
     DEFAULT_LLM_INSTRUCTIONS,
     DEFAULT_WEATHER_PROVIDER,
@@ -1453,10 +1455,33 @@ class AIRadioRuntimeMixin:
                 builtin_instance_id = str(
                     getattr(builtin_provider, "instance_id", "") or ""
                 ).strip()
+                await self._warm_builtin_duration_cache(builtin_provider, uri)
                 return create_uri(MediaType.TRACK, builtin_instance_id or "builtin", uri)
             return uri
         raise MusicAssistantError(
             f"TTS provider '{plugin.instance_id}' returned no direct stream path in StreamDetails.path"
+        )
+
+    async def _warm_builtin_duration_cache(self, builtin_provider: Any, url: str) -> None:
+        """Force-decode duration and prefill builtin's media-info cache.
+
+        Without this, ffprobe of HA tts_proxy URLs returns no duration and the
+        builtin provider classifies the item as Radio, breaking auto-advance.
+        """
+        if builtin_provider is None:
+            return
+        try:
+            tags = await async_parse_tags(url, require_duration=True)
+        except (InvalidDataError, OSError) as err:
+            self.logger.warning("Could not pre-compute TTS section duration for %s: %s", url, err)
+            return
+        if tags.duration:
+            tags.raw.setdefault("format", {})["duration"] = str(tags.duration)
+        await self.mass.cache.set(
+            url,
+            tags.raw,
+            provider=str(getattr(builtin_provider, "instance_id", "") or "builtin"),
+            category=BUILTIN_MEDIA_INFO_CACHE_CATEGORY,
         )
 
     def _get_ai_plugin(self) -> PluginProvider:
