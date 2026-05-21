@@ -7,7 +7,7 @@ import contextlib
 import dataclasses
 import os
 import time
-from collections.abc import AsyncGenerator, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from itertools import groupby
 from math import inf
 from typing import TYPE_CHECKING, Any
@@ -497,137 +497,6 @@ class AudioAnalysisController:
             merged = self._merged_from_rows(group, available_aa_domains)
             if merged is not None:
                 results.append((item_id, provider, merged))
-        return results
-
-    @api_command("audio_analysis/status")
-    async def get_status(self, aa_domain: str) -> dict[str, Any]:
-        """
-        Return runtime state for an AA provider.
-
-        :param aa_domain: AA provider domain to query.
-        """
-        provider = self.mass.get_provider(
-            aa_domain,
-            provider_type=AudioAnalysisProvider,  # type: ignore[type-abstract]
-        )
-        if provider is None:
-            raise ProviderUnavailableError(f"{aa_domain} is not available")
-        extras = await provider.get_provider_status()
-        return {
-            "provider_loaded": True,
-            "analyzed_tracks_count": await self.get_audio_analysis_count(aa_domain),
-            "analysis_version": provider.analysis_version,
-            **extras,
-        }
-
-    @api_command("audio_analysis/analyzed_tracks")
-    async def list_analyzed_tracks(
-        self,
-        aa_domain: str,
-        search: str = "",
-    ) -> AsyncGenerator[dict[str, Any], None]:
-        """
-        Stream the tracks analyzed by the given AA provider.
-
-        Pagination is handled transparently by the websocket layer; one
-        entry is yielded per unique analyzed (item_id, provider).
-
-        :param aa_domain: AA provider domain to query.
-        :param search: Case-insensitive substring filter on item_id, applied
-            across all results.
-        """
-        provider = self.mass.get_provider(
-            aa_domain,
-            provider_type=AudioAnalysisProvider,  # type: ignore[type-abstract]
-        )
-        if provider is None:
-            raise ProviderUnavailableError(f"{aa_domain} is not available")
-
-        q = search.lower()
-
-        async def _resolve(item_id: str, provider_id: str) -> dict[str, Any]:
-            try:
-                t = await self.mass.music.tracks.get(item_id, provider_id)
-                artists = ", ".join(a.name for a in getattr(t, "artists", []) or [])
-                return {"item_id": item_id, "name": t.name, "artist": artists}
-            except Exception as err:
-                self.logger.debug("Failed to resolve track %s/%s: %s", provider_id, item_id, err)
-                return {"item_id": item_id, "name": "(unknown)", "artist": ""}
-
-        seen: set[tuple[str, str]] = set()
-        page_size = 500
-        offset = 0
-        while True:
-            rows = await self.get_audio_analysis_rows(aa_domain, limit=page_size, offset=offset)
-            if not rows:
-                break
-            entries: list[tuple[str, str]] = []
-            for row in rows:
-                key = (row["item_id"], row["provider"])
-                if key in seen:
-                    continue
-                seen.add(key)
-                if q and q not in key[0].lower():
-                    continue
-                entries.append(key)
-            for item in await asyncio.gather(*[_resolve(iid, prov) for iid, prov in entries]):
-                yield item
-            if len(rows) < page_size:
-                break
-            offset += page_size
-
-    @api_command("audio_analysis/track")
-    async def get_track(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-        aa_domain: str | None = None,
-    ) -> list[AudioAnalysisData]:
-        """
-        Return the stored analysis records for a single track.
-
-        Each record includes all canonical scalar fields and the full,
-        unmodified extra_data (embedding included). When aa_domain is given,
-        the result holds at most that provider's single record; when omitted,
-        it holds one record per AA provider that has analyzed this track.
-        Returns an empty list when no usable analysis exists (unknown music
-        provider, no stored rows, or unreadable stored records).
-
-        :param item_id: Provider-native item ID from streamdetails.item_id.
-        :param provider_instance_id_or_domain: Music provider instance ID or domain.
-        :param aa_domain: Optional AA provider domain to restrict to one provider.
-        """
-        if aa_domain is not None:
-            provider = self.mass.get_provider(
-                aa_domain,
-                provider_type=AudioAnalysisProvider,  # type: ignore[type-abstract]
-            )
-            if provider is None:
-                raise ProviderUnavailableError(f"{aa_domain} is not available")
-        music_provider = self.mass.get_provider(
-            provider_instance_id_or_domain, provider_type=MusicProvider
-        )
-        if music_provider is None:
-            return []
-        prov_key = (
-            music_provider.domain
-            if music_provider.is_streaming_provider
-            else music_provider.instance_id
-        )
-        match: dict[str, Any] = {
-            "item_id": item_id,
-            "provider": prov_key,
-            "media_type": MediaType.TRACK.value,
-        }
-        if aa_domain is not None:
-            match["aa_provider_domain"] = aa_domain
-        rows = await self.mass.music.database.get_rows(DB_TABLE_AUDIO_ANALYSIS, match)
-        results: list[AudioAnalysisData] = []
-        for row in rows:
-            try:
-                results.append(AudioAnalysisData.from_dict(json_loads(row["analysis_data"])))
-            except (ValueError, TypeError, KeyError):
-                continue
         return results
 
     @api_command("audio_analysis/coverage")

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import json
 from collections.abc import AsyncGenerator
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -17,7 +16,7 @@ from music_assistant_models.media_items import AudioFormat
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
 from music_assistant.constants import DEFAULT_BACKGROUND_SCAN_CONCURRENCY
 from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
-from music_assistant.models.audio_analysis import AudioAnalysisCoverage, AudioAnalysisData
+from music_assistant.models.audio_analysis import AudioAnalysisCoverage
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
 
@@ -763,255 +762,6 @@ def _make_aa_provider_with_domain(
 
 
 @pytest.mark.asyncio
-async def test_status_returns_common_fields_for_known_aa_domain() -> None:
-    """get_status() returns provider_loaded, analyzed_tracks_count, analysis_version."""
-    c, _ = _stub_controller(count_result=42)
-    p = _make_aa_provider_with_domain("loudness_analysis", analysis_version=2)
-    c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
-
-    result = await c.get_status(aa_domain="loudness_analysis")
-
-    assert result["provider_loaded"] is True
-    assert result["analyzed_tracks_count"] == 42
-    assert result["analysis_version"] == 2
-    c.mass.get_provider.assert_called_once_with(
-        "loudness_analysis", provider_type=AudioAnalysisProvider
-    )
-
-
-@pytest.mark.asyncio
-async def test_status_merges_provider_status_extras() -> None:
-    """get_status() merges the provider's get_provider_status extras into the response."""
-    c, _ = _stub_controller(count_result=10)
-    p = _make_aa_provider_with_domain(
-        "sonic_analysis",
-        provider_status={"clap_model_loaded": True},
-        analysis_version=3,
-    )
-    c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
-
-    result = await c.get_status(aa_domain="sonic_analysis")
-
-    assert result["clap_model_loaded"] is True
-    assert result["analyzed_tracks_count"] == 10
-    assert result["analysis_version"] == 3
-
-
-@pytest.mark.asyncio
-async def test_status_raises_for_unknown_aa_domain() -> None:
-    """Unknown aa_domain raises ProviderUnavailableError."""
-    c, _ = _stub_controller()
-    c.mass.get_provider = MagicMock(return_value=None)  # type: ignore[method-assign]
-
-    with pytest.raises(ProviderUnavailableError):
-        await c.get_status(aa_domain="nope")
-
-
-@pytest.mark.asyncio
-async def test_analyzed_tracks_empty_yields_nothing() -> None:
-    """No analyzed rows -> the stream yields nothing."""
-    c, _ = _stub_controller(list_result=[])
-    p = _make_aa_provider_with_domain("sonic_analysis")
-    c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
-    c.mass.music.tracks = MagicMock()
-    c.mass.music.tracks.get = AsyncMock(side_effect=Exception("not used; no rows"))
-
-    items = [item async for item in c.list_analyzed_tracks(aa_domain="sonic_analysis")]
-
-    assert items == []
-
-
-@pytest.mark.asyncio
-async def test_analyzed_tracks_dedupes_and_resolves_metadata() -> None:
-    """Rows duplicated by (item_id, provider) are deduped; surviving entries get track lookup."""
-    rows = [
-        {"item_id": "a", "provider": "filesystem_local"},
-        {"item_id": "a", "provider": "filesystem_local"},
-        {"item_id": "b", "provider": "filesystem_local"},
-    ]
-    c, _ = _stub_controller(list_result=rows)
-    p = _make_aa_provider_with_domain("sonic_analysis")
-    c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
-
-    fake_track = MagicMock(name="t")
-    fake_track.name = "Track Name"
-    fake_track.artists = []
-    c.mass.music.tracks = MagicMock()
-    c.mass.music.tracks.get = AsyncMock(return_value=fake_track)
-
-    items = [item async for item in c.list_analyzed_tracks(aa_domain="sonic_analysis")]
-
-    assert len(items) == 2
-    assert {item["item_id"] for item in items} == {"a", "b"}
-
-
-@pytest.mark.asyncio
-async def test_analyzed_tracks_search_filters_whole_stream() -> None:
-    """Search filters every row on item_id substring (case-insensitive), not just one page."""
-    rows = [
-        {"item_id": "rock_track_1", "provider": "filesystem_local"},
-        {"item_id": "jazz_track_2", "provider": "filesystem_local"},
-        {"item_id": "ROCK_track_3", "provider": "filesystem_local"},
-        {"item_id": "pop_track_4", "provider": "filesystem_local"},
-    ]
-    c, _ = _stub_controller(list_result=rows)
-    p = _make_aa_provider_with_domain("sonic_analysis")
-    c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
-
-    fake_track = MagicMock(name="t")
-    fake_track.name = "n"
-    fake_track.artists = []
-    c.mass.music.tracks = MagicMock()
-    c.mass.music.tracks.get = AsyncMock(return_value=fake_track)
-
-    items = [
-        item async for item in c.list_analyzed_tracks(aa_domain="sonic_analysis", search="rock")
-    ]
-
-    assert {item["item_id"] for item in items} == {"rock_track_1", "ROCK_track_3"}
-    assert c.mass.music.tracks.get.await_count == 2
-
-
-@pytest.mark.asyncio
-async def test_analyzed_tracks_raises_for_unknown_aa_domain() -> None:
-    """Unknown aa_domain raises ProviderUnavailableError when the stream is consumed."""
-    c, _ = _stub_controller()
-    c.mass.get_provider = MagicMock(return_value=None)  # type: ignore[method-assign]
-    with pytest.raises(ProviderUnavailableError):
-        async for _ in c.list_analyzed_tracks(aa_domain="nope"):
-            pass
-
-
-@pytest.mark.asyncio
-async def test_track_with_aa_domain_returns_single_record() -> None:
-    """With aa_domain set, get_track() returns that provider's record as a 1-item list."""
-    full = {"bpm": 120.0, "extra_data": {"clap_embedding": [0.1, 0.2, 0.3]}}
-    c, _ = _stub_controller()
-    p = _make_aa_provider_with_domain("sonic_analysis")
-    music_prov = MagicMock()
-    music_prov.is_streaming_provider = False
-    music_prov.instance_id = "filesystem_local"
-
-    def _get_provider(dom: str, provider_type: object = None) -> MagicMock:  # noqa: ARG001
-        return p if dom == "sonic_analysis" else music_prov
-
-    c.mass.get_provider = MagicMock(side_effect=_get_provider)  # type: ignore[method-assign]
-    get_rows = AsyncMock(return_value=[{"analysis_data": json.dumps(full)}])
-    c.mass.music.database.get_rows = get_rows  # type: ignore[method-assign]
-
-    result = await c.get_track(
-        item_id="a",
-        provider_instance_id_or_domain="filesystem_local",
-        aa_domain="sonic_analysis",
-    )
-
-    assert len(result) == 1
-    assert isinstance(result[0], AudioAnalysisData)
-    assert result[0].bpm == 120.0
-    assert result[0].extra_data == {"clap_embedding": [0.1, 0.2, 0.3]}
-    assert get_rows.await_args is not None
-    assert get_rows.await_args.args[1]["aa_provider_domain"] == "sonic_analysis"
-
-
-@pytest.mark.asyncio
-async def test_track_without_aa_domain_returns_all_provider_records() -> None:
-    """Without aa_domain, get_track() returns one record per AA provider for the track."""
-    c, _ = _stub_controller()
-    music_prov = MagicMock()
-    music_prov.is_streaming_provider = False
-    music_prov.instance_id = "filesystem_local"
-    c.mass.get_provider = MagicMock(return_value=music_prov)  # type: ignore[method-assign]
-    get_rows = AsyncMock(
-        return_value=[
-            {"analysis_data": json.dumps({"bpm": 120.0})},
-            {"analysis_data": json.dumps({"loudness_integrated": -9.0})},
-        ]
-    )
-    c.mass.music.database.get_rows = get_rows  # type: ignore[method-assign]
-
-    result = await c.get_track(
-        item_id="a",
-        provider_instance_id_or_domain="filesystem_local",
-    )
-
-    assert [type(r) for r in result] == [AudioAnalysisData, AudioAnalysisData]
-    assert result[0].bpm == 120.0
-    assert result[1].loudness_integrated == -9.0
-    assert get_rows.await_args is not None
-    assert "aa_provider_domain" not in get_rows.await_args.args[1]
-
-
-@pytest.mark.asyncio
-async def test_track_returns_empty_when_no_rows() -> None:
-    """No stored analysis rows -> empty list (not an error)."""
-    c, _ = _stub_controller()
-    music_prov = MagicMock()
-    music_prov.is_streaming_provider = False
-    music_prov.instance_id = "filesystem_local"
-    c.mass.get_provider = MagicMock(return_value=music_prov)  # type: ignore[method-assign]
-    c.mass.music.database.get_rows = AsyncMock(return_value=[])  # type: ignore[method-assign]
-
-    result = await c.get_track(
-        item_id="missing",
-        provider_instance_id_or_domain="filesystem_local",
-    )
-
-    assert result == []
-
-
-@pytest.mark.asyncio
-async def test_track_returns_empty_when_music_provider_unresolved() -> None:
-    """The music provider lookup returns None -> empty list."""
-    c, _ = _stub_controller()
-    c.mass.get_provider = MagicMock(return_value=None)  # type: ignore[method-assign]
-
-    result = await c.get_track(
-        item_id="a",
-        provider_instance_id_or_domain="bogus",
-    )
-
-    assert result == []
-
-
-@pytest.mark.asyncio
-async def test_track_skips_unparsable_rows() -> None:
-    """Rows with unparsable analysis_data are skipped; good rows still returned."""
-    c, _ = _stub_controller()
-    music_prov = MagicMock()
-    music_prov.is_streaming_provider = False
-    music_prov.instance_id = "filesystem_local"
-    c.mass.get_provider = MagicMock(return_value=music_prov)  # type: ignore[method-assign]
-    c.mass.music.database.get_rows = AsyncMock(  # type: ignore[method-assign]
-        return_value=[
-            {"analysis_data": "not valid json {"},
-            {"analysis_data": json.dumps({"bpm": 100.0})},
-        ]
-    )
-
-    result = await c.get_track(
-        item_id="a",
-        provider_instance_id_or_domain="filesystem_local",
-    )
-
-    assert len(result) == 1
-    assert result[0].bpm == 100.0
-
-
-@pytest.mark.asyncio
-async def test_track_raises_for_unknown_aa_domain() -> None:
-    """Unloaded AA provider raises ProviderUnavailableError."""
-    c, _ = _stub_controller()
-    c.mass.get_provider = MagicMock(return_value=None)  # type: ignore[method-assign]
-
-    with pytest.raises(ProviderUnavailableError):
-        await c.get_track(
-            aa_domain="nope",
-            item_id="a",
-            provider_instance_id_or_domain="filesystem_local",
-        )
-
-
-@pytest.mark.asyncio
 async def test_coverage_returns_three_counts_and_version() -> None:
     """get_coverage() reports analyzed, pending, stale_version, analysis_version."""
     c, _ = _stub_controller()
@@ -1098,19 +848,13 @@ def test_register_api_commands_registers_all_decorated_endpoints() -> None:
     # `.api_cmd`; in production those are real objects without it. Restrict to
     # str command names -- the only registrations that occur in production.
     registered = {call.args[0] for call in register.call_args_list if isinstance(call.args[0], str)}
-    assert registered == {
-        "audio_analysis/status",
-        "audio_analysis/analyzed_tracks",
-        "audio_analysis/track",
-        "audio_analysis/coverage",
-    }
+    assert registered == {"audio_analysis/coverage"}
     # handler passed must be the controller's own bound method
     by_cmd = {
         call.args[0]: call.args[1]
         for call in register.call_args_list
         if isinstance(call.args[0], str)
     }
-    assert by_cmd["audio_analysis/status"] == controller.get_status
     assert by_cmd["audio_analysis/coverage"] == controller.get_coverage
 
 
@@ -1123,5 +867,4 @@ def test_setup_self_registers_api_commands(monkeypatch: pytest.MonkeyPatch) -> N
 
     register = cast("MagicMock", controller.mass.register_api_command)
     registered = {call.args[0] for call in register.call_args_list if isinstance(call.args[0], str)}
-    assert "audio_analysis/coverage" in registered
-    assert "audio_analysis/status" in registered
+    assert registered == {"audio_analysis/coverage"}
