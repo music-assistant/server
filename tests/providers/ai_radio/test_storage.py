@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from typing import Any
 
 import pytest
 from music_assistant_models.errors import InvalidDataError
 
+from music_assistant.providers.ai_radio.constants import DEFAULT_LLM_INSTRUCTIONS
 from music_assistant.providers.ai_radio.storage import AIRadioStorageMixin
 
 
@@ -229,4 +232,108 @@ def test_normalize_station_rejects_non_numeric_optional_chance() -> None:
     ]
 
     with pytest.raises(InvalidDataError, match="OPTIONAL chance must be numeric"):
+        storage._normalize_station(station)
+
+
+def test_load_sections_persists_defaults_when_file_corrupt(tmp_path: Any) -> None:
+    """Persist default sections to disk when on-disk payload is empty."""
+    sections_file = tmp_path / "sections.json"
+    sections_file.write_text(json.dumps({"version": 1, "sections": []}))
+
+    storage = DummyStorage()
+    storage._sections_file = sections_file
+
+    asyncio.run(storage._load_sections())
+
+    parsed = json.loads(sections_file.read_text())
+    assert len(parsed["sections"]) > 0
+
+
+def test_normalize_section_handles_non_numeric_max_chars_cleanly() -> None:
+    """Handle non-numeric constraint values without leaking a raw ValueError."""
+    storage = DummyStorage()
+
+    with pytest.raises(InvalidDataError):
+        storage._normalize_section(
+            {
+                "id": "s1",
+                "name": "s1",
+                "type": "ai_text",
+                "prompt": "p",
+                "constraints": {"max_chars": "abc"},
+            }
+        )
+
+
+def test_normalize_station_rejects_non_numeric_alternative_weight() -> None:
+    """Reject ALTERNATIVE choices with non-numeric weight values."""
+    storage = DummyStorage()
+    storage._sections = {"Song_Transition": _section("Song_Transition")}
+    station = _station(["Song_Transition"])
+    station["section_order"] = [
+        {
+            "when": "between_songs",
+            "flow": [
+                {
+                    "ALTERNATIVE": {
+                        "choices": [{"section": "Song_Transition", "weight": "not-a-number"}]
+                    }
+                }
+            ],
+        }
+    ]
+
+    with pytest.raises(InvalidDataError, match="weight"):
+        storage._normalize_station(station)
+
+
+def test_load_stations_does_not_persist_invalid_default_station(tmp_path: Any) -> None:
+    """Do not persist a default station that fails normalization to disk."""
+    storage = DummyStorage()
+    storage._stations_file = tmp_path / "stations.json"
+    storage._sections_file = tmp_path / "sections.json"
+    storage._sections = {item["id"]: item for item in storage._default_sections_template()}
+
+    asyncio.run(storage._load_stations())
+
+    if storage._stations_file.exists():
+        parsed = json.loads(storage._stations_file.read_text())
+        for station in parsed.get("stations", []):
+            assert station.get("source_playlist_id") != ""
+
+
+def test_normalize_general_replaces_null_instructions_with_default() -> None:
+    """Replace null instructions with the default LLM instructions string."""
+    storage = DummyStorage()
+
+    result = storage._normalize_general(
+        {
+            "instructions": None,
+            "timezone": "UTC",
+            "location": {"city": "", "country": ""},
+            "weather_provider": "open_meteo",
+            "weather_timeout_seconds": 20,
+        }
+    )
+
+    assert result["instructions"] == DEFAULT_LLM_INSTRUCTIONS
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "max_duration_minutes",
+        "dynamic_batch_size",
+        "dynamic_poll_seconds",
+        "dynamic_prefetch_remaining_tracks",
+    ],
+)
+def test_normalize_station_rejects_non_numeric_numeric_field(field: str) -> None:
+    """Reject station numeric fields containing non-numeric values."""
+    storage = DummyStorage()
+    storage._sections = {"Song_Transition": _section("Song_Transition")}
+    station = _station(["Song_Transition"])
+    station[field] = "not-a-number"
+
+    with pytest.raises(InvalidDataError):
         storage._normalize_station(station)

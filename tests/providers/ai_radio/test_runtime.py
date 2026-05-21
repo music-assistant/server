@@ -451,3 +451,234 @@ async def test_wait_for_background_task_completion_waits_until_success() -> None
     _set_runtime_mass(runtime, DummyMass())
 
     await runtime._wait_for_background_task_completion("task_2", timeout_seconds=1)
+
+
+def test_compose_entries_substring_filter_misidentifies_tts_sections_as_tracks() -> None:
+    """Source-track entry detection must not match TTS sections by substring (C1)."""
+    runtime = DummyRuntime()
+    tracks = [
+        {
+            "uri": "library://track/1",
+            "name": "T1",
+            "songinfo": "A - T1",
+            "duration": 180,
+            "playlist_item": None,
+            "item_id": "1",
+            "artist": "A",
+            "index": 0,
+        },
+        {
+            "uri": "library://track/2",
+            "name": "T2",
+            "songinfo": "A - T2",
+            "duration": 180,
+            "playlist_item": None,
+            "item_id": "2",
+            "artist": "A",
+            "index": 1,
+        },
+    ]
+    sections = [
+        AudioSection(
+            order=1,
+            section_id="intro",
+            section_name="Intro",
+            insert_at_index=0,
+            uri=create_uri(MediaType.TRACK, "builtin_1", "http://x/intro.mp3"),
+        ),
+        AudioSection(
+            order=1,
+            section_id="outro",
+            section_name="Outro",
+            insert_at_index=2,
+            uri=create_uri(MediaType.TRACK, "builtin_1", "http://x/outro.mp3"),
+        ),
+    ]
+
+    entries, _ = runtime._compose_entries(tracks, sections)
+
+    substring_indices = [i for i, uri in enumerate(entries) if "://track/" in uri]
+    source_uris = {cast("str", track["uri"]) for track in tracks}
+    expected_source_indices = [i for i, uri in enumerate(entries) if uri in source_uris]
+
+    assert substring_indices == expected_source_indices
+
+
+@pytest.mark.parametrize(
+    "stub_status",
+    [TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.PENDING],
+)
+async def test_wait_for_background_task_completion_raises_on_failure(
+    stub_status: TaskStatus,
+) -> None:
+    """Surface failures, cancellations and timeouts as MusicAssistantError (P4)."""
+
+    class DummyTasks:
+        def get_task(self, task_id: str) -> BackgroundTask:
+            return BackgroundTask(name="add", id=task_id, status=stub_status)
+
+    class DummyMass:
+        tasks = DummyTasks()
+
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, DummyMass())
+
+    with pytest.raises(MusicAssistantError):
+        await runtime._wait_for_background_task_completion("task_x", timeout_seconds=1)
+
+
+def test_get_ai_plugin_preserves_priority_order() -> None:
+    """Honor provider priority order returned by mass over alphabetical sort (P5)."""
+
+    class DummyPlugin:
+        def __init__(self, instance_id: str) -> None:
+            self.instance_id = instance_id
+
+    high_priority = DummyPlugin("zz_high")
+    low_priority = DummyPlugin("aa_low")
+
+    class DummyMass:
+        def get_providers_supporting_feature(
+            self,
+            feature: ProviderFeature,
+            priority: tuple[ProviderType, ...] = (),
+        ) -> list[Any]:
+            if feature == ProviderFeature.AI_QUERY:
+                return [high_priority, low_priority]
+            return []
+
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, DummyMass())
+
+    plugin = runtime._get_ai_plugin()
+
+    assert plugin.instance_id == "zz_high"
+
+
+def test_get_tts_plugin_preserves_priority_order() -> None:
+    """Honor provider priority order returned by mass over alphabetical sort (P5)."""
+
+    class DummyPlugin:
+        def __init__(self, instance_id: str) -> None:
+            self.instance_id = instance_id
+
+    high_priority = DummyPlugin("zz_high")
+    low_priority = DummyPlugin("aa_low")
+
+    class DummyMass:
+        def get_providers_supporting_feature(
+            self,
+            feature: ProviderFeature,
+            priority: tuple[ProviderType, ...] = (),
+        ) -> list[Any]:
+            if feature == ProviderFeature.TTS:
+                return [high_priority, low_priority]
+            return []
+
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, DummyMass())
+
+    plugin = runtime._get_tts_plugin()
+
+    assert plugin.instance_id == "zz_high"
+
+
+async def test_run_dynamic_mode_has_watchdog_for_stalled_playback() -> None:
+    """Surface stalled dynamic playback (queue not advancing) as MusicAssistantError (P7)."""
+
+    class StalledRuntime(DummyRuntime):
+        async def _fetch_source_tracks(
+            self, station: dict[str, Any]
+        ) -> tuple[list[dict[str, Any]], str]:
+            tracks = [
+                {
+                    "uri": "library://track/1",
+                    "duration": 180,
+                    "name": "T1",
+                    "artist": "A",
+                    "songinfo": "A - T1",
+                    "index": 0,
+                    "playlist_item": None,
+                    "item_id": "1",
+                },
+                {
+                    "uri": "library://track/2",
+                    "duration": 180,
+                    "name": "T2",
+                    "artist": "A",
+                    "songinfo": "A - T2",
+                    "index": 1,
+                    "playlist_item": None,
+                    "item_id": "2",
+                },
+            ]
+            return tracks, "Source"
+
+        def _apply_track_duration_limit(
+            self, tracks: list[dict[str, Any]], station: dict[str, Any]
+        ) -> list[dict[str, Any]]:
+            return tracks
+
+        def _plan_sections(  # type: ignore[override]
+            self, *args: Any, **kwargs: Any
+        ) -> tuple[list[Any], dict[str, Any]]:
+            return [], {}
+
+        async def _generate_sections(  # type: ignore[override]
+            self, *args: Any, **kwargs: Any
+        ) -> list[Any]:
+            return []
+
+        async def _synthesize_sections(  # type: ignore[override]
+            self, *args: Any, **kwargs: Any
+        ) -> list[Any]:
+            return []
+
+        async def _prepare_runtime_tokens(  # type: ignore[override]
+            self, station: dict[str, Any]
+        ) -> dict[str, str]:
+            return {}
+
+    class DummyPlayers:
+        def get_player(self, player_id: str) -> Any:
+            return object()
+
+    class DummyQueue:
+        current_index = 0
+
+    class DummyPlayerQueues:
+        def clear(self, queue_id: str) -> None:
+            return None
+
+        async def play_media(self, **kwargs: Any) -> None:
+            return None
+
+        def get_active_queue(self, player_id: str) -> Any:
+            return None
+
+        def get(self, queue_id: str) -> Any:
+            return DummyQueue()
+
+    class DummyMass:
+        players = DummyPlayers()
+        player_queues = DummyPlayerQueues()
+
+    runtime = StalledRuntime()
+    _set_runtime_mass(runtime, DummyMass())
+    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
+    runtime._sessions[session.session_id] = session
+    station = {
+        "id": "st",
+        "name": "Stalled Station",
+        "default_player_id": "living_room",
+        "dynamic_batch_size": 1,
+        "dynamic_poll_seconds": 1,
+        "dynamic_prefetch_remaining_tracks": 1,
+        "clear_queue_on_start": False,
+        "general": {"timezone": "UTC"},
+        "sections": [],
+        "section_order": [],
+    }
+
+    with pytest.raises(MusicAssistantError, match="stall|stopped advancing|watchdog|inactive"):
+        await asyncio.wait_for(runtime._run_dynamic_mode(session, station), timeout=0.5)
