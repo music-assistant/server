@@ -6,17 +6,18 @@ import asyncio
 import random
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from typing import Any
 
 from music_assistant_models.errors import MusicAssistantError
+
+from music_assistant.helpers.datetime import utc
 
 from .constants import EMPTY_SECTION_ID
 
 
 def utc_now_iso() -> str:
     """Return a UTC ISO timestamp."""
-    return datetime.now(UTC).isoformat()
+    return utc().isoformat()
 
 
 @dataclass(slots=True)
