@@ -1510,11 +1510,12 @@ class StreamsAudio:
         warmup_size = int(pcm_format.pcm_sample_size * WARMUP_DURATION)
         warmup_bytes = 0
         total_chunks_received = 0
+        playback_speed = cast("float", queue_item.extra_attributes.get("playback_speed", 1.0))
         async for chunk in self.get_queue_item_stream(
             queue_item,
             pcm_format,
             seek_position=discard_seconds,
-            playback_speed=cast("float", queue_item.extra_attributes.get("playback_speed", 1.0)),
+            playback_speed=playback_speed,
         ):
             total_chunks_received += 1
             if discard_leftover:
@@ -1605,7 +1606,7 @@ class StreamsAudio:
                         _next_item,
                         pcm_format,
                         playback_speed=cast(
-                            "float", queue_item.extra_attributes.get("playback_speed", 1.0)
+                            "float", _next_item.extra_attributes.get("playback_speed", 1.0)
                         ),
                     ):
                         remaining = crossfade_buffer_size - fade_in_bytes_consumed
@@ -1674,7 +1675,11 @@ class StreamsAudio:
         # this also accounts for crossfade and silence stripping
         seconds_streamed = bytes_written / pcm_format.pcm_sample_size
         streamdetails.seconds_streamed = seconds_streamed
-        streamdetails.duration = int(streamdetails.seek_position + seconds_streamed)
+        # streamdetails.duration is in media-time; seconds_streamed is stream-time
+        # (post-atempo), so we scale by playback_speed to recover media-time.
+        streamdetails.duration = int(
+            streamdetails.seek_position + seconds_streamed * playback_speed
+        )
         # propagate accurate duration to queue_item so UI displays it
         queue_item.duration = streamdetails.duration
         self.logger.debug(
@@ -1808,6 +1813,9 @@ class StreamsAudio:
                 )
                 return
             # append to play log so the queue controller can work out which track is playing
+            track_playback_speed = cast(
+                "float", queue_track.extra_attributes.get("playback_speed", 1.0)
+            )
             play_log_entry = PlayLogEntry(queue_track.queue_item_id)
             queue.flow_mode_stream_log.append(play_log_entry)
             # calculate crossfade buffer size
@@ -1995,8 +2003,10 @@ class StreamsAudio:
             # this also accounts for crossfade and silence stripping
             seconds_streamed = bytes_written / pcm_sample_size
             queue_track.streamdetails.seconds_streamed = seconds_streamed
+            # streamdetails.duration is in media-time; seconds_streamed is stream-time
+            # (post-atempo), so we scale by the track's playback_speed to recover media-time.
             queue_track.streamdetails.duration = int(
-                queue_track.streamdetails.seek_position + seconds_streamed
+                queue_track.streamdetails.seek_position + seconds_streamed * track_playback_speed
             )
             # propagate accurate duration to queue_item so UI displays it
             queue_track.duration = queue_track.streamdetails.duration
