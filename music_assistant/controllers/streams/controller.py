@@ -440,6 +440,31 @@ class StreamsController(CoreController):
         if not queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {queue_item_id}")
 
+        is_audio_source = (
+            queue_item.media_item is not None
+            and queue_item.media_item.media_type == MediaType.AUDIO_SOURCE
+        )
+
+        # HEAD probes for AudioSource items return a minimal response without
+        # touching the plugin. get_stream_details has side effects for
+        # exclusive AudioSources (claims _in_use_by_queue), and a renderer
+        # that probes with HEAD before GET would otherwise reserve the source
+        # without ever starting playback. Caching the streamdetails for HEAD
+        # would also let a follow-up GET skip the claim entirely, breaking
+        # subsequent metadata updates that gate on the lock being held.
+        if request.method != "GET" and is_audio_source:
+            headers = {
+                **DEFAULT_STREAM_HEADERS,
+                "icy-name": queue_item.name.replace("\n", " ")
+                .replace("\r", " ")
+                .replace("\t", " "),
+                "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_REALTIME,
+                "Content-Type": get_mime_type(request.match_info["fmt"]),
+            }
+            resp = web.StreamResponse(status=200, reason="OK", headers=headers)
+            await resp.prepare(request)
+            return resp
+
         # Fire on_source_selected hook BEFORE get_stream_details so the plugin
         # can stop any previous player and release a prior exclusive claim
         # (e.g. _in_use_by_queue held by an earlier queue) before the new
@@ -447,15 +472,12 @@ class StreamsController(CoreController):
         # exclusivity check inside get_stream_details would raise
         # ResourceBusyError for any cross-queue handoff and the takeover path
         # would be unreachable. Source identity comes from queue_item.media_item
-        # because streamdetails do not exist yet. Lifecycle hooks only fire for
-        # GET (the actual stream); HEAD probes from some DLNA renderers must
-        # not trigger transfers.
+        # because streamdetails do not exist yet.
         audio_source_provider: PluginProvider | None = None
         audio_source_id: str | None = None
         if (
-            request.method == "GET"
+            is_audio_source
             and queue_item.media_item is not None
-            and queue_item.media_item.media_type == MediaType.AUDIO_SOURCE
             and (prov := self.mass.get_provider(queue_item.media_item.provider))
             and isinstance(prov, PluginProvider)
         ):
