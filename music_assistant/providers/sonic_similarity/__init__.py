@@ -64,6 +64,14 @@ CONF_ENABLE_CLAP_INDEX = "enable_clap_index"
 CONF_ENABLE_TEXT_SEARCH = "enable_text_search"
 EXTRA_DATA_CLAP_EMBEDDING = "clap_embedding"
 
+# Keys for the read-only status rows on the plugin config page.
+CONF_LABEL_STATUS_18DIM = "status_label_18dim"
+CONF_LABEL_STATUS_CLAP = "status_label_clap"
+CONF_LABEL_STATUS_TEXT = "status_label_text"
+# Action keys dispatched back into get_config_entries via the ACTION button entries.
+ACTION_REBUILD_18DIM = "rebuild_18dim_index"
+ACTION_REBUILD_CLAP = "rebuild_clap_index"
+
 
 def _parse_clap_embedding(raw: Any) -> np.ndarray | None:
     """Coerce a stored embedding (list/tuple) into a 1024-dim float32 array, or None."""
@@ -295,10 +303,70 @@ async def setup(
     return SonicSimilarityPlugin(mass, manifest, config)
 
 
+async def _collect_status_text(
+    mass: MusicAssistant, instance_id: str | None
+) -> tuple[str, str, str]:
+    """Return (18-dim, CLAP, text-encoder) label-text triples for the plugin page.
+
+    Each string is single-line, safe to render in a LABEL config entry, and
+    degrades gracefully when the provider is not yet loaded.
+    """
+    eighteen = "18-dim engine: not yet loaded"
+    clap = "CLAP engine: disabled"
+    text = "Text encoder: disabled"
+    if not instance_id:
+        return eighteen, clap, text
+    provider = mass.get_provider(instance_id)
+    if not isinstance(provider, SonicSimilarityPlugin):
+        return eighteen, clap, text
+
+    # Optional coverage lookup against the upstream AA provider via #3851's API.
+    coverage_pct: float | None = None
+    aa_domain = provider._aa_domain  # noqa: SLF001
+    try:
+        coverage = await mass.streams.audio_analysis.get_coverage(aa_domain)
+    except Exception:  # noqa: BLE001
+        coverage = None
+    if coverage is not None:
+        total = coverage.analyzed + coverage.pending
+        if total > 0:
+            coverage_pct = round(100.0 * coverage.analyzed / total, 1)
+
+    # 18-dim line.
+    index_size = (
+        len(provider._search_index) if provider._search_index is not None else 0  # noqa: SLF001
+    )
+    parts = [
+        f"{index_size:,} tracks indexed",
+        f"{len(provider._signature_cache):,} signatures cached",  # noqa: SLF001
+        f"corpus stats {'ready' if provider.corpus_means is not None else 'pending'}",
+    ]
+    if coverage_pct is not None:
+        parts.append(f"{coverage_pct}% coverage")
+    eighteen = "18-dim engine: " + " · ".join(parts)
+
+    # CLAP line (only meaningful when the index is built).
+    if provider._clap_index is not None:  # noqa: SLF001
+        clap_size = len(provider._clap_index)  # noqa: SLF001
+        clap_parts = [f"{clap_size:,} embeddings indexed"]
+        if coverage_pct is not None:
+            clap_parts.append(f"{coverage_pct}% coverage")
+        clap = "CLAP engine: " + " · ".join(clap_parts)
+
+    # Text-encoder line — encoder state is independent of the index.
+    if bool(provider.config.get_value(CONF_ENABLE_TEXT_SEARCH)):
+        if provider._text_encoder is not None:  # noqa: SLF001
+            text = "Text encoder: loaded (warm)"
+        else:
+            text = "Text encoder: cold (downloads on first query, ~500MB)"
+
+    return eighteen, clap, text
+
+
 async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
+    mass: MusicAssistant,
+    instance_id: str | None = None,
+    action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider.
@@ -311,6 +379,20 @@ async def get_config_entries(
     from music_assistant_models.config_entries import ConfigEntry  # noqa: PLC0415
     from music_assistant_models.enums import ConfigEntryType  # noqa: PLC0415
 
+    # Dispatch rebuild-button clicks onto the running provider instance. Each
+    # rebuild is fire-and-forget (mass.create_task) so the form returns
+    # immediately; the per-engine _rebuild_lock / _clap_rebuild_lock serialise
+    # double-clicks into a no-op tail.
+    if instance_id and action in (ACTION_REBUILD_18DIM, ACTION_REBUILD_CLAP):
+        provider = mass.get_provider(instance_id)
+        if isinstance(provider, SonicSimilarityPlugin):
+            if action == ACTION_REBUILD_18DIM:
+                mass.create_task(provider._rebuild_search_index())
+            elif action == ACTION_REBUILD_CLAP and provider._clap_index is not None:
+                mass.create_task(provider._rebuild_clap_index_from_database())
+
+    status_18, status_clap, status_text = await _collect_status_text(mass, instance_id)
+
     return (
         ConfigEntry(
             key=CONF_AA_PROVIDER,
@@ -320,6 +402,25 @@ async def get_config_entries(
             description="Which audio analysis provider's data to use for similarity vectors. "
             "Default: sonic_analysis (librosa + CLAP, on-device).",
         ),
+        # --- 18-dim engine: status + rebuild ---
+        ConfigEntry(
+            key=CONF_LABEL_STATUS_18DIM,
+            type=ConfigEntryType.LABEL,
+            label=status_18,
+            category="status",
+        ),
+        ConfigEntry(
+            key=ACTION_REBUILD_18DIM,
+            type=ConfigEntryType.ACTION,
+            label="Rebuild 18-dim index",
+            description="Re-scan all stored signatures and rebuild the weighted-Euclidean "
+            "search index. Runs in the background; refresh the page to see updated counts.",
+            action=ACTION_REBUILD_18DIM,
+            action_label="Rebuild 18-dim index",
+            category="status",
+            required=False,
+        ),
+        # --- CLAP engine toggle ---
         ConfigEntry(
             key=CONF_ENABLE_CLAP_INDEX,
             type=ConfigEntryType.BOOLEAN,
@@ -330,6 +431,30 @@ async def get_config_entries(
             "similarity via the sonic_similarity/similar_clap API. Requires no extra "
             "downloads — uses embeddings already on disk.",
         ),
+        # CLAP status + rebuild (auto-hidden when the toggle above is off).
+        ConfigEntry(
+            key=CONF_LABEL_STATUS_CLAP,
+            type=ConfigEntryType.LABEL,
+            label=status_clap,
+            category="status",
+            depends_on=CONF_ENABLE_CLAP_INDEX,
+            depends_on_value=True,
+        ),
+        ConfigEntry(
+            key=ACTION_REBUILD_CLAP,
+            type=ConfigEntryType.ACTION,
+            label="Rebuild CLAP index",
+            description="Incrementally re-scan audio_analysis rows and add any missing CLAP "
+            "embeddings to the 1024-dim index. Runs in the background; refresh the page to "
+            "see updated counts.",
+            action=ACTION_REBUILD_CLAP,
+            action_label="Rebuild CLAP index",
+            category="status",
+            required=False,
+            depends_on=CONF_ENABLE_CLAP_INDEX,
+            depends_on_value=True,
+        ),
+        # --- text-search toggle + status ---
         ConfigEntry(
             key=CONF_ENABLE_TEXT_SEARCH,
             type=ConfigEntryType.BOOLEAN,
@@ -341,6 +466,14 @@ async def get_config_entries(
             "HuggingFace cache — the model is loaded on the first query, not at plugin "
             "start. Implicitly enables the CLAP embedding index above (text and audio "
             "share the same 1024-dim joint embedding space).",
+        ),
+        ConfigEntry(
+            key=CONF_LABEL_STATUS_TEXT,
+            type=ConfigEntryType.LABEL,
+            label=status_text,
+            category="status",
+            depends_on=CONF_ENABLE_TEXT_SEARCH,
+            depends_on_value=True,
         ),
     )
 
