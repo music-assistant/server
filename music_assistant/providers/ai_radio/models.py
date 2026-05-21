@@ -56,6 +56,7 @@ class AudioSection:
     section_name: str
     insert_at_index: int
     uri: str
+    duration: int = 0
 
 
 @dataclass(slots=True)

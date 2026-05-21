@@ -23,10 +23,18 @@ from music_assistant_models.enums import (
     TaskStatus,
 )
 from music_assistant_models.errors import InvalidDataError, MusicAssistantError
+from music_assistant_models.media_items import (
+    ItemMapping,
+    MediaItemImage,
+    ProviderMapping,
+    Track,
+    UniqueList,
+)
 
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.playlists import (
+    ArtistInfo,
     ImageInfo,
     PlaylistItem,
     ProviderMappingInfo,
@@ -391,10 +399,17 @@ class AIRadioRuntimeMixin:
                 batch_entries=len(entries),
                 queue_entries=total_entries_queued,
             )
+            section_by_uri = {audio.uri: audio for audio in audio_sections}
+            media_entries: list[Any] = [
+                self._section_to_queue_track(section_by_uri[entry])
+                if entry in section_by_uri
+                else entry
+                for entry in entries
+            ]
             option = QueueOption.REPLACE if is_first else QueueOption.ADD
             await self.mass.player_queues.play_media(
                 queue_id=queue_id,
-                media=cast("list[Any]", entries),
+                media=media_entries,
                 option=option,
             )
 
@@ -885,7 +900,9 @@ class AIRadioRuntimeMixin:
                 len(section.text),
             )
             try:
-                section_uri = await self._render_tts(text=section.text)
+                section_uri, section_duration = await self._render_tts(
+                    text=section.text, section_name=section.section_name
+                )
             except Exception:
                 self.logger.exception(
                     "TTS synthesis failed: section=%s",
@@ -893,10 +910,11 @@ class AIRadioRuntimeMixin:
                 )
                 raise
             self.logger.debug(
-                "TTS section done: section=%s elapsed=%.2fs uri=%s",
+                "TTS section done: section=%s elapsed=%.2fs uri=%s duration=%ss",
                 section.section_id,
                 perf_counter() - started,
                 section_uri,
+                section_duration,
             )
             output.append(
                 AudioSection(
@@ -905,6 +923,7 @@ class AIRadioRuntimeMixin:
                     section_name=section.section_name,
                     insert_at_index=section.insert_at_index,
                     uri=section_uri,
+                    duration=section_duration,
                 )
             )
         self.logger.info("TTS synthesis finished: sections=%d", len(output))
@@ -975,20 +994,85 @@ class AIRadioRuntimeMixin:
             providers=self._provider_mapping_infos_from_uri(track_uri),
         )
 
+    def _section_to_queue_track(self, section: AudioSection) -> Track | str:
+        """Build a rich Track for queueing (dynamic mode).
+
+        Falls back to the raw URI when the URI cannot be split into a builtin
+        provider reference (e.g. unexpected scheme).
+        """
+        uri = str(section.uri).strip()
+        if "://" not in uri:
+            return uri
+        provider_ref, rest = uri.split("://", 1)
+        if "/" not in rest:
+            return uri
+        media_type, item_id = rest.split("/", 1)
+        if not item_id or media_type != MediaType.TRACK.value:
+            return uri
+        provider = self.mass.get_provider(provider_ref)
+        provider_domain = str(getattr(provider, "domain", "") or provider_ref).strip()
+        provider_instance = str(getattr(provider, "instance_id", "") or provider_ref).strip()
+        track = Track(
+            item_id=item_id,
+            provider=provider_instance,
+            name=section.section_name,
+            duration=int(section.duration or 0),
+            artists=UniqueList(
+                [
+                    ItemMapping(
+                        item_id="AI Radio",
+                        provider=provider_instance,
+                        name="AI Radio",
+                        media_type=MediaType.ARTIST,
+                    )
+                ]
+            ),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=item_id,
+                    provider_domain=provider_domain,
+                    provider_instance=provider_instance,
+                )
+            },
+        )
+        track.metadata.images = UniqueList(
+            [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=self._ai_radio_cover_image_path(),
+                    provider="builtin",
+                    remotely_accessible=False,
+                )
+            ]
+        )
+        return track
+
     def _section_to_playlist_item(self, section: AudioSection) -> PlaylistItem:
         """Create a fully described playlist item for a generated AI Radio section."""
         uri = str(section.uri).strip()
-        display_name = f"AI Radio: {section.section_name}"
+        title = section.section_name
         media_type = self._extract_media_type_from_uri(uri) or MediaType.TRACK.value
+        providers = self._provider_mapping_infos_from_uri(uri)
+        artist_provider_domain = providers[0].domain if providers else "builtin"
+        artist_provider_instance = providers[0].instance_id if providers else "builtin"
+        length = str(int(section.duration)) if section.duration else "-1"
         return PlaylistItem(
             path=uri,
-            title=display_name,
-            length="-1",
+            title=title,
+            length=length,
             metadata={
                 "media_type": media_type,
-                "name": display_name,
+                "name": title,
             },
-            providers=self._provider_mapping_infos_from_uri(uri),
+            providers=providers,
+            artists=[
+                ArtistInfo(
+                    name="AI Radio",
+                    provider_domain=artist_provider_domain,
+                    item_id="AI Radio",
+                    provider_instance=artist_provider_instance,
+                )
+            ],
             images=[self._ai_radio_cover_image_info()],
         )
 
@@ -1441,7 +1525,7 @@ class AIRadioRuntimeMixin:
         )
         return text
 
-    async def _render_tts(self, text: str) -> str:
+    async def _render_tts(self, text: str, section_name: str) -> tuple[str, int]:
         """Render text to a playable URI using the configured TTS plugin feature."""
         plugin = self._get_tts_plugin()
         self.logger.debug(
@@ -1449,40 +1533,48 @@ class AIRadioRuntimeMixin:
         )
         stream_details = await plugin.get_tts_message(text)
         uri = str(getattr(stream_details, "path", "") or "").strip()
-        if uri:
-            if uri.startswith(("http://", "https://", "rtsp://", "rtmp://")):
-                builtin_provider = self.mass.get_provider("builtin")
-                builtin_instance_id = str(
-                    getattr(builtin_provider, "instance_id", "") or ""
-                ).strip()
-                await self._warm_builtin_duration_cache(builtin_provider, uri)
-                return create_uri(MediaType.TRACK, builtin_instance_id or "builtin", uri)
-            return uri
-        raise MusicAssistantError(
-            f"TTS provider '{plugin.instance_id}' returned no direct stream path in StreamDetails.path"
-        )
+        if not uri:
+            raise MusicAssistantError(
+                f"TTS provider '{plugin.instance_id}' returned no direct stream path "
+                "in StreamDetails.path"
+            )
+        if uri.startswith(("http://", "https://", "rtsp://", "rtmp://")):
+            builtin_provider = self.mass.get_provider("builtin")
+            builtin_instance_id = str(getattr(builtin_provider, "instance_id", "") or "").strip()
+            duration = await self._warm_builtin_duration_cache(builtin_provider, uri, section_name)
+            wrapped = create_uri(MediaType.TRACK, builtin_instance_id or "builtin", uri)
+            return wrapped, duration
+        return uri, 0
 
-    async def _warm_builtin_duration_cache(self, builtin_provider: Any, url: str) -> None:
-        """Force-decode duration and prefill builtin's media-info cache.
+    async def _warm_builtin_duration_cache(
+        self, builtin_provider: Any, url: str, section_name: str
+    ) -> int:
+        """Force-decode duration, set a friendly title, prefill builtin's cache.
 
-        Without this, ffprobe of HA tts_proxy URLs returns no duration and the
-        builtin provider classifies the item as Radio, breaking auto-advance.
+        Returns the resolved duration in seconds, or 0 if unknown. Without this,
+        ffprobe of HA tts_proxy URLs returns no duration and the builtin provider
+        classifies the item as Radio, breaking auto-advance.
         """
         if builtin_provider is None:
-            return
+            return 0
         try:
             tags = await async_parse_tags(url, require_duration=True)
         except (InvalidDataError, OSError) as err:
             self.logger.warning("Could not pre-compute TTS section duration for %s: %s", url, err)
-            return
+            return 0
+        format_block = tags.raw.setdefault("format", {})
         if tags.duration:
-            tags.raw.setdefault("format", {})["duration"] = str(tags.duration)
+            format_block["duration"] = str(tags.duration)
+        format_tags = format_block.setdefault("tags", {})
+        format_tags.setdefault("title", section_name)
+        format_tags.setdefault("artist", "AI Radio")
         await self.mass.cache.set(
             url,
             tags.raw,
             provider=str(getattr(builtin_provider, "instance_id", "") or "builtin"),
             category=BUILTIN_MEDIA_INFO_CACHE_CATEGORY,
         )
+        return int(tags.duration or 0)
 
     def _get_ai_plugin(self) -> PluginProvider:
         """Return the plugin used for AI_QUERY tasks."""

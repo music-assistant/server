@@ -264,13 +264,14 @@ async def test_render_tts_converts_raw_http_path_to_builtin_track_uri() -> None:
     runtime = DummyRuntime()
     _set_runtime_mass(runtime, DummyMass())
 
-    uri = await runtime._render_tts("hello world")
+    uri, duration = await runtime._render_tts("hello world", "Test Section")
 
     assert uri == create_uri(
         MediaType.TRACK,
         "builtin_1",
         "http://example.test/api/tts_proxy/abc123.mp3",
     )
+    assert duration == 0
 
 
 async def test_generate_text_wraps_not_connected_error() -> None:
@@ -353,10 +354,10 @@ def test_compose_builtin_playlist_items_preserves_section_metadata() -> None:
 
     assert track_count == 1
     assert len(items) == 2
-    assert items[0].title == "AI Radio: Intro"
+    assert items[0].title == "Intro"
     assert items[0].metadata == {
         "media_type": MediaType.TRACK.value,
-        "name": "AI Radio: Intro",
+        "name": "Intro",
     }
     assert items[0].images
     assert items[0].images[0].path == runtime._ai_radio_cover_image_path()
@@ -364,6 +365,8 @@ def test_compose_builtin_playlist_items_preserves_section_metadata() -> None:
     assert items[0].providers[0].domain == "builtin"
     assert items[0].providers[0].instance_id == "builtin_1"
     assert items[0].providers[0].item_id == section_url
+    assert items[0].artists
+    assert items[0].artists[0].name == "AI Radio"
     assert items[1] == source_item
 
 
@@ -406,12 +409,14 @@ async def test_import_builtin_playlist_preserves_m3u_metadata() -> None:
         runtime._ai_radio_cover_image_path()
     )
     parsed = parse_m3u(mass.music.playlists.m3u_data)
-    assert parsed[0].title == "AI Radio: Intro"
+    assert parsed[0].title == "Intro"
     assert parsed[0].metadata == {
         "media_type": MediaType.TRACK.value,
-        "name": "AI Radio: Intro",
+        "name": "Intro",
     }
     assert parsed[0].images[0].path == runtime._ai_radio_cover_image_path()
+    assert parsed[0].artists
+    assert parsed[0].artists[0].name == "AI Radio"
 
 
 async def test_wait_for_background_task_completion_returns_on_success() -> None:
