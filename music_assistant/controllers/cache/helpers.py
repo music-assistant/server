@@ -87,41 +87,7 @@ def use_cache(
                     use_expired_cache=use_expired_cache,
                 )
 
-            if use_expired_cache:
-                entry = await cache.get_entry(
-                    cache_key,
-                    provider=provider_id,
-                    checksum=cache_checksum,
-                    category=category,
-                    base_class=base_class,
-                )
-                if entry is not None:
-                    if entry.is_expired:
-                        # serve stale data and refresh in the background;
-                        # task_id deduplicates concurrent refreshes for the same entry
-                        async def _background_refresh() -> None:
-                            try:
-                                result = await func(self, *args, **kwargs)
-                                await _store_task(result)
-                            except Exception as exc:
-                                LOGGER.warning(
-                                    "Background cache refresh failed for %s/%s: %s",
-                                    provider_id,
-                                    cache_key,
-                                    exc,
-                                )
-
-                        self.mass.create_task(
-                            _background_refresh(),
-                            task_id=f"cache_refresh.{provider_id}.{cache_key}",
-                        )
-                    return _reconstruct(entry.data)
-                # cache miss: fetch synchronously, store in background
-                result = await func(self, *args, **kwargs)
-                self.mass.create_task(_store_task(result))
-                return result
-
-            # default flow (no SWR)
+            # try the fresh-only lookup first
             cachedata = await cache.get(
                 cache_key,
                 provider=provider_id,
@@ -132,9 +98,41 @@ def use_cache(
             )
             if cachedata is not None:
                 return _reconstruct(cachedata)
-            # get data from method/provider
+
+            if use_expired_cache:
+                # nothing fresh; try again accepting expired entries
+                cachedata = await cache.get(
+                    cache_key,
+                    provider=provider_id,
+                    checksum=cache_checksum,
+                    category=category,
+                    allow_bypass=allow_bypass,
+                    base_class=base_class,
+                    use_expired_cache=True,
+                )
+                if cachedata is not None:
+                    # serve stale data and refresh in the background;
+                    # task_id deduplicates concurrent refreshes for the same entry
+                    async def _background_refresh() -> None:
+                        try:
+                            result = await func(self, *args, **kwargs)
+                            await _store_task(result)
+                        except Exception as exc:
+                            LOGGER.warning(
+                                "Background cache refresh failed for %s/%s: %s",
+                                provider_id,
+                                cache_key,
+                                exc,
+                            )
+
+                    self.mass.create_task(
+                        _background_refresh(),
+                        task_id=f"cache_refresh.{provider_id}.{cache_key}",
+                    )
+                    return _reconstruct(cachedata)
+
+            # cache miss: fetch synchronously, store in background
             result = await func(self, *args, **kwargs)
-            # store result in cache (but don't await)
             self.mass.create_task(_store_task(result))
             return result
 

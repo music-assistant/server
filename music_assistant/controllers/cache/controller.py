@@ -7,7 +7,6 @@ import os
 import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -39,14 +38,6 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
 
     from music_assistant import MusicAssistant
-
-
-@dataclass(slots=True)
-class CacheEntry:
-    """A cache entry returned by `CacheController.get_entry`."""
-
-    data: Any
-    is_expired: bool
 
 
 class CacheController(CoreController):
@@ -111,6 +102,7 @@ class CacheController(CoreController):
         default: Any = None,
         allow_bypass: bool | None = None,
         base_class: Any = None,
+        use_expired_cache: bool = False,
     ) -> Any:
         """
         Get data from cache.
@@ -128,6 +120,9 @@ class CacheController(CoreController):
         :param default: Value to return if no cache object is found.
         :param allow_bypass: Whether to respect the BYPASS_CACHE context variable.
         :param base_class: If provided, reconstruct data using base_class.from_dict().
+        :param use_expired_cache: If True, also return entries past their expiration
+            time instead of treating them as cache misses. Used by the
+            stale-while-revalidate path of `@use_cache`.
         """
         assert self.database is not None
         assert key, "No key provided"
@@ -142,7 +137,7 @@ class CacheController(CoreController):
                     DB_TABLE_CACHE, {"category": category, "provider": provider, "key": key}
                 )
             )
-            and db_row["expires"] >= cur_time
+            and (db_row["expires"] >= cur_time or use_expired_cache)
             and (not checksum or db_row["checksum"] == checksum)
         ):
             # if allow_bypass is not explicitly set,
@@ -152,7 +147,7 @@ class CacheController(CoreController):
             if allow_bypass and BYPASS_CACHE.get():
                 return default
             try:
-                return await self._deserialize_row(db_row, base_class)
+                data = await async_json_loads(db_row["data"])
             except Exception as exc:
                 LOGGER.error(
                     "Error parsing cache data for %s/%s/%s: %s",
@@ -162,64 +157,13 @@ class CacheController(CoreController):
                     str(exc),
                     exc_info=exc if self.logger.isEnabledFor(10) else None,
                 )
+            else:
+                if base_class is not None and data is not None:
+                    if isinstance(data, list):
+                        return [base_class.from_dict(item) for item in data]
+                    return base_class.from_dict(data)
+                return data
         return default
-
-    async def get_entry(
-        self,
-        key: str,
-        provider: str = "default",
-        category: int = 0,
-        checksum: str | int | None = None,
-        base_class: Any = None,
-    ) -> CacheEntry | None:
-        """
-        Get a cache entry with its staleness status, including expired entries.
-
-        Unlike `get`, this returns expired entries instead of treating them as cache
-        misses. Used by the stale-while-revalidate path of `@use_cache`. Returns None
-        if no matching row exists, the checksum mismatches, or the data fails to
-        deserialize. Always honours `BYPASS_CACHE`.
-
-        :param key: The (unique) lookup key of the cache object.
-        :param provider: Provider id to group cache objects.
-        :param category: Category to group cache objects.
-        :param checksum: If provided, only return data if the stored checksum matches.
-        :param base_class: If provided, reconstruct data using base_class.from_dict().
-        """
-        assert self.database is not None
-        assert key, "No key provided"
-        if BYPASS_CACHE.get():
-            return None
-        if checksum is not None and not isinstance(checksum, str):
-            checksum = str(checksum)
-        db_row = await self.database.get_row(
-            DB_TABLE_CACHE, {"category": category, "provider": provider, "key": key}
-        )
-        if not db_row or (checksum and db_row["checksum"] != checksum):
-            return None
-        try:
-            data = await self._deserialize_row(db_row, base_class)
-        except Exception as exc:
-            LOGGER.error(
-                "Error parsing cache data for %s/%s/%s: %s",
-                provider,
-                category,
-                key,
-                str(exc),
-                exc_info=exc if self.logger.isEnabledFor(10) else None,
-            )
-            return None
-        is_expired = db_row["expires"] < int(time.time())
-        return CacheEntry(data=data, is_expired=is_expired)
-
-    async def _deserialize_row(self, db_row: dict[str, Any], base_class: Any) -> Any:
-        """Deserialize a cache row's data, optionally reconstructing via base_class."""
-        data = await async_json_loads(db_row["data"])
-        if base_class is not None and data is not None:
-            if isinstance(data, list):
-                return [base_class.from_dict(item) for item in data]
-            return base_class.from_dict(data)
-        return data
 
     async def set(
         self,
