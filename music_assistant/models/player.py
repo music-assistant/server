@@ -1035,6 +1035,21 @@ class Player(ABC):
                     is_native=True,
                 )
             )
+        elif (
+            self.provider.domain in PROTOCOL_PRIORITY
+            and PlayerFeature.SET_MEMBERS in self.supported_features
+        ):
+            # Player is itself a native endpoint of a known protocol domain.
+            result.append(
+                OutputProtocol(
+                    output_protocol_id=self.player_id,
+                    name=self.provider.name,
+                    protocol_domain=self.provider.domain,
+                    priority=PROTOCOL_PRIORITY[self.provider.domain],
+                    available=self.available,
+                    is_native=True,
+                )
+            )
 
         # Add active protocol players
         active_ids: set[str] = set()
@@ -1335,7 +1350,7 @@ class Player(ABC):
             return ""
         return (
             f"{media.uri}|{media.title}|{media.source_id}|{media.queue_item_id}|"
-            f"{media.image_url}|{media.duration}|{media.elapsed_time}"
+            f"{media.image_url}|{media.duration}|{media.elapsed_time}|{media.palette}"
         )
 
     @final
@@ -1658,6 +1673,9 @@ class Player(ABC):
     @final
     def __final_current_media(self) -> PlayerMedia | None:
         """Return the FINAL current media for the player."""
+        # Lazy import to avoid helpers.colors -> helpers.images -> models.plugin cycle.
+        from music_assistant.helpers.colors import peek_palette_for_url  # noqa: PLC0415
+
         # if the player is grouped/synced, use the current_media of the group/parent player
         if parent_player_id := (self.__final_active_group or self.__final_synced_to):
             if parent_player_id != self.player_id and (
@@ -1676,13 +1694,15 @@ class Player(ABC):
             and (source := self.mass.players.get_plugin_source(active_source))
             and source.metadata
         ):
+            image_url = source.metadata.image_url
             return PlayerMedia(
                 uri=source.metadata.uri or source.id,
                 media_type=MediaType.PLUGIN_SOURCE,
                 title=source.metadata.title,
                 artist=source.metadata.artist,
                 album=source.metadata.album,
-                image_url=source.metadata.image_url,
+                image_url=image_url,
+                palette=peek_palette_for_url(image_url),
                 duration=source.metadata.duration,
                 source_id=source.id,
                 elapsed_time=source.metadata.elapsed_time,
@@ -1705,13 +1725,15 @@ class Player(ABC):
                 stream_metadata := current_item.streamdetails.stream_metadata
             ):
                 # handle stream metadata in streamdetails (e.g. for radio stream)
+                image_url = stream_metadata.image_url or item_image_url
                 return PlayerMedia(
                     uri=current_item.uri,
                     media_type=current_item.media_type,
                     title=stream_metadata.title or current_item.name,
                     artist=stream_metadata.artist,
                     album=stream_metadata.album or stream_metadata.description or current_item.name,
-                    image_url=(stream_metadata.image_url or item_image_url),
+                    image_url=image_url,
+                    palette=peek_palette_for_url(image_url),
                     duration=stream_metadata.duration or current_item.duration,
                     source_id=active_queue.queue_id,
                     queue_item_id=current_item.queue_item_id,
@@ -1727,19 +1749,23 @@ class Player(ABC):
                 podcast = getattr(media_item, "podcast", None)
                 metadata = getattr(media_item, "metadata", None)
                 description = getattr(metadata, "description", None) if metadata else None
+                # the image format needs to be 500x500 jpeg for maximum player compatibility
+                image_url = (
+                    self.mass.metadata.get_image_url(
+                        current_item.media_item.image, size=500, image_format="jpeg"
+                    )
+                    or item_image_url
+                    if current_item.media_item.image
+                    else item_image_url
+                )
                 return PlayerMedia(
                     uri=str(media_item.uri),
                     media_type=media_item.media_type,
                     title=f"{media_item.name} ({version})" if version else media_item.name,
                     artist=getattr(media_item, "artist_str", None),
                     album=album.name if album else podcast.name if podcast else description,
-                    # the image format needs to be 500x500 jpeg for maximum player compatibility
-                    image_url=self.mass.metadata.get_image_url(
-                        current_item.media_item.image, size=500, image_format="jpeg"
-                    )
-                    or item_image_url
-                    if current_item.media_item.image
-                    else item_image_url,
+                    image_url=image_url,
+                    palette=peek_palette_for_url(image_url),
                     duration=media_item.duration,
                     source_id=active_queue.queue_id,
                     queue_item_id=current_item.queue_item_id,
@@ -1753,6 +1779,7 @@ class Player(ABC):
                 media_type=current_item.media_type,
                 title=current_item.name,
                 image_url=item_image_url,
+                palette=peek_palette_for_url(item_image_url),
                 duration=current_item.duration,
                 source_id=active_queue.queue_id,
                 queue_item_id=current_item.queue_item_id,
@@ -1764,13 +1791,15 @@ class Player(ABC):
             return None
         # return native current media if no group/queue is active
         if self.current_media:
+            image_url = self.current_media.image_url
             return PlayerMedia(
                 uri=self.current_media.uri,
                 media_type=self.current_media.media_type,
                 title=self.current_media.title,
                 artist=self.current_media.artist,
                 album=self.current_media.album,
-                image_url=self.current_media.image_url,
+                image_url=image_url,
+                palette=peek_palette_for_url(image_url),
                 duration=self.current_media.duration,
                 source_id=self.current_media.source_id or active_source,
                 queue_item_id=self.current_media.queue_item_id,

@@ -86,7 +86,9 @@ from music_assistant.models.music_provider import MusicProvider
 from .constants import (
     CONF_ACTION_CHECK_QR_AUTH,
     CONF_ACTION_CLEAR_AUTH,
+    CONF_ACTION_START_QQ_QR_AUTH,
     CONF_ACTION_START_QR_AUTH,
+    CONF_ACTION_START_WX_QR_AUTH,
     CONF_CREDENTIAL_JSON,
     CONF_LOGIN_TYPE,
     CONF_MUSICID,
@@ -216,6 +218,18 @@ def _has_qr_pending(values: dict[str, ConfigValueType]) -> bool:
     return bool(values.get(CONF_QR_IDENTIFIER))
 
 
+def _get_qr_login_type(values: dict[str, ConfigValueType]) -> Any:
+    qr_type_value = str(values.get(CONF_QR_TYPE) or "qq")
+    return next(
+        (item for item in qq_login_mod.QRLoginType if item.value == qr_type_value),
+        qq_login_mod.QRLoginType.QQ,
+    )
+
+
+def _get_qr_login_name(values: dict[str, ConfigValueType]) -> str:
+    return "WeChat" if str(values.get(CONF_QR_TYPE) or "") == "wx" else "QQ"
+
+
 def _clear_auth(values: dict[str, ConfigValueType]) -> None:
     route_path = _get_qr_route_path(values)
     values[CONF_UIN] = None
@@ -258,9 +272,13 @@ def _store_credential(values: dict[str, ConfigValueType], credential: Any) -> No
     values[CONF_QR_PAGE_URL] = None
 
 
-async def _start_qr_auth(mass: MusicAssistant, values: dict[str, ConfigValueType]) -> None:
+async def _start_qr_auth(
+    mass: MusicAssistant,
+    values: dict[str, ConfigValueType],
+    login_type: Any,
+) -> None:
     _clear_qr_route(_get_qr_route_path(values))
-    qr = await qq_login_mod.get_qrcode(qq_login_mod.QRLoginType.QQ)
+    qr = await qq_login_mod.get_qrcode(login_type)
     if not getattr(qr, "identifier", None) or not getattr(qr, "data", None):
         raise LoginFailed("Failed to generate QQ Music login QR code")
     values[CONF_QR_IDENTIFIER] = str(qr.identifier)
@@ -278,11 +296,7 @@ async def _start_qr_auth(mass: MusicAssistant, values: dict[str, ConfigValueType
     if not (hasattr(qq_login_mod, "QR") and hasattr(qq_login_mod, "check_qrcode")):
         return
     deadline = time.monotonic() + 120
-    qr_type_value = str(values.get(CONF_QR_TYPE))
-    qr_type = next(
-        (item for item in qq_login_mod.QRLoginType if item.value == qr_type_value),
-        qq_login_mod.QRLoginType.QQ,
-    )
+    qr_type = _get_qr_login_type(values)
     while time.monotonic() < deadline:
         qr_ref = qq_login_mod.QR(
             data=b"",
@@ -304,7 +318,7 @@ async def _start_qr_auth(mass: MusicAssistant, values: dict[str, ConfigValueType
             values[CONF_QR_PAGE_URL] = None
             raise InvalidDataError("QR code expired, please generate a new one")
         if event == qq_login_mod.QRCodeLoginEvents.REFUSE:
-            raise InvalidDataError("Login was rejected in QQ app")
+            raise InvalidDataError(f"Login was rejected in {_get_qr_login_name(values)} app")
         await asyncio.sleep(1)
     if values.get(CONF_QR_IDENTIFIER):
         raise InvalidDataError(
@@ -317,11 +331,7 @@ async def _check_qr_auth(values: dict[str, ConfigValueType]) -> None:
     qr_identifier = str(values.get(CONF_QR_IDENTIFIER) or "")
     if not qr_identifier:
         raise InvalidDataError("Please generate a QR code first")
-    qr_type_val = str(values.get(CONF_QR_TYPE) or "qq")
-    qr_type = next(
-        (item for item in qq_login_mod.QRLoginType if item.value == qr_type_val),
-        qq_login_mod.QRLoginType.QQ,
-    )
+    qr_type = _get_qr_login_type(values)
     qr = qq_login_mod.QR(
         data=b"",
         qr_type=qr_type,
@@ -335,14 +345,16 @@ async def _check_qr_auth(values: dict[str, ConfigValueType]) -> None:
     if event == qq_login_mod.QRCodeLoginEvents.SCAN:
         raise InvalidDataError("QR code not scanned yet")
     if event == qq_login_mod.QRCodeLoginEvents.CONF:
-        raise InvalidDataError("QR scanned, please confirm login in QQ app")
+        raise InvalidDataError(
+            f"QR scanned, please confirm login in {_get_qr_login_name(values)} app"
+        )
     if event == qq_login_mod.QRCodeLoginEvents.TIMEOUT:
         values[CONF_QR_IDENTIFIER] = None
         values[CONF_QR_TYPE] = None
         values[CONF_QR_PAGE_URL] = None
         raise InvalidDataError("QR code expired, please generate a new one")
     if event == qq_login_mod.QRCodeLoginEvents.REFUSE:
-        raise InvalidDataError("Login was rejected in QQ app")
+        raise InvalidDataError(f"Login was rejected in {_get_qr_login_name(values)} app")
     raise LoginFailed("Unable to determine QR login status")
 
 
@@ -350,16 +362,17 @@ def _build_config_entries(values: dict[str, ConfigValueType]) -> tuple[ConfigEnt
     has_qr_pending = _has_qr_pending(values)
     is_verified = _is_verified(values)
     qr_page_url = str(values.get(CONF_QR_PAGE_URL) or "")
+    qr_login_name = _get_qr_login_name(values)
     status_label = (
         "QQ Music login confirmed. Close the QR page and click Save to finish setup."
         if is_verified
-        else "QR code generated. Open the popup page, scan with QQ, and confirm login."
+        else f"QR code generated. Open the popup page, scan with {qr_login_name}, and confirm login."
         if has_qr_pending
-        else "Click QR Login to start authentication."
+        else "Choose QQ or WeChat QR login to start authentication."
     )
     help_text = (
-        "Login flow: 1) Click QR Login. 2) In the newly opened page, scan with QQ and confirm. "
-        "3) Close the QR page. 4) Click Save."
+        "Login flow: 1) Click QQ Login or WeChat Login. 2) In the newly opened page, "
+        "scan with the matching app and confirm. 3) Close the QR page. 4) Click Save."
     )
     return (
         ConfigEntry(key="auth_help", type=ConfigEntryType.LABEL, label=help_text),
@@ -394,18 +407,26 @@ def _build_config_entries(values: dict[str, ConfigValueType]) -> tuple[ConfigEnt
             hidden=not is_verified,
         ),
         ConfigEntry(
-            key=CONF_ACTION_START_QR_AUTH,
+            key=CONF_ACTION_START_QQ_QR_AUTH,
             type=ConfigEntryType.ACTION,
-            label="QR Login",
-            description="Generate QR code and open the login popup page.",
-            action=CONF_ACTION_START_QR_AUTH,
+            label="QQ Login",
+            description="Generate a QQ QR code and open the login popup page.",
+            action=CONF_ACTION_START_QQ_QR_AUTH,
+            hidden=is_verified,
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_START_WX_QR_AUTH,
+            type=ConfigEntryType.ACTION,
+            label="WeChat Login",
+            description="Generate a WeChat QR code and open the login popup page.",
+            action=CONF_ACTION_START_WX_QR_AUTH,
             hidden=is_verified,
         ),
         ConfigEntry(
             key=CONF_ACTION_CHECK_QR_AUTH,
             type=ConfigEntryType.ACTION,
             label="Check QR status",
-            description="Manually check whether QQ scan confirmation is completed.",
+            description=f"Manually check whether {qr_login_name} scan confirmation is completed.",
             action=CONF_ACTION_CHECK_QR_AUTH,
             hidden=not has_qr_pending or is_verified,
         ),
@@ -478,8 +499,10 @@ async def get_config_entries(
         values = {}
     if action == CONF_ACTION_CLEAR_AUTH:
         _clear_auth(values)
-    elif action == CONF_ACTION_START_QR_AUTH:
-        await _start_qr_auth(mass, values)
+    elif action in (CONF_ACTION_START_QR_AUTH, CONF_ACTION_START_QQ_QR_AUTH):
+        await _start_qr_auth(mass, values, qq_login_mod.QRLoginType.QQ)
+    elif action == CONF_ACTION_START_WX_QR_AUTH:
+        await _start_qr_auth(mass, values, qq_login_mod.QRLoginType.WX)
     elif action == CONF_ACTION_CHECK_QR_AUTH:
         await _check_qr_auth(values)
     return _build_config_entries(values)

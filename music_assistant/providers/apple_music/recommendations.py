@@ -2,18 +2,34 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import ItemMapping, Playlist, RecommendationFolder, Track
+from music_assistant_models.media_items import (
+    Artist,
+    ItemMapping,
+    Playlist,
+    RecommendationFolder,
+    Track,
+)
 
 from music_assistant.controllers.cache import use_cache
 
-from .parsers import parse_station_as_playlist, parse_track
+from .parsers import parse_artist, parse_station_as_playlist, parse_track
 
 if TYPE_CHECKING:
     from .provider import AppleMusicProvider
+
+
+def _slugify_title(title: str) -> str:
+    """Return a stable, alphanumeric slug for a recommendation folder title."""
+    slug = "".join(c for c in title.lower().replace(" ", "_") if c.isalnum() or c == "_")
+    if not slug:
+        # Fall back to a hash for titles that yield no alphanumeric characters.
+        slug = hashlib.md5(title.encode(), usedforsecurity=False).hexdigest()[:12]
+    return slug
 
 
 class AppleMusicRecommendationManager:
@@ -22,6 +38,8 @@ class AppleMusicRecommendationManager:
     def __init__(self, provider: AppleMusicProvider) -> None:
         """Initialize recommendation manager."""
         self.provider = provider
+        self._station_id_to_name: dict[str, str] = {}
+        self._station_name_to_id: dict[str, str] = {}
         self.mass = provider.mass
         self.instance_id = provider.instance_id
         self.domain = provider.domain
@@ -48,6 +66,25 @@ class AppleMusicRecommendationManager:
                     )
         return found_tracks
 
+    @use_cache(3600 * 24)
+    async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
+        """Retrieve a list of artists similar to the provided artist via Apple Music similar-artists view."""
+        storefront = self.provider._storefront
+        response = await self.api.get_data(
+            f"catalog/{storefront}/artists/{prov_artist_id}",
+            views="similar-artists",
+        )
+        data = response.get("data", [])
+        if not data:
+            return []
+        similar = data[0].get("views", {}).get("similar-artists", {}).get("data", [])
+        artists: list[Artist] = []
+        for artist_obj in similar[:limit]:
+            parsed = parse_artist(self.provider, artist_obj)
+            if isinstance(parsed, Artist):
+                artists.append(parsed)
+        return artists
+
     async def get_station_playlist(self, station_id: str) -> Playlist:
         """Fetch name and artwork for a radio station and return it as a dynamic Playlist."""
         try:
@@ -68,6 +105,9 @@ class AppleMusicRecommendationManager:
         )
         seen: set[str] = set()
         folders: dict[str, RecommendationFolder] = {}
+        # Reset maps so stale entries from previous fetches are not kept.
+        self._station_id_to_name.clear()
+        self._station_name_to_id.clear()
         for recommendation in response.get("data", []):
             rec_id = recommendation.get("id", "")
             title = (
@@ -93,14 +133,34 @@ class AppleMusicRecommendationManager:
                     playlist = await self.provider.get_playlist(station_id)
                     if playlist.name == station_id:
                         continue
+                if playlist.name and playlist.name != station_id:
+                    self._station_id_to_name[station_id] = playlist.name
+                    self._station_name_to_id[playlist.name] = station_id
                 if title not in folders:
                     folders[title] = RecommendationFolder(
-                        item_id=rec_id,
+                        item_id=_slugify_title(title),
                         provider=self.provider.instance_id,
                         name=title,
                     )
                 folders[title].items.append(playlist)
         return list(folders.values())
+
+    async def resolve_station_id(self, stale_id: str) -> str | None:
+        """
+        Return the current station ID for a stale one.
+
+        :param stale_id: The outdated station ID that may have been rotated by Apple.
+        """
+        station_name = self._station_id_to_name.get(stale_id)
+        if not station_name:
+            # Map may be empty after a process restart; populate from the cache first.
+            await self.get_personal_recommendations()
+            station_name = self._station_id_to_name.get(stale_id)
+            if not station_name:
+                return None
+        async with self.mass.cache.handle_refresh(True):
+            await self.get_personal_recommendations()
+        return self._station_name_to_id.get(station_name)
 
     async def browse_stations(self) -> list[ItemMapping | Playlist]:
         """Return recommended radio stations from personal recommendations."""

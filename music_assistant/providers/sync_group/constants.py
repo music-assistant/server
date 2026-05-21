@@ -17,7 +17,7 @@ CONF_ENTRY_SGP_NOTE = ConfigEntry(
     required=False,
 )
 
-CONF_MEMBERS_FILTER: Final[str] = "members_filter"
+CONF_ALLOWED_MEMBERS: Final[str] = "allowed_members"
 
 
 EXTRA_FEATURES_FROM_MEMBERS: Final[set[PlayerFeature]] = {

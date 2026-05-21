@@ -14,6 +14,8 @@ CONF_QR_TYPE: Final[str] = "qr_type"
 CONF_QR_PAGE_URL: Final[str] = "qr_page_url"
 CONF_QUALITY: Final[str] = "quality"
 CONF_ACTION_START_QR_AUTH: Final[str] = "start_qr_auth"
+CONF_ACTION_START_QQ_QR_AUTH: Final[str] = "start_qq_qr_auth"
+CONF_ACTION_START_WX_QR_AUTH: Final[str] = "start_wx_qr_auth"
 CONF_ACTION_CHECK_QR_AUTH: Final[str] = "check_qr_auth"
 CONF_ACTION_CLEAR_AUTH: Final[str] = "clear_auth"
 
