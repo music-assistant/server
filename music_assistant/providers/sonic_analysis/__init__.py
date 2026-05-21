@@ -388,10 +388,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             return None
         return cached_embeddings
 
-    async def get_provider_status(self) -> dict[str, Any]:
-        """Surface CLAP model load state for audio_analysis/status."""
-        return {"clap_model_loaded": self._clap_model is not None}
-
     async def unload(self, is_removed: bool = False) -> None:
         """Release the CLAP model."""
         if self._clap_load_task is not None and not self._clap_load_task.done():

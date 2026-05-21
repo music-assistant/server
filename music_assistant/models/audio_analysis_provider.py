@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from .provider import Provider
 
@@ -159,17 +159,6 @@ class AudioAnalysisProvider(Provider):
                         "post_analysis raised for %s: %s", self.domain, err, exc_info=err
                     )
         self._sessions.pop(session_id, None)
-
-    async def get_provider_status(self) -> dict[str, Any]:
-        """
-        Provider-specific status fields merged into the audio_analysis/status response.
-
-        Default returns an empty dict; override to surface internal state
-        (e.g., model-loaded flags) without touching the controller. Keys
-        ``provider_loaded``, ``analyzed_tracks_count``, and ``analysis_version``
-        are reserved by the controller and must not be returned here.
-        """
-        return {}
 
     async def post_analysis(
         self,

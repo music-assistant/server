@@ -119,11 +119,3 @@ async def test_finalize_swallows_post_analysis_exception() -> None:
 
     provider.post_analysis.assert_awaited_once()
     assert "session-4" not in provider._sessions
-
-
-@pytest.mark.asyncio
-async def test_get_provider_status_default_returns_empty_dict() -> None:
-    """Default get_provider_status must return an empty dict."""
-    provider = _make_provider()
-    result = await provider.get_provider_status()
-    assert result == {}

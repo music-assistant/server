@@ -749,15 +749,13 @@ def _make_aa_provider_with_domain(
     domain: str,
     *,
     available: bool = True,
-    provider_status: dict[str, Any] | None = None,
     analysis_version: int = 1,
 ) -> MagicMock:
-    """AA provider mock with domain, get_provider_status, and analysis_version set."""
+    """AA provider mock with domain and analysis_version set."""
     provider = MagicMock(spec=AudioAnalysisProvider)
     provider.domain = domain
     provider.available = available
     provider.analysis_version = analysis_version
-    provider.get_provider_status = AsyncMock(return_value=provider_status or {})
     return provider
 
 
