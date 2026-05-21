@@ -1006,6 +1006,16 @@ class MusicController(CoreController):
             item = item.uri
         # ensure we have a full item
         if isinstance(item, str):
+            # Inspect the URI's media_type first so a stale audio-source URI
+            # whose plugin is unloaded gives the honest rejection error
+            # instead of bubbling MediaNotFoundError from get_item_by_uri.
+            # Mirrors the same guard in add_item_to_favorites.
+            try:
+                uri_media_type, _, _ = await parse_uri(item)
+            except (InvalidProviderURI, InvalidProviderID):
+                uri_media_type = None
+            if uri_media_type == MediaType.AUDIO_SOURCE:
+                raise UnsupportedFeaturedException("AudioSource items can not be library items")
             full_item = await self.get_item_by_uri(item)
         # For builtin provider (manual URLs), use the provided item directly
         # to preserve custom modifications (name, images, etc.)

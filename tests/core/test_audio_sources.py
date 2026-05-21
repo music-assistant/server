@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
@@ -10,7 +11,9 @@ import pytest
 from music_assistant_models.enums import (
     ContentType,
     MediaType,
+    PlaybackState,
     PlayerFeature,
+    PlayerType,
     SourceControl,
     StreamType,
 )
@@ -591,6 +594,158 @@ class TestUpdateStreamMetadata:
         assert sd.stream_metadata is None
 
         mass.player_queues.signal_update.assert_not_called()
+
+
+# ----------------------------------------------- elapsed_time override
+
+
+def _make_audio_source_queue(
+    elapsed_time: int | None,
+    elapsed_time_last_updated: float | None = None,
+) -> MagicMock:
+    """Build a queue mock whose current item carries AudioSource streamdetails."""
+    sd = StreamDetails(
+        provider="fake_plugin",
+        item_id="main",
+        audio_format=_audio_format(),
+        media_type=MediaType.AUDIO_SOURCE,
+        stream_type=StreamType.CUSTOM,
+    )
+    sd.stream_metadata = StreamMetadata(title="Live Track")
+    sd.stream_metadata.elapsed_time = elapsed_time
+    sd.stream_metadata.elapsed_time_last_updated = elapsed_time_last_updated
+    current_item = MagicMock()
+    current_item.streamdetails = sd
+    queue = MagicMock()
+    queue.current_item = current_item
+    return queue
+
+
+class TestAudioSourceElapsedTimeOverride:
+    """Verify PlayerState.elapsed_time prefers AudioSource stream_metadata.
+
+    This pins the behavior of the old PluginSource elapsed_time override
+    (test_plugin_source_elapsed_time.py, deleted in the refactor) against
+    the new model: streamdetails.stream_metadata on the active queue item.
+    The override is load-bearing — player.state.corrected_elapsed_time is
+    consumed by the queue controller's resume logic and several player
+    providers; without it those flows would run against the byte-consumed
+    clock and lose upstream seeks / pause-resume on AudioSources.
+    """
+
+    def test_audio_source_elapsed_time_preferred_over_player(
+        self,
+        provider: MockProvider,
+        controller: PlayerController,
+        mock_mass: MagicMock,
+    ) -> None:
+        """AudioSource stream_metadata.elapsed_time overrides the player clock."""
+        player = MockPlayer(provider, "player_1", "Test Player")
+        player._attr_playback_state = PlaybackState.PLAYING
+        player._attr_elapsed_time = 10.0  # physical player reports 10s
+        player._attr_elapsed_time_last_updated = time.time() - 5
+        player._attr_active_source = "player_1"
+
+        controller._players = {"player_1": player}
+        controller._player_throttlers = {"player_1": Throttler(1, 0.05)}
+
+        queue = _make_audio_source_queue(elapsed_time=42)
+        mock_mass.player_queues.get = MagicMock(return_value=queue)
+
+        player.update_state(signal_event=False)
+
+        # Override wins over the player's own elapsed_time
+        assert player.state.elapsed_time == 42
+
+    def test_audio_source_no_elapsed_time_falls_through(
+        self,
+        provider: MockProvider,
+        controller: PlayerController,
+        mock_mass: MagicMock,
+    ) -> None:
+        """Without stream_metadata.elapsed_time, use the player's own clock."""
+        player = MockPlayer(provider, "player_1", "Test Player")
+        player._attr_playback_state = PlaybackState.PLAYING
+        player._attr_elapsed_time = 10.0
+        player._attr_elapsed_time_last_updated = time.time()
+        player._attr_active_source = "player_1"
+
+        controller._players = {"player_1": player}
+        controller._player_throttlers = {"player_1": Throttler(1, 0.05)}
+
+        queue = _make_audio_source_queue(elapsed_time=None)
+        mock_mass.player_queues.get = MagicMock(return_value=queue)
+
+        player.update_state(signal_event=False)
+
+        assert player.state.elapsed_time == 10.0
+
+    def test_audio_source_elapsed_time_with_output_protocol(
+        self,
+        provider: MockProvider,
+        controller: PlayerController,
+        mock_mass: MagicMock,
+    ) -> None:
+        """Override wins even when an output protocol is active."""
+        # Protocol player (e.g. AirPlay) reporting bytes-consumed
+        protocol_player = MockPlayer(
+            provider, "airplay_1", "AirPlay", player_type=PlayerType.PROTOCOL
+        )
+        protocol_player._attr_playback_state = PlaybackState.PLAYING
+        protocol_player._attr_elapsed_time = 5.0
+        protocol_player._attr_elapsed_time_last_updated = time.time()
+        # Main player with active output protocol
+        player = MockPlayer(provider, "player_1", "Test Player")
+        player._attr_playback_state = PlaybackState.PLAYING
+        player._attr_elapsed_time = 8.0
+        player._attr_elapsed_time_last_updated = time.time()
+        player._attr_active_source = "player_1"
+        player.set_active_output_protocol("airplay_1")
+
+        controller._players = {"player_1": player, "airplay_1": protocol_player}
+        controller._player_throttlers = {
+            "player_1": Throttler(1, 0.05),
+            "airplay_1": Throttler(1, 0.05),
+        }
+
+        queue = _make_audio_source_queue(elapsed_time=42)
+        mock_mass.player_queues.get = MagicMock(return_value=queue)
+
+        protocol_player.update_state(signal_event=False)
+        player.update_state(signal_event=False)
+
+        # The override is layered AFTER protocol/sync resolution, so it wins
+        assert player.state.elapsed_time == 42
+
+    def test_audio_source_elapsed_time_last_updated_fallback(
+        self,
+        provider: MockProvider,
+        controller: PlayerController,
+        mock_mass: MagicMock,
+    ) -> None:
+        """When stream_metadata.elapsed_time_last_updated is None, use time.time()."""
+        player = MockPlayer(provider, "player_1", "Test Player")
+        player._attr_playback_state = PlaybackState.PLAYING
+        player._attr_elapsed_time = 10.0
+        old_timestamp = time.time() - 100
+        player._attr_elapsed_time_last_updated = old_timestamp
+        player._attr_active_source = "player_1"
+
+        controller._players = {"player_1": player}
+        controller._player_throttlers = {"player_1": Throttler(1, 0.05)}
+
+        queue = _make_audio_source_queue(elapsed_time=42, elapsed_time_last_updated=None)
+        mock_mass.player_queues.get = MagicMock(return_value=queue)
+
+        before = time.time()
+        player.update_state(signal_event=False)
+        after = time.time()
+
+        assert player.state.elapsed_time == 42
+        # Should snap to time.time() — not inherit the stale player timestamp
+        assert player.state.elapsed_time_last_updated is not None
+        assert player.state.elapsed_time_last_updated >= before
+        assert player.state.elapsed_time_last_updated <= after
 
 
 # ----------------------------------------------- silence-keepalive wrapper

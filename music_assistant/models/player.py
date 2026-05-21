@@ -1550,6 +1550,25 @@ class Player(ABC):
             elapsed_time = self.elapsed_time
             elapsed_time_last_updated = self.elapsed_time_last_updated
 
+        # If the active queue item is an AudioSource with upstream-clock
+        # metadata (e.g. Spotify Connect / AirPlay / Yandex Ynison reporting
+        # the source's logical position), prefer that over the protocol /
+        # self elapsed_time — the latter tracks bytes consumed, which is the
+        # wrong clock for live plugin sources (loses upstream seeks and
+        # pause-resume on the queue's corrected_elapsed_time, which the
+        # player_queues controller and several player providers consume).
+        if (
+            (active_source := self.__final_active_source)
+            and (queue := self.mass.player_queues.get(active_source))
+            and (current_item := queue.current_item) is not None
+            and (sd := current_item.streamdetails) is not None
+            and sd.media_type == MediaType.AUDIO_SOURCE
+            and sd.stream_metadata is not None
+            and sd.stream_metadata.elapsed_time is not None
+        ):
+            elapsed_time = sd.stream_metadata.elapsed_time
+            elapsed_time_last_updated = sd.stream_metadata.elapsed_time_last_updated or time.time()
+
         return (playback_state, elapsed_time, elapsed_time_last_updated)
 
     @cached_property
