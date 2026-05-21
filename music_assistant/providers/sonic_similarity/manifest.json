@@ -1,0 +1,11 @@
+{
+  "type": "plugin",
+  "domain": "sonic_similarity",
+  "name": "Sonic Similarity",
+  "description": "Find similar tracks in your library using audio signature analysis.",
+  "codeowners": ["@music-assistant"],
+  "requirements": ["usearch==2.25.2"],
+  "depends_on": "sonic_analysis",
+  "multi_instance": false,
+  "builtin": false
+}
