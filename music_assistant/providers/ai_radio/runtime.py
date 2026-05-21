@@ -1452,12 +1452,9 @@ class AIRadioRuntimeMixin:
         """Return the plugin used for AI_QUERY tasks."""
         plugins = cast(
             "list[PluginProvider]",
-            sorted(
-                self.mass.get_providers_supporting_feature(
-                    ProviderFeature.AI_QUERY,
-                    priority=(ProviderType.PLUGIN,),
-                ),
-                key=lambda plugin: plugin.instance_id,
+            self.mass.get_providers_supporting_feature(
+                ProviderFeature.AI_QUERY,
+                priority=(ProviderType.PLUGIN,),
             ),
         )
         if not plugins:
@@ -1471,12 +1468,9 @@ class AIRadioRuntimeMixin:
         """Return the plugin used for TTS tasks."""
         plugins = cast(
             "list[PluginProvider]",
-            sorted(
-                self.mass.get_providers_supporting_feature(
-                    ProviderFeature.TTS,
-                    priority=(ProviderType.PLUGIN,),
-                ),
-                key=lambda plugin: plugin.instance_id,
+            self.mass.get_providers_supporting_feature(
+                ProviderFeature.TTS,
+                priority=(ProviderType.PLUGIN,),
             ),
         )
         if not plugins:
