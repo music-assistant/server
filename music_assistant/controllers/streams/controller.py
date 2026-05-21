@@ -82,6 +82,7 @@ from music_assistant.helpers.util import format_ip_for_url, get_ip_addresses
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.plugin import PluginProvider
 from music_assistant.models.smart_fades import SmartFadesMode
 from music_assistant.providers.universal_group.constants import UGP_PREFIX
 from music_assistant.providers.universal_group.player import UniversalGroupPlayer
@@ -426,6 +427,19 @@ class StreamsController(CoreController):
                 )
                 queue_item.available = False
                 raise web.HTTPNotFound(reason=f"No streamdetails for Queue item: {queue_item_id}")
+
+        # Fire on_source_selected hook for AudioSources so plugins can react
+        # (e.g. transfer the external Spotify/AirPlay session to this player).
+        # Providers track their own active-player state and de-duplicate when
+        # the selection is unchanged.
+        if (
+            queue_item.streamdetails.media_type == MediaType.AUDIO_SOURCE
+            and (plugin_prov := self.mass.get_provider(queue_item.streamdetails.provider))
+            and isinstance(plugin_prov, PluginProvider)
+        ):
+            await plugin_prov.on_source_selected(
+                queue_item.streamdetails.item_id, player_id, queue_id
+            )
 
         # pick output format based on the streamdetails and player capabilities
         pcm_format = await self.audio.select_pcm_format(

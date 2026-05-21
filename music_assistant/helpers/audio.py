@@ -8,7 +8,6 @@ import re
 import struct
 import urllib.parse
 from collections.abc import AsyncGenerator, Iterator
-from contextlib import suppress
 from io import BytesIO
 from typing import TYPE_CHECKING, Final
 
@@ -362,14 +361,15 @@ async def audio_source_silence_keepalive(
         return
 
     silence_chunk = b"\x00" * (bytes_per_second * silence_chunk_ms // 1000)
-    queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=8)
+    # empty bytes is the end-of-stream sentinel; real PCM frames are never empty
+    queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=8)
 
     async def _producer() -> None:
         try:
             async for chunk in inner:
                 await queue.put(chunk)
         finally:
-            await queue.put(None)
+            await queue.put(b"")
 
     producer_task = asyncio.create_task(_producer())
     try:
@@ -379,13 +379,19 @@ async def audio_source_silence_keepalive(
             except TimeoutError:
                 yield silence_chunk
                 continue
-            if chunk is None:
+            if not chunk:
                 break
             yield chunk
     finally:
         producer_task.cancel()
-        with suppress(asyncio.CancelledError, Exception):
+        try:
             await producer_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            # log but don't re-raise: we're already in a finally and the
+            # downstream consumer has its own error handling for the outer stream.
+            LOGGER.exception("AudioSource producer task raised")
 
 
 async def get_silence(

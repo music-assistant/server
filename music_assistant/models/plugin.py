@@ -83,8 +83,11 @@ class PluginProvider(Provider):
         :param streamdetails: The StreamDetails previously returned by get_stream_details.
         :param seek_position: Ignored for live AudioSources (no seek through the bytestream).
         """
-        yield b""
         raise NotImplementedError
+        # unreachable, but the yield keeps this method an async generator
+        # so an unimplemented provider fails deterministically without emitting
+        # a stray empty chunk to the downstream consumer first.
+        yield b""  # type: ignore[unreachable]
 
     async def on_source_control(
         self,
