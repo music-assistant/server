@@ -37,17 +37,27 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import ContentType, EventType, ProviderFeature
+from music_assistant_models.enums import (
+    ContentType,
+    EventType,
+    MediaType,
+    ProviderFeature,
+    StreamType,
+)
+from music_assistant_models.errors import MediaNotFoundError, ResourceBusyError
 from music_assistant_models.media_items import (
+    AudioSource,
     Playlist,
     ProviderMapping,
 )
 from music_assistant_models.media_items.audio_format import AudioFormat
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.models.plugin import PluginProvider, PluginSource
+from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.enums import SourceControl
     from music_assistant_models.event import MassEvent
     from music_assistant_models.media_items import (
         BrowseFolder,
@@ -60,6 +70,12 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
+
+
+# stable id for the single AudioSource this demo provider exposes;
+# combined with the provider instance_id this forms the persistent uri
+# (e.g. `<instance_id>://audio_source/main`) used for favorites and browse.
+AUDIO_SOURCE_ID = "main"
 
 SUPPORTED_FEATURES = {
     # MANDATORY
@@ -124,6 +140,10 @@ class MyDemoPluginprovider(PluginProvider):
     implement the abc methods with your actual implementation.
     """
 
+    # tracks which queue currently owns the exclusive AudioSource, so a second
+    # consumer can be rejected with ResourceBusyError from get_stream_details
+    _in_use_by_queue: str | None = None
+
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         # OPTIONAL
@@ -155,42 +175,108 @@ class MyDemoPluginprovider(PluginProvider):
         # it will be called when the provider is unloaded from Music Assistant.
         # this means also when the provider is getting reloaded
 
-    def get_source(self) -> PluginSource:
-        """Get (audio)source details for this plugin."""
+    async def get_audio_sources(self) -> list[AudioSource]:
+        """Return the AudioSources this plugin currently exposes."""
         # OPTIONAL
-        # Will only be called if ProviderFeature.AUDIO_SOURCE is declared
-        # you return a PluginSource object that represents the audio source
-        # that this plugin provider provides.
-        # the audio_format field should be the native audio format of the stream
-        # that is returned by the get_audio_stream method.
-        return PluginSource(
-            id=self.instance_id,
-            name=self.name,
-            passive=False,
-            can_play_pause=False,
-            can_seek=False,
+        # Will only be called if ProviderFeature.AUDIO_SOURCE is declared.
+        #
+        # Return one or more AudioSource MediaItems describing the live
+        # inputs this plugin offers. AudioSources show up under the global
+        # "Live Inputs" browse node and can be played on any player via
+        # the standard play_media flow. Capability flags (can_play_pause,
+        # can_seek, can_next_previous) drive which control buttons the UI
+        # surfaces and which commands the player controller proxies through
+        # to on_source_control.
+        #
+        # Most plugins expose a single source; for those, build it once in
+        # __init__ and return the cached instance here. Plugins that expose
+        # multiple sources (e.g. a hardware bridge with multiple inputs) can
+        # rebuild the list at call time.
+        return [
+            AudioSource(
+                item_id=AUDIO_SOURCE_ID,
+                provider=self.instance_id,
+                name=self.name,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=AUDIO_SOURCE_ID,
+                        provider_domain=self.domain,
+                        provider_instance=self.instance_id,
+                        audio_format=AudioFormat(content_type=ContentType.MP3),
+                    )
+                },
+                can_play_pause=False,
+                can_seek=False,
+                can_next_previous=False,
+                exclusive=True,
+                allow_external_trigger=False,
+            )
+        ]
+
+    async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
+        """Return StreamDetails for streaming the given AudioSource to a queue."""
+        # OPTIONAL
+        # Will only be called if ProviderFeature.AUDIO_SOURCE is declared.
+        #
+        # Return a StreamDetails with stream_type=CUSTOM when audio comes from
+        # an async generator (get_audio_stream below), or stream_type=NAMED_PIPE
+        # plus a path when audio comes from a named pipe / file. stream_metadata
+        # carries the initial track info; update it at runtime via
+        # mass.streams.update_stream_metadata(queue_id, ...) — same mechanism
+        # ICY radio metadata uses.
+        #
+        # Raise ResourceBusyError if the source is exclusive=True and already
+        # in use by a different queue.
+        if source_id != AUDIO_SOURCE_ID:
+            raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
+        if self._in_use_by_queue and self._in_use_by_queue != queue_id:
+            raise ResourceBusyError(
+                f"AudioSource {source_id} is already in use by queue {self._in_use_by_queue}"
+            )
+        self._in_use_by_queue = queue_id
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=source_id,
             audio_format=AudioFormat(content_type=ContentType.MP3),
+            media_type=MediaType.AUDIO_SOURCE,
+            stream_type=StreamType.CUSTOM,
+            stream_metadata=StreamMetadata(title=self.name),
         )
 
-    async def get_audio_stream(self, player_id: str) -> AsyncGenerator[bytes, None]:
-        """
-        Return the (custom) audio stream for the audio source provided by this plugin.
-
-        Will only be called if this plugin is a PLuginSource, meaning that
-        the ProviderFeature.AUDIO_SOURCE is declared.
-
-        The player_id is the id of the player that is requesting the stream.
-        """
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Yield raw audio bytes for the given streamdetails."""
         # OPTIONAL
-        # Will only be called if ProviderFeature.AUDIO_SOURCE is declared
-        # This will be called when this pluginsource has been selected by the user
-        # to play on one of the players.
+        # Will only be called when get_stream_details returned
+        # stream_type=StreamType.CUSTOM. Yield bytes in the PCM format declared
+        # by streamdetails.audio_format. Release any per-stream resources in a
+        # try/finally — the consumer closes the generator when playback ends.
+        # snapshot the consumer at start so we only release the lock if no
+        # other queue took over in the meantime (handled via ResourceBusyError
+        # in get_stream_details).
+        consumer_queue = self._in_use_by_queue
+        try:
+            for _ in range(100):
+                yield b"dummy audio data"
+        finally:
+            if self._in_use_by_queue == consumer_queue:
+                self._in_use_by_queue = None
 
-        # you should return an async generator that yields the audio stream data.
-        # this is an example implementation that just yields some dummy data
-        # you should replace this with your actual implementation.
-        for _ in range(100):
-            yield b"dummy audio data"
+    async def on_source_control(
+        self,
+        source_id: str,
+        action: SourceControl,
+        value: int | None = None,
+    ) -> None:
+        """Handle a playback control command for the active AudioSource."""
+        # OPTIONAL
+        # Called when the AudioSource is the active queue item and the user
+        # invokes a control whose capability flag (can_play_pause, can_seek,
+        # can_next_previous) is True. value carries SEEK position in seconds
+        # or VOLUME level 0-100, and is unused for other actions.
+        # Plugins that advertise no controls do not need to override this.
+        raise NotImplementedError
 
     async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
         """Retrieve a list of similar tracks for the given track."""

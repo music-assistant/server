@@ -8,13 +8,13 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
-from music_assistant_models.enums import ContentType, StreamType
-from music_assistant_models.errors import SetupFailedError
-from music_assistant_models.media_items import AudioFormat
-from music_assistant_models.streamdetails import StreamMetadata
+from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.errors import MediaNotFoundError, ResourceBusyError, SetupFailedError
+from music_assistant_models.media_items import AudioFormat, AudioSource, ProviderMapping
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT, VERBOSE_LOG_LEVEL
-from music_assistant.models.plugin import PluginProvider, PluginSource
+from music_assistant.models.plugin import PluginProvider
 
 from .constants import (
     CONF_AUDIO_CHANNELS,
@@ -39,6 +39,11 @@ if TYPE_CHECKING:
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
+
+
+# stable id for the single AudioSource this provider exposes;
+# combined with the provider instance_id this forms the persistent uri
+AUDIO_SOURCE_ID = "main"
 
 
 class VBANReceiverProvider(PluginProvider):
@@ -67,26 +72,32 @@ class VBANReceiverProvider(PluginProvider):
         self._udp_socket_fut: asyncio.Future[Any] | None = None
         self._stats_reporter: VBANStatsReporter | None = None
         self._active_stream_id: str = ""
+        self._in_use_by_queue: str | None = None
 
-        self._source_details = PluginSource(
-            id=self.instance_id,
+        self._audio_format = AudioFormat(
+            content_type=ContentType(self._pcm_audio_format.lower()),
+            codec_type=ContentType(self._pcm_audio_format.lower()),
+            sample_rate=self._pcm_sample_rate,
+            bit_depth=get_supported_pcm_formats()[self._pcm_audio_format],
+            channels=self._audio_channels,
+        )
+        self._audio_source = AudioSource(
+            item_id=AUDIO_SOURCE_ID,
+            provider=self.instance_id,
             name=f"{self.manifest.name}: {self._vban_stream_name}",
-            passive=False,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=AUDIO_SOURCE_ID,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=self._audio_format,
+                )
+            },
             can_play_pause=False,
             can_seek=False,
             can_next_previous=False,
-            audio_format=AudioFormat(
-                content_type=ContentType(self._pcm_audio_format.lower()),
-                codec_type=ContentType(self._pcm_audio_format.lower()),
-                sample_rate=self._pcm_sample_rate,
-                bit_depth=get_supported_pcm_formats()[self._pcm_audio_format],
-                channels=self._audio_channels,
-            ),
-            metadata=StreamMetadata(
-                title=self._vban_stream_name,
-                artist=self._sender_host,
-            ),
-            stream_type=StreamType.CUSTOM,
+            exclusive=True,
+            allow_external_trigger=False,
         )
 
     @property
@@ -106,7 +117,7 @@ class VBANReceiverProvider(PluginProvider):
             self.logger.isEnabledFor(logging.DEBUG) or self.logger.isEnabledFor(VERBOSE_LOG_LEVEL)
         ):
             self._stats_reporter = VBANStatsReporter(
-                pcm_sample_size=self._source_details.audio_format.pcm_sample_size
+                pcm_sample_size=self._audio_format.pcm_sample_size
             )
 
         self._vban_receiver = AsyncVBANClientMod(default_queue_size=self._vban_queue_size)
@@ -129,9 +140,9 @@ class VBANReceiverProvider(PluginProvider):
 
         self._cancel_stats_reporter()
 
-        if self.active_player:
+        if self._in_use_by_queue:
             # Allow the running stream to stop cleanly
-            self._source_details.in_use_by = None
+            self._in_use_by_queue = None
             await asyncio.sleep(1)
 
         if self._vban_receiver:
@@ -148,28 +159,46 @@ class VBANReceiverProvider(PluginProvider):
 
         self._vban_stream = None
 
-    def _cancel_stats_reporter(self, instance_id: str | None = None) -> None:
-        """Cancel a running stats reporter."""
-        if self._stats_reporter:
-            self.logger.debug("Cancelling stats reporter")
-            self._stats_reporter.cancel(instance_id)
+    async def get_audio_sources(self) -> list[AudioSource]:
+        """Return the single AudioSource this VBAN receiver exposes."""
+        return [self._audio_source]
 
-    def get_source(self) -> PluginSource:
-        """Get (audio)source details for this plugin."""
-        return self._source_details
+    async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
+        """Return StreamDetails for streaming the VBAN PCM audio to a queue."""
+        if source_id != AUDIO_SOURCE_ID:
+            raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
+        if self._in_use_by_queue and self._in_use_by_queue != queue_id:
+            raise ResourceBusyError(
+                f"VBAN receiver {self._vban_stream_name} is already in use by queue "
+                f"{self._in_use_by_queue}"
+            )
+        self._in_use_by_queue = queue_id
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=source_id,
+            audio_format=self._audio_format,
+            media_type=MediaType.AUDIO_SOURCE,
+            stream_type=StreamType.CUSTOM,
+            stream_metadata=StreamMetadata(
+                title=self._vban_stream_name,
+                artist=self._sender_host,
+            ),
+        )
 
-    @property
-    def active_player(self) -> bool:
-        """Report the active player status."""
-        return bool(self._source_details.in_use_by)
-
-    async def get_audio_stream(self, player_id: str) -> AsyncGenerator[bytes, None]:
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
         """Yield raw PCM chunks from the VBANIncomingStream queue."""
         assert self._vban_stream  # for type checking
         assert self._udp_socket_fut  # for type checking
         _stream_id = str(uuid4())
         self._active_stream_id = _stream_id
-        _stream_details = f"ID: {_stream_id}//Player: {player_id}//Stream: {self._vban_stream_name}//Config: {self._source_details.audio_format.output_format_str}"
+        consumer_queue = self._in_use_by_queue
+        _stream_details = (
+            f"ID: {_stream_id}//Queue: {consumer_queue}//"
+            f"Stream: {self._vban_stream_name}//"
+            f"Config: {self._audio_format.output_format_str}"
+        )
         _stream_acquired = False
 
         # Drain any leftovers in the queue from previous use
@@ -183,16 +212,19 @@ class VBANReceiverProvider(PluginProvider):
 
         try:
             while True:
-                if self._source_details.in_use_by != player_id:
+                if self._in_use_by_queue != consumer_queue:
                     self.logger.debug(
-                        "Stopping VBAN PCM audio stream receiver: %s - Reason: plugin is no longer in use by Player %s",
+                        "Stopping VBAN PCM audio stream receiver: %s - Reason: plugin is no "
+                        "longer in use by queue %s",
                         _stream_details,
-                        player_id,
+                        consumer_queue,
                     )
                     break
                 if self._active_stream_id != _stream_id:
                     self.logger.debug(
-                        "Stopping VBAN PCM audio stream receiver: %s - Reason: stream_id has changed from %s to %s meaning %s is a stale stream reader which was not cleanly closed",
+                        "Stopping VBAN PCM audio stream receiver: %s - Reason: stream_id has "
+                        "changed from %s to %s meaning %s is a stale stream reader which was "
+                        "not cleanly closed",
                         _stream_details,
                         _stream_id,
                         self._active_stream_id,
@@ -224,10 +256,19 @@ class VBANReceiverProvider(PluginProvider):
                     continue
                 except asyncio.QueueShutDown:
                     self.logger.error(
-                        "Found VBANIncomingStream queue shut down when attempting to get VBAN packet for audio stream: %s",
+                        "Found VBANIncomingStream queue shut down when attempting to get VBAN "
+                        "packet for audio stream: %s",
                         _stream_details,
                     )
                     break
         finally:
             self._cancel_stats_reporter(_stream_id)
+            if self._in_use_by_queue == consumer_queue:
+                self._in_use_by_queue = None
             self.logger.debug("Stopped VBAN PCM audio stream receiver: %s", _stream_details)
+
+    def _cancel_stats_reporter(self, instance_id: str | None = None) -> None:
+        """Cancel a running stats reporter."""
+        if self._stats_reporter:
+            self.logger.debug("Cancelling stats reporter")
+            self._stats_reporter.cancel(instance_id)

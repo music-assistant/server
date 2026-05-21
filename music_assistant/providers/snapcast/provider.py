@@ -575,12 +575,12 @@ class SnapCastProvider(PlayerProvider):
         if media.media_type == MediaType.ANNOUNCEMENT:
             stream_name += hashlib.md5(media.uri.encode()).hexdigest()[:6]
             name_suffix = MASS_ANNOUNCEMENT_POSTFIX
-        elif media.media_type == MediaType.PLUGIN_SOURCE:
-            custom_data = media.custom_data or {}
-            plugin: str = media.title or custom_data.get("provider") or ""
-            player: str = f" {custom_data.get('player_id', '')}"
-            stream_name += f"{plugin} {player}"
-            source_id = custom_data.get("source_id")
+        elif media.media_type == MediaType.AUDIO_SOURCE and media.source_id:
+            # AudioSource queue items: scope the stream to the queue (media.source_id)
+            # and include the source's display title so simultaneous AudioSources on
+            # different players get distinct snapcast stream names
+            stream_name += f"{media.title or ''} {media.source_id}"
+            source_id = media.source_id
         elif media.source_id and media.source_id.startswith(UGP_PREFIX):
             stream_name += media.source_id
         elif media.source_id and media.queue_item_id:

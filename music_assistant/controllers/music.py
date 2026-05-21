@@ -567,7 +567,33 @@ class MusicController(CoreController):
                         name=prov.name,
                     )
                 )
+            # add a "Live Inputs" entry if any loaded plugin provider exposes AudioSources;
+            # this is the single canonical location for browsing/favoriting audio sources
+            if any(self.mass.get_providers_supporting_feature(ProviderFeature.AUDIO_SOURCE)):
+                root_items.append(
+                    BrowseFolder(
+                        item_id="audio_sources",
+                        provider="library",
+                        path="library://audio_sources/",
+                        uri="library://audio_sources/",
+                        name="Live Inputs",
+                        translation_key="browse.live_inputs",
+                    )
+                )
             return root_items
+
+        # handle the dedicated Live Inputs node: aggregate AudioSources from all
+        # loaded plugin providers that declare ProviderFeature.AUDIO_SOURCE
+        if path == "library://audio_sources/":
+            audio_sources: list[MediaItemType | BrowseFolder] = [
+                BrowseFolder(item_id="root", provider="library", path="root", name="..")
+            ]
+            for prov in self.mass.get_providers_supporting_feature(ProviderFeature.AUDIO_SOURCE):
+                if not isinstance(prov, PluginProvider):
+                    continue
+                for source in await prov.get_audio_sources():
+                    audio_sources.append(source)
+            return audio_sources
 
         # provider level
         prepend_items: list[BrowseFolder] = []
@@ -841,6 +867,18 @@ class MusicController(CoreController):
                 item_id=item_id,
                 provider=provider_instance_id_or_domain,
                 name=item_id,
+            )
+        if media_type == MediaType.AUDIO_SOURCE:
+            # AudioSources are not library-backed; resolve them through the owning
+            # plugin provider's get_audio_sources() catalog. Returning the live
+            # MediaItem lets play_media create a queue item the standard way.
+            prov = self.mass.get_provider(provider_instance_id_or_domain)
+            if isinstance(prov, PluginProvider):
+                for source in await prov.get_audio_sources():
+                    if source.item_id == item_id:
+                        return source
+            raise MediaNotFoundError(
+                f"AudioSource {provider_instance_id_or_domain}/{item_id} not found"
             )
         ctrl = self.get_controller(media_type)
         return await ctrl.get(

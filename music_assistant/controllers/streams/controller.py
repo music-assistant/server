@@ -11,6 +11,7 @@ import asyncio
 import gc
 import logging
 import os
+import time
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, cast
 
@@ -23,7 +24,6 @@ from music_assistant_models.enums import (
     MediaType,
     PlayerFeature,
     ProviderType,
-    StreamType,
     VolumeNormalizationMode,
 )
 from music_assistant_models.errors import (
@@ -82,7 +82,6 @@ from music_assistant.helpers.util import format_ip_for_url, get_ip_addresses
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.models.plugin import PluginProvider, PluginSource
 from music_assistant.models.smart_fades import SmartFadesMode
 from music_assistant.providers.universal_group.constants import UGP_PREFIX
 from music_assistant.providers.universal_group.player import UniversalGroupPlayer
@@ -90,6 +89,7 @@ from music_assistant.providers.universal_group.player import UniversalGroupPlaye
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.player import PlayerMedia
+    from music_assistant_models.streamdetails import StreamMetadata
 
     from music_assistant.mass import MusicAssistant
 
@@ -319,11 +319,6 @@ class StreamsController(CoreController):
                 ),
                 ("*", "/command/{queue_id}/{command}.mp3", self.serve_command_request),
                 ("*", "/announcement/{player_id}.{fmt}", self.serve_announcement_stream),
-                (
-                    "*",
-                    "/pluginsource/{plugin_source}/{player_id}.{fmt}",
-                    self.serve_plugin_source_stream,
-                ),
             ],
         )
         # Start periodic garbage collection task
@@ -344,12 +339,6 @@ class StreamsController(CoreController):
         :return: The resolved stream URL as a string.
         """
         if media.media_type in (MediaType.ANNOUNCEMENT, MediaType.FLOW_STREAM):
-            return media.uri
-        if media.media_type == MediaType.PLUGIN_SOURCE:
-            if media.custom_data and (source_id := media.custom_data.get("source_id")):
-                plugin_source = self.mass.players.get_plugin_source(source_id)
-                if plugin_source:
-                    return await self.get_plugin_source_url(plugin_source, player_id)
             return media.uri
         protocol_player = self.mass.players.get_player(player_id)
         conf_output_codec = cast(
@@ -383,18 +372,32 @@ class StreamsController(CoreController):
         flow_mode = (
             protocol_player is not None
             and (protocol_player.flow_mode or crossfade_needs_flow_mode)
-            and media.media_type not in (MediaType.RADIO, MediaType.PLUGIN_SOURCE)
+            and media.media_type not in (MediaType.RADIO, MediaType.AUDIO_SOURCE)
         )
         base_path = "flow" if flow_mode else "single"
         return f"{self._server.base_url}/{base_path}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}"
 
-    async def get_plugin_source_url(self, plugin_source: PluginSource, player_id: str) -> str:
-        """Get the url for the Plugin Source stream/proxy."""
-        if plugin_source.audio_format.content_type.is_pcm():
-            fmt = ContentType.WAV.value
-        else:
-            fmt = plugin_source.audio_format.content_type.value
-        return f"{self._server.base_url}/pluginsource/{plugin_source.id}/{player_id}.{fmt}"
+    def update_stream_metadata(self, queue_id: str, stream_metadata: StreamMetadata) -> None:
+        """
+        Push a live stream metadata update for the active queue item.
+
+        Used by plugin providers exposing an AudioSource (e.g. AirPlay receiver,
+        Spotify Connect) to surface live track-change info without restarting
+        the stream. The radio ICY metadata path uses the same channel via
+        ``_update_radio_stream_metadata``.
+
+        :param queue_id: The queue whose active item should receive the update.
+        :param stream_metadata: The new stream metadata to attach.
+        """
+        queue = self.mass.player_queues.get(queue_id)
+        if queue is None:
+            return
+        current_item = queue.current_item
+        if current_item is None or current_item.streamdetails is None:
+            return
+        current_item.streamdetails.stream_metadata = stream_metadata
+        current_item.streamdetails.stream_metadata_last_updated = time.time()
+        self.mass.player_queues.signal_update(queue_id)
 
     async def serve_queue_item_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: PLR0915
         """Stream single queueitem audio to a player."""
@@ -785,67 +788,6 @@ class StreamsController(CoreController):
 
         return resp
 
-    async def serve_plugin_source_stream(self, request: web.Request) -> web.StreamResponse:
-        """Stream PluginSource audio to a player."""
-        self._log_request(request)
-        plugin_source_id = request.match_info["plugin_source"]
-        provider = cast("PluginProvider", self.mass.get_provider(plugin_source_id))
-        if not provider:
-            raise ProviderUnavailableError(f"Unknown PluginSource: {plugin_source_id}")
-        # work out output format/details
-        player_id = request.match_info["player_id"]
-        player = self.mass.players.get_player(player_id)
-        if not player:
-            raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
-        plugin_source = provider.get_source()
-        output_format = await self.audio.get_output_format(
-            output_format_str=request.match_info["fmt"],
-            player=player,
-            content_sample_rate=plugin_source.audio_format.sample_rate,
-            content_bit_depth=plugin_source.audio_format.bit_depth,
-            media_type=MediaType.PLUGIN_SOURCE,
-        )
-        headers = {
-            **DEFAULT_STREAM_HEADERS,
-            "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_REALTIME,
-            "icy-name": plugin_source.name,
-            "Content-Type": get_mime_type(output_format.output_format_str),
-        }
-
-        resp = web.StreamResponse(status=200, reason="OK", headers=headers)
-        resp.content_type = get_mime_type(output_format.output_format_str)
-        http_profile = await self.mass.config.get_player_config_value(
-            player_id, CONF_HTTP_PROFILE, default="default", return_type=str
-        )
-        if http_profile == "forced_content_length":
-            # just set an insanely high content length to make sure the player keeps playing
-            resp.content_length = calculate_content_length(output_format, 12 * 3600)
-        elif http_profile == "chunked":
-            resp.enable_chunked_encoding()
-
-        await resp.prepare(request)
-
-        # return early if this is not a GET request
-        if request.method != "GET":
-            return resp
-
-        # all checks passed, start streaming!
-        if not plugin_source.audio_format:
-            raise InvalidDataError(f"No audio format for plugin source {plugin_source_id}")
-        async for chunk in self.get_plugin_source_stream(
-            plugin_source_id=plugin_source_id,
-            output_format=output_format,
-            player_id=player_id,
-            player_filter_params=self.audio.get_player_filter_params(
-                player_id, plugin_source.audio_format, output_format
-            ),
-        ):
-            try:
-                await resp.write(chunk)
-            except (BrokenPipeError, ConnectionResetError, ConnectionError):
-                break
-        return resp
-
     def get_command_url(self, player_or_queue_id: str, command: str) -> str:
         """Get the url for the special command stream."""
         return f"{self.base_url}/command/{player_or_queue_id}/{command}.mp3"
@@ -896,16 +838,6 @@ class StreamsController(CoreController):
                 output_format=pcm_format,
                 pre_announce=media.custom_data["pre_announce"],
                 pre_announce_url=media.custom_data["pre_announce_url"],
-            )
-        if media.media_type == MediaType.PLUGIN_SOURCE:
-            # special case: plugin source stream
-            assert media.custom_data
-            return self.get_plugin_source_stream(
-                plugin_source_id=media.custom_data["source_id"],
-                output_format=pcm_format,
-                # need to pass player_id from the PlayerMedia object
-                # because this could have been a group
-                player_id=media.custom_data["player_id"],
             )
         if (
             media.source_id
@@ -1097,54 +1029,6 @@ class StreamsController(CoreController):
             audio_input=_announcement_stream(), input_format=pcm_format, output_format=output_format
         ):
             yield chunk
-
-    async def get_plugin_source_stream(
-        self,
-        plugin_source_id: str,
-        output_format: AudioFormat,
-        player_id: str,
-        player_filter_params: list[str] | None = None,
-    ) -> AsyncGenerator[bytes, None]:
-        """Get the special plugin source stream."""
-        plugin_prov = cast("PluginProvider", self.mass.get_provider(plugin_source_id))
-        if not plugin_prov:
-            raise ProviderUnavailableError(f"Unknown PluginSource: {plugin_source_id}")
-
-        plugin_source = plugin_prov.get_source()
-        self.logger.debug(
-            "Start streaming PluginSource %s to %s using output format %s",
-            plugin_source_id,
-            player_id,
-            output_format,
-        )
-        # this should already be set by the player controller, but just to be sure
-        plugin_source.in_use_by = player_id
-
-        try:
-            async for chunk in get_ffmpeg_stream(
-                audio_input=cast(
-                    "str | AsyncGenerator[bytes, None]",
-                    plugin_prov.get_audio_stream(player_id)
-                    if plugin_source.stream_type == StreamType.CUSTOM
-                    else plugin_source.path,
-                ),
-                input_format=plugin_source.audio_format,
-                output_format=output_format,
-                filter_params=player_filter_params,
-                extra_input_args=["-y", "-re"],
-            ):
-                if plugin_source.in_use_by != player_id:
-                    # another player took over or the stream ended, stop streaming
-                    break
-                yield chunk
-        finally:
-            self.logger.debug(
-                "Finished streaming PluginSource %s to %s", plugin_source_id, player_id
-            )
-            await asyncio.sleep(1)  # prevent race conditions when selecting source
-            if plugin_source.in_use_by == player_id:
-                # release control
-                plugin_source.in_use_by = None
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""

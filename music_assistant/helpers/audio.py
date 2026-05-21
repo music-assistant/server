@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import struct
 import urllib.parse
 from collections.abc import AsyncGenerator, Iterator
+from contextlib import suppress
 from io import BytesIO
 from typing import TYPE_CHECKING, Final
 
@@ -320,6 +322,61 @@ def get_parts_from_position(
         return parts[i:], int(position)
 
     raise IndexError(f"Could not find any candidate part for position {seek_position}")
+
+
+async def audio_source_silence_keepalive(
+    inner: AsyncGenerator[bytes, None],
+    pcm_format: AudioFormat,
+    idle_threshold_s: float = 0.5,
+    silence_chunk_ms: int = 100,
+) -> AsyncGenerator[bytes, None]:
+    """
+    Wrap a live AudioSource PCM stream and emit silence during idle gaps.
+
+    Plugin providers exposing an AudioSource may stop yielding bytes while the
+    upstream device is paused (e.g. user paused in the Spotify app). Without
+    bytes flowing the downstream consumer (ffmpeg / the player) may disconnect.
+    This wrapper inserts ``silence_chunk_ms`` worth of zero bytes whenever the
+    inner generator hasn't produced for ``idle_threshold_s`` seconds, while
+    relaying real bytes immediately when they arrive.
+
+    :param inner: The underlying async generator yielding raw PCM bytes.
+    :param pcm_format: PCM format the inner generator emits (used to size the
+        silence chunk so it lines up to a frame boundary).
+    :param idle_threshold_s: Seconds without input before silence is inserted.
+    :param silence_chunk_ms: Duration of each silence chunk in milliseconds.
+    """
+    bytes_per_second = pcm_format.sample_rate * pcm_format.channels * (pcm_format.bit_depth // 8)
+    if bytes_per_second <= 0:
+        # malformed format - fall back to a tiny fixed chunk
+        silence_chunk = b"\x00" * 4096
+    else:
+        silence_chunk = b"\x00" * (bytes_per_second * silence_chunk_ms // 1000)
+
+    queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=8)
+
+    async def _producer() -> None:
+        try:
+            async for chunk in inner:
+                await queue.put(chunk)
+        finally:
+            await queue.put(None)
+
+    producer_task = asyncio.create_task(_producer())
+    try:
+        while True:
+            try:
+                chunk = await asyncio.wait_for(queue.get(), timeout=idle_threshold_s)
+            except TimeoutError:
+                yield silence_chunk
+                continue
+            if chunk is None:
+                break
+            yield chunk
+    finally:
+        producer_task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await producer_task
 
 
 async def get_silence(

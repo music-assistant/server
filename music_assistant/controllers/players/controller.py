@@ -39,6 +39,7 @@ from music_assistant_models.enums import (
     PlayerType,
     ProviderFeature,
     ProviderType,
+    SourceControl,
 )
 from music_assistant_models.errors import (
     AlreadyRegisteredError,
@@ -108,7 +109,7 @@ from music_assistant.helpers.util import (
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.player import Player, PlayerMedia, PlayerState
 from music_assistant.models.player_provider import PlayerProvider
-from music_assistant.models.plugin import PluginProvider, PluginSource
+from music_assistant.models.plugin import PluginProvider
 
 from .constants import PlayerLockPurpose
 from .helpers import AnnounceData, handle_player_command, wait_for_power_on
@@ -123,6 +124,7 @@ if TYPE_CHECKING:
         CoreConfig,
         PlayerConfig,
     )
+    from music_assistant_models.media_items import AudioSource
     from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant import MusicAssistant
@@ -455,35 +457,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return control
         return None
 
-    @api_command("players/plugin_sources")
-    def get_plugin_sources(self) -> list[PluginSource]:
-        """Return all available plugin sources."""
-        return [
-            plugin_prov.get_source()
-            for plugin_prov in self.mass.get_providers(ProviderType.PLUGIN)
-            if isinstance(plugin_prov, PluginProvider)
-            and ProviderFeature.AUDIO_SOURCE in plugin_prov.supported_features
-        ]
-
-    @api_command("players/plugin_source")
-    def get_plugin_source(
-        self,
-        source_id: str,
-    ) -> PluginSource | None:
-        """
-        Return PluginSource by source_id.
-
-        :param source_id: ID of the plugin source.
-        :return: PluginSource object or None.
-        """
-        for plugin_prov in self.mass.get_providers(ProviderType.PLUGIN):
-            assert isinstance(plugin_prov, PluginProvider)  # for type checking
-            if ProviderFeature.AUDIO_SOURCE not in plugin_prov.supported_features:
-                continue
-            if (source := plugin_prov.get_source()) and source.id == source_id:
-                return source
-        return None
-
     # Player commands
 
     @api_command("players/cmd/stop")
@@ -575,10 +548,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         - position: position in seconds to seek to in the current playing item.
         """
         player = self._get_player_with_redirect(player_id)
-        # Check if a plugin source is active with a seek callback
-        if plugin_source := self._get_active_plugin_source(player):
-            if plugin_source.can_seek and plugin_source.on_seek:
-                await plugin_source.on_seek(position)
+        # If an AudioSource is the active queue item, proxy the seek to the plugin
+        if active := self._get_active_audio_source(player):
+            audio_source, plugin_prov = active
+            if audio_source.can_seek:
+                await plugin_prov.on_source_control(
+                    audio_source.item_id, SourceControl.SEEK, position
+                )
                 return
         # Redirect to queue controller if it is active
         if active_queue := self.get_active_queue(player):
@@ -604,10 +580,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """Handle NEXT TRACK command for given player."""
         player = self._get_player_with_redirect(player_id)
         active_source_id = player.state.active_source or player.player_id
-        # Check if a plugin source is active with a next callback
-        if plugin_source := self._get_active_plugin_source(player):
-            if plugin_source.can_next_previous and plugin_source.on_next:
-                await plugin_source.on_next()
+        # If an AudioSource is the active queue item, proxy next to the plugin
+        if active := self._get_active_audio_source(player):
+            audio_source, plugin_prov = active
+            if audio_source.can_next_previous:
+                await plugin_prov.on_source_control(audio_source.item_id, SourceControl.NEXT)
                 return
         # Redirect to queue controller if it is active
         if active_queue := self.get_active_queue(player):
@@ -633,10 +610,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """Handle PREVIOUS TRACK command for given player."""
         player = self._get_player_with_redirect(player_id)
         active_source_id = player.state.active_source or player.player_id
-        # Check if a plugin source is active with a previous callback
-        if plugin_source := self._get_active_plugin_source(player):
-            if plugin_source.can_next_previous and plugin_source.on_previous:
-                await plugin_source.on_previous()
+        # If an AudioSource is the active queue item, proxy previous to the plugin
+        if active := self._get_active_audio_source(player):
+            audio_source, plugin_prov = active
+            if audio_source.can_next_previous:
+                await plugin_prov.on_source_control(audio_source.item_id, SourceControl.PREVIOUS)
                 return
         # Redirect to queue controller if it is active
         if active_queue := self.get_active_queue(player):
@@ -2036,11 +2014,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             coros.append(self._handle_cmd_volume_set(child_player.player_id, new_child_volume))
         await asyncio.gather(*coros)
 
-        # notify active plugin source once at the group level to prevent
+        # notify active AudioSource once at the group level to prevent
         # feedback loops from per-child callbacks with different volume values
-        if plugin_source := self._get_active_plugin_source(group_player):
-            if plugin_source.on_volume and plugin_source.in_use_by == group_player.player_id:
-                await plugin_source.on_volume(volume_level)
+        if active := self._get_active_audio_source(group_player):
+            audio_source, plugin_prov = active
+            active_queue = self.get_active_queue(group_player)
+            if active_queue is not None and active_queue.queue_id == group_player.player_id:
+                await plugin_prov.on_source_control(
+                    audio_source.item_id, SourceControl.VOLUME, volume_level
+                )
 
     def _invalidate_group_volume_snapshot(self, player_id: str) -> None:
         """Clear the cached group volume snapshot for all groups this player belongs to."""
@@ -2369,15 +2351,28 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return active_group
         return player
 
-    def _get_active_plugin_source(self, player: Player) -> PluginSource | None:
-        """Get the active PluginSource for a player if any."""
-        # Check if any plugin source is in use by this player
-        for plugin_source in self.get_plugin_sources():
-            if plugin_source.in_use_by == player.player_id:
-                return plugin_source
-            if player.state.active_source == plugin_source.id:
-                return plugin_source
-        return None
+    def _get_active_audio_source(self, player: Player) -> tuple[AudioSource, PluginProvider] | None:
+        """
+        Return the active AudioSource and its owning PluginProvider for a player.
+
+        Returns None when the player's active queue item is not a MediaType.AUDIO_SOURCE
+        or when the owning plugin provider is no longer available.
+
+        :param player: The player whose active queue to inspect.
+        """
+        active_queue = self.get_active_queue(player)
+        if active_queue is None:
+            return None
+        current_item = active_queue.current_item
+        if current_item is None or current_item.media_item is None:
+            return None
+        media_item = current_item.media_item
+        if media_item.media_type != MediaType.AUDIO_SOURCE:
+            return None
+        provider = self.mass.get_provider(media_item.provider)
+        if not isinstance(provider, PluginProvider):
+            return None
+        return cast("AudioSource", media_item), provider
 
     def _get_player_groups(
         self, player: Player, available_only: bool = True, powered_only: bool = False
@@ -2688,41 +2683,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 await asyncio.sleep(0)
             await asyncio.sleep(1)
 
-    async def _handle_select_plugin_source(
-        self, player: Player, plugin_prov: PluginProvider
-    ) -> None:
-        """Handle playback/select of given plugin source on player."""
-        plugin_source = plugin_prov.get_source()
-        if plugin_source.in_use_by and plugin_source.in_use_by != player.player_id:
-            self.logger.debug(
-                "Plugin source %s is already in use by player %s, stopping playback there first.",
-                plugin_source.name,
-                plugin_source.in_use_by,
-            )
-            with suppress(PlayerCommandFailed):
-                await self.cmd_stop(plugin_source.in_use_by)
-        stream_url = await self.mass.streams.get_plugin_source_url(plugin_source, player.player_id)
-        plugin_source.in_use_by = player.player_id
-        # Call on_select callback if available
-        if plugin_source.on_select:
-            await plugin_source.on_select()
-        await self.play_media(
-            player_id=player.player_id,
-            media=PlayerMedia(
-                uri=stream_url,
-                media_type=MediaType.PLUGIN_SOURCE,
-                title=plugin_source.name,
-                custom_data={
-                    "provider": plugin_prov.instance_id,
-                    "source_id": plugin_source.id,
-                    "player_id": player.player_id,
-                    "audio_format": plugin_source.audio_format,
-                },
-            ),
-        )
-        # trigger player update to ensure the source is set
-        self.trigger_player_update(player.player_id)
-
     def _handle_group_dsp_change(
         self, player: Player, prev_group_members: list[str], new_group_members: list[str]
     ) -> None:
@@ -2862,11 +2822,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return True
 
         # Check if it's a known queue ID
-        if self.mass.player_queues.get(source):
-            return True
-
-        # Check if it's a plugin source
-        return any(plugin_source.id == source for plugin_source in self.get_plugin_sources())
+        return self.mass.player_queues.get(source) is not None
 
     def _schedule_update_all_players(self, delay: float = 2.0) -> None:
         """
@@ -3335,13 +3291,17 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # Scale logical volume (0-100) to device volume (min_volume-max_volume)
         device_volume = self.scale_volume_to_device(player_id, volume_level)
 
-        # Check if a plugin source is active with a volume callback.
-        # Only fire if this player is the direct owner of the plugin source,
+        # Notify the active AudioSource of a volume change.
+        # Only fire if this player is the direct owner of its queue,
         # not when it merely inherits active_source from a parent group —
         # group volume changes handle the callback once at the group level.
-        if plugin_source := self._get_active_plugin_source(player):
-            if plugin_source.on_volume and plugin_source.in_use_by == player.player_id:
-                await plugin_source.on_volume(volume_level)
+        if active := self._get_active_audio_source(player):
+            audio_source, plugin_prov = active
+            active_queue = self.get_active_queue(player)
+            if active_queue is not None and active_queue.queue_id == player.player_id:
+                await plugin_prov.on_source_control(
+                    audio_source.item_id, SourceControl.VOLUME, volume_level
+                )
 
         # Handle native volume control support
         if player.volume_control == PLAYER_CONTROL_NATIVE:
@@ -3496,12 +3456,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 # just try to stop (regardless of state)
                 async with self.wait_for_player_update(player_id, timeout=5):
                     await self._handle_cmd_stop(player_id)
-        # check if source is a pluginsource
-        # in that case the source id is the instance_id of the plugin provider
-        if plugin_prov := self.mass.get_provider(source):
-            player.set_active_mass_source(source)
-            await self._handle_select_plugin_source(player, cast("PluginProvider", plugin_prov))
-            return
         # check if source is a mass queue
         # this can be used to restore the queue after a source switch
         if self.mass.player_queues.get(source):
@@ -3576,10 +3530,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 "Ignore PLAY request to player %s: player is already playing", player.state.name
             )
             return
-        # Check if a plugin source is active with a play callback
-        if plugin_source := self._get_active_plugin_source(player):
-            if plugin_source.can_play_pause and plugin_source.on_play:
-                await plugin_source.on_play()
+        # If an AudioSource is the active queue item, proxy play to the plugin
+        if active := self._get_active_audio_source(player):
+            audio_source, plugin_prov = active
+            if audio_source.can_play_pause:
+                await plugin_prov.on_source_control(audio_source.item_id, SourceControl.PLAY)
                 return
         # handle unpause (=play if player is paused)
         if player.state.playback_state == PlaybackState.PAUSED:
@@ -3631,10 +3586,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         assert player is not None
         if player.state.playback_state == PlaybackState.IDLE:
             return
-        # Check if a plugin source is active with a pause callback
-        if plugin_source := self._get_active_plugin_source(player):
-            if plugin_source.can_play_pause and plugin_source.on_pause:
-                await plugin_source.on_pause()
+        # If an AudioSource is the active queue item, proxy pause to the plugin
+        if active := self._get_active_audio_source(player):
+            audio_source, plugin_prov = active
+            if audio_source.can_play_pause:
+                await plugin_prov.on_source_control(audio_source.item_id, SourceControl.PAUSE)
                 return
         # handle command on player/source directly
         active_source = next(

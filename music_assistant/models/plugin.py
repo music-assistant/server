@@ -2,22 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Awaitable, Callable
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from mashumaro import field_options, pass_through
-from music_assistant_models.enums import ContentType, ProviderFeature, StreamType
-from music_assistant_models.media_items.audio_format import AudioFormat
-
-from music_assistant.models.player import PlayerSource
+from music_assistant_models.enums import ProviderFeature
 
 from .provider import Provider
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import AsyncGenerator, Sequence
 
+    from music_assistant_models.enums import SourceControl
     from music_assistant_models.media_items import (
+        AudioSource,
         BrowseFolder,
         ItemMapping,
         MediaItemType,
@@ -25,135 +21,7 @@ if TYPE_CHECKING:
         RecommendationFolder,
         Track,
     )
-    from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
-
-
-@dataclass
-class PluginSource(PlayerSource):
-    """
-    Model for a PluginSource, which is a player (audio)source provided by a plugin.
-
-    A PluginSource is for example a live audio stream such as a aux/microphone input.
-
-    This (intermediate)  model is not exposed on the api,
-    but is used internally by the plugin provider.
-    """
-
-    # The PCM audio format provided by this source
-    # for realtime audio, we recommend using PCM 16bit 44.1kHz stereo
-    audio_format: AudioFormat = field(
-        default=AudioFormat(
-            content_type=ContentType.PCM_S16LE,
-            sample_rate=44100,
-            bit_depth=16,
-            channels=2,
-        ),
-        compare=False,
-        metadata=field_options(serialize="omit", deserialize=pass_through),
-        repr=False,
-    )
-
-    # metadata of the current playing media (if known)
-    metadata: StreamMetadata | None = field(
-        default=None,
-        compare=False,
-        metadata=field_options(serialize="omit", deserialize=pass_through),
-        repr=False,
-    )
-
-    # The type of stream that is provided by this source
-    stream_type: StreamType | None = field(
-        default=StreamType.CUSTOM,
-        compare=False,
-        metadata=field_options(serialize="omit", deserialize=pass_through),
-        repr=False,
-    )
-
-    # The path to the source/audio (if streamtype is not custom)
-    path: str | None = field(
-        default=None,
-        compare=False,
-        metadata=field_options(serialize="omit", deserialize=pass_through),
-        repr=False,
-    )
-    # in_use_by specifies the player id that is currently using this plugin (if any)
-    in_use_by: str | None = field(
-        default=None,
-        compare=False,
-        metadata=field_options(serialize="omit", deserialize=pass_through),
-        repr=False,
-    )
-
-    # Optional callbacks for playback control
-    # These callbacks will be called by the player controller when control commands are issued
-    # and the source reports the corresponding capability (can_play_pause, can_seek, etc.)
-
-    # Callback for play command: async def callback() -> None
-    on_play: Callable[[], Awaitable[None]] | None = field(
-        default=None,
-        compare=False,
-        metadata=field_options(serialize="omit", deserialize=pass_through),
-        repr=False,
-    )
-
-    # Callback for pause command: async def callback() -> None
-    on_pause: Callable[[], Awaitable[None]] | None = field(
-        default=None,
-        compare=False,
-        metadata=field_options(serialize="omit", deserialize=pass_through),
-        repr=False,
-    )
-
-    # Callback for next track command: async def callback() -> None
-    on_next: Callable[[], Awaitable[None]] | None = field(
-        default=None,
-        compare=False,
-        metadata=field_options(serialize="omit", deserialize=pass_through),
-        repr=False,
-    )
-
-    # Callback for previous track command: async def callback() -> None
-    on_previous: Callable[[], Awaitable[None]] | None = field(
-        default=None,
-        compare=False,
-        metadata=field_options(serialize="omit", deserialize=pass_through),
-        repr=False,
-    )
-
-    # Callback for seek command: async def callback(position: int) -> None
-    on_seek: Callable[[int], Awaitable[None]] | None = field(
-        default=None,
-        compare=False,
-        metadata=field_options(serialize="omit", deserialize=pass_through),
-        repr=False,
-    )
-
-    # Callback for volume change command: async def callback(volume: int) -> None
-    on_volume: Callable[[int], Awaitable[None]] | None = field(
-        default=None,
-        compare=False,
-        metadata=field_options(serialize="omit", deserialize=pass_through),
-        repr=False,
-    )
-
-    # Callback for when this source is selected: async def callback() -> None
-    on_select: Callable[[], Awaitable[None]] | None = field(
-        default=None,
-        compare=False,
-        metadata=field_options(serialize="omit", deserialize=pass_through),
-        repr=False,
-    )
-
-    def as_player_source(self) -> PlayerSource:
-        """Return a basic PlayerSource representation without unpicklable callbacks."""
-        return PlayerSource(
-            id=self.id,
-            name=self.name,
-            passive=self.passive,
-            can_play_pause=self.can_play_pause,
-            can_seek=self.can_seek,
-            can_next_previous=self.can_next_previous,
-        )
+    from music_assistant_models.streamdetails import StreamDetails
 
 
 class PluginProvider(Provider):
@@ -163,27 +31,94 @@ class PluginProvider(Provider):
     Plugin Provider implementations should inherit from this base model.
     """
 
-    def get_source(self) -> PluginSource:
+    async def get_audio_sources(self) -> list[AudioSource]:
         """
-        Get (audio)source details for this plugin.
+        Return all AudioSources this plugin currently exposes.
 
-        # Will only be called if ProviderFeature.AUDIO_SOURCE is declared
+        Will only be called if ProviderFeature.AUDIO_SOURCE is declared.
+
+        May change over time (e.g. when a paired hardware device adds/removes
+        favorites). Each AudioSource is a regular MediaItem and will be browseable
+        under the global "Live Inputs" node and playable via the standard play_media flow.
+
+        :return: A list of AudioSource items. Return an empty list if the plugin
+            currently has no sources to expose (e.g. hardware is offline).
+        """
+        if ProviderFeature.AUDIO_SOURCE in self.supported_features:
+            raise NotImplementedError
+        return []
+
+    async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
+        """
+        Return StreamDetails for streaming the given AudioSource.
+
+        Will only be called if ProviderFeature.AUDIO_SOURCE is declared.
+
+        The returned StreamDetails uses the standard fields:
+        ``stream_type`` selects between a custom async generator and a path
+        (e.g. NAMED_PIPE); ``audio_format`` describes the PCM format the source
+        emits; ``stream_metadata`` carries the initial live metadata (and can
+        be updated at runtime via ``mass.streams.update_stream_metadata(queue_id, ...)``,
+        the same channel ICY radio metadata uses).
+
+        Must raise ResourceBusyError if the AudioSource has ``exclusive=True``
+        and is already streaming to a different consumer.
+
+        :param source_id: The AudioSource.item_id requested for playback.
+        :param queue_id: The queue that owns this playback session. For groups this is
+            the group's queue_id; the streams controller fans the stream out to members.
         """
         raise NotImplementedError
 
-    async def get_audio_stream(self, player_id: str) -> AsyncGenerator[bytes, None]:
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
         """
-        Return the (custom) audio stream for the audio source provided by this plugin.
+        Return the (custom) audio stream for an AudioSource.
 
-        Will only be called if this plugin is a PluginSource, meaning that
-        the ProviderFeature.AUDIO_SOURCE is declared AND if the streamtype is StreamType.CUSTOM.
+        Will only be called when the StreamDetails returned by get_stream_details
+        has ``stream_type=StreamType.CUSTOM``. The yielded bytes must be in
+        the PCM format declared by ``streamdetails.audio_format``.
 
-        The player_id is the id of the player that is requesting the stream.
-
-        Must return audio data as bytes generator (in the format specified by the audio_format).
+        :param streamdetails: The StreamDetails previously returned by get_stream_details.
+        :param seek_position: Ignored for live AudioSources (no seek through the bytestream).
         """
         yield b""
         raise NotImplementedError
+
+    async def on_source_control(
+        self,
+        source_id: str,
+        action: SourceControl,
+        value: int | None = None,
+    ) -> None:
+        """
+        Handle a playback control command for an active AudioSource.
+
+        Called by the player controller when the user (or an automation) issues
+        a control command and the active queue item is an AudioSource whose
+        capability flag for the action is True (e.g. ``can_next_previous`` for
+        NEXT/PREVIOUS).
+
+        :param source_id: The AudioSource.item_id the command applies to.
+        :param action: The control action to perform.
+        :param value: Optional numeric value: seek position in seconds for SEEK,
+            volume level 0-100 for VOLUME, ignored for other actions.
+        """
+        raise NotImplementedError
+
+    async def on_source_selected(self, source_id: str, player_id: str, queue_id: str) -> None:
+        """
+        Optional hook fired when an AudioSource has been selected for playback.
+
+        Use this when the plugin needs to react to selection beyond what
+        get_stream_details already does (for example, transferring an
+        external session to the newly chosen player).
+
+        :param source_id: The AudioSource.item_id that was selected.
+        :param player_id: The player that will receive the stream.
+        :param queue_id: The queue that owns this playback session.
+        """
 
     async def get_tts_message(self, message: str, language: str | None = None) -> StreamDetails:
         """

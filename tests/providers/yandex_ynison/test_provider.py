@@ -12,7 +12,6 @@ from music_assistant_models.enums import (
     PlaybackState,
     ProviderFeature,
     ProviderType,
-    StreamType,
 )
 from music_assistant_models.errors import LoginFailed, UnsupportedFeaturedException
 from ya_passport_auth import SecretStr
@@ -124,20 +123,22 @@ def _make_provider(player_id: str = PLAYER_ID_AUTO) -> YandexYnisonProvider:
 class TestProviderInit:
     """Tests for provider initialization."""
 
-    def test_source_details(self) -> None:
-        """PluginSource should be configured correctly."""
+    def test_audio_source_details(self) -> None:
+        """AudioSource should be configured correctly."""
         provider = _make_provider()
 
-        source = provider.get_source()
-        assert source.stream_type == StreamType.CUSTOM
-        assert source.audio_format.content_type == ContentType.PCM_S16LE
-        assert source.audio_format.sample_rate == 44100
-        assert source.audio_format.bit_depth == 16
-        assert source.audio_format.channels == 2
+        source = provider._audio_source
+        # provider_mapping carries the audio_format in the new model
+        mapping = next(iter(source.provider_mappings))
+        assert mapping.audio_format.content_type == ContentType.PCM_S16LE
+        assert mapping.audio_format.sample_rate == 44100
+        assert mapping.audio_format.bit_depth == 16
+        assert mapping.audio_format.channels == 2
+        # capabilities default off until a matching Yandex Music provider links
         assert source.can_play_pause is False
         assert source.can_seek is False
         assert source.can_next_previous is False
-        assert source.on_select is not None
+        assert source.exclusive is True
 
     def test_device_id_persisted(self) -> None:
         """When no device_id in config, should generate and persist."""
@@ -222,14 +223,13 @@ class TestPlayerSelection:
 
 
 class TestSourceSelection:
-    """Tests for _on_source_selected."""
+    """Tests for on_source_selected (the new PluginProvider hook)."""
 
     async def test_on_source_selected_sets_active(self) -> None:
         """Selecting source sets the active player."""
         provider = _make_provider()
 
-        provider._source_details.in_use_by = "new-player"
-        await provider._on_source_selected()
+        await provider.on_source_selected("main", "new-player", "new-player")
         assert provider._active_player_id == "new-player"
 
     async def test_on_source_selected_switching_disabled(self) -> None:
@@ -243,13 +243,12 @@ class TestSourceSelection:
         provider._default_player_id = "default-player"
         mass.players.get_player.return_value = MagicMock()
 
-        provider._source_details.in_use_by = "other-player"
         with pytest.raises(RuntimeError, match="Player switching is disabled"):
-            await provider._on_source_selected()
+            await provider.on_source_selected("main", "other-player", "other-player")
 
-        # Should have rejected the switch and restored in_use_by
+        # Should have redirected to the configured default via play_media
+        mass.player_queues.play_media.assert_awaited()
         assert provider._active_player_id is None
-        assert provider._source_details.in_use_by == "default-player"
 
 
 # ------------------------------------------------------------------
@@ -265,12 +264,12 @@ class TestClearActivePlayer:
         provider = _make_provider()
 
         provider._active_player_id = "some-player"
-        provider._source_details.in_use_by = "some-player"
+        provider._in_use_by_queue = "some-player"
 
         provider._clear_active_player()
 
         assert provider._active_player_id is None
-        assert provider._source_details.in_use_by is None  # type: ignore[unreachable]
+        assert provider._in_use_by_queue is None  # type: ignore[unreachable]
         provider.mass.players.trigger_player_update.assert_called_with("some-player")
 
 
@@ -294,8 +293,8 @@ class TestProviderMatching:
         await provider._check_yandex_provider_match()
 
         assert provider._yandex_provider is mock_ym
-        assert provider._source_details.can_play_pause is True
-        assert provider._source_details.on_play is not None
+        assert provider._audio_source.can_play_pause is True
+        assert provider._audio_source.on_play is not None
 
     async def test_no_matching_provider(self) -> None:
         """No linked provider disables playback control."""
@@ -305,7 +304,7 @@ class TestProviderMatching:
         await provider._check_yandex_provider_match()
 
         assert provider._yandex_provider is None
-        assert provider._source_details.can_play_pause is False
+        assert provider._audio_source.can_play_pause is False
 
 
 # ------------------------------------------------------------------
@@ -347,13 +346,13 @@ class TestYnisonStateHandling:
         provider = _make_provider()
 
         provider._active_player_id = "player1"
-        provider._source_details.in_use_by = "player1"
+        provider._in_use_by_queue = "player1"
 
         state = YnisonState(active_device_id="other-device-id")
         await provider._handle_ynison_state(state)
 
         assert provider._active_player_id is None
-        assert provider._source_details.in_use_by is None  # type: ignore[unreachable]
+        assert provider._in_use_by_queue is None  # type: ignore[unreachable]
 
     async def test_seek_detected_from_ynison(self) -> None:
         """Detects seek from Yandex app via progress drift."""
@@ -500,7 +499,7 @@ class TestYnisonStateHandling:
     async def test_duration_updated_from_stream_details(self) -> None:
         """Duration is updated from stream_details and pushed to Ynison."""
         provider = _make_provider()
-        provider._source_details.in_use_by = "player1"
+        provider._in_use_by_queue = "player1"
         mock_ynison = MagicMock()
         mock_ynison.update_playing_status = AsyncMock()
         mock_ynison.state.is_paused = False
@@ -511,7 +510,7 @@ class TestYnisonStateHandling:
 
         await provider._update_metadata_from_stream(stream_details, seek_ms=30000)
 
-        meta = provider._source_details.metadata
+        meta = provider._audio_source.metadata
         assert meta is not None
         assert meta.duration == 185
         assert meta.elapsed_time == 30  # 30000ms → 30s
@@ -935,7 +934,7 @@ class TestPCMNormalization:
     async def test_stream_track_always_uses_ffmpeg(self) -> None:
         """_stream_track always normalizes through ffmpeg, even without seek."""
         provider = _make_provider()
-        provider._source_details.in_use_by = "player1"
+        provider._in_use_by_queue = "player1"
 
         mock_yandex = MagicMock()
         sd = MagicMock()
@@ -980,7 +979,7 @@ class TestPCMNormalization:
     async def test_stream_track_seek_adds_ss_arg(self) -> None:
         """With seek > 0, _stream_track adds -ss to ffmpeg args."""
         provider = _make_provider()
-        provider._source_details.in_use_by = "player1"
+        provider._in_use_by_queue = "player1"
 
         mock_yandex = MagicMock()
         sd = MagicMock()
@@ -1019,13 +1018,13 @@ class TestPCMNormalization:
         assert "-re" in args
 
     async def test_default_format_is_pcm_s16le(self) -> None:
-        """Default PluginSource audio_format is PCM s16le (lossy profile)."""
+        """Default AudioSource audio_format is PCM s16le (lossy profile)."""
         provider = _make_provider()
-        source = provider.get_source()
-        assert source.audio_format.content_type == ContentType.PCM_S16LE
-        assert source.audio_format.sample_rate == 44100
-        assert source.audio_format.bit_depth == 16
-        assert source.audio_format.channels == 2
+        mapping = next(iter(provider._audio_source.provider_mappings))
+        assert mapping.audio_format.content_type == ContentType.PCM_S16LE
+        assert mapping.audio_format.sample_rate == 44100
+        assert mapping.audio_format.bit_depth == 16
+        assert mapping.audio_format.channels == 2
 
     async def test_superb_quality_uses_lossless_profile(self) -> None:
         """When YM quality=superb, format switches to PCM s24le/48kHz."""
@@ -1042,7 +1041,9 @@ class TestPCMNormalization:
         assert provider._normalized_format.content_type == ContentType.PCM_S24LE
         assert provider._normalized_format.sample_rate == 48000
         assert provider._normalized_format.bit_depth == 24
-        assert provider._source_details.audio_format == provider._normalized_format
+        # AudioSource is rebuilt with the new audio_format on the provider_mapping
+        mapping = next(iter(provider._audio_source.provider_mappings))
+        assert mapping.audio_format == provider._normalized_format
 
     async def test_balanced_quality_uses_lossy_profile(self) -> None:
         """When YM quality=balanced, format stays PCM s16le/44.1kHz."""
@@ -1094,9 +1095,9 @@ class TestPCMNormalization:
         assert provider._normalized_format.content_type == ContentType.PCM_S24LE
 
     async def test_audio_format_not_modified_by_stream(self) -> None:
-        """PluginSource audio_format stays fixed (not updated from stream)."""
+        """AudioSource audio_format stays fixed (not updated from stream)."""
         provider = _make_provider()
-        provider._source_details.in_use_by = "player1"
+        provider._in_use_by_queue = "player1"
 
         mock_yandex = MagicMock()
         sd = MagicMock()
@@ -1129,7 +1130,7 @@ class TestPCMNormalization:
                 pass
 
         # audio_format should still be _normalized_format, not sd.audio_format
-        assert provider._source_details.audio_format is original_format
+        assert provider._audio_source.audio_format is original_format
 
     async def test_stream_track_api_error_returns_empty(self) -> None:
         """If get_stream_details fails, _stream_track yields nothing."""
@@ -1763,20 +1764,20 @@ class TestPausePlayback:
         """Pause stops stream, calls cmd_stop, preserves progress."""
         provider = _make_provider()
         provider._streaming_progress_ms = 50000
-        provider._source_details.in_use_by = "player1"
+        provider._in_use_by_queue = "player1"
 
         await provider._pause_playback()
 
         assert provider._stream_stop_event.is_set()
         provider.mass.players.cmd_stop.assert_awaited_once_with("player1")  # type: ignore[attr-defined]
-        assert provider._source_details.in_use_by is None
+        assert provider._in_use_by_queue is None
         # Progress is preserved for resume
         assert provider._streaming_progress_ms == 50000  # type: ignore[unreachable]
 
     async def test_no_active_player(self) -> None:
         """Pause with no active player just sets stop event."""
         provider = _make_provider()
-        provider._source_details.in_use_by = None
+        provider._in_use_by_queue = None
 
         await provider._pause_playback()
 
@@ -1806,7 +1807,7 @@ class TestEchoSuppression:
         self._player(provider)
         provider._current_streaming_track_id = "track1"
         provider._active_player_id = "player1"
-        provider._source_details.in_use_by = "player1"
+        provider._in_use_by_queue = "player1"
         provider._streaming_progress_ms = 1000
         provider._seek_grace_until = 0.0  # grace expired
 
@@ -1861,7 +1862,7 @@ class TestSyncProgress:
         provider = _make_provider()
         provider._actual_duration_ms = 200000
         provider._ynison = _mock_ynison()
-        provider._source_details.metadata = MagicMock()
+        provider._audio_source.metadata = MagicMock()
 
         # 5 seconds of 44100Hz/16bit/2ch audio
         byte_rate = 44100 * 2 * 2
@@ -1869,7 +1870,7 @@ class TestSyncProgress:
 
         await provider._sync_progress(0, bytes_yielded, "player1")
 
-        meta = provider._source_details.metadata
+        meta = provider._audio_source.metadata
         assert meta.elapsed_time == 5
         provider.mass.players.trigger_player_update.assert_called_with("player1")  # type: ignore[attr-defined]
         provider._ynison.update_playing_status.assert_awaited_once()
@@ -1879,7 +1880,7 @@ class TestSyncProgress:
         provider = _make_provider()
         provider._actual_duration_ms = 200000
         provider._ynison = _mock_ynison()
-        provider._source_details.metadata = MagicMock()
+        provider._audio_source.metadata = MagicMock()
 
         byte_rate = 44100 * 2 * 2
         bytes_yielded = byte_rate * 2  # 2 seconds of audio
@@ -1887,7 +1888,7 @@ class TestSyncProgress:
 
         await provider._sync_progress(seek_ms, bytes_yielded, "player1")
 
-        meta = provider._source_details.metadata
+        meta = provider._audio_source.metadata
         # 30000ms + 2000ms = 32000ms → 32s
         assert meta.elapsed_time == 32
         assert provider._streaming_progress_ms == 32000
@@ -1897,7 +1898,7 @@ class TestSyncProgress:
         provider = _make_provider()
         provider._actual_duration_ms = 200000
         provider._ynison = _mock_ynison()
-        provider._source_details.metadata = MagicMock()
+        provider._audio_source.metadata = MagicMock()
 
         await provider._sync_progress(0, 0, None)
 
