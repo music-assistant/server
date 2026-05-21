@@ -107,7 +107,7 @@ CONF_DEFAULT_ENQUEUE_OPTION_ARTIST = "default_enqueue_option_artist"
 CONF_DEFAULT_ENQUEUE_OPTION_ALBUM = "default_enqueue_option_album"
 CONF_DEFAULT_ENQUEUE_OPTION_TRACK = "default_enqueue_option_track"
 CONF_DEFAULT_ENQUEUE_OPTION_GENRE = "default_enqueue_option_genre"
-CONF_DEFAULT_ENQUEUE_OPTION_RADIO = "default_enqueue_option_radio"
+CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES = "default_enqueue_option_live_sources"
 CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST = "default_enqueue_option_playlist"
 CONF_DEFAULT_ENQUEUE_OPTION_AUDIOBOOK = "default_enqueue_option_audiobook"
 CONF_DEFAULT_ENQUEUE_OPTION_PODCAST = "default_enqueue_option_podcast"
@@ -292,7 +292,7 @@ class PlayerQueuesController(CoreController):
                 description="Define the default enqueue action for this mediatype.",
             ),
             ConfigEntry(
-                key=CONF_DEFAULT_ENQUEUE_OPTION_RADIO,
+                key=CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES,
                 type=ConfigEntryType.STRING,
                 default_value=QueueOption.REPLACE.value,
                 label="Default enqueue option for Radio and Live Input item(s).",
@@ -1341,16 +1341,16 @@ class PlayerQueuesController(CoreController):
 
                 # handle default enqueue option if needed
                 if option is None:
-                    # AudioSources share the radio enqueue default — they're both live
-                    # infinite streams where REPLACE is almost always the right semantic.
-                    enqueue_media_type = (
-                        MediaType.RADIO
-                        if media_item.media_type == MediaType.AUDIO_SOURCE
-                        else media_item.media_type
-                    )
+                    # Radio + AudioSource share a single "live_sources" enqueue default —
+                    # both are live infinite streams where REPLACE is almost always the
+                    # right semantic. Other media types use their per-type config key.
+                    if media_item.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
+                        config_key = CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES
+                    else:
+                        config_key = f"default_enqueue_option_{media_item.media_type.value}"
                     config_value = await self.mass.config.get_core_config_value(
                         self.domain,
-                        f"default_enqueue_option_{enqueue_media_type.value}",
+                        config_key,
                         return_type=str,
                     )
                     option = QueueOption(config_value)
