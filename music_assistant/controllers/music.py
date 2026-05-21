@@ -914,10 +914,7 @@ class MusicController(CoreController):
             # AudioSources are dynamic plugin surfaces (existence depends on a
             # running plugin and its current device state) and have no stable
             # library identity, so they can not be persisted as favorites.
-            # Discoverability is served via the "Live Inputs" browse node.
-            raise UnsupportedFeaturedException(
-                "AudioSources can not be favorited — browse them via 'Live Inputs'."
-            )
+            raise UnsupportedFeaturedException("AudioSource items can not be favorites")
         # make sure we have a full library item
         # a favorite must always be in the library
         full_item = await self.get_item(
@@ -1015,10 +1012,7 @@ class MusicController(CoreController):
             # AudioSources are dynamic plugin surfaces (existence depends on a
             # running plugin and its current device state) and have no stable
             # library identity, so they can not be persisted as library items.
-            # Discoverability is served via the "Live Inputs" browse node.
-            raise UnsupportedFeaturedException(
-                "AudioSources can not be added to the library — browse them via 'Live Inputs'."
-            )
+            raise UnsupportedFeaturedException("AudioSource items can not be library items")
         # add to provider(s) library first
         for prov_mapping in full_item.provider_mappings:
             # we optimistically set in library to True to prevent items

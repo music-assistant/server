@@ -564,7 +564,7 @@ class TestAudioSourceLibraryRejection:
         controller = MusicController.__new__(MusicController)
         controller.mass = MagicMock()
         source = _audio_source()
-        with pytest.raises(UnsupportedFeaturedException, match="Live Inputs"):
+        with pytest.raises(UnsupportedFeaturedException, match="can not be favorites"):
             await controller.add_item_to_favorites(source)
 
     @pytest.mark.asyncio
@@ -576,5 +576,5 @@ class TestAudioSourceLibraryRejection:
         controller.mass = MagicMock()
         source = _audio_source()
         controller.get_item = AsyncMock(return_value=source)  # type: ignore[method-assign]
-        with pytest.raises(UnsupportedFeaturedException, match="Live Inputs"):
+        with pytest.raises(UnsupportedFeaturedException, match="can not be library items"):
             await controller.add_item_to_library(source)
