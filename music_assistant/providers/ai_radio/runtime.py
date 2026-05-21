@@ -209,7 +209,9 @@ class AIRadioRuntimeMixin:
             )
             entries_added = len(playlist_items)
         else:
-            entries, track_count = self._compose_entries(tracks=tracks, sections=audio_sections)
+            entries, _source_positions, track_count = self._compose_entries(
+                tracks=tracks, sections=audio_sections
+            )
             if not entries:
                 raise MusicAssistantError("No playlist entries were generated")
             self._set_session_progress(
@@ -371,7 +373,9 @@ class AIRadioRuntimeMixin:
                 sections=len(generated_sections),
             )
             audio_sections = await self._synthesize_sections(generated_sections=generated_sections)
-            entries, _track_count = self._compose_entries(batch_tracks, audio_sections)
+            entries, source_positions, _track_count = self._compose_entries(
+                batch_tracks, audio_sections
+            )
             if not entries:
                 raise MusicAssistantError("Dynamic batch produced no queue entries")
 
@@ -391,16 +395,11 @@ class AIRadioRuntimeMixin:
                 option=option,
             )
 
-            track_entry_local_indices = [
-                index for index, uri in enumerate(entries) if "://track/" in uri
-            ]
             batch_start_global = total_entries_queued
             total_entries_queued += len(entries)
-            if track_entry_local_indices:
-                trigger_position = max(
-                    0, len(track_entry_local_indices) - prefetch_remaining_tracks
-                )
-                trigger_track_local_index = track_entry_local_indices[trigger_position]
+            if source_positions:
+                trigger_position = max(0, len(source_positions) - prefetch_remaining_tracks)
+                trigger_track_local_index = source_positions[trigger_position]
                 wait_trigger_global_index = batch_start_global + trigger_track_local_index
 
             cursor += len(batch_tracks)
@@ -903,12 +902,13 @@ class AIRadioRuntimeMixin:
         self,
         tracks: list[dict[str, Any]],
         sections: list[AudioSection],
-    ) -> tuple[list[str], int]:
+    ) -> tuple[list[str], list[int], int]:
         """Compose final queue/playlist entries with insert positions."""
         sections_by_index: dict[int, list[AudioSection]] = defaultdict(list)
         for item in sections:
             sections_by_index[item.insert_at_index].append(item)
         entries: list[str] = []
+        source_track_positions: list[int] = []
         track_count = 0
         for index in range(len(tracks) + 1):
             for section in sorted(sections_by_index.get(index, []), key=lambda item: item.order):
@@ -916,9 +916,10 @@ class AIRadioRuntimeMixin:
             if index < len(tracks):
                 track_uri = str(tracks[index].get("uri", "")).strip()
                 if track_uri:
+                    source_track_positions.append(len(entries))
                     entries.append(track_uri)
                     track_count += 1
-        return entries, track_count
+        return entries, source_track_positions, track_count
 
     def _compose_builtin_playlist_items(
         self,

@@ -453,8 +453,8 @@ async def test_wait_for_background_task_completion_waits_until_success() -> None
     await runtime._wait_for_background_task_completion("task_2", timeout_seconds=1)
 
 
-def test_compose_entries_substring_filter_misidentifies_tts_sections_as_tracks() -> None:
-    """Source-track entry detection must not match TTS sections by substring (C1)."""
+def test_compose_entries_returns_correct_source_track_positions() -> None:
+    """_compose_entries returns explicit source-track positions, not substring-derived (C1)."""
     runtime = DummyRuntime()
     tracks = [
         {
@@ -495,13 +495,13 @@ def test_compose_entries_substring_filter_misidentifies_tts_sections_as_tracks()
         ),
     ]
 
-    entries, _ = runtime._compose_entries(tracks, sections)
+    entries, source_positions, _track_count = runtime._compose_entries(tracks, sections)
 
-    substring_indices = [i for i, uri in enumerate(entries) if "://track/" in uri]
     source_uris = {cast("str", track["uri"]) for track in tracks}
     expected_source_indices = [i for i, uri in enumerate(entries) if uri in source_uris]
 
-    assert substring_indices == expected_source_indices
+    assert source_positions == expected_source_indices
+    assert source_positions == [1, 2]
 
 
 @pytest.mark.parametrize(
