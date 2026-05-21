@@ -316,7 +316,23 @@ class AriaCastBridge(PluginProvider):
                         current_target, str(self._audio_source.uri)
                     )
                 return
+        # Handoff: release the prior queue's claim so the new queue's
+        # get_stream_details (called right after this hook by the streams
+        # controller) is not rejected by the busy check. The previous stream's
+        # get_audio_stream loop notices the lock change and exits cleanly.
+        if self._in_use_by_queue and self._in_use_by_queue != queue_id:
+            self._in_use_by_queue = None
         self._active_player_id = player_id
+
+    async def on_source_unselected(self, source_id: str, queue_id: str) -> None:
+        """Release the queue-scoped exclusive claim when MA tears down the stream."""
+        if source_id != AUDIO_SOURCE_ID:
+            return
+        # Belt-and-suspenders to the get_audio_stream finally: only clear if
+        # this queue still owns the source (handoff may have already given it
+        # away to a new queue).
+        if self._in_use_by_queue == queue_id:
+            self._in_use_by_queue = None
 
     async def _monitor_metadata(self) -> None:
         """Connect to local Go binary WebSocket to receive metadata updates."""
@@ -373,7 +389,9 @@ class AriaCastBridge(PluginProvider):
 
         # Push the update through the streamdetails layer if a queue is consuming us
         if self._in_use_by_queue:
-            self.mass.streams.update_stream_metadata(self._in_use_by_queue, meta)
+            self.mass.streams.update_stream_metadata(
+                self._in_use_by_queue, AUDIO_SOURCE_ID, self.instance_id, meta
+            )
 
     def _handle_track_change(self, new_title: str) -> None:
         """Handle track change detection and queue clearing."""
@@ -525,7 +543,10 @@ class AriaCastBridge(PluginProvider):
 
                         if self._in_use_by_queue:
                             self.mass.streams.update_stream_metadata(
-                                self._in_use_by_queue, self._stream_metadata
+                                self._in_use_by_queue,
+                                AUDIO_SOURCE_ID,
+                                self.instance_id,
+                                self._stream_metadata,
                             )
                 else:
                     self.logger.warning("Failed to download artwork: HTTP %s", response.status)

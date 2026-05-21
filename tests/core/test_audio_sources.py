@@ -172,9 +172,20 @@ class _FakePluginProvider:
         self.control_calls.append((action, value))
 
     async def on_source_selected(self, source_id: str, player_id: str, queue_id: str) -> None:
-        del queue_id
         assert source_id == self._audio_source.item_id
         self.selected_calls.append((source_id, player_id))
+        # Mirror the handoff pattern shared by every real plugin: release the
+        # prior queue's exclusive claim so the upcoming get_stream_details for
+        # the new queue is not rejected by the busy check.
+        if self._in_use_by_queue and self._in_use_by_queue != queue_id:
+            self._in_use_by_queue = None
+
+    async def on_source_unselected(self, source_id: str, queue_id: str) -> None:
+        assert source_id == self._audio_source.item_id
+        # Idempotent / stale-callback-safe clear: only release if this queue
+        # still owns the source.
+        if self._in_use_by_queue == queue_id:
+            self._in_use_by_queue = None
 
 
 # -------------------------------------------------------------------- contract
@@ -245,6 +256,47 @@ class TestAudioSourceContract:
             (SourceControl.SEEK, 42),
             (SourceControl.NEXT, None),
         ]
+
+    @pytest.mark.asyncio
+    async def test_handoff_releases_prior_queue_in_on_source_selected(self) -> None:
+        """on_source_selected must clear the prior queue's claim so handoff works."""
+        # The streams controller fires on_source_selected BEFORE get_stream_details.
+        # Without releasing the prior claim, the second get_stream_details would
+        # raise ResourceBusyError and the takeover path would be unreachable.
+        prov = _FakePluginProvider(_audio_source())
+        await prov.get_stream_details("main", "queue_a")
+        assert prov._in_use_by_queue == "queue_a"
+        # Different queue selects the source (cross-queue handoff).
+        # The streams controller pairs this with get_stream_details for the
+        # new queue, which must succeed without ResourceBusyError.
+        await prov.on_source_selected("main", "player_b", "queue_b")
+        sd = await prov.get_stream_details("main", "queue_b")
+        assert sd.media_type == MediaType.AUDIO_SOURCE
+        assert prov._in_use_by_queue == "queue_b"
+
+    @pytest.mark.asyncio
+    async def test_on_source_unselected_releases_own_queue(self) -> None:
+        """on_source_unselected releases the claim if this queue still owns it."""
+        prov = _FakePluginProvider(_audio_source())
+        await prov.get_stream_details("main", "queue_a")
+        await prov.on_source_unselected("main", "queue_a")
+        assert prov._in_use_by_queue is None
+
+    @pytest.mark.asyncio
+    async def test_on_source_unselected_ignores_stale_queue(self) -> None:
+        """A late on_source_unselected after a handoff must not clobber the new claim."""
+        # Stale callback scenario: queue A's stream finally fires AFTER queue B
+        # has already taken over. The guard inside on_source_unselected must
+        # prevent it from clearing queue B's claim.
+        prov = _FakePluginProvider(_audio_source())
+        await prov.get_stream_details("main", "queue_a")
+        # Simulate handoff: B selects the source, releasing A's claim
+        await prov.on_source_selected("main", "player_b", "queue_b")
+        await prov.get_stream_details("main", "queue_b")
+        assert prov._in_use_by_queue == "queue_b"
+        # Now queue A's late unselect fires — it must be a no-op
+        await prov.on_source_unselected("main", "queue_a")
+        assert prov._in_use_by_queue == "queue_b"
 
 
 # ---------------------------------------------------------- active source helper
@@ -324,7 +376,7 @@ class TestUpdateStreamMetadata:
         controller = StreamsController.__new__(StreamsController)
         controller.mass = mass
 
-        controller.update_stream_metadata("missing", StreamMetadata(title="t"))
+        controller.update_stream_metadata("missing", "main", "x", StreamMetadata(title="t"))
         mass.player_queues.signal_update.assert_not_called()
 
     def test_no_op_when_no_streamdetails(self) -> None:
@@ -341,11 +393,11 @@ class TestUpdateStreamMetadata:
         controller = StreamsController.__new__(StreamsController)
         controller.mass = mass
 
-        controller.update_stream_metadata("q1", StreamMetadata(title="t"))
+        controller.update_stream_metadata("q1", "main", "x", StreamMetadata(title="t"))
         mass.player_queues.signal_update.assert_not_called()
 
     def test_writes_metadata_and_signals_queue(self) -> None:
-        """When streamdetails exists, the helper mutates and signals the queue update."""
+        """When streamdetails matches, the helper mutates and signals the queue update."""
         from music_assistant.controllers.streams import StreamsController  # noqa: PLC0415
 
         mass = MagicMock()
@@ -366,11 +418,71 @@ class TestUpdateStreamMetadata:
         controller.mass = mass
 
         new_meta = StreamMetadata(title="Now Playing")
-        controller.update_stream_metadata("q1", new_meta)
+        controller.update_stream_metadata("q1", "y", "x", new_meta)
 
         assert sd.stream_metadata is new_meta
         assert sd.stream_metadata_last_updated is not None
         mass.player_queues.signal_update.assert_called_once_with("q1")
+
+    def test_rejects_when_current_item_is_not_audio_source(self) -> None:
+        """A late metadata callback must not stamp over a track/radio item."""
+        from music_assistant.controllers.streams import StreamsController  # noqa: PLC0415
+
+        mass = MagicMock()
+        sd = StreamDetails(
+            provider="x",
+            item_id="y",
+            audio_format=_audio_format(),
+            media_type=MediaType.TRACK,
+            stream_type=StreamType.HTTP,
+        )
+        queue = MagicMock()
+        queue.current_item = MagicMock()
+        queue.current_item.streamdetails = sd
+        mass.player_queues.get = MagicMock(return_value=queue)
+        mass.player_queues.signal_update = MagicMock()
+
+        controller = StreamsController.__new__(StreamsController)
+        controller.mass = mass
+
+        controller.update_stream_metadata("q1", "y", "x", StreamMetadata(title="stale"))
+        assert sd.stream_metadata is None
+        mass.player_queues.signal_update.assert_not_called()
+
+    def test_rejects_when_source_id_or_provider_mismatches(self) -> None:
+        """A stale callback from a different source/provider must not overwrite."""
+        from music_assistant.controllers.streams import StreamsController  # noqa: PLC0415
+
+        mass = MagicMock()
+        sd = StreamDetails(
+            provider="provider_a",
+            item_id="source_a",
+            audio_format=_audio_format(),
+            media_type=MediaType.AUDIO_SOURCE,
+            stream_type=StreamType.CUSTOM,
+        )
+        queue = MagicMock()
+        queue.current_item = MagicMock()
+        queue.current_item.streamdetails = sd
+        mass.player_queues.get = MagicMock(return_value=queue)
+        mass.player_queues.signal_update = MagicMock()
+
+        controller = StreamsController.__new__(StreamsController)
+        controller.mass = mass
+
+        # Wrong provider
+        controller.update_stream_metadata(
+            "q1", "source_a", "provider_b", StreamMetadata(title="stale")
+        )
+        assert sd.stream_metadata is None
+
+        # Wrong source_id
+        controller.update_stream_metadata(
+            "q1", "source_b", "provider_a", StreamMetadata(title="stale")
+        )
+        assert sd.stream_metadata is None
+
+        mass.player_queues.signal_update.assert_not_called()
 
 
 # ----------------------------------------------- silence-keepalive wrapper

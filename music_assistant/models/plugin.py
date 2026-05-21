@@ -137,13 +137,37 @@ class PluginProvider(Provider):
         """
         React to an AudioSource being selected for playback.
 
-        Optional hook. Override when the plugin needs to do something beyond what
-        get_stream_details already does (for example, transferring an external
-        session to the newly chosen player).
+        Optional hook. Fired by the streams controller **before**
+        ``get_stream_details`` so the plugin can stop the previous player and
+        release any prior exclusive claim (e.g. an existing ``_in_use_by_queue``
+        held by an earlier queue) before the new queue's ``get_stream_details``
+        runs. Without this ordering the exclusivity check inside
+        ``get_stream_details`` would raise ``ResourceBusyError`` for any
+        cross-queue handoff and the takeover path would be unreachable.
 
         :param source_id: The AudioSource.item_id that was selected.
         :param player_id: The player that will receive the stream.
         :param queue_id: The queue that owns this playback session.
+        """
+
+    async def on_source_unselected(self, source_id: str, queue_id: str) -> None:
+        """
+        React to MA tearing down an AudioSource stream from this queue.
+
+        Fired in the ``finally`` block of the queue-item streaming handler — so
+        it runs whether the stream ended normally, the player disconnected, the
+        queue moved on, or an exception interrupted streaming. Override to
+        release any per-queue state set in ``get_stream_details`` (notably the
+        exclusive lock used to reject cross-queue claims) so the source becomes
+        available to other queues without depending on an external session
+        event.
+
+        Implementations should guard with ``if self._in_use_by_queue ==
+        queue_id`` (or equivalent) so a stale callback after a handoff doesn't
+        clear state that already belongs to a new queue.
+
+        :param source_id: The AudioSource.item_id whose stream ended.
+        :param queue_id: The queue whose stream is being torn down.
         """
 
     async def on_volume_change(self, source_id: str, volume: int) -> None:

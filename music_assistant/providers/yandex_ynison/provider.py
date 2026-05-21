@@ -1003,24 +1003,40 @@ class YandexYnisonProvider(PluginProvider):
                 msg = f"Player switching is disabled; source must remain on {current_target}"
                 raise RuntimeError(msg)
 
-        # Stop previous player if switching
+        # Stop previous player if switching. Pre-emptively release
+        # _in_use_by_queue so the new queue's get_stream_details (called right
+        # after this hook by the streams controller) is not rejected by the
+        # busy check. The previous stream loop notices the queue change and
+        # exits cleanly.
         if self._active_player_id and self._active_player_id != player_id:
+            prev_player_id = self._active_player_id
             self.logger.info(
                 "Source selected on %s, stopping %s",
                 player_id,
-                self._active_player_id,
+                prev_player_id,
             )
+            self._in_use_by_queue = None
             try:
-                await self.mass.players.cmd_stop(self._active_player_id)
+                await self.mass.players.cmd_stop(prev_player_id)
             except Exception as err:
                 self.logger.debug(
                     "Failed to stop previous player %s: %s",
-                    self._active_player_id,
+                    prev_player_id,
                     err,
                 )
 
         self._active_player_id = player_id
         self.logger.debug("Active player set to: %s", player_id)
+
+    async def on_source_unselected(self, source_id: str, queue_id: str) -> None:
+        """Release the queue-scoped exclusive claim when MA tears down the stream."""
+        if source_id != AUDIO_SOURCE_ID:
+            return
+        # Belt-and-suspenders to the get_audio_stream try/finally: only clear
+        # if this queue still owns the source (handoff may have already given
+        # it away to a new queue).
+        if self._in_use_by_queue == queue_id:
+            self._in_use_by_queue = None
 
     def _clear_active_player(self) -> None:
         """Clear the active player and reset plugin state."""

@@ -350,19 +350,24 @@ class AirPlayReceiverProvider(PluginProvider):
                 )
                 return
 
-        # If there's already an active player and it's different, kick it out
+        # If there's already an active player and it's different, kick it out.
+        # Pre-emptively release _in_use_by_queue so the new queue's
+        # get_stream_details (called right after this hook by the streams
+        # controller) is not rejected by the busy check. The old stream's
+        # on_source_unselected may fire later for the previous queue, but its
+        # guard (queue_id match) keeps it from clobbering the new claim.
         if self._active_player_id and self._active_player_id != player_id:
+            prev_player_id = self._active_player_id
             self.logger.info(
                 "Source selected on player %s, stopping playback on %s",
                 player_id,
-                self._active_player_id,
+                prev_player_id,
             )
+            self._in_use_by_queue = None
             try:
-                await self.mass.players.cmd_stop(self._active_player_id)
+                await self.mass.players.cmd_stop(prev_player_id)
             except Exception as err:
-                self.logger.debug(
-                    "Failed to stop previous player %s: %s", self._active_player_id, err
-                )
+                self.logger.debug("Failed to stop previous player %s: %s", prev_player_id, err)
 
         # Update the active player
         self._active_player_id = player_id
@@ -371,6 +376,15 @@ class AirPlayReceiverProvider(PluginProvider):
         # Only persist the selected player as the new default if not in auto mode
         if self._default_player_id != PLAYER_ID_AUTO:
             self._save_last_player_id(player_id)
+
+    async def on_source_unselected(self, source_id: str, queue_id: str) -> None:
+        """Release the queue-scoped exclusive claim when MA tears down the stream."""
+        if source_id != AUDIO_SOURCE_ID:
+            return
+        # Guard against stale callbacks from a previous queue after a handoff:
+        # only clear if this queue still owns the source.
+        if self._in_use_by_queue == queue_id:
+            self._in_use_by_queue = None
 
     def _clear_active_player(self) -> None:
         """
@@ -585,7 +599,12 @@ class AirPlayReceiverProvider(PluginProvider):
 
         # Push the metadata update through to the active queue item's streamdetails
         if self._in_use_by_queue:
-            self.mass.streams.update_stream_metadata(self._in_use_by_queue, self._stream_metadata)
+            self.mass.streams.update_stream_metadata(
+                self._in_use_by_queue,
+                AUDIO_SOURCE_ID,
+                self.instance_id,
+                self._stream_metadata,
+            )
 
     def _handle_play_state_change(self, play_state: str) -> None:
         """Handle play state changes from sessioncontrol hooks.

@@ -267,6 +267,26 @@ class VBANReceiverProvider(PluginProvider):
                 self._in_use_by_queue = None
             self.logger.debug("Stopped VBAN PCM audio stream receiver: %s", _stream_details)
 
+    async def on_source_selected(self, source_id: str, player_id: str, queue_id: str) -> None:
+        """Release the prior queue's claim so a cross-queue handoff can proceed."""
+        if source_id != AUDIO_SOURCE_ID:
+            return
+        # The previous stream loop notices the queue change on its 1s timeout
+        # and exits cleanly, freeing get_stream_details to claim for the new
+        # queue without ResourceBusyError.
+        if self._in_use_by_queue and self._in_use_by_queue != queue_id:
+            self._in_use_by_queue = None
+
+    async def on_source_unselected(self, source_id: str, queue_id: str) -> None:
+        """Release the queue-scoped exclusive claim when MA tears down the stream."""
+        if source_id != AUDIO_SOURCE_ID:
+            return
+        # Belt-and-suspenders to the get_audio_stream finally: only clear if
+        # this queue still owns the source (handoff may have already given it
+        # away to a new queue).
+        if self._in_use_by_queue == queue_id:
+            self._in_use_by_queue = None
+
     def _cancel_stats_reporter(self, instance_id: str | None = None) -> None:
         """Cancel a running stats reporter."""
         if self._stats_reporter:

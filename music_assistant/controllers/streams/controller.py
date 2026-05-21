@@ -13,6 +13,7 @@ import logging
 import os
 import time
 from collections.abc import AsyncGenerator
+from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 from aiofiles.os import wrap
@@ -378,16 +379,31 @@ class StreamsController(CoreController):
         base_path = "flow" if flow_mode else "single"
         return f"{self._server.base_url}/{base_path}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}"
 
-    def update_stream_metadata(self, queue_id: str, stream_metadata: StreamMetadata) -> None:
+    def update_stream_metadata(
+        self,
+        queue_id: str,
+        source_id: str,
+        provider: str,
+        stream_metadata: StreamMetadata,
+    ) -> None:
         """
-        Push a live stream metadata update for the active queue item.
+        Push a live stream metadata update for an active AudioSource queue item.
 
         Used by plugin providers exposing an AudioSource (e.g. AirPlay receiver,
         Spotify Connect) to surface live track-change info without restarting
-        the stream. The radio ICY metadata path uses the same channel via
-        ``_update_radio_stream_metadata``.
+        the stream. The radio ICY metadata path uses the same underlying field
+        via ``_update_radio_stream_metadata`` but goes through a separate path.
+
+        The update is rejected silently unless the queue's current item is an
+        AudioSource owned by ``provider`` with ``item_id == source_id``. This
+        guard prevents a late callback (e.g. the provider firing one more
+        metadata update after MA has already moved the queue on to a track or
+        a different AudioSource) from stamping unrelated metadata over the
+        wrong item.
 
         :param queue_id: The queue whose active item should receive the update.
+        :param source_id: The AudioSource.item_id emitting this metadata.
+        :param provider: The provider instance id emitting this metadata.
         :param stream_metadata: The new stream metadata to attach.
         """
         queue = self.mass.player_queues.get(queue_id)
@@ -396,8 +412,15 @@ class StreamsController(CoreController):
         current_item = queue.current_item
         if current_item is None or current_item.streamdetails is None:
             return
-        current_item.streamdetails.stream_metadata = stream_metadata
-        current_item.streamdetails.stream_metadata_last_updated = time.time()
+        sd = current_item.streamdetails
+        if (
+            sd.media_type != MediaType.AUDIO_SOURCE
+            or sd.provider != provider
+            or sd.item_id != source_id
+        ):
+            return
+        sd.stream_metadata = stream_metadata
+        sd.stream_metadata_last_updated = time.time()
         self.mass.player_queues.signal_update(queue_id)
 
     async def serve_queue_item_stream(self, request: web.Request) -> web.StreamResponse:  # noqa: PLR0915
@@ -416,196 +439,225 @@ class StreamsController(CoreController):
         queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
         if not queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {queue_item_id}")
-        if not queue_item.streamdetails:
-            try:
-                queue_item.streamdetails = await self.audio.get_stream_details(
-                    queue_item=queue_item
-                )
-            except Exception as e:
-                self.logger.error(
-                    "Failed to get streamdetails for QueueItem %s: %s", queue_item_id, e
-                )
-                queue_item.available = False
-                raise web.HTTPNotFound(reason=f"No streamdetails for Queue item: {queue_item_id}")
 
-        # Fire on_source_selected hook for AudioSources so plugins can react
-        # (e.g. transfer the external Spotify/AirPlay session to this player).
-        # Providers track their own active-player state and de-duplicate when
-        # the selection is unchanged.
+        # Fire on_source_selected hook BEFORE get_stream_details so the plugin
+        # can stop any previous player and release a prior exclusive claim
+        # (e.g. _in_use_by_queue held by an earlier queue) before the new
+        # queue's get_stream_details runs. Without this ordering the
+        # exclusivity check inside get_stream_details would raise
+        # ResourceBusyError for any cross-queue handoff and the takeover path
+        # would be unreachable. Source identity comes from queue_item.media_item
+        # because streamdetails do not exist yet. Lifecycle hooks only fire for
+        # GET (the actual stream); HEAD probes from some DLNA renderers must
+        # not trigger transfers.
+        audio_source_provider: PluginProvider | None = None
+        audio_source_id: str | None = None
         if (
-            queue_item.streamdetails.media_type == MediaType.AUDIO_SOURCE
-            and (plugin_prov := self.mass.get_provider(queue_item.streamdetails.provider))
-            and isinstance(plugin_prov, PluginProvider)
+            request.method == "GET"
+            and queue_item.media_item is not None
+            and queue_item.media_item.media_type == MediaType.AUDIO_SOURCE
+            and (prov := self.mass.get_provider(queue_item.media_item.provider))
+            and isinstance(prov, PluginProvider)
         ):
-            await plugin_prov.on_source_selected(
-                queue_item.streamdetails.item_id, player_id, queue_id
+            audio_source_provider = prov
+            audio_source_id = queue_item.media_item.item_id
+            await audio_source_provider.on_source_selected(audio_source_id, player_id, queue_id)
+
+        try:
+            if not queue_item.streamdetails:
+                try:
+                    queue_item.streamdetails = await self.audio.get_stream_details(
+                        queue_item=queue_item
+                    )
+                except Exception as e:
+                    self.logger.error(
+                        "Failed to get streamdetails for QueueItem %s: %s", queue_item_id, e
+                    )
+                    queue_item.available = False
+                    raise web.HTTPNotFound(
+                        reason=f"No streamdetails for Queue item: {queue_item_id}"
+                    )
+
+            # pick output format based on the streamdetails and player capabilities
+            pcm_format = await self.audio.select_pcm_format(
+                player=player, streamdetails=queue_item.streamdetails, smartfades_enabled=True
             )
-
-        # pick output format based on the streamdetails and player capabilities
-        pcm_format = await self.audio.select_pcm_format(
-            player=player, streamdetails=queue_item.streamdetails, smartfades_enabled=True
-        )
-        output_format = await self.audio.get_output_format(
-            output_format_str=request.match_info["fmt"],
-            player=player,
-            content_sample_rate=pcm_format.sample_rate,
-            content_bit_depth=pcm_format.bit_depth,
-            media_type=queue_item.media_type,
-        )
-
-        # prepare request, add some DLNA/UPNP compatible headers
-        # icy-name is sanitized to avoid a "Potential header injection attack" exception by aiohttp
-        # see https://github.com/music-assistant/support/issues/4913
-        # use realtime DLNA flags for radio (sender-paced) since the source delivers slowly
-        dlna_features = (
-            DLNA_CONTENT_FEATURES_REALTIME
-            if queue_item.media_type != MediaType.TRACK
-            else DLNA_CONTENT_FEATURES
-        )
-        headers = {
-            **DEFAULT_STREAM_HEADERS,
-            "icy-name": queue_item.name.replace("\n", " ").replace("\r", " ").replace("\t", " "),
-            "contentFeatures.dlna.org": dlna_features,
-            "Content-Type": get_mime_type(output_format.output_format_str),
-        }
-
-        resp = web.StreamResponse(status=200, reason="OK", headers=headers)
-        resp.content_type = get_mime_type(output_format.output_format_str)
-        http_profile = await self.mass.config.get_player_config_value(
-            player_id, CONF_HTTP_PROFILE, default="default", return_type=str
-        )
-        if http_profile == "forced_content_length" and not queue_item.duration:
-            # just set an insane high content length to make sure the player keeps playing
-            resp.content_length = calculate_content_length(output_format, 12 * 3600)
-        elif http_profile == "forced_content_length" and queue_item.duration:
-            # estimate content length based on effective duration
-            # account for seek position (e.g., crossfade from previous track)
-            seek_pos = queue_item.streamdetails.seek_position if queue_item.streamdetails else 0
-            effective_duration = max(queue_item.duration - seek_pos, 1)
-            # use cached actual bytes-per-second if available (from a previous stream)
-            resp.content_length = await get_content_length(
-                self.mass, queue_item.uri, output_format, effective_duration
-            )
-        elif http_profile == "chunked":
-            resp.enable_chunked_encoding()
-
-        await resp.prepare(request)
-
-        # return early if this is not a GET request
-        if request.method != "GET":
-            return resp
-
-        if queue_item.media_type != MediaType.TRACK:
-            # no crossfade on non-tracks
-            smart_fades_mode = SmartFadesMode.DISABLED
-        else:
-            smart_fades_mode = await self.mass.config.get_player_config_value(
-                queue.queue_id, CONF_SMART_FADES_MODE, return_type=SmartFadesMode
-            )
-            standard_crossfade_duration = self.mass.config.get_raw_player_config_value(
-                queue.queue_id, CONF_CROSSFADE_DURATION, 10
-            )
-        if (
-            smart_fades_mode != SmartFadesMode.DISABLED
-            and PlayerFeature.GAPLESS_PLAYBACK not in player.state.supported_features
-        ):
-            self.logger.warning(
-                "Crossfade disabled: Player %s does not support gapless playback, "
-                "consider enabling flow mode to enable crossfade on this player.",
-                player.state.name if player else "Unknown Player",
-            )
-            smart_fades_mode = SmartFadesMode.DISABLED
-
-        if smart_fades_mode != SmartFadesMode.DISABLED:
-            # crossfade is enabled, use special crossfaded single item stream
-            # where the crossfade of the next track is present in the stream of
-            # a single track. This only works if the player supports gapless playback!
-            audio_input = self.audio.get_queue_item_stream_with_smartfade(
+            output_format = await self.audio.get_output_format(
+                output_format_str=request.match_info["fmt"],
                 player=player,
-                queue_item=queue_item,
-                pcm_format=pcm_format,
-                smart_fades_mode=smart_fades_mode,
-                standard_crossfade_duration=standard_crossfade_duration,
+                content_sample_rate=pcm_format.sample_rate,
+                content_bit_depth=pcm_format.bit_depth,
+                media_type=queue_item.media_type,
             )
-        else:
-            # no crossfade, just a regular single item stream
-            audio_input = self.audio.get_queue_item_stream(
-                queue_item=queue_item,
-                pcm_format=pcm_format,
-                seek_position=queue_item.streamdetails.seek_position,
-                playback_speed=cast(
-                    "float", queue_item.extra_attributes.get("playback_speed", 1.0)
-                ),
+
+            # prepare request, add some DLNA/UPNP compatible headers
+            # icy-name is sanitized to avoid a "Potential header injection attack" by aiohttp
+            # see https://github.com/music-assistant/support/issues/4913
+            # use realtime DLNA flags for radio (sender-paced) since the source delivers slowly
+            dlna_features = (
+                DLNA_CONTENT_FEATURES_REALTIME
+                if queue_item.media_type != MediaType.TRACK
+                else DLNA_CONTENT_FEATURES
             )
-        # stream the audio
-        # this final ffmpeg process in the chain will convert the raw, lossless PCM audio into
-        # the desired output format for the player including any player specific filter params
-        # such as channels mixing, DSP, resampling and, only if needed, encoding to lossy formats
-        first_chunk_received = False
-        bytes_sent = 0
-        async for chunk in get_ffmpeg_stream(
-            audio_input=audio_input,
-            input_format=pcm_format,
-            output_format=output_format,
-            filter_params=self.audio.get_player_filter_params(
-                player_id=player.player_id, input_format=pcm_format, output_format=output_format
-            ),
-        ):
-            try:
-                await resp.write(chunk)
-                bytes_sent += len(chunk)
-                if not first_chunk_received:
-                    first_chunk_received = True
-                    # inform the queue that the track is now loaded in the buffer
-                    # so for example the next track can be enqueued
-                    self.mass.player_queues.track_loaded_in_buffer(
-                        queue_item.queue_id, queue_item.queue_item_id
-                    )
-            except (BrokenPipeError, ConnectionResetError, ConnectionError) as err:
-                if (
-                    first_chunk_received
-                    and not player.stop_called
-                    and queue_item.streamdetails.duration  # ignore for radio streams
-                ):
-                    # Player disconnected (unexpected) after receiving at least some data
-                    # This could indicate buffering issues, network problems,
-                    # or player-specific issues.
-                    self.logger.warning(
-                        "Player %s disconnected prematurely from stream for %s (%s) - "
-                        "error: %s, sent %d bytes, content_length=%s",
-                        queue.display_name,
-                        queue_item.name,
-                        queue_item.uri,
-                        err.__class__.__name__,
-                        bytes_sent,
-                        resp.content_length,
-                    )
-                break
-        if queue_item.streamdetails.stream_error:
-            self.logger.error(
-                "Error streaming QueueItem %s (%s) to %s",
-                queue_item.name,
-                queue_item.uri,
-                queue.display_name,
+            headers = {
+                **DEFAULT_STREAM_HEADERS,
+                "icy-name": queue_item.name.replace("\n", " ")
+                .replace("\r", " ")
+                .replace("\t", " "),
+                "contentFeatures.dlna.org": dlna_features,
+                "Content-Type": get_mime_type(output_format.output_format_str),
+            }
+
+            resp = web.StreamResponse(status=200, reason="OK", headers=headers)
+            resp.content_type = get_mime_type(output_format.output_format_str)
+            http_profile = await self.mass.config.get_player_config_value(
+                player_id, CONF_HTTP_PROFILE, default="default", return_type=str
             )
-        elif (
-            bytes_sent > 0
-            and queue_item.streamdetails
-            and queue_item.streamdetails.seconds_streamed
-            and queue_item.duration
-        ):
-            # cache the actual encoded bytes-per-second for this URI + output format
-            # so future content_length estimates are near-exact
-            self.mass.create_task(
-                store_content_length_in_cache(
-                    self.mass,
-                    queue_item.uri,
-                    output_format,
-                    bytes_sent,
-                    queue_item.streamdetails.seconds_streamed,
+            if http_profile == "forced_content_length" and not queue_item.duration:
+                # just set an insane high content length to make sure the player keeps playing
+                resp.content_length = calculate_content_length(output_format, 12 * 3600)
+            elif http_profile == "forced_content_length" and queue_item.duration:
+                # estimate content length based on effective duration
+                # account for seek position (e.g., crossfade from previous track)
+                seek_pos = queue_item.streamdetails.seek_position if queue_item.streamdetails else 0
+                effective_duration = max(queue_item.duration - seek_pos, 1)
+                # use cached actual bytes-per-second if available (from a previous stream)
+                resp.content_length = await get_content_length(
+                    self.mass, queue_item.uri, output_format, effective_duration
                 )
-            )
-        return resp
+            elif http_profile == "chunked":
+                resp.enable_chunked_encoding()
+
+            await resp.prepare(request)
+
+            # return early if this is not a GET request
+            if request.method != "GET":
+                return resp
+
+            if queue_item.media_type != MediaType.TRACK:
+                # no crossfade on non-tracks
+                smart_fades_mode = SmartFadesMode.DISABLED
+            else:
+                smart_fades_mode = await self.mass.config.get_player_config_value(
+                    queue.queue_id, CONF_SMART_FADES_MODE, return_type=SmartFadesMode
+                )
+                standard_crossfade_duration = self.mass.config.get_raw_player_config_value(
+                    queue.queue_id, CONF_CROSSFADE_DURATION, 10
+                )
+            if (
+                smart_fades_mode != SmartFadesMode.DISABLED
+                and PlayerFeature.GAPLESS_PLAYBACK not in player.state.supported_features
+            ):
+                self.logger.warning(
+                    "Crossfade disabled: Player %s does not support gapless playback, "
+                    "consider enabling flow mode to enable crossfade on this player.",
+                    player.state.name if player else "Unknown Player",
+                )
+                smart_fades_mode = SmartFadesMode.DISABLED
+
+            if smart_fades_mode != SmartFadesMode.DISABLED:
+                # crossfade is enabled, use special crossfaded single item stream
+                # where the crossfade of the next track is present in the stream of
+                # a single track. This only works if the player supports gapless playback!
+                audio_input = self.audio.get_queue_item_stream_with_smartfade(
+                    player=player,
+                    queue_item=queue_item,
+                    pcm_format=pcm_format,
+                    smart_fades_mode=smart_fades_mode,
+                    standard_crossfade_duration=standard_crossfade_duration,
+                )
+            else:
+                # no crossfade, just a regular single item stream
+                audio_input = self.audio.get_queue_item_stream(
+                    queue_item=queue_item,
+                    pcm_format=pcm_format,
+                    seek_position=queue_item.streamdetails.seek_position,
+                    playback_speed=cast(
+                        "float", queue_item.extra_attributes.get("playback_speed", 1.0)
+                    ),
+                )
+            # stream the audio
+            # this final ffmpeg process in the chain converts raw lossless PCM into
+            # the desired output format for the player including any player specific
+            # filter params such as channels mixing, DSP, resampling and, only if
+            # needed, encoding to lossy formats
+            first_chunk_received = False
+            bytes_sent = 0
+            async for chunk in get_ffmpeg_stream(
+                audio_input=audio_input,
+                input_format=pcm_format,
+                output_format=output_format,
+                filter_params=self.audio.get_player_filter_params(
+                    player_id=player.player_id,
+                    input_format=pcm_format,
+                    output_format=output_format,
+                ),
+            ):
+                try:
+                    await resp.write(chunk)
+                    bytes_sent += len(chunk)
+                    if not first_chunk_received:
+                        first_chunk_received = True
+                        # inform the queue that the track is now loaded in the buffer
+                        # so for example the next track can be enqueued
+                        self.mass.player_queues.track_loaded_in_buffer(
+                            queue_item.queue_id, queue_item.queue_item_id
+                        )
+                except (BrokenPipeError, ConnectionResetError, ConnectionError) as err:
+                    if (
+                        first_chunk_received
+                        and not player.stop_called
+                        and queue_item.streamdetails.duration  # ignore for radio streams
+                    ):
+                        # Player disconnected (unexpected) after receiving at least some data
+                        # This could indicate buffering issues, network problems,
+                        # or player-specific issues.
+                        self.logger.warning(
+                            "Player %s disconnected prematurely from stream for %s (%s) - "
+                            "error: %s, sent %d bytes, content_length=%s",
+                            queue.display_name,
+                            queue_item.name,
+                            queue_item.uri,
+                            err.__class__.__name__,
+                            bytes_sent,
+                            resp.content_length,
+                        )
+                    break
+            if queue_item.streamdetails.stream_error:
+                self.logger.error(
+                    "Error streaming QueueItem %s (%s) to %s",
+                    queue_item.name,
+                    queue_item.uri,
+                    queue.display_name,
+                )
+            elif (
+                bytes_sent > 0
+                and queue_item.streamdetails
+                and queue_item.streamdetails.seconds_streamed
+                and queue_item.duration
+            ):
+                # cache the actual encoded bytes-per-second for this URI + output format
+                # so future content_length estimates are near-exact
+                self.mass.create_task(
+                    store_content_length_in_cache(
+                        self.mass,
+                        queue_item.uri,
+                        output_format,
+                        bytes_sent,
+                        queue_item.streamdetails.seconds_streamed,
+                    )
+                )
+            return resp
+        finally:
+            # Paired with on_source_selected — fires regardless of how streaming
+            # ended (normal completion, client disconnect, exception). Lets
+            # NAMED_PIPE plugins release ownership without depending on an
+            # external session event. Providers MUST guard against stale
+            # callbacks: clear per-queue state only if it still matches this
+            # queue_id (a handoff may have already given the source away).
+            if audio_source_provider is not None and audio_source_id is not None:
+                with suppress(Exception):
+                    await audio_source_provider.on_source_unselected(audio_source_id, queue_id)
 
     async def serve_queue_flow_stream(self, request: web.Request) -> web.StreamResponse:
         """Stream Queue Flow audio to player."""
