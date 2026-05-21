@@ -216,7 +216,7 @@ class AIRadioStorageMixin:
                 "city": str(location.get("city", "")).strip(),
                 "country": str(location.get("country", "")).strip(),
             },
-            "instructions": str(source_general.get("instructions", defaults["instructions"])),
+            "instructions": str(source_general.get("instructions") or defaults["instructions"]),
             "weather_provider": _text("weather_provider"),
             "weather_timeout_seconds": _int("weather_timeout_seconds"),
         }
