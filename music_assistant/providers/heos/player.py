@@ -44,6 +44,7 @@ class HeosPlayer(Player):
     """HeosPlayer in Music Assistant."""
 
     _heos: Heos
+    _heos_queue: Heos
     _device: PyHeosPlayer
 
     @property
@@ -63,8 +64,12 @@ class HeosPlayer(Player):
         if self._device.heos is None:
             raise SetupFailedError("HEOS device has no controller assigned")
 
+        if provider._heos_queue is None:
+            raise SetupFailedError("HEOS queue controller is not set up")
+
         # Keep internal reference so we don't need to check None on each call
         self._heos = self._device.heos
+        self._heos_queue = provider._heos_queue
 
         self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = PLAYER_FEATURES
@@ -151,25 +156,15 @@ class HeosPlayer(Player):
             case const.EVENT_PLAYER_STATE_CHANGED:
                 self._update_player_state()
                 self._update_player_current_media()
-
-                if (
-                    self._ma_controls_playback
-                    and self._attr_playback_state == PlaybackState.PLAYING
-                    and self._queue_cleanup_pending
-                ):
-                    self._debounce_queue_cleanup()
+                self._schedule_queue_cleanup()
 
             case const.EVENT_PLAYER_NOW_PLAYING_CHANGED:
                 self._update_player_current_media()
                 self._update_player_playing_progress()
+                self._schedule_queue_cleanup()
 
             case const.EVENT_PLAYER_QUEUE_CHANGED:
-                self._queue_cleanup_pending = self._ma_controls_playback
-                if (
-                    self._ma_controls_playback
-                    and self._attr_playback_state == PlaybackState.PLAYING
-                ):
-                    self._debounce_queue_cleanup()
+                self._schedule_queue_cleanup()
 
             case const.EVENT_PLAYER_NOW_PLAYING_PROGRESS:
                 self._update_player_playing_progress()
@@ -181,6 +176,7 @@ class HeosPlayer(Player):
                 self.logger.error(
                     "[%s] Playback error: %s", self._device.name, self._device.playback_error
                 )
+                self._queue_cleanup_pending = False
                 self.set_dynamic_attributes()
 
             case _:
@@ -324,13 +320,19 @@ class HeosPlayer(Player):
 
         self._attr_current_media = media
         self._attr_active_source = self.player_id
+        self._queue_cleanup_pending = True
 
         self.update_state()
 
-    def _debounce_queue_cleanup(self) -> None:
+    def _schedule_queue_cleanup(self) -> None:
         """Debounce queue cleanup so rapid queue changes only trigger one follow-up."""
-        if not self._ma_controls_playback:
+        if (
+            not self._ma_controls_playback
+            or not self._queue_cleanup_pending
+            or self._attr_playback_state != PlaybackState.PLAYING
+        ):
             return
+
         self.mass.call_later(
             1,
             self._start_queue_cleanup_task,
@@ -356,6 +358,8 @@ class HeosPlayer(Player):
             if not self._ma_controls_playback:
                 self._queue_cleanup_pending = False
                 return
+            if not self._queue_cleanup_pending:
+                return
             if self._attr_playback_state != PlaybackState.PLAYING:
                 self.logger.debug(
                     "[%s] Queue cleanup postponed (state=%s)",
@@ -365,14 +369,15 @@ class HeosPlayer(Player):
                 return
             try:
                 self.logger.debug("[%s] Queue cleanup started", self._device.name)
-                queue_items = await self._device.get_queue()
-                current_queue_id = self._device.now_playing_media.queue_id
+                queue_items = await self._heos_queue.player_get_queue(self._device.player_id)
+                now_playing = await self._heos_queue.get_now_playing_media(self._device.player_id)
+                current_queue_id = now_playing.queue_id
                 if current_queue_id is None:
                     self.logger.debug(
                         "[%s] Queue cleanup postponed (no current qid yet)",
                         self._device.name,
                     )
-                    self._debounce_queue_cleanup()
+                    self._schedule_queue_cleanup()
                     return
 
                 queue_ids_to_remove = [
@@ -385,7 +390,9 @@ class HeosPlayer(Player):
                     current_queue_id,
                 )
                 if queue_ids_to_remove:
-                    await self._device.remove_from_queue(queue_ids_to_remove)
+                    await self._heos_queue.player_remove_from_queue(
+                        self._device.player_id, queue_ids_to_remove
+                    )
                 self._queue_cleanup_pending = False
 
             except HeosError as err:
