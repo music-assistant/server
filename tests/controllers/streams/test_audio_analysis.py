@@ -17,7 +17,7 @@ from music_assistant_models.media_items import AudioFormat
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
 from music_assistant.constants import DEFAULT_BACKGROUND_SCAN_CONCURRENCY
 from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis import AudioAnalysisCoverage, AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
 
@@ -1025,12 +1025,12 @@ async def test_coverage_returns_three_counts_and_version() -> None:
 
     result = await c.get_coverage(aa_domain="sonic_analysis")
 
-    assert result == {
-        "analyzed": 100,
-        "pending": 20,
-        "stale_version": 5,
-        "analysis_version": 3,
-    }
+    assert result == AudioAnalysisCoverage(
+        analyzed=100,
+        pending=20,
+        stale_version=5,
+        analysis_version=3,
+    )
 
 
 @pytest.mark.asyncio

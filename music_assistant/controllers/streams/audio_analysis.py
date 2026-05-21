@@ -27,7 +27,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.json import json_dumps, json_loads
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis import AudioAnalysisCoverage, AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.models.music_provider import MusicProvider
 
@@ -631,7 +631,7 @@ class AudioAnalysisController:
         return results
 
     @api_command("audio_analysis/coverage")
-    async def get_coverage(self, aa_domain: str) -> dict[str, Any]:
+    async def get_coverage(self, aa_domain: str) -> AudioAnalysisCoverage:
         """
         Return analysis-coverage health counts for an AA provider.
 
@@ -660,12 +660,12 @@ class AudioAnalysisController:
                 "current_version": provider.analysis_version,
             },
         )
-        return {
-            "analyzed": analyzed,
-            "pending": pending,
-            "stale_version": stale_version,
-            "analysis_version": provider.analysis_version,
-        }
+        return AudioAnalysisCoverage(
+            analyzed=analyzed,
+            pending=pending,
+            stale_version=stale_version,
+            analysis_version=provider.analysis_version,
+        )
 
     async def _run_background_scan(self) -> None:
         """Run the scan as decode-once-fan-out streaming over candidate tracks."""

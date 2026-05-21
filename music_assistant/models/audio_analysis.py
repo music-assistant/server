@@ -104,3 +104,13 @@ class AudioAnalysisData(DataClassDictMixin):
                 continue
             setattr(self, fld.name, new_val)
         return self
+
+
+@dataclass(kw_only=True)
+class AudioAnalysisCoverage(DataClassDictMixin):
+    """Coverage / health counts reported by audio_analysis/coverage."""
+
+    analyzed: int
+    pending: int
+    stale_version: int
+    analysis_version: int
