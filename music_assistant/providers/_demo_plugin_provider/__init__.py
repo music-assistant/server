@@ -230,6 +230,17 @@ class MyDemoPluginprovider(PluginProvider):
         # mass.streams.update_stream_metadata(queue_id, ...) — same mechanism
         # ICY radio metadata uses.
         #
+        # Silence-during-pause contract:
+        # - stream_type=CUSTOM: the server wraps your audio generator with a
+        #   silence-keepalive, so you can just stop yielding bytes while the
+        #   upstream device is paused. The wrapper inserts silence frames at
+        #   the declared PCM format and the player stays connected.
+        # - stream_type=NAMED_PIPE: the underlying process MUST keep writing
+        #   silence to the pipe during pause (most popular binaries like
+        #   shairport-sync and librespot do this in passthrough mode). If
+        #   the producer actually stops writing, ffmpeg will block and the
+        #   player will eventually disconnect.
+        #
         # Raise ResourceBusyError if the source is exclusive=True and already
         # in use by a different queue.
         if source_id != AUDIO_SOURCE_ID:

@@ -64,6 +64,22 @@ class PluginProvider(Provider):
         Must raise ResourceBusyError if the AudioSource has ``exclusive=True``
         and is already streaming to a different consumer.
 
+        Silence-during-pause contract:
+        the player consuming the stream needs a continuous byte flow or it will
+        disconnect after a few seconds. The server keeps the connection alive
+        differently depending on ``stream_type``:
+
+        - ``StreamType.CUSTOM`` — the server wraps ``get_audio_stream`` with a
+          silence-keepalive so a paused upstream device (no bytes yielded) does
+          NOT cause the player to drop out. The plugin can just stop yielding
+          while paused; the wrapper inserts silence frames at the declared PCM
+          format.
+        - ``StreamType.NAMED_PIPE`` — the underlying process MUST keep writing
+          silence to the pipe during pause states (shairport-sync and librespot
+          in pipe/passthrough mode both do this by default). If the producer
+          binary actually stops writing, the consuming ffmpeg will block and
+          the player will eventually disconnect.
+
         :param source_id: The AudioSource.item_id requested for playback.
         :param queue_id: The queue that owns this playback session. For groups this is
             the group's queue_id; the streams controller fans the stream out to members.
@@ -79,6 +95,13 @@ class PluginProvider(Provider):
         Will only be called when the StreamDetails returned by get_stream_details
         has ``stream_type=StreamType.CUSTOM``. The yielded bytes must be in
         the PCM format declared by ``streamdetails.audio_format``.
+
+        Pausing is fine: when the upstream device is paused the plugin can stop
+        yielding bytes. The server wraps this generator with a silence-keepalive
+        that keeps the player connected by inserting silence at the declared PCM
+        format during quiet periods. The plugin should release any per-session
+        state in a ``try/finally`` — the consumer closes the generator when
+        playback ends or another queue takes over.
 
         :param streamdetails: The StreamDetails previously returned by get_stream_details.
         :param seek_position: Ignored for live AudioSources (no seek through the bytestream).
