@@ -569,7 +569,8 @@ class MusicController(CoreController):
                     )
                 )
             # add a "Live Inputs" entry if any loaded plugin provider exposes AudioSources;
-            # this is the single canonical location for browsing/favoriting audio sources
+            # this is the canonical browse location for audio sources (they are not
+            # favoritable / library-backed — see MusicController.add_item_to_favorites)
             if any(self.mass.get_providers_supporting_feature(ProviderFeature.AUDIO_SOURCE)):
                 root_items.append(
                     BrowseFolder(

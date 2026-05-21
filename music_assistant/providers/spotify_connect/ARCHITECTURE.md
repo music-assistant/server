@@ -42,7 +42,7 @@ Unlike traditional Spotify integrations that require Web API authentication, Spo
 │  │  AudioSource (MediaItem)      │  │  Provides:
 │  │  - Capability flags           │  │  - Playback control
 │  │  - StreamMetadata (live)      │  │  - Metadata display
-│  │  - Web API integration        │  │  - Browse / favorites
+│  │  - Web API integration        │  │  - Browse under Live Inputs
 │  └───────────────────────────────┘  │
 └─────────────────┬───────────────────┘
                   │
@@ -83,8 +83,9 @@ standard ``play_media`` flow — they appear in the player's queue as a single l
 the same way radio stations do.
 
 **Static Properties:**
-- `item_id`: `"main"` (combined with the provider instance_id forms the persistent URI used
-  for favorites)
+- `item_id`: `"main"` (combined with the provider instance_id forms the persistent
+  browse/play URI listed under "Live Inputs"; AudioSource items are not favoritable
+  in MA core today — see ``MusicController.add_item_to_favorites``)
 - `name`: Display name (e.g., "Music Assistant")
 - `exclusive`: True (a single librespot stream can only serve one queue at a time)
 - `allow_external_trigger`: True (Spotify app picks MA → plugin starts playback)

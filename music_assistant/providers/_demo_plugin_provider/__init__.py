@@ -73,8 +73,9 @@ if TYPE_CHECKING:
 
 
 # stable id for the single AudioSource this demo provider exposes;
-# combined with the provider instance_id this forms the persistent uri
-# (e.g. `<instance_id>://audio_source/main`) used for favorites and browse.
+# combined with the provider instance_id this forms the persistent browse/play uri
+# (e.g. `<instance_id>://audio_source/main`) listed under "Live Inputs". AudioSource
+# items are not favoritable / library-backed in MA core today.
 AUDIO_SOURCE_ID = "main"
 
 SUPPORTED_FEATURES = {
