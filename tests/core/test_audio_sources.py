@@ -329,12 +329,17 @@ class TestAudioSourceContract:
         await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
         await prov.get_stream_details("main", "queue_a")
         await prov.on_source_unselected("main", "queue_a", "session_1")
-        assert prov._in_use_by_queue is None
+        # Read into a locally-typed var so mypy's literal narrowing doesn't
+        # chain across the next await (which mutates the attribute it can't see).
+        post_release: str | None = prov._in_use_by_queue
+        assert post_release is None
         # Request 2 — same queue/player, no fresh get_stream_details (caller
         # has cached streamdetails). on_source_selected MUST re-claim.
         await prov.on_source_selected("main", "player_a", "queue_a", "session_2")
-        assert prov._in_use_by_queue == "queue_a"
-        assert prov._active_session_id == "session_2"
+        post_reclaim_queue: str | None = prov._in_use_by_queue
+        post_reclaim_session: str | None = prov._active_session_id
+        assert post_reclaim_queue == "queue_a"
+        assert post_reclaim_session == "session_2"
 
     @pytest.mark.asyncio
     async def test_preload_get_stream_details_does_not_block_handoff(self) -> None:
@@ -382,12 +387,19 @@ class TestAudioSourceContract:
         assert prov._active_session_id == "session_2"
         # Now request 1's late finally fires with the stale session id — no-op
         await prov.on_source_unselected("main", "queue_a", "session_1")
-        assert prov._in_use_by_queue == "queue_a"
-        assert prov._active_session_id == "session_2"
+        # Read into locally-typed vars so the previous literal narrowing
+        # ("session_2") doesn't make mypy treat the post-release assertions
+        # below as unreachable.
+        post_stale_queue: str | None = prov._in_use_by_queue
+        post_stale_session: str | None = prov._active_session_id
+        assert post_stale_queue == "queue_a"
+        assert post_stale_session == "session_2"
         # Request 2's finally then fires with the current session id — releases
         await prov.on_source_unselected("main", "queue_a", "session_2")
-        assert prov._in_use_by_queue is None
-        assert prov._active_session_id is None
+        post_release_queue: str | None = prov._in_use_by_queue
+        post_release_session: str | None = prov._active_session_id
+        assert post_release_queue is None
+        assert post_release_session is None
 
 
 # ---------------------------------------------------------- active source helper

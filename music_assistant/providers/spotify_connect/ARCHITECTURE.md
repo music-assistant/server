@@ -309,11 +309,18 @@ Inherits from `PluginProvider`
 - `handle_async_init()`: Setup provider, start webservice, load credentials
 - `unload()`: Cleanup, stop processes
 - `get_audio_sources()`: Return the AudioSource MediaItem(s) for browse/play
-- `get_stream_details()`: Return StreamDetails for a playback session (raises
-  `ResourceBusyError` when an exclusive source is already in use by another queue)
+- `get_stream_details()`: Return StreamDetails for a playback session.
+  Side-effect-free — exclusivity is claimed in `on_source_selected`, not here,
+  so preload paths (player_queues._load_item) can fetch streamdetails without
+  blocking a later cross-queue handoff.
 - `get_audio_stream()`: Provide audio bytes to the queue (when stream_type=CUSTOM)
 - `on_source_control()`: Dispatch playback commands to `_on_play/pause/next/previous/seek/volume`
-- `on_source_selected()`: React to a player selecting/starting this source
+- `on_source_selected()`: Claim `_in_use_by_queue` and record `_active_session_id`;
+  stop the previous active player on cross-queue handoff. Raises `RuntimeError`
+  to abort the original request after redirecting to the configured target when
+  `allow_player_switch=False`.
+- `on_source_unselected()`: Release `_in_use_by_queue` if the per-request
+  `stream_session_id` still matches the active session (paired with `on_source_selected`).
 
 **Event Handlers:**
 - `_handle_session_connected()`: Process session connect

@@ -496,11 +496,29 @@ class StreamsController(CoreController):
             and (prov := self.mass.get_provider(queue_item.media_item.provider))
             and isinstance(prov, PluginProvider)
         ):
-            audio_source_provider = prov
             audio_source_id = queue_item.media_item.item_id
-            await audio_source_provider.on_source_selected(
-                audio_source_id, player_id, queue_id, stream_session_id
-            )
+            try:
+                await prov.on_source_selected(
+                    audio_source_id, player_id, queue_id, stream_session_id
+                )
+            except RuntimeError as err:
+                # Provider intentionally aborts the original request (e.g.
+                # allow_player_switch=False has just redirected play_media to
+                # the configured target). Surface as 404 so the disallowed
+                # player drops the connection cleanly instead of treating an
+                # uncaught 500 as transient and retrying. The lock was not
+                # claimed (the raise happens before the claim), so no
+                # on_source_unselected pairing is needed.
+                self.logger.info(
+                    "AudioSource %s aborted stream for player %s: %s",
+                    audio_source_id,
+                    player_id,
+                    err,
+                )
+                raise web.HTTPNotFound(reason=str(err))
+            # Successful selection — wire the provider into the finally block
+            # so on_source_unselected fires when streaming ends.
+            audio_source_provider = prov
 
         try:
             if not queue_item.streamdetails:
