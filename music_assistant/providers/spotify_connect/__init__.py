@@ -201,8 +201,11 @@ class SpotifyConnectProvider(PluginProvider):
         # _build_audio_source refreshes the cached AudioSource so the next
         # get_audio_sources call returns the updated capability flags.
         self._audio_source = self._build_audio_source()
-        # _in_use_by_queue is the queue currently streaming us (set in
-        # get_stream_details, cleared on stop)
+        # _in_use_by_queue is the queue currently streaming us. Claimed in
+        # on_source_selected (NOT in get_stream_details — that path also runs
+        # from queue preload, where claiming would block a later cross-queue
+        # handoff). Released in on_source_unselected when the session id
+        # matches, or in _clear_active_player on Spotify session_disconnected.
         self._in_use_by_queue: str | None = None
         # _active_session_id is the controller-provided token for the current
         # stream request — used to reject stale on_source_unselected callbacks

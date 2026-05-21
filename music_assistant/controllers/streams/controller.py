@@ -447,12 +447,11 @@ class StreamsController(CoreController):
         )
 
         # HEAD probes for AudioSource items return a minimal response without
-        # touching the plugin. get_stream_details has side effects for
-        # exclusive AudioSources (claims _in_use_by_queue), and a renderer
-        # that probes with HEAD before GET would otherwise reserve the source
-        # without ever starting playback. Caching the streamdetails for HEAD
-        # would also let a follow-up GET skip the claim entirely, breaking
-        # subsequent metadata updates that gate on the lock being held.
+        # touching the plugin. on_source_selected is the lifecycle hook that
+        # claims ownership and fires off transfer/handoff side effects (stop
+        # the previous player, redirect on disallowed switch, etc.), and a
+        # renderer probing with HEAD before GET should not trigger any of
+        # that. The actual GET request goes through the full hook chain.
         if request.method != "GET" and is_audio_source:
             # For PCM-fmt URLs, advertise audio/wav in HEAD: most DLNA renderers
             # key off the HEAD Content-Type to pick a decoder and do not handle
