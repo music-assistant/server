@@ -41,12 +41,7 @@ from .constants import (
     VALID_WEB_SEARCH_MODES,
     WEB_SEARCH_MODE_RANK,
 )
-from .models import (
-    AudioSection,
-    GeneratedSection,
-    PlannedSection,
-    SessionState,
-    Slot,
+from .helpers import (
     build_slots,
     coerce_float,
     coerce_int,
@@ -56,6 +51,13 @@ from .models import (
     soft_limit_text,
     track_songinfo,
     utc_now_iso,
+)
+from .models import (
+    AudioSection,
+    GeneratedSection,
+    PlannedSection,
+    SessionState,
+    Slot,
 )
 
 if TYPE_CHECKING:

@@ -22,7 +22,7 @@ from .constants import (
     EMPTY_SECTION_ID,
     VALID_WEB_SEARCH_MODES,
 )
-from .models import slugify
+from .helpers import slugify
 
 _slugify = slugify
 
