@@ -21,8 +21,8 @@ class VBANListenerProtocolMod(VBANListenerProtocol):  # type: ignore[misc]
 
     def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
         """Handle received datagram."""
-        # No need to process the datagram if the plugin isn't in use
-        if self.controller and not self.controller.active_player:
+        # No need to process the datagram if no queue is currently streaming us
+        if self.controller and not self.controller._in_use_by_queue:
             return
         super().datagram_received(data, addr)
 

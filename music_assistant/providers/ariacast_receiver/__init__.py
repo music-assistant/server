@@ -312,7 +312,9 @@ class AriaCastBridge(PluginProvider):
                 )
                 # bounce back to the configured target
                 if current_target:
-                    await self.mass.players.play_media(current_target, self._make_player_media())
+                    await self.mass.player_queues.play_media(
+                        current_target, str(self._audio_source.uri)
+                    )
                 return
         self._active_player_id = player_id
 
@@ -454,7 +456,9 @@ class AriaCastBridge(PluginProvider):
             # Clear queue before resuming to remove old silence/data
             self.frame_queue.clear()
             self.frame_available.clear()
-            await self.mass.players.play_media(self._active_player_id, self._make_player_media())
+            await self.mass.player_queues.play_media(
+                self._active_player_id, str(self._audio_source.uri)
+            )
 
         await self._send_api_command("play")
 

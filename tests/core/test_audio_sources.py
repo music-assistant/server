@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import asyncio
+from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -10,7 +11,6 @@ from music_assistant_models.enums import (
     ContentType,
     MediaType,
     PlayerFeature,
-    ProviderFeature,
     SourceControl,
     StreamType,
 )
@@ -20,11 +20,8 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.controllers.players import PlayerController
 from music_assistant.helpers.throttle_retry import Throttler
+from music_assistant.models.plugin import PluginProvider
 from tests.common import MockPlayer, MockProvider
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
-
 
 # -------------------------------------------------------------------- fixtures
 
@@ -287,7 +284,9 @@ class TestGetActiveAudioSource:
     ) -> None:
         """Active AudioSource queue item → returns (AudioSource, PluginProvider)."""
         source = _audio_source()
-        plugin_prov = _FakePluginProvider(source)
+        # Use a MagicMock with spec=PluginProvider so the helper's isinstance
+        # check passes; _FakePluginProvider is duck-typed and would fail here.
+        plugin_prov = MagicMock(spec=PluginProvider)
 
         active_queue = MagicMock()
         current_item = MagicMock()
@@ -368,3 +367,71 @@ class TestUpdateStreamMetadata:
         assert sd.stream_metadata is new_meta
         assert sd.stream_metadata_last_updated is not None
         mass.player_queues.signal_update.assert_called_once_with("q1")
+
+
+# ----------------------------------------------- silence-keepalive wrapper
+
+
+class TestAudioSourceSilenceKeepalive:
+    """Verify the wrapper relays inner bytes and inserts silence during idle gaps."""
+
+    @pytest.mark.asyncio
+    async def test_relays_inner_bytes_unchanged(self) -> None:
+        """When the inner generator yields fast enough, no silence is inserted."""
+        from music_assistant.helpers.audio import (  # noqa: PLC0415
+            audio_source_silence_keepalive,
+        )
+
+        async def _inner() -> AsyncGenerator[bytes, None]:
+            yield b"chunk1"
+            yield b"chunk2"
+
+        out = [chunk async for chunk in audio_source_silence_keepalive(_inner(), _audio_format())]
+        assert out == [b"chunk1", b"chunk2"]
+
+    @pytest.mark.asyncio
+    async def test_inserts_silence_during_idle_gap(self) -> None:
+        """A producer that stalls longer than the threshold should see silence inserted."""
+        from music_assistant.helpers.audio import (  # noqa: PLC0415
+            audio_source_silence_keepalive,
+        )
+
+        async def _inner() -> AsyncGenerator[bytes, None]:
+            yield b"hello"
+            # stall longer than the idle threshold
+            await asyncio.sleep(0.25)
+            yield b"world"
+
+        pcm_format = _audio_format()
+        out: list[bytes] = []
+        async for chunk in audio_source_silence_keepalive(
+            _inner(), pcm_format, idle_threshold_s=0.05, silence_chunk_ms=10
+        ):
+            out.append(chunk)
+        # the real bytes are passed through
+        assert b"hello" in out
+        assert b"world" in out
+        # at least one silence chunk landed between them
+        bytes_per_second = (
+            pcm_format.sample_rate * pcm_format.channels * (pcm_format.bit_depth // 8)
+        )
+        silence_chunk = b"\x00" * (bytes_per_second * 10 // 1000)
+        assert silence_chunk in out
+
+    @pytest.mark.asyncio
+    async def test_completes_when_inner_finishes(self) -> None:
+        """The wrapper completes once the inner generator is exhausted."""
+        from music_assistant.helpers.audio import (  # noqa: PLC0415
+            audio_source_silence_keepalive,
+        )
+
+        async def _inner() -> AsyncGenerator[bytes, None]:
+            yield b"one"
+
+        chunks = [
+            chunk
+            async for chunk in audio_source_silence_keepalive(
+                _inner(), _audio_format(), idle_threshold_s=1.0
+            )
+        ]
+        assert chunks == [b"one"]

@@ -293,8 +293,10 @@ class TestProviderMatching:
         await provider._check_yandex_provider_match()
 
         assert provider._yandex_provider is mock_ym
+        # Capability flags rebuilt on the AudioSource when a matching provider links
         assert provider._audio_source.can_play_pause is True
-        assert provider._audio_source.on_play is not None
+        assert provider._audio_source.can_seek is True
+        assert provider._audio_source.can_next_previous is True
 
     async def test_no_matching_provider(self) -> None:
         """No linked provider disables playback control."""
@@ -510,8 +512,9 @@ class TestYnisonStateHandling:
 
         await provider._update_metadata_from_stream(stream_details, seek_ms=30000)
 
-        meta = provider._audio_source.metadata
-        assert meta is not None
+        # live track-change info lives on _stream_metadata (pushed through
+        # streamdetails.stream_metadata), not on the AudioSource MediaItem
+        meta = provider._stream_metadata
         assert meta.duration == 185
         assert meta.elapsed_time == 30  # 30000ms → 30s
         assert provider._actual_duration_ms == 185000
@@ -1129,8 +1132,10 @@ class TestPCMNormalization:
             async for _ in provider._stream_track("track:123"):
                 pass
 
-        # audio_format should still be _normalized_format, not sd.audio_format
-        assert provider._audio_source.audio_format is original_format
+        # audio_format should still be _normalized_format, not sd.audio_format;
+        # the AudioSource carries it via its ProviderMapping in the new model
+        mapping = next(iter(provider._audio_source.provider_mappings))
+        assert mapping.audio_format is original_format
 
     async def test_stream_track_api_error_returns_empty(self) -> None:
         """If get_stream_details fails, _stream_track yields nothing."""
