@@ -29,6 +29,7 @@ from music_assistant_models.errors import (
     InvalidProviderURI,
     MediaNotFoundError,
     MusicAssistantError,
+    UnsupportedFeaturedException,
 )
 from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import (
@@ -909,6 +910,14 @@ class MusicController(CoreController):
         """Add an item to the favorites."""
         if isinstance(item, str):
             item = await self.get_item_by_uri(item)
+        if item.media_type == MediaType.AUDIO_SOURCE:
+            # AudioSources are dynamic plugin surfaces (existence depends on a
+            # running plugin and its current device state) and have no stable
+            # library identity, so they can not be persisted as favorites.
+            # Discoverability is served via the "Live Inputs" browse node.
+            raise UnsupportedFeaturedException(
+                "AudioSources can not be favorited — browse them via 'Live Inputs'."
+            )
         # make sure we have a full library item
         # a favorite must always be in the library
         full_item = await self.get_item(
@@ -1001,6 +1010,14 @@ class MusicController(CoreController):
                 item.media_type,
                 item.item_id,
                 item.provider,
+            )
+        if full_item.media_type == MediaType.AUDIO_SOURCE:
+            # AudioSources are dynamic plugin surfaces (existence depends on a
+            # running plugin and its current device state) and have no stable
+            # library identity, so they can not be persisted as library items.
+            # Discoverability is served via the "Live Inputs" browse node.
+            raise UnsupportedFeaturedException(
+                "AudioSources can not be added to the library — browse them via 'Live Inputs'."
             )
         # add to provider(s) library first
         for prov_mapping in full_item.provider_mappings:

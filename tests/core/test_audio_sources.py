@@ -14,7 +14,11 @@ from music_assistant_models.enums import (
     SourceControl,
     StreamType,
 )
-from music_assistant_models.errors import MediaNotFoundError, ResourceBusyError
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    ResourceBusyError,
+    UnsupportedFeaturedException,
+)
 from music_assistant_models.media_items import AudioFormat, AudioSource, ProviderMapping
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
@@ -435,3 +439,30 @@ class TestAudioSourceSilenceKeepalive:
             )
         ]
         assert chunks == [b"one"]
+
+
+class TestAudioSourceLibraryRejection:
+    """AudioSources are dynamic plugin surfaces — favorites/library must reject them."""
+
+    @pytest.mark.asyncio
+    async def test_add_to_favorites_rejects_audio_source(self) -> None:
+        """add_item_to_favorites raises UnsupportedFeaturedException for AUDIO_SOURCE."""
+        from music_assistant.controllers.music import MusicController  # noqa: PLC0415
+
+        controller = MusicController.__new__(MusicController)
+        controller.mass = MagicMock()
+        source = _audio_source()
+        with pytest.raises(UnsupportedFeaturedException, match="Live Inputs"):
+            await controller.add_item_to_favorites(source)
+
+    @pytest.mark.asyncio
+    async def test_add_to_library_rejects_audio_source(self) -> None:
+        """add_item_to_library raises UnsupportedFeaturedException for AUDIO_SOURCE."""
+        from music_assistant.controllers.music import MusicController  # noqa: PLC0415
+
+        controller = MusicController.__new__(MusicController)
+        controller.mass = MagicMock()
+        source = _audio_source()
+        controller.get_item = AsyncMock(return_value=source)  # type: ignore[method-assign]
+        with pytest.raises(UnsupportedFeaturedException, match="Live Inputs"):
+            await controller.add_item_to_library(source)
