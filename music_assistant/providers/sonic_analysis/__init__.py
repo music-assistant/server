@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import math
 import time
 from dataclasses import dataclass, field
@@ -311,31 +310,20 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         self._clap_model: Any = None
         self._clap_text_embeddings: Any = None
         self._clap_prompt_order: list[tuple[str, tuple[str, str]]] = []
-        self._clap_load_task: asyncio.Task[None] | None = None
 
     async def handle_async_init(self) -> None:
-        """Schedule the CLAP model load in the background and return immediately."""
-        self._clap_load_task = self.mass.create_task(self._load_clap_in_background())
+        """Load the CLAP model synchronously so provider.available gates analysis until ready.
 
-    async def _load_clap_in_background(self) -> None:
-        """Run the CLAP model load in a worker thread and record the result."""
-        try:
-            (
-                self._clap_model,
-                self._clap_text_embeddings,
-                self._clap_prompt_order,
-            ) = await asyncio.to_thread(self._load_clap)
-        except asyncio.CancelledError:
-            raise
-        except Exception as err:
-            self.logger.error(
-                "CLAP model failed to load; sonic_analysis will skip background "
-                "scans until the provider is reloaded: %s",
-                err,
-                exc_info=err,
-            )
-            self._clap_model = None
-            return
+        Blocks the provider's setup until the model is loaded (first-run downloads
+        ~500MB). On failure the exception propagates and the provider stays
+        available=False, which the AudioAnalysisController already honors when
+        scheduling work.
+        """
+        (
+            self._clap_model,
+            self._clap_text_embeddings,
+            self._clap_prompt_order,
+        ) = await asyncio.to_thread(self._load_clap)
         self.logger.info(
             "CLAP model loaded; %d prompt pairs ready",
             len(self._clap_prompt_order),
@@ -388,11 +376,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Release the CLAP model."""
-        if self._clap_load_task is not None and not self._clap_load_task.done():
-            self._clap_load_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._clap_load_task
-        self._clap_load_task = None
         self._clap_model = None
         self._clap_text_embeddings = None
         await super().unload(is_removed)
