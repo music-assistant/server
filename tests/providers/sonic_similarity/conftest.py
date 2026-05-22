@@ -59,11 +59,28 @@ def mock_mass(tmp_path: Path) -> MagicMock:
     mass.music.tracks.get = AsyncMock()
     mass.music.database = MagicMock()
 
-    # streams.audio_analysis controller (the #3851 surface)
+    # streams.audio_analysis controller (the #3851 surface). The iter_*
+    # methods return AsyncGenerators; tests configure their contents by
+    # assigning a list to the corresponding ``_iter_*_data`` attribute on
+    # the mass mock, which the generator closures yield from. The MagicMock
+    # wrapper preserves call_count so tests can still assert call patterns.
     mass.streams = MagicMock()
     mass.streams.audio_analysis = MagicMock()
-    mass.streams.audio_analysis.get_audio_analysis_rows = AsyncMock(return_value=[])
-    mass.streams.audio_analysis.get_merged_audio_analysis_rows = AsyncMock(return_value=[])
+    mass._iter_audio_analysis_rows_data = []
+    mass._iter_merged_audio_analysis_rows_data = []
+
+    async def _iter_rows(*_args: Any, **_kwargs: Any) -> Any:
+        for row in mass._iter_audio_analysis_rows_data:
+            yield row
+
+    async def _iter_merged(*_args: Any, **_kwargs: Any) -> Any:
+        for entry in mass._iter_merged_audio_analysis_rows_data:
+            yield entry
+
+    mass.streams.audio_analysis.iter_audio_analysis_rows = MagicMock(side_effect=_iter_rows)
+    mass.streams.audio_analysis.iter_merged_audio_analysis_rows = MagicMock(
+        side_effect=_iter_merged
+    )
     mass.streams.audio_analysis.get_coverage = AsyncMock(return_value=None)
     return mass
 
@@ -205,7 +222,7 @@ def make_analysis_row(
     clap_embedding: Any = None,
     aa_provider_domain: str = "sonic_analysis",
 ) -> dict[str, Any]:
-    """Build an audio_analysis DB row dict in the shape get_audio_analysis_rows returns.
+    """Build an audio_analysis DB row dict in the shape iter_audio_analysis_rows yields.
 
     :param item_id: Track id (matches a key in ``_signature_cache``).
     :param provider: Provider instance the row belongs to.

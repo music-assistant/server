@@ -1130,17 +1130,13 @@ class SonicSimilarityPlugin(PluginProvider):
 
     async def _rebuild_search_index_locked(self) -> None:
         """Rebuild body — assumes self._rebuild_lock is held."""
-        # Cross-AA-provider merge runs in the controller (see get_merged_audio_analysis_rows).
-        # Conflict resolution is timestamp-order (latest non-None write wins per field), which
-        # means a re-run of the primary analyzer can override fields a secondary analyzer
-        # populated earlier — accept that for symmetry with the rest of MA's analysis stack.
-        # Rows from currently-unavailable AA providers are skipped by the helper.
-        merged_entries = await self.mass.streams.audio_analysis.get_merged_audio_analysis_rows(
-            self._aa_domain
-        )
-        if not merged_entries:
-            self.logger.info("No analysis rows found in database, skipping index rebuild")
-            return
+        # Cross-AA-provider merge runs in the controller, streamed as an
+        # AsyncGenerator (iter_merged_audio_analysis_rows). Conflict resolution
+        # is timestamp-order (latest non-None write wins per field), which means
+        # a re-run of the primary analyzer can override fields a secondary
+        # analyzer populated earlier — accept that for symmetry with the rest
+        # of MA's analysis stack. Rows from currently-unavailable AA providers
+        # are skipped by the helper.
 
         # Build new state in LOCALS — old self.* state continues to serve queries
         # until we atomically swap at the end.
@@ -1152,7 +1148,17 @@ class SonicSimilarityPlugin(PluginProvider):
 
         all_features: list[list[float]] = []
         row_entries: list[tuple[int, list[float]]] = []  # (label, raw vec)
-        for item_id, provider, data in merged_entries:
+        # Sample up to 3 early entries for the "0 signatures" diagnostic peek
+        # below; the controller streams now, so we can't slice the full list.
+        sampled_for_diag: list[tuple[str, str, Any]] = []
+        total_merged_rows = 0
+
+        async for item_id, provider, data in (
+            self.mass.streams.audio_analysis.iter_merged_audio_analysis_rows(self._aa_domain)
+        ):
+            total_merged_rows += 1
+            if len(sampled_for_diag) < 3:
+                sampled_for_diag.append((item_id, provider, data))
             vec = assemble_vector(data)
             if vec is None or len(vec) != VECTOR_DIMENSIONS:
                 continue
@@ -1166,11 +1172,15 @@ class SonicSimilarityPlugin(PluginProvider):
             new_signatures_by_id[item_id] = vec
             new_provider_by_item_id[item_id] = provider
 
+        if total_merged_rows == 0:
+            self.logger.info("No analysis rows found in database, skipping index rebuild")
+            return
+
         if not all_features:
-            # Help the user diagnose the "250 rows, 0 signatures" case. Peek at
-            # up to 3 merged entries and report which required fields are missing.
+            # Help the user diagnose the "250 rows, 0 signatures" case using the
+            # entries sampled during the stream above.
             missing_report: list[str] = []
-            for item_id, _provider, data in merged_entries[:3]:
+            for item_id, _provider, data in sampled_for_diag:
                 missing = [
                     f
                     for f in (
@@ -1195,7 +1205,7 @@ class SonicSimilarityPlugin(PluginProvider):
                 "Common cause: current aa_provider_domain lacks required scalar fields — "
                 "switch Similarity Source to sonic_analysis (which populates all "
                 "required hard scalars).",
-                len(merged_entries),
+                total_merged_rows,
                 self._aa_domain,
                 "; ".join(missing_report),
             )
@@ -1435,10 +1445,11 @@ class SonicSimilarityPlugin(PluginProvider):
         if self._clap_index is None:
             return
         async with self._clap_rebuild_lock:
-            rows = await self.mass.streams.audio_analysis.get_audio_analysis_rows(self._aa_domain)
             added = 0
             seen: set[tuple[str, str]] = set()
-            for row in rows:
+            async for row in (
+                self.mass.streams.audio_analysis.iter_audio_analysis_rows(self._aa_domain)
+            ):
                 key = (row["provider"], row["item_id"])
                 if key in seen:
                     continue

@@ -89,14 +89,14 @@ class TestRebuildClapIndexFromDatabase:
         """Early-returns without touching audio_analysis when index disabled."""
         plugin = make_plugin()
         await plugin._rebuild_clap_index_from_database()  # noqa: SLF001
-        assert mock_mass.streams.audio_analysis.get_audio_analysis_rows.await_count == 0
+        assert mock_mass.streams.audio_analysis.iter_audio_analysis_rows.call_count == 0
 
     @pytest.mark.asyncio
     async def test_adds_new_embeddings_and_saves(
         self, make_plugin, mock_mass: MagicMock
     ) -> None:
         """Adds each unique new embedding to the index and persists once."""
-        mock_mass.streams.audio_analysis.get_audio_analysis_rows.return_value = [
+        mock_mass._iter_audio_analysis_rows_data =[
             make_analysis_row(item_id="a", provider="spotify", clap_embedding=[0.1] * 1024),
             make_analysis_row(item_id="b", provider="spotify", clap_embedding=[0.2] * 1024),
         ]
@@ -119,7 +119,7 @@ class TestRebuildClapIndexFromDatabase:
         self, make_plugin, mock_mass: MagicMock
     ) -> None:
         """Rows whose (provider, item_id) is contained() are skipped entirely."""
-        mock_mass.streams.audio_analysis.get_audio_analysis_rows.return_value = [
+        mock_mass._iter_audio_analysis_rows_data =[
             make_analysis_row(item_id="a", clap_embedding=[0.1] * 1024),
             make_analysis_row(item_id="b", clap_embedding=[0.2] * 1024),
         ]
@@ -140,7 +140,7 @@ class TestRebuildClapIndexFromDatabase:
             "aa_provider_domain": "sonic_analysis",
             "analysis_data": "not-valid-json",
         }
-        mock_mass.streams.audio_analysis.get_audio_analysis_rows.return_value = [malformed_row]
+        mock_mass._iter_audio_analysis_rows_data =[malformed_row]
         plugin = make_plugin(clap_enabled=True)
         await plugin._rebuild_clap_index_from_database()  # noqa: SLF001
         plugin._clap_index.add.assert_not_awaited()  # noqa: SLF001
@@ -151,7 +151,7 @@ class TestRebuildClapIndexFromDatabase:
         self, make_plugin, mock_mass: MagicMock
     ) -> None:
         """Rows whose extra_data lacks clap_embedding are skipped."""
-        mock_mass.streams.audio_analysis.get_audio_analysis_rows.return_value = [
+        mock_mass._iter_audio_analysis_rows_data =[
             make_analysis_row(item_id="x", clap_embedding=None),
         ]
         plugin = make_plugin(clap_enabled=True)
@@ -164,7 +164,7 @@ class TestRebuildClapIndexFromDatabase:
         self, make_plugin, mock_mass: MagicMock
     ) -> None:
         """Rows whose embedding parses but isn't 1024-dim are rejected."""
-        mock_mass.streams.audio_analysis.get_audio_analysis_rows.return_value = [
+        mock_mass._iter_audio_analysis_rows_data =[
             make_analysis_row(item_id="x", clap_embedding=[0.1] * 100),
         ]
         plugin = make_plugin(clap_enabled=True)
@@ -177,7 +177,7 @@ class TestRebuildClapIndexFromDatabase:
         self, make_plugin, mock_mass: MagicMock
     ) -> None:
         """Duplicate (provider, item_id) rows in a single rebuild add at most once."""
-        mock_mass.streams.audio_analysis.get_audio_analysis_rows.return_value = [
+        mock_mass._iter_audio_analysis_rows_data =[
             make_analysis_row(item_id="a", provider="spotify", clap_embedding=[0.1] * 1024),
             make_analysis_row(item_id="a", provider="spotify", clap_embedding=[0.1] * 1024),
         ]
