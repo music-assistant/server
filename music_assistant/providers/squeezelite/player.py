@@ -31,6 +31,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_SYNC_ADJUST,
+    CONF_OUTPUT_CODEC,
     INTERNAL_PCM_FORMAT,
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
@@ -278,18 +279,20 @@ class SqueezelitePlayer(Player):
         self.multi_client_stream = stream = MultiClientStream(
             audio_source=audio_source, audio_format=master_audio_format
         )
-        base_url = (
-            f"{self.mass.streams.base_url}/slimproto/multi?player_id={self.player_id}&fmt=flac"
-        )
+        base_url = f"{self.mass.streams.base_url}/slimproto/multi?player_id={self.player_id}"
 
         # Count how many clients will connect
         expected_clients = len(list(self._get_sync_clients()))
         stream.expected_clients = expected_clients
 
         # forward to downstream play_media commands
+        # Per-member output_codec: classic Squeezeboxes silently fail on fixed flac in sync (#5506).
         async with TaskManager(self.mass) as tg:
             for slimplayer in self._get_sync_clients():
-                url = f"{base_url}&child_player_id={slimplayer.player_id}"
+                member_codec = self.mass.config.get_raw_player_config_value(
+                    slimplayer.player_id, CONF_OUTPUT_CODEC, "flac"
+                )
+                url = f"{base_url}&fmt={member_codec}&child_player_id={slimplayer.player_id}"
                 tg.create_task(
                     self._handle_play_url_for_slimplayer(
                         slimplayer,
