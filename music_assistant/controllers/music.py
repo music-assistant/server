@@ -104,6 +104,7 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import Audiobook, PodcastEpisode
 
     from music_assistant import MusicAssistant
+    from music_assistant.models import ProviderInstanceType
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.models.plugin import PluginProvider
     from music_assistant.models.provider import Provider
@@ -223,13 +224,25 @@ class MusicController(CoreController):
 
         Note that this applies user provider filters (for all user types).
         """
-        user = get_current_user()
-        user_provider_filter = user.provider_filter if user else None
         return [
             x
-            for x in self.mass.providers
+            for x in self._apply_user_provider_filter(self.mass.providers)
             if x.type == ProviderType.MUSIC
-            and (not user_provider_filter or x.instance_id in user_provider_filter)
+        ]
+
+    def _apply_user_provider_filter(
+        self,
+        providers: Iterable[ProviderInstanceType],
+    ) -> list[ProviderInstanceType]:
+        """Filter providers by the current user's music provider filter."""
+        user = get_current_user()
+        user_provider_filter = user.provider_filter if user else None
+        if not user_provider_filter:
+            return list(providers)
+        return [
+            p
+            for p in providers
+            if p.type != ProviderType.MUSIC or p.instance_id in user_provider_filter
         ]
 
     @api_command("music/sync")
@@ -557,7 +570,10 @@ class MusicController(CoreController):
         if not path or path == "root":
             # root level; folder per provider that declares BROWSE
             root_items: list[BrowseFolder] = []
-            for prov in self.mass.get_providers_supporting_feature(ProviderFeature.BROWSE):
+            providers_with_browse = self.mass.get_providers_supporting_feature(
+                ProviderFeature.BROWSE
+            )
+            for prov in self._apply_user_provider_filter(providers_with_browse):
                 root_items.append(
                     BrowseFolder(
                         item_id="root",
@@ -803,9 +819,10 @@ class MusicController(CoreController):
     @api_command("music/recommendations")
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get all recommendations."""
-        recommendation_providers = self.mass.get_providers_supporting_feature(
+        providers_with_recommendations = self.mass.get_providers_supporting_feature(
             ProviderFeature.RECOMMENDATIONS,
         )
+        recommendation_providers = self._apply_user_provider_filter(providers_with_recommendations)
         results_per_provider: list[list[RecommendationFolder]] = await asyncio.gather(
             self._get_default_recommendations(),
             *[
