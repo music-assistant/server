@@ -1076,9 +1076,12 @@ class PlayerQueuesController(CoreController):
                 # reset the play action in progress flag on restore
                 # this can happen if MA was killed while a play action was in progress
                 queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
-                # from_cache reconstructs radio_source and enqueued_media_items,
-                # which mashumaro deserializes as plain dicts instead of MediaItemType objects.
+                # from_cache properly deserializes radio_source and enqueued_media_items
+                # back into MediaItemType objects (from_dict/mashumaro leaves them as plain dicts).
                 queue.from_cache(prev_state)
+                # recalculate is_dynamic after radio_source is restored from cache
+                # (old cache entries won't have is_dynamic set)
+                queue.is_dynamic = _is_radio_source_dynamic(queue.radio_source)
                 prev_items = await self.mass.cache.get(
                     key=queue_id,
                     provider=self.domain,
