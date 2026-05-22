@@ -142,7 +142,7 @@ class IBroadcastProvider(MusicProvider):
                 self.logger.debug("Parse artist failed: %s", artist, exc_info=error)
                 continue
 
-    @use_cache(3600 * 24 * 7)  # Cache for 7 days
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of albums for the given artist."""
         albums_objs = [
@@ -159,7 +159,7 @@ class IBroadcastProvider(MusicProvider):
                 continue
         return albums
 
-    @use_cache(3600 * 24 * 7)  # Cache for 7 days
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         album = await self._client.get_album(int(prov_album_id))
@@ -219,7 +219,7 @@ class IBroadcastProvider(MusicProvider):
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} could not be parsed") from error
         return playlist
 
-    @use_cache(3600)  # Cache for 1 hour
+    @use_cache(3600, allow_expired_cache=True)  # Cache for 1 hour
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         tracks: list[Track] = []

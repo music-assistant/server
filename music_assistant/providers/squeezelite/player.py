@@ -31,6 +31,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_SYNC_ADJUST,
+    CONF_OUTPUT_CODEC,
     INTERNAL_PCM_FORMAT,
     VERBOSE_LOG_LEVEL,
     create_sample_rates_config_entry,
@@ -101,7 +102,7 @@ class SqueezelitePlayer(Player):
         self.multi_client_stream: MultiClientStream | None = None
         self._sync_playpoints: deque[SyncPlayPoint] = deque(maxlen=MIN_REQ_PLAYPOINTS)
         self._do_not_resync_before: float = 0.0
-        self._plugin_source_active: bool = False
+        self._audio_source_active: bool = False
         self._low_latency_stream: bool = False
         # TEMP: patch slimclient send_strm to adjust buffer thresholds
         # this can be removed when we did a new release of aioslimproto with this change
@@ -206,7 +207,7 @@ class SqueezelitePlayer(Player):
 
     async def stop(self) -> None:
         """Handle STOP command on the player."""
-        self._plugin_source_active = False
+        self._audio_source_active = False
         # Clean up any existing multi-client stream
         if self.multi_client_stream is not None:
             await self.multi_client_stream.stop()
@@ -278,18 +279,20 @@ class SqueezelitePlayer(Player):
         self.multi_client_stream = stream = MultiClientStream(
             audio_source=audio_source, audio_format=master_audio_format
         )
-        base_url = (
-            f"{self.mass.streams.base_url}/slimproto/multi?player_id={self.player_id}&fmt=flac"
-        )
+        base_url = f"{self.mass.streams.base_url}/slimproto/multi?player_id={self.player_id}"
 
         # Count how many clients will connect
         expected_clients = len(list(self._get_sync_clients()))
         stream.expected_clients = expected_clients
 
         # forward to downstream play_media commands
+        # Per-member output_codec: classic Squeezeboxes silently fail on fixed flac in sync (#5506).
         async with TaskManager(self.mass) as tg:
             for slimplayer in self._get_sync_clients():
-                url = f"{base_url}&child_player_id={slimplayer.player_id}"
+                member_codec = self.mass.config.get_raw_player_config_value(
+                    slimplayer.player_id, CONF_OUTPUT_CODEC, "flac"
+                )
+                url = f"{base_url}&fmt={member_codec}&child_player_id={slimplayer.player_id}"
                 tg.create_task(
                     self._handle_play_url_for_slimplayer(
                         slimplayer,
@@ -462,16 +465,13 @@ class SqueezelitePlayer(Player):
         if media.source_id and (queue := self.mass.player_queues.get(media.source_id)):
             self.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
             self.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
-        source_id = media.source_id or (media.custom_data or {}).get("source_id")
-        plugin_source_active = (
-            source_id is not None and self.mass.players.get_plugin_source(source_id) is not None
-        )
-        low_latency_stream = plugin_source_active or media.media_type == MediaType.RADIO
+        audio_source_active = media.media_type == MediaType.AUDIO_SOURCE
+        low_latency_stream = audio_source_active or media.media_type == MediaType.RADIO
         # set the flags on the player that owns the slimclient (may differ from self
         # during group playback where self is the leader but slimplayer is a member)
         target_player = self.mass.players.get_player(slimplayer.player_id)
         if isinstance(target_player, SqueezelitePlayer):
-            target_player._plugin_source_active = plugin_source_active
+            target_player._audio_source_active = audio_source_active
             target_player._low_latency_stream = low_latency_stream
         await slimplayer.play_url(
             url=url,

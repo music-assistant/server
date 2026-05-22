@@ -22,18 +22,23 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
     EventType,
+    MediaType,
     PlaybackState,
     ProviderFeature,
     ProviderType,
+    SourceControl,
     StreamType,
 )
-from music_assistant_models.errors import UnsupportedFeaturedException
-from music_assistant_models.media_items import AudioFormat
-from music_assistant_models.streamdetails import StreamMetadata
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    UnsupportedFeaturedException,
+)
+from music_assistant_models.media_items import AudioFormat, AudioSource, ProviderMapping
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.helpers.process import AsyncProcess, check_output
-from music_assistant.models.plugin import PluginProvider, PluginSource
+from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.spotify.helpers import get_librespot_binary
 
 if TYPE_CHECKING:
@@ -58,6 +63,10 @@ PLAYER_ID_AUTO = "__auto__"
 EVENTS_SCRIPT = pathlib.Path(__file__).parent.resolve().joinpath("events.py")
 
 SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
+
+# stable id for the single AudioSource this provider exposes;
+# combined with the provider instance_id this forms the persistent uri
+AUDIO_SOURCE_ID = "main"
 
 
 async def setup(
@@ -175,35 +184,34 @@ class SpotifyConnectProvider(PluginProvider):
             self._default_player_id,
             self.instance_id,
         )
-        self._source_details = PluginSource(
-            id=self.instance_id,
-            name=self.name,
-            # passive=False allows this source to be selected on any player
-            # Only show in source list if player switching is allowed
-            passive=not self._allow_player_switch,
-            # Playback control capabilities will be enabled when Spotify Web API is available
-            can_play_pause=False,
-            can_seek=False,
-            can_next_previous=False,
-            audio_format=AudioFormat(
-                content_type=ContentType.PCM_S16LE,
-                codec_type=ContentType.PCM_S16LE,
-                sample_rate=44100,
-                bit_depth=16,
-                channels=2,
-            ),
-            metadata=StreamMetadata(
-                title=f"Spotify Connect | {connect_name}",
-            ),
-            stream_type=StreamType.NAMED_PIPE,
-            path=self.named_pipe,
+        self._audio_format = AudioFormat(
+            content_type=ContentType.PCM_S16LE,
+            codec_type=ContentType.PCM_S16LE,
+            sample_rate=44100,
+            bit_depth=16,
+            channels=2,
         )
-        # Set the on_select callback for when the source is selected on a player
-        self._source_details.on_select = self._on_source_selected
-        self._audio_buffer: asyncio.Queue[bytes] = asyncio.Queue(10)
-        # Web API integration for playback control
+        self._stream_metadata = StreamMetadata(title=f"Spotify Connect | {connect_name}")
+        # Web API integration for playback control - must come before _build_audio_source
+        # because the AudioSource's capability flags depend on whether Web API is available.
         self._connected_spotify_username: str | None = None
         self._spotify_provider: SpotifyProvider | None = None
+        # Playback control capabilities flip True once a matching Spotify music
+        # provider becomes available (Web API for play/pause/seek/next/prev).
+        # _build_audio_source refreshes the cached AudioSource so the next
+        # get_audio_sources call returns the updated capability flags.
+        self._audio_source = self._build_audio_source()
+        # _in_use_by_queue is the queue currently streaming us. Claimed in
+        # on_source_selected (NOT in get_stream_details — that path also runs
+        # from queue preload, where claiming would block a later cross-queue
+        # handoff). Released in on_source_unselected when the session id
+        # matches, or in _clear_active_player on Spotify session_disconnected.
+        self._in_use_by_queue: str | None = None
+        # _active_session_id is the controller-provided token for the current
+        # stream request — used to reject stale on_source_unselected callbacks
+        # after a same-queue reconnect supersedes the previous request.
+        self._active_session_id: str | None = None
+        self._audio_buffer: asyncio.Queue[bytes] = asyncio.Queue(10)
         self._on_unload_callbacks: list[Callable[..., None]] = []
         self._runner_error_count = 0
         self._spotify_device_id: str | None = None
@@ -240,9 +248,78 @@ class SpotifyConnectProvider(PluginProvider):
         for callback in self._on_unload_callbacks:
             callback()
 
-    def get_source(self) -> PluginSource:
-        """Get (audio)source details for this plugin."""
-        return self._source_details
+    async def get_audio_sources(self) -> list[AudioSource]:
+        """Return the AudioSources this plugin currently exposes."""
+        return [self._audio_source]
+
+    async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
+        """Return StreamDetails for streaming the Spotify Connect audio.
+
+        Side-effect-free: ownership is claimed in on_source_selected (which the
+        streams controller fires before this method on the actual stream
+        request). Keeping this idempotent means preload paths like
+        player_queues._load_item can fetch streamdetails without claiming the
+        source and blocking a subsequent cross-queue handoff.
+        """
+        if source_id != AUDIO_SOURCE_ID:
+            raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=source_id,
+            audio_format=self._audio_format,
+            media_type=MediaType.AUDIO_SOURCE,
+            stream_type=StreamType.NAMED_PIPE,
+            path=self.named_pipe,
+            stream_metadata=self._stream_metadata,
+        )
+
+    async def on_source_control(
+        self,
+        source_id: str,
+        action: SourceControl,
+        value: int | None = None,
+    ) -> None:
+        """Proxy playback control commands to Spotify via the Web API."""
+        if source_id != AUDIO_SOURCE_ID:
+            return
+        if action == SourceControl.PLAY:
+            await self._on_play()
+        elif action == SourceControl.PAUSE:
+            await self._on_pause()
+        elif action == SourceControl.NEXT:
+            await self._on_next()
+        elif action == SourceControl.PREVIOUS:
+            await self._on_previous()
+        elif action == SourceControl.SEEK and value is not None:
+            await self._on_seek(value)
+
+    async def on_volume_change(self, source_id: str, volume: int) -> None:
+        """Sync the Spotify app's volume slider with the player's new volume."""
+        if source_id != AUDIO_SOURCE_ID:
+            return
+        await self._on_volume(volume)
+
+    def _build_audio_source(self) -> AudioSource:
+        """Construct the AudioSource MediaItem with current capability flags."""
+        has_web_api = self._spotify_provider is not None
+        return AudioSource(
+            item_id=AUDIO_SOURCE_ID,
+            provider=self.instance_id,
+            name=self.name,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=AUDIO_SOURCE_ID,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=self._audio_format,
+                )
+            },
+            can_play_pause=has_web_api,
+            can_seek=has_web_api,
+            can_next_previous=has_web_api,
+            exclusive=True,
+            allow_external_trigger=True,
+        )
 
     @property
     def active_player_id(self) -> str | None:
@@ -294,54 +371,88 @@ class SpotifyConnectProvider(PluginProvider):
         )
         return None
 
-    async def _on_source_selected(self) -> None:
-        """
-        Handle callback when this source is selected on a player.
-
-        This is called by the player controller when a user selects this
-        plugin as a source on a specific player.
-        """
-        # The player that selected us is stored in in_use_by by the player controller
-        new_player_id = self._source_details.in_use_by
-        if not new_player_id:
+    async def on_source_selected(
+        self,
+        source_id: str,
+        player_id: str,
+        queue_id: str,
+        stream_session_id: str,
+    ) -> None:
+        """Handle callback when this AudioSource has been selected/started on a player."""
+        if source_id != AUDIO_SOURCE_ID or not player_id:
             return
 
         # Check if manual player switching is allowed
         if not self._allow_player_switch:
-            # Player switching disabled - only allow if it matches the current target
+            # Player switching disabled - redirect to the configured target
             current_target = self._get_target_player_id()
-            if new_player_id != current_target:
+            if player_id != current_target and current_target:
                 self.logger.debug(
-                    "Manual player switching disabled, ignoring selection on %s",
-                    new_player_id,
+                    "Manual player switching disabled, redirecting selection from %s to %s",
+                    player_id,
+                    current_target,
                 )
-                # Revert in_use_by to reflect the rejection
-                self._source_details.in_use_by = current_target
-                self.mass.players.trigger_player_update(new_player_id)
-                return
+                await self.mass.player_queues.play_media(
+                    current_target, str(self._audio_source.uri)
+                )
+                # Raising aborts the original request so it cannot continue
+                # into get_stream_details and claim the exclusive source for
+                # the disallowed player. The redirect above starts the stream
+                # on the configured target via a separate request.
+                raise RuntimeError(
+                    f"Player switching disabled; source must remain on {current_target}"
+                )
 
-        # If there's already an active player and it's different, kick it out
-        if self._active_player_id and self._active_player_id != new_player_id:
+        # If there's already an active player and it's different, kick it out.
+        # The lock claim a few lines below replaces the previous queue's claim;
+        # the prior stream's on_source_unselected may fire later, but its
+        # session-id guard keeps it from clobbering the new claim.
+        if self._active_player_id and self._active_player_id != player_id:
+            prev_player_id = self._active_player_id
             self.logger.info(
                 "Source selected on player %s, stopping playback on %s",
-                new_player_id,
-                self._active_player_id,
+                player_id,
+                prev_player_id,
             )
-            # Stop the current player
             try:
-                await self.mass.players.cmd_stop(self._active_player_id)
+                await self.mass.players.cmd_stop(prev_player_id)
             except Exception as err:
-                self.logger.debug(
-                    "Failed to stop previous player %s: %s", self._active_player_id, err
-                )
+                self.logger.debug("Failed to stop previous player %s: %s", prev_player_id, err)
+
+        # Claim ownership for this queue. The lock lives here (not in
+        # get_stream_details) so preload paths can fetch streamdetails without
+        # accidentally blocking a subsequent cross-queue handoff at the actual
+        # stream request.
+        self._in_use_by_queue = queue_id
+        # Record this request's session id so a later on_source_unselected can
+        # tell whether it is the live teardown or a stale callback from a
+        # superseded same-queue request.
+        self._active_session_id = stream_session_id
 
         # Update the active player
-        self._active_player_id = new_player_id
-        self.logger.debug("Active player set to: %s", new_player_id)
+        self._active_player_id = player_id
+        self.logger.debug("Active player set to: %s", player_id)
 
         # Only persist the selected player as the new default if not in auto mode
         if self._default_player_id != PLAYER_ID_AUTO:
-            self._save_last_player_id(new_player_id)
+            self._save_last_player_id(player_id)
+
+    async def on_source_unselected(
+        self, source_id: str, queue_id: str, stream_session_id: str
+    ) -> None:
+        """Release the queue-scoped exclusive claim when MA tears down the stream."""
+        if source_id != AUDIO_SOURCE_ID:
+            return
+        # Reject stale callbacks: only release if this is still the active
+        # session. A queue_id check alone is not sufficient — same-queue
+        # reconnects (player drops + reopens the same stream URL before the
+        # original request's finally fires) would otherwise let the old
+        # request's late callback clear the live claim of the new stream.
+        if self._active_session_id != stream_session_id:
+            return
+        self._active_session_id = None
+        if self._in_use_by_queue == queue_id:
+            self._in_use_by_queue = None
 
     def _clear_active_player(self) -> None:
         """
@@ -351,7 +462,8 @@ class SpotifyConnectProvider(PluginProvider):
         """
         prev_player_id = self._active_player_id
         self._active_player_id = None
-        self._source_details.in_use_by = None
+        self._in_use_by_queue = None
+        self._active_session_id = None
 
         if prev_player_id:
             self.logger.debug("Playback ended on player %s, clearing active player", prev_player_id)
@@ -400,31 +512,33 @@ class SpotifyConnectProvider(PluginProvider):
             self._update_source_capabilities()
 
     def _update_source_capabilities(self) -> None:
-        """Update source capabilities based on Web API availability."""
-        has_web_api = self._spotify_provider is not None
-        self._source_details.can_play_pause = has_web_api
-        self._source_details.can_seek = has_web_api
-        self._source_details.can_next_previous = has_web_api
-
-        # Register or unregister callbacks based on availability
-        if has_web_api:
-            self._source_details.on_play = self._on_play
-            self._source_details.on_pause = self._on_pause
-            self._source_details.on_next = self._on_next
-            self._source_details.on_previous = self._on_previous
-            self._source_details.on_seek = self._on_seek
-            self._source_details.on_volume = self._on_volume
-        else:
-            self._source_details.on_play = None
-            self._source_details.on_pause = None
-            self._source_details.on_next = None
-            self._source_details.on_previous = None
-            self._source_details.on_seek = None
-            self._source_details.on_volume = None
-
-        # Trigger player update to reflect capability changes
-        if self._source_details.in_use_by:
-            self.mass.players.trigger_player_update(self._source_details.in_use_by)
+        """Rebuild the AudioSource so capability flags reflect Web API availability."""
+        self._audio_source = self._build_audio_source()
+        # The currently playing queue item carries a SNAPSHOT of the old
+        # AudioSource — overwrite it so the new capability flags reach the UI
+        # without waiting for the next play_media. Snapshot current_item and
+        # re-check identity before the write so a queue advance racing this
+        # callback can't stamp the new AudioSource onto an item that has
+        # already moved on. Signal the queue update so the frontend re-renders
+        # the controls (play/pause, next/prev) live.
+        if not self._in_use_by_queue:
+            return
+        queue_id = self._in_use_by_queue
+        queue = self.mass.player_queues.get(queue_id)
+        if queue is None:
+            return
+        current_item = queue.current_item
+        if (
+            current_item is not None
+            and current_item.media_item is not None
+            and current_item.media_item.media_type == MediaType.AUDIO_SOURCE
+            and current_item.media_item.item_id == AUDIO_SOURCE_ID
+            and current_item.media_item.provider == self.instance_id
+            and queue.current_item is current_item
+        ):
+            current_item.media_item = self._audio_source
+            self.mass.player_queues.signal_update(queue_id, items_changed=True)
+        self.mass.players.trigger_player_update(queue_id)
 
     async def _on_play(self) -> None:
         """Handle play command via Spotify Web API."""
@@ -743,24 +857,21 @@ class SpotifyConnectProvider(PluginProvider):
             prev_player_id = self._active_player_id
             self._clear_active_player()
             if prev_player_id:
-                self.mass.create_task(self.mass.players.deselect_source(prev_player_id))
+                self.mass.create_task(self.mass.players.cmd_stop(prev_player_id))
 
-        # handle paused event - clear in_use_by so UI shows correct active source
-        # this happens when MA starts playing while Spotify Connect was active
-        # Note: we don't call _clear_active_player here because pause is temporary
-        # and we want to resume on the same player when playback resumes
-        if event_name == "paused" and self._source_details.in_use_by:
-            current_player = self._source_details.in_use_by
-            self.logger.debug(
-                "Spotify Connect paused, releasing player UI state for %s", current_player
-            )
-            self._source_details.in_use_by = None
-            self.mass.players.trigger_player_update(current_player)
+        # NOTE: a transient "paused" event used to clear in_use_by_queue here so
+        # MA could take over. In the new AudioSource model, pause is rendered by
+        # the queue's seek bar freezing (stream_metadata.elapsed_time stops
+        # advancing), and an explicit play_media call from MA replaces the
+        # active queue item — closing our stream cleanly through the normal
+        # queue lifecycle. Clearing the lock on paused caused churn on the
+        # MA-side resume path (each resume created a new play_media session),
+        # so we leave it set until session_disconnected or an external stop.
 
         # handle session connected event
         # this player has become the active spotify connect player
         # we need to start the playback
-        if event_name in ("sink", "playing") and (not self._source_details.in_use_by):
+        if event_name in ("sink", "playing") and (not self._in_use_by_queue):
             # If we receive a 'sink' event but we are not officially connected
             # (i.e. we just disconnected), ignore it to prevent accidental
             # re-activation of this player (trailing event from dying session).
@@ -788,52 +899,47 @@ class SpotifyConnectProvider(PluginProvider):
                 )
                 self._active_player_id = target_player_id
                 self.mass.create_task(
-                    self.mass.players.select_source(target_player_id, self.instance_id)
+                    self.mass.player_queues.play_media(
+                        target_player_id, str(self._audio_source.uri)
+                    )
                 )
-                self._source_details.in_use_by = target_player_id
             else:
                 self.logger.warning(
                     "Spotify Connect playback started but no player available. "
                     "Select this source on a player to start playback."
                 )
 
-        # parse metadata fields
+        # parse metadata fields (_stream_metadata is always set in __init__)
         if common_meta := json_data.get("common_metadata_fields", {}):
             uri = common_meta.get("uri", "Unknown")
             title = common_meta.get("name", "Unknown")
             image_url = images[0] if (images := common_meta.get("covers")) else None
-            if self._source_details.metadata is None:
-                self._source_details.metadata = StreamMetadata(uri=uri, title=title)
-            self._source_details.metadata.uri = uri
-            self._source_details.metadata.title = title
-            self._source_details.metadata.artist = None
-            self._source_details.metadata.album = None
-            self._source_details.metadata.image_url = image_url
-            self._source_details.metadata.description = None
+            self._stream_metadata.uri = uri
+            self._stream_metadata.title = title
+            self._stream_metadata.artist = None
+            self._stream_metadata.album = None
+            self._stream_metadata.image_url = image_url
+            self._stream_metadata.description = None
             duration_ms = common_meta.get("duration_ms", 0)
-            self._source_details.metadata.duration = (
+            self._stream_metadata.duration = (
                 int(duration_ms) // 1000 if duration_ms is not None else None
             )
             # Reset elapsed time when track changes to prevent showing stale elapsed time
             # from previous track
-            self._source_details.metadata.elapsed_time = 0
-            self._source_details.metadata.elapsed_time_last_updated = int(time.time())
+            self._stream_metadata.elapsed_time = 0
+            self._stream_metadata.elapsed_time_last_updated = int(time.time())
 
         if track_meta := json_data.get("track_metadata_fields", {}):
             if artists := track_meta.get("artists"):
-                if self._source_details.metadata is not None:
-                    self._source_details.metadata.artist = artists[0]
-            if self._source_details.metadata is not None:
-                self._source_details.metadata.album = track_meta.get("album")
+                self._stream_metadata.artist = artists[0]
+            self._stream_metadata.album = track_meta.get("album")
 
         if episode_meta := json_data.get("episode_metadata_fields", {}):
-            if self._source_details.metadata is not None:
-                self._source_details.metadata.description = episode_meta.get("description")
+            self._stream_metadata.description = episode_meta.get("description")
 
         if "position_ms" in json_data:
-            if self._source_details.metadata is not None:
-                self._source_details.metadata.elapsed_time = int(json_data["position_ms"]) // 1000
-                self._source_details.metadata.elapsed_time_last_updated = int(time.time())
+            self._stream_metadata.elapsed_time = int(json_data["position_ms"]) // 1000
+            self._stream_metadata.elapsed_time_last_updated = int(time.time())
 
         if event_name == "volume_changed" and (volume := json_data.get("volume")):
             # Ignore volume_changed events that fire immediately after session_connect
@@ -844,20 +950,25 @@ class SpotifyConnectProvider(PluginProvider):
                     "Ignoring initial volume_changed event (%.2fs after session_connect)",
                     time_since_connect,
                 )
-            elif self._source_details.in_use_by:
+            elif self._in_use_by_queue:
                 # Spotify Connect volume is 0-65535
                 volume = int(int(volume) / 65535 * 100)
                 self._last_volume_sent_to_spotify = volume
                 try:
-                    await self.mass.players.cmd_volume_set(self._source_details.in_use_by, volume)
+                    await self.mass.players.cmd_volume_set(self._in_use_by_queue, volume)
                 except UnsupportedFeaturedException:
                     self.logger.debug(
                         "Player %s does not support volume control",
-                        self._source_details.in_use_by,
+                        self._in_use_by_queue,
                     )
 
-        # signal update to connected player
-        if self._source_details.in_use_by:
-            self.mass.players.trigger_player_update(self._source_details.in_use_by)
+        # push metadata update to the active queue item's streamdetails
+        if self._in_use_by_queue:
+            self.mass.streams.update_stream_metadata(
+                self._in_use_by_queue,
+                AUDIO_SOURCE_ID,
+                self.instance_id,
+                self._stream_metadata,
+            )
 
         return Response()

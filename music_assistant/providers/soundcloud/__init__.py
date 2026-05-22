@@ -312,7 +312,7 @@ class SoundcloudMusicProvider(MusicProvider):
         result = await self._soundcloud.get_playlist_details(prov_playlist_id)
         return cast("dict[str, Any]", result)
 
-    @use_cache(3600 * 3)  # Cache for 3 hours
+    @use_cache(3600 * 3, allow_expired_cache=True)  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
@@ -339,7 +339,7 @@ class SoundcloudMusicProvider(MusicProvider):
                 continue
         return result
 
-    @use_cache(3600 * 24 * 14)  # Cache for 14 days
+    @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of (max 100, API doesn't allow a higher limit) tracks for the given artist."""
         tracks_obj = await self._soundcloud.get_tracks_from_user(prov_artist_id, 100)
@@ -385,7 +385,7 @@ class SoundcloudMusicProvider(MusicProvider):
             return None
         return api_response.get("collection") or api_response.get("items")
 
-    @use_cache(3600 * 24 * 14)  # Cache for 14 days
+    @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         tracks_obj = await self._soundcloud.get_recommended(prov_track_id, limit)
