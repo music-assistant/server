@@ -332,9 +332,7 @@ class SonosPlayer(Player):
             )
             return
 
-        if (
-            not self.flow_mode and media.source_id and media.queue_item_id
-        ) or media.media_type == MediaType.PLUGIN_SOURCE:
+        if not self.flow_mode and media.source_id and media.queue_item_id:
             # Regular Queue item playback
             # create a sonos cloud queue and load it
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/{self.player_id}/v2.3/"

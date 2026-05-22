@@ -77,6 +77,7 @@ from music_assistant.helpers import ssl as ssl_util
 from music_assistant.helpers.audio import (
     HTTP_HEADERS,
     HTTP_HEADERS_ICY,
+    audio_source_silence_keepalive,
     calculate_content_length,
     get_bit_rate,
     get_normalization_mode,
@@ -108,6 +109,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.music_provider import MusicProvider
     from music_assistant.models.player import Player
+    from music_assistant.models.plugin import PluginProvider
     from music_assistant.providers.sync_group import SyncGroupPlayer
 
 # ruff: noqa: PLR0915
@@ -266,18 +268,25 @@ class StreamsAudio:
                     ):
                         continue
                     # guard that provider is available
-                    music_prov = mass.get_provider(prov_media.provider_instance)
-                    if TYPE_CHECKING:  # avoid circular import
-                        assert isinstance(music_prov, MusicProvider)
-                    if not music_prov:
+                    provider = mass.get_provider(prov_media.provider_instance)
+                    if not provider:
                         self.logger.debug(f"Skipping {prov_media} - provider not available")
                         continue  # provider not available ?
-                    # get streamdetails from provider
+                    # get streamdetails from provider; AudioSource items come from a
+                    # PluginProvider which carries a different signature (queue-scoped
+                    # context rather than media_type) — branch on provider type.
                     try:
                         BYPASS_THROTTLER.set(True)
-                        streamdetails = await music_prov.get_stream_details(
-                            prov_media.item_id, media_item.media_type
-                        )
+                        if media_item.media_type == MediaType.AUDIO_SOURCE:
+                            plugin_prov = cast("PluginProvider", provider)
+                            streamdetails = await plugin_prov.get_stream_details(
+                                prov_media.item_id, queue_item.queue_id
+                            )
+                        else:
+                            music_prov = cast("MusicProvider", provider)
+                            streamdetails = await music_prov.get_stream_details(
+                                prov_media.item_id, media_item.media_type
+                            )
                     except MusicAssistantError as err:
                         self.logger.warning(str(err))
                     else:
@@ -378,12 +387,25 @@ class StreamsAudio:
         audio_source: str | AsyncGenerator[bytes, None]
         stream_type = streamdetails.stream_type
         if stream_type == StreamType.CUSTOM:
-            music_prov = mass.get_provider(streamdetails.provider)
-            if TYPE_CHECKING:  # avoid circular import
-                assert isinstance(music_prov, MusicProvider)
-            audio_source = music_prov.get_audio_stream(
+            # MusicProvider and PluginProvider both expose get_audio_stream with the same shape
+            provider = mass.get_provider(streamdetails.provider)
+            if provider is None:
+                raise ProviderUnavailableError(
+                    f"Provider {streamdetails.provider} for stream is no longer available"
+                )
+            provider = cast("MusicProvider | PluginProvider", provider)
+            audio_source = provider.get_audio_stream(
                 streamdetails, seek_position=seek_position if streamdetails.can_seek else 0
             )
+            # For AudioSource items (live plugin streams), wrap the generator so it
+            # keeps emitting silence frames during quiet periods (e.g. when the
+            # external app is paused). This stops the consumer from disconnecting
+            # while the source's own state machine recovers. The wrapper is a
+            # no-op while the plugin yields normally.
+            if streamdetails.media_type == MediaType.AUDIO_SOURCE:
+                audio_source = audio_source_silence_keepalive(
+                    audio_source, streamdetails.audio_format
+                )
             seek_position = 0 if streamdetails.can_seek else seek_position
         elif stream_type == StreamType.ICY:
             assert isinstance(streamdetails.path, str)  # for type checking
@@ -1113,7 +1135,7 @@ class StreamsAudio:
             # no point in having a higher bit depth for lossy formats
             output_bit_depth = 16
             output_sample_rate = min(48000, output_sample_rate)
-        if media_type not in (MediaType.TRACK, MediaType.PLUGIN_SOURCE, MediaType.FLOW_STREAM):
+        if media_type not in (MediaType.TRACK, MediaType.AUDIO_SOURCE, MediaType.FLOW_STREAM):
             # no point in having a higher bit depth for non-track media types (e.g. TTS, radio)
             output_bit_depth = min(output_bit_depth, 16)
         if output_format_str == "pcm":
@@ -1389,8 +1411,10 @@ class StreamsAudio:
                 asyncio.get_event_loop().time() - stream_started_at,
                 seconds_streamed,
             )
-            if (finished or seconds_streamed >= 90) and (
-                music_prov := self.mass.get_provider(streamdetails.provider)
+            if (
+                (finished or seconds_streamed >= 90)
+                and streamdetails.media_type != MediaType.AUDIO_SOURCE
+                and (music_prov := self.mass.get_provider(streamdetails.provider))
             ):
                 if TYPE_CHECKING:
                     assert isinstance(music_prov, MusicProvider)

@@ -117,10 +117,6 @@ class SyncGroupPlayer(Player):
         # NOTE: Not using 'state' here as we need the 'raw' value provided by the sync leader player
         if not self.sync_leader:
             return None
-        # if a plugin source is active on the syncleader, return that
-        for plugin_source in self.mass.players.get_plugin_sources():
-            if plugin_source.in_use_by == self.sync_leader.player_id:
-                return plugin_source.id
         # deal with output protocols on the sync leader
         output_protocol_domain: str | None = None
         if (
