@@ -25,9 +25,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MusicAssistantError
-from music_assistant_models.media_items import Album
+from music_assistant_models.media_items import Album, RecommendationFolder
+from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.sonic_similarity.clap_index import (
@@ -73,10 +74,25 @@ CONF_LABEL_STATUS_TEXT = "status_label_text"
 ACTION_REBUILD_18DIM = "rebuild_18dim_index"
 ACTION_REBUILD_CLAP = "rebuild_clap_index"
 
-# Features exposed to the cross-provider dispatcher in controllers/media/tracks.py.
-# Declared unconditionally; get_similar_tracks returns [] until the corpus is ready,
-# which the dispatcher treats as "try the next provider" via its truthy check.
-SUPPORTED_FEATURES = {ProviderFeature.SIMILAR_TRACKS}
+# Features exposed to the cross-provider dispatchers.
+# * SIMILAR_TRACKS — controllers/media/tracks.py:378-387 fans out to plugins after
+#   music-provider mappings have been tried. We're the local fallback engine.
+# * RECOMMENDATIONS — controllers/music.py:803 gathers folders from every plugin
+#   declaring this feature and zip-merges them into music/recommendations, which
+#   the frontend's HomeWidgetRows.vue renders as discover-page widget rows
+#   without any client-side wiring per plugin.
+# Both methods return [] when the engine isn't ready, which the dispatchers treat
+# as "this provider has nothing right now" — no dynamic feature-set tricks needed.
+SUPPORTED_FEATURES = {
+    ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.RECOMMENDATIONS,
+}
+
+# Tunables for the recommendations() folder. RECOMMEND_SEED_COUNT keeps the
+# fan-out cost bounded; RECOMMEND_ITEM_LIMIT is the visible row length.
+RECOMMEND_SEED_COUNT: int = 5
+RECOMMEND_PER_SEED_LIMIT: int = 10
+RECOMMEND_ITEM_LIMIT: int = 12
 
 
 def _parse_clap_embedding(raw: Any) -> np.ndarray | None:
@@ -906,6 +922,109 @@ class SonicSimilarityPlugin(PluginProvider):
 
         resolved = await asyncio.gather(*[_resolve(e) for e in items])
         return [t for t in resolved if t is not None]
+
+    # ------------------------------------------------------------------
+    # Cross-provider RECOMMENDATIONS hook (home/discover page)
+    # ------------------------------------------------------------------
+
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """Yield an 'Inspired by recently played' folder for the discover page.
+
+        Picked up by the music/recommendations dispatcher (controllers/music.py:803)
+        and rendered by HomeWidgetRows.vue alongside the library's own
+        recommendation folders. Returns [] when the engine isn't ready or when
+        no recent tracks intersect the index — the dispatcher then simply
+        omits us from the response (no empty card on the page).
+
+        Internally: sample up to RECOMMEND_SEED_COUNT recent tracks, find the
+        ones we have indexed, fan out per-seed via _handle_similar to get a
+        diverse pool, dedupe by (provider, item_id), and resolve the first
+        RECOMMEND_ITEM_LIMIT to full Tracks.
+        """
+        if self.corpus_means is None or not self._signature_cache:
+            return []
+
+        try:
+            recent = await self.mass.music.recently_played(
+                limit=RECOMMEND_SEED_COUNT,
+                media_types=[MediaType.TRACK],
+                user_initiated_only=True,
+            )
+        except Exception as err:  # noqa: BLE001
+            self.logger.debug("recently_played failed: %s", err)
+            return []
+        if not recent:
+            return []
+
+        # Walk each recent mapping into a seed item_id our index has analysed.
+        # The mapping is library-aggregated; we need the underlying streaming
+        # provider's id (or the filesystem path) — same logic as
+        # get_similar_tracks but starting from an ItemMapping instead of a Track.
+        seed_ids: list[str] = []
+        seen_seeds: set[str] = set()
+        for mapping in recent:
+            try:
+                track = await self.mass.music.tracks.get(mapping.item_id, mapping.provider)
+            except MusicAssistantError:
+                continue
+            seed_id: str | None = None
+            for pm in track.provider_mappings or ():
+                if pm.provider_domain == "library":
+                    continue
+                if (pm.item_id, pm.provider_instance) in self._signature_cache:
+                    seed_id = pm.item_id
+                    break
+                if pm.item_id in self._signatures_by_id:
+                    seed_id = pm.item_id
+                    break
+            if seed_id and seed_id not in seen_seeds:
+                seed_ids.append(seed_id)
+                seen_seeds.add(seed_id)
+
+        if not seed_ids:
+            return []
+
+        # Fan out per seed; union results, first-occurrence wins (we already
+        # ordered seeds by recency above, so earlier seeds get priority).
+        candidate_order: list[tuple[str, str]] = []
+        candidate_seen: set[tuple[str, str]] = set()
+        for sid in seed_ids:
+            response = await self._handle_similar(item_id=sid, limit=RECOMMEND_PER_SEED_LIMIT)
+            for entry in response.get("items") or []:
+                key = (entry["provider"], entry["item_id"])
+                if key in candidate_seen:
+                    continue
+                candidate_seen.add(key)
+                candidate_order.append(key)
+                if len(candidate_order) >= RECOMMEND_ITEM_LIMIT:
+                    break
+            if len(candidate_order) >= RECOMMEND_ITEM_LIMIT:
+                break
+
+        if not candidate_order:
+            return []
+
+        async def _resolve(provider: str, item_id: str) -> Track | None:
+            try:
+                return await self.mass.music.tracks.get(item_id, provider)
+            except MusicAssistantError:
+                return None
+
+        resolved = await asyncio.gather(*[_resolve(p, i) for p, i in candidate_order])
+        items = [t for t in resolved if t is not None]
+        if not items:
+            return []
+
+        return [
+            RecommendationFolder(
+                item_id="inspired_by_recently_played",
+                provider=self.instance_id,
+                name="Inspired by recently played",
+                translation_key="inspired_by_recently_played",
+                icon="mdi-shimmer",
+                items=UniqueList(items),
+            ),
+        ]
 
     async def _handle_status(self) -> dict[str, Any]:
         """Return current analysis status."""
