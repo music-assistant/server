@@ -30,7 +30,7 @@ def use_cache(
     cache_checksum: str | None = None,
     allow_bypass: bool | None = None,
     base_class: Any = None,
-    use_expired_cache: bool = False,
+    allow_expired_cache: bool = False,
 ) -> Callable[
     [Callable[Concatenate[ProviderT, P], Awaitable[R]]],
     Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]],
@@ -46,7 +46,7 @@ def use_cache(
     :param base_class: If provided, reconstruct cached data using base_class.from_dict().
         Handles both single dicts and lists of dicts automatically.
         If not provided, falls back to type-annotation based reconstruction.
-    :param use_expired_cache: If True, enable stale-while-revalidate. When the cached
+    :param allow_expired_cache: If True, enable stale-while-revalidate. When the cached
         entry has expired, return it immediately and trigger a background refresh that
         re-runs the wrapped function and updates the cache. Expired entries also
         survive the cache auto-cleanup task so they remain available as fallback data.
@@ -84,7 +84,7 @@ def use_cache(
                     category=category,
                     checksum=cache_checksum,
                     persistent=persistent,
-                    use_expired_cache=use_expired_cache,
+                    allow_expired_cache=allow_expired_cache,
                 )
 
             # try the fresh-only lookup first
@@ -99,7 +99,7 @@ def use_cache(
             if cachedata is not None:
                 return _reconstruct(cachedata)
 
-            if use_expired_cache:
+            if allow_expired_cache:
                 # nothing fresh; try again accepting expired entries
                 cachedata = await cache.get(
                     cache_key,
@@ -108,7 +108,7 @@ def use_cache(
                     category=category,
                     allow_bypass=allow_bypass,
                     base_class=base_class,
-                    use_expired_cache=True,
+                    allow_expired_cache=True,
                 )
                 if cachedata is not None:
                     # serve stale data and refresh in the background;

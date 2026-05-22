@@ -102,7 +102,7 @@ class CacheController(CoreController):
         default: Any = None,
         allow_bypass: bool | None = None,
         base_class: Any = None,
-        use_expired_cache: bool = False,
+        allow_expired_cache: bool = False,
     ) -> Any:
         """
         Get data from cache.
@@ -120,7 +120,7 @@ class CacheController(CoreController):
         :param default: Value to return if no cache object is found.
         :param allow_bypass: Whether to respect the BYPASS_CACHE context variable.
         :param base_class: If provided, reconstruct data using base_class.from_dict().
-        :param use_expired_cache: If True, also return entries past their expiration
+        :param allow_expired_cache: If True, also return entries past their expiration
             time instead of treating them as cache misses. Used by the
             stale-while-revalidate path of `@use_cache`.
         """
@@ -137,7 +137,7 @@ class CacheController(CoreController):
                     DB_TABLE_CACHE, {"category": category, "provider": provider, "key": key}
                 )
             )
-            and (db_row["expires"] >= cur_time or use_expired_cache)
+            and (db_row["expires"] >= cur_time or allow_expired_cache)
             and (not checksum or db_row["checksum"] == checksum)
         ):
             # if allow_bypass is not explicitly set,
@@ -174,7 +174,7 @@ class CacheController(CoreController):
         category: int = 0,
         checksum: str | None = None,
         persistent: bool = False,
-        use_expired_cache: bool = False,
+        allow_expired_cache: bool = False,
     ) -> None:
         """
         Store data in cache.
@@ -190,7 +190,7 @@ class CacheController(CoreController):
         :param category: Category to group cache objects.
         :param checksum: Optional checksum to store with the cache object.
         :param persistent: If True, the entry survives cache clears.
-        :param use_expired_cache: If True, the entry survives the auto-cleanup task
+        :param allow_expired_cache: If True, the entry survives the auto-cleanup task
             after it expires, so it can still be served as fallback data by the
             stale-while-revalidate path of `@use_cache`.
         """
@@ -213,7 +213,7 @@ class CacheController(CoreController):
                 "checksum": checksum,
                 "data": data,
                 "persistent": persistent,
-                "use_expired_cache": use_expired_cache,
+                "allow_expired_cache": allow_expired_cache,
             },
         )
 
@@ -269,8 +269,8 @@ class CacheController(CoreController):
                 f"Scanning cache record {index}/{len(db_rows)}",
             )
             # clean up db cache object only if expired; entries marked with
-            # use_expired_cache are kept as fallback for stale-while-revalidate
-            if db_row["expires"] < cur_timestamp and not db_row["use_expired_cache"]:
+            # allow_expired_cache are kept as fallback for stale-while-revalidate
+            if db_row["expires"] < cur_timestamp and not db_row["allow_expired_cache"]:
                 await self.database.delete(DB_TABLE_CACHE, {"id": db_row["id"]})
                 cleaned_records += 1
             await asyncio.sleep(0)  # yield to eventloop
@@ -384,7 +384,7 @@ class CacheController(CoreController):
                     [data] TEXT NULL,
                     [checksum] TEXT NULL,
                     [persistent] INTEGER NOT NULL DEFAULT 0,
-                    [use_expired_cache] INTEGER NOT NULL DEFAULT 0,
+                    [allow_expired_cache] INTEGER NOT NULL DEFAULT 0,
                     UNIQUE(category, key, provider)
                     )"""
         )
@@ -432,7 +432,7 @@ class CacheController(CoreController):
         if prev_version <= 7:
             await self.database.execute(
                 f"ALTER TABLE {DB_TABLE_CACHE} "
-                "ADD COLUMN use_expired_cache INTEGER NOT NULL DEFAULT 0"
+                "ADD COLUMN allow_expired_cache INTEGER NOT NULL DEFAULT 0"
             )
         await self.database.commit()
 

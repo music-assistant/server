@@ -371,26 +371,28 @@ async def test_skip_vacuum_when_cache_reset(
     assert "Compacting database" not in caplog.text
 
 
-# --- use_expired_cache flag ---
+# --- allow_expired_cache flag ---
 
 
-async def test_get_with_use_expired_cache_returns_expired_data(
+async def test_get_with_allow_expired_cache_returns_expired_data(
     cache: CacheController,
 ) -> None:
-    """Test that get(use_expired_cache=True) returns data past its expiration."""
+    """Test that get(allow_expired_cache=True) returns data past its expiration."""
     await cache.set("stale", "old_data", provider="test", expiration=-1)
     assert await cache.get("stale", provider="test", default="gone") == "gone"
     assert (
-        await cache.get("stale", provider="test", default="gone", use_expired_cache=True)
+        await cache.get("stale", provider="test", default="gone", allow_expired_cache=True)
         == "old_data"
     )
 
 
-async def test_get_with_use_expired_cache_still_returns_default_when_missing(
+async def test_get_with_allow_expired_cache_still_returns_default_when_missing(
     cache: CacheController,
 ) -> None:
-    """Test that use_expired_cache=True still returns default when nothing is cached."""
-    result = await cache.get("nonexistent", provider="test", default="gone", use_expired_cache=True)
+    """Test that allow_expired_cache=True still returns default when nothing is cached."""
+    result = await cache.get(
+        "nonexistent", provider="test", default="gone", allow_expired_cache=True
+    )
     assert result == "gone"
 
 
@@ -398,17 +400,17 @@ async def test_auto_cleanup_removes_expired_entries(cache: CacheController) -> N
     """Test that auto_cleanup removes expired entries by default."""
     await cache.set("evict", "data", provider="test", expiration=-1)
     await cache.auto_cleanup()
-    result = await cache.get("evict", provider="test", default="gone", use_expired_cache=True)
+    result = await cache.get("evict", provider="test", default="gone", allow_expired_cache=True)
     assert result == "gone"
 
 
-async def test_auto_cleanup_keeps_use_expired_cache_entries(
+async def test_auto_cleanup_keeps_allow_expired_cache_entries(
     cache: CacheController,
 ) -> None:
-    """Test that auto_cleanup keeps expired entries with use_expired_cache=True."""
-    await cache.set("keep", "data", provider="test", expiration=-1, use_expired_cache=True)
+    """Test that auto_cleanup keeps expired entries with allow_expired_cache=True."""
+    await cache.set("keep", "data", provider="test", expiration=-1, allow_expired_cache=True)
     await cache.auto_cleanup()
-    result = await cache.get("keep", provider="test", use_expired_cache=True)
+    result = await cache.get("keep", provider="test", allow_expired_cache=True)
     assert result == "data"
 
 
