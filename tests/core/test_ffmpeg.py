@@ -119,6 +119,17 @@ def test_parse_stream_info_ignores_video_stream() -> None:
     assert parse_ffmpeg_stream_info(line) is None
 
 
+def test_parse_stream_info_unknown_codec_still_yields_other_fields() -> None:
+    """Unrecognised codec token returns UNKNOWN but sample rate / bit rate are still parsed."""
+    line = "Stream #0:0: Audio: somenewcodec, 48000 Hz, stereo, 192 kb/s"
+    info = parse_ffmpeg_stream_info(line)
+    assert info is not None
+    assert info.codec == ContentType.UNKNOWN
+    assert info.sample_rate == 48000
+    assert info.bit_rate == 192
+    assert info.bit_depth is None
+
+
 # -- parse_ffmpeg_duration --
 
 

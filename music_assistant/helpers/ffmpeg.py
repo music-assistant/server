@@ -279,10 +279,12 @@ class FFMpeg(AsyncProcess):
     def _apply_input_stream_info(self, info: FFMpegStreamInfo) -> None:
         """Mirror values from a parsed ffmpeg input stream line onto self.input_format."""
         # content_type is the container format; only fill it in if the provider didn't
-        # specify one. codec_type is always set to what ffmpeg actually detected.
-        if self.input_format.content_type == ContentType.UNKNOWN:
-            self.input_format.content_type = info.codec
-        self.input_format.codec_type = info.codec
+        # specify one. codec_type is the audio codec ffmpeg detected; only override
+        # if we actually parsed a known codec (don't clobber a provider value with UNKNOWN).
+        if info.codec != ContentType.UNKNOWN:
+            if self.input_format.content_type == ContentType.UNKNOWN:
+                self.input_format.content_type = info.codec
+            self.input_format.codec_type = info.codec
         if info.sample_rate:
             self.input_format.sample_rate = info.sample_rate
         if info.bit_depth:
