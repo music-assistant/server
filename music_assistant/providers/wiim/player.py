@@ -87,6 +87,9 @@ class WiimPlayer(Player):
         device.av_transport_event_callback = self._handle_sdk_av_transport_event
         device.play_queue_event_callback = self._handle_sdk_play_queue_event
 
+        self._last_logged_sdk_uri: str | None = None
+        self._last_logged_sdk_status: PlayingStatus | None = None
+
     # --- Lifecycle ---
 
     async def setup(self) -> None:
@@ -160,6 +163,12 @@ class WiimPlayer(Player):
         """Handle enqueuing of the next queue item on the player."""
         stream_url = await self.mass.streams.resolve_stream_url(self.player_id, media)
         didl_metadata = create_didl_metadata(media, url=stream_url)
+        self.logger.debug(
+            "enqueue_next_media on %s: queue_item_id=%s, uri=%s",
+            self._attr_name,
+            media.queue_item_id,
+            stream_url,
+        )
         try:
             await self.device._invoke_upnp_action(
                 "AVTransport",
@@ -246,6 +255,22 @@ class WiimPlayer(Player):
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
         """Handle SET_MEMBERS command on the player."""
+        queue = self.mass.player_queues.get(self.player_id)
+        entry_sdk_uri = self.device.current_media.uri if self.device.current_media else None
+        self.logger.debug(
+            "set_members entry on %s: add=%s, remove=%s | "
+            "queue.current_item_id=%s, queue.next_item_id=%s, "
+            "queue.next_item_id_enqueued=%s | "
+            "sdk.current_uri=%s, sdk.playing_status=%s",
+            self._attr_name,
+            player_ids_to_add,
+            player_ids_to_remove,
+            queue.current_item.queue_item_id if queue and queue.current_item else None,
+            queue.next_item.queue_item_id if queue and queue.next_item else None,
+            queue.next_item_id_enqueued if queue else None,
+            entry_sdk_uri,
+            self.device.playing_status,
+        )
         try:
             if player_ids_to_add:
                 follower_udns = [
@@ -264,6 +289,16 @@ class WiimPlayer(Player):
                         )
         except (WiimDeviceException, WiimRequestException) as err:
             self._handle_command_error("set_members", err)
+        finally:
+            exit_sdk_uri = self.device.current_media.uri if self.device.current_media else None
+            self.logger.debug(
+                "set_members exit on %s: sdk.current_uri=%s, sdk.playing_status=%s, "
+                "queue.current_item_id=%s",
+                self._attr_name,
+                exit_sdk_uri,
+                self.device.playing_status,
+                queue.current_item.queue_item_id if queue and queue.current_item else None,
+            )
 
     # --- SDK event handlers ---
 
@@ -394,7 +429,30 @@ class WiimPlayer(Player):
                 source_id=self._attr_active_source,
             )
 
+        self._log_sdk_state_change()
         self.update_state()
+
+    def _log_sdk_state_change(self) -> None:
+        """Log a debug line whenever the SDK-reported URI or playing_status changes."""
+        new_sdk_uri = self.device.current_media.uri if self.device.current_media else None
+        new_sdk_status = self.device.playing_status
+        if (
+            new_sdk_uri == self._last_logged_sdk_uri
+            and new_sdk_status == self._last_logged_sdk_status
+        ):
+            return
+        ma_queue = self.mass.player_queues.get(self.player_id)
+        self.logger.debug(
+            "WiiM state changed on %s: uri=%r->%r, status=%s->%s | queue.current_item_id=%s",
+            self._attr_name,
+            self._last_logged_sdk_uri,
+            new_sdk_uri,
+            self._last_logged_sdk_status,
+            new_sdk_status,
+            ma_queue.current_item.queue_item_id if ma_queue and ma_queue.current_item else None,
+        )
+        self._last_logged_sdk_uri = new_sdk_uri
+        self._last_logged_sdk_status = new_sdk_status
 
     async def _ensure_subscriptions_and_update(self) -> None:
         """Re-subscribe to UPnP events and update state."""
