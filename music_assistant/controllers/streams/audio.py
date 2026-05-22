@@ -2279,12 +2279,14 @@ class StreamsAudio:
         if not cleaned_stream_title:
             return
 
-        if cleaned_stream_title != streamdetails.stream_title:
-            self.logger.log(VERBOSE_LOG_LEVEL, "ICY Radio streamtitle original: %s", stream_title)
-            self.logger.log(
-                VERBOSE_LOG_LEVEL, "ICY Radio streamtitle cleaned: %s", cleaned_stream_title
-            )
-            streamdetails.stream_title = cleaned_stream_title
+        if cleaned_stream_title == streamdetails.stream_title:
+            return
+
+        self.logger.log(VERBOSE_LOG_LEVEL, "ICY Radio streamtitle original: %s", stream_title)
+        self.logger.log(
+            VERBOSE_LOG_LEVEL, "ICY Radio streamtitle cleaned: %s", cleaned_stream_title
+        )
+        streamdetails.stream_title = cleaned_stream_title
 
         if " - " in cleaned_stream_title:
             artist_name_raw, track_name = (
