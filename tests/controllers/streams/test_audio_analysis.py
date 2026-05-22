@@ -721,6 +721,46 @@ async def test_get_merged_audio_analysis_rows_empty_db_returns_empty_list() -> N
 
 
 @pytest.mark.asyncio
+async def test_get_merged_audio_analysis_rows_logs_warning_for_unparsable_rows(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Unparsable rows must surface a WARNING so storage corruption is observable."""
+    rows: list[dict[str, Any]] = [
+        {
+            "id": 42,
+            "item_id": "t1",
+            "provider": "filesystem_local",
+            "aa_provider_domain": "sonic_analysis",
+            "analysis_data": "not-json",
+        },
+        {
+            "id": 43,
+            "item_id": "t1",
+            "provider": "filesystem_local",
+            "aa_provider_domain": "smart_fades",
+            "analysis_data": '{"bpm": 120.0}',
+        },
+    ]
+    c, _ = _stub_controller(rows_from_query_result=rows)
+    c.mass.get_providers = MagicMock(  # type: ignore[method-assign]
+        return_value=[
+            _aa_provider_stub("sonic_analysis"),
+            _aa_provider_stub("smart_fades"),
+        ]
+    )
+
+    with caplog.at_level("WARNING", logger=audio_analysis_mod.LOGGER.name):
+        await c.get_merged_audio_analysis_rows("sonic_analysis")
+
+    assert any(
+        "Skipping unparsable audio_analysis row" in r.message
+        and "id=42" in r.message
+        and "sonic_analysis" in r.message
+        for r in caplog.records
+    )
+
+
+@pytest.mark.asyncio
 async def test_get_merged_audio_analysis_rows_drops_groups_with_only_corrupt_rows() -> None:
     """A group whose only row has corrupt JSON is not emitted at all."""
     rows: list[dict[str, Any]] = [
@@ -789,6 +829,27 @@ async def test_coverage_raises_for_unknown_aa_domain() -> None:
 
     with pytest.raises(ProviderUnavailableError):
         await c.get_coverage(aa_domain="nope")
+
+
+@pytest.mark.asyncio
+async def test_coverage_stale_query_counts_null_analysis_version_as_stale() -> None:
+    """Rows with NULL analysis_version must be counted as stale (SQLite `NULL < N` is NULL)."""
+    c, db = _stub_controller(count_result=0)
+    p = _make_aa_provider_with_domain("sonic_analysis", analysis_version=3)
+    c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
+    c.get_audio_analysis_count = AsyncMock(return_value=0)  # type: ignore[method-assign]
+    c._count_candidates_missing_analysis = AsyncMock(return_value=0)  # type: ignore[method-assign]
+
+    await c.get_coverage(aa_domain="sonic_analysis")
+
+    sql, params = db.get_count_from_query.await_args.args
+    assert "analysis_version IS NULL" in sql
+    assert "analysis_version < :current_version" in sql
+    assert params == {
+        "aa_domain": "sonic_analysis",
+        "media_type": MediaType.TRACK.value,
+        "current_version": 3,
+    }
 
 
 @pytest.mark.asyncio

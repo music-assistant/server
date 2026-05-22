@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import logging
 import os
 import time
 from collections.abc import Iterable, Mapping
@@ -24,6 +25,7 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
     LOUDNESS_MEASUREMENT_MIN_LUFS,
+    MASS_LOGGER_NAME,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.datetime import local_clock_time_to_utc
@@ -50,6 +52,8 @@ FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
     "filesystem_smb",
     "filesystem_nfs",
 )
+
+LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_analysis")
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
@@ -81,7 +85,13 @@ def _merged_from_rows(
             continue
         try:
             row_data = AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
-        except (ValueError, TypeError, KeyError):
+        except (ValueError, TypeError, KeyError) as err:
+            LOGGER.warning(
+                "Skipping unparsable audio_analysis row (id=%s, aa_provider_domain=%s): %s",
+                row.get("id"),
+                row["aa_provider_domain"],
+                err,
+            )
             continue
         merged.update(row_data)
         found = True
@@ -489,11 +499,13 @@ class AudioAnalysisController:
 
         analyzed = await self.get_audio_analysis_count(aa_domain)
         pending = await self._count_candidates_missing_analysis(aa_domain)
+        # NULL analysis_version (pre-versioning rows) is treated as stale: SQLite
+        # evaluates `NULL < N` as NULL (falsy), so it must be matched explicitly.
         stale_query = (
             f"SELECT id FROM {DB_TABLE_AUDIO_ANALYSIS} "
             f"WHERE aa_provider_domain = :aa_domain "
             f"  AND media_type = :media_type "
-            f"  AND analysis_version < :current_version"
+            f"  AND (analysis_version IS NULL OR analysis_version < :current_version)"
         )
         stale_version = await self.mass.music.database.get_count_from_query(
             stale_query,
