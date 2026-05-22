@@ -1013,11 +1013,19 @@ class PlayerQueuesController(CoreController):
         if target_player.state.active_group or target_player.state.synced_to:
             # edge case: the user wants to move playback from the group as a whole, to a single
             # player in the group or it is grouped and the command targeted at the single player.
-            # We need to dissolve the group first.
+            # We need to dissolve the group/sync first, and wait for the state to actually
+            # propagate before we hand the queue over to the target player.
             group_id = target_player.state.active_group or target_player.state.synced_to
             assert group_id is not None  # checked in if condition above
-            await self.mass.players.cmd_ungroup(group_id)
-            await asyncio.sleep(3)
+            async with self.mass.players.wait_for_player_update(
+                target_queue_id,
+                attribute_name=(
+                    "active_group" if target_player.state.active_group else "synced_to"
+                ),
+                attribute_value=None,
+                timeout=5,
+            ):
+                await self.mass.players.cmd_ungroup(group_id)
 
         # capture source state before stopping (stop resets these)
         source_items = self._queue_items[source_queue_id]

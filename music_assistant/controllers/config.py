@@ -73,6 +73,7 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_CHANNELS,
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_OUTPUT_LIMITER,
+    CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
     CONF_ENTRY_SAMPLE_RATES,
@@ -1705,11 +1706,14 @@ class ConfigController:
             CONF_ENTRY_ANNOUNCE_VOLUME,
             CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
             CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
+            # play_media-on-self preference (only relevant to non-group players)
+            CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
         ]
         return entries
 
     def _create_player_control_config_entries(self, player: Player) -> list[ConfigEntry]:
         """Create config entries for player controls."""
+        is_group = player.state.type == PlayerType.GROUP
         all_controls = self.mass.players.player_controls()
         power_controls = [x for x in all_controls if x.supports_power]
         volume_controls = [x for x in all_controls if x.supports_volume]
@@ -1825,8 +1829,11 @@ class ConfigController:
             # Volume limit entries
             CONF_ENTRY_MIN_VOLUME,
             CONF_ENTRY_MAX_VOLUME,
-            # auto-play on power on control config entry
-            CONF_ENTRY_AUTO_PLAY,
+            # auto-play on power on — only meaningful for individual players.
+            # For group players, power on/off is purely a "capture members"
+            # toggle (Fake control) and auto-starting playback there causes
+            # surprise playback when the user just wanted to pin the group.
+            *([] if is_group else [CONF_ENTRY_AUTO_PLAY]),
         ]
 
     async def _create_output_protocol_config_entries(  # noqa: PLR0915

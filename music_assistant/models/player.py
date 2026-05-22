@@ -315,6 +315,19 @@ class Player(ABC):
         return self._attr_can_group_with
 
     @property
+    def is_active_session(self) -> bool:
+        """
+        Return whether this group player is currently holding (capturing) its members.
+
+        Used by :meth:`__final_active_group` to decide whether children should be
+        considered "owned" by this group at this moment. Non-group players should
+        always return ``False``. Group implementations should return ``True`` while
+        a session is being formed, while it is actively playing/paused, and during
+        any idle grace period; and ``False`` once the group is fully dormant.
+        """
+        return False
+
+    @property
     def synced_to(self) -> str | None:
         """Return the id of the player this player is synced to (sync leader)."""
         # default implementation, feel free to override if your
@@ -803,7 +816,11 @@ class Player(ABC):
         """Return the power control type."""
         conf = self.mass.config.get_raw_player_config_value(self.player_id, CONF_POWER_CONTROL)
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
-            # the control type is explicitly set in the config, use that
+            # validate that NATIVE is still backed by an actual POWER feature.
+            # this handles graceful degradation for players (e.g. group players)
+            # that previously advertised POWER but no longer do.
+            if conf == PLAYER_CONTROL_NATIVE and PlayerFeature.POWER not in self.supported_features:
+                return PLAYER_CONTROL_NONE
             return str(conf)
         if conf and (_control := self.mass.players.get_player_control(str(conf))):
             # the control type is explicitly set to a player control,
@@ -1665,11 +1682,19 @@ class Player(ABC):
                 continue
             if group_player.player_id == self.player_id:
                 continue
-            if group_player.powered is False or (
-                group_player.powered is None and group_player.playback_state == PlaybackState.IDLE
-            ):
-                # a group is only considered active if it supports power and is powered on,
-                # or if it doesn't support power but is not idle
+            # Use the raw `powered` attribute (not `state.powered`) so the
+            # check reflects what the group player itself believes — for
+            # native/fake control the group's `power()` method sets
+            # `_attr_powered` directly. `state.powered` routes through
+            # `__final_power_state` which may return None for power_control
+            # == NONE even though the group is actively capturing members.
+            powered = group_player.powered
+            if powered is False:
+                # explicit power-off (fake or native) - never captures members
+                continue
+            if powered is not True and not group_player.is_active_session:
+                # no explicit power-on and no captured session - group is dormant,
+                # configured members are free to be controlled individually
                 continue
             if self.player_id in group_player.state.group_members:
                 return group_player.player_id
