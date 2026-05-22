@@ -59,6 +59,35 @@ if TYPE_CHECKING:
     from music_assistant.controllers.streams.controller import StreamsController
 
 
+def _merged_from_rows(
+    rows: Iterable[Mapping[str, Any]],
+    available_aa_domains: set[str],
+) -> AudioAnalysisData | None:
+    """
+    Fold audio_analysis rows into one merged result (latest-write-wins).
+
+    Rows from AA providers not in available_aa_domains, and rows whose
+    analysis_data is unparsable, are skipped. Returns None when no usable
+    row remains.
+
+    :param rows: audio_analysis rows ordered oldest-first; each must carry
+        aa_provider_domain and analysis_data.
+    :param available_aa_domains: AA provider domains currently available.
+    """
+    merged = AudioAnalysisData()
+    found = False
+    for row in rows:
+        if row["aa_provider_domain"] not in available_aa_domains:
+            continue
+        try:
+            row_data = AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
+        except (ValueError, TypeError, KeyError):
+            continue
+        merged.update(row_data)
+        found = True
+    return merged if found else None
+
+
 class AudioAnalysisController:
     """Controller that distributes PCM chunks to all registered AudioAnalysisProviders."""
 
@@ -236,35 +265,6 @@ class AudioAnalysisController:
             },
         )
 
-    @staticmethod
-    def _merged_from_rows(
-        rows: Iterable[Mapping[str, Any]],
-        available_aa_domains: set[str],
-    ) -> AudioAnalysisData | None:
-        """
-        Fold audio_analysis rows into one merged result (latest-write-wins).
-
-        Rows from AA providers not in available_aa_domains, and rows whose
-        analysis_data is unparsable, are skipped. Returns None when no usable
-        row remains.
-
-        :param rows: audio_analysis rows ordered oldest-first; each must carry
-            aa_provider_domain and analysis_data.
-        :param available_aa_domains: AA provider domains currently available.
-        """
-        merged = AudioAnalysisData()
-        found = False
-        for row in rows:
-            if row["aa_provider_domain"] not in available_aa_domains:
-                continue
-            try:
-                row_data = AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
-            except (ValueError, TypeError, KeyError):
-                continue
-            merged.update(row_data)
-            found = True
-        return merged if found else None
-
     async def get_audio_analysis(
         self,
         item_id: str,
@@ -303,7 +303,7 @@ class AudioAnalysisController:
         available_aa_domains = {
             p.domain for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS) if p.available
         }
-        return self._merged_from_rows(rows, available_aa_domains)
+        return _merged_from_rows(rows, available_aa_domains)
 
     async def set_track_loudness(
         self,
@@ -468,7 +468,7 @@ class AudioAnalysisController:
         for (item_id, provider), group in groupby(
             rows, key=lambda r: (r["item_id"], r["provider"])
         ):
-            merged = self._merged_from_rows(group, available_aa_domains)
+            merged = _merged_from_rows(group, available_aa_domains)
             if merged is not None:
                 results.append((item_id, provider, merged))
         return results
