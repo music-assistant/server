@@ -284,8 +284,11 @@ async def test_set_with_empty_key_is_noop(cache: CacheController) -> None:
 # --- Oversized cache detection ---
 
 
-async def test_cache_reset_when_exceeding_limit(mass_minimal: MusicAssistant) -> None:
-    """Test that the cache database is removed when it exceeds MAX_CACHE_DB_SIZE_MB."""
+async def test_cache_warns_when_exceeding_limit(
+    mass_minimal: MusicAssistant,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test that a warning is logged (and files kept) when the db exceeds the limit."""
     cache = mass_minimal.cache
     db_files = await _create_db_files(mass_minimal.cache_path)
 
@@ -297,15 +300,18 @@ async def test_cache_reset_when_exceeding_limit(mass_minimal: MusicAssistant) ->
             return func(*args)
 
         mock_to_thread.side_effect = _side_effect
-        result = await cache._check_and_reset_oversized_cache()
+        await cache._check_oversized_cache()
 
-    assert result is True
+    assert "exceeds recommended maximum" in caplog.text
     for path in db_files:
-        assert not os.path.exists(path)
+        assert os.path.exists(path)
 
 
-async def test_cache_not_reset_when_under_limit(mass_minimal: MusicAssistant) -> None:
-    """Test that the cache database is kept when it is under MAX_CACHE_DB_SIZE_MB."""
+async def test_cache_does_not_warn_when_under_limit(
+    mass_minimal: MusicAssistant,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test that no warning is logged when the db is under the limit."""
     cache = mass_minimal.cache
     db_files = await _create_db_files(mass_minimal.cache_path)
 
@@ -317,14 +323,17 @@ async def test_cache_not_reset_when_under_limit(mass_minimal: MusicAssistant) ->
             return func(*args)
 
         mock_to_thread.side_effect = _side_effect
-        result = await cache._check_and_reset_oversized_cache()
+        await cache._check_oversized_cache()
 
-    assert result is False
+    assert "exceeds recommended maximum" not in caplog.text
     for path in db_files:
         assert os.path.exists(path)
 
 
-async def test_all_three_db_files_included_in_size(mass_minimal: MusicAssistant) -> None:
+async def test_all_three_db_files_included_in_size(
+    mass_minimal: MusicAssistant,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Test that cache.db, cache.db-wal, and cache.db-shm are all summed for size check."""
     cache = mass_minimal.cache
     db_path = os.path.join(mass_minimal.cache_path, "cache.db")
@@ -337,38 +346,11 @@ async def test_all_three_db_files_included_in_size(mass_minimal: MusicAssistant)
     with patch(
         "music_assistant.controllers.cache.controller.MAX_CACHE_DB_SIZE_MB", size_threshold_mb
     ):
-        result = await cache._check_and_reset_oversized_cache()
+        await cache._check_oversized_cache()
 
-    assert result is True
-    assert not os.path.exists(db_path)
-    assert not os.path.exists(db_path + "-wal")
-    assert not os.path.exists(db_path + "-shm")
-
-
-async def test_skip_migration_when_cache_reset(
-    mass_minimal: MusicAssistant,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Test that database migration is skipped when the cache was reset."""
-    cache = mass_minimal.cache
-
-    with patch.object(cache, "_check_and_reset_oversized_cache", return_value=True):
-        await cache._setup_database()
-
-    assert "Performing database migration" not in caplog.text
-
-
-async def test_skip_vacuum_when_cache_reset(
-    mass_minimal: MusicAssistant,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Test that database vacuum is skipped when the cache was reset."""
-    cache = mass_minimal.cache
-
-    with patch.object(cache, "_check_and_reset_oversized_cache", return_value=True):
-        await cache._setup_database()
-
-    assert "Compacting database" not in caplog.text
+    assert "exceeds recommended maximum" in caplog.text
+    for suffix in ("", "-wal", "-shm"):
+        assert os.path.exists(db_path + suffix)
 
 
 # --- allow_expired_cache flag ---
