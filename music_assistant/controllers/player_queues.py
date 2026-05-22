@@ -436,7 +436,7 @@ class PlayerQueuesController(CoreController):
             and (queue.items - queue.current_index) <= 1
         ):
             queue.radio_source = queue.enqueued_media_items
-            queue.is_dynamic = self._calc_is_dynamic(queue.radio_source)
+            queue.is_dynamic = _is_radio_source_dynamic(queue.radio_source)
             task_id = f"fill_radio_tracks_{queue_id}"
             self.mass.call_later(5, self._fill_radio_tracks, queue_id, task_id=task_id)
         self.signal_update(queue_id=queue_id)
@@ -1388,7 +1388,7 @@ class PlayerQueuesController(CoreController):
             queue.radio_source = radio_source
         else:
             queue.radio_source += radio_source
-        queue.is_dynamic = self._calc_is_dynamic(queue.radio_source)
+        queue.is_dynamic = _is_radio_source_dynamic(queue.radio_source)
         # Use collected media items to calculate the radio if radio mode is on
         if radio_mode:
             radio_tracks = await self._get_radio_tracks(
@@ -2868,7 +2868,7 @@ class PlayerQueuesController(CoreController):
                     ", ".join([x.uri for x in queue.enqueued_media_items]),  # type: ignore[misc]  # uri set in __post_init__
                 )
                 queue.radio_source = queue.enqueued_media_items
-                queue.is_dynamic = self._calc_is_dynamic(queue.radio_source)
+                queue.is_dynamic = _is_radio_source_dynamic(queue.radio_source)
             # auto fill radio tracks if less than 5 tracks left in the queue
             if (
                 queue.radio_source
@@ -2877,15 +2877,6 @@ class PlayerQueuesController(CoreController):
             ):
                 task_id = f"fill_radio_tracks_{queue_id}"
                 self.mass.call_later(5, self._fill_radio_tracks, queue_id, task_id=task_id)
-
-    @staticmethod
-    def _calc_is_dynamic(radio_source: list[MediaItemType]) -> bool:
-        """Return True if radio_source is a single dynamic playlist."""
-        return (
-            len(radio_source) == 1
-            and isinstance(radio_source[0], Playlist)
-            and radio_source[0].is_dynamic
-        )
 
     def _get_flow_queue_stream_index(
         self, queue: PlayerQueue, player: Player
@@ -3297,6 +3288,15 @@ class PlayerQueuesController(CoreController):
                 buffers_cleared,
                 queue_id,
             )
+
+
+def _is_radio_source_dynamic(radio_source: list[MediaItemType]) -> bool:
+    """Return True if radio_source is a single dynamic playlist."""
+    return (
+        len(radio_source) == 1
+        and isinstance(radio_source[0], Playlist)
+        and radio_source[0].is_dynamic
+    )
 
 
 async def _smart_shuffle(items: list[QueueItem]) -> list[QueueItem]:
