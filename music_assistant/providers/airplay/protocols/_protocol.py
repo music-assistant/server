@@ -63,11 +63,18 @@ class AirPlayProtocol(ABC):
         self._metadata_checksum = ""
         self._last_progress_sent: int = -1
         self._elapsed_time_offset: float | None = None
+        self._cli_start_ts: float | None = None
+        self._connected_ts: float | None = None
 
     @property
     def running(self) -> bool:
         """Return boolean if this stream is running."""
         return not self._stopped and self._cli_proc is not None and not self._cli_proc.closed
+
+    @property
+    def connected(self) -> bool:
+        """Return boolean if the stream connection has been established."""
+        return self._connected.is_set()
 
     @abstractmethod
     async def start(self, start_ntp: int) -> None:

@@ -73,6 +73,7 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_CHANNELS,
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_OUTPUT_LIMITER,
+    CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
     CONF_ENTRY_SAMPLE_RATES,
@@ -1351,6 +1352,53 @@ class ConfigController:
             LOGGER.warning("Repaired corrupt tasks core configuration")
             changed = True
 
+        # Migrate default_enqueue_option_radio -> default_enqueue_option_live_sources.
+        # The same setting now covers both radio stations and plugin AudioSources
+        # (Spotify Connect, AirPlay receiver, etc.); preserves the user's customised
+        # value if they set one.
+        # TODO: remove after 2.10 release
+        player_queues_cfg = self._data.get(CONF_CORE, {}).get("player_queues")
+        if isinstance(player_queues_cfg, dict):
+            values = player_queues_cfg.get("values")
+            if isinstance(values, dict) and "default_enqueue_option_radio" in values:
+                radio_value = values.pop("default_enqueue_option_radio")
+                values.setdefault("default_enqueue_option_live_sources", radio_value)
+                LOGGER.info(
+                    "Migrated default_enqueue_option_radio -> default_enqueue_option_live_sources"
+                )
+                changed = True
+
+        # Migrate sync_group members_filter (exclusion) -> allowed_members (inclusion).
+        # Inversion freezes the universe at migration time; speakers added after this
+        # point must be added by the user explicitly, which matches the new design's
+        # "limit to these" intent.
+        # TODO: remove after 2.10 release
+        all_player_configs = self._data.get(CONF_PLAYERS, {})
+        if isinstance(all_player_configs, dict):
+            group_provider_domains = {"sync_group", "universal_group"}
+            universe = {
+                pid
+                for pid, cfg in all_player_configs.items()
+                if isinstance(cfg, dict) and cfg.get("provider") not in group_provider_domains
+            }
+            for player_id, player_cfg in all_player_configs.items():
+                if not isinstance(player_cfg, dict):
+                    continue
+                if player_cfg.get("provider") != "sync_group":
+                    continue
+                values = player_cfg.setdefault("values", {})
+                old_exclude = values.get("members_filter") or []
+                if not old_exclude or values.get("allowed_members") is not None:
+                    continue
+                values["allowed_members"] = sorted(universe - set(old_exclude))
+                values["members_filter"] = []
+                LOGGER.info(
+                    "Migrated sync_group %s: members_filter (exclusion) "
+                    "-> allowed_members (inclusion)",
+                    player_id,
+                )
+                changed = True
+
         if changed:
             await self._async_save()
 
@@ -1624,13 +1672,10 @@ class ConfigController:
                 key=CONF_HIDE_IN_UI,
                 type=ConfigEntryType.BOOLEAN,
                 label="Hide this player in the user interface",
-                description="Hide this player from the main players list and from selection "
-                "menus like 'Play on' and 'Transfer queue'. "
-                "The player remains fully controllable and continues to appear as a "
-                "current member of any sync group it belongs to (including in that "
-                "group's volume control). It will not, however, be offered as a "
-                "candidate when adding new members to a group. "
-                "Disable the player to block access entirely.",
+                description="Hide this player from the main players list and dashboard selection "
+                "menus.  The player remains fully controllable and still appears in any sync group "
+                "it currently belongs to and in the settings. Disable the player to exclude "
+                "it everywhere.",
                 default_value=player.hidden_by_default,
                 category="generic",
                 advanced=False,
@@ -1661,11 +1706,14 @@ class ConfigController:
             CONF_ENTRY_ANNOUNCE_VOLUME,
             CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
             CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
+            # play_media-on-self preference (only relevant to non-group players)
+            CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
         ]
         return entries
 
     def _create_player_control_config_entries(self, player: Player) -> list[ConfigEntry]:
         """Create config entries for player controls."""
+        is_group = player.state.type == PlayerType.GROUP
         all_controls = self.mass.players.player_controls()
         power_controls = [x for x in all_controls if x.supports_power]
         volume_controls = [x for x in all_controls if x.supports_volume]
@@ -1781,8 +1829,11 @@ class ConfigController:
             # Volume limit entries
             CONF_ENTRY_MIN_VOLUME,
             CONF_ENTRY_MAX_VOLUME,
-            # auto-play on power on control config entry
-            CONF_ENTRY_AUTO_PLAY,
+            # auto-play on power on — only meaningful for individual players.
+            # For group players, power on/off is purely a "capture members"
+            # toggle (Fake control) and auto-starting playback there causes
+            # surprise playback when the user just wanted to pin the group.
+            *([] if is_group else [CONF_ENTRY_AUTO_PLAY]),
         ]
 
     async def _create_output_protocol_config_entries(  # noqa: PLR0915

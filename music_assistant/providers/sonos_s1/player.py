@@ -34,7 +34,9 @@ from .constants import (
     POSITION_SECONDS,
     RESUB_COOLDOWN_SECONDS,
     SONOS_STATE_TRANSITIONING,
+    SOURCE_LINEIN,
     SOURCE_MAPPING,
+    SOURCE_TV,
     SUBSCRIPTION_SERVICES,
     SUBSCRIPTION_TIMEOUT,
 )
@@ -273,6 +275,21 @@ class SonosPlayer(Player):
 
         await asyncio.to_thread(add_to_queue)
         self.mass.call_later(2, self.poll)
+
+    async def select_source(self, source: str) -> None:
+        """Handle SELECT SOURCE command on the player."""
+        if source in LINEIN_SOURCE_IDS:
+
+            def _switch_to_linein() -> None:
+                if source == SOURCE_TV:
+                    self.soco.switch_to_tv()
+                elif source == SOURCE_LINEIN:
+                    self.soco.switch_to_line_in()
+
+            await asyncio.to_thread(_switch_to_linein)
+            self.mass.call_later(2, self.poll)
+        else:
+            await self.stop()
 
     @soco_error()
     async def set_members(

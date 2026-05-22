@@ -41,6 +41,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.media_items.metadata import MediaItemChapter
 from music_assistant_models.streamdetails import StreamDetails
+from orjson import JSONDecodeError
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
@@ -577,7 +578,7 @@ class SpotifyProvider(MusicProvider):
             # The resume position will be automatically updated by MA's internal tracking
             # and will be retrieved via get_audiobook() which combines MA + Spotify positions
 
-    @use_cache(86400 * 365)  # 1 year - album track listings are immutable
+    @use_cache(86400 * 365, allow_expired_cache=True)  # 1 year - album track listings are immutable
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
         return [
@@ -586,7 +587,7 @@ class SpotifyProvider(MusicProvider):
             if item["id"]
         ]
 
-    @use_cache(3600 * 3)  # 3 hours
+    @use_cache(3600 * 3, allow_expired_cache=True)  # 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         is_liked_songs = prov_playlist_id == self._get_liked_songs_playlist_id()
@@ -606,8 +607,15 @@ class SpotifyProvider(MusicProvider):
         page_size = 50
         offset = page * page_size
 
-        # Get etag for caching
-        cache_checksum = await self._get_etag(uri, limit=1, offset=0, use_global_session=use_global)
+        meta = await self._get_paginated_meta(uri, limit=1, offset=0, use_global_session=use_global)
+        cache_checksum = meta["etag"]
+        total = meta["total"]
+
+        # Spotify has started returning 5xx for offset >= total on some
+        # playlists (notably algorithmic ones like Daily Mix). The retry
+        # storm that follows surfaces as "No playable items found".
+        if total and offset >= total:
+            return result
 
         spotify_result = await self._get_data_with_caching(
             uri, cache_checksum, limit=page_size, offset=offset, use_global_session=use_global
@@ -629,28 +637,40 @@ class SpotifyProvider(MusicProvider):
             result.append(track)
         return result
 
-    @use_cache(86400 * 14)  # 14 days
+    @use_cache(86400 * 14, allow_expired_cache=True)  # 14 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
-        return [
-            parse_album(item, self)
-            async for item in self._get_all_items(
-                f"artists/{prov_artist_id}/albums?include_groups=album,single,compilation"
-            )
-            if (item and item["id"])
-        ]
+        try:
+            return [
+                parse_album(item, self)
+                async for item in self._get_all_items(
+                    f"artists/{prov_artist_id}/albums?include_groups=album,single,compilation",
+                    limit=10,
+                )
+                if (item and item["id"])
+            ]
+        except MediaNotFoundError:
+            self.logger.warning("Unable to fetch albums for artist %s", prov_artist_id)
+            return []
 
-    @use_cache(86400 * 14)  # 14 days
+    @use_cache(86400 * 14, allow_expired_cache=True)  # 14 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
-        artist = await self.get_artist(prov_artist_id)
-        endpoint = f"artists/{prov_artist_id}/top-tracks"
-        items = await self._get_data(endpoint)
-        return [
-            parse_track(item, self, artist=artist)
-            for item in items["tracks"]
-            if (item and item["id"])
-        ]
+        try:
+            artist = await self.get_artist(prov_artist_id)
+            endpoint = f"artists/{prov_artist_id}/top-tracks"
+            items = await self._get_data(endpoint)
+            return [
+                parse_track(item, self, artist=artist)
+                for item in items["tracks"]
+                if (item and item["id"])
+            ]
+        except MediaNotFoundError:
+            self.logger.warning(
+                "Top tracks search for artist %s appears to have been removed by Spotify for this account.",
+                prov_artist_id,
+            )
+            return []
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
@@ -719,7 +739,7 @@ class SpotifyProvider(MusicProvider):
         self._fix_create_playlist_api_bug(new_playlist)
         return parse_playlist(new_playlist, self)
 
-    @use_cache(86400 * 14)  # 14 days
+    @use_cache(86400 * 14, allow_expired_cache=True)  # 14 days
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         # Recommendations endpoint is only available on global session (not developer API)
@@ -1121,14 +1141,19 @@ class SpotifyProvider(MusicProvider):
         return chapters_data
 
     async def _get_all_items(
-        self, endpoint: str, key: str = "items", **kwargs: Any
+        self, endpoint: str, key: str = "items", limit: int = 50, **kwargs: Any
     ) -> AsyncGenerator[dict[str, Any], None]:
         """Get all items from a paged list."""
-        limit = 50
         offset = 0
-        # do single request to get the etag (which we use as checksum for caching)
-        cache_checksum = await self._get_etag(endpoint, limit=1, offset=0, **kwargs)
+        # single request to fetch the etag (used as cache checksum) and total
+        meta = await self._get_paginated_meta(endpoint, limit=1, offset=0, **kwargs)
+        cache_checksum = meta["etag"]
+        total = meta["total"]
         while True:
+            # Avoid requesting beyond the known end. Spotify can return 5xx
+            # for offset >= total on some endpoints (e.g. algorithmic playlists).
+            if total and offset >= total:
+                break
             result = await self._get_data_with_caching(
                 endpoint, cache_checksum=cache_checksum, limit=limit, offset=offset, **kwargs
             )
@@ -1158,11 +1183,11 @@ class SpotifyProvider(MusicProvider):
         )
         return result
 
-    @use_cache(120, allow_bypass=False)  # short cache for etags (subsequent calls use cached data)
-    async def _get_etag(self, endpoint: str, **kwargs: Any) -> str | None:
-        """Get etag for api endpoint."""
+    @use_cache(120, allow_bypass=False)  # short cache: subsequent calls reuse cached data
+    async def _get_paginated_meta(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        """Get etag and total item count for a paginated api endpoint."""
         _res = await self._get_data(endpoint, **kwargs)
-        return _res.get("etag")
+        return {"etag": _res.get("etag"), "total": _res.get("total", 0)}
 
     @throttle_with_retries
     async def _get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
@@ -1210,9 +1235,23 @@ class SpotifyProvider(MusicProvider):
                     self._auth_info_dev = None
                 raise ResourceTemporarilyUnavailable("Token expired", backoff_time=1)
 
-            # handle 404 not found, convert to MediaNotFoundError
-            if response.status in (400, 404):
+            if response.status in (400, 403, 404):
+                try:
+                    error = await response.json(loads=json_loads)
+                    message = error.get("error", {}).get("message") or response.reason
+                except (aiohttp.ContentTypeError, JSONDecodeError):
+                    message = (await response.text()) or response.reason
+
+                self.logger.debug(
+                    "Spotify API error: endpoint=%s, status=%s, reason=%s, message=%s",
+                    endpoint,
+                    response.status,
+                    response.reason,
+                    message,
+                )
+
                 raise MediaNotFoundError(f"{endpoint} not found")
+
             response.raise_for_status()
             result: dict[str, Any] = await response.json(loads=json_loads)
             if etag := response.headers.get("ETag"):

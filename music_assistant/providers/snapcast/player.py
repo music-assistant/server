@@ -7,7 +7,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState, PlayerFeature
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 from propcache import under_cached_property as cached_property
 
@@ -238,15 +238,9 @@ class SnapCastPlayer(Player):
         sync_group_player: Player | None = None
         if curr_ma_stream := self.snap_provider.get_snap_ma_stream(curr_stream_id):
             media = curr_ma_stream.media
-            if media.media_type == MediaType.PLUGIN_SOURCE:
-                custom_data = media.custom_data or {}
-                assigned_player = custom_data.get("player_id", "")
-                if assigned_player.startswith(SGP_PREFIX):
-                    sync_group_player = self.mass.players.get_player(assigned_player)
-            else:
-                media_src_id = media.source_id or ""
-                if media_src_id.startswith(SGP_PREFIX):
-                    sync_group_player = self.mass.players.get_player(media_src_id)
+            media_src_id = media.source_id or ""
+            if media_src_id.startswith(SGP_PREFIX):
+                sync_group_player = self.mass.players.get_player(media_src_id)
         if sync_group_player and self.player_id in (player_ids_to_remove or []):
             # players in sync_group_player.group_members will be rejoined
             # remove others first

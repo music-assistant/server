@@ -137,7 +137,7 @@ class NugsProvider(MusicProvider):
         artist_data = artist_response["items"][0]["artist"]
         return self._parse_artist(artist_data)
 
-    @use_cache(3600 * 24 * 14)  # Cache for 14 days
+    @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         params = {
@@ -174,7 +174,7 @@ class NugsProvider(MusicProvider):
             return cached
         raise MediaNotFoundError(f"Track {prov_track_id} not found")
 
-    @use_cache(3600 * 24 * 14)  # Cache for 14 days
+    @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
         endpoint = f"shows/{prov_album_id}"
@@ -193,7 +193,7 @@ class NugsProvider(MusicProvider):
         await self._cache_tracks(tracks)
         return tracks
 
-    @use_cache(3600)  # Cache for 1 hour
+    @use_cache(3600, allow_expired_cache=True)  # Cache for 1 hour
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []

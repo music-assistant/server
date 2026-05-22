@@ -96,7 +96,7 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
       The base class uses this to skip re-analysis of already-analyzed tracks.
     - If you have other conditions that determine whether to skip an analysis,
       implement them in _start_analysis and return False to reject the session.
-    - Store results via self.mass.streams.audio_analysis.set_audio_analysis() in _finalize.
+    - Return AudioAnalysisData from _finalize; the base class persists it.
     """
 
     # Increment this when your analysis algorithm changes significantly.
@@ -162,26 +162,18 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
         )
 
     async def _finalize(self, session_id: str) -> None:
-        """Finalize analysis and store results.
+        """Finalize analysis and return the result.
 
         Called when the track has finished buffering and all chunks have been
-        processed. This is where a real provider would compute final results
-        and store them via self.mass.streams.audio_analysis.set_audio_analysis().
+        processed. A real provider would compute its final result and return it
+        as an AudioAnalysisData; the base class then persists it via
+        set_audio_analysis() and fires post_analysis(). Return None to skip both.
 
-        Example of storing results (not done in this demo)::
+        Example return (not done in this demo)::
 
             from music_assistant.models.audio_analysis import AudioAnalysisData
 
-            session = self._sessions[session_id]
-            analysis = AudioAnalysisData(bpm=120.0, duration=180.5)
-            await self.mass.streams.audio_analysis.set_audio_analysis(
-                item_id=session.streamdetails.item_id,
-                provider_instance_id_or_domain=session.streamdetails.provider,
-                aa_provider_domain=self.domain,
-                analysis=analysis,
-                analysis_version=self.analysis_version,
-                media_type=session.streamdetails.media_type,
-            )
+            return AudioAnalysisData(bpm=120.0, duration=180.5)
 
         Note: The base class's finalize() method calls this, then cleans up
         the session from self._sessions automatically. Do not override finalize()

@@ -85,6 +85,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -165,6 +166,7 @@
     'album_type': 'unknown',
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -176,6 +178,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -239,6 +242,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': list([
         'East coast',
@@ -303,6 +307,7 @@
     'album_type': 'unknown',
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -314,6 +319,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -377,6 +383,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'Download the full release here (creative commons). These cripsy beats are ripe with thumping funk and techno influences, sample wizardry and daring shuffles. Composed with the help of unique sound plugins which were especially programmed to measure Comfort Fit’s needs and wishes, we think the chances aren’t bad that you’ll fall for the unique sound signature, bounce and elegance of this unusual Hip Hop production. Ltj bukem / Good looking Rec., UK: "Really love this music." Velanche / XLR8R, UK: "Awesome job he\'s done... overall production is dope." Kwesi / BBE Music, UK: "Wooooooowwwww... WHAT THE FUCK! THIS IS WHAT',
+      'description_language': None,
       'explicit': None,
       'genres': list([
         'East coast',
@@ -510,6 +517,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': list([
         'East coast',
@@ -637,6 +645,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'Download the full release here (creative commons). These cripsy beats are ripe with thumping funk and techno influences, sample wizardry and daring shuffles. Composed with the help of unique sound plugins which were especially programmed to measure Comfort Fit’s needs and wishes, we think the chances aren’t bad that you’ll fall for the unique sound signature, bounce and elegance of this unusual Hip Hop production. Ltj bukem / Good looking Rec., UK: "Really love this music." Velanche / XLR8R, UK: "Awesome job he\'s done... overall production is dope." Kwesi / BBE Music, UK: "Wooooooowwwww... WHAT THE FUCK! THIS IS WHAT',
+      'description_language': None,
       'explicit': None,
       'genres': list([
         'East coast',
@@ -770,6 +779,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': list([
         'East coast',
@@ -897,6 +907,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'Download the full release here (creative commons). These cripsy beats are ripe with thumping funk and techno influences, sample wizardry and daring shuffles. Composed with the help of unique sound plugins which were especially programmed to measure Comfort Fit’s needs and wishes, we think the chances aren’t bad that you’ll fall for the unique sound signature, bounce and elegance of this unusual Hip Hop production. Ltj bukem / Good looking Rec., UK: "Really love this music." Velanche / XLR8R, UK: "Awesome job he\'s done... overall production is dope." Kwesi / BBE Music, UK: "Wooooooowwwww... WHAT THE FUCK! THIS IS WHAT',
+      'description_language': None,
       'explicit': None,
       'genres': list([
         'East coast',
@@ -964,6 +975,7 @@
 # ---
 # name: test_parse_artists[no-sort-name.artist]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
       list([
@@ -979,6 +991,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1042,6 +1055,7 @@
 # ---
 # name: test_parse_artists[no-sort-name.artist].1
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
       list([
@@ -1057,6 +1071,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'Empty biography',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1126,6 +1141,7 @@
 # ---
 # name: test_parse_artists[spec-artistid3.artist]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
       list([
@@ -1141,6 +1157,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1204,6 +1221,7 @@
 # ---
 # name: test_parse_artists[spec-artistid3.artist].1
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
       list([
@@ -1219,6 +1237,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'Empty biography',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1288,6 +1307,7 @@
 # ---
 # name: test_parse_artists[spec-sample.artist]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
     ]),
@@ -1299,6 +1319,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1356,6 +1377,7 @@
 # ---
 # name: test_parse_artists[spec-sample.artist].1
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
     ]),
@@ -1367,6 +1389,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'Empty biography',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1443,6 +1466,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'The history of The History of Rome...Why the Western Empire Fell when it did...Some thoughts on the future...Thank you, goodnight.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1481,6 +1505,7 @@
         'chapters': None,
         'copyright': None,
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
+        'description_language': None,
         'explicit': None,
         'genres': None,
         'grouping': None,
@@ -1582,6 +1607,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'The history of The History of Rome...Why the Western Empire Fell when it did...Some thoughts on the future...Thank you, goodnight.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1620,6 +1646,7 @@
         'chapters': None,
         'copyright': None,
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
+        'description_language': None,
         'explicit': None,
         'genres': None,
         'grouping': None,
@@ -1721,6 +1748,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'The history of The History of Rome...Why the Western Empire Fell when it did...Some thoughts on the future...Thank you, goodnight.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1759,6 +1787,7 @@
         'chapters': None,
         'copyright': None,
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
+        'description_language': None,
         'explicit': None,
         'genres': None,
         'grouping': None,
@@ -1860,6 +1889,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1932,6 +1962,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -2002,6 +2033,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -2079,6 +2111,7 @@
     }),
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -2090,6 +2123,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -2156,6 +2190,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -2281,6 +2316,7 @@
         'chapters': None,
         'copyright': None,
         'description': None,
+        'description_language': None,
         'explicit': None,
         'genres': list([
           'East coast',
@@ -2341,6 +2377,7 @@
     }),
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -2352,6 +2389,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -2418,6 +2456,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -2494,6 +2533,7 @@
     }),
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -2505,6 +2545,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -2571,6 +2612,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -2696,6 +2738,7 @@
         'chapters': None,
         'copyright': None,
         'description': None,
+        'description_language': None,
         'explicit': None,
         'genres': list([
           'East coast',
@@ -2756,6 +2799,7 @@
     }),
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -2767,6 +2811,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -2833,6 +2878,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -2975,6 +3021,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -3100,6 +3147,7 @@
         'chapters': None,
         'copyright': None,
         'description': None,
+        'description_language': None,
         'explicit': None,
         'genres': list([
           'East coast',
@@ -3226,6 +3274,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -3368,6 +3417,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -3493,6 +3543,7 @@
         'chapters': None,
         'copyright': None,
         'description': None,
+        'description_language': None,
         'explicit': None,
         'genres': list([
           'East coast',
@@ -3619,6 +3670,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
