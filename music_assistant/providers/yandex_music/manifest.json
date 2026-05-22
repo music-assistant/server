@@ -1,7 +1,7 @@
 {
   "type": "music",
   "domain": "yandex_music",
-  "stage": "beta",
+  "stage": "stable",
   "name": "Yandex Music",
   "description": "Stream music, personalized recommendations, and lossless FLAC from Yandex Music — including My Wave radio and library sync.",
   "codeowners": ["@TrudenBoy"],
