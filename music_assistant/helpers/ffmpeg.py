@@ -62,8 +62,8 @@ _SAMPLE_FMT_BIT_DEPTH: Final[dict[str, int]] = {
 
 
 @dataclass
-class FFMpegInputStreamInfo:
-    """Audio format details parsed from an ffmpeg input stream log line."""
+class FFMpegStreamInfo:
+    """Audio format details parsed from an ffmpeg 'Stream #' log line."""
 
     codec: ContentType
     sample_rate: int | None = None
@@ -104,12 +104,21 @@ class FFMpeg(AsyncProcess):
         self.collect_log_history = collect_log_history
         self.log_history: deque[str] = deque(maxlen=100)
         self.concat_error = False  # switch to True if concat demuxer fails on MultiPartFiles
+        # Audio format details for the input and output stream as detected from ffmpeg's
+        # own stderr probe output. input_stream_info is also mirrored onto self.input_format
+        # so callers that share the AudioFormat (e.g. streamdetails) pick up the corrected
+        # values; output_stream_info is informational (useful for logging / future UI use).
+        self.input_stream_info: FFMpegStreamInfo | None = None
+        self.output_stream_info: FFMpegStreamInfo | None = None
         # Source duration in (whole) seconds as detected from the ffmpeg input log line,
         # or None if not yet parsed / not reported (e.g. live radio streams).
         self.parsed_duration: int | None = None
         self._stdin_feeder_task: asyncio.Task[None] | None = None
         self._stderr_reader_task: asyncio.Task[None] | None = None
-        self._input_stream_info_parsed = False
+        # ffmpeg emits 'Input #N, ...' and 'Output #N, ...' headers before each block of
+        # 'Stream #' lines; we track which block the next stream line belongs to.
+        # Defaults to "input" so a stray Stream # line before any header still routes there.
+        self._current_log_section: str = "input"
         stdin: bool | int
         if audio_input == "-" or isinstance(audio_input, AsyncGenerator):
             stdin = True
@@ -201,19 +210,33 @@ class FFMpeg(AsyncProcess):
                 # and should raise an exception to prevent false progress logging
                 self.concat_error = True
 
-            # Provider-supplied audio format details are often incomplete (e.g. defaults
-            # to 44.1/16) or missing for lossy codecs; opportunistically parse the real
-            # values from ffmpeg's probe output and update the input_format in place.
-            if not self._input_stream_info_parsed:
+            # Track which ffmpeg block we're currently parsing so the next 'Stream #'
+            # audio line is routed to the correct slot (input vs output).
+            if line.startswith("Input #"):
+                self._current_log_section = "input"
+            elif line.startswith("Output #"):
+                self._current_log_section = "output"
+
+            # Capture the first audio stream line per section. Provider-supplied input
+            # details are often incomplete (e.g. defaults to 44.1/16) or missing for
+            # lossy codecs, so we mirror the parsed input values onto input_format too.
+            if self._current_log_section == "input" and self.input_stream_info is None:
                 if stream_info := parse_ffmpeg_stream_info(line):
+                    self.input_stream_info = stream_info
+                    self._log_stream_info("input", stream_info)
                     self._apply_input_stream_info(stream_info)
-                    self._input_stream_info_parsed = True
+            elif self._current_log_section == "output" and self.output_stream_info is None:
+                if stream_info := parse_ffmpeg_stream_info(line):
+                    self.output_stream_info = stream_info
+                    self._log_stream_info("output", stream_info)
+
             # Source duration is reported separately from the stream info. Useful when
             # the provider didn't supply one (some podcast feeds report total_time=0).
             if self.parsed_duration is None:
                 duration = parse_ffmpeg_duration(line)
                 if duration is not None:
                     self.parsed_duration = duration
+                    self.logger.debug("Detected input duration: %s seconds", duration)
             del line
 
     async def _feed_stdin(self) -> None:
@@ -253,15 +276,8 @@ class FFMpeg(AsyncProcess):
             if not generator_exhausted:
                 await close_async_generator(self.audio_input)
 
-    def _apply_input_stream_info(self, info: FFMpegInputStreamInfo) -> None:
-        """Mirror values from a parsed ffmpeg stream info line onto self.input_format."""
-        self.logger.debug(
-            "Detected input stream info: codec=%s sample_rate=%s bit_depth=%s bit_rate=%s kb/s",
-            info.codec,
-            info.sample_rate,
-            info.bit_depth,
-            info.bit_rate,
-        )
+    def _apply_input_stream_info(self, info: FFMpegStreamInfo) -> None:
+        """Mirror values from a parsed ffmpeg input stream line onto self.input_format."""
         # content_type is the container format; only fill it in if the provider didn't
         # specify one. codec_type is always set to what ffmpeg actually detected.
         if self.input_format.content_type == ContentType.UNKNOWN:
@@ -274,13 +290,24 @@ class FFMpeg(AsyncProcess):
         if info.bit_rate:
             self.input_format.bit_rate = info.bit_rate
 
+    def _log_stream_info(self, label: str, info: FFMpegStreamInfo) -> None:
+        """Log a parsed FFMpegStreamInfo object at debug level."""
+        self.logger.debug(
+            "Detected %s stream info: codec=%s sample_rate=%s bit_depth=%s bit_rate=%s kb/s",
+            label,
+            info.codec,
+            info.sample_rate,
+            info.bit_depth,
+            info.bit_rate,
+        )
 
-def parse_ffmpeg_stream_info(line: str) -> FFMpegInputStreamInfo | None:
+
+def parse_ffmpeg_stream_info(line: str) -> FFMpegStreamInfo | None:
     """
     Extract audio format details from an ffmpeg 'Stream #X: Audio: ...' log line.
 
     :param line: A single ffmpeg stderr log line.
-    :returns: FFMpegInputStreamInfo when the line describes an audio stream,
+    :returns: FFMpegStreamInfo when the line describes an audio stream,
         otherwise None.
     """
     if not (line.startswith("Stream #") and ": Audio: " in line):
@@ -291,7 +318,7 @@ def parse_ffmpeg_stream_info(line: str) -> FFMpegInputStreamInfo | None:
     codec_part = line.split(": Audio: ", 1)[1].split(" ", 1)[0].split(",", maxsplit=1)[0]
     codec = ContentType.try_parse(codec_part)
 
-    info = FFMpegInputStreamInfo(codec=codec)
+    info = FFMpegStreamInfo(codec=codec)
     if match := _FFMPEG_SAMPLE_RATE_RE.search(line):
         info.sample_rate = int(match.group(1))
     if match := _FFMPEG_BIT_RATE_RE.search(line):

@@ -5,7 +5,7 @@ from __future__ import annotations
 from music_assistant_models.enums import ContentType
 
 from music_assistant.helpers.ffmpeg import (
-    FFMpegInputStreamInfo,
+    FFMpegStreamInfo,
     parse_ffmpeg_duration,
     parse_ffmpeg_stream_info,
 )
@@ -17,7 +17,7 @@ def test_parse_stream_info_mp3() -> None:
     """Lossy MP3 line yields codec/sample rate/bit rate, but no bit depth."""
     line = "Stream #0:0: Audio: mp3, 44100 Hz, stereo, fltp, 320 kb/s"
     info = parse_ffmpeg_stream_info(line)
-    assert info == FFMpegInputStreamInfo(
+    assert info == FFMpegStreamInfo(
         codec=ContentType.MP3,
         sample_rate=44100,
         bit_depth=None,
@@ -40,7 +40,7 @@ def test_parse_stream_info_flac_16bit() -> None:
     """16-bit FLAC: bit depth is inferred from the s16 sample format token."""
     line = "Stream #0:0: Audio: flac, 44100 Hz, stereo, s16, 1024 kb/s"
     info = parse_ffmpeg_stream_info(line)
-    assert info == FFMpegInputStreamInfo(
+    assert info == FFMpegStreamInfo(
         codec=ContentType.FLAC,
         sample_rate=44100,
         bit_depth=16,
@@ -52,7 +52,7 @@ def test_parse_stream_info_flac_24bit_in_s32() -> None:
     """24-bit FLAC is stored in s32; the explicit "(24 bit)" annotation wins."""
     line = "Stream #0:0: Audio: flac, 96000 Hz, stereo, s32 (24 bit)"
     info = parse_ffmpeg_stream_info(line)
-    assert info == FFMpegInputStreamInfo(
+    assert info == FFMpegStreamInfo(
         codec=ContentType.FLAC,
         sample_rate=96000,
         bit_depth=24,
@@ -64,7 +64,7 @@ def test_parse_stream_info_flac_24bit_hires_with_bitrate() -> None:
     """High-resolution 24-bit FLAC at 192k with reported bit rate."""
     line = "Stream #0:0: Audio: flac, 192000 Hz, stereo, s32 (24 bit), 5644 kb/s"
     info = parse_ffmpeg_stream_info(line)
-    assert info == FFMpegInputStreamInfo(
+    assert info == FFMpegStreamInfo(
         codec=ContentType.FLAC,
         sample_rate=192000,
         bit_depth=24,
@@ -76,7 +76,7 @@ def test_parse_stream_info_pcm_s16le() -> None:
     """PCM stream reports codec via try_parse, sample format gives bit depth."""
     line = "Stream #0:0: Audio: pcm_s16le, 44100 Hz, stereo, s16, 1411 kb/s"
     info = parse_ffmpeg_stream_info(line)
-    assert info == FFMpegInputStreamInfo(
+    assert info == FFMpegStreamInfo(
         codec=ContentType.PCM_S16LE,
         sample_rate=44100,
         bit_depth=16,
@@ -88,7 +88,7 @@ def test_parse_stream_info_opus_without_bitrate() -> None:
     """Opus often omits bit rate; we still get codec and sample rate."""
     line = "Stream #0:0: Audio: opus, 48000 Hz, stereo, fltp"
     info = parse_ffmpeg_stream_info(line)
-    assert info == FFMpegInputStreamInfo(
+    assert info == FFMpegStreamInfo(
         codec=ContentType.OPUS,
         sample_rate=48000,
         bit_depth=None,
