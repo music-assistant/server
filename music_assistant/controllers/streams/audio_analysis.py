@@ -8,8 +8,7 @@ import dataclasses
 import logging
 import os
 import time
-from collections.abc import Iterable, Mapping
-from itertools import groupby
+from collections.abc import AsyncGenerator, Iterable, Mapping
 from math import inf
 from typing import TYPE_CHECKING, Any
 
@@ -407,54 +406,52 @@ class AudioAnalysisController:
             {"aa_provider_domain": aa_provider_domain, "media_type": media_type.value},
         )
 
-    async def get_audio_analysis_rows(
+    async def iter_audio_analysis_rows(
         self,
         aa_provider_domain: str,
         media_type: MediaType = MediaType.TRACK,
-        limit: int = 0,
-        offset: int = 0,
-    ) -> list[Mapping[str, Any]]:
+    ) -> AsyncGenerator[Mapping[str, Any]]:
         """
-        Return audio_analysis rows for a given aa_provider_domain.
+        Stream audio_analysis rows for a given aa_provider_domain.
 
-        :param aa_provider_domain: Domain of the AA provider whose rows to return.
+        :param aa_provider_domain: Domain of the AA provider whose rows to yield.
         :param media_type: The media type to filter rows by.
-        :param limit: Max rows to return. 0 (default) means unbounded.
-        :param offset: Pagination offset.
         """
-        return await self.mass.music.database.get_rows(
-            DB_TABLE_AUDIO_ANALYSIS,
-            {
-                "aa_provider_domain": aa_provider_domain,
-                "media_type": media_type.value,
-            },
-            limit=limit,
-            offset=offset,
+        query = (
+            f"SELECT * FROM {DB_TABLE_AUDIO_ANALYSIS} "
+            f"WHERE aa_provider_domain = :aa_provider_domain AND media_type = :media_type"
         )
+        async for row in self.mass.music.database.iter_rows_from_query(
+            query,
+            {"aa_provider_domain": aa_provider_domain, "media_type": media_type.value},
+        ):
+            yield row
 
-    async def get_merged_audio_analysis_rows(
+    async def iter_merged_audio_analysis_rows(
         self,
         primary_aa_domain: str,
         media_type: MediaType = MediaType.TRACK,
-    ) -> list[tuple[str, str, AudioAnalysisData]]:
+    ) -> AsyncGenerator[tuple[str, str, AudioAnalysisData]]:
         """
-        Return one merged AudioAnalysisData per track present in primary_aa_domain.
+        Yield one merged AudioAnalysisData per track present in primary_aa_domain.
 
         Unlike get_audio_analysis, the music provider need not be loaded — rows
         are merged purely from the database, gated only on AA-provider
         availability. Used by bulk consumers (e.g. similarity index rebuild).
 
+        Rows are streamed and grouped on the fly: only the rows for the
+        currently-folding (item_id, provider) pair are held in memory at once,
+        so peak memory is proportional to one track, not the whole library.
+
         :param primary_aa_domain: AA provider domain that defines the universe of
-            tracks to return. Only (item_id, provider) pairs with at least one
+            tracks to yield. Only (item_id, provider) pairs with at least one
             row in this domain are emitted.
         :param media_type: The media type to filter on.
-        :returns: List of (item_id, provider, merged_analysis) tuples, grouped by
-            (item_id, provider); order is otherwise unspecified.
         """
         # EXISTS subquery scopes to the primary domain's universe at the DB level;
-        # ORDER BY (item_id, provider, ts) lets groupby fold each track in one pass.
+        # ORDER BY (item_id, provider, ts) lets us fold each track in one streaming pass.
         query = (
-            f"SELECT item_id, provider, aa_provider_domain, analysis_data "
+            f"SELECT item_id, provider, aa_provider_domain, analysis_data, id "
             f"FROM {DB_TABLE_AUDIO_ANALYSIS} aa1 "
             f"WHERE aa1.media_type = :media_type "
             f"AND EXISTS ("
@@ -466,22 +463,27 @@ class AudioAnalysisController:
             f") "
             f"ORDER BY aa1.item_id, aa1.provider, aa1.timestamp_created ASC"
         )
-        rows = await self.mass.music.database.get_rows_from_query(
-            query,
-            params={"media_type": media_type.value, "primary_aa_domain": primary_aa_domain},
-            limit=0,
-        )
         available_aa_domains = {
             p.domain for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS) if p.available
         }
-        results: list[tuple[str, str, AudioAnalysisData]] = []
-        for (item_id, provider), group in groupby(
-            rows, key=lambda r: (r["item_id"], r["provider"])
+        current_key: tuple[str, str] | None = None
+        current_group: list[Mapping[str, Any]] = []
+        async for row in self.mass.music.database.iter_rows_from_query(
+            query,
+            {"media_type": media_type.value, "primary_aa_domain": primary_aa_domain},
         ):
-            merged = _merged_from_rows(group, available_aa_domains)
+            key = (row["item_id"], row["provider"])
+            if current_key is not None and key != current_key:
+                merged = _merged_from_rows(current_group, available_aa_domains)
+                if merged is not None:
+                    yield (*current_key, merged)
+                current_group = []
+            current_key = key
+            current_group.append(row)
+        if current_key is not None:
+            merged = _merged_from_rows(current_group, available_aa_domains)
             if merged is not None:
-                results.append((item_id, provider, merged))
-        return results
+                yield (*current_key, merged)
 
     @api_command("audio_analysis/coverage")
     async def get_coverage(self, aa_domain: str) -> AudioAnalysisCoverage:
