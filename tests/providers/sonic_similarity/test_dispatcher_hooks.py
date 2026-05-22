@@ -138,13 +138,19 @@ class TestRecommendations:
     async def test_requests_partial_plays_from_recently_played(
         self, make_plugin, mock_mass: MagicMock
     ) -> None:
-        """recommendations() asks for partial plays (not just fully-played tracks)."""
+        """recommendations() asks for partial plays and does NOT filter on user_initiated.
+
+        MA only sets user_initiated=True on container-level plays (album, artist,
+        playlist, genre); individual tracks always get user_initiated=False from
+        the playback-report hook. Restricting to user_initiated=True therefore
+        excludes the actual track-level plays we want as seeds.
+        """
         plugin = make_plugin(signatures={("spotify", "seed_id"): [0.1] * 18})
         mock_mass.music.recently_played = AsyncMock(return_value=[])
         await plugin.recommendations()
         call_kwargs = mock_mass.music.recently_played.await_args.kwargs
         assert call_kwargs["fully_played_only"] is False
-        assert call_kwargs["user_initiated_only"] is True
+        assert "user_initiated_only" not in call_kwargs
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_recently_played_is_empty(

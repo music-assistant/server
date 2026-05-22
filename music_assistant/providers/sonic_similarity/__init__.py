@@ -993,7 +993,6 @@ class SonicSimilarityPlugin(PluginProvider):
             recent = await self.mass.music.recently_played(
                 limit=RECOMMEND_SEED_COUNT,
                 media_types=[MediaType.TRACK],
-                user_initiated_only=True,
                 fully_played_only=False,
             )
         except Exception as err:  # noqa: BLE001
@@ -1002,7 +1001,7 @@ class SonicSimilarityPlugin(PluginProvider):
         if not recent:
             self.logger.info(
                 "recommendations: recently_played returned 0 items "
-                "(fully_played_only=False, user_initiated_only=True) — yielding []",
+                "(media_types=[track], fully_played_only=False) — yielding []",
             )
             return []
 
