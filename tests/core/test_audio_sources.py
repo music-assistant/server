@@ -479,10 +479,15 @@ class TestGetActiveAudioSource:
         mock_mass: MagicMock,
     ) -> None:
         """Active AudioSource queue item → returns (AudioSource, PluginProvider)."""
+        from music_assistant_models.enums import ProviderFeature  # noqa: PLC0415
+
         source = _audio_source()
         # Use a MagicMock with spec=PluginProvider so the helper's isinstance
         # check passes; _FakePluginProvider is duck-typed and would fail here.
+        # supported_features must include AUDIO_SOURCE — the helper rejects
+        # providers that no longer declare the feature.
         plugin_prov = MagicMock(spec=PluginProvider)
+        plugin_prov.supported_features = {ProviderFeature.AUDIO_SOURCE}
 
         active_queue = MagicMock()
         current_item = MagicMock()
@@ -496,6 +501,30 @@ class TestGetActiveAudioSource:
         returned_source, returned_prov = result
         assert returned_source is source
         assert returned_prov is plugin_prov
+
+    def test_returns_none_when_provider_no_longer_declares_audio_source(
+        self,
+        controller: PlayerController,
+        player: MockPlayer,
+        mock_mass: MagicMock,
+    ) -> None:
+        """Provider that dropped the AUDIO_SOURCE feature at runtime → returns None."""
+        source = _audio_source()
+        plugin_prov = MagicMock(spec=PluginProvider)
+        # Provider no longer declares AUDIO_SOURCE — could happen after a
+        # reload/reconfig while a queue item from the old config is still live.
+        plugin_prov.supported_features = set()
+
+        active_queue = MagicMock()
+        current_item = MagicMock()
+        current_item.media_item = source
+        active_queue.current_item = current_item
+        controller.get_active_queue = MagicMock(return_value=active_queue)  # type: ignore[method-assign]
+        mock_mass.get_provider = MagicMock(return_value=plugin_prov)
+
+        # Don't dispatch on_source_control / on_volume_change to a provider
+        # that didn't opt in to the feature.
+        assert controller._get_active_audio_source(player) is None
 
 
 # ------------------------------------------------------------- update_stream_metadata
@@ -875,3 +904,27 @@ class TestAudioSourceLibraryRejection:
         controller.get_item = AsyncMock(return_value=source)  # type: ignore[method-assign]
         with pytest.raises(UnsupportedFeaturedException, match="can not be library items"):
             await controller.add_item_to_library(source)
+
+    @pytest.mark.asyncio
+    async def test_add_to_favorites_rejects_stale_audio_source_uri(self) -> None:
+        """A stale audio-source URI (plugin unloaded) raises the honest error."""
+        # Without the parse_uri-first guard, get_item_by_uri would bubble
+        # MediaNotFoundError because the owning plugin is gone, masking the
+        # real reason: AudioSources can't be favorited regardless.
+        from music_assistant.controllers.music import MusicController  # noqa: PLC0415
+
+        controller = MusicController.__new__(MusicController)
+        controller.mass = MagicMock()
+        # The URI shape parse_uri returns AUDIO_SOURCE for.
+        with pytest.raises(UnsupportedFeaturedException, match="can not be favorites"):
+            await controller.add_item_to_favorites("stale_plugin://audio_source/main")
+
+    @pytest.mark.asyncio
+    async def test_add_to_library_rejects_stale_audio_source_uri(self) -> None:
+        """A stale audio-source URI (plugin unloaded) raises the honest error."""
+        from music_assistant.controllers.music import MusicController  # noqa: PLC0415
+
+        controller = MusicController.__new__(MusicController)
+        controller.mass = MagicMock()
+        with pytest.raises(UnsupportedFeaturedException, match="can not be library items"):
+            await controller.add_item_to_library("stale_plugin://audio_source/main")

@@ -2373,6 +2373,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         provider = self.mass.get_provider(media_item.provider)
         if not isinstance(provider, PluginProvider):
             return None
+        # Belt-and-suspenders: a queue item carrying media_type=AUDIO_SOURCE
+        # can only have come from a provider that declared the feature, but
+        # a feature flag flipped off at runtime (provider reload, config
+        # change) would leave on_source_control / on_volume_change raising
+        # NotImplementedError out of cmd_play / cmd_pause. Skip cleanly.
+        if ProviderFeature.AUDIO_SOURCE not in provider.supported_features:
+            return None
         return media_item, provider
 
     def _get_player_groups(
@@ -3460,6 +3467,33 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if self.mass.player_queues.get(source):
             player.set_active_mass_source(source)
             return
+        # Legacy compatibility: the old plugin-source API used the
+        # plugin's instance_id directly as the source string. The refactor
+        # moved plugin sources to first-class AudioSource MediaItems played
+        # via player_queues.play_media. Translate a legacy plugin-instance-id
+        # source into the new flow so old frontends, third-party scripts,
+        # and HA automations keep working — but only when the provider
+        # exposes EXACTLY ONE AudioSource (it was always a 1:1 mapping under
+        # the old API; multi-source providers have to use the explicit URI).
+        if (legacy_prov := self.mass.get_provider(source)) and isinstance(
+            legacy_prov, PluginProvider
+        ):
+            if ProviderFeature.AUDIO_SOURCE not in legacy_prov.supported_features:
+                raise PlayerCommandFailed(f"Provider {source} does not expose AudioSources")
+            sources = await legacy_prov.get_audio_sources()
+            if len(sources) == 1:
+                self.logger.debug(
+                    "Translating legacy select_source(%s) to play_media(%s)",
+                    source,
+                    sources[0].uri,
+                )
+                await self.mass.player_queues.play_media(player_id, str(sources[0].uri))
+                return
+            raise UnsupportedFeaturedException(
+                f"Provider {source} exposes {len(sources)} AudioSources; the legacy "
+                "select_source(plugin_instance_id) API only supported 1:1 mappings. "
+                "Use player_queues.play_media with an explicit AudioSource URI."
+            )
         # basic check if player supports source selection
         if PlayerFeature.SELECT_SOURCE not in player.state.supported_features:
             raise UnsupportedFeaturedException(

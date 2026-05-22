@@ -577,11 +577,18 @@ class SnapCastProvider(PlayerProvider):
             name_suffix = MASS_ANNOUNCEMENT_POSTFIX
         elif media.media_type == MediaType.AUDIO_SOURCE and media.source_id:
             # AudioSource queue items: scope the stream to the queue (media.source_id).
-            # The source_id (= queue id) is already unique per consumer, so the
-            # display title is not needed for uniqueness — and would be unsafe
-            # to include raw since AudioSource names may contain spaces and
-            # punctuation that snapcast stream names reject.
-            stream_name += media.source_id
+            # Append a short hash of the queue_item_id so a queue rapidly
+            # re-selecting the same source (AudioSource A → track → AudioSource A
+            # again) cannot collide with a half-torn-down stream of the same
+            # name (destroy_on_stop is async; the create lookup can run before
+            # the delete completes). queue_item_id is fresh per play_media so
+            # this gives us a unique key per selection.
+            uniq = (
+                hashlib.md5(media.queue_item_id.encode()).hexdigest()[:6]
+                if media.queue_item_id
+                else ""
+            )
+            stream_name += f"{media.source_id}_{uniq}" if uniq else media.source_id
             source_id = media.source_id
         elif media.source_id and media.source_id.startswith(UGP_PREFIX):
             stream_name += media.source_id

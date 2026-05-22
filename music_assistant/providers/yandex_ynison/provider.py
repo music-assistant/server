@@ -953,12 +953,15 @@ class YandexYnisonProvider(PluginProvider):
         self._stream_stop_event.set()
         # Preserve the last known position for same-track resume.
         self._streaming_progress_ms = paused_progress_ms
-        # Don't pre-clear _in_use_by_queue here — let cmd_stop flow through to
-        # serve_queue_item_stream's finally, which fires on_source_unselected
-        # with the matching stream_session_id and clears both the lock and the
-        # session id together. Clearing the lock here while the session id
-        # stays set is exactly the double-write the session-id system was
-        # designed to prevent.
+        # Don't pre-clear _in_use_by_queue here. Lock release is owned by the
+        # standard teardown path (the streaming generator's finally + the
+        # streams controller's on_source_unselected), which clears both the
+        # lock and the session id together under the session-id guard.
+        # Pre-clearing the lock while leaving the session id set is the
+        # double-write the session-id system was designed to prevent. Note:
+        # cmd_stop is not a guaranteed teardown trigger — if the generator
+        # is blocked on a long external poll the finally may take a while —
+        # but the worst outcome is a delayed release, not an incorrect one.
         player_id = self._in_use_by_queue
         if player_id:
             try:

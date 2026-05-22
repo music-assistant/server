@@ -471,6 +471,17 @@ class StreamsController(CoreController):
         # renderer probing with HEAD before GET should not trigger any of
         # that. The actual GET request goes through the full hook chain.
         if request.method != "GET" and is_audio_source:
+            # Validate the providing plugin still exists before advertising the
+            # source. Many DLNA renderers cache HEAD responses; returning 200
+            # for a URI whose plugin has been unloaded would lie to the
+            # renderer and the follow-up GET would fail unrecoverably.
+            assert queue_item.media_item is not None
+            if not isinstance(
+                self.mass.get_provider(queue_item.media_item.provider), PluginProvider
+            ):
+                raise web.HTTPNotFound(
+                    reason=f"AudioSource provider {queue_item.media_item.provider} unavailable"
+                )
             # For PCM-fmt URLs, advertise audio/wav in HEAD: most DLNA renderers
             # key off the HEAD Content-Type to pick a decoder and do not handle
             # raw PCM (application/octet-stream). The actual GET response will
@@ -514,6 +525,14 @@ class StreamsController(CoreController):
             and isinstance(prov, PluginProvider)
         ):
             audio_source_id = queue_item.media_item.item_id
+            # Wire the provider into the finally block BEFORE awaiting the
+            # hook: if the provider partially mutates state (claims the lock,
+            # records the session id) and then raises a non-RuntimeError
+            # exception (buggy plugin, asyncio.CancelledError, etc.), the
+            # finally must still fire on_source_unselected so the lock gets
+            # released. The provider's session-id guard makes a spurious
+            # release a no-op if the lock was never actually claimed.
+            audio_source_provider = prov
             try:
                 await prov.on_source_selected(
                     audio_source_id, player_id, queue_id, stream_session_id
@@ -523,9 +542,10 @@ class StreamsController(CoreController):
                 # allow_player_switch=False has just redirected play_media to
                 # the configured target). Surface as 404 so the disallowed
                 # player drops the connection cleanly instead of treating an
-                # uncaught 500 as transient and retrying. The lock was not
-                # claimed (the raise happens before the claim), so no
-                # on_source_unselected pairing is needed.
+                # uncaught 500 as transient and retrying. The provider
+                # contract requires raising BEFORE claiming, so this is a
+                # clean abort — but we still let the finally run, where the
+                # session-id guard makes the unselect a no-op.
                 self.logger.info(
                     "AudioSource %s aborted stream for player %s: %s",
                     audio_source_id,
@@ -533,9 +553,6 @@ class StreamsController(CoreController):
                     err,
                 )
                 raise web.HTTPNotFound(reason=str(err))
-            # Successful selection — wire the provider into the finally block
-            # so on_source_unselected fires when streaming ends.
-            audio_source_provider = prov
 
         try:
             if not queue_item.streamdetails:
