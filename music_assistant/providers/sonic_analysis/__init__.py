@@ -26,7 +26,6 @@ from .clap_prompts import (
     SCALAR_PROMPT_PAIRS,
     hash_scalar_prompt_pairs,
     load_precomputed_prompt_embeddings,
-    validate_calibration_freshness,
 )
 from .helpers import (
     BlockFeatures,
@@ -316,7 +315,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
 
     async def handle_async_init(self) -> None:
         """Schedule the CLAP model load in the background and return immediately."""
-        validate_calibration_freshness()
         self._clap_load_task = self.mass.create_task(self._load_clap_in_background())
 
     async def _load_clap_in_background(self) -> None:

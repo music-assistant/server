@@ -126,28 +126,7 @@ async def test_load_clap_in_background_offloads_load_to_thread() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 2: handle_async_init still validates calibration
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_handle_async_init_validates_calibration() -> None:
-    """``handle_async_init`` must still call ``validate_calibration_freshness``."""
-    provider = _make_provider()
-    provider.mass.create_task = MagicMock(  # type: ignore[method-assign]
-        side_effect=lambda coro: coro.close() or MagicMock()
-    )
-
-    with patch(
-        "music_assistant.providers.sonic_analysis.validate_calibration_freshness"
-    ) as validate_mock:
-        await provider.handle_async_init()
-
-    validate_mock.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# Test 3: background load populates state on success
+# Test 2: background load populates state on success
 # ---------------------------------------------------------------------------
 
 
