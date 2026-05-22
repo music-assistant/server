@@ -2227,10 +2227,13 @@ class StreamsAudio:
         """
         if streamdetails is None:
             return INTERNAL_PCM_FORMAT.content_type, INTERNAL_PCM_FORMAT.bit_depth
+        # mirror get_player_filter_params: when this player is a protocol wrapper,
+        # DSP is configured against its parent rather than itself
+        dsp_player_id = player.protocol_parent_id or player.player_id
         needs_headroom = (
             smartfades_enabled
             or streamdetails.volume_normalization_mode != VolumeNormalizationMode.DISABLED
-            or self.mass.config.get_player_dsp_config(player.player_id).enabled
+            or self.mass.config.get_player_dsp_config(dsp_player_id).enabled
         )
         if needs_headroom:
             return INTERNAL_PCM_FORMAT.content_type, INTERNAL_PCM_FORMAT.bit_depth
