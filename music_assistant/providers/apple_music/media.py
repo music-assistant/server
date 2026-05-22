@@ -129,7 +129,7 @@ class AppleMusicMediaManager:
         response = await self.api.get_data(endpoint)
         return parse_playlist(self.provider, response["data"][0], is_favourite)
 
-    @use_cache()
+    @use_cache(allow_expired_cache=True)
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
         endpoint = f"catalog/{self.provider._storefront}/albums/{prov_album_id}/tracks"
@@ -217,7 +217,7 @@ class AppleMusicMediaManager:
             if t and t.get("id")
         ]
 
-    @use_cache(3600 * 24 * 7)
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         endpoint = f"catalog/{self.provider._storefront}/artists/{prov_artist_id}/albums"
@@ -237,7 +237,7 @@ class AppleMusicMediaManager:
                 albums.append(parsed)
         return albums
 
-    @use_cache(3600 * 24 * 7)
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         endpoint = f"catalog/{self.provider._storefront}/artists/{prov_artist_id}/view/top-songs"

@@ -347,7 +347,7 @@ class YoutubeMusicProvider(MusicProvider):
         msg = f"Item {prov_album_id} not found"
         raise MediaNotFoundError(msg)
 
-    @use_cache(3600 * 24 * 30)  # Cache for 30 days
+    @use_cache(3600 * 24 * 30, allow_expired_cache=True)  # Cache for 30 days
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         album_obj = await get_album(
@@ -415,7 +415,7 @@ class YoutubeMusicProvider(MusicProvider):
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
 
-    @use_cache(3600 * 3)  # Cache for 3 hours
+    @use_cache(3600 * 3, allow_expired_cache=True)  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Return playlist tracks for the given provider playlist id."""
         if page > 0:
@@ -463,7 +463,7 @@ class YoutubeMusicProvider(MusicProvider):
         # YTM doesn't seem to support paging so we ignore offset and limit
         return result
 
-    @use_cache(3600 * 24 * 7)  # Cache for 7 days
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
@@ -478,7 +478,7 @@ class YoutubeMusicProvider(MusicProvider):
             return albums
         return []
 
-    @use_cache(3600 * 24 * 7)  # Cache for 7 days
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
         """Get a list of 25 most popular tracks for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
@@ -614,7 +614,7 @@ class YoutubeMusicProvider(MusicProvider):
             user=self._yt_user,
         )
 
-    @use_cache(3600 * 24)  # Cache for 1 day
+    @use_cache(3600 * 24, allow_expired_cache=True)  # Cache for 1 day
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         result = []
