@@ -294,15 +294,14 @@ CONF_ENTRY_FLOW_MODE_SAMPLE_RATE = ConfigEntry(
     options=[
         ConfigValueOption("Smart (upsample only)", FLOW_MODE_SAMPLE_RATE_SMART),
         ConfigValueOption("Bit-perfect (no resampling)", FLOW_MODE_SAMPLE_RATE_BIT_PERFECT),
-        ConfigValueOption(
-            "48 kHz / 24-bit (balanced quality and bandwidth)", FLOW_MODE_SAMPLE_RATE_48000
-        ),
-        ConfigValueOption("96 kHz / 24-bit (high quality)", FLOW_MODE_SAMPLE_RATE_96000),
+        ConfigValueOption("48 kHz (balanced quality and bandwidth)", FLOW_MODE_SAMPLE_RATE_48000),
+        ConfigValueOption("96 kHz (high quality)", FLOW_MODE_SAMPLE_RATE_96000),
         ConfigValueOption("Highest supported by player", FLOW_MODE_SAMPLE_RATE_HIGHEST),
     ],
     default_value=FLOW_MODE_SAMPLE_RATE_SMART,
     description="When streaming in Flow Mode, the entire queue is sent as one gapless stream "
-    "and must use a single sample rate/bit depth for the whole stream.\n\n"
+    "and must use a single sample rate for the whole stream. The bit depth follows the "
+    "source material (the player's preferred output bit depth still applies downstream).\n\n"
     "- 'Smart (upsample only)': Starts the flow stream at the sample rate of the first "
     "track. Subsequent tracks with an equal or lower sample rate are upsampled to match; "
     "if the next track has a higher sample rate, the flow stream is restarted at that "
@@ -310,9 +309,9 @@ CONF_ENTRY_FLOW_MODE_SAMPLE_RATE = ConfigEntry(
     "- 'Bit-perfect (no resampling)': Never resamples audio (unless the player does not "
     "support the track's sample rate). Playback is restarted between queue tracks when "
     "their sample rates differ, which disables gapless and crossfade between those tracks.\n"
-    "- '48 kHz / 24-bit': Resamples all audio to a fixed 48 kHz / 24-bit (if supported by "
+    "- '48 kHz': Resamples all audio to a fixed 48 kHz (or the closest rate supported by "
     "the player) using a high quality resampler. A good compromise of quality and bandwidth.\n"
-    "- '96 kHz / 24-bit': Resamples all audio to a fixed 96 kHz / 24-bit (if supported by "
+    "- '96 kHz': Resamples all audio to a fixed 96 kHz (or the closest rate supported by "
     "the player) using a high quality resampler.\n"
     "- 'Highest supported by player': Resamples all audio to the highest sample rate the "
     "player supports. Note that this can waste a lot of bandwidth.",

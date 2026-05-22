@@ -147,9 +147,11 @@ class SyncGroupPlayer(Player):
             return leader.flow_mode
         return False
 
-    @cached_property
+    @property
     def supported_sample_rates(self) -> list[tuple[int, int]] | None:
         """Return supported sample rates as defined by the sync leader."""
+        # not cached: sync_leader can change during dynamic group reforms,
+        # so we always re-resolve to stay in sync with the current leader
         if leader := self.sync_leader:
             return leader.get_supported_sample_rates()
         return [(44100, 16), (48000, 16)]

@@ -2251,15 +2251,15 @@ class StreamsAudio:
         Covers every case where the flow loop should break and hand control back to
         the queue controller for restart:
 
-        - Live media (radio, plugin/audio sources): cannot be played inside a flow,
+        - Live media (radio, audio sources): cannot be played inside a flow,
           the controller will fall back to a single-item stream.
         - Sample rate mismatch ('smart' / 'bit_perfect' modes only): the next
           track's sample rate (snapped up to the closest supported player rate,
-          mirroring select_flow_format's anchoring logic) is incompatible with the
-          current flow rate, so a new flow must be opened.
+          mirroring select_flow_pcm_format's anchoring logic) is incompatible with
+          the current flow rate, so a new flow must be opened.
 
         The first (anchor) track is always allowed to continue for the sample
-        rate check; select_flow_format has already snapped the flow rate to it.
+        rate check; select_flow_pcm_format has already snapped the flow rate to it.
 
         :param queue_track: The upcoming queue item.
         :param pcm_format: The current flow stream's PCM format.

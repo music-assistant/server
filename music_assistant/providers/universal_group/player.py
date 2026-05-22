@@ -439,7 +439,7 @@ class UniversalGroupPlayer(Player):
                         uri=f"{base_url}?player_id={player_id}",
                         media_type=MediaType.FLOW_STREAM,
                         title=self.display_name,
-                        source_id=player_id,
+                        source_id=self.player_id,
                         custom_data={"ugp_player_id": self.player_id},
                     ),
                 )
