@@ -2314,18 +2314,17 @@ class StreamsAudio:
 
             # Open raw socket connection with timeout
             reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=10)
+            try:
+                # Send minimal HTTP request with ICY metadata header
+                request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nIcy-MetaData: 1\r\n\r\n"
+                writer.write(request.encode())
+                await writer.drain()
 
-            # Send minimal HTTP request with ICY metadata header
-            request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nIcy-MetaData: 1\r\n\r\n"
-            writer.write(request.encode())
-            await writer.drain()
-
-            # Read just the response line
-            response_line = await asyncio.wait_for(reader.readline(), timeout=5)
-
-            # Clean up connection
-            writer.close()
-            await writer.wait_closed()
+                # Read just the response line
+                response_line = await asyncio.wait_for(reader.readline(), timeout=5)
+            finally:
+                writer.close()
+                await writer.wait_closed()
 
             # Check if response starts with "ICY"
             decoded_line = response_line.decode("latin-1", errors="ignore").strip()
