@@ -51,12 +51,17 @@ from music_assistant.constants import (
     CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES,
     CONF_ENTRY_OUTPUT_LIMITER,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
+    CONF_FLOW_MODE_SAMPLE_RATE,
     CONF_OUTPUT_CHANNELS,
-    CONF_SAMPLE_RATES,
     CONF_SMART_FADES_MODE,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
     CONF_VOLUME_NORMALIZATION_TARGET,
+    FLOW_MODE_SAMPLE_RATE_48000,
+    FLOW_MODE_SAMPLE_RATE_96000,
+    FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
+    FLOW_MODE_SAMPLE_RATE_HIGHEST,
+    FLOW_MODE_SAMPLE_RATE_SMART,
     INTERNAL_PCM_FORMAT,
     MASS_LOGGER_NAME,
     VERBOSE_LOG_LEVEL,
@@ -127,6 +132,22 @@ class CrossfadeData:
     pcm_format: AudioFormat  # Format of the 'data' bytes (current/previous track's format)
     fade_in_pcm_format: AudioFormat  # Format for 'fade_in_size' (next track's format)
     queue_item_id: str
+
+
+def _snap_supported_rate_up(target: int, supported_sample_rates: list[int]) -> int:
+    """Snap target up to the lowest supported rate >= target, falling back to max."""
+    if target in supported_sample_rates:
+        return target
+    higher = [r for r in supported_sample_rates if r > target]
+    return min(higher) if higher else max(supported_sample_rates)
+
+
+def _snap_supported_rate_down(target: int, supported_sample_rates: list[int]) -> int:
+    """Snap target down to the highest supported rate <= target, falling back to min."""
+    if target in supported_sample_rates:
+        return target
+    lower = [r for r in supported_sample_rates if r < target]
+    return max(lower) if lower else min(supported_sample_rates)
 
 
 class StreamsAudio:
@@ -1117,25 +1138,15 @@ class StreamsAudio:
     ) -> AudioFormat:
         """Parse (player specific) output format details for given format string."""
         content_type: ContentType = ContentType.try_parse(output_format_str)
-        supported_rates_conf = cast(
-            "list[tuple[str, str]]",
-            await self.mass.config.get_player_config_value(
-                player.player_id, CONF_SAMPLE_RATES, unpack_splitted_values=True
-            ),
-        )
-        output_channels_str = self.mass.config.get_raw_player_config_value(
-            player.player_id, CONF_OUTPUT_CHANNELS, "stereo"
-        )
-        supported_sample_rates = tuple(int(x[0]) for x in supported_rates_conf)
-
-        if not supported_sample_rates or content_sample_rate in supported_sample_rates:
+        player_supported_rates = player.get_supported_sample_rates()
+        supported_sample_rates = [sr for sr, _ in player_supported_rates]
+        if content_sample_rate in supported_sample_rates:
             output_sample_rate = content_sample_rate
         else:
             output_sample_rate = max(supported_sample_rates)
-
         # only consider bit depths that are actually paired with the chosen sample rate
         bit_depths_for_rate = [
-            int(bd) for (sr, bd) in supported_rates_conf if int(sr) == output_sample_rate
+            bd for (sr, bd) in player_supported_rates if sr == output_sample_rate
         ]
         output_bit_depth = min(content_bit_depth, max(bit_depths_for_rate, default=16))
 
@@ -1148,6 +1159,10 @@ class StreamsAudio:
             output_bit_depth = min(output_bit_depth, 16)
         if output_format_str == "pcm":
             content_type = ContentType.from_bit_depth(output_bit_depth)
+
+        output_channels_str = self.mass.config.get_raw_player_config_value(
+            player.player_id, CONF_OUTPUT_CHANNELS, "stereo"
+        )
         fmt = AudioFormat(
             content_type=content_type,
             sample_rate=output_sample_rate,
@@ -1157,68 +1172,30 @@ class StreamsAudio:
         fmt.bit_rate = get_bit_rate(fmt)
         return fmt
 
-    async def select_flow_format(self, player: Player) -> AudioFormat:
-        """Parse (player specific) flow stream PCM format."""
-        supported_rates_conf = cast(
-            "list[tuple[str, str]]",
-            await self.mass.config.get_player_config_value(
-                player.player_id, CONF_SAMPLE_RATES, unpack_splitted_values=True
-            ),
-        )
-        supported_sample_rates = tuple(int(x[0]) for x in supported_rates_conf)
-        output_sample_rate = INTERNAL_PCM_FORMAT.sample_rate
-        for sample_rate in (192000, 96000, 48000, 44100):
-            if sample_rate in supported_sample_rates:
-                output_sample_rate = sample_rate
-                break
-        return AudioFormat(
-            content_type=INTERNAL_PCM_FORMAT.content_type,
-            sample_rate=output_sample_rate,
-            bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
-            channels=2,
-        )
-
     async def select_pcm_format(
         self, player: Player, streamdetails: StreamDetails, smartfades_enabled: bool
     ) -> AudioFormat:
         """
-        Select the internal PCM format for streaming a queue item.
+        Select the internal PCM format for streaming a single queue item.
 
-        Uses F32 (float32) when audio processing is expected (volume normalization,
-        crossfade, DSP) for extra headroom. Falls back to the source material's
-        native bit depth when no processing is needed, avoiding unnecessary conversion.
+        Used by the per-item (non-flow) stream path. The sample rate is the highest
+        rate the player supports that is <= the source rate, so the source is never
+        upsampled. The bit depth follows the source unless audio processing
+        (crossfade, volume normalization, DSP) is active — those need F32 headroom
+        to avoid clipping/precision loss.
 
         :param player: The player requesting the stream.
         :param streamdetails: Stream details for the current item.
         :param smartfades_enabled: Whether crossfade is enabled for this stream.
         """
-        supported_rates_conf = cast(
-            "list[tuple[str, str]]",
-            await self.mass.config.get_player_config_value(
-                player.player_id, CONF_SAMPLE_RATES, unpack_splitted_values=True
-            ),
-        )
-        supported_sample_rates = tuple(int(x[0]) for x in supported_rates_conf)
+        supported_sample_rates = [sr for sr, _ in player.get_supported_sample_rates()]
         output_sample_rate = max(
             (r for r in supported_sample_rates if r <= streamdetails.audio_format.sample_rate),
             default=48000,
         )
-
-        # determine if audio processing will be applied
-        # if so, use F32 for headroom; otherwise use source bit depth
-        needs_processing = (
-            smartfades_enabled
-            or streamdetails.volume_normalization_mode != VolumeNormalizationMode.DISABLED
-            or self.mass.config.get_player_dsp_config(player.player_id).enabled
+        content_type, bit_depth = self._pick_pcm_bit_depth(
+            player, streamdetails, smartfades_enabled
         )
-
-        if needs_processing:
-            content_type = INTERNAL_PCM_FORMAT.content_type
-            bit_depth = INTERNAL_PCM_FORMAT.bit_depth
-        else:
-            bit_depth = streamdetails.audio_format.bit_depth
-            content_type = ContentType.from_bit_depth(bit_depth)
-
         pcm_format = AudioFormat(
             sample_rate=output_sample_rate,
             content_type=content_type,
@@ -1227,8 +1204,67 @@ class StreamsAudio:
         )
         if smartfades_enabled:
             pcm_format.channels = 2
-
         return pcm_format
+
+    async def select_flow_pcm_format(
+        self,
+        player: Player,
+        start_streamdetails: StreamDetails | None = None,
+        smartfades_enabled: bool = False,
+    ) -> AudioFormat:
+        """
+        Select the internal PCM format for a Queue Flow Mode stream.
+
+        Used by the gapless flow path that stitches multiple queue items into one
+        continuous PCM stream. The sample rate is driven by the player's
+        ``CONF_FLOW_MODE_SAMPLE_RATE`` setting (smart/bit_perfect/48k/96k/highest)
+        — for the anchored modes it follows the first track's rate, for the fixed
+        modes it snaps to the configured rate. The bit depth follows the first
+        track's source unless audio processing is active (then F32 for headroom),
+        avoiding an unnecessary up-convert to 32-bit when none of the consumers
+        will benefit from it.
+
+        :param player: The player the flow stream is being prepared for.
+        :param start_streamdetails: Stream details of the first track in the flow.
+            Required for the anchored modes ('smart' / 'bit_perfect') and for the
+            bit-depth optimization. May be omitted for the fixed-rate modes — when
+            omitted the bit depth defaults to F32.
+        :param smartfades_enabled: Whether the queue will use crossfade transitions.
+        """
+        supported_sample_rates = sorted({sr for sr, _ in player.get_supported_sample_rates()})
+        flow_mode_conf = cast(
+            "str",
+            player.config.get_value(CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART),
+        )
+
+        if flow_mode_conf == FLOW_MODE_SAMPLE_RATE_HIGHEST:
+            output_sample_rate = max(supported_sample_rates)
+        elif flow_mode_conf == FLOW_MODE_SAMPLE_RATE_48000:
+            # for the fixed-rate modes, the user picked a specific bandwidth/quality
+            # ceiling; prefer the highest supported rate <= target
+            output_sample_rate = _snap_supported_rate_down(48000, supported_sample_rates)
+        elif flow_mode_conf == FLOW_MODE_SAMPLE_RATE_96000:
+            output_sample_rate = _snap_supported_rate_down(96000, supported_sample_rates)
+        else:
+            # smart or bit_perfect (default): anchor the flow at the starting track's
+            # sample rate; if the player doesn't natively support it, upsample to the
+            # closest higher supported rate
+            target_rate = (
+                start_streamdetails.audio_format.sample_rate
+                if start_streamdetails
+                else max(supported_sample_rates)
+            )
+            output_sample_rate = _snap_supported_rate_up(target_rate, supported_sample_rates)
+
+        content_type, bit_depth = self._pick_pcm_bit_depth(
+            player, start_streamdetails, smartfades_enabled
+        )
+        return AudioFormat(
+            content_type=content_type,
+            sample_rate=output_sample_rate,
+            bit_depth=bit_depth,
+            channels=2,
+        )
 
     async def get_queue_item_stream(
         self,
@@ -1760,6 +1796,15 @@ class StreamsAudio:
             standard_crossfade_duration = self.mass.config.get_raw_player_config_value(
                 queue.queue_id, CONF_CROSSFADE_DURATION, 10
             )
+        flow_mode_sample_rate_conf = self.mass.config.get_raw_player_config_value(
+            queue.queue_id, CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART
+        )
+        flow_player = self.mass.players.get_player(queue.queue_id)
+        flow_supported_sample_rates = (
+            sorted({sr for sr, _ in flow_player.get_supported_sample_rates()})
+            if flow_player
+            else []
+        )
         # smart crossfade requires a large buffer for beat analysis
         if (
             smart_fades_mode == SmartFadesMode.SMART_CROSSFADE
@@ -1807,17 +1852,13 @@ class StreamsAudio:
                 except QueueEmpty:
                     break
 
-            if queue_track.media_type == MediaType.RADIO:
-                # radio streams should not be played in flow mode
-                # break out of the flow stream and let the queue controller
-                # restart playback using the single item stream
-                self.logger.info(
-                    "Radio item %s (%s) encountered in flow stream for queue %s "
-                    "- breaking out to single item stream",
-                    queue_track.queue_item_id,
-                    queue_track.name,
-                    queue.display_name,
-                )
+            if self._flow_stream_needs_restart(
+                queue_track,
+                pcm_format,
+                flow_supported_sample_rates,
+                flow_mode_sample_rate_conf,
+                is_first_track=queue_track is start_queue_item,
+            ):
                 break
 
             if queue_track.streamdetails is None:
@@ -2167,6 +2208,103 @@ class StreamsAudio:
             del self._crossfade_data[queue_id]
 
     # --- Private methods ---
+
+    def _pick_pcm_bit_depth(
+        self,
+        player: Player,
+        streamdetails: StreamDetails | None,
+        smartfades_enabled: bool,
+    ) -> tuple[ContentType, int]:
+        """
+        Return ``(content_type, bit_depth)`` for an internal PCM stream.
+
+        F32 is chosen when audio processing (crossfade, volume normalization, DSP)
+        will run on the stream — those need the extra headroom to avoid clipping
+        and precision loss. Otherwise the source's native bit depth is reused so
+        we don't waste memory upcasting a 16-bit stream to 32-bit just to pass it
+        through. When the source is unknown (no streamdetails) we fall back to
+        F32 conservatively.
+        """
+        if streamdetails is None:
+            return INTERNAL_PCM_FORMAT.content_type, INTERNAL_PCM_FORMAT.bit_depth
+        needs_headroom = (
+            smartfades_enabled
+            or streamdetails.volume_normalization_mode != VolumeNormalizationMode.DISABLED
+            or self.mass.config.get_player_dsp_config(player.player_id).enabled
+        )
+        if needs_headroom:
+            return INTERNAL_PCM_FORMAT.content_type, INTERNAL_PCM_FORMAT.bit_depth
+        bit_depth = streamdetails.audio_format.bit_depth
+        return ContentType.from_bit_depth(bit_depth), bit_depth
+
+    def _flow_stream_needs_restart(
+        self,
+        queue_track: QueueItem,
+        pcm_format: AudioFormat,
+        supported_sample_rates: list[int],
+        flow_mode_sample_rate_conf: str,
+        is_first_track: bool,
+    ) -> bool:
+        """
+        Return True if the upcoming queue track requires exiting the flow stream.
+
+        Covers every case where the flow loop should break and hand control back to
+        the queue controller for restart:
+
+        - Live media (radio, plugin/audio sources): cannot be played inside a flow,
+          the controller will fall back to a single-item stream.
+        - Sample rate mismatch ('smart' / 'bit_perfect' modes only): the next
+          track's sample rate (snapped up to the closest supported player rate,
+          mirroring select_flow_format's anchoring logic) is incompatible with the
+          current flow rate, so a new flow must be opened.
+
+        The first (anchor) track is always allowed to continue for the sample
+        rate check; select_flow_format has already snapped the flow rate to it.
+
+        :param queue_track: The upcoming queue item.
+        :param pcm_format: The current flow stream's PCM format.
+        :param supported_sample_rates: Sorted list of the player's supported rates.
+        :param flow_mode_sample_rate_conf: The flow mode sample rate config value.
+        :param is_first_track: Whether this is the first track of the flow stream.
+        """
+        # live audio (radio, plugin or audio source) cannot be flowed; let the
+        # queue controller fall back to single-item streaming for this item
+        if queue_track.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
+            self.logger.info(
+                "Live media item %s (%s, %s) encountered in flow stream "
+                "- breaking out to single item stream",
+                queue_track.queue_item_id,
+                queue_track.name,
+                queue_track.media_type,
+            )
+            return True
+
+        if is_first_track or queue_track.streamdetails is None:
+            return False
+        raw_next_rate = queue_track.streamdetails.audio_format.sample_rate
+        if not raw_next_rate or not supported_sample_rates:
+            return False
+        effective_next_rate = _snap_supported_rate_up(raw_next_rate, supported_sample_rates)
+
+        if flow_mode_sample_rate_conf == FLOW_MODE_SAMPLE_RATE_BIT_PERFECT:
+            needs_restart = effective_next_rate != pcm_format.sample_rate
+        elif flow_mode_sample_rate_conf == FLOW_MODE_SAMPLE_RATE_SMART:
+            needs_restart = effective_next_rate > pcm_format.sample_rate
+        else:
+            needs_restart = False
+
+        if needs_restart:
+            self.logger.info(
+                "Track %s (%s) sample rate %s (snapped to %s) incompatible with flow rate %s "
+                "(mode: %s) - breaking out to restart flow stream",
+                queue_track.queue_item_id,
+                queue_track.name,
+                raw_next_rate,
+                effective_next_rate,
+                pcm_format.sample_rate,
+                flow_mode_sample_rate_conf,
+            )
+        return needs_restart
 
     @asynccontextmanager
     async def _connect_radio_stream(self, url: str, **kwargs: Any) -> AsyncGenerator[Any, None]:

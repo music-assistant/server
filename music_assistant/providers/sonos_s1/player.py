@@ -20,7 +20,7 @@ from soco import SoCoException
 from soco.core import MUSIC_SRC_RADIO, SoCo
 from soco.data_structures import DidlAudioBroadcast
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL, create_sample_rates_config_entry
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
@@ -43,7 +43,6 @@ from .constants import (
 from .helpers import SonosUpdateError, soco_error
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
     from soco.events_base import Event as SonosEvent
     from soco.events_base import SubscriptionBase
 
@@ -59,6 +58,9 @@ class SonosSubscriptionsFailed(PlayerCommandFailed):
 
 class SonosPlayer(Player):
     """Sonos Player implementation for S1 speakers."""
+
+    # S1 hardware is fixed to 16-bit at 44.1/48 kHz
+    _attr_supported_sample_rates = [(44100, 16), (48000, 16)]
 
     def __init__(
         self,
@@ -151,20 +153,6 @@ class SonosPlayer(Player):
 
         self.update_state()
         await self.unsubscribe()
-
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
-        """Return all (provider/player specific) Config Entries for the player."""
-        return [
-            create_sample_rates_config_entry(
-                supported_sample_rates=[44100, 48000],
-                supported_bit_depths=[16],
-                hidden=True,
-            ),
-        ]
 
     async def stop(self) -> None:
         """Send STOP command to the player."""

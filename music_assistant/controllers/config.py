@@ -56,6 +56,7 @@ from music_assistant.constants import (
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_FLOW_MODE_SAMPLE_RATE,
     CONF_ENTRY_HTTP_PROFILE,
     CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS,
     CONF_ENTRY_LIBRARY_SYNC_ALBUMS,
@@ -1585,14 +1586,17 @@ class ConfigController:
             if is_http_based_player_protocol:
                 # for http based players we can add the http streaming related entries
                 default_entries += [
-                    CONF_ENTRY_SAMPLE_RATES,
                     CONF_ENTRY_OUTPUT_CODEC,
                     CONF_ENTRY_HTTP_PROFILE,
                     CONF_ENTRY_ENABLE_ICY_METADATA,
                 ]
+                # only inject the sample-rates config when the player can't declare its rates itself
+                if not player.declares_supported_sample_rates:
+                    default_entries.append(CONF_ENTRY_SAMPLE_RATES)
                 # add flow mode entry for http-based players that do not already enforce it
                 if not player.requires_flow_mode:
                     default_entries.append(CONF_ENTRY_FLOW_MODE)
+                default_entries.append(CONF_ENTRY_FLOW_MODE_SAMPLE_RATE)
         if PlayerFeature.GAPLESS_PLAYBACK in player.supported_features:
             default_entries.append(CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES)
         # request player specific entries

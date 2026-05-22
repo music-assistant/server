@@ -55,6 +55,7 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import Album, Artist, is_track
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
+from propcache import under_cached_property as cached_property
 
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player, PlayerMedia
@@ -440,6 +441,16 @@ class SendspinPlayer(SendspinBasePlayer):
                 self._attr_supported_features.add(PlayerFeature.VOLUME_SET)
             if PlayerCommand.MUTE in _supported_commands:
                 self._attr_supported_features.add(PlayerFeature.VOLUME_MUTE)
+
+    @cached_property
+    def supported_sample_rates(self) -> list[tuple[int, int]] | None:
+        """Return supported (sample_rate, bit_depth) tuples derived from the player role."""
+        if (player_role := self._player_role) is not None:
+            formats = player_role.get_supported_formats() or []
+            rates = sorted({(fmt.sample_rate, fmt.bit_depth) for fmt in formats})
+            if rates:
+                return rates
+        return [(44100, 16)]
 
     def preserve_control_features_from(self, other: SendspinPlayer) -> None:
         """Keep the first registration's volume/mute features as a workaround for Cast."""

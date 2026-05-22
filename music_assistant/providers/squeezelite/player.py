@@ -26,19 +26,18 @@ from music_assistant_models.enums import (
     RepeatMode,
 )
 from music_assistant_models.errors import InvalidCommand, MusicAssistantError
-from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_SYNC_ADJUST,
     CONF_OUTPUT_CODEC,
-    INTERNAL_PCM_FORMAT,
+    CONF_SMART_FADES_MODE,
     VERBOSE_LOG_LEVEL,
-    create_sample_rates_config_entry,
 )
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.smart_fades import SmartFadesMode
 
 from .constants import (
     CONF_ENTRY_DISPLAY,
@@ -99,6 +98,13 @@ class SqueezelitePlayer(Player):
             PlayerFeature.GAPLESS_PLAYBACK,
         }
         self._attr_can_group_with = {provider.instance_id}
+        max_sr = int(self.client.max_sample_rate)
+        self._attr_supported_sample_rates = [
+            (sr, bd)
+            for sr in (44100, 48000, 88200, 96000, 176400, 192000)
+            if sr <= max_sr
+            for bd in (16, 24)
+        ]
         self.multi_client_stream: MultiClientStream | None = None
         self._sync_playpoints: deque[SyncPlayPoint] = deque(maxlen=MIN_REQ_PLAYPOINTS)
         self._do_not_resync_before: float = 0.0
@@ -144,7 +150,6 @@ class SqueezelitePlayer(Player):
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         base_entries = await super().get_config_entries(action=action, values=values)
-        max_sample_rate = int(self.client.max_sample_rate)
         # create preset entries (for players that support it)
         presets = []
         async for playlist in self.mass.music.playlists.iter_library_items(True):
@@ -172,9 +177,6 @@ class SqueezelitePlayer(Player):
             CONF_ENTRY_DISPLAY,
             CONF_ENTRY_VISUALIZATION,
             CONF_ENTRY_HTTP_PROFILE_FORCED_2,
-            create_sample_rates_config_entry(
-                max_sample_rate=max_sample_rate, max_bit_depth=24, safe_max_bit_depth=24
-            ),
         ]
 
     async def volume_set(self, volume_level: int) -> None:
@@ -260,13 +262,26 @@ class SqueezelitePlayer(Player):
             )
             return
 
-        # this is a syncgroup, we need to handle this with a multi client stream
-        # Use a fixed 96kHz/24-bit format for syncgroup playback
-        master_audio_format = AudioFormat(
-            content_type=INTERNAL_PCM_FORMAT.content_type,
-            sample_rate=96000,
-            bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
-            channels=2,
+        # this is a syncgroup; we need to handle this with a multi client stream.
+        # pick the master flow format honoring the leader's flow-mode-sample-rate
+        # setting and supported rates. anchor on the first track when its streamdetails
+        # are already resolved so smart/bit-perfect modes start at the right rate.
+        start_queue_item = (
+            self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+            if media.source_id and media.queue_item_id
+            else None
+        )
+        smart_fades_mode = (
+            await self.mass.config.get_player_config_value(
+                self.player_id, CONF_SMART_FADES_MODE, return_type=SmartFadesMode
+            )
+            if media.media_type == MediaType.TRACK
+            else SmartFadesMode.DISABLED
+        )
+        master_audio_format = await self.mass.streams.audio.select_flow_pcm_format(
+            self,
+            start_streamdetails=start_queue_item.streamdetails if start_queue_item else None,
+            smartfades_enabled=smart_fades_mode != SmartFadesMode.DISABLED,
         )
 
         # select audio source, we force flow mode

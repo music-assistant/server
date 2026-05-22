@@ -147,6 +147,13 @@ class SyncGroupPlayer(Player):
             return leader.flow_mode
         return False
 
+    @cached_property
+    def supported_sample_rates(self) -> list[tuple[int, int]] | None:
+        """Return supported sample rates as defined by the sync leader."""
+        if leader := self.sync_leader:
+            return leader.get_supported_sample_rates()
+        return [(44100, 16), (48000, 16)]
+
     @property
     def active_source(self) -> str | None:
         """Return the active source id of the current media (if any)."""
