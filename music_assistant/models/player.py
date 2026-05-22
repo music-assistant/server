@@ -821,8 +821,17 @@ class Player(ABC):
         if conf := self.config.get_value(CONF_SAMPLE_RATES):
             conf = cast("list[str]", conf)
             for item in conf:
-                sample_rate_str, bit_depth_str = item.split(MULTI_VALUE_SPLITTER)
-                config_rates.append((int(sample_rate_str.strip()), int(bit_depth_str.strip())))
+                # tolerate legacy/malformed entries: anything that does not parse as
+                # `<rate><splitter><bit_depth>` is skipped and we fall back to defaults
+                try:
+                    sample_rate_str, bit_depth_str = item.split(MULTI_VALUE_SPLITTER, 1)
+                    config_rates.append((int(sample_rate_str.strip()), int(bit_depth_str.strip())))
+                except (ValueError, TypeError):
+                    self.logger.warning(
+                        "Ignoring malformed CONF_SAMPLE_RATES entry %r for player %s",
+                        item,
+                        self.player_id,
+                    )
         return config_rates or [(44100, 16)]
 
     @property

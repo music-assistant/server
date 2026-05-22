@@ -24,7 +24,9 @@ from propcache import under_cached_property as cached_property
 
 from music_assistant.constants import (
     CONF_DYNAMIC_GROUP_MEMBERS,
+    CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
     CONF_GROUP_MEMBERS,
+    CONF_HTTP_PROFILE,
     CONF_POWER_CONTROL,
     DEFAULT_STREAM_HEADERS,
     DLNA_CONTENT_FEATURES_REALTIME,
@@ -206,6 +208,7 @@ class UniversalGroupPlayer(Player):
                 required=False,
             ),
             CONF_ENTRY_UGP_OUTPUT_FORMAT,
+            CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
         ]
 
     async def stop(self) -> None:
@@ -576,7 +579,13 @@ class UniversalGroupPlayer(Player):
             "Content-Type": get_mime_type(output_format_str),
         }
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
-        resp.enable_chunked_encoding()
+        http_profile = cast("str", self.config.get_value(CONF_HTTP_PROFILE, "chunked"))
+        if http_profile == "forced_content_length":
+            # some clients (notably older Chromecast firmware) refuse to play unless
+            # they see a Content-Length header up front
+            resp.content_length = 4294967296
+        elif http_profile == "chunked":
+            resp.enable_chunked_encoding()
         await resp.prepare(request)
 
         # return early if this is not a GET request
