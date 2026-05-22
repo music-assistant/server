@@ -12,6 +12,11 @@ from music_assistant.constants import INTERNAL_PCM_FORMAT, create_sample_rates_c
 
 UGP_PREFIX: Final[str] = "ugp_"
 
+# Grace period (seconds) before a universal group releases its members after
+# the active stream naturally ends (playback_state transitions to IDLE without
+# an explicit stop). Matches the SyncGroup grace window.
+IDLE_GRACE_SECONDS: Final[float] = 10.0
+
 
 CONF_ENTRY_SAMPLE_RATES_UGP = create_sample_rates_config_entry(
     max_sample_rate=96000, max_bit_depth=24, hidden=True

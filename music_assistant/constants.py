@@ -94,6 +94,7 @@ CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
 CONF_AUTO_PLAY: Final[str] = "auto_play"
+CONF_PLAY_MEDIA_OVERRIDES_GROUP: Final[str] = "play_media_overrides_group"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
 CONF_DYNAMIC_GROUP_MEMBERS: Final[str] = "dynamic_members"
 CONF_HIDE_IN_UI: Final[str] = "hide_in_ui"
@@ -289,6 +290,21 @@ CONF_ENTRY_AUTO_PLAY = ConfigEntry(
     depends_on=CONF_POWER_CONTROL,
     depends_on_value_not="none",
     category="player_controls",
+)
+
+CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP = ConfigEntry(
+    key=CONF_PLAY_MEDIA_OVERRIDES_GROUP,
+    type=ConfigEntryType.BOOLEAN,
+    label="Play Media overrides active group",
+    description="When this player is currently captured by an active group or sync session, "
+    "an explicit Play Media command (e.g. starting a new playlist or track from Home "
+    "Assistant) will release this player from the group/sync and play the new media "
+    "directly on this player. Disable this to keep the legacy behavior where Play "
+    "Media is redirected to the group leader. Other commands (next/prev/pause/resume) "
+    "are always forwarded to the group leader as they act on the existing playback.",
+    default_value=True,
+    category="generic",
+    advanced=False,
 )
 
 CONF_ENTRY_MIN_VOLUME = ConfigEntry(

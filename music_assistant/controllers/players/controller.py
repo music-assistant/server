@@ -84,6 +84,7 @@ from music_assistant.constants import (
     CONF_GROUP_MEMBERS,
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
+    CONF_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
     CONF_PRE_ANNOUNCE_CHIME_URL,
@@ -996,14 +997,88 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
     @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
-        """Handle PLAY MEDIA on given player.
+        """
+        Handle PLAY MEDIA on given player.
 
         :param player_id: player_id of the player to handle the command.
         :param media: The Media that needs to be played on the player.
         """
+        # An explicit play_media on a captured player honors the player's
+        # CONF_PLAY_MEDIA_OVERRIDES_GROUP preference (default: True) — the
+        # player is released from its group/sync first, then plays the media
+        # standalone. With the preference off, behavior falls back to the
+        # legacy "redirect to group leader" path below.
+        target_player = self.get_player(player_id, True)
+        if target_player is not None and (
+            target_player.state.synced_to or target_player.state.active_group
+        ):
+            override = bool(
+                self.mass.config.get_raw_player_config_value(
+                    target_player.player_id,
+                    CONF_PLAY_MEDIA_OVERRIDES_GROUP,
+                    True,
+                )
+            )
+            if override:
+                await self._release_player_for_play_media(target_player)
+                await self._handle_play_media(target_player.player_id, media)
+                return
         player = self._get_player_with_redirect(player_id)
-        # Delegate to internal handler for actual implementation
         await self._handle_play_media(player.player_id, media)
+
+    async def _release_player_for_play_media(self, player: Player) -> None:
+        """
+        Release a captured player so a play_media command can target it directly.
+
+        :param player: The captured player to release.
+        """
+        # Strategy is picked from how the player is currently captured:
+        #   synced_to            → unsync this player (cmd_ungroup)
+        #   dynamic group member → remove from group via cmd_set_members
+        #   static group member  → dissolve the whole group (power off if it
+        #                          has a real power control, otherwise stop)
+        if player.state.synced_to:
+            self.logger.debug(
+                "Unsyncing %s from %s to honor explicit play_media target",
+                player.state.name,
+                player.state.synced_to,
+            )
+            await self.cmd_ungroup(player.player_id)
+            return
+        if not player.state.active_group:
+            return
+        group = self.get_player(player.state.active_group)
+        if group is None:
+            return
+        is_dynamic_member = (
+            PlayerFeature.SET_MEMBERS in group.state.supported_features
+            and player.player_id not in group.state.static_group_members
+        )
+        if is_dynamic_member:
+            self.logger.debug(
+                "Removing %s from dynamic group %s to honor explicit play_media target",
+                player.state.name,
+                group.state.name,
+            )
+            await self.cmd_set_members(group.player_id, player_ids_to_remove=[player.player_id])
+            return
+        # static member: a single member can't be released, so the whole
+        # group must dissolve. Prefer cmd_power when an explicit power
+        # control is set so the user-visible state stays consistent.
+        if group.state.power_control != PLAYER_CONTROL_NONE and group.state.powered:
+            self.logger.debug(
+                "Powering off %s to honor explicit play_media target on %s",
+                group.state.name,
+                player.state.name,
+            )
+            await self._handle_cmd_power(group.player_id, False)
+        else:
+            self.logger.debug(
+                "Stopping %s to honor explicit play_media target on %s",
+                group.state.name,
+                player.state.name,
+            )
+            await self._handle_cmd_stop(group.player_id)
 
     @api_command("players/cmd/select_sound_mode")
     @handle_player_command
@@ -1228,8 +1303,27 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             self.logger.warning("Player %s is not available", player_id)
             return
 
+        # Ungroup on a group player is interpreted as 'release the captured
+        # session entirely'. This avoids the "Cannot remove static member"
+        # error path when transfer_queue or HA's unjoin asks us to release a
+        # group that has static members.
+        if player.state.type == PlayerType.GROUP:
+            if player.state.power_control != PLAYER_CONTROL_NONE:
+                await self._handle_cmd_power(player.player_id, False)
+            else:
+                await self._handle_cmd_stop(player.player_id)
+            return
+
         if player.state.active_group:
-            # the player is part of a (permanent) groupplayer and the user tries to ungroup
+            group = self.get_player(player.state.active_group)
+            is_static_member = group is not None and player_id in group.state.static_group_members
+            if is_static_member:
+                # Static members can't be released individually — recurse so
+                # the group-player branch above stops/dissolves the session.
+                if group is not None:
+                    await self.cmd_ungroup(group.player_id)
+                return
+            # dynamic or non-static member — remove just this player
             await self.cmd_set_members(player.state.active_group, player_ids_to_remove=[player_id])
             return
 
@@ -1239,7 +1333,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return
 
         if player.state.group_members:
-            # player is a sync leader (or syncgroup), so we ungroup all members from it
+            # player is a sync leader (a non-group player with synced followers).
+            # Ungroup all followers from it.
             await self.cmd_set_members(
                 player.player_id, player_ids_to_remove=player.state.group_members
             )
@@ -1436,15 +1531,23 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # register throttler for this player
             self._player_throttlers[player_id] = Throttler(1, 0.05)
 
-            # restore 'fake' power state from cache if available
-            cached_value = await self.mass.cache.get(
-                key=player.player_id,
-                provider=self.domain,
-                category=CACHE_CATEGORY_PLAYER_POWER,
-                default=False,
-            )
-            if cached_value is not None:
-                player.extra_data[ATTR_FAKE_POWER] = cached_value
+            # restore 'fake' power state from cache if available.
+            # Group players intentionally do NOT restore their fake-power
+            # state across restarts: at boot there is no sync session yet, so
+            # a restored 'powered=True' would put the group in an inconsistent
+            # 'active without captured session' state where children appear
+            # owned by a group that has no leader. Users who want their
+            # 'group captured' state preserved across restarts would need
+            # explicit session restoration which is out of scope here.
+            if player.type != PlayerType.GROUP:
+                cached_value = await self.mass.cache.get(
+                    key=player.player_id,
+                    provider=self.domain,
+                    category=CACHE_CATEGORY_PLAYER_POWER,
+                    default=False,
+                )
+                if cached_value is not None:
+                    player.extra_data[ATTR_FAKE_POWER] = cached_value
 
             # finally actually register it
 
@@ -3250,13 +3353,21 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             # user wants to use fake power control - so we (optimistically) update the state
             # and store the state in the cache
             player.extra_data[ATTR_FAKE_POWER] = powered
+            # Group players need to actively form/dissolve their session when the
+            # user toggles fake power — otherwise the toggle would only update the
+            # cosmetic state without ever capturing or releasing the members.
+            if player_state.type == PlayerType.GROUP:
+                await player.power(powered)
             player.update_state()  # trigger update of the player state
-            await self.mass.cache.set(
-                key=player_id,
-                data=powered,
-                provider=self.domain,
-                category=CACHE_CATEGORY_PLAYER_POWER,
-            )
+            if player_state.type != PlayerType.GROUP:
+                # see register(): group fake-power is intentionally not persisted
+                # because there is no session to restore at boot.
+                await self.mass.cache.set(
+                    key=player_id,
+                    data=powered,
+                    provider=self.domain,
+                    category=CACHE_CATEGORY_PLAYER_POWER,
+                )
         # handle external player control
         elif player_control := self._controls.get(player.state.power_control):
             control_name = player_control.name if player_control else player.state.power_control
