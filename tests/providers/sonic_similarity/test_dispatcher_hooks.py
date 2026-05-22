@@ -1,0 +1,255 @@
+"""Tests for the cross-provider dispatcher hooks (get_similar_tracks / recommendations)."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.media_items import RecommendationFolder
+
+from tests.providers.sonic_similarity.conftest import make_item_mapping, make_track
+
+
+class TestGetSimilarTracks:
+    """Tests for SonicSimilarityPlugin.get_similar_tracks."""
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_corpus_not_ready(self, make_plugin) -> None:
+        """No corpus means no candidates — the dispatcher gets an empty list."""
+        plugin = make_plugin()
+        track = make_track("any_id")
+        result = await plugin.get_similar_tracks(track)
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_mapping_intersects_index(self, make_plugin) -> None:
+        """A track whose mappings don't match the index produces no seed."""
+        plugin = make_plugin(signatures={("spotify", "known_id"): [0.1] * 18})
+        track = make_track("unknown_id", provider="other_provider")
+        plugin._handle_similar = AsyncMock(return_value={"items": []})  # noqa: SLF001
+        result = await plugin.get_similar_tracks(track)
+        assert result == []
+        plugin._handle_similar.assert_not_called()  # noqa: SLF001
+
+    @pytest.mark.asyncio
+    async def test_primary_cache_hit_returns_resolved_tracks(
+        self, make_plugin, mock_mass: MagicMock
+    ) -> None:
+        """A mapping matching the (item_id, provider_instance) cache is used as the seed."""
+        plugin = make_plugin(signatures={("spotify", "seed_id"): [0.1] * 18})
+        track = make_track("seed_id", provider="spotify")
+        plugin._handle_similar = AsyncMock(  # noqa: SLF001
+            return_value={
+                "items": [{"item_id": "result1", "provider": "spotify", "distance": 0.5}],
+            }
+        )
+        resolved_track = make_track("result1")
+        mock_mass.music.tracks.get = AsyncMock(return_value=resolved_track)
+
+        result = await plugin.get_similar_tracks(track, limit=10)
+
+        assert result == [resolved_track]
+        plugin._handle_similar.assert_awaited_once_with(item_id="seed_id", limit=10)  # noqa: SLF001
+        mock_mass.music.tracks.get.assert_awaited_once_with("result1", "spotify")
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_signatures_by_id(
+        self, make_plugin, mock_mass: MagicMock
+    ) -> None:
+        """When (item_id, provider_instance) misses, the by-id fallback supplies the seed."""
+        plugin = make_plugin(signatures={("spotify", "track_a"): [0.1] * 18})
+        # Mapping uses a different provider_instance but the same item_id, so the
+        # primary cache misses and the by-id fallback should kick in.
+        track = make_track("track_a", provider="tidal")
+        plugin._handle_similar = AsyncMock(  # noqa: SLF001
+            return_value={
+                "items": [{"item_id": "r1", "provider": "spotify", "distance": 0.2}],
+            }
+        )
+        mock_mass.music.tracks.get = AsyncMock(return_value=make_track("r1"))
+
+        result = await plugin.get_similar_tracks(track)
+
+        assert len(result) == 1
+        plugin._handle_similar.assert_awaited_once_with(item_id="track_a", limit=25)  # noqa: SLF001
+
+    @pytest.mark.asyncio
+    async def test_skips_tracks_that_fail_to_resolve(
+        self, make_plugin, mock_mass: MagicMock
+    ) -> None:
+        """Resolution failures are swallowed; only successfully resolved tracks come back."""
+        plugin = make_plugin(signatures={("spotify", "seed_id"): [0.1] * 18})
+        track = make_track("seed_id", provider="spotify")
+        plugin._handle_similar = AsyncMock(  # noqa: SLF001
+            return_value={
+                "items": [
+                    {"item_id": "good", "provider": "spotify", "distance": 0.1},
+                    {"item_id": "bad", "provider": "spotify", "distance": 0.2},
+                ],
+            }
+        )
+        good_track = make_track("good")
+
+        async def _fake_get(item_id: str, _provider: str) -> MagicMock:
+            if item_id == "bad":
+                raise MusicAssistantError("nope")
+            return good_track
+
+        mock_mass.music.tracks.get = AsyncMock(side_effect=_fake_get)
+
+        result = await plugin.get_similar_tracks(track)
+        assert result == [good_track]
+
+    @pytest.mark.asyncio
+    async def test_skips_library_mapping(self, make_plugin) -> None:
+        """library mappings are skipped even when their item_id is indexed."""
+        plugin = make_plugin(signatures={("spotify", "indexed_id"): [0.1] * 18})
+        track = make_track("indexed_id", provider="other")
+        # Two mappings: a library one matching the cache by item_id (should be
+        # skipped) and a streaming one with a non-matching id.
+        library_mapping = MagicMock()
+        library_mapping.item_id = "indexed_id"
+        library_mapping.provider_instance = "library"
+        library_mapping.provider_domain = "library"
+        streaming_mapping = MagicMock()
+        streaming_mapping.item_id = "other_id"
+        streaming_mapping.provider_instance = "other"
+        streaming_mapping.provider_domain = "other"
+        track.provider_mappings = [library_mapping, streaming_mapping]
+        plugin._handle_similar = AsyncMock(return_value={"items": []})  # noqa: SLF001
+
+        result = await plugin.get_similar_tracks(track)
+        assert result == []
+        plugin._handle_similar.assert_not_called()  # noqa: SLF001
+
+
+class TestRecommendations:
+    """Tests for SonicSimilarityPlugin.recommendations."""
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_corpus_not_ready(self, make_plugin) -> None:
+        """Without a corpus, the discover dispatcher should get nothing."""
+        plugin = make_plugin()
+        result = await plugin.recommendations()
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_recently_played_is_empty(
+        self, make_plugin, mock_mass: MagicMock
+    ) -> None:
+        """No recent tracks → no seeds → empty result."""
+        plugin = make_plugin(signatures={("spotify", "seed_id"): [0.1] * 18})
+        mock_mass.music.recently_played = AsyncMock(return_value=[])
+        result = await plugin.recommendations()
+        assert result == []
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_seed_intersects_index(
+        self, make_plugin, mock_mass: MagicMock
+    ) -> None:
+        """Recent tracks whose mappings don't intersect the index produce no folder."""
+        plugin = make_plugin(signatures={("spotify", "known_id"): [0.1] * 18})
+        mock_mass.music.recently_played = AsyncMock(
+            return_value=[make_item_mapping("lib_1")]
+        )
+        # Resolved track has only a non-matching mapping.
+        mock_mass.music.tracks.get = AsyncMock(
+            return_value=make_track("some_other_id", provider="other_provider")
+        )
+        plugin._handle_similar = AsyncMock(return_value={"items": []})  # noqa: SLF001
+
+        result = await plugin.recommendations()
+        assert result == []
+        plugin._handle_similar.assert_not_called()  # noqa: SLF001
+
+    @pytest.mark.asyncio
+    async def test_happy_path_yields_single_folder(
+        self, make_plugin, mock_mass: MagicMock
+    ) -> None:
+        """One recent track resolves to one indexed seed and produces one folder."""
+        plugin = make_plugin(signatures={("spotify", "seed1"): [0.1] * 18})
+        mock_mass.music.recently_played = AsyncMock(
+            return_value=[make_item_mapping("recent1")]
+        )
+        recent_track = make_track("seed1", provider="spotify")
+        resolved = make_track("r1")
+
+        async def _fake_get(item_id: str, _provider: str) -> MagicMock:
+            if item_id == "recent1":
+                return recent_track
+            return resolved
+
+        mock_mass.music.tracks.get = AsyncMock(side_effect=_fake_get)
+        plugin._handle_similar = AsyncMock(  # noqa: SLF001
+            return_value={
+                "items": [{"item_id": "r1", "provider": "spotify", "distance": 0.3}],
+            }
+        )
+
+        result = await plugin.recommendations()
+
+        assert len(result) == 1
+        folder = result[0]
+        assert isinstance(folder, RecommendationFolder)
+        assert folder.translation_key == "inspired_by_recently_played"
+        assert len(folder.items) == 1
+
+    @pytest.mark.asyncio
+    async def test_dedupes_across_multiple_seeds(
+        self, make_plugin, mock_mass: MagicMock
+    ) -> None:
+        """Overlapping candidates from multiple seeds collapse to one entry each."""
+        plugin = make_plugin(
+            signatures={
+                ("spotify", "seed1"): [0.1] * 18,
+                ("spotify", "seed2"): [0.2] * 18,
+            }
+        )
+        mock_mass.music.recently_played = AsyncMock(
+            return_value=[
+                make_item_mapping("recent1"),
+                make_item_mapping("recent2"),
+            ]
+        )
+        recent_track1 = make_track("seed1", provider="spotify")
+        recent_track2 = make_track("seed2", provider="spotify")
+        resolved_a = make_track("cand_a")
+        resolved_b = make_track("cand_b")
+
+        async def _fake_get(item_id: str, _provider: str) -> MagicMock:
+            return {
+                "recent1": recent_track1,
+                "recent2": recent_track2,
+                "cand_a": resolved_a,
+                "cand_b": resolved_b,
+            }[item_id]
+
+        mock_mass.music.tracks.get = AsyncMock(side_effect=_fake_get)
+
+        async def _fake_handle_similar(*, item_id: str, limit: int) -> dict:  # noqa: ARG001
+            if item_id == "seed1":
+                return {
+                    "items": [
+                        {"item_id": "cand_a", "provider": "spotify", "distance": 0.1},
+                        {"item_id": "cand_b", "provider": "spotify", "distance": 0.2},
+                    ],
+                }
+            return {
+                "items": [
+                    # cand_a is a repeat of seed1's first hit; cand_b also overlaps.
+                    {"item_id": "cand_a", "provider": "spotify", "distance": 0.3},
+                    {"item_id": "cand_b", "provider": "spotify", "distance": 0.4},
+                ],
+            }
+
+        plugin._handle_similar = AsyncMock(side_effect=_fake_handle_similar)  # noqa: SLF001
+
+        result = await plugin.recommendations()
+
+        assert len(result) == 1
+        folder = result[0]
+        assert isinstance(folder, RecommendationFolder)
+        item_ids = [item.item_id for item in folder.items]
+        # Each unique candidate appears exactly once.
+        assert sorted(item_ids) == ["cand_a", "cand_b"]
