@@ -589,9 +589,7 @@ class StreamsAudio:
             )
 
         # Other aiohttp errors - might still be Shoutcast, check it
-        self.logger.debug(
-            "aiohttp error for %s, checking if legacy Shoutcast stream", validate_url
-        )
+        self.logger.debug("aiohttp error for %s, checking if legacy Shoutcast stream", validate_url)
         if await self._validate_shoutcast_stream(validate_url):
             return await self._cache_radio_result(
                 url, StreamType.SHOUTCAST, resolved_url=validate_url
@@ -601,9 +599,7 @@ class StreamsAudio:
         self.logger.warning(
             "Failed to parse radio URL %s: %s - attempting direct stream", validate_url, str(err)
         )
-        return await self._cache_radio_result(
-            url, fallback_stream_type, resolved_url=validate_url
-        )
+        return await self._cache_radio_result(url, fallback_stream_type, resolved_url=validate_url)
 
     async def resolve_radio_stream(self, url: str) -> tuple[str, StreamType]:
         """
