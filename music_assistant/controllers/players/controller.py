@@ -1037,13 +1037,23 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         #   dynamic group member → remove from group via cmd_set_members
         #   static group member  → dissolve the whole group (power off if it
         #                          has a real power control, otherwise stop)
+        # In every branch we wait for the relevant state attribute to actually
+        # clear before returning. Providers (Sonos in particular) reject a
+        # play_media on a player whose synced_to/active_group is still set
+        # locally even though the release command has been acknowledged.
         if player.state.synced_to:
             self.logger.debug(
                 "Unsyncing %s from %s to honor explicit play_media target",
                 player.state.name,
                 player.state.synced_to,
             )
-            await self.cmd_ungroup(player.player_id)
+            async with self.wait_for_player_update(
+                player.player_id,
+                attribute_name="synced_to",
+                attribute_value=None,
+                timeout=5,
+            ):
+                await self.cmd_ungroup(player.player_id)
             return
         if not player.state.active_group:
             return
@@ -1060,25 +1070,37 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 player.state.name,
                 group.state.name,
             )
-            await self.cmd_set_members(group.player_id, player_ids_to_remove=[player.player_id])
+            async with self.wait_for_player_update(
+                player.player_id,
+                attribute_name="active_group",
+                attribute_value=None,
+                timeout=5,
+            ):
+                await self.cmd_set_members(group.player_id, player_ids_to_remove=[player.player_id])
             return
         # static member: a single member can't be released, so the whole
         # group must dissolve. Prefer cmd_power when an explicit power
         # control is set so the user-visible state stays consistent.
-        if group.state.power_control != PLAYER_CONTROL_NONE and group.state.powered:
-            self.logger.debug(
-                "Powering off %s to honor explicit play_media target on %s",
-                group.state.name,
-                player.state.name,
-            )
-            await self._handle_cmd_power(group.player_id, False)
-        else:
-            self.logger.debug(
-                "Stopping %s to honor explicit play_media target on %s",
-                group.state.name,
-                player.state.name,
-            )
-            await self._handle_cmd_stop(group.player_id)
+        async with self.wait_for_player_update(
+            player.player_id,
+            attribute_name="active_group",
+            attribute_value=None,
+            timeout=5,
+        ):
+            if group.state.power_control != PLAYER_CONTROL_NONE and group.state.powered:
+                self.logger.debug(
+                    "Powering off %s to honor explicit play_media target on %s",
+                    group.state.name,
+                    player.state.name,
+                )
+                await self._handle_cmd_power(group.player_id, False)
+            else:
+                self.logger.debug(
+                    "Stopping %s to honor explicit play_media target on %s",
+                    group.state.name,
+                    player.state.name,
+                )
+                await self._handle_cmd_stop(group.player_id)
 
     @api_command("players/cmd/select_sound_mode")
     @handle_player_command

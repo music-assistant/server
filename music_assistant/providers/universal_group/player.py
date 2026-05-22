@@ -305,14 +305,16 @@ class UniversalGroupPlayer(Player):
                             member.player_id, timeout=5
                         ):
                             await other_group.set_members(player_ids_to_remove=[member.player_id])
-                    # the other group can't release this member dynamically — stop it
-                    # entirely so the member is freed. Avoid calling power() on a group
-                    # that has no power control (would be a no-op + warning).
+                    # the other group can't release this member dynamically — stop
+                    # it entirely so the member is freed. Route power-off through
+                    # the controller so a FAKE-power group also gets its extra_data
+                    # updated; calling other_group.power() directly would only set
+                    # _attr_powered and leave the cached fake state out of sync.
                     elif other_group.state.power_control != PLAYER_CONTROL_NONE:
                         async with self.mass.players.wait_for_player_update(
                             member.player_id, timeout=5
                         ):
-                            await other_group.power(False)
+                            await self.mass.players._handle_cmd_power(other_group.player_id, False)
                     else:
                         async with self.mass.players.wait_for_player_update(
                             member.player_id, timeout=5
@@ -395,8 +397,11 @@ class UniversalGroupPlayer(Player):
                 # This is player is part of a syncgroup - ungroup it first
                 await child_player.ungroup()
             self._attr_group_members.append(player_id)
-            # let the newly add member join the stream if we're playing
-            if self.stream and not self.stream.done and self.powered:
+            # let the newly added member join the stream if it's still live —
+            # the `self.powered` gate that used to guard this is gone with the
+            # session-lifecycle refactor (groups now have `_attr_powered=None`
+            # unless the user assigned Fake control).
+            if self.stream and not self.stream.done:
                 base_url = f"{self.mass.streams.base_url}/ugp/{self.player_id}.flac"
                 # Use internal handler to get protocol selection and avoid redirect
                 await self.mass.players._handle_play_media(
