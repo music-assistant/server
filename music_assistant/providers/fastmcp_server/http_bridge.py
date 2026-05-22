@@ -263,12 +263,16 @@ async def mount_into_mass(
     return _unmount
 
 
-async def _start_asgi_lifespan(asgi_app: Any) -> dict[str, Any]:
+async def _start_asgi_lifespan(
+    asgi_app: Any,
+    *,
+    startup_timeout: float = 30,
+) -> dict[str, Any]:
     """Send ASGI ``lifespan.startup`` and keep the lifespan task running.
 
-    Returns a state dict carrying the running task and the queues used to
-    feed it ``lifespan.shutdown`` later. Re-raises a startup failure synchronously
-    so caller sees the underlying exception immediately.
+    :param asgi_app: ASGI 3.0 application to drive.
+    :param startup_timeout: Seconds to wait for the startup acknowledgement
+        before treating it as a failure. Exposed for tests.
     """
     receive_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     send_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -284,18 +288,27 @@ async def _start_asgi_lifespan(asgi_app: Any) -> dict[str, Any]:
         name="mcp-asgi-lifespan",
     )
 
-    # Trigger startup and wait for ack.
-    await receive_queue.put({"type": "lifespan.startup"})
-    ack = await asyncio.wait_for(send_queue.get(), timeout=30)
-    if ack.get("type") == "lifespan.startup.failed":
-        # Lifespan task aborted; surface its exception cleanly.
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await task
-        msg = ack.get("message", "ASGI lifespan startup failed")
-        raise RuntimeError(msg)
-    if ack.get("type") != "lifespan.startup.complete":
-        msg = f"Unexpected ASGI lifespan event during startup: {ack!r}"
-        raise RuntimeError(msg)
+    try:
+        # Trigger startup and wait for ack.
+        await receive_queue.put({"type": "lifespan.startup"})
+        ack = await asyncio.wait_for(send_queue.get(), timeout=startup_timeout)
+        if ack.get("type") == "lifespan.startup.failed":
+            # Lifespan task aborted; surface its exception cleanly.
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+            msg = ack.get("message", "ASGI lifespan startup failed")
+            raise RuntimeError(msg)
+        if ack.get("type") != "lifespan.startup.complete":
+            msg = f"Unexpected ASGI lifespan event during startup: {ack!r}"
+            raise RuntimeError(msg)
+    except BaseException:
+        # Don't leak the background lifespan task on any non-success exit
+        # from the startup negotiation (timeout, unexpected event, cancel).
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        raise
 
     return {"task": task, "receive_queue": receive_queue, "send_queue": send_queue}
 
