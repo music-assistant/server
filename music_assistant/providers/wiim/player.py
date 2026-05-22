@@ -434,7 +434,7 @@ class WiimPlayer(Player):
 
     def _log_sdk_state_change(self) -> None:
         """Log a debug line whenever the SDK-reported URI or playing_status changes."""
-        new_sdk_uri = self._attr_current_media.uri if self._attr_current_media else None
+        new_sdk_uri = self.device.current_media.uri if self.device.current_media else None
         new_sdk_status = self.device.playing_status
         if (
             new_sdk_uri == self._last_logged_sdk_uri
