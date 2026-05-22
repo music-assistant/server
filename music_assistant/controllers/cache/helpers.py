@@ -117,12 +117,11 @@ def use_cache(
                         try:
                             result = await func(self, *args, **kwargs)
                             await _store_task(result)
-                        except Exception as exc:
-                            LOGGER.warning(
-                                "Background cache refresh failed for %s/%s: %s",
+                        except Exception:
+                            LOGGER.exception(
+                                "Background cache refresh failed for %s/%s",
                                 provider_id,
                                 cache_key,
-                                exc,
                             )
 
                     self.mass.create_task(
