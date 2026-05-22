@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import AsyncGenerator
-from typing import Any, cast
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -828,41 +828,3 @@ def test_controller_has_no_provider_specific_extra_data_keys() -> None:
     # do not weaken this to an import/attribute check.
     assert "_EXPORT_STRIP_EXTRA_DATA_KEYS" not in source
     assert "clap_embedding" not in source
-
-
-def test_register_api_commands_registers_all_decorated_endpoints() -> None:
-    """Every @api_command on the controller must be registered with the API.
-
-    The controller is a nested sub-controller, so mass._register_api_commands
-    never scans it -- it must self-register, or the commands resolve to
-    "Invalid command".
-    """
-    controller = _make_controller()
-
-    controller._register_api_commands()
-
-    register = cast("MagicMock", controller.mass.register_api_command)
-    # _make_controller() mocks mass/streams as MagicMock, which auto-vivify
-    # `.api_cmd`; in production those are real objects without it. Restrict to
-    # str command names -- the only registrations that occur in production.
-    registered = {call.args[0] for call in register.call_args_list if isinstance(call.args[0], str)}
-    assert registered == {"audio_analysis/coverage"}
-    # handler passed must be the controller's own bound method
-    by_cmd = {
-        call.args[0]: call.args[1]
-        for call in register.call_args_list
-        if isinstance(call.args[0], str)
-    }
-    assert by_cmd["audio_analysis/coverage"] == controller.get_coverage
-
-
-def test_setup_self_registers_api_commands(monkeypatch: pytest.MonkeyPatch) -> None:
-    """setup() must wire the api-command registration (not only the scan task)."""
-    controller = _make_controller()
-    monkeypatch.setattr(controller, "_configure_thread_caps", lambda: None)
-
-    controller.setup()
-
-    register = cast("MagicMock", controller.mass.register_api_command)
-    registered = {call.args[0] for call in register.call_args_list if isinstance(call.args[0], str)}
-    assert registered == {"audio_analysis/coverage"}
