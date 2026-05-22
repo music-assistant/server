@@ -521,7 +521,7 @@ class StreamsAudio:
                     # Some providers omit (or report 0 for) the item duration; ffmpeg can
                     # usually probe it from the source. Only apply when missing so we
                     # don't clobber an accurate provider value with a rounded one.
-                    if ffmpeg_proc.parsed_duration and not streamdetails.duration:
+                    if ffmpeg_proc.parsed_duration is not None and not streamdetails.duration:
                         streamdetails.duration = ffmpeg_proc.parsed_duration
                     logger.debug(
                         "First chunk received after %.2f seconds (codec detected: %s)",
