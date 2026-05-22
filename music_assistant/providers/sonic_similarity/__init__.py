@@ -977,16 +977,7 @@ class SonicSimilarityPlugin(PluginProvider):
         diverse pool, dedupe by (provider, item_id), and resolve the first
         RECOMMEND_ITEM_LIMIT to full Tracks.
         """
-        # Diagnostic INFO logs at each early-return point so users / log readers
-        # can tell which guard hit when the row doesn't appear. Each call yields
-        # exactly one line (per dispatch by the music/recommendations API).
         if self.corpus_means is None or not self._signature_cache:
-            self.logger.info(
-                "recommendations: corpus not ready "
-                "(cached_signatures=%d, has_corpus_stats=%s) — yielding []",
-                len(self._signature_cache),
-                self.corpus_means is not None,
-            )
             return []
 
         try:
@@ -996,13 +987,9 @@ class SonicSimilarityPlugin(PluginProvider):
                 fully_played_only=False,
             )
         except Exception as err:  # noqa: BLE001
-            self.logger.info("recommendations: recently_played raised %s — yielding []", err)
+            self.logger.debug("recently_played failed: %s", err)
             return []
         if not recent:
-            self.logger.info(
-                "recommendations: recently_played returned 0 items "
-                "(media_types=[track], fully_played_only=False) — yielding []",
-            )
             return []
 
         # Walk each recent mapping into a seed item_id our index has analysed.
@@ -1011,13 +998,10 @@ class SonicSimilarityPlugin(PluginProvider):
         # get_similar_tracks but starting from an ItemMapping instead of a Track.
         seed_ids: list[str] = []
         seen_seeds: set[str] = set()
-        resolve_failures = 0
-        unindexed_recents = 0
         for mapping in recent:
             try:
                 track = await self.mass.music.tracks.get(mapping.item_id, mapping.provider)
             except MusicAssistantError:
-                resolve_failures += 1
                 continue
             seed_id: str | None = None
             for pm in track.provider_mappings or ():
@@ -1029,21 +1013,11 @@ class SonicSimilarityPlugin(PluginProvider):
                 if pm.item_id in self._signatures_by_id:
                     seed_id = pm.item_id
                     break
-            if seed_id is None:
-                unindexed_recents += 1
-                continue
-            if seed_id not in seen_seeds:
+            if seed_id and seed_id not in seen_seeds:
                 seed_ids.append(seed_id)
                 seen_seeds.add(seed_id)
 
         if not seed_ids:
-            self.logger.info(
-                "recommendations: %d recent track(s) yielded 0 indexed seeds "
-                "(resolve_failures=%d, unindexed_recents=%d) — yielding []",
-                len(recent),
-                resolve_failures,
-                unindexed_recents,
-            )
             return []
 
         # Fan out per seed; union results, first-occurrence wins (we already
@@ -1064,10 +1038,6 @@ class SonicSimilarityPlugin(PluginProvider):
                 break
 
         if not candidate_order:
-            self.logger.info(
-                "recommendations: %d seed(s) yielded 0 unique candidates — yielding []",
-                len(seed_ids),
-            )
             return []
 
         async def _resolve(provider: str, item_id: str) -> Track | None:
@@ -1079,20 +1049,8 @@ class SonicSimilarityPlugin(PluginProvider):
         resolved = await asyncio.gather(*[_resolve(p, i) for p, i in candidate_order])
         items = [t for t in resolved if t is not None]
         if not items:
-            self.logger.info(
-                "recommendations: %d candidate(s) failed to resolve to Tracks — yielding []",
-                len(candidate_order),
-            )
             return []
 
-        self.logger.info(
-            "recommendations: yielded folder with %d item(s) from %d seed(s) "
-            "(recent=%d, candidates=%d)",
-            len(items),
-            len(seed_ids),
-            len(recent),
-            len(candidate_order),
-        )
         return [
             RecommendationFolder(
                 item_id="inspired_by_recently_played",
