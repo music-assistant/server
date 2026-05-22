@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -62,6 +64,31 @@ if TYPE_CHECKING:
 USEARCH_INDEX_FILENAME_TPL = "sonic_signatures_{domain}_v{version}.usearch"
 USEARCH_INDEX_FILENAME_GLOB = "sonic_signatures_{domain}_v*.usearch"
 CONF_AA_PROVIDER = "aa_provider_domain"
+
+# aa_provider_domain is interpolated into on-disk filename templates above.
+# Allow only the shape every real MA provider domain uses (e.g. sonic_analysis,
+# spotify, lastfm_recommendations) so a stray '/' or '..' in the config value
+# can't escape mass.storage_path during writes/unlinks.
+_AA_DOMAIN_PATTERN = re.compile(r"^[a-zA-Z0-9_]+$")
+_AA_DOMAIN_DEFAULT = "sonic_analysis"
+
+
+def _safe_aa_domain(raw: Any, logger: logging.Logger) -> str:
+    """Return ``raw`` if it's a valid AA-provider domain, else the default.
+
+    :param raw: The raw value read from the CONF_AA_PROVIDER config entry.
+    :param logger: Logger to warn on when falling back to the default.
+    """
+    candidate = str(raw or _AA_DOMAIN_DEFAULT).strip()
+    if _AA_DOMAIN_PATTERN.fullmatch(candidate):
+        return candidate
+    logger.warning(
+        "aa_provider_domain %r is not a valid provider domain (expected "
+        "alphanumeric + underscore only); falling back to %r.",
+        candidate,
+        _AA_DOMAIN_DEFAULT,
+    )
+    return _AA_DOMAIN_DEFAULT
 CONF_ENABLE_CLAP_INDEX = "enable_clap_index"
 CONF_ENABLE_TEXT_SEARCH = "enable_text_search"
 EXTRA_DATA_CLAP_EMBEDDING = "clap_embedding"
@@ -548,7 +575,9 @@ class SonicSimilarityPlugin(PluginProvider):
                 "sonic_similarity/rebuild_index", self._handle_rebuild_index
             )
         )
-        self._aa_domain = str(self.config.get_value(CONF_AA_PROVIDER) or "sonic_analysis")
+        self._aa_domain = _safe_aa_domain(
+            self.config.get_value(CONF_AA_PROVIDER), self.logger
+        )
         self.logger.info(
             "Sonic Similarity loaded (aa_provider=%s), rebuilding search index...",
             self._aa_domain,
