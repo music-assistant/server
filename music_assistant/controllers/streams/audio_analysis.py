@@ -443,11 +443,26 @@ class AudioAnalysisController:
         currently-folding (item_id, provider) pair are held in memory at once,
         so peak memory is proportional to one track, not the whole library.
 
+        If primary_aa_domain is not currently available, no rows can satisfy
+        the availability gate and the generator yields nothing (a WARNING is
+        logged so callers can distinguish "offline" from "empty").
+
         :param primary_aa_domain: AA provider domain that defines the universe of
             tracks to yield. Only (item_id, provider) pairs with at least one
             row in this domain are emitted.
         :param media_type: The media type to filter on.
         """
+        available_aa_domains = {
+            p.domain for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS) if p.available
+        }
+        if primary_aa_domain not in available_aa_domains:
+            LOGGER.warning(
+                "iter_merged_audio_analysis_rows called with offline primary AA domain "
+                "%r; yielding no rows. Available domains: %s",
+                primary_aa_domain,
+                sorted(available_aa_domains),
+            )
+            return
         # EXISTS subquery scopes to the primary domain's universe at the DB level;
         # ORDER BY (item_id, provider, ts) lets us fold each track in one streaming pass.
         query = (
@@ -463,9 +478,6 @@ class AudioAnalysisController:
             f") "
             f"ORDER BY aa1.item_id, aa1.provider, aa1.timestamp_created ASC"
         )
-        available_aa_domains = {
-            p.domain for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS) if p.available
-        }
         current_key: tuple[str, str] | None = None
         current_group: list[Mapping[str, Any]] = []
         async for row in self.mass.music.database.iter_rows_from_query(
@@ -491,6 +503,9 @@ class AudioAnalysisController:
         Return analysis-coverage health counts for an AA provider.
 
         :param aa_domain: AA provider domain to query.
+        :returns: Counts where ``pending`` reflects filesystem-source tracks only;
+            streaming-provider tracks are never considered for background analysis
+            and are excluded.
         """
         provider = self.mass.get_provider(
             aa_domain,

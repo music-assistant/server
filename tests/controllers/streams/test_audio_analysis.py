@@ -784,6 +784,27 @@ async def test_iter_merged_audio_analysis_rows_drops_groups_with_only_corrupt_ro
     assert result[0][0] == "good"
 
 
+@pytest.mark.asyncio
+async def test_iter_merged_audio_analysis_rows_warns_when_primary_domain_offline(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Offline primary AA domain yields nothing and surfaces a WARNING."""
+    c, db = _stub_controller(iter_rows=[])
+    # Only smart_fades is available; sonic_analysis (the queried domain) isn't.
+    c.mass.get_providers = MagicMock(return_value=[_aa_provider_stub("smart_fades")])  # type: ignore[method-assign]
+
+    with caplog.at_level("WARNING", logger=audio_analysis_mod.LOGGER.name):
+        result = [x async for x in c.iter_merged_audio_analysis_rows("sonic_analysis")]
+
+    assert result == []
+    # Early return must short-circuit before any DB work.
+    assert not db.iter_rows_from_query.called
+    assert any(
+        "offline primary AA domain" in r.message and "sonic_analysis" in r.message
+        for r in caplog.records
+    )
+
+
 def _make_aa_provider_with_domain(
     domain: str,
     *,
