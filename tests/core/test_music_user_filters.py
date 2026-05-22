@@ -79,7 +79,9 @@ async def test_browse_root_honors_admin_provider_filter(mock_get_user: Mock) -> 
     music_b = _make_prov("m_b", ProviderType.MUSIC, {ProviderFeature.BROWSE})
     music_b.domain = "music_b"
     music_b.name = "Music B"
-    mass.get_providers_supporting_feature.return_value = [music_a, music_b]
+    mass.get_providers_supporting_feature.side_effect = lambda feature: (
+        [music_a, music_b] if feature == ProviderFeature.BROWSE else []
+    )
 
     controller = MusicController.__new__(MusicController)
     controller.mass = mass
