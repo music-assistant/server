@@ -1351,6 +1351,22 @@ class ConfigController:
             LOGGER.warning("Repaired corrupt tasks core configuration")
             changed = True
 
+        # Migrate default_enqueue_option_radio -> default_enqueue_option_live_sources.
+        # The same setting now covers both radio stations and plugin AudioSources
+        # (Spotify Connect, AirPlay receiver, etc.); preserves the user's customised
+        # value if they set one.
+        # TODO: remove after 2.10 release
+        player_queues_cfg = self._data.get(CONF_CORE, {}).get("player_queues")
+        if isinstance(player_queues_cfg, dict):
+            values = player_queues_cfg.get("values")
+            if isinstance(values, dict) and "default_enqueue_option_radio" in values:
+                radio_value = values.pop("default_enqueue_option_radio")
+                values.setdefault("default_enqueue_option_live_sources", radio_value)
+                LOGGER.info(
+                    "Migrated default_enqueue_option_radio -> default_enqueue_option_live_sources"
+                )
+                changed = True
+
         # Migrate sync_group members_filter (exclusion) -> allowed_members (inclusion).
         # Inversion freezes the universe at migration time; speakers added after this
         # point must be added by the user explicitly, which matches the new design's

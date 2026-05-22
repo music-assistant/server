@@ -193,7 +193,15 @@ async def test_browse_root_includes_non_music_providers() -> None:
     plugin_prov = _make_prov("p_a", ProviderType.PLUGIN, {ProviderFeature.BROWSE})
     plugin_prov.domain = "plugin_a"
     plugin_prov.name = "Plugin A"
-    mass.get_providers_supporting_feature.return_value = [music_prov, plugin_prov]
+
+    # browse queries get_providers_supporting_feature twice: once for BROWSE, once
+    # for AUDIO_SOURCE (to decide whether to inject the Live Inputs root entry).
+    def _supports(feature: ProviderFeature) -> list[Mock]:
+        if feature == ProviderFeature.BROWSE:
+            return [music_prov, plugin_prov]
+        return []
+
+    mass.get_providers_supporting_feature.side_effect = _supports
 
     controller = MusicController.__new__(MusicController)
     controller.mass = mass
@@ -201,6 +209,8 @@ async def test_browse_root_includes_non_music_providers() -> None:
     result = await controller.browse(path=None)
 
     assert [folder.path for folder in result] == ["m_a://", "p_a://"]  # type: ignore[union-attr]
-    mass.get_providers_supporting_feature.assert_called_once()
-    args, kwargs = mass.get_providers_supporting_feature.call_args
-    assert (args[0] if args else kwargs["feature"]) == ProviderFeature.BROWSE
+    calls = [
+        c.args[0] if c.args else c.kwargs["feature"]
+        for c in mass.get_providers_supporting_feature.call_args_list
+    ]
+    assert ProviderFeature.BROWSE in calls

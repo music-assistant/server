@@ -39,10 +39,10 @@ Unlike traditional Spotify integrations that require Web API authentication, Spo
 │  │  - Volume changes             │  │  - Track metadata
 │  └───────────────────────────────┘  │
 │  ┌───────────────────────────────┐  │
-│  │  PluginSource                 │  │  Provides:
-│  │  - Dynamic capabilities       │  │  - Playback control
-│  │  - Callback routing           │  │  - Metadata display
-│  │  - Web API integration        │  │  - Source selection
+│  │  AudioSource (MediaItem)      │  │  Provides:
+│  │  - Capability flags           │  │  - Playback control
+│  │  - StreamMetadata (live)      │  │  - Metadata display
+│  │  - Web API integration        │  │  - Browse under Live Inputs
 │  └───────────────────────────────┘  │
 └─────────────────┬───────────────────┘
                   │
@@ -76,22 +76,33 @@ Unlike traditional Spotify integrations that require Web API authentication, Spo
   - Playback state changes (playing, paused, stopped)
   - Volume changes from Spotify app
 
-#### 3. **PluginSource Model**
-The provider creates a `PluginSource` that represents the Spotify Connect audio source:
+#### 3. **AudioSource Model**
+The provider exposes an `AudioSource` MediaItem that represents the Spotify Connect audio source.
+AudioSources are browsable under the global "Live Inputs" node and are played via the
+standard ``play_media`` flow — they appear in the player's queue as a single live item,
+the same way radio stations do.
 
 **Static Properties:**
-- `id`: Provider instance ID
+- `item_id`: `"main"` (combined with the provider instance_id forms the persistent
+  browse/play URI listed under "Live Inputs"; AudioSource items are not favoritable
+  in MA core today — see ``MusicController.add_item_to_favorites``)
 - `name`: Display name (e.g., "Music Assistant")
-- `passive`: False (active audio source)
+- `exclusive`: True (a single librespot stream can only serve one queue at a time)
+- `allow_external_trigger`: True (Spotify app picks MA → plugin starts playback)
 
 **Dynamic Capabilities:**
 - `can_play_pause`: Enabled when Web API control available
 - `can_seek`: Enabled when Web API control available
 - `can_next_previous`: Enabled when Web API control available
 
-**Metadata:**
-- Updated in real-time from librespot events
-- Includes URI, title, artist, album, artwork URL
+When capabilities flip (Web API becomes available/unavailable) the AudioSource is rebuilt
+via ``_build_audio_source()`` so the next ``get_audio_sources()`` returns the updated flags.
+
+**Stream Metadata:**
+The live track info (title, artist, album, artwork, elapsed time) is published through
+``StreamMetadata`` attached to the active queue item's ``StreamDetails``. Updates are pushed
+via ``mass.streams.update_stream_metadata(queue_id, ...)`` — the same channel ICY radio
+metadata uses.
 
 #### 4. **Audio Pipeline**
 ```
@@ -155,43 +166,36 @@ When the Spotify account logged into Connect matches a configured Spotify music 
 - Username match check happens when playback starts (`sink`/`playing` events)
 - This ensures music provider has time to initialize
 
-#### Callback Architecture
+#### Control Proxying Architecture
 
-**PluginSource Callbacks** (defined in `models/plugin.py`):
+Player controller commands (play/pause/next/previous/seek/volume) reach the active queue
+item's owning provider through the standard ``PluginProvider.on_source_control`` hook:
+
 ```python
-on_play: Callable[[], Awaitable[None]] | None
-on_pause: Callable[[], Awaitable[None]] | None
-on_next: Callable[[], Awaitable[None]] | None
-on_previous: Callable[[], Awaitable[None]] | None
-on_seek: Callable[[int], Awaitable[None]] | None
+async def on_source_control(
+    self,
+    source_id: str,
+    action: SourceControl,
+    value: int | None = None,
+) -> None
 ```
 
 **Flow:**
 1. User presses play/pause in Music Assistant UI
-2. Player controller checks if active source has callbacks
-3. If callbacks present, invoke them instead of player methods
-4. Callbacks forward commands to Spotify Web API
-5. Spotify app receives command and updates state
+2. Player controller's command handler sees the active queue item is `MediaType.AUDIO_SOURCE`
+3. Reads the AudioSource's capability flags (`can_play_pause`, `can_seek`, `can_next_previous`)
+4. If supported, calls `plugin_prov.on_source_control(source_id, action, value)`
+5. The Spotify Connect provider dispatches on `action` to the appropriate Web API call
+6. Spotify app receives command and updates state
 
 #### Implementation Details
 
 **Provider Methods:**
 - `_check_spotify_provider_match()`: Finds matching Spotify provider
-- `_update_source_capabilities()`: Enables/disables capabilities and registers callbacks
-- `_on_play/pause/next/previous/seek()`: Callback implementations
-
-**Capability Flags:**
-```python
-# When Web API available:
-source.can_play_pause = True
-source.can_seek = True
-source.can_next_previous = True
-
-# Callbacks registered:
-source.on_play = self._on_play
-source.on_pause = self._on_pause
-# ... etc
-```
+- `_build_audio_source()`: Constructs the AudioSource with current capability flags
+- `_update_source_capabilities()`: Rebuilds the AudioSource so new flags propagate
+- `_on_play/pause/next/previous/seek/volume()`: Web API call implementations dispatched
+  from `on_source_control`
 
 **Web API Commands:**
 - `PUT /me/player/play` - Resume playback
@@ -213,26 +217,6 @@ The provider subscribes to events to maintain accurate state:
 - Session connected → Check for provider match
 - Session disconnected → Disable Web API control
 - Provider added/removed → Re-check matches
-
-### Deepcopy Handling
-
-The `PluginSource` contains unpicklable callbacks (functions, futures). To support player state serialization:
-
-**Problem**: Default `deepcopy` fails on callbacks
-**Solution**: `as_player_source()` method returns base `PlayerSource` without callbacks
-
-```python
-def as_player_source(self) -> PlayerSource:
-    """Return as basic PlayerSource without callbacks."""
-    return PlayerSource(
-        id=self.id,
-        name=self.name,
-        passive=self.passive,
-        can_play_pause=self.can_play_pause,
-        can_seek=self.can_seek,
-        can_next_previous=self.can_next_previous,
-    )
-```
 
 ## Event Handling
 
@@ -324,8 +308,19 @@ Inherits from `PluginProvider`
 **Key Methods:**
 - `handle_async_init()`: Setup provider, start webservice, load credentials
 - `unload()`: Cleanup, stop processes
-- `get_audio_stream()`: Provide audio to player
-- `get_source()`: Return PluginSource details
+- `get_audio_sources()`: Return the AudioSource MediaItem(s) for browse/play
+- `get_stream_details()`: Return StreamDetails for a playback session.
+  Side-effect-free — exclusivity is claimed in `on_source_selected`, not here,
+  so preload paths (player_queues._load_item) can fetch streamdetails without
+  blocking a later cross-queue handoff.
+- `get_audio_stream()`: Provide audio bytes to the queue (when stream_type=CUSTOM)
+- `on_source_control()`: Dispatch playback commands to `_on_play/pause/next/previous/seek/volume`
+- `on_source_selected()`: Claim `_in_use_by_queue` and record `_active_session_id`;
+  stop the previous active player on cross-queue handoff. Raises `RuntimeError`
+  to abort the original request after redirecting to the configured target when
+  `allow_player_switch=False`.
+- `on_source_unselected()`: Release `_in_use_by_queue` if the per-request
+  `stream_session_id` still matches the active session (paired with `on_source_selected`).
 
 **Event Handlers:**
 - `_handle_session_connected()`: Process session connect
@@ -337,12 +332,9 @@ Inherits from `PluginProvider`
 
 **Playback Control:**
 - `_check_spotify_provider_match()`: Find matching provider
-- `_update_source_capabilities()`: Toggle control features
-- `_on_play/pause/next/previous/seek()`: Control callbacks
-
-**Utilities:**
-- `_load_cached_username()`: Read credentials file
-- `_get_active_plugin_source()`: Find active source by `in_use_by`
+- `_build_audio_source()`: Build AudioSource with current capability flags
+- `_update_source_capabilities()`: Rebuild AudioSource when Web API availability changes
+- `_on_play/pause/next/previous/seek/volume()`: Web API call implementations
 
 ## Dependencies
 
@@ -400,7 +392,8 @@ Inherits from `PluginProvider`
 
 ## Related Documentation
 
-- **PluginSource Model**: See `music_assistant/models/plugin.py`
+- **PluginProvider Contract**: See `music_assistant/models/plugin.py`
+- **AudioSource MediaItem**: See `music_assistant_models.media_items.AudioSource`
 - **Player Controller**: See `music_assistant/controllers/players/`
 - **Spotify Provider**: See `music_assistant/providers/spotify/`
 - **librespot**: https://github.com/librespot-org/librespot

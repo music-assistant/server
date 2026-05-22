@@ -30,14 +30,6 @@ def _format_type_name(type_hint: Any) -> str:
         ):
             return "PlayerState"
 
-    # Handle PluginSource - replace with PlayerSource (parent type)
-    if hasattr(type_hint, "__name__") and type_hint.__name__ == "PluginSource":
-        if (
-            hasattr(type_hint, "__module__")
-            and type_hint.__module__ == "music_assistant.models.plugin"
-        ):
-            return "PlayerSource"
-
     # Map Python types to JSON types
     type_name_mapping = {
         "str": "string",
@@ -195,10 +187,6 @@ def _get_type_schema(  # noqa: PLR0911, PLR0915
                     definitions["MediaItemType"] = _get_type_schema(media_item_type, definitions)
             return {"$ref": "#/components/schemas/MediaItemType"}
 
-        # Handle PluginSource - replace with PlayerSource (parent type)
-        if type_hint == "PluginSource":
-            return _get_type_schema("PlayerSource", definitions)
-
         # Check if it looks like a simple class name (no special chars, starts with uppercase)
         # Examples: "PlayerType", "DeviceInfo", "PlaybackState"
         # Exclude generic types like "Any", "Union", "Optional", etc.
@@ -229,18 +217,6 @@ def _get_type_schema(  # noqa: PLR0911, PLR0915
         ):
             # Replace with PlayerState from music_assistant_models
             return _get_type_schema(PlayerState, definitions)
-
-    # Handle PluginSource - replace with PlayerSource (parent type)
-    if hasattr(type_hint, "__name__") and type_hint.__name__ == "PluginSource":
-        # Check if this is PluginSource from music_assistant.models.plugin
-        if (
-            hasattr(type_hint, "__module__")
-            and type_hint.__module__ == "music_assistant.models.plugin"
-        ):
-            # Replace with PlayerSource from music_assistant.models.player
-            from music_assistant.models.player import PlayerSource  # noqa: PLC0415
-
-            return _get_type_schema(PlayerSource, definitions)
 
     # Handle Union types (including Optional)
     origin = get_origin(type_hint)
