@@ -93,6 +93,9 @@ def _safe_aa_domain(raw: Any, logger: logging.Logger) -> str:
 
 CONF_ENABLE_CLAP_INDEX = "enable_clap_index"
 CONF_ENABLE_TEXT_SEARCH = "enable_text_search"
+CONF_ENABLE_DISCOVER_ROW = "enable_discover_row"
+CONF_DISCOVER_PRESET = "discover_preset"
+CONF_DISCOVER_DIVERSITY = "discover_diversity"
 EXTRA_DATA_CLAP_EMBEDDING = "clap_embedding"
 
 # Keys for the read-only status rows on the plugin config page.
@@ -432,7 +435,10 @@ async def get_config_entries(
     :param action: action key called from config entries UI.
     :param values: the (intermediate) raw values for config entries sent with the action.
     """
-    from music_assistant_models.config_entries import ConfigEntry  # noqa: PLC0415
+    from music_assistant_models.config_entries import (  # noqa: PLC0415
+        ConfigEntry,
+        ConfigValueOption,
+    )
     from music_assistant_models.enums import ConfigEntryType  # noqa: PLC0415
 
     # Dispatch rebuild-button clicks onto the running provider instance. Each
@@ -529,6 +535,48 @@ async def get_config_entries(
             label=status_text,
             category="status",
             depends_on=CONF_ENABLE_TEXT_SEARCH,
+            depends_on_value=True,
+        ),
+        # --- discover-row controls ---
+        ConfigEntry(
+            key=CONF_ENABLE_DISCOVER_ROW,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=True,
+            label="Show 'Inspired by recently played' on the discover page",
+            description="Yield a discover-page row seeded by your recently-played tracks. "
+            "Disable to suppress the row without uninstalling the plugin.",
+            category="discover",
+        ),
+        ConfigEntry(
+            key=CONF_DISCOVER_PRESET,
+            type=ConfigEntryType.STRING,
+            default_value="discover",
+            label="Discover row preset",
+            description="Similarity weight preset used to rank candidates for the row. "
+            "'discover' favours novelty (low genre/era weighting); 'balanced' is uniform; "
+            "'vibe' weights mood + timbre; 'party' weights rhythm + regularity; 'genre_era' "
+            "stays close to the seed's genre and decade.",
+            options=[
+                ConfigValueOption("Discover (novelty-leaning)", "discover"),
+                ConfigValueOption("Balanced", "balanced"),
+                ConfigValueOption("Vibe (mood + timbre)", "vibe"),
+                ConfigValueOption("Party (rhythm-heavy)", "party"),
+                ConfigValueOption("Genre + Era (stay close)", "genre_era"),
+            ],
+            category="discover",
+            depends_on=CONF_ENABLE_DISCOVER_ROW,
+            depends_on_value=True,
+        ),
+        ConfigEntry(
+            key=CONF_DISCOVER_DIVERSITY,
+            type=ConfigEntryType.FLOAT,
+            default_value=0.2,
+            label="Discover row diversity",
+            description="0.0 keeps results closest to the seeds; 1.0 maximises variety via "
+            "MMR (some results may be less similar but more distinct from each other).",
+            range=(0.0, 1.0),
+            category="discover",
+            depends_on=CONF_ENABLE_DISCOVER_ROW,
             depends_on_value=True,
         ),
     )
@@ -977,6 +1025,8 @@ class SonicSimilarityPlugin(PluginProvider):
         diverse pool, dedupe by (provider, item_id), and resolve the first
         RECOMMEND_ITEM_LIMIT to full Tracks.
         """
+        if not bool(self.config.get_value(CONF_ENABLE_DISCOVER_ROW)):
+            return []
         if self.corpus_means is None or not self._signature_cache:
             return []
 
@@ -1020,12 +1070,23 @@ class SonicSimilarityPlugin(PluginProvider):
         if not seed_ids:
             return []
 
+        preset = str(self.config.get_value(CONF_DISCOVER_PRESET) or "discover")
+        try:
+            diversity = float(self.config.get_value(CONF_DISCOVER_DIVERSITY) or 0.0)
+        except (TypeError, ValueError):
+            diversity = 0.0
+
         # Fan out per seed; union results, first-occurrence wins (we already
         # ordered seeds by recency above, so earlier seeds get priority).
         candidate_order: list[tuple[str, str]] = []
         candidate_seen: set[tuple[str, str]] = set()
         for sid in seed_ids:
-            response = await self._handle_similar(item_id=sid, limit=RECOMMEND_PER_SEED_LIMIT)
+            response = await self._handle_similar(
+                item_id=sid,
+                limit=RECOMMEND_PER_SEED_LIMIT,
+                preset=preset,
+                diversity=diversity,
+            )
             for entry in response.get("items") or []:
                 key = (entry["provider"], entry["item_id"])
                 if key in candidate_seen:

@@ -99,6 +99,10 @@ def make_plugin(mock_mass: MagicMock, logger: logging.Logger):
         usearch backing.
     :param text_search_enabled: When True, the config returns True for
         CONF_ENABLE_TEXT_SEARCH (encoder stays lazy until first call).
+    :param discover_row_enabled: Config value for CONF_ENABLE_DISCOVER_ROW
+        (default True, matching the production default).
+    :param discover_preset: Config value for CONF_DISCOVER_PRESET.
+    :param discover_diversity: Config value for CONF_DISCOVER_DIVERSITY.
     :param signatures: Optional dict of {(provider, item_id): vector}
         used to populate ``_signature_cache`` / ``_signatures_by_id`` /
         ``_provider_by_item_id`` and to set non-None corpus_means/stds.
@@ -112,6 +116,9 @@ def make_plugin(mock_mass: MagicMock, logger: logging.Logger):
         *,
         clap_enabled: bool = False,
         text_search_enabled: bool = False,
+        discover_row_enabled: bool = True,
+        discover_preset: str = "discover",
+        discover_diversity: float = 0.2,
         signatures: dict[tuple[str, str], list[float]] | None = None,
     ) -> SonicSimilarityPlugin:
         manifest = MagicMock()
@@ -121,6 +128,9 @@ def make_plugin(mock_mass: MagicMock, logger: logging.Logger):
             "aa_provider_domain": "sonic_analysis",
             "enable_clap_index": clap_enabled,
             "enable_text_search": text_search_enabled,
+            "enable_discover_row": discover_row_enabled,
+            "discover_preset": discover_preset,
+            "discover_diversity": discover_diversity,
         }
         config.get_value = lambda key: config_values.get(key)
         plugin = SonicSimilarityPlugin(mock_mass, manifest, config, SUPPORTED_FEATURES)

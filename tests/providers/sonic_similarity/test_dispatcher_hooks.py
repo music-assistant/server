@@ -128,11 +128,59 @@ class TestRecommendations:
     """Tests for SonicSimilarityPlugin.recommendations."""
 
     @pytest.mark.asyncio
+    async def test_returns_empty_when_disabled_via_config(
+        self, make_plugin, mock_mass: MagicMock
+    ) -> None:
+        """When CONF_ENABLE_DISCOVER_ROW is False, short-circuit before touching the corpus."""
+        plugin = make_plugin(
+            discover_row_enabled=False,
+            signatures={("spotify", "seed_id"): [0.1] * 18},
+        )
+        result = await plugin.recommendations()
+        assert result == []
+        # And we never queried recently_played at all.
+        assert mock_mass.music.recently_played.await_count == 0
+
+    @pytest.mark.asyncio
     async def test_returns_empty_when_corpus_not_ready(self, make_plugin) -> None:
         """Without a corpus, the discover dispatcher should get nothing."""
         plugin = make_plugin()
         result = await plugin.recommendations()
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_passes_preset_and_diversity_to_handle_similar(
+        self, make_plugin, mock_mass: MagicMock
+    ) -> None:
+        """Preset + diversity config values propagate to each _handle_similar call."""
+        plugin = make_plugin(
+            signatures={("spotify", "seed1"): [0.1] * 18},
+            discover_preset="vibe",
+            discover_diversity=0.7,
+        )
+        mock_mass.music.recently_played = AsyncMock(
+            return_value=[make_item_mapping("recent1")]
+        )
+        recent_track = make_track("seed1", provider="spotify")
+        resolved = make_track("r1")
+
+        async def _fake_get(item_id: str, _provider: str) -> MagicMock:
+            return recent_track if item_id == "recent1" else resolved
+
+        mock_mass.music.tracks.get = AsyncMock(side_effect=_fake_get)
+        plugin._handle_similar = AsyncMock(  # noqa: SLF001
+            return_value={
+                "items": [{"item_id": "r1", "provider": "spotify", "distance": 0.3}],
+            }
+        )
+
+        await plugin.recommendations()
+
+        plugin._handle_similar.assert_awaited()  # noqa: SLF001
+        # Every call should carry the configured preset + diversity.
+        for call in plugin._handle_similar.await_args_list:  # noqa: SLF001
+            assert call.kwargs["preset"] == "vibe"
+            assert call.kwargs["diversity"] == 0.7
 
     @pytest.mark.asyncio
     async def test_requests_partial_plays_from_recently_played(
