@@ -13,7 +13,7 @@ aiohttp-socks==0.11.0
 aiojellyfin==0.14.1
 aiomusiccast==0.15.0
 aiortc>=1.6.0
-aiosendspin[server]==5.2.0
+aiosendspin[server]==5.3.0
 aioslimproto==3.1.8
 aiosonos==0.1.12
 aiosqlite==0.22.1
@@ -38,14 +38,16 @@ duration-parser==1.0.1
 getmac==0.9.5
 gql[all]==4.0.0
 hass-client==1.2.3
+huggingface-hub==1.12.0
 ibroadcastaio==0.6.0
 ifaddr==0.2.0
 liblistenbrainz==0.7.0
 librosa==0.11.0
 lyricsgenius==3.11.0
 mashumaro==3.20
-music-assistant-frontend==2.17.154
-music-assistant-models==1.1.117
+modern_colorthief==0.2.1
+music-assistant-frontend==2.17.161
+music-assistant-models==1.1.121
 mutagen==1.47.0
 niconico.py-ma==2.1.0.post2
 nnAudio==0.3.3
@@ -53,10 +55,10 @@ numpy==2.3.5
 orjson==3.11.6
 pillow==12.2.0
 pkce==1.0.3
-plexapi==4.17.2
+plexapi==4.18.1
 podcastparser==0.6.11
 propcache>=0.2.1
-py-opensonic==9.0.1
+py-opensonic==9.1.0
 pyblu==2.0.6
 pycares==4.11.0
 PyChromecast==14.0.9
@@ -64,16 +66,18 @@ pycryptodome==3.23.0
 pyheos==1.0.6
 pyjwt[crypto]>=2.10.1
 pylast==7.0.2
-python-fullykiosk==0.0.14
+python-fullykiosk==0.0.15
 python-mpd2>=3.1.1
 python-slugify==8.0.4
 pytz==2025.2
+pywam==0.2.0
 pywidevine==1.9.0
+PyYAML==6.0.3
 qqmusic-api-python==0.4.1
 radios==0.3.2
 rokuecp==0.19.5
 shortuuid==1.0.13
-snapcast==2.3.7
+snapcast==2.3.8
 soco==0.31.0
 soundcloudpy==0.1.4
 sounddevice==0.5.5
@@ -83,6 +87,8 @@ torch==2.11.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
 torch==2.11.0; sys_platform != 'linux' or platform_machine != 'x86_64'
 torchaudio==2.11.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
 torchaudio==2.11.0; sys_platform != 'linux' or platform_machine != 'x86_64'
+torchlibrosa==0.1.0
+transformers==5.6.2
 unidecode==1.4.0
 uv>=0.8.0
 websocket-client==1.9.0

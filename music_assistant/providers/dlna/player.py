@@ -560,6 +560,14 @@ class DLNAPlayer(Player):
                 await self.device.async_update(do_ping=do_ping)
             self.last_seen = now if do_ping else self.last_seen
         except UpnpError as err:
+            # Some devices (e.g. Denon HEOS) return SOAP responses containing
+            # non-UTF-8 bytes in track metadata, which the underlying library
+            # surfaces as a UpnpCommunicationError wrapping UnicodeDecodeError.
+            # Treat this as a transient metadata issue and keep the player
+            # connected; the next poll will likely succeed.
+            if isinstance(err.__cause__, UnicodeDecodeError):
+                self.logger.debug("Ignoring non-UTF-8 SOAP response from device: %r", err)
+                return
             self.logger.debug("Device unavailable: %r", err)
             await self._device_disconnect()
             raise PlayerUnavailableError from err

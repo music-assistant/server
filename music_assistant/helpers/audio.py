@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import struct
 import urllib.parse
 from collections.abc import AsyncGenerator, Iterator
+from contextlib import aclosing
 from io import BytesIO
 from typing import TYPE_CHECKING, Final
 
@@ -320,6 +322,85 @@ def get_parts_from_position(
         return parts[i:], int(position)
 
     raise IndexError(f"Could not find any candidate part for position {seek_position}")
+
+
+async def audio_source_silence_keepalive(
+    inner: AsyncGenerator[bytes, None],
+    pcm_format: AudioFormat,
+    idle_threshold_s: float = 0.5,
+    silence_chunk_ms: int = 100,
+) -> AsyncGenerator[bytes, None]:
+    """
+    Wrap a live AudioSource PCM stream and emit silence during idle gaps.
+
+    Plugin providers exposing an AudioSource may stop yielding bytes while the
+    upstream device is paused (e.g. user paused in the Spotify app). Without
+    bytes flowing the downstream consumer (ffmpeg / the player) may disconnect.
+    This wrapper inserts ``silence_chunk_ms`` worth of zero bytes whenever the
+    inner generator hasn't produced for ``idle_threshold_s`` seconds, while
+    relaying real bytes immediately when they arrive.
+
+    Only meaningful for PCM streams — injecting raw zero bytes into a compressed
+    stream (MP3/AAC/etc.) would corrupt the bitstream. For non-PCM ``pcm_format``
+    inputs the wrapper degrades to a transparent pass-through.
+
+    :param inner: The underlying async generator yielding raw PCM bytes.
+    :param pcm_format: PCM format the inner generator emits (used to size the
+        silence chunk so it lines up to a frame boundary).
+    :param idle_threshold_s: Seconds without input before silence is inserted.
+    :param silence_chunk_ms: Duration of each silence chunk in milliseconds.
+    """
+    frame_size = pcm_format.channels * (pcm_format.bit_depth // 8)
+    bytes_per_second = (
+        pcm_format.sample_rate * frame_size if pcm_format.content_type.is_pcm() else 0
+    )
+    if bytes_per_second <= 0 or frame_size <= 0:
+        # non-PCM or malformed format: pass through unchanged, no silence injection
+        async for chunk in inner:
+            yield chunk
+        return
+
+    # Round the silence chunk size DOWN to a whole-frame multiple so emitted
+    # chunks line up to PCM frame boundaries for arbitrary silence_chunk_ms /
+    # sample-rate combinations.
+    raw_silence_bytes = bytes_per_second * silence_chunk_ms // 1000
+    silence_bytes = max(frame_size, (raw_silence_bytes // frame_size) * frame_size)
+    silence_chunk = b"\x00" * silence_bytes
+    # empty bytes is the end-of-stream sentinel; real PCM frames are never empty
+    queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=8)
+
+    async def _producer() -> None:
+        # aclosing ensures inner.aclose() runs on cancellation so the underlying
+        # generator's own finally (e.g. plugin lock release, fd cleanup) fires
+        # instead of leaking until GC.
+        try:
+            async with aclosing(inner) as managed_inner:
+                async for chunk in managed_inner:
+                    await queue.put(chunk)
+        finally:
+            await queue.put(b"")
+
+    producer_task = asyncio.create_task(_producer())
+    try:
+        while True:
+            try:
+                chunk = await asyncio.wait_for(queue.get(), timeout=idle_threshold_s)
+            except TimeoutError:
+                yield silence_chunk
+                continue
+            if not chunk:
+                break
+            yield chunk
+    finally:
+        producer_task.cancel()
+        try:
+            await producer_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            # log but don't re-raise: we're already in a finally and the
+            # downstream consumer has its own error handling for the outer stream.
+            LOGGER.exception("AudioSource producer task raised")
 
 
 async def get_silence(

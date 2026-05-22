@@ -63,6 +63,8 @@ from .constants import (
     DISCOVERY_INITIAL_TRACKS,
     FOR_YOU_FOLDER_ID,
     IMAGE_SIZE_MEDIUM,
+    LIKED_BATCH_JITTER_MIN_S,
+    LIKED_BATCH_JITTER_SPAN_S,
     LIKED_TRACKS_PLAYLIST_ID,
     LISTENING_HISTORY_FOLDER_ID,
     MY_WAVE_BATCH_SIZE,
@@ -2377,7 +2379,7 @@ class YandexMusicProvider(MusicProvider):
             return []
 
         max_tracks_config = int(
-            self.config.get_value(CONF_LIKED_TRACKS_MAX_TRACKS) or 500  # type: ignore[arg-type]
+            self.config.get_value(CONF_LIKED_TRACKS_MAX_TRACKS) or 200  # type: ignore[arg-type]
         )
 
         # Fetch liked tracks (already sorted in reverse chronological order by api_client)
@@ -2398,6 +2400,13 @@ class YandexMusicProvider(MusicProvider):
             batch_ids = track_ids[i : i + batch_size]
             batch_result = await self.client.get_tracks(batch_ids)
             full_tracks.extend(batch_result)
+            # Spread bursts: insert a small jittered pause between batches so
+            # a 500-track hydration doesn't look like a bot to Yandex's
+            # smart-captcha. Skipped after the last batch.
+            if i + batch_size < len(track_ids):
+                await asyncio.sleep(
+                    LIKED_BATCH_JITTER_MIN_S + random.random() * LIKED_BATCH_JITTER_SPAN_S
+                )
 
         # Create track ID to full track mapping by track ID directly
         track_map = {}
@@ -2422,7 +2431,7 @@ class YandexMusicProvider(MusicProvider):
 
     # Get related items
 
-    @use_cache(3600 * 24 * 30)
+    @use_cache(3600 * 24 * 30, allow_expired_cache=True)
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks.
 
@@ -2932,7 +2941,7 @@ class YandexMusicProvider(MusicProvider):
             icon="mdi-weather-sunny",
         )
 
-    @use_cache(3600 * 3)
+    @use_cache(3600 * 3, allow_expired_cache=True)
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks.
 
@@ -3032,7 +3041,7 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing playlist track: %s", err)
         return tracks
 
-    @use_cache(3600 * 24 * 7)
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get artist's albums.
 
@@ -3048,7 +3057,7 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing artist album: %s", err)
         return result
 
-    @use_cache(3600 * 24 * 7)
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get artist's top tracks.
 

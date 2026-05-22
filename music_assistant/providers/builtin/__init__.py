@@ -310,20 +310,6 @@ class BuiltinProvider(MusicProvider):
             metadata=metadata,
         )
 
-    async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:
-        """Get single MediaItem from provider."""
-        if media_type == MediaType.ARTIST:
-            return await self.get_artist(prov_item_id)
-        if media_type == MediaType.TRACK:
-            return await self.get_track(prov_item_id)
-        if media_type == MediaType.RADIO:
-            return await self.get_radio(prov_item_id)
-        if media_type == MediaType.PLAYLIST:
-            return await self.get_playlist(prov_item_id)
-        if media_type == MediaType.UNKNOWN:
-            return await self.parse_item(prov_item_id)
-        raise NotImplementedError
-
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from the provider."""
         stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_TRACKS, [])
