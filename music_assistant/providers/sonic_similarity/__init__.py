@@ -89,6 +89,8 @@ def _safe_aa_domain(raw: Any, logger: logging.Logger) -> str:
         _AA_DOMAIN_DEFAULT,
     )
     return _AA_DOMAIN_DEFAULT
+
+
 CONF_ENABLE_CLAP_INDEX = "enable_clap_index"
 CONF_ENABLE_TEXT_SEARCH = "enable_text_search"
 EXTRA_DATA_CLAP_EMBEDDING = "clap_embedding"
@@ -133,6 +135,7 @@ def _parse_clap_embedding(raw: Any) -> np.ndarray | None:
     if arr.shape != (CLAP_EMBEDDING_DIM,):
         return None
     return arr
+
 
 # Genre/year reranking bonus scale. Raw genre Jaccard + year-proximity terms reach
 # magnitudes ~10-20x the audio-distance dynamic range; without scaling they dominate
@@ -359,6 +362,10 @@ async def _collect_status_text(
 
     Each string is single-line, safe to render in a LABEL config entry, and
     degrades gracefully when the provider is not yet loaded.
+
+    :param mass: MusicAssistant instance used to look up the loaded provider.
+    :param instance_id: Provider instance id to inspect, or None before the
+        provider is loaded.
     """
     eighteen = "18-dim engine: not yet loaded"
     clap = "CLAP engine: disabled"

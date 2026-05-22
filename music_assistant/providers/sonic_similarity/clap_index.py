@@ -109,7 +109,7 @@ class ClapIndex:
                     self._index_path,
                     len(self._index),
                 )
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001
                 self._logger.warning("Failed to load CLAP index file (%s), starting fresh", err)
                 self._index_path.unlink(missing_ok=True)
                 self._index = Index(
@@ -122,7 +122,7 @@ class ClapIndex:
             try:
                 raw = json.loads(self._keys_path.read_text(encoding="utf-8"))
                 self._reverse = {int(k): (v[0], v[1]) for k, v in raw.items()}
-            except Exception as err:
+            except Exception as err:  # noqa: BLE001
                 self._logger.warning("Failed to load CLAP keys file (%s), starting fresh", err)
                 self._reverse = {}
 
@@ -185,7 +185,7 @@ class ClapIndex:
                 continue
             try:
                 vec = self._index.get(label)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 return None
             if vec is None:
                 return None
