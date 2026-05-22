@@ -255,8 +255,7 @@ class FFMpeg(AsyncProcess):
 
     def _apply_input_stream_info(self, info: FFMpegInputStreamInfo) -> None:
         """Mirror values from a parsed ffmpeg stream info line onto self.input_format."""
-        self.logger.log(
-            VERBOSE_LOG_LEVEL,
+        self.logger.debug(
             "Detected input stream info: codec=%s sample_rate=%s bit_depth=%s bit_rate=%s kb/s",
             info.codec,
             info.sample_rate,
