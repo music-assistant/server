@@ -994,6 +994,7 @@ class SonicSimilarityPlugin(PluginProvider):
                 limit=RECOMMEND_SEED_COUNT,
                 media_types=[MediaType.TRACK],
                 user_initiated_only=True,
+                fully_played_only=False,
             )
         except Exception as err:  # noqa: BLE001
             self.logger.info("recommendations: recently_played raised %s — yielding []", err)
@@ -1001,7 +1002,7 @@ class SonicSimilarityPlugin(PluginProvider):
         if not recent:
             self.logger.info(
                 "recommendations: recently_played returned 0 items "
-                "(fully_played_only=True default; user_initiated_only=True) — yielding []",
+                "(fully_played_only=False, user_initiated_only=True) — yielding []",
             )
             return []
 
