@@ -255,14 +255,10 @@ async def mount_into_mass(
     def _unmount() -> None:
         with contextlib.suppress(Exception):
             unregister()
-        # Schedule the lifespan shutdown — caller may be sync (MA's
-        # ``unload``), so dispatch onto the running loop without blocking.
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(_stop_asgi_lifespan(lifespan_state))
-        else:  # pragma: no cover - belt-and-braces for unit-test contexts
-            with contextlib.suppress(Exception):
-                loop.run_until_complete(_stop_asgi_lifespan(lifespan_state))
+        # ``MCPServerRuntime.stop`` (the only caller) is ``async def``,
+        # so a running loop is guaranteed — dispatch shutdown onto it
+        # without blocking.
+        asyncio.get_running_loop().create_task(_stop_asgi_lifespan(lifespan_state))
 
     return _unmount
 

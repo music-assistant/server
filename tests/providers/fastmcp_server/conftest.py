@@ -2,8 +2,7 @@
 
 Most tests run without a real Music Assistant install — they exercise pure
 logic (URI parsing, tag mapping, config entries shape) or use ``MagicMock``
-for ``mass``. Integration-level tests that need a real MA stack are marked
-with ``@pytest.mark.integration`` and skipped by default.
+for ``mass``.
 """
 # ruff: noqa: D401, PLR0915
 #   D401: fixture docstrings describe *what is returned* ("A stub …"), not
@@ -16,13 +15,10 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
 
 # Make the provider/ package importable as a top-level "provider" module without
 # requiring a full ``pip install -e .`` step in ad-hoc test runs.
@@ -225,23 +221,3 @@ def mock_config() -> MagicMock:
 def have_fastmcp() -> bool:
     """True if ``fastmcp`` is importable in the current environment."""
     return importlib.util.find_spec("fastmcp") is not None
-
-
-def pytest_collection_modifyitems(config: Any, items: Iterator[Any]) -> None:
-    """Skip integration tests by default unless ``--run-integration`` is passed."""
-    if config.getoption("--run-integration", default=False):
-        return
-    skip_integration = pytest.mark.skip(reason="integration tests require --run-integration")
-    for item in items:
-        if "integration" in item.keywords:
-            item.add_marker(skip_integration)
-
-
-def pytest_addoption(parser: Any) -> None:
-    """Add the ``--run-integration`` CLI flag."""
-    parser.addoption(
-        "--run-integration",
-        action="store_true",
-        default=False,
-        help="run tests marked @pytest.mark.integration",
-    )
