@@ -1075,32 +1075,18 @@ class StreamsAudio:
         filter_params = []
 
         player = self.mass.players.get_player(player_id)
-        dsp_player_id = player_id
-        if player and player.protocol_parent_id:
-            dsp_player_id = player.protocol_parent_id
-        dsp = self.mass.config.get_player_dsp_config(dsp_player_id)
         limiter_enabled = True
 
         if player:
-            if is_grouping_preventing_dsp(player):
-                dsp.enabled = False
-            elif player.provider.domain == "player_group" and (
-                PlayerFeature.MULTI_DEVICE_DSP not in player.state.supported_features
-            ):
-                if player.state.group_members:
-                    child_player = self.mass.players.get_player(player.state.group_members[0])
-                    assert child_player is not None
-                    dsp = self.mass.config.get_player_dsp_config(child_player.player_id)
-                else:
-                    dsp.enabled = False
-
+            dsp = self._resolve_player_dsp_config(player)
             player.extra_data["output_format"] = output_format
             if player.protocol_parent_id:
                 parent_player = self.mass.players.get_player(player.protocol_parent_id)
                 if parent_player:
                     parent_player.extra_data["output_format"] = output_format
-
             limiter_enabled = self.is_output_limiter_enabled(player)
+        else:
+            dsp = self.mass.config.get_player_dsp_config(player_id)
 
         if dsp.enabled:
             if dsp.input_gain != 0:
@@ -2213,6 +2199,33 @@ class StreamsAudio:
 
     # --- Private methods ---
 
+    def _resolve_player_dsp_config(self, player: Player) -> DSPConfig:
+        """
+        Resolve the effective DSP config for a player.
+
+        Single source of truth shared by every code path that needs to know
+        whether DSP will run for this player. Protocol wrappers defer to their
+        parent player; single-leg ``player_group`` instances that don't expose
+        ``MULTI_DEVICE_DSP`` defer to their first member; players whose grouping
+        context prevents DSP get a disabled config back regardless.
+
+        :param player: The player to resolve DSP config for.
+        """
+        dsp_player_id = player.protocol_parent_id or player.player_id
+        dsp = self.mass.config.get_player_dsp_config(dsp_player_id)
+        if is_grouping_preventing_dsp(player):
+            dsp.enabled = False
+        elif player.provider.domain == "player_group" and (
+            PlayerFeature.MULTI_DEVICE_DSP not in player.state.supported_features
+        ):
+            if player.state.group_members:
+                child_player = self.mass.players.get_player(player.state.group_members[0])
+                assert child_player is not None
+                dsp = self.mass.config.get_player_dsp_config(child_player.player_id)
+            else:
+                dsp.enabled = False
+        return dsp
+
     def _pick_pcm_bit_depth(
         self,
         player: Player,
@@ -2231,13 +2244,10 @@ class StreamsAudio:
         """
         if streamdetails is None:
             return INTERNAL_PCM_FORMAT.content_type, INTERNAL_PCM_FORMAT.bit_depth
-        # mirror get_player_filter_params: when this player is a protocol wrapper,
-        # DSP is configured against its parent rather than itself
-        dsp_player_id = player.protocol_parent_id or player.player_id
         needs_headroom = (
             smartfades_enabled
             or streamdetails.volume_normalization_mode != VolumeNormalizationMode.DISABLED
-            or self.mass.config.get_player_dsp_config(dsp_player_id).enabled
+            or self._resolve_player_dsp_config(player).enabled
         )
         if needs_headroom:
             return INTERNAL_PCM_FORMAT.content_type, INTERNAL_PCM_FORMAT.bit_depth
