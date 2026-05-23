@@ -116,6 +116,10 @@ def _extract_imageproxy_id(url: str) -> str | None:
     with a single trailing slash) — extra segments are rejected so this
     helper agrees with what `MetaDataController.handle_imageproxy` accepts.
     """
+    # bail out early on anything that obviously can't be a v2 imageproxy URL
+    # (non-strings such as MagicMock from tests; urlparse would TypeError)
+    if not isinstance(url, str) or _IMAGEPROXY_V2_PREFIX not in url:
+        return None
     parsed = urllib.parse.urlparse(url)
     if not parsed.path.startswith(_IMAGEPROXY_V2_PREFIX):
         return None
