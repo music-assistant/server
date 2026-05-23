@@ -31,7 +31,11 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 30
+# v31: MediaItemImage now carries `proxy_id`; clients may use the canonical
+#      /imageproxy/<proxy_id>?size=&fmt= URL form. The legacy
+#      /imageproxy?provider=&path= endpoint stays for back-compat but is
+#      deprecated and logs throttled deprecation warnings.
+API_SCHEMA_VERSION: Final[int] = 31
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
