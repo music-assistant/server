@@ -269,7 +269,9 @@ def peek_palette_for_url(image_url: str | None) -> MediaItemPalette | None:
     """
     if not image_url:
         return None
-    # New /imageproxy/<id> form: the id itself is the cache key.
+    # /imageproxy/<id>: `image_id` is by construction equal to
+    # `create_thumb_hash(provider, path)` (see MetaDataController.compute_image_id),
+    # which is also the key get_palette() stores under, so we can peek directly.
     if image_id := _extract_imageproxy_id(image_url):
         return _get_from_memory_cache(image_id)
     if extracted := _extract_imageproxy_params(image_url):

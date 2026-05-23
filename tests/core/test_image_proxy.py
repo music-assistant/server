@@ -10,7 +10,7 @@ from music_assistant.controllers.metadata import (
     MetaDataController,
     _is_safe_imageproxy_request_path,
 )
-from music_assistant.helpers.images import _extract_imageproxy_id
+from music_assistant.helpers.images import _extract_imageproxy_id, create_thumb_hash
 from music_assistant.mass import MusicAssistant
 
 
@@ -30,6 +30,20 @@ async def test_compute_image_id_is_deterministic(metadata_controller: MetaDataCo
     assert image_id_a == image_id_b
     expected = hashlib.sha256(b"filesystem//local/cover.jpg").hexdigest()
     assert image_id_a == expected
+
+
+async def test_image_id_matches_thumb_and_palette_cache_key(
+    metadata_controller: MetaDataController,
+) -> None:
+    """image_id must equal create_thumb_hash(provider, path).
+
+    The thumbnail and color-palette caches both key off
+    `create_thumb_hash(provider, path)`. If `compute_image_id` ever diverged
+    from that, `peek_palette_for_url` for /imageproxy/<id> URLs would silently
+    stop hitting and the on-disk thumbnail cache would split into two buckets.
+    """
+    image_id = metadata_controller.compute_image_id("filesystem", "/local/cover.jpg")
+    assert image_id == create_thumb_hash("filesystem", "/local/cover.jpg")
 
 
 async def test_compute_image_id_differs_per_input(metadata_controller: MetaDataController) -> None:
