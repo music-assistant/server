@@ -111,12 +111,12 @@ class YouSeeMusikProvider(MusicProvider):
         """Get full artist details by id."""
         return await self.media.get_artist(prov_artist_id)
 
-    @use_cache(3600 * 24 * 14)  # Cache for 14 days
+    @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         return await self.media.get_artist_albums(prov_artist_id)
 
-    @use_cache(3600 * 24 * 14)  # Cache for 14 days
+    @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of most popular tracks for the given artist."""
         return await self.media.get_artist_toptracks(prov_artist_id)
@@ -136,7 +136,7 @@ class YouSeeMusikProvider(MusicProvider):
         """Get full playlist details by id."""
         return await self.media.get_playlist(prov_playlist_id)
 
-    @use_cache(3600 * 24 * 30)  # Cache for 30 days
+    @use_cache(3600 * 24 * 30, allow_expired_cache=True)  # Cache for 30 days
     async def get_album_tracks(
         self,
         prov_album_id: str,
@@ -144,7 +144,7 @@ class YouSeeMusikProvider(MusicProvider):
         """Get album tracks for given album id."""
         return await self.media.get_album_tracks(prov_album_id)
 
-    @use_cache(3600 * 3)  # Cache for 3 hours
+    @use_cache(3600 * 3, allow_expired_cache=True)  # Cache for 3 hours
     async def get_playlist_tracks(
         self,
         prov_playlist_id: str,
@@ -175,7 +175,7 @@ class YouSeeMusikProvider(MusicProvider):
         """Create a new playlist on provider with given name."""
         return await self.playlist.create(name)
 
-    @use_cache(3600 * 24)  # Cache for 24 hours
+    @use_cache(3600 * 24, allow_expired_cache=True)  # Cache for 24 hours
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of similar tracks based on the provided track."""
         return await self.media.get_similar_tracks(prov_track_id, limit)

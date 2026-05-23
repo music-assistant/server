@@ -32,7 +32,7 @@ TARGET_ITEM_COUNT = 10
 RESOLUTION_BUFFER_SMALL = 15
 
 # Number of items to fetch when we expect many resolution failures (large buffer)
-RESOLUTION_BUFFER_LARGE = 30
+RESOLUTION_BUFFER_LARGE = 40
 
 # Number of top items to always include when sampling (before random selection)
 TOP_ITEMS_TO_TAKE = 3
@@ -41,7 +41,7 @@ TOP_ITEMS_TO_TAKE = 3
 SIMILAR_ITEMS_BUFFER = 12
 
 # Number of similar items to fetch for each seed artist/track
-SIMILAR_ITEMS_PER_SEED = 3
+SIMILAR_ITEMS_PER_SEED = 5
 
 # Number of top artists to use as seeds for personalized recommendations
 TOP_ARTISTS_LIMIT = 5

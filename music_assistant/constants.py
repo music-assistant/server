@@ -87,6 +87,7 @@ CONF_PLAYER_DSP: Final[str] = "player_dsp"
 CONF_PLAYER_DSP_PRESETS: Final[str] = "player_dsp_presets"
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
 CONF_FLOW_MODE: Final[str] = "flow_mode"
+CONF_FLOW_MODE_SAMPLE_RATE: Final[str] = "flow_mode_sample_rate"
 CONF_LOG_LEVEL: Final[str] = "log_level"
 CONF_HIDE_GROUP_CHILDS: Final[str] = "hide_group_childs"
 CONF_CROSSFADE_DURATION: Final[str] = "crossfade_duration"
@@ -94,6 +95,7 @@ CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
 CONF_AUTO_PLAY: Final[str] = "auto_play"
+CONF_PLAY_MEDIA_OVERRIDES_GROUP: Final[str] = "play_media_overrides_group"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
 CONF_DYNAMIC_GROUP_MEMBERS: Final[str] = "dynamic_members"
 CONF_HIDE_IN_UI: Final[str] = "hide_in_ui"
@@ -279,6 +281,45 @@ CONF_ENTRY_FLOW_MODE = ConfigEntry(
 )
 
 
+FLOW_MODE_SAMPLE_RATE_SMART: Final[str] = "smart"
+FLOW_MODE_SAMPLE_RATE_BIT_PERFECT: Final[str] = "bit_perfect"
+FLOW_MODE_SAMPLE_RATE_48000: Final[str] = "48000"
+FLOW_MODE_SAMPLE_RATE_96000: Final[str] = "96000"
+FLOW_MODE_SAMPLE_RATE_HIGHEST: Final[str] = "highest"
+
+CONF_ENTRY_FLOW_MODE_SAMPLE_RATE = ConfigEntry(
+    key=CONF_FLOW_MODE_SAMPLE_RATE,
+    type=ConfigEntryType.STRING,
+    label="Flow Mode sample rate",
+    options=[
+        ConfigValueOption("Smart (upsample only)", FLOW_MODE_SAMPLE_RATE_SMART),
+        ConfigValueOption("Bit-perfect (no resampling)", FLOW_MODE_SAMPLE_RATE_BIT_PERFECT),
+        ConfigValueOption("48 kHz (balanced quality and bandwidth)", FLOW_MODE_SAMPLE_RATE_48000),
+        ConfigValueOption("96 kHz (high quality)", FLOW_MODE_SAMPLE_RATE_96000),
+        ConfigValueOption("Highest supported by player", FLOW_MODE_SAMPLE_RATE_HIGHEST),
+    ],
+    default_value=FLOW_MODE_SAMPLE_RATE_SMART,
+    description="When streaming in Flow Mode, the entire queue is sent as one gapless stream "
+    "and must use a single sample rate for the whole stream.\n\n"
+    "- 'Smart (upsample only)': Starts the flow stream at the sample rate of the first "
+    "track. Subsequent tracks with an equal or lower sample rate are upsampled to match; "
+    "if the next track has a higher sample rate, the flow stream is restarted at that "
+    "higher rate. This is the best balance between quality and seamless playback.\n"
+    "- 'Bit-perfect (no resampling)': Never resamples audio (unless the player does not "
+    "support the track's sample rate). Playback is restarted between queue tracks when "
+    "their sample rates differ, which disables gapless and crossfade between those tracks.\n"
+    "- '48 kHz': Resamples all audio to a fixed 48 kHz (or the closest rate supported by "
+    "the player) using a high quality resampler. A good compromise of quality and bandwidth.\n"
+    "- '96 kHz': Resamples all audio to a fixed 96 kHz (or the closest rate supported by "
+    "the player) using a high quality resampler.\n"
+    "- 'Highest supported by player': Resamples all audio to the highest sample rate the "
+    "player supports. Note that this can waste a lot of bandwidth.",
+    category="protocol_generic",
+    advanced=True,
+    requires_reload=True,
+)
+
+
 CONF_ENTRY_AUTO_PLAY = ConfigEntry(
     key=CONF_AUTO_PLAY,
     type=ConfigEntryType.BOOLEAN,
@@ -289,6 +330,21 @@ CONF_ENTRY_AUTO_PLAY = ConfigEntry(
     depends_on=CONF_POWER_CONTROL,
     depends_on_value_not="none",
     category="player_controls",
+)
+
+CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP = ConfigEntry(
+    key=CONF_PLAY_MEDIA_OVERRIDES_GROUP,
+    type=ConfigEntryType.BOOLEAN,
+    label="Play Media overrides active group",
+    description="When this player is currently captured by an active group or sync session, "
+    "an explicit Play Media command (e.g. starting a new playlist or track from Home "
+    "Assistant) will release this player from the group/sync and play the new media "
+    "directly on this player. Disable this to keep the legacy behavior where Play "
+    "Media is redirected to the group leader. Other commands (next/prev/pause/resume) "
+    "are always forwarded to the group leader as they act on the existing playback.",
+    default_value=True,
+    category="generic",
+    advanced=False,
 )
 
 CONF_ENTRY_MIN_VOLUME = ConfigEntry(

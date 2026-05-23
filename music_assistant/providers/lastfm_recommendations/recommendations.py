@@ -114,6 +114,7 @@ class LastFMRecommendationManager:
         :param item_data: Raw Last.fm item data (artist, album, or track dict).
         :param media_type: Type of media item to check.
         """
+        name = item_data.get("name", "")
         # MBID lookup is the most reliable; fall back to name search for items without MBID.
         mbid = item_data.get("mbid")
         if mbid:
@@ -121,42 +122,57 @@ class LastFMRecommendationManager:
                 if await self.mass.music.artists.get_library_item_by_external_id(
                     mbid, ExternalID.MB_ARTIST
                 ):
+                    self.logger.debug("Filtered artist '%s' (MBID match: %s)", name, mbid)
                     return True
             elif media_type == MediaType.ALBUM:
                 if await self.mass.music.albums.get_library_item_by_external_id(
                     mbid, ExternalID.MB_ALBUM
                 ):
+                    self.logger.debug("Filtered album '%s' (MBID match: %s)", name, mbid)
                     return True
             elif media_type == MediaType.TRACK:
                 if await self.mass.music.tracks.get_library_item_by_external_id(
                     mbid, ExternalID.MB_RECORDING
                 ):
+                    self.logger.debug("Filtered track '%s' (MBID match: %s)", name, mbid)
                     return True
 
         if media_type == MediaType.ARTIST:
-            name = item_data.get("name", "")
             if name:
                 artist_results = await self.mass.music.artists.library_items(search=name, limit=1)
-                return len(artist_results) > 0
+                if artist_results:
+                    self.logger.debug(
+                        "Filtered artist '%s' (name match: '%s')", name, artist_results[0].name
+                    )
+                    return True
 
         elif media_type == MediaType.ALBUM:
-            name = item_data.get("name", "")
             if name:
                 album_results = await self.mass.music.albums.library_items(search=name, limit=1)
-                return len(album_results) > 0
+                if album_results:
+                    self.logger.debug(
+                        "Filtered album '%s' (name match: '%s')", name, album_results[0].name
+                    )
+                    return True
 
         elif media_type == MediaType.TRACK:
             artist_info = item_data.get("artist", {})
             artist_name = (
                 artist_info if isinstance(artist_info, str) else artist_info.get("name", "")
             )
-            track_name = item_data.get("name", "")
-            if track_name and artist_name:
-                search_query = f"{artist_name} {track_name}"
+            if name and artist_name:
+                search_query = f"{artist_name} {name}"
                 track_results = await self.mass.music.tracks.library_items(
                     search=search_query, limit=1
                 )
-                return len(track_results) > 0
+                if track_results:
+                    self.logger.debug(
+                        "Filtered track '%s - %s' (name match: '%s')",
+                        artist_name,
+                        name,
+                        track_results[0].name,
+                    )
+                    return True
 
         return False
 

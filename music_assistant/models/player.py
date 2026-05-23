@@ -19,6 +19,7 @@ from collections.abc import Callable
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast, final
 
+from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
 from music_assistant_models.constants import (
     EXTRA_ATTRIBUTES_TYPES,
     PLAYER_CONTROL_FAKE,
@@ -54,6 +55,7 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
+    CONF_SAMPLE_RATES,
     CONF_VOLUME_CONTROL,
     EXTERNAL_SOURCES,
     PLAYER_CONTROL_PROTOCOL,
@@ -102,6 +104,7 @@ class Player(ABC):
     _attr_expose_to_ha_by_default: bool = True
     _attr_enabled_by_default: bool = True
     _attr_needs_setup: bool = False
+    _attr_supported_sample_rates: list[tuple[int, int]] | None = None
 
     def __init__(self, provider: PlayerProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -315,6 +318,19 @@ class Player(ABC):
         return self._attr_can_group_with
 
     @property
+    def is_active_session(self) -> bool:
+        """
+        Return whether this group player is currently holding (capturing) its members.
+
+        Used by :meth:`__final_active_group` to decide whether children should be
+        considered "owned" by this group at this moment. Non-group players should
+        always return ``False``. Group implementations should return ``True`` while
+        a session is being formed, while it is actively playing/paused, and during
+        any idle grace period; and ``False`` once the group is fully dormant.
+        """
+        return False
+
+    @property
     def synced_to(self) -> str | None:
         """Return the id of the player this player is synced to (sync leader)."""
         # default implementation, feel free to override if your
@@ -356,6 +372,23 @@ class Player(ABC):
     def options(self) -> UniqueList[PlayerOption]:
         """Return all PlayerOptions for Player."""
         return UniqueList(self._attr_options)
+
+    @property
+    def supported_sample_rates(self) -> list[tuple[int, int]] | None:
+        """
+        Return the (sample_rate, bit_depth) pairs this player natively supports.
+
+        Example: [(44100, 16), (48000, 24)]
+
+        Players with a known static set should set ``_attr_supported_sample_rates``.
+        Players whose supported rates depend on runtime state (e.g. group players
+        whose members can change) should override this property.
+
+        Returning ``None`` defers to the user's per-player ``CONF_SAMPLE_RATES``
+        selection — callers should use ``get_supported_sample_rates()`` to get a
+        resolved, non-None list.
+        """
+        return self._attr_supported_sample_rates
 
     async def power(self, powered: bool) -> None:
         """
@@ -772,6 +805,46 @@ class Player(ABC):
         """Return if the player is enabled."""
         return self._config.enabled
 
+    @final
+    def get_supported_sample_rates(self) -> list[tuple[int, int]]:
+        """
+        Return the resolved (sample_rate, bit_depth) pairs the player can play.
+
+        Honors, in order:
+        1. The ``supported_sample_rates`` property (declarative or overridden)
+        2. The user's ``CONF_SAMPLE_RATES`` selection
+        3. A safe ``[(44100, 16)]`` fallback
+        """
+        if (declared := self.supported_sample_rates) is not None:
+            return declared
+        config_rates: list[tuple[int, int]] = []
+        if conf := self.config.get_value(CONF_SAMPLE_RATES):
+            conf = cast("list[str]", conf)
+            for item in conf:
+                # tolerate legacy/malformed entries: anything that does not parse as
+                # `<rate><splitter><bit_depth>` is skipped and we fall back to defaults
+                try:
+                    sample_rate_str, bit_depth_str = item.split(MULTI_VALUE_SPLITTER, 1)
+                    config_rates.append((int(sample_rate_str.strip()), int(bit_depth_str.strip())))
+                except (ValueError, TypeError):
+                    self.logger.warning(
+                        "Ignoring malformed CONF_SAMPLE_RATES entry %r for player %s",
+                        item,
+                        self.player_id,
+                    )
+        return config_rates or [(44100, 16)]
+
+    @property
+    @final
+    def declares_supported_sample_rates(self) -> bool:
+        """
+        Return True when this player exposes its supported rates without user config.
+
+        Used by the config controller to decide whether to inject the generic
+        ``CONF_ENTRY_SAMPLE_RATES`` option in the player config UI.
+        """
+        return self.supported_sample_rates is not None
+
     @property
     @final
     def initialized(self) -> asyncio.Event:
@@ -803,7 +876,11 @@ class Player(ABC):
         """Return the power control type."""
         conf = self.mass.config.get_raw_player_config_value(self.player_id, CONF_POWER_CONTROL)
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
-            # the control type is explicitly set in the config, use that
+            # validate that NATIVE is still backed by an actual POWER feature.
+            # this handles graceful degradation for players (e.g. group players)
+            # that previously advertised POWER but no longer do.
+            if conf == PLAYER_CONTROL_NATIVE and PlayerFeature.POWER not in self.supported_features:
+                return PLAYER_CONTROL_NONE
             return str(conf)
         if conf and (_control := self.mass.players.get_player_control(str(conf))):
             # the control type is explicitly set to a player control,
@@ -1550,18 +1627,24 @@ class Player(ABC):
             elapsed_time = self.elapsed_time
             elapsed_time_last_updated = self.elapsed_time_last_updated
 
-        # If a PluginSource is active with elapsed_time metadata, prefer it
-        # over the player/protocol elapsed_time (which tracks bytes consumed,
-        # not the source's logical playback position).
-        active_source = self.__final_active_source
+        # If the active queue item is an AudioSource with upstream-clock
+        # metadata (e.g. Spotify Connect / AirPlay / Yandex Ynison reporting
+        # the source's logical position), prefer that over the protocol /
+        # self elapsed_time — the latter tracks bytes consumed, which is the
+        # wrong clock for live plugin sources (loses upstream seeks and
+        # pause-resume on the queue's corrected_elapsed_time, which the
+        # player_queues controller and several player providers consume).
         if (
-            active_source
-            and (source := self.mass.players.get_plugin_source(active_source))
-            and source.metadata
-            and source.metadata.elapsed_time is not None
+            (active_source := self.__final_active_source)
+            and (queue := self.mass.player_queues.get(active_source))
+            and (current_item := queue.current_item) is not None
+            and (sd := current_item.streamdetails) is not None
+            and sd.media_type == MediaType.AUDIO_SOURCE
+            and sd.stream_metadata is not None
+            and sd.stream_metadata.elapsed_time is not None
         ):
-            elapsed_time = source.metadata.elapsed_time
-            elapsed_time_last_updated = source.metadata.elapsed_time_last_updated or time.time()
+            elapsed_time = sd.stream_metadata.elapsed_time
+            elapsed_time_last_updated = sd.stream_metadata.elapsed_time_last_updated or time.time()
 
         return (playback_state, elapsed_time, elapsed_time_last_updated)
 
@@ -1659,11 +1742,19 @@ class Player(ABC):
                 continue
             if group_player.player_id == self.player_id:
                 continue
-            if group_player.powered is False or (
-                group_player.powered is None and group_player.playback_state == PlaybackState.IDLE
-            ):
-                # a group is only considered active if it supports power and is powered on,
-                # or if it doesn't support power but is not idle
+            # Use the raw `powered` attribute (not `state.powered`) so the
+            # check reflects what the group player itself believes — for
+            # native/fake control the group's `power()` method sets
+            # `_attr_powered` directly. `state.powered` routes through
+            # `__final_power_state` which may return None for power_control
+            # == NONE even though the group is actively capturing members.
+            powered = group_player.powered
+            if powered is False:
+                # explicit power-off (fake or native) - never captures members
+                continue
+            if powered is not True and not group_player.is_active_session:
+                # no explicit power-on and no captured session - group is dormant,
+                # configured members are free to be controlled individually
                 continue
             if self.player_id in group_player.state.group_members:
                 return group_player.player_id
@@ -1687,28 +1778,8 @@ class Player(ABC):
         if self.type == PlayerType.PROTOCOL and self.__attr_protocol_parent_id:
             if parent_player := self.mass.players.get_player(self.__attr_protocol_parent_id):
                 return parent_player.state.current_media
-        # if a pluginsource is currently active, return those details
-        active_source = self.__final_active_source
-        if (
-            active_source
-            and (source := self.mass.players.get_plugin_source(active_source))
-            and source.metadata
-        ):
-            image_url = source.metadata.image_url
-            return PlayerMedia(
-                uri=source.metadata.uri or source.id,
-                media_type=MediaType.PLUGIN_SOURCE,
-                title=source.metadata.title,
-                artist=source.metadata.artist,
-                album=source.metadata.album,
-                image_url=image_url,
-                palette=peek_palette_for_url(image_url),
-                duration=source.metadata.duration,
-                source_id=source.id,
-                elapsed_time=source.metadata.elapsed_time,
-                elapsed_time_last_updated=source.metadata.elapsed_time_last_updated,
-            )
         # if MA queue is active, return those details
+        active_source = self.__final_active_source
         active_queue: PlayerQueue | None = None
         if not active_queue and active_source:
             active_queue = self.mass.player_queues.get(active_source)
@@ -1832,12 +1903,6 @@ class Player(ABC):
                 can_next_previous=True,
             )
             sources.append(mass_source)
-        # append all/any plugin sources (convert to PlayerSource to avoid deepcopy issues)
-        for plugin_source in self.mass.players.get_plugin_sources():
-            if hasattr(plugin_source, "as_player_source"):
-                sources.append(plugin_source.as_player_source())
-            else:
-                sources.append(plugin_source)
         return sources
 
     @cached_property
@@ -2051,11 +2116,6 @@ class Player(ABC):
         ):
             return parent_player.state.active_source
 
-        # if a plugin source is active that belongs to this player, return that
-        for plugin_source in self.mass.players.get_plugin_sources():
-            if plugin_source.in_use_by == self.player_id:
-                return plugin_source.id
-
         # always prefer active MA source but add a guard to detect if player is really playing
         # something different, such as a line-in or TV input, we use an explicit list here
         # because many players do not accurately report the active_source
@@ -2131,15 +2191,9 @@ class Player(ABC):
         if active_source == self.player_id:
             return False
 
-        # Check if it's a known queue ID
-        if self.mass.player_queues.get(active_source):
-            return False
-
-        # Check if it's a plugin source - if not, it's an external source
-        return not any(
-            plugin_source.id == active_source
-            for plugin_source in self.mass.players.get_plugin_sources()
-        )
+        # If it's a known queue ID it's MA-managed; anything else is external
+        # (line-in, TV input, etc.)
+        return self.mass.player_queues.get(active_source) is None
 
     @final
     def _expand_can_group_with(self) -> set[Player]:
