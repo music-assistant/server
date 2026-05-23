@@ -530,15 +530,6 @@ class UniversalGroupPlayer(Player):
         output_format_str = request.path.rsplit(".")[-1]
 
         if child_player_id and (child_player := self.mass.players.get_player(child_player_id)):
-            # Resolve universal_player wrappers to their active protocol player —
-            # sample_rates and http_profile live on the protocol, not the wrapper.
-            if (
-                child_player.active_output_protocol
-                and child_player.active_output_protocol != "native"
-                and (proto := self.mass.players.get_player(child_player.active_output_protocol))
-            ):
-                child_player = proto
-                child_player_id = proto.player_id
             # Use the preferred output format of the child player
             output_format = await self.mass.streams.audio.get_output_format(
                 output_format_str=output_format_str,
