@@ -146,6 +146,10 @@ def test_is_safe_imageproxy_request_path_rejects_control_char_bypass() -> None:
     assert not _is_safe_imageproxy_request_path("\nfile:///etc/passwd")
     assert not _is_safe_imageproxy_request_path("\x00file:///etc/passwd")
     assert not _is_safe_imageproxy_request_path("\rhttp://localhost/")
+    # ASCII space is not < 0x20, so the strip() guard is what catches this
+    assert not _is_safe_imageproxy_request_path(" file:///etc/passwd")
+    assert not _is_safe_imageproxy_request_path("file:///etc/passwd ")
+    assert not _is_safe_imageproxy_request_path(" https://cdn.example.com/a.jpg")
 
 
 def test_is_safe_imageproxy_request_path_rejects_ssrf_targets() -> None:
@@ -177,6 +181,11 @@ def test_extract_imageproxy_id_matches_path_only() -> None:
     # invalid id length / charset
     assert _extract_imageproxy_id("http://mass.local/imageproxy/short") is None
     assert _extract_imageproxy_id("http://mass.local/imageproxy/" + "g" * 64) is None
+    # extra path segments must not be accepted (matches handle_imageproxy)
+    assert _extract_imageproxy_id("http://mass.local/imageproxy/" + "a" * 64 + "/extra") is None
+    assert _extract_imageproxy_id("http://mass.local/imageproxy/extra/" + "a" * 64) is None
+    # canonical form with trailing slash is fine
+    assert _extract_imageproxy_id("http://mass.local/imageproxy/" + "a" * 64 + "/") == "a" * 64
 
 
 async def test_handle_imageproxy_rejects_extra_path_segments(

@@ -104,14 +104,19 @@ def _extract_imageproxy_params(url: str) -> tuple[str, str] | None:
 
 
 def _extract_imageproxy_id(url: str) -> str | None:
-    """Return the 64-hex image_id from a /imageproxy/<id> URL, or None."""
+    """Return the 64-hex image_id from a /imageproxy/<id> URL, or None.
+
+    The path must match the canonical shape `/imageproxy/<id>` (optionally
+    with a single trailing slash) — extra segments are rejected so this
+    helper agrees with what `MetaDataController.handle_imageproxy` accepts.
+    """
     parsed = urllib.parse.urlparse(url)
     if not parsed.path.startswith(_IMAGEPROXY_V2_PREFIX):
         return None
-    image_id = parsed.path[len(_IMAGEPROXY_V2_PREFIX) :].split("/", 1)[0].lower()
-    if len(image_id) == 64 and all(c in "0123456789abcdef" for c in image_id):
-        return image_id
-    return None
+    remainder = parsed.path[len(_IMAGEPROXY_V2_PREFIX) :].rstrip("/").lower()
+    if len(remainder) != 64 or any(c not in "0123456789abcdef" for c in remainder):
+        return None
+    return remainder
 
 
 def player_image_url(mass: MusicAssistant, url: str | None) -> str | None:

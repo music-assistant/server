@@ -117,14 +117,14 @@ def _is_safe_imageproxy_request_path(path: str) -> bool:
     r"""
     Return True if `path` is safe to fetch on behalf of an imageproxy client.
 
-    Rejects any input containing control characters (so a leading `\t` or
-    `\x00` cannot mask an otherwise-forbidden scheme), restricts the scheme
-    to http, https, or empty (local / relative path), and for http(s) targets
-    rejects IP-literal hosts that resolve to loopback, private, link-local
-    or multicast ranges. DNS-resolved hostnames are trusted; full DNS-rebinding
-    mitigation is out of scope here.
+    Rejects any input containing control characters or surrounding whitespace
+    (so a leading `\t`, ` `, or `\x00` cannot mask an otherwise-forbidden
+    scheme), restricts the scheme to http, https, or empty (local / relative
+    path), and for http(s) targets rejects IP-literal hosts that resolve to
+    loopback, private, link-local or multicast ranges. DNS-resolved hostnames
+    are trusted; full DNS-rebinding mitigation is out of scope here.
     """
-    if any(ord(c) < 0x20 for c in path):
+    if any(ord(c) < 0x20 for c in path) or path != path.strip():
         return False
     parsed = urllib.parse.urlparse(path)
     scheme = parsed.scheme.lower()
