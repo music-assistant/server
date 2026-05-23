@@ -217,6 +217,8 @@ _IMAGE_ID_CACHE_TTL = 86400 * 365  # 1 year, refreshed on each write
 # to bound PIL memory + thumbnail cache cardinality; expand if a real use case appears.
 _ALLOWED_IMAGEPROXY_SIZES = frozenset({0, 80, 160, 256, 512, 1024})
 
+_IMAGEPROXY_PATH_PREFIX = "/imageproxy/"
+
 # Deprecation logging for the legacy /imageproxy query-string endpoint.
 _LEGACY_DEPRECATION_LOG_INTERVAL = 60  # seconds between log lines per IP
 _LEGACY_DEPRECATION_PRUNE_AFTER = 300  # drop tracking entries idle this long
@@ -663,7 +665,11 @@ class MetaDataController(CoreController):
         taking the `proxy_id` from a `MediaItemImage` and appending it as a
         single path segment, optionally with `size` and `fmt` query parameters.
         """
-        image_id = request.path.rstrip("/").rsplit("/", 1)[-1].lower()
+        # require exactly /imageproxy/<id> (optionally with a trailing slash);
+        # extra path segments such as /imageproxy/foo/<id> must not validate
+        if not request.path.startswith(_IMAGEPROXY_PATH_PREFIX):
+            return web.Response(status=400)
+        image_id = request.path[len(_IMAGEPROXY_PATH_PREFIX) :].rstrip("/").lower()
         if len(image_id) != 64 or any(c not in "0123456789abcdef" for c in image_id):
             return web.Response(status=400)
         try:

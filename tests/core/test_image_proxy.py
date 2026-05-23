@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -21,6 +22,30 @@ async def metadata_controller(mass_minimal: MusicAssistant) -> MetaDataControlle
     controller = MetaDataController(mass_minimal)
     mass_minimal.metadata = controller
     return controller
+
+
+async def _wait_for_persisted_image_id(
+    controller: MetaDataController, image_id: str, timeout: float = 2.0
+) -> dict[str, str]:
+    """
+    Wait until `_persist_image_id` has written its row, or fail the test.
+
+    `_persist_image_id` runs on the loop but does real work (json dump on a
+    thread + sqlite write), so a `sleep(0)` busy-loop can race on slow CI.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        raw = await controller.cache.get(
+            key=image_id,
+            category=CACHE_CATEGORY_IMAGE_IDS,
+            provider=controller.domain,
+        )
+        if raw is not None:
+            assert isinstance(raw, dict)
+            return raw
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"image_id {image_id!r} not persisted within {timeout}s")
 
 
 async def test_compute_image_id_is_deterministic(metadata_controller: MetaDataController) -> None:
@@ -68,16 +93,7 @@ async def test_resolve_image_id_via_in_memory_lru(
 async def test_resolve_image_id_via_cache_db(metadata_controller: MetaDataController) -> None:
     """After the async persist runs, the mapping resolves from cache even with empty LRU."""
     image_id = metadata_controller.compute_image_id("filesystem", "/local/cover.jpg")
-    # let the scheduled persist task drain
-    for _ in range(20):
-        await asyncio.sleep(0)
-        raw = await metadata_controller.cache.get(
-            key=image_id,
-            category=CACHE_CATEGORY_IMAGE_IDS,
-            provider=metadata_controller.domain,
-        )
-        if raw is not None:
-            break
+    raw = await _wait_for_persisted_image_id(metadata_controller, image_id)
     assert raw == {"provider": "filesystem", "path": "/local/cover.jpg"}
     # wipe the in-memory layer so we hit the cache db
     metadata_controller._image_id_lru.clear()
@@ -98,17 +114,7 @@ async def test_image_id_persists_with_persistent_flag(
 ) -> None:
     """Mappings must survive a `clear()` without include_persistent."""
     image_id = metadata_controller.compute_image_id("filesystem", "/persistent.jpg")
-    # wait for the scheduled persist task to land in the cache db
-    for _ in range(20):
-        await asyncio.sleep(0)
-        raw = await metadata_controller.cache.get(
-            key=image_id,
-            category=CACHE_CATEGORY_IMAGE_IDS,
-            provider=metadata_controller.domain,
-        )
-        if raw is not None:
-            break
-    assert raw is not None
+    await _wait_for_persisted_image_id(metadata_controller, image_id)
     # simulate the user-facing "Reset cache" action: clear() without include_persistent
     await metadata_controller.cache.clear()
     metadata_controller._image_id_lru.clear()
@@ -171,3 +177,35 @@ def test_extract_imageproxy_id_matches_path_only() -> None:
     # invalid id length / charset
     assert _extract_imageproxy_id("http://mass.local/imageproxy/short") is None
     assert _extract_imageproxy_id("http://mass.local/imageproxy/" + "g" * 64) is None
+
+
+async def test_handle_imageproxy_rejects_extra_path_segments(
+    metadata_controller: MetaDataController,
+) -> None:
+    """`/imageproxy/<id>` is the only shape that should validate."""
+    image_id = metadata_controller.compute_image_id("filesystem", "/local/cover.jpg")
+
+    def _fake_request(path: str) -> MagicMock:
+        request = MagicMock()
+        request.path = path
+        request.query = {}
+        return request
+
+    # canonical form passes the path check and reaches resolve (404 because
+    # the (provider, path) is not actually fetchable in this minimal fixture)
+    assert (
+        await metadata_controller.handle_imageproxy(_fake_request(f"/imageproxy/{image_id}"))
+    ).status in (200, 404)
+    # extra leading segment must not be accepted
+    bad = await metadata_controller.handle_imageproxy(
+        _fake_request(f"/imageproxy/extra/{image_id}")
+    )
+    assert bad.status == 400
+    # trailing extra segment likewise
+    bad = await metadata_controller.handle_imageproxy(
+        _fake_request(f"/imageproxy/{image_id}/extra")
+    )
+    assert bad.status == 400
+    # double slash after the prefix must not be accepted either
+    bad = await metadata_controller.handle_imageproxy(_fake_request(f"/imageproxy//{image_id}"))
+    assert bad.status == 400
