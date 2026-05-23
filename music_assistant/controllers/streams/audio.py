@@ -2293,12 +2293,20 @@ class StreamsAudio:
             return False
         effective_next_rate = _snap_supported_rate_up(raw_next_rate, supported_sample_rates)
 
-        if flow_mode_sample_rate_conf == FLOW_MODE_SAMPLE_RATE_BIT_PERFECT:
-            needs_restart = effective_next_rate != pcm_format.sample_rate
-        elif flow_mode_sample_rate_conf == FLOW_MODE_SAMPLE_RATE_SMART:
-            needs_restart = effective_next_rate > pcm_format.sample_rate
-        else:
+        # branch order mirrors select_flow_pcm_format: fixed-rate modes resample
+        # everything to the chosen rate (no restart); bit_perfect restarts on any
+        # mismatch; anything else falls through to smart-anchor behavior so
+        # unknown/legacy config values don't silently pin the flow forever.
+        if flow_mode_sample_rate_conf in (
+            FLOW_MODE_SAMPLE_RATE_48000,
+            FLOW_MODE_SAMPLE_RATE_96000,
+            FLOW_MODE_SAMPLE_RATE_HIGHEST,
+        ):
             needs_restart = False
+        elif flow_mode_sample_rate_conf == FLOW_MODE_SAMPLE_RATE_BIT_PERFECT:
+            needs_restart = effective_next_rate != pcm_format.sample_rate
+        else:
+            needs_restart = effective_next_rate > pcm_format.sample_rate
 
         if needs_restart:
             self.logger.info(
