@@ -7,9 +7,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from music_assistant.controllers.metadata import (
+    _IMAGEPROXY_CONTENT_TYPES,
     CACHE_CATEGORY_IMAGE_IDS,
     MetaDataController,
     _is_safe_imageproxy_request_path,
+    _normalize_imageproxy_format,
 )
 from music_assistant.helpers.images import _extract_imageproxy_id, create_thumb_hash
 from music_assistant.mass import MusicAssistant
@@ -169,6 +171,29 @@ def test_is_safe_imageproxy_request_path_rejects_ssrf_targets() -> None:
     assert _is_safe_imageproxy_request_path("http://example.com/a.jpg")
     assert _is_safe_imageproxy_request_path("https://cdn.example.com/a.jpg")
     assert _is_safe_imageproxy_request_path("http://8.8.8.8/a.jpg")
+
+
+def test_normalize_imageproxy_format() -> None:
+    """Client `fmt` values are lowercased / trimmed and validated."""
+    assert _normalize_imageproxy_format("jpg") == "jpg"
+    assert _normalize_imageproxy_format("JPG") == "jpg"
+    assert _normalize_imageproxy_format("jpeg") == "jpeg"
+    assert _normalize_imageproxy_format("PNG") == "png"
+    assert _normalize_imageproxy_format("svg") == "svg"
+    assert _normalize_imageproxy_format("  png  ") == "png"
+    # invalid / empty input falls through so caller can detect from path
+    assert _normalize_imageproxy_format("") is None
+    assert _normalize_imageproxy_format(None) is None
+    assert _normalize_imageproxy_format("gif") is None
+    assert _normalize_imageproxy_format("bmp") is None
+
+
+def test_imageproxy_content_types_are_standards_compliant() -> None:
+    """Every accepted fmt must produce a standards-compliant MIME type."""
+    assert _IMAGEPROXY_CONTENT_TYPES["jpg"] == "image/jpeg"
+    assert _IMAGEPROXY_CONTENT_TYPES["jpeg"] == "image/jpeg"
+    assert _IMAGEPROXY_CONTENT_TYPES["png"] == "image/png"
+    assert _IMAGEPROXY_CONTENT_TYPES["svg"] == "image/svg+xml"
 
 
 def test_extract_imageproxy_id_matches_path_only() -> None:

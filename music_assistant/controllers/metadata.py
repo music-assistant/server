@@ -106,6 +106,27 @@ def _detect_image_format(path: str) -> str:
             return "jpg"
 
 
+# Map of normalised imageproxy `fmt` values to standards-compliant MIME types.
+# Used both to validate the client-supplied `fmt` query parameter and to set
+# the Content-Type on the response.
+_IMAGEPROXY_CONTENT_TYPES: dict[str, str] = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "svg": "image/svg+xml",
+}
+
+
+def _normalize_imageproxy_format(value: str | None) -> str | None:
+    """Return a validated, lowercase imageproxy format, or None when invalid."""
+    if not value:
+        return None
+    normalized = value.strip().lower()
+    if normalized in _IMAGEPROXY_CONTENT_TYPES:
+        return normalized
+    return None
+
+
 # Schemes accepted from a client on the legacy /imageproxy?path= endpoint.
 # Allowlist (not blacklist) so a leading-whitespace or unknown-scheme value
 # cannot sneak through. Provider-supplied paths resolved internally via
@@ -682,7 +703,9 @@ class MetaDataController(CoreController):
         if resolved is None:
             return web.Response(status=404)
         provider, path = resolved
-        image_format = request.query.get("fmt") or _detect_image_format(path)
+        image_format = _normalize_imageproxy_format(
+            request.query.get("fmt")
+        ) or _detect_image_format(path)
         return await self._serve_thumbnail(path, provider, size, image_format)
 
     async def handle_legacy_imageproxy(self, request: web.Request) -> web.Response:
@@ -711,7 +734,9 @@ class MetaDataController(CoreController):
             return web.Response(status=400)
         if size not in _ALLOWED_IMAGEPROXY_SIZES:
             return web.Response(status=400)
-        image_format = request.query.get("fmt") or _detect_image_format(path)
+        image_format = _normalize_imageproxy_format(
+            request.query.get("fmt")
+        ) or _detect_image_format(path)
         # path was double-encoded by old get_image_url(); decode iteratively
         # until stable so we cope with any extra wrapping clients may have done
         for _ in range(3):
@@ -747,11 +772,10 @@ class MetaDataController(CoreController):
                     exc_info=err if self.logger.isEnabledFor(10) else None,
                 )
             return web.Response(status=404)
-        content_type = "image/svg+xml" if image_format == "svg" else f"image/{image_format}"
         return web.Response(
             body=image_data,
             headers={"Cache-Control": "max-age=31536000", "Access-Control-Allow-Origin": "*"},
-            content_type=content_type,
+            content_type=_IMAGEPROXY_CONTENT_TYPES[image_format],
         )
 
     def _maybe_log_legacy_imageproxy(self, request: web.Request) -> None:
