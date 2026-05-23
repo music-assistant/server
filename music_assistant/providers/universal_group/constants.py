@@ -60,9 +60,9 @@ CONF_ENTRY_UGP_OUTPUT_FORMAT = ConfigEntry(
     type=ConfigEntryType.STRING,
     label="Output format for Universal Group playback",
     options=[
-        ConfigValueOption("MP3 (320 kbps) — broadest compatibility", UGP_OUTPUT_MP3),
-        ConfigValueOption("FLAC 44.1 kHz / 16-bit — lossless CD-quality", UGP_OUTPUT_FLAC_44100_16),
-        ConfigValueOption("FLAC 48 kHz / 24-bit — hi-res", UGP_OUTPUT_FLAC_48000_24),
+        ConfigValueOption("MP3 (320 kbps)", UGP_OUTPUT_MP3),
+        ConfigValueOption("FLAC 44.1 kHz / 16-bit", UGP_OUTPUT_FLAC_44100_16),
+        ConfigValueOption("FLAC 48 kHz / 24-bit", UGP_OUTPUT_FLAC_48000_24),
     ],
     default_value=UGP_OUTPUT_MP3,
     description="Universal Groups deliver the exact same encoded stream to every "
