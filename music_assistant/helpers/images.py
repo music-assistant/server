@@ -258,10 +258,9 @@ async def get_image_thumb(
         return cached
 
     # 2. Check on-disk cache
-    thumb_dir = os.path.join(mass.cache_path, _THUMB_CACHE_DIR)
-    cache_filepath = os.path.join(thumb_dir, cache_filename)
-    resolved = os.path.realpath(cache_filepath)
-    if not resolved.startswith(os.path.realpath(thumb_dir) + os.sep):
+    thumb_dir_resolved = os.path.realpath(os.path.join(mass.cache_path, _THUMB_CACHE_DIR))
+    cache_filepath = os.path.realpath(os.path.join(thumb_dir_resolved, cache_filename))
+    if not cache_filepath.startswith(thumb_dir_resolved + os.sep):
         msg = f"Cache path escapes thumbnail directory: {cache_filepath}"
         raise OSError(msg)
     if await asyncio.to_thread(os.path.isfile, cache_filepath):
