@@ -72,6 +72,8 @@ class SonosQueue:
 
     items: list[PlayerMedia] = field(default_factory=list)
     last_updated: float = time.time()
+    includes_beginning: bool = False
+    includes_end: bool = False
 
 
 class SonosPlayer(Player):
@@ -781,6 +783,8 @@ class SonosPlayer(Player):
         queue = self.mass.player_queues.get(queue_id)
         if not queue:
             self.sonos_queue.items.clear()
+            self.sonos_queue.includes_beginning = False
+            self.sonos_queue.includes_end = False
             return
         current_index = queue.current_index or 0
         current_index = (
@@ -809,9 +813,11 @@ class SonosPlayer(Player):
 
         # Use get_next_item to fetch next items, which accounts for repeat mode
         last_index: int | str = current_index
+        includes_end = False
         for _ in range(5):
             next_item = self.mass.player_queues.get_next_item(queue_id, last_index)
             if next_item is None:
+                includes_end = True
                 break
             media = await self.mass.player_queues.player_media_from_queue_item(next_item)
             media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
@@ -819,6 +825,8 @@ class SonosPlayer(Player):
             last_index = next_item.queue_item_id
 
         self.sonos_queue.items = items
+        self.sonos_queue.includes_beginning = offset == 0
+        self.sonos_queue.includes_end = includes_end
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Set Sonos queue items from MA queue %s on player %s: %s",
