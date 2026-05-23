@@ -27,6 +27,7 @@ from music_assistant_models.api import CommandMessage
 from music_assistant_models.auth import UserRole
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 
 from music_assistant.constants import (
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
@@ -582,7 +583,13 @@ class WebserverController(CoreController):
                 result = [item async for item in result]
             elif inspect.iscoroutine(result):
                 result = await result
-            return web.json_response(result, dumps=json_dumps)
+            # Set the image-proxy resolver so any MediaItemImage in the result
+            # gets a short opaque proxy_id injected during dict serialization.
+            token = IMAGE_PROXY_ID_RESOLVER.set(self.mass.metadata.compute_image_id)
+            try:
+                return web.json_response(result, dumps=json_dumps)
+            finally:
+                IMAGE_PROXY_ID_RESOLVER.reset(token)
         except Exception as e:
             # Return clean error message without stacktrace
             error_type = type(e).__name__
