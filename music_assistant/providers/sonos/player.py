@@ -72,6 +72,8 @@ class SonosQueue:
 
     items: list[PlayerMedia] = field(default_factory=list)
     last_updated: float = time.time()
+    includes_beginning: bool = False
+    includes_end: bool = False
 
 
 class SonosPlayer(Player):
@@ -781,6 +783,8 @@ class SonosPlayer(Player):
         queue = self.mass.player_queues.get(queue_id)
         if not queue:
             self.sonos_queue.items.clear()
+            self.sonos_queue.includes_beginning = False
+            self.sonos_queue.includes_end = False
             return
         current_index = queue.current_index or 0
         current_index = (
@@ -818,7 +822,12 @@ class SonosPlayer(Player):
             items.append(media)
             last_index = next_item.queue_item_id
 
+        # check after the loop in case the window filled exactly up to the last item
+        includes_end = self.mass.player_queues.get_next_item(queue_id, last_index) is None
+
         self.sonos_queue.items = items
+        self.sonos_queue.includes_beginning = offset == 0
+        self.sonos_queue.includes_end = includes_end
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Set Sonos queue items from MA queue %s on player %s: %s",
