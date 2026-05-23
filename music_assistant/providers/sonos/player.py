@@ -813,16 +813,17 @@ class SonosPlayer(Player):
 
         # Use get_next_item to fetch next items, which accounts for repeat mode
         last_index: int | str = current_index
-        includes_end = False
         for _ in range(5):
             next_item = self.mass.player_queues.get_next_item(queue_id, last_index)
             if next_item is None:
-                includes_end = True
                 break
             media = await self.mass.player_queues.player_media_from_queue_item(next_item)
             media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
             items.append(media)
             last_index = next_item.queue_item_id
+
+        # check after the loop in case the window filled exactly up to the last item
+        includes_end = self.mass.player_queues.get_next_item(queue_id, last_index) is None
 
         self.sonos_queue.items = items
         self.sonos_queue.includes_beginning = offset == 0
