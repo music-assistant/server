@@ -10,6 +10,7 @@ from music_assistant.controllers.metadata import (
     MetaDataController,
     _is_safe_imageproxy_request_path,
 )
+from music_assistant.helpers.images import _extract_imageproxy_id
 from music_assistant.mass import MusicAssistant
 
 
@@ -56,7 +57,11 @@ async def test_resolve_image_id_via_cache_db(metadata_controller: MetaDataContro
     # let the scheduled persist task drain
     for _ in range(20):
         await asyncio.sleep(0)
-        raw = await metadata_controller.cache.get(key=image_id, category=CACHE_CATEGORY_IMAGE_IDS)
+        raw = await metadata_controller.cache.get(
+            key=image_id,
+            category=CACHE_CATEGORY_IMAGE_IDS,
+            provider=metadata_controller.domain,
+        )
         if raw is not None:
             break
     assert raw == {"provider": "filesystem", "path": "/local/cover.jpg"}
@@ -82,7 +87,11 @@ async def test_image_id_persists_with_persistent_flag(
     # wait for the scheduled persist task to land in the cache db
     for _ in range(20):
         await asyncio.sleep(0)
-        raw = await metadata_controller.cache.get(key=image_id, category=CACHE_CATEGORY_IMAGE_IDS)
+        raw = await metadata_controller.cache.get(
+            key=image_id,
+            category=CACHE_CATEGORY_IMAGE_IDS,
+            provider=metadata_controller.domain,
+        )
         if raw is not None:
             break
     assert raw is not None
@@ -109,3 +118,15 @@ def test_is_safe_imageproxy_request_path_rejects_dangerous_schemes() -> None:
     assert not _is_safe_imageproxy_request_path("gopher://example.com/")
     assert not _is_safe_imageproxy_request_path("javascript:alert(1)")
     assert not _is_safe_imageproxy_request_path("ftp://example.com/a.jpg")
+
+
+def test_extract_imageproxy_id_matches_path_only() -> None:
+    """Only URLs whose path begins with /imageproxy/ should yield an id."""
+    valid = "http://mass.local/imageproxy/" + "a" * 64 + "?size=256"
+    assert _extract_imageproxy_id(valid) == "a" * 64
+    # an id-shaped substring inside a query string must not match
+    decoy = "http://other.example.com/foo?next=/imageproxy/" + "b" * 64
+    assert _extract_imageproxy_id(decoy) is None
+    # invalid id length / charset
+    assert _extract_imageproxy_id("http://mass.local/imageproxy/short") is None
+    assert _extract_imageproxy_id("http://mass.local/imageproxy/" + "g" * 64) is None

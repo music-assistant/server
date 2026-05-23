@@ -105,10 +105,10 @@ def _extract_imageproxy_params(url: str) -> tuple[str, str] | None:
 
 def _extract_imageproxy_id(url: str) -> str | None:
     """Return the 64-hex image_id from a /imageproxy/<id> URL, or None."""
-    if _IMAGEPROXY_V2_PREFIX not in url:
+    parsed = urllib.parse.urlparse(url)
+    if not parsed.path.startswith(_IMAGEPROXY_V2_PREFIX):
         return None
-    after = url.split(_IMAGEPROXY_V2_PREFIX, 1)[1]
-    image_id = after.split("?", 1)[0].split("/", 1)[0].split("#", 1)[0].lower()
+    image_id = parsed.path[len(_IMAGEPROXY_V2_PREFIX) :].split("/", 1)[0].lower()
     if len(image_id) == 64 and all(c in "0123456789abcdef" for c in image_id):
         return image_id
     return None

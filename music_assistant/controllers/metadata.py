@@ -188,8 +188,11 @@ DEFAULT_THUMB_CACHE_MAX_SIZE_MB = 500
 
 # Image-id system: maps a sha256(provider+path) hash to the (provider, path) tuple
 # so the imageproxy can be addressed by an opaque short id instead of a long
-# query string carrying the raw (often URL-shaped) path.
-CACHE_CATEGORY_IMAGE_IDS = 1
+# query string carrying the raw (often URL-shaped) path. The high category
+# number matches the convention used elsewhere in this controller and avoids
+# collisions with providers that use low category integers under the default
+# cache namespace.
+CACHE_CATEGORY_IMAGE_IDS = 102
 _IMAGE_ID_LRU_MAX = 10000
 _IMAGE_ID_CACHE_TTL = 86400 * 365  # 1 year, refreshed on each write
 
@@ -222,7 +225,10 @@ class MetaDataController(CoreController):
         # image-id LRU: image_id -> (provider, path). Acts as a write-through
         # hot cache in front of the cache controller so that resolving an image
         # by id never blocks on sqlite if the URL was generated recently.
+        # The lock is needed because compute_image_id() runs from the executor
+        # thread during outbound websocket serialization.
         self._image_id_lru: OrderedDict[str, tuple[str, str]] = OrderedDict()
+        self._image_id_lock = threading.Lock()
         # per-IP throttle for the legacy /imageproxy deprecation warning
         self._legacy_imageproxy_warn_at: dict[str, float] = {}
 
@@ -465,12 +471,13 @@ class MetaDataController(CoreController):
         :param path: Image path or URL as the provider knows it.
         """
         image_id = create_thumb_hash(provider, path)
-        if image_id in self._image_id_lru:
-            self._image_id_lru.move_to_end(image_id)
-            return image_id
-        self._image_id_lru[image_id] = (provider, path)
-        while len(self._image_id_lru) > _IMAGE_ID_LRU_MAX:
-            self._image_id_lru.popitem(last=False)
+        with self._image_id_lock:
+            if image_id in self._image_id_lru:
+                self._image_id_lru.move_to_end(image_id)
+                return image_id
+            self._image_id_lru[image_id] = (provider, path)
+            while len(self._image_id_lru) > _IMAGE_ID_LRU_MAX:
+                self._image_id_lru.popitem(last=False)
         # the to_dict hook calls us from the executor when running under
         # _send_message; only call create_task directly when we know we are
         # on the loop thread, otherwise hop across via call_soon_threadsafe
@@ -487,18 +494,24 @@ class MetaDataController(CoreController):
 
         :param image_id: The opaque id as produced by `compute_image_id`.
         """
-        if cached := self._image_id_lru.get(image_id):
-            self._image_id_lru.move_to_end(image_id)
-            return cached
-        cached_db = await self.cache.get(key=image_id, category=CACHE_CATEGORY_IMAGE_IDS)
+        with self._image_id_lock:
+            if cached := self._image_id_lru.get(image_id):
+                self._image_id_lru.move_to_end(image_id)
+                return cached
+        cached_db = await self.cache.get(
+            key=image_id,
+            category=CACHE_CATEGORY_IMAGE_IDS,
+            provider=self.domain,
+        )
         if isinstance(cached_db, dict):
             provider = cached_db.get("provider")
             path = cached_db.get("path")
             if isinstance(provider, str) and isinstance(path, str):
                 result = (provider, path)
-                self._image_id_lru[image_id] = result
-                while len(self._image_id_lru) > _IMAGE_ID_LRU_MAX:
-                    self._image_id_lru.popitem(last=False)
+                with self._image_id_lock:
+                    self._image_id_lru[image_id] = result
+                    while len(self._image_id_lru) > _IMAGE_ID_LRU_MAX:
+                        self._image_id_lru.popitem(last=False)
                 return result
         return None
 
@@ -643,9 +656,15 @@ class MetaDataController(CoreController):
         if size not in _ALLOWED_IMAGEPROXY_SIZES:
             return web.Response(status=400)
         image_format = request.query.get("fmt") or _detect_image_format(path)
-        if "%" in path:
-            # assume (double) encoded url, decode it
-            path = urllib.parse.unquote_plus(path)
+        # path was double-encoded by old get_image_url(); decode iteratively
+        # until stable so we cope with any extra wrapping clients may have done
+        for _ in range(3):
+            if "%" not in path:
+                break
+            decoded = urllib.parse.unquote_plus(path)
+            if decoded == path:
+                break
+            path = decoded
         if not _is_safe_imageproxy_request_path(path):
             return web.Response(status=400)
         if not self.mass.get_provider(provider) and not path.startswith("http"):
@@ -1913,6 +1932,7 @@ class MetaDataController(CoreController):
             key=image_id,
             data={"provider": provider, "path": path},
             category=CACHE_CATEGORY_IMAGE_IDS,
+            provider=self.domain,
             expiration=_IMAGE_ID_CACHE_TTL,
             persistent=True,
         )
