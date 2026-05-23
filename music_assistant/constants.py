@@ -300,8 +300,7 @@ CONF_ENTRY_FLOW_MODE_SAMPLE_RATE = ConfigEntry(
     ],
     default_value=FLOW_MODE_SAMPLE_RATE_SMART,
     description="When streaming in Flow Mode, the entire queue is sent as one gapless stream "
-    "and must use a single sample rate for the whole stream. The bit depth follows the "
-    "source material (the player's preferred output bit depth still applies downstream).\n\n"
+    "and must use a single sample rate for the whole stream.\n\n"
     "- 'Smart (upsample only)': Starts the flow stream at the sample rate of the first "
     "track. Subsequent tracks with an equal or lower sample rate are upsampled to match; "
     "if the next track has a higher sample rate, the flow stream is restarted at that "

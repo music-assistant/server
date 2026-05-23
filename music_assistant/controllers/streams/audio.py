@@ -1189,9 +1189,13 @@ class StreamsAudio:
         :param smartfades_enabled: Whether crossfade is enabled for this stream.
         """
         supported_sample_rates = [sr for sr, _ in player.get_supported_sample_rates()]
+        # snap-down: pick the highest supported rate <= source. when the source rate
+        # is below every supported rate (e.g. 22 kHz content on a 44.1k-only player),
+        # fall back to the lowest supported rate instead of a hardcoded 48 kHz that
+        # the player may not actually support.
         output_sample_rate = max(
             (r for r in supported_sample_rates if r <= streamdetails.audio_format.sample_rate),
-            default=48000,
+            default=min(supported_sample_rates),
         )
         content_type, bit_depth = self._pick_pcm_bit_depth(
             player, streamdetails, smartfades_enabled
