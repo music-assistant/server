@@ -313,19 +313,19 @@ class MetaDataController(CoreController):
 
     async def post_setup(self) -> None:
         """Handle logic after all core controllers have been set up."""
-        self.mass.streams.register_dynamic_route("/imageproxy", self.handle_imageproxy)
-        # New opaque-id form, served via prefix match on the catch-all of both
-        # the public webserver and the streams server (the legacy form is on the
-        # webserver via a static route registered in WebserverController).
-        self.mass.streams.register_dynamic_route("/imageproxy/*", self.handle_imageproxy_v2)
-        self.mass.webserver.register_dynamic_route("/imageproxy/*", self.handle_imageproxy_v2)
+        # canonical opaque-id endpoint, served by both the public webserver
+        # and the streams server (the latter is what player metadata URLs hit)
+        self.mass.streams.register_dynamic_route("/imageproxy/*", self.handle_imageproxy)
+        self.mass.webserver.register_dynamic_route("/imageproxy/*", self.handle_imageproxy)
+        # deprecated /imageproxy?provider=&path=&size=&fmt= form (kept for back-compat)
+        self.mass.streams.register_dynamic_route("/imageproxy", self.handle_legacy_imageproxy)
         self._register_maintenance_tasks()
 
     async def close(self) -> None:
         """Handle logic on server stop."""
-        self.mass.streams.unregister_dynamic_route("/imageproxy")
         self.mass.streams.unregister_dynamic_route("/imageproxy/*")
         self.mass.webserver.unregister_dynamic_route("/imageproxy/*")
+        self.mass.streams.unregister_dynamic_route("/imageproxy")
 
     @property
     def providers(self) -> list[MetadataProvider]:
@@ -639,7 +639,40 @@ class MetaDataController(CoreController):
         return thumbnail_bytes
 
     async def handle_imageproxy(self, request: web.Request) -> web.Response:
-        """Handle a legacy /imageproxy?provider=&path=&size=&fmt= request."""
+        """
+        Serve an image for a `/imageproxy/<image_id>?size=&fmt=` request.
+
+        This is the canonical imageproxy endpoint: clients build the URL by
+        taking the `proxy_id` from a `MediaItemImage` and appending it as a
+        single path segment, optionally with `size` and `fmt` query parameters.
+        """
+        image_id = request.path.rstrip("/").rsplit("/", 1)[-1].lower()
+        if len(image_id) != 64 or any(c not in "0123456789abcdef" for c in image_id):
+            return web.Response(status=400)
+        try:
+            size = int(request.query.get("size", "0"))
+        except ValueError:
+            return web.Response(status=400)
+        if size not in _ALLOWED_IMAGEPROXY_SIZES:
+            return web.Response(status=400)
+        resolved = await self.resolve_image_id(image_id)
+        if resolved is None:
+            return web.Response(status=404)
+        provider, path = resolved
+        image_format = request.query.get("fmt") or _detect_image_format(path)
+        return await self._serve_thumbnail(path, provider, size, image_format)
+
+    async def handle_legacy_imageproxy(self, request: web.Request) -> web.Response:
+        """
+        Serve an image for a legacy `/imageproxy?provider=&path=&size=&fmt=` request.
+
+        DEPRECATED: this form requires the client to carry the full provider id
+        and (often URL-shaped) path on the query string, which produces
+        unwieldy double-encoded URLs and an open surface for arbitrary path
+        injection. New clients must use the `proxy_id` field on
+        `MediaItemImage` and hit `handle_imageproxy` instead. Each remote IP
+        gets a throttled deprecation `warning` log per minute.
+        """
         self._maybe_log_legacy_imageproxy(request)
         try:
             path = request.query["path"]
@@ -669,24 +702,6 @@ class MetaDataController(CoreController):
             return web.Response(status=400)
         if not self.mass.get_provider(provider) and not path.startswith("http"):
             return web.Response(status=404)
-        return await self._serve_thumbnail(path, provider, size, image_format)
-
-    async def handle_imageproxy_v2(self, request: web.Request) -> web.Response:
-        """Handle a /imageproxy/<image_id>?size=&fmt= request."""
-        image_id = request.path.rstrip("/").rsplit("/", 1)[-1].lower()
-        if len(image_id) != 64 or any(c not in "0123456789abcdef" for c in image_id):
-            return web.Response(status=400)
-        try:
-            size = int(request.query.get("size", "0"))
-        except ValueError:
-            return web.Response(status=400)
-        if size not in _ALLOWED_IMAGEPROXY_SIZES:
-            return web.Response(status=400)
-        resolved = await self.resolve_image_id(image_id)
-        if resolved is None:
-            return web.Response(status=404)
-        provider, path = resolved
-        image_format = request.query.get("fmt") or _detect_image_format(path)
         return await self._serve_thumbnail(path, provider, size, image_format)
 
     async def _serve_thumbnail(
@@ -733,8 +748,9 @@ class MetaDataController(CoreController):
             return
         self._legacy_imageproxy_warn_at[remote] = now
         self.logger.warning(
-            "Deprecated /imageproxy query-string request from %s (UA: %s); "
-            "clients should use the proxy_id field on MediaItemImage instead",
+            "Deprecated /imageproxy?provider=&path= request from %s (UA: %s); "
+            "clients should read the proxy_id field on MediaItemImage and use "
+            "the canonical /imageproxy/<proxy_id> endpoint instead",
             remote,
             request.headers.get("User-Agent", "?"),
         )

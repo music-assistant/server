@@ -274,8 +274,10 @@ class WebserverController(CoreController):
         routes.append(("OPTIONS", "/info", self._handle_cors_preflight))
         # add websocket api
         routes.append(("GET", "/ws", self._handle_ws_client))
-        # also host the image proxy on the webserver
-        routes.append(("GET", "/imageproxy", self.mass.metadata.handle_imageproxy))
+        # legacy /imageproxy?provider=&path= form — deprecated; the canonical
+        # /imageproxy/<image_id> form is registered as a dynamic route on the
+        # webserver by MetaDataController.post_setup()
+        routes.append(("GET", "/imageproxy", self.mass.metadata.handle_legacy_imageproxy))
         # also host the audio preview service
         routes.append(("GET", "/preview", self.serve_preview_stream))
         # add jsonrpc api
