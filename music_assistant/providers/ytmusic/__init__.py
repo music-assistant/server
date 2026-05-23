@@ -337,15 +337,25 @@ class YoutubeMusicProvider(MusicProvider):
     @use_cache(3600 * 24 * 30)  # Cache for 30 days
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
-        if album_obj := await get_album(prov_album_id=prov_album_id, language=self.language):
+        if album_obj := await get_album(
+            headers=self._headers,
+            prov_album_id=prov_album_id,
+            language=self.language,
+            user=self._yt_user,
+        ):
             return self._parse_album(album_obj=album_obj, album_id=prov_album_id)
         msg = f"Item {prov_album_id} not found"
         raise MediaNotFoundError(msg)
 
-    @use_cache(3600 * 24 * 30)  # Cache for 30 days
+    @use_cache(3600 * 24 * 30, allow_expired_cache=True)  # Cache for 30 days
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
-        album_obj = await get_album(prov_album_id=prov_album_id, language=self.language)
+        album_obj = await get_album(
+            headers=self._headers,
+            prov_album_id=prov_album_id,
+            language=self.language,
+            user=self._yt_user,
+        )
         if not album_obj.get("tracks"):
             return []
         tracks = []
@@ -405,7 +415,7 @@ class YoutubeMusicProvider(MusicProvider):
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
 
-    @use_cache(3600 * 3)  # Cache for 3 hours
+    @use_cache(3600 * 3, allow_expired_cache=True)  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Return playlist tracks for the given provider playlist id."""
         if page > 0:
@@ -453,7 +463,7 @@ class YoutubeMusicProvider(MusicProvider):
         # YTM doesn't seem to support paging so we ignore offset and limit
         return result
 
-    @use_cache(3600 * 24 * 7)  # Cache for 7 days
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
@@ -468,7 +478,7 @@ class YoutubeMusicProvider(MusicProvider):
             return albums
         return []
 
-    @use_cache(3600 * 24 * 7)  # Cache for 7 days
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
         """Get a list of 25 most popular tracks for the given artist."""
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
@@ -604,7 +614,7 @@ class YoutubeMusicProvider(MusicProvider):
             user=self._yt_user,
         )
 
-    @use_cache(3600 * 24)  # Cache for 1 day
+    @use_cache(3600 * 24, allow_expired_cache=True)  # Cache for 1 day
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         result = []
@@ -680,6 +690,7 @@ class YoutubeMusicProvider(MusicProvider):
                         folder.items.append(track)
                     except InvalidDataError:
                         self.logger.debug("Invalid track in recommendations: %s", recommended_item)
+                        continue
                 elif recommended_item.get("playlistId"):
                     # Probably a playlist
                     recommended_item["id"] = recommended_item["playlistId"]
@@ -697,6 +708,42 @@ class YoutubeMusicProvider(MusicProvider):
                     )
                     continue
             folders.append(folder)
+        # Also add personalized mixes if available
+        mixed_for_you_folder = RecommendationFolder(
+            name="Mixed for you",
+            item_id=f"{self.instance_id}_mixed_for_you",
+            provider=self.instance_id,
+            icon="mdi:shuffle-variant",
+        )
+
+        async def _get_personal_playlist_preview(playlist_id: str) -> Playlist | None:
+            if playlist_id == YT_LIKED_SONGS_PLAYLIST_ID:
+                return None
+            try:
+                playlist_obj = await get_playlist(
+                    prov_playlist_id=playlist_id,
+                    headers=self._headers,
+                    language=self.language,
+                    user=self._yt_user,
+                    limit=5,  # limit fetched tracks here to reduce payload size
+                )
+                return self._parse_playlist(playlist_obj)
+            except MediaNotFoundError:
+                # personal playlist might not be available for all users, ignore if not found
+                return None
+            except Exception as err:
+                self.logger.debug("Failed to fetch personal mix %s: %s", playlist_id, err)
+                return None
+
+        playlist_previews = await asyncio.gather(
+            *(_get_personal_playlist_preview(playlist_id) for playlist_id in YT_PERSONAL_PLAYLISTS)
+        )
+        mixed_for_you_folder.items.extend(
+            preview for preview in playlist_previews if preview is not None
+        )
+        if mixed_for_you_folder.items:
+            folders.append(mixed_for_you_folder)
+
         return folders
 
     async def _post_data(self, endpoint: str, data: dict[str, str], **kwargs):
@@ -848,7 +895,8 @@ class YoutubeMusicProvider(MusicProvider):
 
     def _parse_playlist(self, playlist_obj: dict) -> Playlist:
         """Parse a YT Playlist response to a Playlist object."""
-        playlist_id = playlist_obj["id"]
+        raw_playlist_id = playlist_obj["id"]
+        playlist_id = raw_playlist_id
         playlist_name = playlist_obj["title"]
         is_editable = playlist_obj.get("privacy", "") == "PRIVATE"
         # Playlist ID's are not unique across instances for lists like 'Likes', 'Supermix', etc.
@@ -865,7 +913,7 @@ class YoutubeMusicProvider(MusicProvider):
                     item_id=playlist_id,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    url=f"{YTM_DOMAIN}/playlist?list={playlist_id}",
+                    url=f"{YTM_DOMAIN}/playlist?list={raw_playlist_id}",
                     is_unique=is_editable,  # user-owned playlists are unique
                 )
             },
@@ -1036,7 +1084,8 @@ class YoutubeMusicProvider(MusicProvider):
                 except yt_dlp.utils.DownloadError as err:
                     raise UnplayableMediaError(err) from err
                 format_selector = ydl.build_format_selector("m4a/bestaudio")
-                if not (stream_format := next(format_selector({"formats": info["formats"]})), None):
+                stream_format = next(format_selector({"formats": info["formats"]}), None)
+                if not stream_format:
                     raise UnplayableMediaError("No stream formats found")
                 return stream_format
 

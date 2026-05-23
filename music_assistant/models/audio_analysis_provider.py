@@ -28,15 +28,13 @@ class AnalysisSessionData:
 
 
 class AudioAnalysisProvider(Provider):
-    """Base representation of an Audio Analysis Provider.
+    """
+    Base representation of an Audio Analysis Provider.
 
-    Audio Analysis Provider implementations should inherit from this base model.
-    These providers receive PCM audio chunks during streaming and produce analysis
-    results such as beat tracking, key detection, phrase boundaries, etc.
-
-    The AudioAnalysisController creates session IDs and passes them to all methods.
-    Providers implement _start_analysis and _finalize as hooks — the base class
-    manages session lifecycle, version gating, and cleanup.
+    Receives PCM audio chunks during streaming and produces analysis results
+    such as beat tracking, key detection, or loudness. The same hooks drive
+    both live playback and background scans; providers do not need to know
+    which context they are running in.
     """
 
     # Version of the analysis algorithm. Providers should increment this when
@@ -61,10 +59,9 @@ class AudioAnalysisProvider(Provider):
         streamdetails: StreamDetails,
         audio_format: AudioFormat,
     ) -> bool:
-        """Start analysis for a new session.
+        """
+        Start analysis for a new session.
 
-        Checks whether analysis is needed (version gating), stores session data,
-        and calls _start_analysis for provider-specific initialization.
         Returns True if the provider accepted the session.
 
         :param session_id: Session ID created by the AudioAnalysisController.
@@ -95,11 +92,10 @@ class AudioAnalysisProvider(Provider):
         streamdetails: StreamDetails,
         audio_format: AudioFormat,
     ) -> bool:
-        """Provider-specific initialization for a new analysis session.
+        """
+        Provider-specific initialization for a new analysis session.
 
-        Called by start_analysis after version gating and session storage.
         Return False to reject the session (e.g. unsupported format).
-        Session data is available in self._sessions[session_id].
 
         :param session_id: The analysis session ID.
         :param streamdetails: The stream details for the item being analyzed.
@@ -112,53 +108,74 @@ class AudioAnalysisProvider(Provider):
         session_id: str,
         pcm_chunk: bytes,
     ) -> None:
-        """Process a PCM audio chunk.
+        """
+        Process a PCM audio chunk.
 
-        Called for each chunk of audio data during streaming.
+        Implementations MUST `await` all chunk-processing work; the controller
+        relies on this to backpressure the audio source.
 
         :param session_id: The analysis session ID.
         :param pcm_chunk: Raw PCM audio data.
         """
 
     @abstractmethod
-    async def _finalize(self, session_id: str) -> None:
-        """Finalize analysis and store results.
+    async def _finalize(self, session_id: str) -> AudioAnalysisData | None:
+        """
+        Compute and return the analysis for this session (or None to skip).
 
-        Called when the track has finished streaming. Providers are responsible
-        for storing their results via mass.streams.audio_analysis.set_audio_analysis().
+        The base class persists the returned value via set_audio_analysis() and
+        then fires post_analysis(). Return None to skip both.
 
         :param session_id: The analysis session ID.
         """
 
     async def finalize(self, session_id: str) -> None:
-        """Finalize analysis and clean up session state.
-
-        Calls _finalize, then removes the session from _sessions.
-        The controller calls this method — providers override _finalize.
-
-        :param session_id: The analysis session ID.
-        """
+        """Finalize analysis, persist the result, fire post_analysis, then clean up."""
+        analysis: AudioAnalysisData | None = None
         try:
-            await self._finalize(session_id)
-        finally:
-            self._sessions.pop(session_id, None)
+            analysis = await self._finalize(session_id)
+        except Exception as err:
+            self.logger.error("_finalize raised for session %s: %s", session_id, err, exc_info=err)
+        session = self._sessions.get(session_id)
+        if analysis is not None and session is not None:
+            try:
+                await self.mass.streams.audio_analysis.set_audio_analysis(
+                    item_id=session.streamdetails.item_id,
+                    provider_instance_id_or_domain=session.streamdetails.provider,
+                    aa_provider_domain=self.domain,
+                    analysis=analysis,
+                    analysis_version=self.analysis_version,
+                    media_type=session.streamdetails.media_type,
+                )
+            except Exception as err:
+                self.logger.warning(
+                    "set_audio_analysis raised for %s: %s", self.domain, err, exc_info=err
+                )
+            else:
+                try:
+                    await self.post_analysis(session.streamdetails, analysis)
+                except Exception as err:
+                    self.logger.warning(
+                        "post_analysis raised for %s: %s", self.domain, err, exc_info=err
+                    )
+        self._sessions.pop(session_id, None)
 
-    async def analyze_file(
+    async def post_analysis(
         self,
         streamdetails: StreamDetails,
-    ) -> AudioAnalysisData | None:
+        analysis: AudioAnalysisData,
+    ) -> None:
         """
-        Run analysis directly on a local audio file.
+        Run side effects after analysis is finalized and persisted.
 
-        Used by the AudioAnalysisController's background scan. Providers that can
-        analyze a file without going through live PCM streaming (e.g. by handing
-        the path to FFmpeg/librosa/etc.) should override this. Default returns
-        None, meaning the provider does not support file-based analysis.
+        Default is a no-op. Implementations MUST self-gate on whether
+        `streamdetails.path` is a writable filesystem path, since this hook
+        fires for both live and background-scan analyses.
 
-        :param streamdetails: StreamDetails for the item being analyzed.
-            Contains the local file path and audio format.
+        :param streamdetails: The stream details for the analyzed item.
+        :param analysis: The analysis data that was persisted by `_finalize`.
         """
-        return None
+        return
 
     async def cancel(self, session_id: str) -> None:
         """Cancel an in-progress analysis session."""

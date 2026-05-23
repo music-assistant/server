@@ -555,8 +555,8 @@ class AudioTags:
                 chapters.append(
                     AudioTagsChapter(
                         chapter_id=chapter_data["id"],
-                        position_start=chapter_data["start_time"],
-                        position_end=chapter_data["end_time"],
+                        position_start=float(chapter_data["start_time"]),
+                        position_end=float(chapter_data["end_time"]),
                         title=chapter_data.get("tags", {}).get("title"),
                     )
                 )

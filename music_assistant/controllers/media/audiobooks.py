@@ -136,7 +136,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             provider = self.mass.get_provider(provider_id)
             if not isinstance(provider, MusicProvider):
                 continue
-            if not provider.library_supported(MediaType.AUDIOBOOK):
+            if not self.mass.music.library_supported(provider, MediaType.AUDIOBOOK):
                 continue
             result.extend(
                 prov_item
@@ -287,7 +287,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
-            if not provider.library_supported(MediaType.AUDIOBOOK):
+            if not self.mass.music.library_supported(provider, MediaType.AUDIOBOOK):
                 continue
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA

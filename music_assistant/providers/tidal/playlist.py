@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from aiohttp.client_exceptions import ClientError
 from music_assistant_models.errors import ResourceTemporarilyUnavailable
 
+from .constants import PLAYLISTS
 from .parsers import parse_playlist
 
 if TYPE_CHECKING:
@@ -40,7 +41,7 @@ class TidalPlaylistManager:
         """Add tracks to playlist."""
         try:
             # Get ETag first
-            api_result = await self.api.get(f"playlists/{prov_playlist_id}", return_etag=True)
+            api_result = await self.api.get(f"{PLAYLISTS}/{prov_playlist_id}", return_etag=True)
             playlist_obj = api_result[0] if isinstance(api_result, tuple) else api_result
             etag = api_result[1] if isinstance(api_result, tuple) else None
 
@@ -53,7 +54,7 @@ class TidalPlaylistManager:
             headers = {"If-None-Match": etag} if etag else {}
 
             await self.api.post(
-                f"playlists/{prov_playlist_id}/items", data=data, as_form=True, headers=headers
+                f"{PLAYLISTS}/{prov_playlist_id}/items", data=data, as_form=True, headers=headers
             )
         except ClientError as err:
             raise ResourceTemporarilyUnavailable("Failed to add tracks") from err
@@ -62,13 +63,15 @@ class TidalPlaylistManager:
         """Remove tracks from playlist."""
         try:
             # Get ETag first
-            api_result = await self.api.get(f"playlists/{prov_playlist_id}", return_etag=True)
+            api_result = await self.api.get(f"{PLAYLISTS}/{prov_playlist_id}", return_etag=True)
             etag = api_result[1] if isinstance(api_result, tuple) else None
 
             # Tidal uses 0-based indices in URL path
             indices = ",".join(str(pos - 1) for pos in positions)
             headers = {"If-None-Match": etag} if etag else {}
 
-            await self.api.delete(f"playlists/{prov_playlist_id}/items/{indices}", headers=headers)
+            await self.api.delete(
+                f"{PLAYLISTS}/{prov_playlist_id}/items/{indices}", headers=headers
+            )
         except ClientError as err:
             raise ResourceTemporarilyUnavailable("Failed to remove tracks") from err

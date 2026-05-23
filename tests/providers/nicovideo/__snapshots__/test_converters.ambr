@@ -4,6 +4,7 @@
     'album_type': 'unknown',
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -15,6 +16,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -74,6 +76,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -134,6 +137,7 @@
       'album_type': 'unknown',
       'artists': list([
         dict({
+          'artist_type': 'singer',
           'date_added': None,
           'external_ids': list([
           ]),
@@ -145,6 +149,7 @@
             'chapters': None,
             'copyright': None,
             'description': None,
+            'description_language': None,
             'explicit': None,
             'genres': None,
             'grouping': None,
@@ -204,6 +209,7 @@
         'chapters': None,
         'copyright': None,
         'description': 'This is a dummy description for testing purposes.',
+        'description_language': None,
         'explicit': None,
         'genres': None,
         'grouping': None,
@@ -262,6 +268,7 @@
         'album': None,
         'artists': list([
           dict({
+            'artist_type': 'singer',
             'date_added': None,
             'external_ids': list([
             ]),
@@ -273,6 +280,7 @@
               'chapters': None,
               'copyright': None,
               'description': None,
+              'description_language': None,
               'explicit': None,
               'genres': None,
               'grouping': None,
@@ -347,6 +355,7 @@
           'chapters': None,
           'copyright': None,
           'description': 'This is a dummy description for testing purposes.',
+          'description_language': None,
           'explicit': False,
           'genres': None,
           'grouping': None,
@@ -421,6 +430,7 @@
     'album_type': 'unknown',
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -432,6 +442,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -491,6 +502,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -547,6 +559,7 @@
 # ---
 # name: test_converter_with_fixture[artists/following_users.json]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
     ]),
@@ -558,6 +571,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -620,6 +634,7 @@
 # ---
 # name: test_converter_with_fixture[artists/user_details.json]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
     ]),
@@ -631,6 +646,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -696,6 +712,7 @@
     'album': None,
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -707,6 +724,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -781,6 +799,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': False,
       'genres': None,
       'grouping': None,
@@ -853,6 +872,7 @@
     'album': None,
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -864,6 +884,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -938,6 +959,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': False,
       'genres': None,
       'grouping': None,
@@ -1020,6 +1042,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1099,6 +1122,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1179,6 +1203,7 @@
         'chapters': None,
         'copyright': None,
         'description': 'This is a dummy description for testing purposes.',
+        'description_language': None,
         'explicit': None,
         'genres': None,
         'grouping': None,
@@ -1247,6 +1272,7 @@
         'album': None,
         'artists': list([
           dict({
+            'artist_type': 'singer',
             'date_added': None,
             'external_ids': list([
             ]),
@@ -1258,6 +1284,7 @@
               'chapters': None,
               'copyright': None,
               'description': None,
+              'description_language': None,
               'explicit': None,
               'genres': None,
               'grouping': None,
@@ -1332,6 +1359,7 @@
           'chapters': None,
           'copyright': None,
           'description': 'This is a dummy description for testing purposes.',
+          'description_language': None,
           'explicit': False,
           'genres': None,
           'grouping': None,
@@ -1416,6 +1444,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1485,6 +1514,7 @@
     'album_type': 'unknown',
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -1496,6 +1526,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -1555,6 +1586,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1614,6 +1646,7 @@
     'album': None,
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -1625,6 +1658,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -1699,6 +1733,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': False,
       'genres': None,
       'grouping': None,
@@ -1771,6 +1806,7 @@
     'album': None,
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -1782,6 +1818,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -1856,6 +1893,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': False,
       'genres': None,
       'grouping': None,
@@ -1966,6 +2004,7 @@
     'album': None,
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -1977,6 +2016,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -2051,6 +2091,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': False,
       'genres': None,
       'grouping': None,
@@ -2123,6 +2164,7 @@
     'album': None,
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -2134,6 +2176,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -2208,6 +2251,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': False,
       'genres': None,
       'grouping': None,
@@ -2281,6 +2325,7 @@
       'album_type': 'unknown',
       'artists': list([
         dict({
+          'artist_type': 'singer',
           'date_added': None,
           'external_ids': list([
           ]),
@@ -2292,6 +2337,7 @@
             'chapters': None,
             'copyright': None,
             'description': None,
+            'description_language': None,
             'explicit': None,
             'genres': None,
             'grouping': None,
@@ -2363,6 +2409,7 @@
         'chapters': None,
         'copyright': None,
         'description': 'This is a dummy description for testing purposes.',
+        'description_language': None,
         'explicit': None,
         'genres': None,
         'grouping': None,
@@ -2418,6 +2465,7 @@
     }),
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -2429,6 +2477,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -2503,6 +2552,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': None,
       'genres': list([
         'APIテストタグ68461151-45285955',

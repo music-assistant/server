@@ -459,14 +459,14 @@
         "name": "テスト",
         "isCategory": false,
         "isCategoryCandidate": false,
-        "isNicodicArticleExists": true,
+        "isNicodicArticleExists": false,
         "isLocked": true
       },
       {
         "name": "テスト動画",
         "isCategory": false,
         "isCategoryCandidate": false,
-        "isNicodicArticleExists": true,
+        "isNicodicArticleExists": false,
         "isLocked": true
       },
       {
@@ -540,7 +540,7 @@
       "watchTrackId": "dummy_track_id_for_testing",
       "genre": "other",
       "gender": "4",
-      "age": 65
+      "age": 30
     },
     "items": [
       {
@@ -575,7 +575,7 @@
     "isPremium": false,
     "allowSensitiveContents": true,
     "existence": {
-      "age": 65,
+      "age": 30,
       "prefecture": "北海道",
       "sex": "unanswered"
     }

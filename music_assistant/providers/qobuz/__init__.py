@@ -302,7 +302,7 @@ class QobuzProvider(MusicProvider):
             raise InvalidDataError(msg)
         return self._parse_playlist(playlist_obj)
 
-    @use_cache(3600 * 24 * 30)  # Cache for 30 days
+    @use_cache(3600 * 24 * 30, allow_expired_cache=True)  # Cache for 30 days
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
         params = {"album_id": prov_album_id}
@@ -317,7 +317,7 @@ class QobuzProvider(MusicProvider):
                 await asyncio.sleep(0)
         return result
 
-    @use_cache(3600 * 3)  # Cache for 3 hours
+    @use_cache(3600 * 3, allow_expired_cache=True)  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
@@ -344,7 +344,7 @@ class QobuzProvider(MusicProvider):
                 await asyncio.sleep(0)
         return result
 
-    @use_cache(3600 * 24 * 14)  # Cache for 14 days
+    @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of albums for the given artist."""
         result = await self._get_data(
@@ -367,7 +367,7 @@ class QobuzProvider(MusicProvider):
             )
         ]
 
-    @use_cache(3600 * 24 * 14)  # Cache for 14 days
+    @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of most popular tracks for the given artist."""
         result = await self._get_data(
@@ -401,10 +401,6 @@ class QobuzProvider(MusicProvider):
                 and str(item["performer"]["id"]) == str(prov_artist_id)
             )
         ]
-
-    async def get_similar_artists(self, prov_artist_id: str) -> None:
-        """Get similar artists for given artist."""
-        # https://www.qobuz.com/api.json/0.2/artist/getSimilarArtists?artist_id=220020&offset=0&limit=3
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
@@ -596,6 +592,8 @@ class QobuzProvider(MusicProvider):
             )
         if artist_obj.get("biography"):
             artist.metadata.description = artist_obj["biography"].get("content")
+        if favorited_at := artist_obj.get("favorited_at"):
+            artist.date_added = datetime.datetime.fromtimestamp(favorited_at, tz=datetime.UTC)
         return artist
 
     async def _parse_album(
@@ -672,6 +670,8 @@ class QobuzProvider(MusicProvider):
             album.metadata.description = album_obj["description"]
         if album_obj.get("parental_warning"):
             album.metadata.explicit = True
+        if favorited_at := album_obj.get("favorited_at"):
+            album.date_added = datetime.datetime.fromtimestamp(favorited_at, tz=datetime.UTC)
         return album
 
     async def _parse_track(self, track_obj: dict[str, Any]) -> Track:
@@ -760,6 +760,8 @@ class QobuzProvider(MusicProvider):
                     remotely_accessible=True,
                 )
             )
+        if favorited_at := track_obj.get("favorited_at"):
+            track.date_added = datetime.datetime.fromtimestamp(favorited_at, tz=datetime.UTC)
         return track
 
     def _parse_playlist(self, playlist_obj: dict[str, Any]) -> Playlist:
@@ -797,6 +799,9 @@ class QobuzProvider(MusicProvider):
                     remotely_accessible=True,
                 )
             )
+        # subscribed_at for playlists the user subscribed to, created_at for user-owned ones
+        if timestamp := playlist_obj.get("subscribed_at") or playlist_obj.get("created_at"):
+            playlist.date_added = datetime.datetime.fromtimestamp(timestamp, tz=datetime.UTC)
         return playlist
 
     @lock
@@ -804,6 +809,8 @@ class QobuzProvider(MusicProvider):
         """Login to qobuz and store the token."""
         if self._user_auth_info:
             return str(self._user_auth_info["user_auth_token"])
+        # TODO: move credentials from query string to POST body to remove the
+        # residual exposure via HTTP session tracing / upstream proxy logs.
         params: dict[str, Any] = {
             "username": self.config.get_value(CONF_USERNAME),
             "password": self.config.get_value(CONF_PASSWORD),
@@ -896,6 +903,13 @@ class QobuzProvider(MusicProvider):
             # handle 404 not found, convert to MediaNotFoundError
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
+            # raise_for_status on 401 embeds the request URL in the exception message;
+            # on /user/login that URL carries the username/password query params.
+            if response.status == 401:
+                if endpoint == "user/login":
+                    raise LoginFailed("Invalid Qobuz credentials")
+                self._user_auth_info = None
+                raise LoginFailed("Qobuz session expired")
             response.raise_for_status()
             try:
                 return cast("dict[str, Any]", await response.json(loads=json_loads))
@@ -941,6 +955,11 @@ class QobuzProvider(MusicProvider):
             # handle 404 not found, convert to MediaNotFoundError
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
+            # raise_for_status on 401 embeds the request URL in the exception message,
+            # which carries the user_auth_token as a query param.
+            if response.status == 401:
+                self._user_auth_info = None
+                raise LoginFailed("Qobuz session expired")
             response.raise_for_status()
             return cast("dict[str, Any]", await response.json(loads=json_loads))
 

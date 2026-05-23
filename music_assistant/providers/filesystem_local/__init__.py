@@ -909,7 +909,50 @@ class LocalFileSystemProvider(MusicProvider):
         if file_item.ext == "pls":
             playlist.is_editable = False
         playlist.owner = self.name
+        # Check for local image with the same basename
+        if local_image := await self._get_playlist_local_image(file_item):
+            playlist.metadata.images = UniqueList([local_image])
         return playlist
+
+    async def _get_playlist_local_image(self, file_item: FileSystemItem) -> MediaItemImage | None:
+        """Return a local image alongside the playlist file (matching basename) if any."""
+        cache_key = f"playlist_image.{file_item.relative_path}"
+        cached = await self.cache.get(
+            key=cache_key,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_FOLDER_IMAGES,
+            base_class=MediaItemImage,
+        )
+        if cached is not None:
+            return cached[0] if cached else None
+        try:
+            folder_files = await self._scandir(file_item.relative_parent_path)
+        except (OSError, MusicAssistantError):
+            return None
+        target = file_item.name.lower()
+        result: MediaItemImage | None = None
+        for item in folder_files:
+            if item.is_dir or not item.ext:
+                continue
+            if item.ext.lower() not in IMAGE_EXTENSIONS:
+                continue
+            if item.name.lower() != target:
+                continue
+            result = MediaItemImage(
+                type=ImageType.THUMB,
+                path=item.relative_path,
+                provider=self.instance_id,
+                remotely_accessible=False,
+            )
+            break
+        await self.cache.set(
+            key=cache_key,
+            data=[result.to_dict()] if result is not None else [],
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_FOLDER_IMAGES,
+            expiration=120,
+        )
+        return result
 
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get full audiobook details by id."""
@@ -1417,14 +1460,17 @@ class LocalFileSystemProvider(MusicProvider):
         Audiobooks can be single files with embedded chapters or multiple files per folder.
         Only the first file (by track number or alphabetically) is processed as the audiobook.
         """
-        # Skip files that aren't the first chapter
+        # Skip files that aren't the first chapter.
+        # A file carrying its own embedded chapter markers is a standalone audiobook,
+        # so it should never be treated as a chapter file of another book.
         track_tag = tags.tags.get("track")
         if track_tag:
             track_num = try_parse_int(str(track_tag).split("/")[0], None)
-            if track_num and track_num > 1:
+            if track_num and track_num > 1 and not tags.chapters:
                 raise IsChapterFile
-        else:
-            # No track tag - only process the first file alphabetically
+        elif not tags.chapters:
+            # No track tag and no embedded chapters -
+            # assume part of a multi-file audiobook, only process the first file alphabetically
             items = await self._scandir(file_item.parent_path)
             # Sort by filename for alphabetical ordering
             items.sort(key=lambda x: x.filename.lower())

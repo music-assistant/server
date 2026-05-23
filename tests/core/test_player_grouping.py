@@ -13,7 +13,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import PlaybackState, PlayerFeature
+from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 
 from music_assistant.controllers.players import PlayerController
 from tests.common import MockPlayer, MockProvider
@@ -334,6 +334,132 @@ class TestProviderInstanceIdExpansion:
         can_group = player_a.state.can_group_with
         assert "player_b" in can_group
         assert "player_c" in can_group
+
+
+class TestFinalActiveGroupNewModel:
+    """The active_group derivation respects is_active_session and the powered signal.
+
+    Verifies the post-refactor contract:
+
+    - A group whose ``powered`` attribute is ``False`` (e.g. user explicitly
+      pinned it off via Fake control) never captures its members.
+    - A group whose ``powered`` is ``True`` (fake-pinned on) captures members
+      even without a live session.
+    - A group with ``powered=None`` (no power control assigned) only captures
+      members while ``is_active_session`` is ``True`` — i.e. while it has a
+      sync_leader, an active stream, or a pending idle-grace task.
+    """
+
+    def test_dormant_group_does_not_capture_members(self, mock_mass: MagicMock) -> None:
+        """No power signal, no session → member's active_group is None."""
+        controller = PlayerController(mock_mass)
+        group_provider = MockProvider("test_group", instance_id="test_group", mass=mock_mass)
+        member_provider = MockProvider("test", instance_id="test", mass=mock_mass)
+
+        group = MockPlayer(group_provider, "g1", "Group", player_type=PlayerType.GROUP)
+        # explicitly "no opinion" on power (matches new default for groups)
+        group._attr_powered = None
+        # listed as a configured member, but no active session
+        group._attr_group_members = ["member"]
+        # is_active_session base default is False → group is dormant
+        group._cache.clear()
+
+        member = MockPlayer(member_provider, "member", "Member")
+
+        controller._players = {"g1": group, "member": member}
+        mock_mass.players = controller
+
+        group.set_initialized()
+        member.set_initialized()
+        group.update_state(signal_event=False)
+        member.update_state(signal_event=False)
+
+        assert member.state.active_group is None
+
+    def test_powered_true_group_captures_members(self, mock_mass: MagicMock) -> None:
+        """Group with _attr_powered=True (fake pin) captures members regardless of session."""
+        controller = PlayerController(mock_mass)
+        group_provider = MockProvider("test_group", instance_id="test_group", mass=mock_mass)
+        member_provider = MockProvider("test", instance_id="test", mass=mock_mass)
+
+        group = MockPlayer(group_provider, "g1", "Group", player_type=PlayerType.GROUP)
+        group._attr_powered = True
+        group._attr_group_members = ["member"]
+        group._cache.clear()
+
+        member = MockPlayer(member_provider, "member", "Member")
+
+        controller._players = {"g1": group, "member": member}
+        mock_mass.players = controller
+
+        group.set_initialized()
+        member.set_initialized()
+        group.update_state(signal_event=False)
+        member.update_state(signal_event=False)
+
+        assert member.state.active_group == "g1"
+
+    def test_powered_false_group_does_not_capture_members(self, mock_mass: MagicMock) -> None:
+        """Group with _attr_powered=False (explicit off) does not capture, even with a session."""
+        controller = PlayerController(mock_mass)
+        group_provider = MockProvider("test_group", instance_id="test_group", mass=mock_mass)
+        member_provider = MockProvider("test", instance_id="test", mass=mock_mass)
+
+        group = MockPlayer(group_provider, "g1", "Group", player_type=PlayerType.GROUP)
+        group._attr_powered = False
+        group._attr_group_members = ["member"]
+        group._cache.clear()
+
+        member = MockPlayer(member_provider, "member", "Member")
+
+        controller._players = {"g1": group, "member": member}
+        mock_mass.players = controller
+
+        group.set_initialized()
+        member.set_initialized()
+        group.update_state(signal_event=False)
+        member.update_state(signal_event=False)
+
+        assert member.state.active_group is None
+
+    def test_session_active_group_captures_members(self, mock_mass: MagicMock) -> None:
+        """Group with powered=None but is_active_session=True captures members."""
+        controller = PlayerController(mock_mass)
+        group_provider = MockProvider("test_group", instance_id="test_group", mass=mock_mass)
+        member_provider = MockProvider("test", instance_id="test", mass=mock_mass)
+
+        # subclass MockPlayer to override is_active_session for this test
+        class _SessionedGroup(MockPlayer):
+            @property
+            def is_active_session(self) -> bool:
+                return True
+
+        group = _SessionedGroup(group_provider, "g1", "Group", player_type=PlayerType.GROUP)
+        group._attr_powered = None  # no opinion on power
+        group._attr_group_members = ["member"]
+        group._cache.clear()
+
+        member = MockPlayer(member_provider, "member", "Member")
+
+        controller._players = {"g1": group, "member": member}
+        mock_mass.players = controller
+
+        group.set_initialized()
+        member.set_initialized()
+        group.update_state(signal_event=False)
+        member.update_state(signal_event=False)
+
+        assert member.state.active_group == "g1"
+
+
+class TestPlayerBaseIsActiveSession:
+    """The Player base class defaults is_active_session to False; only groups override it."""
+
+    def test_base_player_is_not_an_active_session(self, mock_mass: MagicMock) -> None:
+        """A regular MockPlayer should never claim to hold a captured session."""
+        provider = MockProvider("test", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "p1", "P1")
+        assert player.is_active_session is False
 
 
 if __name__ == "__main__":
