@@ -7,6 +7,7 @@ import hashlib
 import itertools
 import os
 import random
+import re
 import urllib.parse
 from base64 import b64decode
 from collections import OrderedDict
@@ -36,6 +37,11 @@ if TYPE_CHECKING:
 _THUMB_CACHE_DIR = "thumbnails"
 _THUMB_MEMORY_CACHE_MAX = 50
 _ALLOWED_THUMB_FORMATS: frozenset[str] = frozenset({"PNG", "JPEG"})
+
+# By construction the filename is `<sha256>_<int>.(jpg|png)`; the regex is an
+# explicit sanitizer that also lets CodeQL prove the value is safe to join
+# into a filesystem path.
+_THUMB_FILENAME_RE = re.compile(r"^[0-9a-f]{64}_\d+\.(?:jpg|png)$")
 
 _thumb_memory_cache: OrderedDict[str, bytes] = OrderedDict()
 
@@ -240,6 +246,12 @@ async def get_image_thumb(
 
     thumb_hash = create_thumb_hash(provider, path_or_url)
     cache_filename = _thumb_cache_filename(thumb_hash, size, image_format)
+    if not _THUMB_FILENAME_RE.fullmatch(cache_filename):
+        # cache_filename is built from a sha256 + int + fixed extension, so this
+        # is unreachable in practice — it is here so a future change to either
+        # builder cannot silently let an unsafe value reach the filesystem path
+        msg = f"Refusing to use unexpected cache filename: {cache_filename!r}"
+        raise OSError(msg)
 
     # 1. Check in-memory FIFO cache
     if cached := _get_from_memory_cache(cache_filename):
