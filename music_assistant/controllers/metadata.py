@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import os
 import pathlib
@@ -105,25 +106,41 @@ def _detect_image_format(path: str) -> str:
             return "jpg"
 
 
-# Schemes that a client is not allowed to ask the imageproxy to fetch on its
-# behalf. Provider-supplied paths (resolved internally via `resolve_image`)
-# may still produce `data:image/...` results; only inbound client paths are
-# filtered here.
-_FORBIDDEN_IMAGEPROXY_SCHEMES = (
-    "file:",
-    "data:",
-    "gopher:",
-    "ftp:",
-    "ftps:",
-    "ws:",
-    "wss:",
-    "javascript:",
-)
+# Schemes accepted from a client on the legacy /imageproxy?path= endpoint.
+# Allowlist (not blacklist) so a leading-whitespace or unknown-scheme value
+# cannot sneak through. Provider-supplied paths resolved internally via
+# `resolve_image` are not subject to this — only inbound client paths are.
+_ALLOWED_IMAGEPROXY_REQUEST_SCHEMES: frozenset[str] = frozenset({"", "http", "https"})
 
 
 def _is_safe_imageproxy_request_path(path: str) -> bool:
-    """Return True if `path` is one we'll accept from a client imageproxy request."""
-    return not path.lower().startswith(_FORBIDDEN_IMAGEPROXY_SCHEMES)
+    r"""
+    Return True if `path` is safe to fetch on behalf of an imageproxy client.
+
+    Rejects any input containing control characters (so a leading `\t` or
+    `\x00` cannot mask an otherwise-forbidden scheme), restricts the scheme
+    to http, https, or empty (local / relative path), and for http(s) targets
+    rejects IP-literal hosts that resolve to loopback, private, link-local
+    or multicast ranges. DNS-resolved hostnames are trusted; full DNS-rebinding
+    mitigation is out of scope here.
+    """
+    if any(ord(c) < 0x20 for c in path):
+        return False
+    parsed = urllib.parse.urlparse(path)
+    scheme = parsed.scheme.lower()
+    if scheme not in _ALLOWED_IMAGEPROXY_REQUEST_SCHEMES:
+        return False
+    if scheme in ("http", "https"):
+        host = parsed.hostname  # already lowercased; brackets stripped for IPv6
+        if not host or host == "localhost":
+            return False
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return True
+        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_multicast:
+            return False
+    return True
 
 
 LOCALES = {

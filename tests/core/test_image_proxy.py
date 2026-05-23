@@ -134,6 +134,33 @@ def test_is_safe_imageproxy_request_path_rejects_dangerous_schemes() -> None:
     assert not _is_safe_imageproxy_request_path("ftp://example.com/a.jpg")
 
 
+def test_is_safe_imageproxy_request_path_rejects_control_char_bypass() -> None:
+    """Leading whitespace/control bytes must not mask a forbidden scheme."""
+    assert not _is_safe_imageproxy_request_path("\tfile:///etc/passwd")
+    assert not _is_safe_imageproxy_request_path("\nfile:///etc/passwd")
+    assert not _is_safe_imageproxy_request_path("\x00file:///etc/passwd")
+    assert not _is_safe_imageproxy_request_path("\rhttp://localhost/")
+
+
+def test_is_safe_imageproxy_request_path_rejects_ssrf_targets() -> None:
+    """http(s) URLs targeting localhost / private / link-local IPs are rejected."""
+    assert not _is_safe_imageproxy_request_path("http://localhost/")
+    assert not _is_safe_imageproxy_request_path("http://127.0.0.1/foo.jpg")
+    assert not _is_safe_imageproxy_request_path("http://10.0.0.1/foo.jpg")
+    assert not _is_safe_imageproxy_request_path("http://192.168.1.5/foo.jpg")
+    assert not _is_safe_imageproxy_request_path("http://172.16.0.1/foo.jpg")
+    # AWS / GCP metadata service
+    assert not _is_safe_imageproxy_request_path("http://169.254.169.254/")
+    # IPv6 loopback / link-local / unique-local
+    assert not _is_safe_imageproxy_request_path("http://[::1]/foo.jpg")
+    assert not _is_safe_imageproxy_request_path("http://[fe80::1]/foo.jpg")
+    assert not _is_safe_imageproxy_request_path("http://[fc00::1]/foo.jpg")
+    # public DNS names and IPs are still accepted
+    assert _is_safe_imageproxy_request_path("http://example.com/a.jpg")
+    assert _is_safe_imageproxy_request_path("https://cdn.example.com/a.jpg")
+    assert _is_safe_imageproxy_request_path("http://8.8.8.8/a.jpg")
+
+
 def test_extract_imageproxy_id_matches_path_only() -> None:
     """Only URLs whose path begins with /imageproxy/ should yield an id."""
     valid = "http://mass.local/imageproxy/" + "a" * 64 + "?size=256"
