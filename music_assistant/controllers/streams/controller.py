@@ -780,8 +780,19 @@ class StreamsController(CoreController):
         if not start_queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {start_queue_item_id}")
 
-        # select the highest possible PCM settings for this player
-        flow_pcm_format = await self.audio.select_flow_format(player)
+        # select the PCM format for the flow stream, anchored on the first track
+        smart_fades_mode = (
+            await self.mass.config.get_player_config_value(
+                queue_id, CONF_SMART_FADES_MODE, return_type=SmartFadesMode
+            )
+            if start_queue_item.media_type == MediaType.TRACK
+            else SmartFadesMode.DISABLED
+        )
+        flow_pcm_format = await self.audio.select_flow_pcm_format(
+            player,
+            start_streamdetails=start_queue_item.streamdetails,
+            smartfades_enabled=smart_fades_mode != SmartFadesMode.DISABLED,
+        )
 
         # work out output format/details
         output_format = await self.audio.get_output_format(

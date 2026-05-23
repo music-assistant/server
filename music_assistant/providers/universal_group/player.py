@@ -24,6 +24,7 @@ from propcache import under_cached_property as cached_property
 
 from music_assistant.constants import (
     CONF_DYNAMIC_GROUP_MEMBERS,
+    CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
     CONF_GROUP_MEMBERS,
     CONF_HTTP_PROFILE,
     CONF_POWER_CONTROL,
@@ -33,9 +34,15 @@ from music_assistant.constants import (
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.providers.universal_group.constants import UGP_FORMAT
 
-from .constants import CONF_ENTRY_SAMPLE_RATES_UGP, CONFIG_ENTRY_UGP_NOTE, IDLE_GRACE_SECONDS
+from .constants import (
+    CONF_ENTRY_UGP_OUTPUT_FORMAT,
+    CONF_UGP_OUTPUT_FORMAT,
+    CONFIG_ENTRY_UGP_NOTE,
+    IDLE_GRACE_SECONDS,
+    UGP_OUTPUT_MP3,
+    resolve_ugp_output_format,
+)
 from .ugp_stream import UGPStream
 
 if TYPE_CHECKING:
@@ -77,7 +84,9 @@ class UniversalGroupPlayer(Player):
         self._attr_poll_interval = 30
         # task that releases members after the idle grace window expires
         self._idle_grace_task: asyncio.Task[None] | None = None
-        # register dynamic route for the ugp stream
+        # register dynamic routes for the ugp stream (FLAC + MP3 cover the configured
+        # output formats; the actual codec served is decided by the UGP's own config,
+        # not by the request URL)
         self._on_unload_callbacks.append(
             self.mass.streams.register_dynamic_route(
                 f"/ugp/{self.player_id}.flac", self._serve_ugp_stream
@@ -86,11 +95,6 @@ class UniversalGroupPlayer(Player):
         self._on_unload_callbacks.append(
             self.mass.streams.register_dynamic_route(
                 f"/ugp/{self.player_id}.mp3", self._serve_ugp_stream
-            )
-        )
-        self._on_unload_callbacks.append(
-            self.mass.streams.register_dynamic_route(
-                f"/ugp/{self.player_id}.aac", self._serve_ugp_stream
             )
         )
         self._set_attributes()
@@ -133,6 +137,18 @@ class UniversalGroupPlayer(Player):
             for x in self.mass.players.providers
             if x.instance_id != self.provider.instance_id
         }
+
+    @cached_property
+    def supported_sample_rates(self) -> list[tuple[int, int]] | None:
+        """Return the (sample_rate, bit_depth) pair the UGP serves to its members."""
+        # UGP delivers the same encoded stream to every member, so its only natively
+        # supported rate is whatever the configured output format produces. Returning a
+        # single-rate list keeps the upstream MA flow stream pinned and prevents
+        # smart/bit-perfect modes from triggering needless restarts.
+        output_format, _ = resolve_ugp_output_format(
+            cast("str", self.config.get_value(CONF_UGP_OUTPUT_FORMAT, UGP_OUTPUT_MP3))
+        )
+        return [(output_format.sample_rate, output_format.bit_depth)]
 
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
@@ -191,7 +207,8 @@ class UniversalGroupPlayer(Player):
                 default_value=False,
                 required=False,
             ),
-            CONF_ENTRY_SAMPLE_RATES_UGP,
+            CONF_ENTRY_UGP_OUTPUT_FORMAT,
+            CONF_ENTRY_HTTP_PROFILE_DEFAULT_1,
         ]
 
     async def stop(self) -> None:
@@ -341,14 +358,25 @@ class UniversalGroupPlayer(Player):
             # stop any existing stream first
             await self.stream.stop()
 
-        # select audio source
-        audio_source = self.mass.streams.get_stream(media, UGP_FORMAT, self.player_id)
-
-        # start the stream task
-        self.stream = UGPStream(
-            audio_source=audio_source, audio_format=UGP_FORMAT, base_pcm_format=UGP_FORMAT
+        # resolve the static output format the UGP serves to all members
+        output_format, fmt_str = resolve_ugp_output_format(
+            cast("str", self.config.get_value(CONF_UGP_OUTPUT_FORMAT, UGP_OUTPUT_MP3))
         )
-        base_url = f"{self.mass.streams.base_url}/ugp/{self.player_id}.flac"
+        # internal PCM pivot for the multiplexer: F32 at the configured output rate
+        # so the per-member encoder doesn't have to resample
+        pivot_format = AudioFormat(
+            content_type=ContentType.PCM_F32LE,
+            sample_rate=output_format.sample_rate,
+            bit_depth=32,
+            channels=2,
+        )
+        audio_source = self.mass.streams.get_stream(media, pivot_format, self.player_id)
+        self.stream = UGPStream(
+            audio_source=audio_source,
+            audio_format=pivot_format,
+            base_pcm_format=pivot_format,
+        )
+        base_url = f"{self.mass.streams.base_url}/ugp/{self.player_id}.{fmt_str}"
 
         # set the state optimistically
         self._attr_current_media = deepcopy(media)
@@ -369,6 +397,7 @@ class UniversalGroupPlayer(Player):
                             media_type=MediaType.FLOW_STREAM,
                             title=self.display_name,
                             source_id=self.player_id,
+                            custom_data={"ugp_player_id": self.player_id},
                         ),
                     )
                 )
@@ -402,7 +431,10 @@ class UniversalGroupPlayer(Player):
             # session-lifecycle refactor (groups now have `_attr_powered=None`
             # unless the user assigned Fake control).
             if self.stream and not self.stream.done:
-                base_url = f"{self.mass.streams.base_url}/ugp/{self.player_id}.flac"
+                _, fmt_str = resolve_ugp_output_format(
+                    cast("str", self.config.get_value(CONF_UGP_OUTPUT_FORMAT, UGP_OUTPUT_MP3))
+                )
+                base_url = f"{self.mass.streams.base_url}/ugp/{self.player_id}.{fmt_str}"
                 # Use internal handler to get protocol selection and avoid redirect
                 await self.mass.players._handle_play_media(
                     player_id,
@@ -410,7 +442,8 @@ class UniversalGroupPlayer(Player):
                         uri=f"{base_url}?player_id={player_id}",
                         media_type=MediaType.FLOW_STREAM,
                         title=self.display_name,
-                        source_id=player_id,
+                        source_id=self.player_id,
+                        custom_data={"ugp_player_id": self.player_id},
                     ),
                 )
         # handle removals
@@ -526,52 +559,39 @@ class UniversalGroupPlayer(Player):
     async def _serve_ugp_stream(self, request: web.Request) -> web.StreamResponse:
         """Serve the UGP (multi-client) flow stream audio to a player."""
         ugp_player_id = request.path.rsplit(".")[0].rsplit("/")[-1]
-        child_player_id = request.query.get("player_id")  # optional!
-        output_format_str = request.path.rsplit(".")[-1]
-
-        if child_player_id and (child_player := self.mass.players.get_player(child_player_id)):
-            # Use the preferred output format of the child player
-            output_format = await self.mass.streams.audio.get_output_format(
-                output_format_str=output_format_str,
-                player=child_player,
-                content_sample_rate=UGP_FORMAT.sample_rate,
-                content_bit_depth=UGP_FORMAT.bit_depth,
-                media_type=MediaType.FLOW_STREAM,
-            )
-            http_profile = await self.mass.config.get_player_config_value(
-                child_player_id, CONF_HTTP_PROFILE, return_type=str
-            )
-        elif output_format_str == "flac":
-            output_format = AudioFormat(content_type=ContentType.FLAC)
-        else:
-            output_format = AudioFormat(content_type=ContentType.MP3)
-            http_profile = "chunked"
+        # child_player_id is optional and only used for per-member DSP — never to
+        # decide the output codec/rate. The output format is dictated by the UGP
+        # player's own CONF_UGP_OUTPUT_FORMAT so every member receives an identical
+        # encoded stream.
+        child_player_id = request.query.get("player_id")
 
         if not (ugp_player := self.mass.players.get_player(ugp_player_id)):
             raise web.HTTPNotFound(reason=f"Unknown UGP player: {ugp_player_id}")
-
         if not self.stream or self.stream.done:
             raise web.HTTPNotFound(body=f"There is no active UGP stream for {ugp_player_id}!")
 
+        output_format, output_format_str = resolve_ugp_output_format(
+            cast("str", self.config.get_value(CONF_UGP_OUTPUT_FORMAT, UGP_OUTPUT_MP3))
+        )
         headers = {
             **DEFAULT_STREAM_HEADERS,
             "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_REALTIME,
             "Content-Type": get_mime_type(output_format_str),
         }
-
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
+        http_profile = cast("str", self.config.get_value(CONF_HTTP_PROFILE, "chunked"))
         if http_profile == "forced_content_length":
+            # some clients (notably older Chromecast firmware) refuse to play unless
+            # they see a Content-Length header up front
             resp.content_length = 4294967296
         elif http_profile == "chunked":
             resp.enable_chunked_encoding()
-
         await resp.prepare(request)
 
         # return early if this is not a GET request
         if request.method != "GET":
             return resp
 
-        # all checks passed, start streaming!
         self.logger.debug(
             "Start serving UGP flow audio stream for UGP-player %s to %s",
             ugp_player.display_name,
