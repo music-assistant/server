@@ -89,7 +89,7 @@ class DeezerProvider(MusicProvider):
         """Handle async init of the Deezer provider."""
         arl_token = str(self.config.get_value(CONF_ARL_TOKEN))
 
-        self.gql_client = DeezerGQLClient(arl=arl_token)
+        self.gql_client = DeezerGQLClient(arl=arl_token, session=self.mass.http_session)
         me = await self.gql_client.get_me()
         if me is None:
             msg = "Failed to authenticate with Deezer. Please check your ARL token."
@@ -105,7 +105,6 @@ class DeezerProvider(MusicProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        await self.gql_client.close()
 
     # -- Library retrieval --
 
