@@ -76,10 +76,6 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
         super().__init__(logger, supported_media_types=SUPPORTED_SCROBBLE_MEDIA_TYPES)
         self.mass = mass
 
-    def _is_scrobblable_media_type(self, media_type: MediaType) -> bool:
-        """Return true if the given OpenSubsonic media type can be scrobbled, false otherwise."""
-        return media_type in self.supported_media_types
-
     async def _get_subsonic_provider_and_item_id(
         self, media_type: MediaType, provider_instance_id_or_domain: str, item_id: str
     ) -> tuple[None | OpenSonicProvider, str]:
@@ -124,8 +120,6 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
 
     async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
         media_type, provider_instance_id_or_domain, item_id = await parse_uri(report.uri)
-        if not self._is_scrobblable_media_type(media_type):
-            return
         prov, item_id = await self._get_subsonic_provider_and_item_id(
             media_type, provider_instance_id_or_domain, item_id
         )
@@ -142,8 +136,6 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
 
     async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
         media_type, provider_instance_id_or_domain, item_id = await parse_uri(report.uri)
-        if not self._is_scrobblable_media_type(media_type):
-            return
         prov, item_id = await self._get_subsonic_provider_and_item_id(
             media_type, provider_instance_id_or_domain, item_id
         )

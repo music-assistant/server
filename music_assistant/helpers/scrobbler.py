@@ -26,6 +26,7 @@ class ScrobblerHelper:
 
     logger: logging.Logger
     config: ScrobblerConfig
+    supported_media_types: frozenset[MediaType] | None
     currently_playing: str | None = None
     last_scrobbled: str | None = None
 
@@ -38,9 +39,9 @@ class ScrobblerHelper:
         """Initialize."""
         self.logger = logger
         self.config = config or ScrobblerConfig(suffix_version=False)
-        if supported_media_types is None:
-            supported_media_types = (MediaType.TRACK,)
-        self.supported_media_types = frozenset(supported_media_types)
+        self.supported_media_types = (
+            frozenset(supported_media_types) if supported_media_types is not None else None
+        )
 
     def _is_configured(self) -> bool:
         """Override if subclass needs specific configuration."""
@@ -66,7 +67,7 @@ class ScrobblerHelper:
 
         report: MediaItemPlaybackProgressReport = event.data
 
-        if report.media_type not in self.supported_media_types:
+        if self.supported_media_types and report.media_type not in self.supported_media_types:
             self.logger.debug("skipped scrobbling for unsupported media type %s", report.media_type)
             return
 
