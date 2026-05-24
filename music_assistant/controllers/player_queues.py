@@ -1684,7 +1684,8 @@ class PlayerQueuesController(CoreController):
         # when the player requests it. For the current/first track this ensures
         # immediate playback start. For preloaded next tracks we skip this and
         # initialize the buffer ~30s before the current track ends instead.
-        if is_start:
+        # AudioSource items are realtime/live and bypass the AudioBuffer.
+        if is_start and queue_item.streamdetails.media_type != MediaType.AUDIO_SOURCE:
             await AudioBuffer.get_buffer(
                 self.mass,
                 queue_item.streamdetails,
@@ -2412,6 +2413,9 @@ class PlayerQueuesController(CoreController):
         if not queue or not queue.next_item:
             return
         next_item = queue.next_item
+        # AudioSource items are realtime/live and bypass the AudioBuffer
+        if next_item.media_type == MediaType.AUDIO_SOURCE:
+            return
         # guard against race condition where queue.next_item still points to the
         # currently playing track because the player state hasn't been updated yet
         if queue.current_item and next_item.queue_item_id == queue.current_item.queue_item_id:

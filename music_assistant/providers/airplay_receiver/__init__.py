@@ -30,6 +30,7 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import (
+    AudioError,
     MediaNotFoundError,
     UnsupportedFeaturedException,
 )
@@ -57,7 +58,6 @@ if TYPE_CHECKING:
 
 CONF_MASS_PLAYER_ID = "mass_player_id"
 CONF_AIRPLAY_NAME = "airplay_name"
-CONF_ALLOW_PLAYER_SWITCH = "allow_player_switch"
 
 # Special value for auto player selection
 PLAYER_ID_AUTO = "__auto__"
@@ -114,15 +114,6 @@ async def get_config_entries(
             required=True,
         ),
         ConfigEntry(
-            key=CONF_ALLOW_PLAYER_SWITCH,
-            type=ConfigEntryType.BOOLEAN,
-            label="Allow manual player switching",
-            description="When enabled, you can select this plugin as a source on any player "
-            "to switch playback to that player. When disabled, playback is fixed to the "
-            "configured default player.",
-            default_value=True,
-        ),
-        ConfigEntry(
             key=CONF_AIRPLAY_NAME,
             type=ConfigEntryType.STRING,
             label="AirPlay Device Name",
@@ -143,11 +134,6 @@ class AirPlayReceiverProvider(PluginProvider):
         # Default player ID from config (PLAYER_ID_AUTO or a specific player_id)
         self._default_player_id: str = (
             cast("str", self.config.get_value(CONF_MASS_PLAYER_ID)) or PLAYER_ID_AUTO
-        )
-        # Whether manual player switching is allowed (default to True for upgrades)
-        allow_switch_value = self.config.get_value(CONF_ALLOW_PLAYER_SWITCH)
-        self._allow_player_switch: bool = (
-            cast("bool", allow_switch_value) if allow_switch_value is not None else True
         )
         # Currently active player (the one currently playing or selected)
         self._active_player_id: str | None = None
@@ -191,6 +177,8 @@ class AirPlayReceiverProvider(PluginProvider):
             can_next_previous=False,
             exclusive=True,
             allow_external_trigger=True,
+            # passive: only flows when an external AirPlay client is connected
+            can_initiate=False,
         )
         # _in_use_by_queue: the queue currently streaming us. Claimed in
         # on_source_selected (NOT in get_stream_details — that path also runs
@@ -257,9 +245,16 @@ class AirPlayReceiverProvider(PluginProvider):
         request). Keeping this idempotent means preload paths like
         player_queues._load_item can fetch streamdetails without claiming the
         source and blocking a subsequent cross-queue handoff.
+
+        Raises AudioError when no AirPlay client is currently connected.
         """
         if source_id != AUDIO_SOURCE_ID:
             raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
+        if not self._active_player_id:
+            raise AudioError(
+                "AirPlay receiver has no active client — start playback from your "
+                "AirPlay-capable device first"
+            )
         return StreamDetails(
             provider=self.instance_id,
             item_id=source_id,
@@ -344,36 +339,20 @@ class AirPlayReceiverProvider(PluginProvider):
         if source_id != AUDIO_SOURCE_ID or not player_id:
             return
 
-        # Check if manual player switching is allowed
-        if not self._allow_player_switch:
-            # Player switching disabled - only allow if it matches the current target
-            current_target = self._get_target_player_id()
-            if player_id != current_target and current_target:
-                self.logger.debug(
-                    "Manual player switching disabled, redirecting selection from %s to %s",
-                    player_id,
-                    current_target,
-                )
-                await self.mass.player_queues.play_media(
-                    current_target, str(self._audio_source.uri)
-                )
-                # Raising aborts the original request so it cannot continue
-                # into get_stream_details and claim the exclusive source for
-                # the disallowed player. The redirect above starts the stream
-                # on the configured target via a separate request.
-                raise RuntimeError(
-                    f"Player switching disabled; source must remain on {current_target}"
-                )
+        # Cache the queue_id (user-facing MA player) rather than the protocol-
+        # level player_id; protocol bridges (e.g. Sendspin's spb_…) can tear
+        # down between streams and their ID is then invalid for play_media.
+        active_player_id = queue_id
 
         # If there's already an active player and it's different, kick it out.
         # The lock claim a few lines below replaces the previous queue's claim;
         # the prior stream's on_source_unselected may fire later, but its
         # session-id guard keeps it from clobbering the new claim.
-        if self._active_player_id and self._active_player_id != player_id:
+        if self._active_player_id and self._active_player_id != active_player_id:
             prev_player_id = self._active_player_id
             self.logger.info(
                 "Source selected on player %s, stopping playback on %s",
-                player_id,
+                active_player_id,
                 prev_player_id,
             )
             try:
@@ -392,12 +371,12 @@ class AirPlayReceiverProvider(PluginProvider):
         self._active_session_id = stream_session_id
 
         # Update the active player
-        self._active_player_id = player_id
-        self.logger.debug("Active player set to: %s", player_id)
+        self._active_player_id = active_player_id
+        self.logger.debug("Active player set to: %s", active_player_id)
 
         # Only persist the selected player as the new default if not in auto mode
         if self._default_player_id != PLAYER_ID_AUTO:
-            self._save_last_player_id(player_id)
+            self._save_last_player_id(active_player_id)
 
     async def on_source_unselected(
         self, source_id: str, queue_id: str, stream_session_id: str

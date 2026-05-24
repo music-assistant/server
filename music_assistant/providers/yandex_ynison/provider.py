@@ -20,6 +20,7 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import (
+    AudioError,
     LoginFailed,
     MediaNotFoundError,
     PlayerCommandFailed,
@@ -35,7 +36,6 @@ from music_assistant.models.plugin import PluginProvider
 
 from .auth import refresh_music_token
 from .constants import (
-    CONF_ALLOW_PLAYER_SWITCH,
     CONF_DEVICE_ID,
     CONF_MASS_PLAYER_ID,
     CONF_OUTPUT_BIT_DEPTH,
@@ -122,10 +122,6 @@ class YandexYnisonProvider(PluginProvider):
         self._default_player_id: str = (
             cast("str", self.config.get_value(CONF_MASS_PLAYER_ID)) or PLAYER_ID_AUTO
         )
-        allow_switch_value = self.config.get_value(CONF_ALLOW_PLAYER_SWITCH)
-        self._allow_player_switch: bool = (
-            cast("bool", allow_switch_value) if allow_switch_value is not None else True
-        )
         self._cfg_sample_rate: str = (
             cast("str", self.config.get_value(CONF_OUTPUT_SAMPLE_RATE)) or OUTPUT_AUTO
         )
@@ -199,6 +195,8 @@ class YandexYnisonProvider(PluginProvider):
             can_next_previous=False,
             exclusive=True,
             allow_external_trigger=True,
+            # passive: only flows when the Yandex Ynison session is externally active
+            can_initiate=False,
         )
         # _in_use_by_queue tracks the queue currently consuming our stream
         self._in_use_by_queue: str | None = None
@@ -281,6 +279,11 @@ class YandexYnisonProvider(PluginProvider):
         """
         if source_id != AUDIO_SOURCE_ID:
             raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
+        if not self._ynison or not self._ynison.state.current_track_id:
+            raise AudioError(
+                "Yandex Ynison has no active session — start playback from the "
+                "Yandex Music app first"
+            )
         return StreamDetails(
             provider=self.instance_id,
             item_id=source_id,
@@ -1016,29 +1019,19 @@ class YandexYnisonProvider(PluginProvider):
         if source_id != AUDIO_SOURCE_ID or not player_id:
             return
 
-        # Check if manual player switching is allowed
-        if not self._allow_player_switch:
-            current_target = self._get_target_player_id()
-            if player_id != current_target and current_target:
-                self.logger.debug(
-                    "Player switching disabled, redirecting selection from %s to %s",
-                    player_id,
-                    current_target,
-                )
-                await self.mass.player_queues.play_media(
-                    current_target, str(self._audio_source.uri)
-                )
-                msg = f"Player switching is disabled; source must remain on {current_target}"
-                raise RuntimeError(msg)
+        # Cache the queue_id (user-facing MA player) rather than the protocol-
+        # level player_id; protocol bridges (e.g. Sendspin's spb_…) can tear
+        # down between streams and their ID is then invalid for play_media.
+        active_player_id = queue_id
 
         # Stop previous player if switching. The lock claim a few lines below
         # replaces the previous queue's claim; the previous stream loop notices
         # the queue change and exits cleanly.
-        if self._active_player_id and self._active_player_id != player_id:
+        if self._active_player_id and self._active_player_id != active_player_id:
             prev_player_id = self._active_player_id
             self.logger.info(
                 "Source selected on %s, stopping %s",
-                player_id,
+                active_player_id,
                 prev_player_id,
             )
             try:
@@ -1059,8 +1052,8 @@ class YandexYnisonProvider(PluginProvider):
         # tell whether it is the live teardown or a stale callback from a
         # superseded same-queue request.
         self._active_session_id = stream_session_id
-        self._active_player_id = player_id
-        self.logger.debug("Active player set to: %s", player_id)
+        self._active_player_id = active_player_id
+        self.logger.debug("Active player set to: %s", active_player_id)
 
     async def on_source_unselected(
         self, source_id: str, queue_id: str, stream_session_id: str
