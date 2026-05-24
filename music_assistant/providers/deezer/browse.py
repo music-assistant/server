@@ -565,7 +565,7 @@ class DeezerBrowseManager:
 
     # -- Recommendations --
 
-    @use_cache(3600)  # type: ignore[type-var]
+    @use_cache(3600, allow_expired_cache=True)  # type: ignore[type-var]
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get Deezer's recommendations including Flow and personalized content."""
         result: list[RecommendationFolder] = []
@@ -745,7 +745,7 @@ class DeezerBrowseManager:
 
     # -- Recently played (shared by browse and recommendations) --
 
-    @use_cache(3600)  # type: ignore[type-var]
+    @use_cache(3600, allow_expired_cache=True)  # type: ignore[type-var]
     async def _get_recently_played_items(self) -> list[MediaItemType]:
         """Get recently played items (cached)."""
         result = await self.provider.gql_client.get_recently_played(first=50)
@@ -863,7 +863,7 @@ class DeezerBrowseManager:
             return await self._get_shaker_tracks(shaker_id)
         return await self._get_regular_playlist_tracks(prov_playlist_id)
 
-    @use_cache(3600)  # type: ignore[type-var]
+    @use_cache(3600, allow_expired_cache=True)  # type: ignore[type-var]
     async def _get_smart_tracklist_playlists(self) -> list[Playlist]:
         """Get SmartTracklist items from Made For Me as virtual playlists (cached).
 
@@ -914,7 +914,7 @@ class DeezerBrowseManager:
                     tracks.append(parse_track(self.provider, ft.track))
         return tracks
 
-    @use_cache(3600)  # type: ignore[type-var]
+    @use_cache(3600, allow_expired_cache=True)  # type: ignore[type-var]
     async def _get_recommended_tracks(self) -> list[Track]:
         """Get cached recommended tracks (hot tracks)."""
         recs = await self.provider.gql_client.get_recommendations(
@@ -928,7 +928,7 @@ class DeezerBrowseManager:
             return []
         return [parse_track(self.provider, ht) for ht in recs.recommendations.hot_tracks]
 
-    @use_cache(3600)  # type: ignore[type-var]
+    @use_cache(3600, allow_expired_cache=True)  # type: ignore[type-var]
     async def _get_chart_tracks(self) -> list[Track]:
         """Get cached chart tracks."""
         charts = await self.provider.gql_client.get_charts(
@@ -1037,7 +1037,7 @@ class DeezerBrowseManager:
             cursor = tracks_conn.page_info.end_cursor
         return all_tracks
 
-    @use_cache(3600)  # type: ignore[type-var]
+    @use_cache(3600, allow_expired_cache=True)  # type: ignore[type-var]
     async def _get_user_chart_tracks(self) -> list[Track]:
         """Get the user's most listened tracks."""
         result = await self.provider.gql_client.get_user_charts(tracks_first=50)
