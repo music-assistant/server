@@ -6,6 +6,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.constants import PLAYER_CONTROL_FAKE
 from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed, UnsupportedFeaturedException
 from propcache import under_cached_property as cached_property
@@ -14,14 +15,16 @@ from music_assistant.constants import (
     APPLICATION_NAME,
     CONF_DYNAMIC_GROUP_MEMBERS,
     CONF_GROUP_MEMBERS,
+    CONF_POWER_CONTROL,
 )
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
+    CONF_ALLOWED_MEMBERS,
     CONF_ENTRY_SGP_NOTE,
-    CONF_MEMBERS_FILTER,
     EXTRA_FEATURES_FROM_MEMBERS,
+    IDLE_GRACE_SECONDS,
     PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH,
 )
 
@@ -48,8 +51,14 @@ class SyncGroupPlayer(Player):
         self._attr_name = self.config.name or self.config.default_name or f"SyncGroup {player_id}"
         self._attr_available = True
         self._attr_device_info = DeviceInfo(model=provider.name, manufacturer=APPLICATION_NAME)
-        self._attr_powered = False  # group players are always powered off by default
+        # Group players default to "no opinion" on power. The session lifecycle
+        # (form on play, dissolve on stop, debounced idle deform) governs whether
+        # the group is considered active. Users who want an explicit on/off button
+        # can assign 'Fake power control' which is then reflected via extra_data.
+        self._attr_powered = None
         self._attr_needs_poll = True
+        # task that dissolves the group after the idle grace window expires
+        self._idle_grace_task: asyncio.Task[None] | None = None
         self._update_attributes()
 
     @cached_property
@@ -63,43 +72,56 @@ class SyncGroupPlayer(Player):
         # groups can't be synced
         return None
 
+    @property
+    def is_active_session(self) -> bool:
+        """
+        Return whether this sync group is currently holding its members.
+
+        The session is considered active while a sync leader is set (formed and
+        potentially playing/paused) or while the idle grace timer is still
+        pending. ``__final_active_group`` reads this to decide whether the
+        configured members should be marked as ``active_group`` for this group.
+        """
+        return self.sync_leader is not None or self._idle_grace_task is not None
+
     async def on_config_updated(self) -> None:
         """Handle logic when the PlayerConfig is first loaded or updated."""
         # Config is only available after the player was registered
         self._cache.clear()  # clear to prevent loading old is_dynamic
-        static_members_conf = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
-        static_members: list[str] = []
-        # TEMP: migrate protocol id's to protocol parent id's for static members
-        # TODO: remove this logic once 2.8 is released and we start the 2.9 cycle.
-        changes_made = False
-        for member_id in static_members_conf:
-            if (
-                member_player := self.mass.players.get_player(member_id)
-            ) and member_player.protocol_parent_id:
-                static_members.append(member_player.protocol_parent_id)
-                changes_made = True
-            else:
-                static_members.append(member_id)
-        if changes_made:
-            self.mass.config.set_raw_player_config_value(
-                self.player_id, CONF_GROUP_MEMBERS, static_members
-            )
-
-        self._attr_static_group_members = static_members.copy()
+        preset_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
         if self.is_dynamic:
+            # In dynamic mode the configured members act as a preset: they are
+            # pulled in when the group is powered on
+            self._attr_static_group_members = []
             self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
         else:
+            self._attr_static_group_members = list(preset_members)
             self._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
-        self._attr_group_members = static_members.copy()
+        # Only realign the effective member list to the preset when we are
+        # dormant. Otherwise a config save (e.g. user toggling an unrelated
+        # field) would wipe any dynamic joins that happened during this session.
+        if not self.is_active_session:
+            self._attr_group_members = list(preset_members)
 
     @property
     def supported_features(self) -> set[PlayerFeature]:
         """Return the supported features of the player."""
-        # by default we don't have any features, except play_media and power
-        # but we can gain some features based on the capabilities of the members
-        # NOTE: set_members is only supported if it's a dynamic group
-        # we use the power feature as a proxy for "is group active/formed"
-        base_features: set[PlayerFeature] = {PlayerFeature.PLAY_MEDIA, PlayerFeature.POWER}
+        # PlayerFeature.POWER is intentionally NOT advertised by default: it forces
+        # users to remember to power the group off to release its members, which
+        # makes "play X on a single member from HA" silently redirect to the whole
+        # group long after playback ended. The new lifecycle forms the group on
+        # play and dissolves it on stop (with a short idle grace), so explicit
+        # power control is no longer required.
+        # Users who DO want an explicit on/off button can assign 'Fake power
+        # control' in the player config; we then advertise POWER so the UI shows
+        # the toggle. The raw config value is read here to avoid recursion via
+        # the power_control property (which itself may inspect supported features).
+        base_features: set[PlayerFeature] = {PlayerFeature.PLAY_MEDIA}
+        raw_power_conf = self.mass.config.get_raw_player_config_value(
+            self.player_id, CONF_POWER_CONTROL
+        )
+        if raw_power_conf == PLAYER_CONTROL_FAKE:
+            base_features.add(PlayerFeature.POWER)
         if self.is_dynamic:
             base_features.add(PlayerFeature.SET_MEMBERS)
         if self.sync_leader:
@@ -126,15 +148,20 @@ class SyncGroupPlayer(Player):
         return False
 
     @property
+    def supported_sample_rates(self) -> list[tuple[int, int]] | None:
+        """Return supported sample rates as defined by the sync leader."""
+        # not cached: sync_leader can change during dynamic group reforms,
+        # so we always re-resolve to stay in sync with the current leader
+        if leader := self.sync_leader:
+            return leader.get_supported_sample_rates()
+        return [(44100, 16), (48000, 16)]
+
+    @property
     def active_source(self) -> str | None:
         """Return the active source id of the current media (if any)."""
         # NOTE: Not using 'state' here as we need the 'raw' value provided by the sync leader player
         if not self.sync_leader:
             return None
-        # if a plugin source is active on the syncleader, return that
-        for plugin_source in self.mass.players.get_plugin_sources():
-            if plugin_source.in_use_by == self.sync_leader.player_id:
-                return plugin_source.id
         # deal with output protocols on the sync leader
         output_protocol_domain: str | None = None
         if (
@@ -171,6 +198,15 @@ class SyncGroupPlayer(Player):
         # NOTE: Not using 'state' here as we need the 'raw' value provided by the sync leader player
         return self.sync_leader.source_list if self.sync_leader else []
 
+    def _is_member_allowed(self, player_id: str) -> bool:
+        """Return whether a player is allowed to join this group given the configured filter."""
+        # preset members should always be allowed to re-join
+        preset_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []) or [])
+        if player_id in preset_members:
+            return True
+        allowed_members = cast("list[str]", self.config.get_value(CONF_ALLOWED_MEMBERS, []) or [])
+        return not allowed_members or player_id in allowed_members
+
     @property
     def can_group_with(self) -> set[str]:
         """Return the id's of players this player can group with."""
@@ -178,28 +214,27 @@ class SyncGroupPlayer(Player):
             # in case of static members,
             # we can only group with the players defined in the config, so we return those directly
             return set(self._attr_static_group_members)
-        members_filter = (
-            cast("list[str]", self.config.get_value(CONF_MEMBERS_FILTER, []))
-            if self.is_dynamic
-            else []
-        )
         # Aggregate can_group_with from ALL current group members (not just the leader).
         # A sync group can accommodate protocol switches, so a player compatible with
         # ANY current member is a valid candidate to join.
         member_ids = self._attr_group_members if self._attr_group_members else []
+        # current members bypass the allow-list filter (filter constrains joiners only)
+        current_members = set(member_ids)
         if member_ids:
             can_group_with: set[str] = set()
             for member_id in member_ids:
-                if member_id in members_filter:
-                    continue
                 member_player = self.mass.players.get_player(member_id)
                 if member_player and member_player.state.available:
                     can_group_with.add(member_player.player_id)
                     can_group_with.update(member_player.state.can_group_with)
-            return can_group_with.difference(members_filter)
+            return {
+                pid
+                for pid in can_group_with
+                if pid in current_members or self._is_member_allowed(pid)
+            }
         # Empty dynamic groups can potentially group with any compatible players
         # Actual compatibility is validated when adding members
-        can_group_with: set[str] = set()  # type: ignore[no-redef]
+        can_group_with = set()
         for player in self.mass.players.all_players(return_unavailable=False):
             if not player.available or player.type == PlayerType.GROUP:
                 # let's avoid showing group players as options to group with
@@ -210,7 +245,7 @@ class SyncGroupPlayer(Player):
                 and not player.state.active_group
             ):
                 can_group_with.add(player.player_id)
-        return can_group_with.difference(members_filter)
+        return {pid for pid in can_group_with if self._is_member_allowed(pid)}
 
     @property
     def group_members(self) -> list[str]:
@@ -226,13 +261,24 @@ class SyncGroupPlayer(Player):
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
+        # keep saved player ids so the UI can render a user friendly name
+        # prevents the bug where only the player ids show up during playback
+        saved_ids = {
+            *cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []) or []),
+            *cast("list[str]", self.config.get_value(CONF_ALLOWED_MEMBERS, []) or []),
+        }
         possible_players = sorted(
             [
                 ConfigValueOption(x.display_name, x.player_id)
                 for x in self.mass.players.all_players(True, False)
                 if x.type != PlayerType.GROUP
-                and PlayerFeature.SET_MEMBERS in x.state.supported_features
-                and x.state.can_group_with
+                and (
+                    x.player_id in saved_ids
+                    or (
+                        PlayerFeature.SET_MEMBERS in x.state.supported_features
+                        and x.state.can_group_with
+                    )
+                )
             ],
             key=lambda x: x.title,
         )
@@ -243,11 +289,9 @@ class SyncGroupPlayer(Player):
                 key=CONF_GROUP_MEMBERS,
                 type=ConfigEntryType.STRING,
                 multi_value=True,
-                label="Permanent group members",
+                label="Group members",
                 default_value=[],
-                description="Select all static/permanent members of this sync group. "
-                "These members will always be part of the group and can never be unjoined "
-                "from the group. ",
+                description="Select the members of this sync group. ",
                 required=False,  # needed for dynamic members (which allows empty members list)
                 options=possible_players,
             ),
@@ -257,40 +301,59 @@ class SyncGroupPlayer(Player):
                 label="Enable dynamic members",
                 description="Allow (un)joining members dynamically, so the group more or less "
                 "behaves the same like manually syncing players together, "
-                "with the main difference being that the group player will hold the queue. \n"
-                "Note that static members will always be part of the group and can never "
-                "be unjoined from the group.",
+                "with the main difference being that the group player will hold the queue.",
                 default_value=False,
                 required=False,
             ),
             ConfigEntry(
-                key=CONF_MEMBERS_FILTER,
+                key=CONF_ALLOWED_MEMBERS,
                 type=ConfigEntryType.STRING,
                 multi_value=True,
-                label="Members filter",
-                description="Optionally filter the list of available members that "
-                "are allowed to group with this player by excluding certain members. \n"
-                "Players in this list will NOT show up in the UI as options to be "
-                "added as members to the group. Also trying to join a member that "
-                "is in this list to the group will be prevented.",
+                label="Allowed members",
+                description="Limit which players can join this group. "
+                "Leave empty to allow any sync-compatible player. "
+                "This can be used to reduce the list of players that show up for joining "
+                "in case you have a lot of players.",
                 default_value=[],
                 required=False,
                 options=possible_players,
                 depends_on=CONF_DYNAMIC_GROUP_MEMBERS,
+                advanced=True,
             ),
         ]
         return entries
 
     async def power(self, powered: bool) -> None:
-        """Handle POWER command to group player."""
-        # always stop at power off
+        """
+        Handle POWER command to group player.
+
+        Only called when the user has assigned a power control (native or fake)
+        to the group. Powering ON pre-forms the group so its members are
+        captured immediately (matching the legacy behaviour for users who opt
+        in). Powering OFF stops any playback and dissolves the group.
+
+        :param powered: True to power on (form/capture), False to power off (dissolve).
+        """
+        # always cancel any pending idle-grace timer on explicit power transitions
+        self._cancel_idle_grace_timer()
+
         if not powered and self.playback_state in (
             PlaybackState.PLAYING,
             PlaybackState.PAUSED,
         ):
-            await self.stop()
+            # stop directly via the leader to avoid re-entering our own stop()
+            # logic (which would dissolve before we re-dissolve below).
+            if sync_leader := self.sync_leader:
+                await self.mass.players._handle_cmd_stop(sync_leader.player_id)
 
         if powered:
+            # apply the configured preset members on power-on so unjoins
+            # during a powered session stick until the next power cycle
+            preset_members = cast("list[str]", self.config.get_value(CONF_GROUP_MEMBERS, []))
+            self._attr_group_members = [
+                *preset_members,
+                *[x for x in self._attr_group_members if x not in preset_members],
+            ]
             # form syncgroup when powering on
             await self._form_syncgroup()
         else:
@@ -303,12 +366,28 @@ class SyncGroupPlayer(Player):
             self.update_state()
 
     async def stop(self) -> None:
-        """Send STOP command to given player."""
+        """
+        Send STOP command to given player.
+
+        An explicit stop on the group dissolves the syncgroup immediately so the
+        members are released back to individual control. The idle grace timer is
+        intentionally only used when the queue ends naturally (playback_state
+        transitions to IDLE without a stop command). Users who want the group
+        to stay formed across stops can assign Fake power control and use that
+        to pin the group as 'active'.
+        """
+        self._cancel_idle_grace_timer()
         self._attr_current_media = None
         if sync_leader := self.sync_leader:
             # Use internal handler to target the sync leader directly,
             # bypassing group/sync redirect that would loop back to this player.
             await self.mass.players._handle_cmd_stop(sync_leader.player_id)
+        # Skip the dissolve when the user has explicitly powered the group on
+        # via Fake power control — they expect the group to stay 'active' until
+        # they power it off, even after a stop.
+        if self._attr_powered is True:
+            return
+        await self._dissolve_syncgroup()
 
     async def play(self) -> None:
         """Send PLAY (unpause) command to given player."""
@@ -364,19 +443,14 @@ class SyncGroupPlayer(Player):
         was_playing = self.playback_state == PlaybackState.PLAYING
 
         # handle additions
-        members_filter = (
-            cast("list[str]", self.config.get_value(CONF_MEMBERS_FILTER, []))
-            if self.is_dynamic
-            else []
-        )
         final_players_to_add: list[str] = []
         can_group_with = sync_leader.state.can_group_with.copy() if sync_leader else set()
         for member_id in player_ids_to_add or []:
             if member_id == self.player_id:
                 continue  # can not add self as member
-            if member_id in members_filter:
+            if not self._is_member_allowed(member_id):
                 self.logger.warning(
-                    "Player %s is in the members filter list for group %s, "
+                    "Player %s is not allowed to join group %s by the configured player filters, "
                     "skipping adding it as a member to the group",
                     member_id,
                     self.display_name,
@@ -484,21 +558,25 @@ class SyncGroupPlayer(Player):
         self._update_attributes()
         super().on_group_member_updated(member_player, changed_values)
 
+    async def on_unload(self) -> None:
+        """Handle logic when the player is unloaded from the Player controller."""
+        self._cancel_idle_grace_timer()
+        await super().on_unload()
+        # the player is going away; make sure we don't leave the protocol-level
+        # sync group standing with a now-nonexistent leader behind it.
+        if self.sync_leader is not None:
+            await self._dissolve_syncgroup()
+
     async def _form_syncgroup(self) -> None:
         """Form syncgroup by syncing all (possible) members."""
+        # any in-flight grace timer is moot now — we're (re)forming the group
+        self._cancel_idle_grace_timer()
         self.logger.debug(
             "Forming syncgroup %s, _attr_group_members=%s, sync_leader=%s",
             self.display_name,
             self._attr_group_members,
             self.sync_leader.display_name if self.sync_leader else None,
         )
-        # always ensure static members are part of the group members,
-        # even if they were (temporarily) removed by un unjoin
-        self._attr_group_members = [
-            *self._attr_static_group_members,
-            *[x for x in self._attr_group_members if x not in self._attr_static_group_members],
-        ]
-
         # select new sync leader if needed
         if not self.sync_leader:
             self.sync_leader = self._select_sync_leader()
@@ -512,6 +590,29 @@ class SyncGroupPlayer(Player):
             self.sync_leader.player_id,
             *[x for x in self._attr_group_members if x != self.sync_leader.player_id],
         ]
+        # If the leader still believes it's synced to a previous leader (e.g. we
+        # just picked a new leader after dissolving the old session and the
+        # protocol-level state hasn't propagated yet), wait for it to settle.
+        # Without this, the subsequent play_media call hits the provider's
+        # "I'm synced to another player" guard and gets rejected.
+        if self.sync_leader.state.synced_to is not None:
+            self.logger.debug(
+                "Waiting for new leader %s to report synced_to=None before forming",
+                self.sync_leader.display_name,
+            )
+            if not await self._wait_member_unsynced(self.sync_leader.player_id):
+                # Leader is genuinely stuck — bail out before issuing play_media
+                # so we don't trigger the provider's "synced to another player"
+                # rejection. The caller (play / play_media) will surface this as
+                # a no-op form; the next user action can retry once the
+                # protocol layer has caught up.
+                self.logger.error(
+                    "Aborting syncgroup form for %s: leader %s is stuck synced",
+                    self.display_name,
+                    self.sync_leader.display_name,
+                )
+                self.sync_leader = None
+                return
         # Translate the leader's group_members (may be protocol IDs) to parent IDs
         # so we can compare against our _attr_group_members (always parent IDs)
         already_synced = set(self._translate_to_parent_ids(self.sync_leader.state.group_members))
@@ -545,6 +646,8 @@ class SyncGroupPlayer(Player):
 
     async def _dissolve_syncgroup(self) -> None:
         """Dissolve the current syncgroup by ungrouping all members."""
+        # a dissolve is happening now — any pending grace timer is no longer needed
+        self._cancel_idle_grace_timer()
         if sync_leader := self.sync_leader:
             # dissolve the temporary syncgroup from the sync leader
             sync_children = [
@@ -624,6 +727,25 @@ class SyncGroupPlayer(Player):
                 )
                 return member_player
         return None
+
+    # -----------------------------------------------------------------------
+    # Protocol awareness
+    # -----------------------------------------------------------------------
+    # A sync group can contain members from multiple protocol domains (e.g. a
+    # Sonos that can play via either its native protocol or via AirPlay). The
+    # group needs to:
+    #   - track which protocol the live session is using (active_protocol_domain)
+    #   - resolve which player actually owns the protocol-level session
+    #     (_active_session_player) so leader/handoff bookkeeping is done on
+    #     the right object
+    #   - choose new leaders that keep protocol continuity
+    #     (_member_supports_protocol_domain / _select_sync_leader)
+    #   - downshift to the native protocol when the last protocol-requiring
+    #     member is gone (_any_member_requires_protocol_domain)
+    # The helpers below cover those needs. Composition decisions (which protocol
+    # to use given the current member mix) intentionally live in the group:
+    # individual protocol providers don't have visibility into the rest of the
+    # group's members.
 
     def _translate_to_parent_ids(self, player_ids: list[str]) -> list[str]:
         """Translate a list of (possibly protocol) player IDs to parent player IDs.
@@ -731,10 +853,14 @@ class SyncGroupPlayer(Player):
 
     def _update_attributes(self) -> None:
         """Update dynamic attributes."""
-        # NOTE: Always read the *raw* attributes (not `.state.*`) from the sync leader.
-        # The leader's `state.playback_state` is derived through __final_playback_state which,
-        # when this group is powered, treats us as the leader's active_group and routes its
-        # state back to ours - creating a circular dependency that strands both at IDLE.
+        # NOTE on what reads from `.state.*` vs the leader's raw attributes below:
+        # `__final_current_media` and `__final_active_source` on a player that has
+        # an ``active_group`` route through the active_group's state — so reading
+        # ``sync_leader.state.current_media`` from inside the group would loop
+        # back through our own state derivation (group → leader.state →
+        # active_group=group → group). For those two we MUST use the leader's
+        # raw attributes. ``playback_state`` / ``elapsed_time`` do not route via
+        # active_group and are safe to read from ``.state.*``.
         if (sync_leader := self.sync_leader) is None:
             # no sync leader, reset playback-related attributes to default values
             self._attr_playback_state = PlaybackState.IDLE
@@ -744,7 +870,9 @@ class SyncGroupPlayer(Player):
             self._attr_active_source = None
             self._attr_poll_interval = 30
             return
-        self._attr_playback_state = sync_leader.state.playback_state
+        prev_state = self._attr_playback_state
+        new_state = sync_leader.state.playback_state
+        self._attr_playback_state = new_state
         self._attr_elapsed_time = sync_leader.state.elapsed_time
         self._attr_elapsed_time_last_updated = sync_leader.state.elapsed_time_last_updated
         # don't use 'state' for current_media here since that points back to this group
@@ -753,7 +881,19 @@ class SyncGroupPlayer(Player):
         # on the leader rather than the group.
         self._attr_current_media = sync_leader.current_media
         self._attr_active_source = sync_leader.active_source
-        self._attr_poll_interval = 1 if self._attr_playback_state == PlaybackState.PLAYING else 30
+        self._attr_poll_interval = 1 if new_state == PlaybackState.PLAYING else 30
+        # idle grace handling: schedule a debounced dissolve when the leader
+        # naturally transitions from PLAYING/PAUSED to IDLE. The dissolve is
+        # skipped if the user has pinned the group with Fake power control.
+        if new_state == PlaybackState.IDLE and prev_state in (
+            PlaybackState.PLAYING,
+            PlaybackState.PAUSED,
+        ):
+            if self._attr_powered is not True:
+                self._schedule_idle_grace_timer()
+        elif new_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+            # leader resumed playing, cancel any pending grace
+            self._cancel_idle_grace_timer()
 
     def _is_player_in_session(self, player: Player, session_player: Player | None) -> bool:
         """Return True if ``player`` is already a sync_client of the live session.
@@ -794,6 +934,7 @@ class SyncGroupPlayer(Player):
         old_leader_id: str,
         leader_to_stop: Player | None = None,
         resume_playback: bool = True,
+        preferred_protocol_domain: str | None = None,
     ) -> None:
         """Stop the current sync session, dissolve the syncgroup, and optionally re-form.
 
@@ -808,6 +949,10 @@ class SyncGroupPlayer(Player):
         :param resume_playback: If True, call ``play()`` after dissolving to
             restart playback on the new leader. Pass False when the group was
             not actively playing (e.g. paused or idle).
+        :param preferred_protocol_domain: Optional snapshot of the active
+            protocol domain taken before the old leader was cleared, passed to
+            :meth:`_select_sync_leader` so the new leader is chosen to keep the
+            protocol session continuous where possible.
         """
         leader_to_stop = leader_to_stop or self.sync_leader
         if leader_to_stop:
@@ -828,14 +973,45 @@ class SyncGroupPlayer(Player):
             # re-forming. Providers like Sonos propagate group state
             # asynchronously — the children can still report synced_to for
             # a few seconds after the leader's ungroup command returns.
-            await asyncio.gather(
+            unsync_results = await asyncio.gather(
                 *(self._wait_member_unsynced(m) for m in self._attr_group_members),
                 return_exceptions=True,
             )
+            stuck_members = [
+                self._attr_group_members[i]
+                for i, result in enumerate(unsync_results)
+                if result is False
+            ]
+            if stuck_members:
+                self.logger.error(
+                    "Members of group %s still report synced_to after recovery attempts: %s; "
+                    "aborting reform (no playback will resume on this call)",
+                    self.display_name,
+                    stuck_members,
+                )
+                return
+            # Preselect the new leader with the protocol hint so the form
+            # picks a member compatible with the previous session's protocol
+            # (e.g. keep AirPlay if the session was AirPlay).
+            if preferred_protocol_domain is not None:
+                self.sync_leader = self._select_sync_leader(
+                    preferred_protocol_domain=preferred_protocol_domain
+                )
             await self.play()
 
-    async def _wait_member_unsynced(self, member_id: str, timeout: float = 5.0) -> None:
-        """Wait until the given member reports as unsynced (synced_to is None)."""
+    async def _wait_member_unsynced(self, member_id: str, timeout: float = 5.0) -> bool:
+        """
+        Wait until the given member reports as unsynced (synced_to is None).
+
+        Returns ``True`` when the member is verified unsynced (downstream flows
+        like leader selection / play_media on the leader are safe to proceed),
+        or ``False`` when the player is genuinely stuck (the caller should
+        abort rather than issue a play_media that will be rejected by the
+        provider's "I'm synced to another player" guard).
+
+        :param member_id: The player to wait on.
+        :param timeout: Seconds to wait for the first state propagation.
+        """
         async with self.mass.players.wait_for_player_update(
             member_id,
             attribute_name="synced_to",
@@ -843,6 +1019,39 @@ class SyncGroupPlayer(Player):
             timeout=timeout,
         ):
             pass
+        member = self.mass.players.get_player(member_id)
+        if member is None or member.synced_to is None:
+            return True
+        # The provider didn't propagate within the timeout. Try an explicit
+        # ungroup to push the protocol layer, then wait again with a tighter
+        # budget. This rescues the common "Sonos UPnP event lag" case.
+        self.logger.warning(
+            "Player %s still reports synced_to=%s after %ss; "
+            "issuing explicit ungroup and re-waiting",
+            member.display_name,
+            member.synced_to,
+            timeout,
+        )
+        try:
+            await self.mass.players.cmd_ungroup(member_id)
+        except Exception as err:
+            self.logger.debug("ungroup recovery for %s raised: %s", member.display_name, err)
+        async with self.mass.players.wait_for_player_update(
+            member_id,
+            attribute_name="synced_to",
+            attribute_value=None,
+            timeout=2.0,
+        ):
+            pass
+        member = self.mass.players.get_player(member_id)
+        if member is None or member.synced_to is None:
+            return True
+        self.logger.error(
+            "Player %s is stuck synced_to=%s; aborting dissolve+reform path",
+            member.display_name,
+            member.synced_to,
+        )
+        return False
 
     async def _dynamic_leader_switch(self, old_leader_id: str) -> None:
         """Switch the sync leader without tearing down the stream session.
@@ -906,9 +1115,14 @@ class SyncGroupPlayer(Player):
                 self.display_name,
             )
             # Restore sync_leader so _dissolve_and_reform -> _dissolve_syncgroup
-            # can properly ungroup protocol-level members.
+            # can properly ungroup protocol-level members. Forward the protocol
+            # hint so the new form keeps protocol continuity when possible.
             self.sync_leader = old_leader
-            await self._dissolve_and_reform(old_leader_id, leader_to_stop=old_leader)
+            await self._dissolve_and_reform(
+                old_leader_id,
+                leader_to_stop=old_leader,
+                preferred_protocol_domain=preferred_domain,
+            )
             return
 
         self.sync_leader = new_leader
@@ -954,6 +1168,47 @@ class SyncGroupPlayer(Player):
             await new_target.set_members(player_ids_to_add=remaining_protocol_ids)
 
         self.update_state()
+
+    def _schedule_idle_grace_timer(self) -> None:
+        """Schedule a debounced dissolve after the leader becomes idle."""
+        # any previously scheduled task is replaced so we don't end up with
+        # two dissolves racing each other when the leader oscillates quickly
+        self._cancel_idle_grace_timer()
+        self.logger.debug(
+            "Scheduling idle-grace dissolve for syncgroup %s in %ss",
+            self.display_name,
+            IDLE_GRACE_SECONDS,
+        )
+        self._idle_grace_task = self.mass.create_task(self._idle_grace_runner())
+
+    def _cancel_idle_grace_timer(self) -> None:
+        """Cancel any pending idle-grace dissolve task."""
+        if self._idle_grace_task is not None:
+            if not self._idle_grace_task.done():
+                self._idle_grace_task.cancel()
+            self._idle_grace_task = None
+
+    async def _idle_grace_runner(self) -> None:
+        """Wait the grace window, then dissolve if the group is still idle."""
+        try:
+            await asyncio.sleep(IDLE_GRACE_SECONDS)
+        except asyncio.CancelledError:
+            return
+        # re-check state at fire time — playback may have resumed, the user
+        # may have powered the group on, or another path may have dissolved
+        # us already. Any of these means we should not dissolve here.
+        self._idle_grace_task = None
+        if self.sync_leader is None:
+            return
+        if self._attr_powered is True:
+            return
+        if self.sync_leader.state.playback_state != PlaybackState.IDLE:
+            return
+        self.logger.info(
+            "Idle-grace expired for syncgroup %s, dissolving",
+            self.display_name,
+        )
+        await self._dissolve_syncgroup()
 
     def _resolve_session_target(self, player: Player, domain: str | None) -> Player | None:
         """Resolve the player that participates in the live session for ``domain``.

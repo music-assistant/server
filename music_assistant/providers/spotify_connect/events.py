@@ -5,12 +5,12 @@
 import json
 import os
 import urllib.request
-from datetime import datetime
+from datetime import UTC, datetime
 
 player_event = os.getenv("PLAYER_EVENT")
 
 json_dict = {
-    "event_time": str(datetime.now()),
+    "event_time": str(datetime.now(UTC)),
     "event": player_event,
 }
 

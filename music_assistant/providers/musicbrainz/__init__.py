@@ -12,12 +12,9 @@ from typing import TYPE_CHECKING, Any, cast
 
 from mashumaro import DataClassDictMixin
 from mashumaro.exceptions import MissingField
-from music_assistant_models.enums import ExternalID, ProviderFeature
-from music_assistant_models.errors import (
-    InvalidDataError,
-    ResourceTemporarilyUnavailable,
-    RetriesExhausted,
-)
+from music_assistant_models.enums import ExternalID, LinkType, ProviderFeature
+from music_assistant_models.errors import InvalidDataError, ResourceTemporarilyUnavailable, RetriesExhausted
+from music_assistant_models.media_items import MediaItemLink, MediaItemMetadata
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import compare_strings
@@ -28,7 +25,7 @@ from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
-    from music_assistant_models.media_items import Album, Track
+    from music_assistant_models.media_items import Album, Artist, Track
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -37,9 +34,26 @@ if TYPE_CHECKING:
 
 LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
 
-SUPPORTED_FEATURES: set[ProviderFeature] = (
-    set()
-)  # we don't have any special supported features (yet)
+SUPPORTED_FEATURES: set[ProviderFeature] = {ProviderFeature.ARTIST_METADATA}
+
+# Mapping from MusicBrainz URL relation "type" slug to our LinkType enum.
+# See https://musicbrainz.org/relationships/artist-url for the full set.
+URL_RELATION_TYPE_MAPPING: dict[str, LinkType] = {
+    "wikipedia": LinkType.WIKIPEDIA,
+    "allmusic": LinkType.ALLMUSIC,
+    "last.fm": LinkType.LASTFM,
+    "official homepage": LinkType.WEBSITE,
+}
+
+# Social network relations use a single MB type but multiple destinations,
+# so we sniff the URL host to pick a more specific LinkType.
+SOCIAL_HOST_MAPPING: tuple[tuple[str, LinkType], ...] = (
+    ("facebook.com", LinkType.FACEBOOK),
+    ("instagram.com", LinkType.INSTAGRAM),
+    ("tiktok.com", LinkType.TIKTOK),
+    ("twitter.com", LinkType.TWITTER),
+    ("x.com", LinkType.TWITTER),
+)
 
 
 async def setup(
@@ -103,6 +117,23 @@ class MusicBrainzAlias(DataClassDictMixin):
 
 
 @dataclass
+class MusicBrainzUrl(DataClassDictMixin):
+    """Model for a Url object embedded in a MusicBrainz relation."""
+
+    resource: str
+
+
+@dataclass
+class MusicBrainzRelation(DataClassDictMixin):
+    """Model for a Relation object from MusicBrainz."""
+
+    type: str
+
+    # optional - only populated on url-rels (work-rels and friends have other targets)
+    url: MusicBrainzUrl | None = None
+
+
+@dataclass
 class MusicBrainzArtist(DataClassDictMixin):
     """Model for a (basic) Artist object from MusicBrainz."""
 
@@ -113,6 +144,7 @@ class MusicBrainzArtist(DataClassDictMixin):
     # optional fields
     aliases: list[MusicBrainzAlias] | None = None
     tags: list[MusicBrainzTag] | None = None
+    relations: list[MusicBrainzRelation] | None = None
 
     @classmethod
     def from_raw(cls, data: Any) -> MusicBrainzArtist:
@@ -318,7 +350,6 @@ class MusicbrainzProvider(MetadataProvider):
         if result := await self.get_data(endpoint):
             if "id" not in result:
                 result["id"] = artist_id
-            # TODO: Parse all the optional data like relations and such
             try:
                 return MusicBrainzArtist.from_raw(result)
             except MissingField as err:
@@ -348,9 +379,40 @@ class MusicbrainzProvider(MetadataProvider):
                 results.append(None)
         return results
 
+    async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
+        """Surface MusicBrainz URL relations (Wikipedia, official site, socials, ...)."""
+        if not artist.mbid:
+            return None
+        try:
+            details = await self.get_artist_details(artist.mbid)
+        except InvalidDataError:
+            return None
+        if not details.relations:
+            return None
+        links: set[MediaItemLink] = set()
+        for relation in details.relations:
+            if not relation.url:
+                continue
+            if link_type := self._link_type_for_relation(relation):
+                links.add(MediaItemLink(type=link_type, url=relation.url.resource))
+        if not links:
+            return None
+        return MediaItemMetadata(links=links)
+
+    @staticmethod
+    def _link_type_for_relation(relation: MusicBrainzRelation) -> LinkType | None:
+        if link_type := URL_RELATION_TYPE_MAPPING.get(relation.type):
+            return link_type
+        if relation.type == "social network" and relation.url:
+            url_lower = relation.url.resource.lower()
+            for host, link_type in SOCIAL_HOST_MAPPING:
+                if host in url_lower:
+                    return link_type
+        return None
+
     async def get_recording_details(self, recording_id: str) -> MusicBrainzRecording:
         """Get Recording details by providing a MusicBrainz Recording Id."""
-        if result := await self.get_data(f"recording/{recording_id}?inc=artists+releases"):
+        if result := await self.get_data(f"recording/{recording_id}?inc=artists+releases+isrcs"):
             if "id" not in result:
                 result["id"] = recording_id
             try:
@@ -359,6 +421,18 @@ class MusicbrainzProvider(MetadataProvider):
                 raise InvalidDataError from err
         msg = "Invalid MusicBrainz recording ID provided"
         raise InvalidDataError(msg)
+
+    async def get_isrcs_for_recording(self, recording_id: str) -> list[str]:
+        """
+        Get ISRCs for a MusicBrainz Recording ID.
+
+        :param recording_id: MusicBrainz recording ID.
+        :return: List of ISRCs, or empty list if not found or on error.
+        """
+        with suppress(InvalidDataError):
+            recording = await self.get_recording_details(recording_id)
+            return recording.isrcs or []
+        return []
 
     async def get_release_details(self, album_id: str) -> MusicBrainzRelease:
         """Get Release/Album details by providing a MusicBrainz Album id."""
