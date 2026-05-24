@@ -548,12 +548,16 @@ class DeezerMediaManager:
                 ep.fully_played, ep.resume_position_ms = bookmarks[ep.item_id]
             yield ep
 
-    @use_cache(3600 * 24)
+    @use_cache(3600)
     async def _fetch_podcast_episodes(self, prov_podcast_id: str) -> list[PodcastEpisode]:
         """Fetch and cache all episodes for a podcast.
 
-        Uses rawEpisodes (full ID list) + batch fetch because Deezer's cursor
-        pagination on episodes is broken when using an order other than NONE.
+        Uses a two-layer caching strategy:
+        - Outer (this decorator, 1h): avoids repeated cache lookups during
+          rapid navigation (e.g., user browsing back and forth between podcasts).
+        - Inner (per-episode, 30 days): prevents re-fetching episode details
+          that rarely change. When the outer cache expires, only genuinely new
+          episodes require an API call.
         """
         result = await self.provider.gql_client.get_podcast(
             podcast_id=prov_podcast_id, episodes_first=0
