@@ -1471,9 +1471,8 @@ class ConfigController:
 
         LOGGER.warning(
             "Migrated %d legacy Fully Kiosk provider instance(s) into a single instance. "
-            "Devices and their passwords have been preserved, but any sync groups, "
-            "queues or favourites that referenced the previous player IDs will need to "
-            "be re-linked. This migration function will be removed in MA 2.10.",
+            "Devices and their passwords have been preserved, but any Fully Kiosk player "
+            "that was part of a universal group will need to be re-added to it. "
             len(legacy_ids),
         )
         return True
