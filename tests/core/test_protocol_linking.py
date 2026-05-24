@@ -2,7 +2,7 @@
 
 import logging
 from collections.abc import Awaitable
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -3162,6 +3162,90 @@ class TestNativeProtocolDomainPlayerGrouping:
         assert "sendspin_other" in filtered
         assert len(filtered) == 2
 
+    def test_sendspin_visualizer_groups_via_common_protocol(self, mock_mass: MagicMock) -> None:
+        """Test grouping a sendspin visualizer (e.g. Hue light) with a sendspin-bridged parent.
+
+        Visualizer players have no PLAY_MEDIA so they are not native players, but the
+        Sendspin provider advertises a self-referential sendspin output protocol on them
+        (is_native=True) so the common-protocol search (Priority 4) can match them against
+        any parent that has a sendspin bridge linked.
+        """
+        controller = PlayerController(mock_mass)
+
+        sonos_provider = MockProvider("sonos", instance_id="sonos", mass=mock_mass)
+        sendspin_provider = MockProvider("sendspin", instance_id="sendspin", mass=mock_mass)
+
+        # Mancave: native Sonos parent with sendspin bridge linked
+        mancave = MockPlayer(sonos_provider, "sonos_mancave", "Mancave")
+        mancave._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        mancave._cache.clear()
+
+        # Sendspin bridge protocol player linked to Mancave
+        sendspin_bridge = MockPlayer(
+            sendspin_provider,
+            "spb_mancave",
+            "Mancave (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+        )
+        sendspin_bridge._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sendspin_bridge._attr_can_group_with = {"sendspin"}
+        sendspin_bridge._cache.clear()
+        sendspin_bridge.set_protocol_parent_id("sonos_mancave")
+
+        # Hue visualizer: sendspin provider, no PLAY_MEDIA, has SET_MEMBERS, type LIGHT
+        hue_light = MockPlayer(
+            sendspin_provider,
+            "hue-mancave",
+            "Hue: Mancave",
+            player_type=PlayerType.LIGHT,
+        )
+        hue_light._attr_supported_features = {PlayerFeature.SET_MEMBERS}
+        hue_light._cache.clear()
+
+        mancave.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="spb_mancave",
+                    name="Sendspin",
+                    protocol_domain="sendspin",
+                    priority=40,
+                    available=True,
+                )
+            ]
+        )
+
+        mock_mass.players = controller
+        controller._players = {
+            "sonos_mancave": mancave,
+            "spb_mancave": sendspin_bridge,
+            "hue-mancave": hue_light,
+        }
+        controller._player_throttlers = {
+            "sonos_mancave": Throttler(1, 0.05),
+            "spb_mancave": Throttler(1, 0.05),
+            "hue-mancave": Throttler(1, 0.05),
+        }
+
+        sendspin_bridge.update_state(signal_event=False)
+        mancave.update_state(signal_event=False)
+        hue_light.update_state(signal_event=False)
+
+        protocol_members, native_members, protocol_player, protocol_domain = (
+            controller._translate_members_for_protocols(
+                parent_player=mancave,
+                player_ids=["hue-mancave"],
+                parent_protocol_player=None,
+                parent_protocol_domain=None,
+            )
+        )
+
+        # Priority 4 should match sendspin↔sendspin and route via the bridge,
+        # using the visualizer's player_id directly (is_native=True).
+        assert protocol_members == ["hue-mancave"]
+        assert native_members == []
+        assert protocol_domain == "sendspin"
+        assert protocol_player == sendspin_bridge
+
 
 class TestEnrichPlayerIdentifiers:
     """Tests for MAC address enrichment via ARP lookup."""
@@ -4723,7 +4807,7 @@ class TestUniversalPlayerMerging:
         # up1 should have no more links
         assert len(up1.linked_output_protocols) == 0
 
-    async def test_merge_preserves_moved_protocols_during_parent_cleanup(
+    async def test_merge_preserves_moved_protocols_during_parent_cleanup(  # noqa: PLR0915
         self, mock_mass: MagicMock
     ) -> None:
         """Moved protocol ownership must survive the removed parent's permanent cleanup."""
@@ -4754,7 +4838,7 @@ class TestUniversalPlayerMerging:
 
         scheduled_tasks: list[Awaitable[object]] = []
 
-        def capture_task(task: Awaitable[object]) -> None:
+        def capture_task(task: Awaitable[object], *_args: Any, **_kwargs: Any) -> None:
             scheduled_tasks.append(task)
 
         mock_mass.config.get = MagicMock(side_effect=config_get)
@@ -4826,9 +4910,10 @@ class TestUniversalPlayerMerging:
 
         assert dlna_live.protocol_parent_id == "up_keep"
         assert config_store["players/dlna_cached/values/protocol_parent_id"] == "up_keep"
-        assert len(scheduled_tasks) == 1
+        unregister_tasks = [t for t in scheduled_tasks if "unregister" in repr(t)]
+        assert len(unregister_tasks) == 1
 
-        await scheduled_tasks[0]
+        await unregister_tasks[0]
 
         assert "up_remove" not in controller._players
         assert dlna_live.protocol_parent_id == "up_keep"
@@ -4945,7 +5030,7 @@ class TestUniversalPlayerReplacement:
 
         scheduled_tasks: list[Awaitable[object]] = []
 
-        def capture_task(task: Awaitable[object]) -> None:
+        def capture_task(task: Awaitable[object], *_args: Any, **_kwargs: Any) -> None:
             scheduled_tasks.append(task)
 
         mock_mass.config.get = MagicMock(side_effect=config_get)
@@ -5006,9 +5091,10 @@ class TestUniversalPlayerReplacement:
             "dlna_cached",
         }
         assert config_store["players/dlna_cached/values/protocol_parent_id"] == "sonos_1"
-        assert len(scheduled_tasks) == 1
+        unregister_tasks = [t for t in scheduled_tasks if "unregister" in repr(t)]
+        assert len(unregister_tasks) == 1
 
-        await scheduled_tasks[0]
+        await unregister_tasks[0]
 
         assert "up_old" not in controller._players
         assert ap_live.protocol_parent_id == "sonos_1"

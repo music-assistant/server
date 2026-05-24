@@ -96,6 +96,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_sendspin_player_id,
 )
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.colors import get_palette_for_url, peek_palette_for_url
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.helpers.util import (
@@ -1522,6 +1523,59 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             task_id=task_id,
         )
 
+    def _schedule_palette_fetch(
+        self, player_id: str, image_url: str | None, *, trigger_update: bool = True
+    ) -> None:
+        """Kick off an async palette extraction for an image URL.
+
+        :param player_id: Player the palette is scoped to (used for task dedup).
+        :param image_url: Image URL to extract from. No-op when empty or already cached.
+        :param trigger_update: When True, re-emit player state once palette is ready
+                               (current track). When False, only warm the cache (prefetch).
+        """
+        if not image_url or peek_palette_for_url(image_url) is not None:
+            return
+        slot = "current" if trigger_update else "next"
+        self.mass.create_task(
+            self._fetch_palette(player_id, image_url, trigger_update=trigger_update),
+            task_id=f"palette_fetch_{player_id}_{slot}",
+            abort_existing=False,
+        )
+
+    async def _fetch_palette(self, player_id: str, image_url: str, *, trigger_update: bool) -> None:
+        palette = await get_palette_for_url(self.mass, image_url)
+        if palette is None or not trigger_update:
+            return
+        player = self.get_player(player_id)
+        if player is None:
+            return
+        current = player.state.current_media
+        if current is None or current.image_url != image_url:
+            return  # media changed while fetching
+        # Avoid trigger_player_update so a concurrent state-change debounce
+        # doesn't cancel our timer via the shared player_update_state task_id.
+        self.mass.call_later(
+            0,
+            player.update_state,
+            force_update=True,
+            task_id=f"palette_player_update_{player_id}",
+        )
+
+    def _schedule_next_queue_item_palette_prefetch(
+        self, player_id: str, current_media: PlayerMedia
+    ) -> None:
+        """Warm the palette cache for the next queue item so it's hot at transition."""
+        queue_id, item_id = current_media.source_id, current_media.queue_item_id
+        if not queue_id or not item_id:
+            return
+        next_item = self.mass.player_queues.get_next_item(queue_id, item_id)
+        if next_item is None or not next_item.image:
+            return
+        next_url = self.mass.metadata.get_image_url(
+            next_item.image, size=500, prefer_stream_server=True
+        )
+        self._schedule_palette_fetch(player_id, next_url, trigger_update=False)
+
     async def unregister(self, player_id: str, permanent: bool = False) -> None:
         """
         Unregister a player from the player controller.
@@ -1731,6 +1785,14 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 changed_values,
                 task_id=f"queue_on_player_update_{player.player_id}",
             )
+
+        # Kick async palette extraction on cold cache. On transition prefetch
+        # the next queue item too.
+        if (current_media := player.state.current_media) and current_media.image_url:
+            if current_media.palette is None:
+                self._schedule_palette_fetch(player_id, current_media.image_url)
+            if "current_media.image_url" in changed_values or "current_media" in changed_values:
+                self._schedule_next_queue_item_palette_prefetch(player_id, current_media)
 
         # handle DSP reload of the leader when grouping/ungrouping
         if ATTR_GROUP_MEMBERS in changed_values:

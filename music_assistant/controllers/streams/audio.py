@@ -1098,7 +1098,7 @@ class StreamsAudio:
         )
         supported_sample_rates = tuple(int(x[0]) for x in supported_rates_conf)
 
-        if content_sample_rate in supported_sample_rates:
+        if not supported_sample_rates or content_sample_rate in supported_sample_rates:
             output_sample_rate = content_sample_rate
         else:
             output_sample_rate = max(supported_sample_rates)
