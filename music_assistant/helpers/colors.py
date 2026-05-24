@@ -20,8 +20,9 @@ from modern_colorthief import get_palette as _mmcq_palette
 from music_assistant_models.media_items import MediaItemPalette
 
 from music_assistant.helpers.images import (
-    _create_thumb_hash,
+    _extract_imageproxy_id,
     _extract_imageproxy_params,
+    create_thumb_hash,
     get_image_data,
 )
 
@@ -243,7 +244,7 @@ async def get_palette(
     """
     if not path_or_url:
         return None
-    key = _create_thumb_hash(provider, path_or_url)
+    key = create_thumb_hash(provider, path_or_url)
 
     if cached := _get_from_memory_cache(key):
         return cached
@@ -268,11 +269,16 @@ def peek_palette_for_url(image_url: str | None) -> MediaItemPalette | None:
     """
     if not image_url:
         return None
+    # /imageproxy/<id>: `image_id` is by construction equal to
+    # `create_thumb_hash(provider, path)` (see MetaDataController.compute_image_id),
+    # which is also the key get_palette() stores under, so we can peek directly.
+    if image_id := _extract_imageproxy_id(image_url):
+        return _get_from_memory_cache(image_id)
     if extracted := _extract_imageproxy_params(image_url):
         path, provider = extracted
     else:
         path, provider = image_url, "builtin"
-    key = _create_thumb_hash(provider, path)
+    key = create_thumb_hash(provider, path)
     return _get_from_memory_cache(key)
 
 
@@ -282,7 +288,13 @@ async def get_palette_for_url(
     """Resolve an imageproxy URL to (path, provider) and return its palette."""
     if not image_url:
         return None
-    if extracted := _extract_imageproxy_params(image_url):
+    # New /imageproxy/<id> form: async-resolve the id back to (provider, path).
+    if image_id := _extract_imageproxy_id(image_url):
+        resolved = await mass.metadata.resolve_image_id(image_id)
+        if resolved is None:
+            return None
+        provider, path = resolved
+    elif extracted := _extract_imageproxy_params(image_url):
         path, provider = extracted
     else:
         path, provider = image_url, "builtin"
