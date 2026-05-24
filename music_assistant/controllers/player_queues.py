@@ -2123,16 +2123,17 @@ class PlayerQueuesController(CoreController):
             "Fetching episode(s) and resume point to play for Podcast %s",
             podcast.name,
         )
-        all_episodes = [
-            x async for x in self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider)
-        ]
         # Require exact case and keyword match to minimise false positives.
         if isinstance(episode, str) and episode in _LATEST_EPISODE_KEYWORDS:
-            if not all_episodes:
+            # provider yields newest-first, so only pull the first episode here and skip
+            # materialising the rest, which avoids a per-episode resume lookup on each one
+            latest = await anext(
+                self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider), None
+            )
+            if latest is None:
                 raise InvalidDataError(
                     f"Unable to resolve episode to play for Podcast {podcast.name}"
                 )
-            latest = all_episodes[0]
             (
                 fully_played,
                 resume_position_ms,
@@ -2140,6 +2141,9 @@ class PlayerQueuesController(CoreController):
             latest.fully_played = fully_played
             latest.resume_position_ms = 0 if fully_played else resume_position_ms
             return UniqueList([latest])
+        all_episodes = [
+            x async for x in self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider)
+        ]
         all_episodes.sort(key=lambda x: x.position)
         # if a episode was provided, a user explicitly selected a episode to play
         # so we need to find the index of the episode in the list
