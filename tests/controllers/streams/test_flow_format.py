@@ -227,6 +227,86 @@ async def test_select_flow_pcm_format_uses_f32_when_no_start_streamdetails() -> 
     assert fmt.bit_depth == 32
 
 
+# --- select_pcm_format (AUDIO_SOURCE passthrough) ---
+
+
+@pytest.mark.asyncio
+async def test_select_pcm_format_audio_source_passthrough_when_supported() -> None:
+    """AUDIO_SOURCE keeps source rate/bit depth/channels even with smartfades requested."""
+    audio = _make_streams_audio()
+    player = _make_player(supported=[(44100, 16), (48000, 24), (96000, 24)])
+    streamdetails = _make_streamdetails(
+        sample_rate=48000, bit_depth=24, channels=1, media_type=MediaType.AUDIO_SOURCE
+    )
+    fmt = await audio.select_pcm_format(player, streamdetails, smartfades_enabled=True)
+    assert fmt.sample_rate == 48000
+    assert fmt.bit_depth == 24
+    assert fmt.channels == 1
+
+
+@pytest.mark.asyncio
+async def test_select_pcm_format_audio_source_snaps_down_unsupported_rate() -> None:
+    """AUDIO_SOURCE snaps the sample rate down when the player can't accept the source rate."""
+    audio = _make_streams_audio()
+    player = _make_player(supported=[(44100, 16), (48000, 24)])
+    streamdetails = _make_streamdetails(
+        sample_rate=88200, bit_depth=24, media_type=MediaType.AUDIO_SOURCE
+    )
+    fmt = await audio.select_pcm_format(player, streamdetails, smartfades_enabled=False)
+    assert fmt.sample_rate == 48000
+    assert fmt.bit_depth == 24
+
+
+@pytest.mark.asyncio
+async def test_select_pcm_format_audio_source_falls_back_to_min_supported() -> None:
+    """When the source rate is below every supported rate, fall back to the player's lowest."""
+    audio = _make_streams_audio()
+    player = _make_player(supported=[(44100, 16), (48000, 24)])
+    streamdetails = _make_streamdetails(
+        sample_rate=22050, bit_depth=16, media_type=MediaType.AUDIO_SOURCE
+    )
+    fmt = await audio.select_pcm_format(player, streamdetails, smartfades_enabled=False)
+    assert fmt.sample_rate == 44100
+
+
+# --- select_flow_pcm_format (AUDIO_SOURCE passthrough) ---
+
+
+@pytest.mark.asyncio
+async def test_select_flow_pcm_format_audio_source_bypasses_flow_mode() -> None:
+    """AUDIO_SOURCE as start item ignores flow mode config and passes the source through."""
+    audio = _make_streams_audio()
+    # 'highest' would normally pick 96000 — passthrough must override that.
+    player = _make_player(
+        supported=[(44100, 16), (48000, 24), (96000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_HIGHEST,
+    )
+    streamdetails = _make_streamdetails(
+        sample_rate=44100, bit_depth=16, media_type=MediaType.AUDIO_SOURCE
+    )
+    fmt = await audio.select_flow_pcm_format(
+        player, start_streamdetails=streamdetails, smartfades_enabled=True
+    )
+    assert fmt.sample_rate == 44100
+    assert fmt.bit_depth == 16
+    assert fmt.channels == 2
+
+
+@pytest.mark.asyncio
+async def test_select_flow_pcm_format_audio_source_preserves_mono() -> None:
+    """AUDIO_SOURCE keeps source channels — no forced stereo widening."""
+    audio = _make_streams_audio()
+    player = _make_player(
+        supported=[(44100, 16), (48000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    streamdetails = _make_streamdetails(
+        sample_rate=44100, bit_depth=16, channels=1, media_type=MediaType.AUDIO_SOURCE
+    )
+    fmt = await audio.select_flow_pcm_format(player, start_streamdetails=streamdetails)
+    assert fmt.channels == 1
+
+
 # --- _flow_stream_needs_restart ---
 
 
@@ -405,7 +485,11 @@ def _make_streams_audio() -> StreamsAudio:
     return audio
 
 
-def _make_player(*, supported: list[tuple[int, int]], flow_mode: str) -> MagicMock:
+def _make_player(
+    *,
+    supported: list[tuple[int, int]],
+    flow_mode: str = FLOW_MODE_SAMPLE_RATE_SMART,
+) -> MagicMock:
     """Build a player double exposing only what select_flow_pcm_format needs."""
     player = MagicMock()
     player.get_supported_sample_rates = MagicMock(return_value=supported)
@@ -421,14 +505,17 @@ def _make_streamdetails(
     *,
     sample_rate: int,
     bit_depth: int,
+    channels: int = 2,
     volume_normalization_mode: VolumeNormalizationMode = VolumeNormalizationMode.DISABLED,
+    media_type: MediaType = MediaType.TRACK,
 ) -> MagicMock:
     """Build a StreamDetails double carrying just the fields the format selector reads."""
     streamdetails = MagicMock()
     streamdetails.audio_format = AudioFormat(
-        sample_rate=sample_rate, bit_depth=bit_depth, channels=2
+        sample_rate=sample_rate, bit_depth=bit_depth, channels=channels
     )
     streamdetails.volume_normalization_mode = volume_normalization_mode
+    streamdetails.media_type = media_type
     return streamdetails
 
 
