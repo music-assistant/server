@@ -72,6 +72,7 @@ from music_assistant.controllers.streams.constants import (
 )
 from music_assistant.helpers.audio import (
     calculate_content_length,
+    create_wave_header,
     get_content_length,
     get_mime_type,
     store_content_length_in_cache,
@@ -91,12 +92,26 @@ from music_assistant.providers.universal_group.player import UniversalGroupPlaye
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.player import PlayerMedia
+    from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamMetadata
 
     from music_assistant.mass import MusicAssistant
 
 
 isfile = wrap(os.path.isfile)
+
+
+async def _wav_passthrough_stream(
+    audio_input: AsyncGenerator[bytes, None], output_format: AudioFormat
+) -> AsyncGenerator[bytes, None]:
+    """Yield a WAV header followed by raw PCM bytes from ``audio_input``."""
+    yield create_wave_header(
+        samplerate=output_format.sample_rate,
+        channels=output_format.channels,
+        bitspersample=output_format.bit_depth,
+    )
+    async for chunk in audio_input:
+        yield chunk
 
 
 class StreamsController(CoreController):
@@ -343,13 +358,19 @@ class StreamsController(CoreController):
         if media.media_type in (MediaType.ANNOUNCEMENT, MediaType.FLOW_STREAM):
             return media.uri
         protocol_player = self.mass.players.get_player(player_id)
-        conf_output_codec = cast(
-            "str",
-            protocol_player.config.get_value(CONF_OUTPUT_CODEC, default="flac")
-            if protocol_player
-            else "flac",
-        )
-        output_codec = ContentType.try_parse(conf_output_codec)
+        # AudioSource is realtime: serve as WAV (PCM + header) so the encode
+        # step is a no-op passthrough — drops a whole ffmpeg from the
+        # consumer-side pipeline and the latency that comes with it.
+        if media.media_type == MediaType.AUDIO_SOURCE:
+            output_codec = ContentType.WAV
+        else:
+            conf_output_codec = cast(
+                "str",
+                protocol_player.config.get_value(CONF_OUTPUT_CODEC, default="flac")
+                if protocol_player
+                else "flac",
+            )
+            output_codec = ContentType.try_parse(conf_output_codec)
         fmt = output_codec.value
         # handle raw pcm without exact format specifiers
         if output_codec.is_pcm() and ";" not in fmt:
@@ -672,18 +693,36 @@ class StreamsController(CoreController):
             # the desired output format for the player including any player specific
             # filter params such as channels mixing, DSP, resampling and, only if
             # needed, encoding to lossy formats
-            first_chunk_received = False
-            bytes_sent = 0
-            async for chunk in get_ffmpeg_stream(
-                audio_input=audio_input,
+            filter_params = self.audio.get_player_filter_params(
+                player_id=player.player_id,
                 input_format=pcm_format,
                 output_format=output_format,
-                filter_params=self.audio.get_player_filter_params(
-                    player_id=player.player_id,
+            )
+            # Fast path for live AudioSource: when the player accepts WAV at the
+            # source's exact PCM rate/depth/channels and no filters apply, we
+            # skip the encode ffmpeg entirely and just stream a WAV header
+            # followed by the raw PCM bytes — saves an ffmpeg process and the
+            # latency of its internal buffer on every realtime stream.
+            audio_bytes: AsyncGenerator[bytes, None]
+            if (
+                queue_item.media_type == MediaType.AUDIO_SOURCE
+                and output_format.content_type == ContentType.WAV
+                and not filter_params
+                and output_format.sample_rate == pcm_format.sample_rate
+                and output_format.bit_depth == pcm_format.bit_depth
+                and output_format.channels == pcm_format.channels
+            ):
+                audio_bytes = _wav_passthrough_stream(audio_input, output_format)
+            else:
+                audio_bytes = get_ffmpeg_stream(
+                    audio_input=audio_input,
                     input_format=pcm_format,
                     output_format=output_format,
-                ),
-            ):
+                    filter_params=filter_params,
+                )
+            first_chunk_received = False
+            bytes_sent = 0
+            async for chunk in audio_bytes:
                 try:
                     await resp.write(chunk)
                     bytes_sent += len(chunk)
@@ -1057,8 +1096,8 @@ class StreamsController(CoreController):
                 or (protocol_player is not None and protocol_player.flow_mode)
                 or crossfade_needs_flow_mode
             )
-            if media.media_type == MediaType.RADIO:
-                # flow_mode for radio is pointless
+            if media.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
+                # flow_mode for live/infinite streams is pointless
                 flow_mode = False
             if flow_mode:
                 # flow stream request
@@ -1077,13 +1116,26 @@ class StreamsController(CoreController):
             # single item stream (e.g. radio or non-flow mode)
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
             assert queue_item
-            return self.audio.get_queue_item_stream(
+            inner_stream = self.audio.get_queue_item_stream(
                 queue_item=queue_item,
                 pcm_format=pcm_format,
                 playback_speed=cast(
                     "float", queue_item.extra_attributes.get("playback_speed", 1.0)
                 ),
             )
+            # mirror the on_source_selected/unselected lifecycle the HTTP route
+            # fires, so direct-PCM consumers (AirPlay, Snapcast, UGP) honour the
+            # plugin contract too
+            if (
+                queue_item.media_item is not None
+                and queue_item.media_item.media_type == MediaType.AUDIO_SOURCE
+            ):
+                return self._wrap_with_audio_source_lifecycle(
+                    inner=inner_stream,
+                    queue_item=queue_item,
+                    player_id=player_id or media.source_id,
+                )
+            return inner_stream
         # assume url or some other direct path
         # NOTE: this will fail if its an uri not playable by ffmpeg
         return get_ffmpeg_stream(
@@ -1213,6 +1265,59 @@ class StreamsController(CoreController):
             audio_input=_announcement_stream(), input_format=pcm_format, output_format=output_format
         ):
             yield chunk
+
+    async def _wrap_with_audio_source_lifecycle(
+        self,
+        inner: AsyncGenerator[bytes, None],
+        queue_item: QueueItem,
+        player_id: str,
+    ) -> AsyncGenerator[bytes, None]:
+        """
+        Wrap an AudioSource queue item stream with on_source_selected/unselected hooks.
+
+        Direct-PCM consumers (AirPlay, Snapcast, UGP, ...) call ``get_stream`` instead
+        of going through the HTTP route, but the plugin contract requires the
+        lifecycle hooks to fire for every actual stream request — they're what
+        claim/release the per-queue exclusive ownership and trigger acquisition
+        side effects like the Spotify Connect Web API play kick. This wrapper
+        gives those consumers the same lifecycle the HTTP route already provides.
+
+        :param inner: The underlying audio stream generator.
+        :param queue_item: The AudioSource queue item being streamed.
+        :param player_id: The protocol player consuming this stream.
+        """
+        media_item = queue_item.media_item
+        assert media_item is not None  # caller checked media_type == AUDIO_SOURCE
+        prov = self.mass.get_provider(media_item.provider)
+        queue_id = queue_item.queue_id
+        if not isinstance(prov, PluginProvider):
+            async for chunk in inner:
+                yield chunk
+            return
+        source_id = media_item.item_id
+        stream_session_id = uuid4().hex
+        # single try/finally so on_source_unselected fires even when
+        # on_source_selected raises after partially claiming state; the
+        # provider's session_id guard makes a no-op claim release safe.
+        try:
+            try:
+                await prov.on_source_selected(source_id, player_id, queue_id, stream_session_id)
+            except RuntimeError as err:
+                # provider intentionally aborts the request — surface as AudioError
+                raise AudioError(str(err)) from err
+            async for chunk in inner:
+                yield chunk
+        finally:
+            try:
+                await prov.on_source_unselected(source_id, queue_id, stream_session_id)
+            except Exception as err:
+                self.logger.exception(
+                    "on_source_unselected raised for provider %s source %s queue %s: %s",
+                    prov.instance_id,
+                    source_id,
+                    queue_id,
+                    err,
+                )
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""

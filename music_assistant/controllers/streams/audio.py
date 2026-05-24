@@ -82,7 +82,6 @@ from music_assistant.helpers import ssl as ssl_util
 from music_assistant.helpers.audio import (
     HTTP_HEADERS,
     HTTP_HEADERS_ICY,
-    audio_source_silence_keepalive,
     calculate_content_length,
     get_bit_rate,
     get_normalization_mode,
@@ -90,10 +89,12 @@ from music_assistant.helpers.audio import (
     is_grouping_preventing_dsp,
     iter_pcm_slices,
     parse_extinf_metadata,
+    realtime_pcm_pacer,
     resample_pcm_audio,
 )
 from music_assistant.helpers.dsp import filter_to_ffmpeg_params
 from music_assistant.helpers.ffmpeg import FFMpeg, get_ffmpeg_stream
+from music_assistant.helpers.named_pipe import read_named_pipe
 from music_assistant.helpers.playlists import IsHLSPlaylist, PlaylistItem, fetch_playlist, parse_m3u
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import (
@@ -122,6 +123,10 @@ if TYPE_CHECKING:
 # Seconds of PCM yielded directly to the player before the crossfade holdback starts buffering.
 WARMUP_DURATION = 8
 
+# Chunk size for the realtime AudioSource path; small enough to keep ffmpeg→consumer
+# latency below ~50 ms while still amortising per-chunk overhead.
+AUDIO_SOURCE_CHUNK_SECONDS = 0.02
+
 
 @dataclass
 class CrossfadeData:
@@ -148,6 +153,16 @@ def _snap_supported_rate_down(target: int, supported_sample_rates: list[int]) ->
         return target
     lower = [r for r in supported_sample_rates if r < target]
     return max(lower) if lower else min(supported_sample_rates)
+
+
+def _pcm_formats_match(a: AudioFormat, b: AudioFormat) -> bool:
+    """Return True if two PCM formats describe identical raw bytes."""
+    return (
+        a.content_type == b.content_type
+        and a.sample_rate == b.sample_rate
+        and a.bit_depth == b.bit_depth
+        and a.channels == b.channels
+    )
 
 
 class StreamsAudio:
@@ -397,8 +412,21 @@ class StreamsAudio:
         pcm_format: AudioFormat,
         seek_position: int = 0,
         filter_params: list[str] | None = None,
+        chunk_seconds: float = 1.0,
     ) -> AsyncGenerator[bytes, None]:
-        """Get audio stream for given media details as raw PCM."""
+        """
+        Get audio stream for given media details as raw PCM.
+
+        :param streamdetails: Details of the stream to fetch.
+        :param pcm_format: Target PCM format the consumer expects.
+        :param seek_position: Seek offset in seconds (only honoured when the
+            source allows seeking; ignored for live AudioSources).
+        :param filter_params: Optional ffmpeg filter expressions.
+        :param chunk_seconds: Size of each yielded chunk in seconds of audio.
+            Defaults to 1 s for track-like sources; callers streaming live
+            AudioSources should pass a much smaller value (e.g. 0.02) to keep
+            end-to-end latency low.
+        """
         mass = self.mass
         logger = self.logger.getChild("media_stream")
         logger.log(VERBOSE_LOG_LEVEL, "Starting media stream for %s", streamdetails.uri)
@@ -418,15 +446,6 @@ class StreamsAudio:
             audio_source = provider.get_audio_stream(
                 streamdetails, seek_position=seek_position if streamdetails.can_seek else 0
             )
-            # For AudioSource items (live plugin streams), wrap the generator so it
-            # keeps emitting silence frames during quiet periods (e.g. when the
-            # external app is paused). This stops the consumer from disconnecting
-            # while the source's own state machine recovers. The wrapper is a
-            # no-op while the plugin yields normally.
-            if streamdetails.media_type == MediaType.AUDIO_SOURCE:
-                audio_source = audio_source_silence_keepalive(
-                    audio_source, streamdetails.audio_format
-                )
             seek_position = 0 if streamdetails.can_seek else seek_position
         elif stream_type == StreamType.ICY:
             assert isinstance(streamdetails.path, str)  # for type checking
@@ -490,6 +509,11 @@ class StreamsAudio:
                 assert isinstance(streamdetails.path, str)  # for type checking
                 audio_source = streamdetails.path
 
+        # pace ffmpeg at native rate for live sources; the producer (e.g.
+        # librespot's pipe backend) may otherwise write faster than realtime
+        if streamdetails.media_type == MediaType.AUDIO_SOURCE and "-re" not in extra_input_args:
+            extra_input_args += ["-re"]
+
         # handle seek support
         if seek_position and streamdetails.duration and streamdetails.allow_seek:
             extra_input_args += ["-ss", str(int(seek_position))]
@@ -529,7 +553,7 @@ class StreamsAudio:
                     streamdetails.stream_type,
                 )
             stream_start = mass.loop.time()
-            chunk_size = calculate_content_length(pcm_format, 1)
+            chunk_size = calculate_content_length(pcm_format, chunk_seconds)
             async for chunk in ffmpeg_proc.iter_chunked(chunk_size):
                 if not first_chunk_received:
                     # At this point ffmpeg has started and should now know the codec used
@@ -1256,6 +1280,102 @@ class StreamsAudio:
             channels=2,
         )
 
+    async def get_audio_source_stream(
+        self,
+        queue_item: QueueItem,
+        pcm_format: AudioFormat,
+        raise_on_error: bool = True,
+    ) -> AsyncGenerator[bytes, None]:
+        """
+        Get the realtime PCM stream for an AudioSource queue item.
+
+        AudioSources are live/realtime: bytes flow at the producer's pace, with
+        no pre-buffering, no loudness hydration, no volume normalization, no
+        crossfade/fade-in, no playback-speed shift, no next-track preload. The
+        path stays as small as possible to keep end-to-end latency low.
+
+        Fast path: when the source PCM format already matches the consumer's
+        ``pcm_format``, the provider's bytes are paced in Python and forwarded
+        directly — no ffmpeg in the data path.
+
+        Slow path: when formats differ, ffmpeg resamples/recodes the stream
+        (with ``-re`` for rate pacing) via ``get_media_stream``.
+
+        :param queue_item: The AudioSource queue item to stream.
+        :param pcm_format: Output PCM format the consumer wants.
+        :param raise_on_error: Re-raise stream errors instead of swallowing them.
+        """
+        streamdetails = queue_item.streamdetails
+        assert streamdetails
+        logger = self.logger.getChild("audio_source_stream")
+        bytes_received = 0
+        try:
+            async for chunk in self._iter_audio_source_pcm(streamdetails, pcm_format):
+                bytes_received += len(chunk)
+                yield chunk
+        except AudioError as err:
+            streamdetails.stream_error = True
+            queue_item.available = False
+            if raise_on_error:
+                raise
+            logger.error(
+                "AudioError while streaming AudioSource %s (%s): %s",
+                queue_item.name,
+                streamdetails.uri,
+                err,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            streamdetails.stream_error = True
+            if raise_on_error:
+                raise
+            logger.exception(
+                "Unexpected error while streaming AudioSource %s (%s): %s",
+                queue_item.name,
+                streamdetails.uri,
+                err,
+            )
+        finally:
+            streamdetails.seconds_streamed = bytes_received / pcm_format.pcm_sample_size
+
+    async def _iter_audio_source_pcm(
+        self,
+        streamdetails: StreamDetails,
+        pcm_format: AudioFormat,
+    ) -> AsyncGenerator[bytes, None]:
+        """Yield PCM for an AudioSource, bypassing ffmpeg when formats match."""
+        if _pcm_formats_match(streamdetails.audio_format, pcm_format):
+            source_gen = self._open_audio_source_generator(streamdetails)
+            async for chunk in realtime_pcm_pacer(source_gen, pcm_format):
+                yield chunk
+            return
+        # format mismatch → fall back to ffmpeg for resampling (still small chunks)
+        async for chunk in self.get_media_stream(
+            streamdetails=streamdetails,
+            pcm_format=pcm_format,
+            filter_params=None,
+            chunk_seconds=AUDIO_SOURCE_CHUNK_SECONDS,
+        ):
+            yield chunk
+
+    def _open_audio_source_generator(
+        self, streamdetails: StreamDetails
+    ) -> AsyncGenerator[bytes, None]:
+        """Open the raw PCM generator for an AudioSource (CUSTOM or NAMED_PIPE)."""
+        if streamdetails.stream_type == StreamType.CUSTOM:
+            provider = self.mass.get_provider(streamdetails.provider)
+            if provider is None:
+                raise ProviderUnavailableError(
+                    f"Provider {streamdetails.provider} for stream is no longer available"
+                )
+            provider = cast("MusicProvider | PluginProvider", provider)
+            return provider.get_audio_stream(streamdetails)
+        if streamdetails.stream_type == StreamType.NAMED_PIPE:
+            assert isinstance(streamdetails.path, str)  # for type checking
+            return read_named_pipe(streamdetails.path)
+        raise AudioError(f"Unsupported stream_type {streamdetails.stream_type} for AudioSource")
+
     async def get_queue_item_stream(
         self,
         queue_item: QueueItem,
@@ -1270,7 +1390,19 @@ class StreamsAudio:
         Audio is always served from the AudioBuffer which stores raw decoded PCM.
         Volume normalization and other filters are applied on-the-fly when reading
         from the buffer.
+
+        AudioSource items dispatch to ``get_audio_source_stream`` instead: they
+        are realtime and bypass the buffering/normalization/filter machinery.
         """
+        if queue_item.media_type == MediaType.AUDIO_SOURCE:
+            async for chunk in self.get_audio_source_stream(
+                queue_item=queue_item,
+                pcm_format=pcm_format,
+                raise_on_error=raise_on_error,
+            ):
+                yield chunk
+            return
+
         streamdetails = queue_item.streamdetails
         assert streamdetails
         filter_params: list[str] = []
@@ -1365,7 +1497,6 @@ class StreamsAudio:
             seek_position_ms=seek_position_ms,
             reason="streaming",
         )
-
         # read from buffer with filters applied (volume normalization, speed, fade-in, etc.)
         # if no processing needed, this yields directly from the buffer
         media_stream_gen = audio_buffer.get_stream(
@@ -1812,7 +1943,6 @@ class StreamsAudio:
             if smart_fades_mode == SmartFadesMode.STANDARD_CROSSFADE
             else "",
         )
-        total_bytes_sent = 0
         total_chunks_received = 0
 
         def _superseded() -> bool:
@@ -2074,7 +2204,6 @@ class StreamsAudio:
                 # doesn't undercount while waiting for the next track's crossfade mix.
                 # This will be corrected to crossfade_total/2 once the mix completes.
                 play_log_entry.seconds_streamed += len(last_fadeout_part) / pcm_sample_size
-            total_bytes_sent += bytes_written
             self.logger.debug(
                 "Finished Streaming queue track: %s (%s) on queue %s",
                 queue_track.streamdetails.uri,
@@ -2109,7 +2238,6 @@ class StreamsAudio:
                 # full tail was pre-counted and is now yielded as-is
                 last_play_log_entry.duration = streamdetails.duration
             last_fadeout_part = b""
-        total_bytes_sent += bytes_written
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
         # only signal completion if we are still the active producer — a later
         # producer would (incorrectly) see this as its own completion otherwise

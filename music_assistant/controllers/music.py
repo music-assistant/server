@@ -570,7 +570,7 @@ class MusicController(CoreController):
         """Browse Music providers."""
         if not path or path == "root":
             # root level; folder per provider that declares BROWSE
-            root_items: list[BrowseFolder] = []
+            root_items: list[MediaItemType | BrowseFolder] = []
             providers_with_browse = self.mass.get_providers_supporting_feature(
                 ProviderFeature.BROWSE
             )
@@ -584,34 +584,33 @@ class MusicController(CoreController):
                         name=prov.name,
                     )
                 )
-            # add a "Live Inputs" entry if any loaded plugin provider exposes AudioSources;
-            # this is the canonical browse location for audio sources (they are not
-            # favoritable / library-backed — see MusicController.add_item_to_favorites)
-            if any(self.mass.get_providers_supporting_feature(ProviderFeature.AUDIO_SOURCE)):
-                root_items.append(
-                    BrowseFolder(
-                        item_id="audio_sources",
-                        provider="library",
-                        path="library://audio_sources/",
-                        uri="library://audio_sources/",
-                        name="Live Inputs",
-                        translation_key="browse.live_inputs",
-                    )
-                )
-            return root_items
-
-        # handle the dedicated Live Inputs node: aggregate AudioSources from all
-        # loaded plugin providers that declare ProviderFeature.AUDIO_SOURCE
-        if path == "library://audio_sources/":
-            audio_sources: list[MediaItemType | BrowseFolder] = [
-                BrowseFolder(item_id="root", provider="library", path="root", name="..")
-            ]
-            for prov in self.mass.get_providers_supporting_feature(ProviderFeature.AUDIO_SOURCE):
+            # AudioSource providers surface at root like regular providers; a
+            # provider with a single user-initiable source is promoted to that
+            # source directly so it's playable in one tap.
+            audio_source_providers = self.mass.get_providers_supporting_feature(
+                ProviderFeature.AUDIO_SOURCE
+            )
+            for prov in self._apply_user_provider_filter(audio_source_providers):
                 if not isinstance(prov, PluginProvider):
                     continue
-                for source in await prov.get_audio_sources():
-                    audio_sources.append(source)
-            return audio_sources
+                initiable = [
+                    source for source in await prov.get_audio_sources() if source.can_initiate
+                ]
+                if not initiable:
+                    continue
+                if len(initiable) == 1:
+                    root_items.append(initiable[0])
+                else:
+                    root_items.append(
+                        BrowseFolder(
+                            item_id="root",
+                            provider=prov.domain,
+                            path=f"{prov.instance_id}://",
+                            uri=f"{prov.instance_id}://",
+                            name=prov.name,
+                        )
+                    )
+            return root_items
 
         # provider level
         prepend_items: list[BrowseFolder] = []
@@ -634,6 +633,15 @@ class MusicController(CoreController):
                     name="..",
                 )
             )
+        # AudioSource providers don't implement browse(); list their initiable sources directly
+        if (
+            isinstance(prov, PluginProvider)
+            and ProviderFeature.AUDIO_SOURCE in prov.supported_features
+        ):
+            initiable: list[MediaItemType | BrowseFolder] = [
+                source for source in await prov.get_audio_sources() if source.can_initiate
+            ]
+            return [*prepend_items, *initiable]
         # limit -1 to account for the prepended items
         prov_items = await prov.browse(path=path)
         return prepend_items + prov_items
@@ -1292,8 +1300,10 @@ class MusicController(CoreController):
         # also update playcount in library table (if fully played)
         if not fully_played or is_playing:
             return
-        if not (ctrl := self.get_controller(media_item.media_type)):
-            # skip non media items (e.g. plugin source)
+        try:
+            ctrl = self.get_controller(media_item.media_type)
+        except NotImplementedError:
+            # skip non-library media types (e.g. AudioSource plugin sources)
             return
         db_item = await ctrl.get_library_item_by_prov_id(media_item.item_id, media_item.provider)
         if db_item:

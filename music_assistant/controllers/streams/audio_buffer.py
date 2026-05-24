@@ -432,7 +432,11 @@ class AudioBuffer:
         streamdetails.buffer = audio_buffer
 
         # attach analyze jobs for ahead-of-time processing
-        if seek_position_ms == 0:
+        # skip live/infinite streams (radio, audio sources) — analysis would never finalize
+        if seek_position_ms == 0 and streamdetails.media_type not in (
+            MediaType.RADIO,
+            MediaType.AUDIO_SOURCE,
+        ):
             # audio analysis providers (loudness, beat tracking, key detection, etc.)
             await mass.streams.audio_analysis.start_analysis(audio_buffer, streamdetails)
 
