@@ -2584,6 +2584,7 @@ class StreamsAudio:
         except UnicodeDecodeError:
             self.logger.debug("Invalid response encoding during Shoutcast validation for %s", url)
             return False
+
     def _resolve_player_dsp_config(self, player: Player) -> DSPConfig:
         """
         Resolve the effective DSP config for a player.
