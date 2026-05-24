@@ -512,7 +512,7 @@ class ConfigController:
                 if not isinstance(player_conf, dict):
                     continue
                 if player_conf.get("provider") == instance_id:
-                    self.remove(f"{CONF_PLAYERS}/{player_conf.get('player_id', key)}")
+                    self.remove(f"{CONF_PLAYERS}/{player_conf.get('player_id') or key}")
 
     async def remove_provider_config_value(self, instance_id: str, key: str) -> None:
         """Remove/reset single Provider config value."""
