@@ -333,10 +333,10 @@ class TestParseCueTracks:
         assert len(tracks) == 3
         # CUE TITLE overrode audio tag for album name
         assert tags.tags["album"] == "Live at the BBC"
-        # CUE top-level PERFORMER overrode audio albumartist (multi-value plural form;
-        # tags.tags is typed str-valued but accepts list[str] at runtime, mirroring
-        # how audio-tag parsers in helpers.tags populate it)
-        assert tags.tags["albumartists"] == ["Dire Straits"]  # type: ignore[comparison-overlap]
+        # CUE top-level PERFORMER overrode audio albumartist, stored as the plural
+        # multi-value form (list at runtime, though tags is typed str-valued)
+        albumartists_value: object = tags.tags["albumartists"]
+        assert albumartists_value == ["Dire Straits"]
         assert "albumartist" not in tags.tags
         # per-track names from CUE
         assert tracks[0].name == "Down to the Waterline"
