@@ -1,4 +1,4 @@
-"""Allows scrobbling of tracks back to the Subsonic media server."""
+"""Allows scrobbling of supported media items back to the Subsonic media server."""
 
 import logging
 import time
@@ -19,6 +19,12 @@ from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.opensubsonic.parsers import EP_CHAN_SEP
 from music_assistant.providers.opensubsonic.sonic_provider import OpenSonicProvider
 
+SUPPORTED_SCROBBLE_MEDIA_TYPES: tuple[MediaType, ...] = (
+    MediaType.TRACK,
+    MediaType.AUDIOBOOK,
+    MediaType.PODCAST_EPISODE,
+)
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -32,7 +38,7 @@ async def setup(
 
 
 class SubsonicScrobbleProvider(PluginProvider):
-    """Plugin provider to support scrobbling of tracks."""
+    """Plugin provider to support Subsonic scrobbling."""
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -67,16 +73,12 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
 
     def __init__(self, mass: MusicAssistant, logger: logging.Logger) -> None:
         """Initialize."""
-        super().__init__(logger)
+        super().__init__(logger, supported_media_types=SUPPORTED_SCROBBLE_MEDIA_TYPES)
         self.mass = mass
 
     def _is_scrobblable_media_type(self, media_type: MediaType) -> bool:
         """Return true if the given OpenSubsonic media type can be scrobbled, false otherwise."""
-        return media_type in (
-            MediaType.TRACK,
-            MediaType.AUDIOBOOK,
-            MediaType.PODCAST_EPISODE,
-        )
+        return media_type in self.supported_media_types
 
     async def _get_subsonic_provider_and_item_id(
         self, media_type: MediaType, provider_instance_id_or_domain: str, item_id: str
