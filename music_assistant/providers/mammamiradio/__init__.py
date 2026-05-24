@@ -9,7 +9,7 @@ See: https://github.com/florianhorner/mammamiradio
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
@@ -33,7 +33,7 @@ from music_assistant_models.media_items import (
     SearchResults,
     UniqueList,
 )
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.models.music_provider import MusicProvider
 
@@ -61,6 +61,98 @@ RADIO_DESCRIPTION = (
     "Self-hosted via the mammamiradio HA addon."
 )
 REACHABILITY_TIMEOUT = 5
+# How often Music Assistant invokes the live-metadata callback (seconds). 12s is
+# imperceptible on a now-playing card and keeps per-listener poll load on
+# mammamiradio's single-process addon modest.
+STREAM_METADATA_UPDATE_INTERVAL = 12
+# Short timeout for the /public-status poll so a slow addon never eats most of
+# the metadata update interval.
+METADATA_TIMEOUT = 3
+
+# Music titles mammamiradio emits as placeholders — treated as "no title".
+_PLACEHOLDER_TITLES = {"", "unknown", "untitled", "unknown title"}
+# Segment types rendered as a generic "station element" on the now-playing card.
+_STATION_ELEMENT_TYPES = {"station_id", "time_check", "sweeper"}
+# Segment types that represent idle/internal state — no description pushed to MA.
+_IDLE_TYPES = {"skipping", "stopped"}
+
+
+def _segment_to_stream_metadata(
+    now: dict[str, Any],
+    upcoming: list[Any],
+    ha: dict[str, Any],
+    brand: dict[str, Any],
+    *,
+    show_upcoming: bool,
+) -> StreamMetadata:
+    """Map a ``/public-status`` segment snapshot onto a ``StreamMetadata``.
+
+    Total by construction: every input — an unknown segment ``type``, an empty
+    ``now``, missing metadata fields — yields a ``StreamMetadata`` with a
+    non-empty ``title`` (``StreamMetadata.title`` is a mandatory ``str``). The
+    terminal title clamp below is the load-bearing guarantee.
+
+    ``description`` combines the typed "Up next" line and the Home Assistant
+    "A casa" mood line rather than alternating them, so a single glance at the
+    now-playing card surfaces both. It is suppressed for idle/internal segments
+    so mammamiradio's stopped/skipping state never reaches MA lock screens or
+    speaker displays.
+    """
+    station_name = brand.get("station_name") or RADIO_NAME
+    seg_type = now.get("type")
+    label = now.get("label") or ""
+    meta = now.get("metadata") or {}
+
+    title: str | None = None
+    artist: str | None = None
+    image_url: str | None = None
+
+    if seg_type == "music":
+        raw_title = meta.get("title_only") or meta.get("title") or ""
+        if str(raw_title).strip().lower() in _PLACEHOLDER_TITLES:
+            raw_title = ""
+        title = raw_title
+        artist = meta.get("artist")
+        image_url = meta.get("album_art")
+    elif seg_type == "banter":
+        title = label or "Host banter"
+        artist = ", ".join(brand.get("hosts") or []) or station_name
+    elif seg_type == "ad":
+        title = label or "Ad break"
+        artist = "Pubblicità"
+    elif seg_type == "news_flash":
+        title = label or "News flash"
+        artist = meta.get("host") or station_name
+    elif seg_type in _STATION_ELEMENT_TYPES:
+        title = label or station_name
+        artist = station_name
+    else:
+        # skipping / stopped / empty now_streaming / any unrecognized type.
+        title = station_name
+        artist = ""
+
+    # Terminal title clamp — the invariant: title is always a non-empty str.
+    title = str(title or "").strip() or label.strip() or station_name
+
+    description: str | None = None
+    if seg_type is not None and seg_type not in _IDLE_TYPES:
+        parts: list[str] = []
+        if show_upcoming and upcoming:
+            up_label = (upcoming[0] or {}).get("label")
+            if up_label:
+                parts.append(f"Up next: {up_label}")
+        casa = ha.get("mood") or ha.get("weather")
+        if casa:
+            parts.append(f"A casa: {casa}")
+        description = " · ".join(parts) or None
+
+    return StreamMetadata(
+        title=title,
+        artist=artist or None,
+        album=station_name,
+        image_url=image_url or None,
+        description=description,
+    )
 
 
 async def setup(
@@ -181,6 +273,14 @@ class MammamiradioProvider(MusicProvider):
         consume; HEAD returns 200 even when the source is offline (a known
         Icecast quirk). A dedicated ``/healthz`` endpoint is the only reliable
         liveness signal, and that check belongs at init.
+
+        Live now-playing metadata is delivered separately, after the stream is
+        already resolved: ``stream_metadata_update_callback`` is invoked by MA's
+        player-queue controller every ``STREAM_METADATA_UPDATE_INTERVAL`` seconds
+        (see ``_update_stream_metadata``). No HTTP call is made here — the
+        no-probe contract above holds for metadata too. The first metadata frame
+        arrives within one update interval; until then MA shows the static Radio
+        item info.
         """
         if item_id != RADIO_ITEM_ID:
             msg = f"mammamiradio: radio station {item_id} not found"
@@ -201,7 +301,74 @@ class MammamiradioProvider(MusicProvider):
             path=stream_path,
             allow_seek=False,
             can_seek=False,
+            stream_metadata_update_callback=self._update_stream_metadata,
+            stream_metadata_update_interval=STREAM_METADATA_UPDATE_INTERVAL,
         )
+
+    async def _update_stream_metadata(
+        self, stream_details: StreamDetails, elapsed_time: int
+    ) -> None:
+        """Refresh now-playing metadata mid-stream from mammamiradio's /public-status.
+
+        Invoked by Music Assistant's player-queue controller every
+        ``STREAM_METADATA_UPDATE_INTERVAL`` seconds. Polls the unauthenticated
+        ``/public-status`` endpoint, maps the current typed segment onto a
+        ``StreamMetadata``, and alternates the now/up-next view. Any failure is
+        swallowed (logged at debug) so a transient addon hiccup never raises
+        inside the callback or disturbs playback; the prior metadata stays in
+        place.
+
+        :param stream_details: StreamDetails object to update with metadata.
+        :param elapsed_time: Elapsed playback time in seconds (unused).
+        """
+        payload = await self._fetch_public_status()
+        if payload is None:
+            return
+
+        if stream_details.data is None:
+            stream_details.data = {}
+        data = stream_details.data
+
+        now = payload.get("now_streaming") or {}
+        upcoming = payload.get("upcoming") or []
+        ha = payload.get("ha_moments") or {}
+        brand = payload.get("brand") or {}
+
+        # Stable per-segment identity. ``epoch``/``started`` alone may be absent
+        # or unstable for non-music segments, so key change-detection on a
+        # composite tuple.
+        seg_key = (now.get("type"), now.get("label"), now.get("started"))
+        if seg_key != data.get("last_segment"):
+            data["last_segment"] = seg_key
+            data["show_upcoming"] = False
+
+        # Read the display mode BEFORE mutating, so the first frame of every
+        # segment renders the "Now" view (mutate-then-read would flip this).
+        show_upcoming = data.get("show_upcoming", False)
+        stream_details.stream_metadata = _segment_to_stream_metadata(
+            now, upcoming, ha, brand, show_upcoming=show_upcoming
+        )
+        data["show_upcoming"] = not show_upcoming
+
+    async def _fetch_public_status(self) -> dict[str, Any] | None:
+        """GET ``/public-status``, returning the parsed payload or None on any failure."""
+        url = f"{self._stream_url_root()}/public-status"
+        try:
+            timeout = aiohttp.ClientTimeout(total=METADATA_TIMEOUT)
+            async with self.mass.http_session.get(url, timeout=timeout) as response:
+                if response.status >= 400:
+                    self.logger.debug(
+                        "mammamiradio /public-status returned HTTP %s", response.status
+                    )
+                    return None
+                payload: dict[str, Any] = await response.json()
+                return payload or None
+        except (aiohttp.ClientError, TimeoutError) as err:
+            self.logger.debug("mammamiradio /public-status request failed: %s", err)
+            return None
+        except (ValueError, TypeError) as err:
+            self.logger.debug("mammamiradio /public-status returned bad JSON: %s", err)
+            return None
 
     def _stream_url_root(self) -> str:
         """Return the configured mammamiradio URL stripped of query, fragment, and trailing slash."""

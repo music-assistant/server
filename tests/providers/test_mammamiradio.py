@@ -17,8 +17,10 @@ from music_assistant.providers.mammamiradio import (
     DEFAULT_URL,
     RADIO_ITEM_ID,
     RADIO_NAME,
+    STREAM_METADATA_UPDATE_INTERVAL,
     SUPPORTED_FEATURES,
     MammamiradioProvider,
+    _segment_to_stream_metadata,
     get_config_entries,
 )
 
@@ -37,6 +39,17 @@ def _make_failing_ctx(exc: Exception) -> MagicMock:
     """Build an async-context-manager mock whose __aenter__ raises ``exc``."""
     ctx = MagicMock()
     ctx.__aenter__ = AsyncMock(side_effect=exc)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    return ctx
+
+
+def _make_json_ctx(payload: Any, status: int = 200) -> MagicMock:
+    """Async-context-manager mock yielding a response with `status` and async `.json()`."""
+    response = MagicMock()
+    response.status = status
+    response.json = AsyncMock(return_value=payload)
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=response)
     ctx.__aexit__ = AsyncMock(return_value=False)
     return ctx
 
@@ -261,6 +274,10 @@ async def test_get_stream_details_does_not_probe_at_stream_time(
     ``StreamDetails``; failures at the actual stream URL surface naturally
     via MA's ffmpeg pipeline. Locks the contract that no http_session calls
     happen during stream-details resolution.
+
+    Live metadata does not break this contract: ``get_stream_details`` only
+    *wires* the ``stream_metadata_update_callback`` + interval; the HTTP poll
+    happens later, inside the callback, never at stream-details time.
     """
     mass_mock.http_session.get = MagicMock()
     mass_mock.http_session.head = MagicMock()
@@ -268,6 +285,9 @@ async def test_get_stream_details_does_not_probe_at_stream_time(
     assert details.path == "http://localhost:8000/stream"
     mass_mock.http_session.get.assert_not_called()
     mass_mock.http_session.head.assert_not_called()
+    # The live-metadata callback is wired, but not invoked here.
+    assert details.stream_metadata_update_callback == provider._update_stream_metadata
+    assert details.stream_metadata_update_interval == STREAM_METADATA_UPDATE_INTERVAL
 
 
 async def test_get_stream_details_with_invalid_id_raises_media_not_found(
@@ -346,6 +366,294 @@ async def test_search_empty_query_returns_empty(
 
 
 # ---------------------------------------------------------------------------
+# Live typed-segment metadata — `_segment_to_stream_metadata` (pure mapping)
+#
+# The invariant under test everywhere: the helper is TOTAL — every input
+# produces a StreamMetadata with a non-empty `title` (a mandatory str field).
+# ---------------------------------------------------------------------------
+
+_BRAND = {"station_name": "mammamiradio", "hosts": ["Gianni", "Lucia"]}
+
+
+def test_segment_music_maps_title_artist_image() -> None:
+    """A music segment surfaces title / artist / album art."""
+    now = {
+        "type": "music",
+        "label": "Volare — Modugno",
+        "metadata": {
+            "title_only": "Volare",
+            "title": "Volare — Modugno",
+            "artist": "Domenico Modugno",
+            "album_art": "http://art/volare.jpg",
+        },
+    }
+    sm = _segment_to_stream_metadata(now, [], {}, _BRAND, show_upcoming=False)
+    assert sm.title == "Volare"
+    assert sm.artist == "Domenico Modugno"
+    assert sm.image_url == "http://art/volare.jpg"
+    assert sm.album == "mammamiradio"
+
+
+def test_segment_banter_uses_host_names() -> None:
+    """A banter segment titles as 'Host banter' with the hosts as artist."""
+    sm = _segment_to_stream_metadata(
+        {"type": "banter", "label": ""}, [], {}, _BRAND, show_upcoming=False
+    )
+    assert sm.title == "Host banter"
+    assert sm.artist == "Gianni, Lucia"
+
+
+def test_segment_ad_is_pubblicita() -> None:
+    """An ad segment titles as 'Ad break' with artist 'Pubblicità'."""
+    sm = _segment_to_stream_metadata(
+        {"type": "ad", "label": ""}, [], {}, _BRAND, show_upcoming=False
+    )
+    assert sm.title == "Ad break"
+    assert sm.artist == "Pubblicità"
+
+
+def test_segment_news_flash_uses_host() -> None:
+    """A news_flash segment carries the reporting host as artist."""
+    now = {"type": "news_flash", "label": "Notizie flash", "metadata": {"host": "Gianni"}}
+    sm = _segment_to_stream_metadata(now, [], {}, _BRAND, show_upcoming=False)
+    assert sm.title == "Notizie flash"
+    assert sm.artist == "Gianni"
+
+
+def test_segment_sweeper_is_total_and_titled() -> None:
+    """A sweeper segment (real SegmentType, no dedicated branch) still yields a title.
+
+    Regression for the unhandled-type crash: SWEEPER is in mammamiradio's
+    SegmentType enum; the helper must produce a valid StreamMetadata.
+    """
+    sm = _segment_to_stream_metadata(
+        {"type": "sweeper", "label": "Stazione radio"}, [], {}, _BRAND, show_upcoming=False
+    )
+    assert sm.title == "Stazione radio"
+    assert sm.artist == "mammamiradio"
+
+
+def test_segment_unknown_type_falls_through_to_station_name() -> None:
+    """An unrecognized segment type hits the catch-all and still has a title."""
+    sm = _segment_to_stream_metadata(
+        {"type": "future_segment_kind", "label": ""}, [], {}, _BRAND, show_upcoming=False
+    )
+    assert sm.title == "mammamiradio"
+
+
+def test_segment_music_with_none_metadata_clamps_title() -> None:
+    """Music payload with metadata=None must not raise; title clamps to the label."""
+    sm = _segment_to_stream_metadata(
+        {"type": "music", "label": "Brano 5", "metadata": None},
+        [],
+        {},
+        _BRAND,
+        show_upcoming=False,
+    )
+    assert sm.title == "Brano 5"
+
+
+def test_segment_music_with_empty_metadata_and_label_clamps_to_station() -> None:
+    """Music payload with metadata={} and no label clamps to the station name."""
+    sm = _segment_to_stream_metadata(
+        {"type": "music", "label": "", "metadata": {}}, [], {}, _BRAND, show_upcoming=False
+    )
+    assert sm.title == "mammamiradio"
+
+
+def test_segment_music_placeholder_title_clamps() -> None:
+    """A music 'unknown' placeholder title is treated as no title."""
+    now = {"type": "music", "label": "Brano misterioso", "metadata": {"title": "unknown"}}
+    sm = _segment_to_stream_metadata(now, [], {}, _BRAND, show_upcoming=False)
+    assert sm.title == "Brano misterioso"
+
+
+def test_segment_empty_label_fallbacks_per_type() -> None:
+    """news_flash / station_id / time_check with empty labels never produce empty titles."""
+    for seg_type, expected in (
+        ("news_flash", "News flash"),
+        ("station_id", "mammamiradio"),
+        ("time_check", "mammamiradio"),
+    ):
+        sm = _segment_to_stream_metadata(
+            {"type": seg_type, "label": ""}, [], {}, _BRAND, show_upcoming=False
+        )
+        assert sm.title == expected, seg_type
+
+
+def test_segment_empty_now_streaming_is_idle() -> None:
+    """An empty now_streaming dict falls to the idle branch with the station name."""
+    sm = _segment_to_stream_metadata({}, [], {}, _BRAND, show_upcoming=False)
+    assert sm.title == "mammamiradio"
+    assert sm.description is None
+
+
+def test_segment_missing_brand_defaults_station_name() -> None:
+    """A missing brand still yields a non-empty title via the literal fallback."""
+    sm = _segment_to_stream_metadata({"type": "stopped"}, [], {}, {}, show_upcoming=False)
+    assert sm.title == "mammamiradio"
+
+
+def test_segment_malformed_upcoming_does_not_raise() -> None:
+    """Upcoming entries missing a 'label' key must not raise a KeyError."""
+    now = {"type": "music", "label": "X", "metadata": {"title": "X"}}
+    # missing-label dict, then empty list — both must be tolerated
+    sm1 = _segment_to_stream_metadata(now, [{}], {}, _BRAND, show_upcoming=True)
+    sm2 = _segment_to_stream_metadata(now, [], {}, _BRAND, show_upcoming=True)
+    assert sm1.title == "X"
+    assert sm2.title == "X"
+
+
+def test_segment_description_combines_upnext_and_casa() -> None:
+    """When both are present, description carries 'Up next' AND 'A casa' together."""
+    now = {"type": "music", "label": "X", "metadata": {"title": "X"}}
+    upcoming = [{"type": "banter", "label": "Chiacchiere"}]
+    ha = {"mood": "cena in famiglia"}
+    sm = _segment_to_stream_metadata(now, upcoming, ha, _BRAND, show_upcoming=True)
+    assert sm.description is not None
+    assert "Up next: Chiacchiere" in sm.description
+    assert "A casa: cena in famiglia" in sm.description
+
+
+def test_segment_description_casa_only_when_not_show_upcoming() -> None:
+    """On the 'Now' frame the HA line still renders even though 'Up next' is hidden."""
+    now = {"type": "music", "label": "X", "metadata": {"title": "X"}}
+    upcoming = [{"type": "banter", "label": "Chiacchiere"}]
+    ha = {"mood": "cena in famiglia"}
+    sm = _segment_to_stream_metadata(now, upcoming, ha, _BRAND, show_upcoming=False)
+    assert sm.description == "A casa: cena in famiglia"
+
+
+def test_segment_idle_suppresses_description() -> None:
+    """Stopped / skipping segments push no description to MA media surfaces."""
+    ha = {"mood": "cena in famiglia"}
+    for seg_type in ("stopped", "skipping"):
+        sm = _segment_to_stream_metadata(
+            {"type": seg_type}, [{"label": "Next"}], ha, _BRAND, show_upcoming=True
+        )
+        assert sm.description is None, seg_type
+
+
+# ---------------------------------------------------------------------------
+# Live typed-segment metadata — `_update_stream_metadata` callback (stateful)
+# ---------------------------------------------------------------------------
+
+
+async def _details_for(provider: MammamiradioProvider) -> Any:
+    """Resolve a StreamDetails object to drive the metadata callback against."""
+    return await provider.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
+
+
+async def test_callback_populates_stream_metadata_from_public_status(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """The callback polls /public-status and sets stream_metadata."""
+    details = await _details_for(provider)
+    payload = {
+        "now_streaming": {
+            "type": "music",
+            "label": "Volare",
+            "started": 100,
+            "metadata": {"title_only": "Volare", "artist": "Modugno"},
+        },
+        "upcoming": [],
+        "brand": _BRAND,
+    }
+    mass_mock.http_session.get = MagicMock(return_value=_make_json_ctx(payload))
+    await provider._update_stream_metadata(details, 0)
+    assert details.stream_metadata is not None
+    assert details.stream_metadata.title == "Volare"
+    assert details.stream_metadata.artist == "Modugno"
+    # The poll hits /public-status, not /stream or /healthz.
+    assert mass_mock.http_session.get.call_args.args[0].endswith("/public-status")
+
+
+async def test_callback_alternates_now_then_upnext(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """Call 1 shows 'Now'; call 2 flips to 'Up next'; a segment change resets to 'Now'."""
+    details = await _details_for(provider)
+    payload = {
+        "now_streaming": {"type": "music", "label": "A", "started": 1, "metadata": {"title": "A"}},
+        "upcoming": [{"type": "banter", "label": "Chiacchiere"}],
+        "brand": _BRAND,
+    }
+    mass_mock.http_session.get = MagicMock(return_value=_make_json_ctx(payload))
+
+    # Call 1 — first frame of the segment is the "Now" view, no "Up next".
+    await provider._update_stream_metadata(details, 0)
+    desc1 = details.stream_metadata.description
+    assert desc1 is None or "Up next:" not in desc1
+
+    # Call 2 — same segment, alternates to "Up next".
+    await provider._update_stream_metadata(details, 0)
+    assert "Up next: Chiacchiere" in details.stream_metadata.description
+
+    # Segment change — resets the alternation back to "Now".
+    payload2 = {
+        "now_streaming": {"type": "music", "label": "B", "started": 2, "metadata": {"title": "B"}},
+        "upcoming": [{"type": "banter", "label": "Chiacchiere"}],
+        "brand": _BRAND,
+    }
+    mass_mock.http_session.get = MagicMock(return_value=_make_json_ctx(payload2))
+    await provider._update_stream_metadata(details, 0)
+    desc3 = details.stream_metadata.description
+    assert desc3 is None or "Up next:" not in desc3
+
+
+async def test_callback_offline_public_status_leaves_prior_metadata(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A failing /public-status mid-stream must not raise and must not clobber metadata."""
+    details = await _details_for(provider)
+    good = {
+        "now_streaming": {"type": "music", "label": "A", "started": 1, "metadata": {"title": "A"}},
+        "upcoming": [],
+        "brand": _BRAND,
+    }
+    mass_mock.http_session.get = MagicMock(return_value=_make_json_ctx(good))
+    await provider._update_stream_metadata(details, 0)
+    prior = details.stream_metadata
+    assert prior is not None
+
+    # Now the addon goes unreachable — callback must swallow it.
+    mass_mock.http_session.get = MagicMock(
+        return_value=_make_failing_ctx(aiohttp.ClientConnectionError("nope"))
+    )
+    await provider._update_stream_metadata(details, 0)  # must not raise
+    assert details.stream_metadata is prior
+
+    # A 5xx is treated the same way.
+    mass_mock.http_session.get = MagicMock(return_value=_make_json_ctx({}, status=503))
+    await provider._update_stream_metadata(details, 0)  # must not raise
+    assert details.stream_metadata is prior
+
+
+async def test_callback_handles_stopped_session(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A stopped session yields an idle StreamMetadata with no description."""
+    details = await _details_for(provider)
+    payload = {"now_streaming": {"type": "stopped"}, "upcoming": [], "brand": _BRAND}
+    mass_mock.http_session.get = MagicMock(return_value=_make_json_ctx(payload))
+    await provider._update_stream_metadata(details, 0)
+    assert details.stream_metadata.title == "mammamiradio"
+    assert details.stream_metadata.description is None
+
+
+async def test_callback_handles_null_now_streaming(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A payload with now_streaming=null falls to the idle branch without raising."""
+    details = await _details_for(provider)
+    mass_mock.http_session.get = MagicMock(
+        return_value=_make_json_ctx({"now_streaming": None, "brand": _BRAND})
+    )
+    await provider._update_stream_metadata(details, 0)
+    assert details.stream_metadata.title == "mammamiradio"
+
+
+# ---------------------------------------------------------------------------
 # Live integration smoke (opt-in via MAMMAMIRADIO_LIVE_URL)
 # ---------------------------------------------------------------------------
 
@@ -366,7 +674,7 @@ async def test_live_stream_smoke() -> None:
         mass.http_session = session
         prov = _build_provider_with_url(mass, live_url)
 
-        # Init must not raise even if /healthz is missing.
+        # Init raises if /healthz is absent or unhealthy.
         await prov.handle_async_init()
         # Browse returns exactly one Radio entry.
         items = await prov.browse("mammamiradio://")
@@ -377,3 +685,7 @@ async def test_live_stream_smoke() -> None:
         assert isinstance(details.path, str)
         assert details.path.endswith("/stream")
         assert details.audio_format.content_type == ContentType.MP3
+        # The live-metadata callback fetches a real /public-status payload.
+        await prov._update_stream_metadata(details, 0)
+        assert details.stream_metadata is not None
+        assert details.stream_metadata.title
