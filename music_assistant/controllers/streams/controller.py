@@ -11,6 +11,7 @@ import asyncio
 import gc
 import logging
 import os
+import struct
 import time
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, cast
@@ -72,7 +73,6 @@ from music_assistant.controllers.streams.constants import (
 )
 from music_assistant.helpers.audio import (
     calculate_content_length,
-    create_wave_header,
     get_content_length,
     get_mime_type,
     store_content_length_in_cache,
@@ -101,15 +101,33 @@ if TYPE_CHECKING:
 isfile = wrap(os.path.isfile)
 
 
+def _streaming_wav_header(output_format: AudioFormat) -> bytes:
+    """Build a WAV header with open-ended (0xFFFFFFFF) RIFF/data sizes for live streams."""
+    channels = output_format.channels
+    sample_rate = output_format.sample_rate
+    bits_per_sample = output_format.bit_depth
+    byte_rate = sample_rate * channels * (bits_per_sample // 8)
+    block_align = channels * (bits_per_sample // 8)
+    # RIFF size & data size both set to 0xFFFFFFFF so clients honoring the WAV
+    # length fields don't cut the stream off (default header hardcodes ~6.7h).
+    return (
+        b"RIFF"
+        + struct.pack("<L", 0xFFFFFFFF)
+        + b"WAVE"
+        + b"fmt "
+        + struct.pack(
+            "<LHHLLHH", 16, 1, channels, sample_rate, byte_rate, block_align, bits_per_sample
+        )
+        + b"data"
+        + struct.pack("<L", 0xFFFFFFFF)
+    )
+
+
 async def _wav_passthrough_stream(
     audio_input: AsyncGenerator[bytes, None], output_format: AudioFormat
 ) -> AsyncGenerator[bytes, None]:
     """Yield a WAV header followed by raw PCM bytes from ``audio_input``."""
-    yield create_wave_header(
-        samplerate=output_format.sample_rate,
-        channels=output_format.channels,
-        bitspersample=output_format.bit_depth,
-    )
+    yield _streaming_wav_header(output_format)
     async for chunk in audio_input:
         yield chunk
 

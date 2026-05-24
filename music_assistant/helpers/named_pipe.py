@@ -140,6 +140,11 @@ async def read_named_pipe(
     loop = asyncio.get_running_loop()
     while True:
         fd = os.open(pipe_path, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            pipe_file = os.fdopen(fd, "rb", buffering=0)
+        except OSError:
+            os.close(fd)
+            raise
         # Small StreamReader limit so back-pressure kicks in quickly when the
         # producer writes faster than realtime (e.g. librespot's pipe backend
         # which is not natively rate-limited). asyncio's default is 64 KiB.
@@ -147,10 +152,14 @@ async def read_named_pipe(
         # without being so tight it risks dropping packets from realtime-paced
         # producers (shairport-sync etc.) under brief consumer-side jitter.
         reader = asyncio.StreamReader(limit=32768)
-        transport, _ = await loop.connect_read_pipe(
-            partial(asyncio.StreamReaderProtocol, reader),
-            os.fdopen(fd, "rb", buffering=0),
-        )
+        try:
+            transport, _ = await loop.connect_read_pipe(
+                partial(asyncio.StreamReaderProtocol, reader),
+                pipe_file,
+            )
+        except BaseException:
+            pipe_file.close()
+            raise
         try:
             while True:
                 data = await reader.read(chunk_size)
