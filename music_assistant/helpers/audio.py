@@ -344,7 +344,7 @@ async def realtime_pcm_pacer(
         async for chunk in inner:
             yield chunk
         return
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     start_time = loop.time()
     total_bytes = 0
     async for chunk in inner:
