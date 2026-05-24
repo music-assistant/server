@@ -57,6 +57,10 @@ class ScrobblerHelper:
 
         report: MediaItemPlaybackProgressReport = event.data
 
+        if report.media_type != "track":
+            self.logger.debug("skipped scrobbling for non-track item")
+            return
+
         # handle optional user_id filtering
         if self.config.mass_userids and report.userid not in self.config.mass_userids:
             self.logger.debug("skipped scrobbling for user %s due to user filter", report.userid)
