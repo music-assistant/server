@@ -491,9 +491,15 @@ class DeezerMediaManager:
         if result is None:
             raise MediaNotFoundError(f"Audiobook {prov_audiobook_id} not found on Deezer")
         item = parse_audiobook(self.provider, result)
-        all_edges = await fetch_all_audiobook_chapter_edges(
-            self.provider.gql_client, prov_audiobook_id
-        )
+        if result.chapters.page_info.has_next_page:
+            all_edges = await fetch_all_audiobook_chapter_edges(
+                self.provider.gql_client,
+                prov_audiobook_id,
+                initial_edges=result.chapters.edges,
+                initial_page_info=result.chapters.page_info,
+            )
+        else:
+            all_edges = result.chapters.edges
         item.metadata.chapters = parse_audiobook_chapters(all_edges)
         return item
 

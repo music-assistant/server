@@ -19,7 +19,10 @@ from music_assistant_models.media_items import (
 
 if TYPE_CHECKING:
     from deezer_python_gql import DeezerGQLClient
-    from deezer_python_gql.generated.get_audiobook import GetAudiobookAudiobookChaptersEdges
+    from deezer_python_gql.generated.get_audiobook import (
+        GetAudiobookAudiobookChaptersEdges,
+        GetAudiobookAudiobookChaptersPageInfo,
+    )
 
     from .provider import DeezerProvider
 
@@ -129,18 +132,27 @@ async def fetch_all_audiobook_chapter_edges(
     gql_client: DeezerGQLClient,
     audiobook_id: str,
     page_size: int = 200,
+    *,
+    initial_edges: list[GetAudiobookAudiobookChaptersEdges] | None = None,
+    initial_page_info: GetAudiobookAudiobookChaptersPageInfo | None = None,
 ) -> list[GetAudiobookAudiobookChaptersEdges]:
     """Paginate through all chapters of an audiobook and return the full edge list.
 
     :param gql_client: The Deezer GQL client to use.
     :param audiobook_id: The audiobook ID to fetch chapters for.
     :param page_size: Number of chapters per page.
+    :param initial_edges: Pre-fetched edges to avoid re-fetching the first page.
+    :param initial_page_info: Page info from the pre-fetched result.
     """
-    result = await gql_client.get_audiobook(audiobook_id=audiobook_id, chapters_first=page_size)
-    if result is None:
-        return []
-    all_edges = list(result.chapters.edges)
-    page_info = result.chapters.page_info
+    if initial_edges is not None and initial_page_info is not None:
+        all_edges = list(initial_edges)
+        page_info = initial_page_info
+    else:
+        result = await gql_client.get_audiobook(audiobook_id=audiobook_id, chapters_first=page_size)
+        if result is None:
+            return []
+        all_edges = list(result.chapters.edges)
+        page_info = result.chapters.page_info
     while page_info.has_next_page:
         next_page = await gql_client.get_audiobook(
             audiobook_id=audiobook_id,
