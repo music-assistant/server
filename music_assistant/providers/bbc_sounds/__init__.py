@@ -418,12 +418,12 @@ class BBCSoundsProvider(MusicProvider):
         """Get list of stations as Radios."""
         radio_list: list[Radio] = []
         for station in await self.client.stations.get_stations(include_local=include_local):
-            if station and station.item_id:
+            if station and station.id:
                 station_info = await self._station_programme_display(station=station)
                 description = station_info.title if station_info else None
                 radio_list.append(
                     Radio(
-                        item_id=station.item_id,
+                        item_id=station.id,
                         name=(
                             station.network.short_title
                             if station.network and station.network.short_title
@@ -449,7 +449,7 @@ class BBCSoundsProvider(MusicProvider):
                         ),
                         provider_mappings={
                             ProviderMapping(
-                                item_id=station.item_id,
+                                item_id=station.id,
                                 provider_domain=self.domain,
                                 provider_instance=self.instance_id,
                             )

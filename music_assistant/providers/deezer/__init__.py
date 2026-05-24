@@ -429,7 +429,7 @@ class DeezerProvider(MusicProvider):
             self.logger.warning("Failed getting track: %s", error)
             raise MediaNotFoundError(f"Album {prov_track_id} not found on Deezer") from error
 
-    @use_cache(3600 * 24 * 30)  # Cache for 30 days
+    @use_cache(3600 * 24 * 30, allow_expired_cache=True)  # Cache for 30 days
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all tracks in an album."""
         album = await self.client.get_album(album_id=int(prov_album_id))
@@ -494,13 +494,13 @@ class DeezerProvider(MusicProvider):
             for index, track in enumerate(tracks, 1)
         ]
 
-    @use_cache(3600 * 24 * 7)  # Cache for 7 days
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
         artist = await self.client.get_artist(artist_id=int(prov_artist_id))
         return [self.parse_album(album=album) async for album in await artist.get_albums()]
 
-    @use_cache(3600 * 24 * 7)  # Cache for 7 days
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get top 50 tracks of an artist."""
         artist = await self.client.get_artist(artist_id=int(prov_artist_id))
@@ -729,7 +729,7 @@ class DeezerProvider(MusicProvider):
         playlist = await self.client.get_playlist(playlist_id)
         return self.parse_playlist(playlist=playlist)
 
-    @use_cache(3600 * 24)  # Cache for 24 hours
+    @use_cache(3600 * 24, allow_expired_cache=True)  # Cache for 24 hours
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         endpoint = "song.getSearchTrackMix"

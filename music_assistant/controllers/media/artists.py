@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature
+from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature, ProviderType
 from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
@@ -25,10 +25,11 @@ from music_assistant.controllers.media.base import MediaControllerBase
 from music_assistant.helpers.compare import compare_artist, compare_strings, create_safe_string
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
-    from music_assistant.models.music_provider import MusicProvider
+    from music_assistant.models.metadata_provider import MetadataProvider
 
 
 class ArtistsController(MediaControllerBase[Artist]):
@@ -46,6 +47,50 @@ class ArtistsController(MediaControllerBase[Artist]):
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/artist_albums", self.albums)
         self.mass.register_api_command(f"music/{api_base}/artist_tracks", self.tracks)
+        self.mass.register_api_command(f"music/{api_base}/similar_artists", self.similar_artists)
+
+    async def similar_artists(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        limit: int = 25,
+    ) -> list[Artist]:
+        """
+        Get a list of similar artists for the given artist.
+
+        :param item_id: The item ID of the artist.
+        :param provider_instance_id_or_domain: The provider instance ID or domain.
+        :param limit: Maximum number of similar artists to return.
+        """
+        ref_item = await self.get(item_id, provider_instance_id_or_domain)
+        # Try music providers mapped to the reference artist first.
+        for prov_mapping in ref_item.provider_mappings:
+            prov = self.mass.get_provider(prov_mapping.provider_instance)
+            if prov is None or not prov.available:
+                continue
+            if not isinstance(prov, MusicProvider):
+                continue
+            if ProviderFeature.SIMILAR_ARTISTS not in prov.supported_features:
+                continue
+            try:
+                if result := await prov.get_similar_artists(
+                    prov_artist_id=prov_mapping.item_id, limit=limit
+                ):
+                    return result
+            except NotImplementedError:
+                continue
+        # Fallback: metadata providers.
+        for prov in self.mass.get_providers_supporting_feature(
+            ProviderFeature.SIMILAR_ARTISTS,
+            priority=(ProviderType.METADATA,),
+        ):
+            try:
+                metadata_prov = cast("MetadataProvider", prov)
+                if result := await metadata_prov.get_similar_artists(ref_item, limit=limit):
+                    return result
+            except NotImplementedError:
+                continue
+        return []
 
     async def library_count(
         self, favorite_only: bool = False, album_artists_only: bool = False
@@ -506,7 +551,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
-            if not provider.library_supported(MediaType.ARTIST):
+            if not self.mass.music.library_supported(provider, MediaType.ARTIST):
                 continue
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA

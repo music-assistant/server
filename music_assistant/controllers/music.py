@@ -29,6 +29,7 @@ from music_assistant_models.errors import (
     InvalidProviderURI,
     MediaNotFoundError,
     MusicAssistantError,
+    UnsupportedFeaturedException,
 )
 from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import (
@@ -49,6 +50,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
+    CONF_ENTRY_LIBRARY_SYNC_BACK,
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
@@ -87,6 +89,7 @@ from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import TaskManager, parse_optional_bool, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.plugin import PluginProvider
 
 from .media.albums import AlbumsController
 from .media.artists import ArtistsController
@@ -103,13 +106,16 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import Audiobook, PodcastEpisode
 
     from music_assistant import MusicAssistant
+    from music_assistant.models import ProviderInstanceType
+    from music_assistant.models.metadata_provider import MetadataProvider
+    from music_assistant.models.provider import Provider
 
 
 CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 39
+DB_SCHEMA_VERSION: Final[int] = 40
 
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
@@ -219,13 +225,25 @@ class MusicController(CoreController):
 
         Note that this applies user provider filters (for all user types).
         """
-        user = get_current_user()
-        user_provider_filter = user.provider_filter if user else None
         return [
             x
-            for x in self.mass.providers
+            for x in self._apply_user_provider_filter(self.mass.providers)
             if x.type == ProviderType.MUSIC
-            and (not user_provider_filter or x.instance_id in user_provider_filter)
+        ]
+
+    def _apply_user_provider_filter(
+        self,
+        providers: Iterable[ProviderInstanceType],
+    ) -> list[ProviderInstanceType]:
+        """Filter providers by the current user's music provider filter."""
+        user = get_current_user()
+        user_provider_filter = user.provider_filter if user else None
+        if not user_provider_filter:
+            return list(providers)
+        return [
+            p
+            for p in providers
+            if p.type != ProviderType.MUSIC or p.instance_id in user_provider_filter
         ]
 
     @api_command("music/sync")
@@ -250,7 +268,7 @@ class MusicController(CoreController):
             for provider in self.providers:
                 if provider.instance_id not in providers:
                     continue
-                if not provider.library_supported(media_type):
+                if not self.library_supported(provider, media_type):
                     continue
                 # handle mediatype specific sync config
                 conf_key = f"library_sync_{media_type}s"
@@ -551,11 +569,12 @@ class MusicController(CoreController):
     async def browse(self, path: str | None = None) -> Sequence[MediaItemType | BrowseFolder]:
         """Browse Music providers."""
         if not path or path == "root":
-            # root level; folder per provider
-            root_items: list[BrowseFolder] = []
-            for prov in self.providers:
-                if ProviderFeature.BROWSE not in prov.supported_features:
-                    continue
+            # root level; folder per provider that declares BROWSE
+            root_items: list[MediaItemType | BrowseFolder] = []
+            providers_with_browse = self.mass.get_providers_supporting_feature(
+                ProviderFeature.BROWSE
+            )
+            for prov in self._apply_user_provider_filter(providers_with_browse):
                 root_items.append(
                     BrowseFolder(
                         item_id="root",
@@ -565,6 +584,32 @@ class MusicController(CoreController):
                         name=prov.name,
                     )
                 )
+            # AudioSource providers surface at root like regular providers; a
+            # provider with a single user-initiable source is promoted to that
+            # source directly so it's playable in one tap.
+            audio_source_providers = self.mass.get_providers_supporting_feature(
+                ProviderFeature.AUDIO_SOURCE
+            )
+            for prov in self._apply_user_provider_filter(audio_source_providers):
+                if not isinstance(prov, PluginProvider):
+                    continue
+                initiable = [
+                    source for source in await prov.get_audio_sources() if source.can_initiate
+                ]
+                if not initiable:
+                    continue
+                if len(initiable) == 1:
+                    root_items.append(initiable[0])
+                else:
+                    root_items.append(
+                        BrowseFolder(
+                            item_id="root",
+                            provider=prov.domain,
+                            path=f"{prov.instance_id}://",
+                            uri=f"{prov.instance_id}://",
+                            name=prov.name,
+                        )
+                    )
             return root_items
 
         # provider level
@@ -588,6 +633,15 @@ class MusicController(CoreController):
                     name="..",
                 )
             )
+        # AudioSource providers don't implement browse(); list their initiable sources directly
+        if (
+            isinstance(prov, PluginProvider)
+            and ProviderFeature.AUDIO_SOURCE in prov.supported_features
+        ):
+            initiable: list[MediaItemType | BrowseFolder] = [
+                source for source in await prov.get_audio_sources() if source.can_initiate
+            ]
+            return [*prepend_items, *initiable]
         # limit -1 to account for the prepended items
         prov_items = await prov.browse(path=path)
         return prepend_items + prov_items
@@ -801,9 +855,10 @@ class MusicController(CoreController):
     @api_command("music/recommendations")
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get all recommendations."""
-        recommendation_providers = [
-            x for x in self.providers if ProviderFeature.RECOMMENDATIONS in x.supported_features
-        ]
+        providers_with_recommendations = self.mass.get_providers_supporting_feature(
+            ProviderFeature.RECOMMENDATIONS,
+        )
+        recommendation_providers = self._apply_user_provider_filter(providers_with_recommendations)
         results_per_provider: list[list[RecommendationFolder]] = await asyncio.gather(
             self._get_default_recommendations(),
             *[
@@ -840,6 +895,18 @@ class MusicController(CoreController):
                 provider=provider_instance_id_or_domain,
                 name=item_id,
             )
+        if media_type == MediaType.AUDIO_SOURCE:
+            # AudioSources are not library-backed; resolve them through the owning
+            # plugin provider's get_audio_sources() catalog. Returning the live
+            # MediaItem lets play_media create a queue item the standard way.
+            prov = self.mass.get_provider(provider_instance_id_or_domain)
+            if isinstance(prov, PluginProvider):
+                for source in await prov.get_audio_sources():
+                    if source.item_id == item_id:
+                        return source
+            raise MediaNotFoundError(
+                f"AudioSource {provider_instance_id_or_domain}/{item_id} not found"
+            )
         ctrl = self.get_controller(media_type)
         return await ctrl.get(
             item_id=item_id,
@@ -868,7 +935,21 @@ class MusicController(CoreController):
     ) -> None:
         """Add an item to the favorites."""
         if isinstance(item, str):
+            # Inspect the URI's media_type first so a stale audio-source URI
+            # whose plugin is unloaded gives the honest rejection error
+            # instead of bubbling MediaNotFoundError from get_item_by_uri.
+            try:
+                uri_media_type, _, _ = await parse_uri(item)
+            except (InvalidProviderURI, InvalidProviderID):
+                uri_media_type = None
+            if uri_media_type == MediaType.AUDIO_SOURCE:
+                raise UnsupportedFeaturedException("AudioSource items can not be favorites")
             item = await self.get_item_by_uri(item)
+        if item.media_type == MediaType.AUDIO_SOURCE:
+            # AudioSources are dynamic plugin surfaces (existence depends on a
+            # running plugin and its current device state) and have no stable
+            # library identity, so they can not be persisted as favorites.
+            raise UnsupportedFeaturedException("AudioSource items can not be favorites")
         # make sure we have a full library item
         # a favorite must always be in the library
         full_item = await self.get_item(
@@ -887,7 +968,9 @@ class MusicController(CoreController):
         # forward to provider(s) if needed
         for prov_mapping in full_item.provider_mappings:
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if not provider or not provider.library_favorites_edit_supported(full_item.media_type):
+            if not provider or not self.library_favorites_edit_supported(
+                provider, full_item.media_type
+            ):
                 continue
             await provider.set_favorite(prov_mapping.item_id, full_item.media_type, True)
 
@@ -907,7 +990,9 @@ class MusicController(CoreController):
         full_item = await ctrl.get_library_item(library_item_id)
         for prov_mapping in full_item.provider_mappings:
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if not provider or not provider.library_favorites_edit_supported(full_item.media_type):
+            if not provider or not self.library_favorites_edit_supported(
+                provider, full_item.media_type
+            ):
                 continue
             self.mass.create_task(provider.set_favorite(prov_mapping.item_id, media_type, False))
 
@@ -927,9 +1012,9 @@ class MusicController(CoreController):
             if not prov_mapping.in_library:
                 continue
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if not provider or not provider.library_edit_supported(full_item.media_type):
+            if not provider or not self.library_edit_supported(provider, full_item.media_type):
                 continue
-            if not provider.library_sync_back_enabled(full_item.media_type):
+            if not self.library_sync_back_enabled(provider, full_item.media_type):
                 continue
             prov_mapping.in_library = False
             self.mass.create_task(provider.library_remove(prov_mapping.item_id, media_type))
@@ -946,6 +1031,16 @@ class MusicController(CoreController):
             item = item.uri
         # ensure we have a full item
         if isinstance(item, str):
+            # Inspect the URI's media_type first so a stale audio-source URI
+            # whose plugin is unloaded gives the honest rejection error
+            # instead of bubbling MediaNotFoundError from get_item_by_uri.
+            # Mirrors the same guard in add_item_to_favorites.
+            try:
+                uri_media_type, _, _ = await parse_uri(item)
+            except (InvalidProviderURI, InvalidProviderID):
+                uri_media_type = None
+            if uri_media_type == MediaType.AUDIO_SOURCE:
+                raise UnsupportedFeaturedException("AudioSource items can not be library items")
             full_item = await self.get_item_by_uri(item)
         # For builtin provider (manual URLs), use the provided item directly
         # to preserve custom modifications (name, images, etc.)
@@ -958,6 +1053,11 @@ class MusicController(CoreController):
                 item.item_id,
                 item.provider,
             )
+        if full_item.media_type == MediaType.AUDIO_SOURCE:
+            # AudioSources are dynamic plugin surfaces (existence depends on a
+            # running plugin and its current device state) and have no stable
+            # library identity, so they can not be persisted as library items.
+            raise UnsupportedFeaturedException("AudioSource items can not be library items")
         # add to provider(s) library first
         for prov_mapping in full_item.provider_mappings:
             # we optimistically set in library to True to prevent items
@@ -965,9 +1065,9 @@ class MusicController(CoreController):
             # or 2-way sync is disabled.
             prov_mapping.in_library = True
             provider = self.mass.get_provider(prov_mapping.provider_instance)
-            if not provider or not provider.library_edit_supported(full_item.media_type):
+            if not provider or not self.library_edit_supported(provider, full_item.media_type):
                 continue
-            if not provider.library_sync_back_enabled(full_item.media_type):
+            if not self.library_sync_back_enabled(provider, full_item.media_type):
                 continue
             prov_item = deepcopy(full_item) if full_item.provider == "library" else full_item
             prov_item.provider = prov_mapping.provider_instance
@@ -1080,6 +1180,8 @@ class MusicController(CoreController):
                 for prov_mapping in album_track.provider_mappings:
                     if not (prov := self.mass.get_provider(prov_mapping.provider_instance)):
                         continue
+                    if not isinstance(prov, MusicProvider):
+                        continue
                     if prov.is_streaming_provider:
                         continue
                     with suppress(MediaNotFoundError):
@@ -1181,6 +1283,9 @@ class MusicController(CoreController):
             ):
                 continue
             if music_prov := self.mass.get_provider(prov_mapping.provider_instance):
+                if music_prov.type != ProviderType.MUSIC:
+                    continue
+                music_prov = cast("MusicProvider", music_prov)
                 self.mass.create_task(
                     music_prov.on_played(
                         media_type=media_item.media_type,
@@ -1195,8 +1300,10 @@ class MusicController(CoreController):
         # also update playcount in library table (if fully played)
         if not fully_played or is_playing:
             return
-        if not (ctrl := self.get_controller(media_item.media_type)):
-            # skip non media items (e.g. plugin source)
+        try:
+            ctrl = self.get_controller(media_item.media_type)
+        except NotImplementedError:
+            # skip non-library media types (e.g. AudioSource plugin sources)
             return
         db_item = await ctrl.get_library_item_by_prov_id(media_item.item_id, media_item.provider)
         if db_item:
@@ -1254,6 +1361,9 @@ class MusicController(CoreController):
             ):
                 continue
             if music_prov := self.mass.get_provider(prov_mapping.provider_instance):
+                if music_prov.type != ProviderType.MUSIC:
+                    continue
+                music_prov = cast("MusicProvider", music_prov)
                 self.mass.create_task(
                     music_prov.on_played(
                         media_type=media_item.media_type,
@@ -1605,7 +1715,7 @@ class MusicController(CoreController):
             return
         self.unschedule_provider_sync(provider.instance_id, clear_persisted_state=False)
         for media_type in MediaType:
-            if not provider.library_supported(media_type):
+            if not self.library_supported(provider, media_type):
                 continue
             await self._schedule_provider_mediatype_sync(provider, media_type, True)
 
@@ -1633,7 +1743,7 @@ class MusicController(CoreController):
             return task.schedule
         if not (provider := self.mass.get_provider(provider_instance_id)):
             return None
-        if not provider.library_supported(media_type):
+        if not self.library_supported(provider, media_type):
             return None
         return provider.get_default_library_sync_schedule(media_type)
 
@@ -1648,6 +1758,8 @@ class MusicController(CoreController):
                 # unique mapping, no need to map
                 continue
             if not (provider := self.mass.get_provider(provider_mapping.provider_instance)):
+                continue
+            if not isinstance(provider, MusicProvider):
                 continue
             if not provider.is_streaming_provider:
                 continue
@@ -1818,7 +1930,7 @@ class MusicController(CoreController):
         ]
 
     async def _get_provider_recommendations(
-        self, provider: MusicProvider
+        self, provider: MusicProvider | MetadataProvider | PluginProvider
     ) -> list[RecommendationFolder]:
         """Return recommendations from a provider."""
         try:
@@ -2666,6 +2778,17 @@ class MusicController(CoreController):
             )
             await self._database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_LOUDNESS_MEASUREMENTS}")
 
+        if prev_version <= 39:
+            # add is_manual column to genre_media_item_mapping
+            try:
+                await self._database.execute(
+                    f"ALTER TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+                    "ADD COLUMN [is_manual] BOOLEAN NOT NULL DEFAULT 0;"
+                )
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
+
         # save changes
         await self._database.commit()
 
@@ -2871,6 +2994,7 @@ class MusicController(CoreController):
             [media_type] TEXT NOT NULL,
             [alias] TEXT,
             [is_derived] BOOLEAN NOT NULL DEFAULT 0,
+            [is_manual] BOOLEAN NOT NULL DEFAULT 0,
             FOREIGN KEY([genre_id]) REFERENCES [genres]([item_id]),
             UNIQUE(genre_id, media_id, media_type)
             );"""
@@ -3141,3 +3265,70 @@ class MusicController(CoreController):
                 elif mapping_or_instance_id.provider_instance in user.provider_filter:
                     return user
         return None
+
+    def library_supported(self, provider: Provider, media_type: MediaType) -> bool:
+        """Return whether the provider declares LIBRARY support for the given media type."""
+        if provider.type != ProviderType.MUSIC:
+            return False
+        if media_type == MediaType.ARTIST:
+            return provider.supports_feature(ProviderFeature.LIBRARY_ARTISTS)
+        if media_type == MediaType.ALBUM:
+            return provider.supports_feature(ProviderFeature.LIBRARY_ALBUMS)
+        if media_type == MediaType.TRACK:
+            return provider.supports_feature(ProviderFeature.LIBRARY_TRACKS)
+        if media_type == MediaType.PLAYLIST:
+            return provider.supports_feature(ProviderFeature.LIBRARY_PLAYLISTS)
+        if media_type == MediaType.RADIO:
+            return provider.supports_feature(ProviderFeature.LIBRARY_RADIOS)
+        if media_type == MediaType.AUDIOBOOK:
+            return provider.supports_feature(ProviderFeature.LIBRARY_AUDIOBOOKS)
+        if media_type == MediaType.PODCAST:
+            return provider.supports_feature(ProviderFeature.LIBRARY_PODCASTS)
+        return False
+
+    def library_edit_supported(self, provider: Provider, media_type: MediaType) -> bool:
+        """Return whether the provider supports library add/remove for the given media type."""
+        if provider.type != ProviderType.MUSIC:
+            return False
+        if media_type == MediaType.ARTIST:
+            return provider.supports_feature(ProviderFeature.LIBRARY_ARTISTS_EDIT)
+        if media_type == MediaType.ALBUM:
+            return provider.supports_feature(ProviderFeature.LIBRARY_ALBUMS_EDIT)
+        if media_type == MediaType.TRACK:
+            return provider.supports_feature(ProviderFeature.LIBRARY_TRACKS_EDIT)
+        if media_type == MediaType.PLAYLIST:
+            return provider.supports_feature(ProviderFeature.LIBRARY_PLAYLISTS_EDIT)
+        if media_type == MediaType.RADIO:
+            return provider.supports_feature(ProviderFeature.LIBRARY_RADIOS_EDIT)
+        if media_type == MediaType.AUDIOBOOK:
+            return provider.supports_feature(ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT)
+        if media_type == MediaType.PODCAST:
+            return provider.supports_feature(ProviderFeature.LIBRARY_PODCASTS_EDIT)
+        return False
+
+    def library_favorites_edit_supported(self, provider: Provider, media_type: MediaType) -> bool:
+        """Return whether the provider supports favorites add/remove for the given media type."""
+        if provider.type != ProviderType.MUSIC:
+            return False
+        if media_type == MediaType.ARTIST:
+            return provider.supports_feature(ProviderFeature.FAVORITE_ARTISTS_EDIT)
+        if media_type == MediaType.ALBUM:
+            return provider.supports_feature(ProviderFeature.FAVORITE_ALBUMS_EDIT)
+        if media_type == MediaType.TRACK:
+            return provider.supports_feature(ProviderFeature.FAVORITE_TRACKS_EDIT)
+        if media_type == MediaType.PLAYLIST:
+            return provider.supports_feature(ProviderFeature.FAVORITE_PLAYLISTS_EDIT)
+        if media_type == MediaType.RADIO:
+            return provider.supports_feature(ProviderFeature.FAVORITE_RADIOS_EDIT)
+        if media_type == MediaType.AUDIOBOOK:
+            return provider.supports_feature(ProviderFeature.FAVORITE_AUDIOBOOKS_EDIT)
+        if media_type == MediaType.PODCAST:
+            return provider.supports_feature(ProviderFeature.FAVORITE_PODCASTS_EDIT)
+        return False
+
+    def library_sync_back_enabled(self, provider: Provider, media_type: MediaType) -> bool:
+        """Return whether library sync back is enabled for the provider+media_type."""
+        conf_value = provider.config.get_value(
+            CONF_ENTRY_LIBRARY_SYNC_BACK.key, CONF_ENTRY_LIBRARY_SYNC_BACK.default_value
+        )
+        return bool(conf_value)

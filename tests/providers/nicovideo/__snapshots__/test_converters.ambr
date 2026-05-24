@@ -4,6 +4,7 @@
     'album_type': 'unknown',
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -15,6 +16,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -74,6 +76,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -134,6 +137,7 @@
       'album_type': 'unknown',
       'artists': list([
         dict({
+          'artist_type': 'singer',
           'date_added': None,
           'external_ids': list([
           ]),
@@ -145,6 +149,7 @@
             'chapters': None,
             'copyright': None,
             'description': None,
+            'description_language': None,
             'explicit': None,
             'genres': None,
             'grouping': None,
@@ -204,6 +209,7 @@
         'chapters': None,
         'copyright': None,
         'description': 'This is a dummy description for testing purposes.',
+        'description_language': None,
         'explicit': None,
         'genres': None,
         'grouping': None,
@@ -262,6 +268,7 @@
         'album': None,
         'artists': list([
           dict({
+            'artist_type': 'singer',
             'date_added': None,
             'external_ids': list([
             ]),
@@ -273,6 +280,7 @@
               'chapters': None,
               'copyright': None,
               'description': None,
+              'description_language': None,
               'explicit': None,
               'genres': None,
               'grouping': None,
@@ -280,6 +288,7 @@
                 dict({
                   'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
                   'provider': 'nicovideo_test',
+                  'proxy_id': None,
                   'remotely_accessible': True,
                   'type': 'thumb',
                 }),
@@ -347,6 +356,7 @@
           'chapters': None,
           'copyright': None,
           'description': 'This is a dummy description for testing purposes.',
+          'description_language': None,
           'explicit': False,
           'genres': None,
           'grouping': None,
@@ -354,12 +364,14 @@
             dict({
               'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
               'provider': 'nicovideo_test',
+              'proxy_id': None,
               'remotely_accessible': True,
               'type': 'thumb',
             }),
             dict({
               'path': 'https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006.L',
               'provider': 'nicovideo_test',
+              'proxy_id': None,
               'remotely_accessible': True,
               'type': 'thumb',
             }),
@@ -421,6 +433,7 @@
     'album_type': 'unknown',
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -432,6 +445,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -491,6 +505,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -547,6 +562,7 @@
 # ---
 # name: test_converter_with_fixture[artists/following_users.json]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
     ]),
@@ -558,6 +574,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -565,6 +582,7 @@
         dict({
           'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
           'provider': 'nicovideo_test',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -620,6 +638,7 @@
 # ---
 # name: test_converter_with_fixture[artists/user_details.json]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
     ]),
@@ -631,6 +650,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -638,6 +658,7 @@
         dict({
           'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
           'provider': 'nicovideo_test',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -696,6 +717,7 @@
     'album': None,
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -707,6 +729,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -714,6 +737,7 @@
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
               'provider': 'nicovideo_test',
+              'proxy_id': None,
               'remotely_accessible': True,
               'type': 'thumb',
             }),
@@ -781,6 +805,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': False,
       'genres': None,
       'grouping': None,
@@ -788,12 +813,14 @@
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
           'provider': 'nicovideo_test',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
         dict({
           'path': 'https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006.L',
           'provider': 'nicovideo_test',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -853,6 +880,7 @@
     'album': None,
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -864,6 +892,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -871,6 +900,7 @@
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
               'provider': 'nicovideo_test',
+              'proxy_id': None,
               'remotely_accessible': True,
               'type': 'thumb',
             }),
@@ -938,6 +968,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': False,
       'genres': None,
       'grouping': None,
@@ -945,12 +976,14 @@
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
           'provider': 'nicovideo_test',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
         dict({
           'path': 'https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006.L',
           'provider': 'nicovideo_test',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -1020,6 +1053,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1027,6 +1061,7 @@
         dict({
           'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
           'provider': 'nicovideo_test',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -1099,6 +1134,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1106,6 +1142,7 @@
         dict({
           'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
           'provider': 'nicovideo_test',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -1179,6 +1216,7 @@
         'chapters': None,
         'copyright': None,
         'description': 'This is a dummy description for testing purposes.',
+        'description_language': None,
         'explicit': None,
         'genres': None,
         'grouping': None,
@@ -1186,6 +1224,7 @@
           dict({
             'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
             'provider': 'nicovideo_test',
+            'proxy_id': None,
             'remotely_accessible': True,
             'type': 'thumb',
           }),
@@ -1247,6 +1286,7 @@
         'album': None,
         'artists': list([
           dict({
+            'artist_type': 'singer',
             'date_added': None,
             'external_ids': list([
             ]),
@@ -1258,6 +1298,7 @@
               'chapters': None,
               'copyright': None,
               'description': None,
+              'description_language': None,
               'explicit': None,
               'genres': None,
               'grouping': None,
@@ -1265,6 +1306,7 @@
                 dict({
                   'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
                   'provider': 'nicovideo_test',
+                  'proxy_id': None,
                   'remotely_accessible': True,
                   'type': 'thumb',
                 }),
@@ -1332,6 +1374,7 @@
           'chapters': None,
           'copyright': None,
           'description': 'This is a dummy description for testing purposes.',
+          'description_language': None,
           'explicit': False,
           'genres': None,
           'grouping': None,
@@ -1339,12 +1382,14 @@
             dict({
               'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
               'provider': 'nicovideo_test',
+              'proxy_id': None,
               'remotely_accessible': True,
               'type': 'thumb',
             }),
             dict({
               'path': 'https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006.L',
               'provider': 'nicovideo_test',
+              'proxy_id': None,
               'remotely_accessible': True,
               'type': 'thumb',
             }),
@@ -1416,6 +1461,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1423,6 +1469,7 @@
         dict({
           'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
           'provider': 'nicovideo_test',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -1485,6 +1532,7 @@
     'album_type': 'unknown',
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -1496,6 +1544,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -1555,6 +1604,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1614,6 +1664,7 @@
     'album': None,
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -1625,6 +1676,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -1632,6 +1684,7 @@
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
               'provider': 'nicovideo_test',
+              'proxy_id': None,
               'remotely_accessible': True,
               'type': 'thumb',
             }),
@@ -1699,6 +1752,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': False,
       'genres': None,
       'grouping': None,
@@ -1706,12 +1760,14 @@
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
           'provider': 'nicovideo_test',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
         dict({
           'path': 'https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006.L',
           'provider': 'nicovideo_test',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -1771,6 +1827,7 @@
     'album': None,
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -1782,6 +1839,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -1789,6 +1847,7 @@
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
               'provider': 'nicovideo_test',
+              'proxy_id': None,
               'remotely_accessible': True,
               'type': 'thumb',
             }),
@@ -1856,6 +1915,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': False,
       'genres': None,
       'grouping': None,
@@ -1863,12 +1923,14 @@
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
           'provider': 'nicovideo_test',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
         dict({
           'path': 'https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006.L',
           'provider': 'nicovideo_test',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -1966,6 +2028,7 @@
     'album': None,
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -1977,6 +2040,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -1984,6 +2048,7 @@
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
               'provider': 'nicovideo_test',
+              'proxy_id': None,
               'remotely_accessible': True,
               'type': 'thumb',
             }),
@@ -2051,6 +2116,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': False,
       'genres': None,
       'grouping': None,
@@ -2058,12 +2124,14 @@
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
           'provider': 'nicovideo_test',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
         dict({
           'path': 'https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006.L',
           'provider': 'nicovideo_test',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -2123,6 +2191,7 @@
     'album': None,
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -2134,6 +2203,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -2141,6 +2211,7 @@
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
               'provider': 'nicovideo_test',
+              'proxy_id': None,
               'remotely_accessible': True,
               'type': 'thumb',
             }),
@@ -2208,6 +2279,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': False,
       'genres': None,
       'grouping': None,
@@ -2215,12 +2287,14 @@
         dict({
           'path': 'https://img.cdn.nimg.jp/s/nicovideo/thumbnails/45285955/45285955.27227006.original/r640x360l?key=7098d92a9c12d0b14101a4c3c8297e04c6e7a59eb59ffe9e71c88fa0181b0cb5',
           'provider': 'nicovideo_test',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
         dict({
           'path': 'https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006.L',
           'provider': 'nicovideo_test',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -2281,6 +2355,7 @@
       'album_type': 'unknown',
       'artists': list([
         dict({
+          'artist_type': 'singer',
           'date_added': None,
           'external_ids': list([
           ]),
@@ -2292,6 +2367,7 @@
             'chapters': None,
             'copyright': None,
             'description': None,
+            'description_language': None,
             'explicit': None,
             'genres': None,
             'grouping': None,
@@ -2299,6 +2375,7 @@
               dict({
                 'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
                 'provider': 'nicovideo_test',
+                'proxy_id': None,
                 'remotely_accessible': True,
                 'type': 'thumb',
               }),
@@ -2363,6 +2440,7 @@
         'chapters': None,
         'copyright': None,
         'description': 'This is a dummy description for testing purposes.',
+        'description_language': None,
         'explicit': None,
         'genres': None,
         'grouping': None,
@@ -2418,6 +2496,7 @@
     }),
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -2429,6 +2508,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -2436,6 +2516,7 @@
             dict({
               'path': 'https://secure-dcdn.cdn.nimg.jp/nicoaccount/usericon/defaults/blank.jpg',
               'provider': 'nicovideo_test',
+              'proxy_id': None,
               'remotely_accessible': True,
               'type': 'thumb',
             }),
@@ -2503,6 +2584,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'This is a dummy description for testing purposes.',
+      'description_language': None,
       'explicit': None,
       'genres': list([
         'APIテストタグ68461151-45285955',
@@ -2514,18 +2596,21 @@
         dict({
           'path': 'https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006',
           'provider': 'nicovideo_test',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
         dict({
           'path': 'https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006.L',
           'provider': 'nicovideo_test',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
         dict({
           'path': 'https://nicovideo.cdn.nimg.jp/thumbnails/45285955/45285955.27227006.M',
           'provider': 'nicovideo_test',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),

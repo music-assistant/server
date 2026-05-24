@@ -58,7 +58,6 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player_provider import PlayerProvider
-from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -432,18 +431,39 @@ class MusicAssistant:
             and (return_unavailable or prov.available)
         ]
 
-    def get_plugins_by_feature(self, feature: ProviderFeature) -> list[PluginProvider]:
-        """Return all available PluginProvider instances that support the given feature."""
-        return cast(
-            "list[PluginProvider]",
-            [
-                prov
-                for prov in list(self._providers.values())
-                if prov.available
-                and isinstance(prov, PluginProvider)
-                and feature in prov.supported_features
-            ],
-        )
+    def get_providers_supporting_feature(
+        self,
+        feature: ProviderFeature,
+        priority: tuple[ProviderType, ...] = (
+            ProviderType.MUSIC,
+            ProviderType.METADATA,
+            ProviderType.PLUGIN,
+        ),
+    ) -> list[ProviderInstanceType]:
+        """
+        Return all available providers that support the given feature.
+
+        Results are grouped by provider type in the order given by ``priority``,
+        and sorted within each tier by the provider's ``priority`` attribute
+        (lower value = higher priority).
+
+        :param feature: The ProviderFeature to query for.
+        :param priority: Ordered tuple of ProviderType values indicating tier order.
+            Types omitted from this tuple are excluded from the results.
+        """
+        by_tier: dict[ProviderType, list[ProviderInstanceType]] = {ptype: [] for ptype in priority}
+        for prov in self.get_providers():
+            if not prov.available:
+                continue
+            if prov.type not in by_tier:
+                continue
+            if feature not in prov.supported_features:
+                continue
+            by_tier[prov.type].append(prov)
+        result: list[ProviderInstanceType] = []
+        for ptype in priority:
+            result.extend(sorted(by_tier[ptype], key=lambda p: getattr(p, "priority", 50)))
+        return result
 
     def signal_event(
         self,
@@ -528,6 +548,9 @@ class MusicAssistant:
             if abort_existing:
                 existing.cancel()
             else:
+                # close any already-constructed coroutine to avoid "never awaited" warning
+                if inspect.iscoroutine(target):
+                    target.close()
                 return existing
         self.verify_event_loop_thread("create_task")
 
@@ -807,6 +830,7 @@ class MusicAssistant:
             self.player_queues,
             self.webserver,
             self.webserver.auth,
+            self.streams.audio_analysis,
         ):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):

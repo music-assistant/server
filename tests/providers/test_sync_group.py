@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import inspect
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature
 from music_assistant_models.player import OutputProtocol
 
+from music_assistant.constants import CONF_PLAYERS
 from music_assistant.providers.sync_group.player import SyncGroupPlayer
 
 
@@ -87,6 +89,11 @@ def _make_mock_player(
     player.state.can_group_with = set()
     player.state.group_members = []
     player.state.supported_features = {PlayerFeature.SET_MEMBERS}
+    # default to "not synced" so the syncgroup form path doesn't enter the
+    # stale-state wait loop. Tests that want to assert on the stale-state
+    # behavior can override this explicitly.
+    player.state.synced_to = None
+    player.synced_to = None
     player.set_members = AsyncMock()
 
     return player
@@ -538,3 +545,624 @@ class TestSetMembersDoesNotRegisterIncompatible:
         assert "member" in sgp._attr_group_members
         # but _handle_set_members on the leader is not called (no leader yet)
         mass.players._handle_set_members.assert_not_awaited()
+
+
+def _make_sync_group_with_filters(
+    mass: MagicMock,
+    allowed_members: list[str] | None = None,
+) -> SyncGroupPlayer:
+    """Create a SyncGroupPlayer where the allowed_members filter can be configured."""
+    provider = MagicMock()
+    provider.domain = "sync_group"
+    provider.instance_id = "sync_group_test"
+    provider.name = "Sync Group"
+    provider.mass = mass
+
+    def _config_get_value(key: str, default: object = None) -> object:
+        if key == "dynamic_members":
+            return True
+        if key == "allowed_members":
+            return allowed_members or []
+        return default
+
+    mass.config.get_base_player_config.return_value = MagicMock(
+        name=None, default_name="Test Group", get_value=_config_get_value
+    )
+
+    sgp = SyncGroupPlayer(provider, "syncgroup_test")
+    sgp._cache.clear()
+    return sgp
+
+
+class TestPlayerFilters:
+    """Test the allowed_members filter semantics."""
+
+    def test_no_filter_allows_anything(self) -> None:
+        """Empty filter: any player is allowed."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group_with_filters(mass)
+        assert sgp._is_member_allowed("p1") is True
+
+    def test_allowed_members_restricts_to_listed(self) -> None:
+        """allowed_members populated: only listed IDs pass."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group_with_filters(mass, allowed_members=["p1"])
+        assert sgp._is_member_allowed("p1") is True
+        assert sgp._is_member_allowed("p2") is False
+
+    @pytest.mark.asyncio
+    async def test_set_members_rejects_filtered_player(self) -> None:
+        """set_members must skip a candidate that fails the filter."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group_with_filters(mass, allowed_members=["allowed"])
+
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        leader.state.can_group_with = {"allowed", "blocked"}
+        allowed = _make_mock_player("allowed", provider_domain="sonos")
+        blocked = _make_mock_player("blocked", provider_domain="sonos")
+
+        mass.players.get_player = _player_lookup(
+            {"leader": leader, "allowed": allowed, "blocked": blocked}
+        )
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader"]
+
+        await sgp.set_members(player_ids_to_add=["allowed", "blocked"])
+
+        assert "allowed" in sgp._attr_group_members
+        assert "blocked" not in sgp._attr_group_members
+
+    def test_can_group_with_current_members_exempt_from_filter(self) -> None:
+        """A current member not listed in allowed_members must still seed candidates.
+
+        Regression: filter must constrain JOINERS only, not gate the seed of
+        current members. Otherwise enabling a filter that doesn't list a current
+        member makes the candidate set empty (no joinable players show up).
+        """
+        mass = _make_mock_mass()
+        # current member is "leader", but the allow-list only lists "candidate".
+        sgp = _make_sync_group_with_filters(mass, allowed_members=["candidate"])
+
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        leader.state.can_group_with = {"candidate", "outsider"}
+
+        candidate = _make_mock_player("candidate", provider_domain="sonos")
+        outsider = _make_mock_player("outsider", provider_domain="sonos")
+
+        mass.players.get_player = _player_lookup(
+            {"leader": leader, "candidate": candidate, "outsider": outsider}
+        )
+        sgp._attr_group_members = ["leader"]
+
+        result = sgp.can_group_with
+        # The current member (leader) is exempt and stays in the set.
+        assert "leader" in result
+        # An allowed candidate passes the filter.
+        assert "candidate" in result
+        # A player not in the allow-list is rejected.
+        assert "outsider" not in result
+
+
+class TestPresetMembersInDynamicGroup:
+    """In a dynamic group, configured members act as a preset, not as a lock."""
+
+    def _make_dynamic_group_with_preset(
+        self, mass: MagicMock, preset_members: list[str]
+    ) -> SyncGroupPlayer:
+        """Create a dynamic sync group whose CONF_GROUP_MEMBERS is the given preset."""
+        provider = MagicMock()
+        provider.domain = "sync_group"
+        provider.instance_id = "sync_group_test"
+        provider.name = "Sync Group"
+        provider.mass = mass
+
+        def _config_get_value(key: str, default: object = None) -> object:
+            if key == "dynamic_members":
+                return True
+            if key == "group_members":
+                return list(preset_members)
+            return default
+
+        mass.config.get_base_player_config.return_value = MagicMock(
+            name=None, default_name="Test Group", get_value=_config_get_value
+        )
+        sgp = SyncGroupPlayer(provider, "syncgroup_test")
+        sgp._cache.clear()
+        return sgp
+
+    @pytest.mark.asyncio
+    async def test_preset_member_can_be_unjoined(self) -> None:
+        """A preset member in a dynamic group can be unjoined for the session."""
+        mass = _make_mock_mass()
+        sgp = self._make_dynamic_group_with_preset(mass, ["leader", "preset_b"])
+        # Re-trigger on_config_updated so the new config is applied.
+        await sgp.on_config_updated()
+
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        leader.state.can_group_with = {"preset_b"}
+        preset_b = _make_mock_player("preset_b", provider_domain="sonos")
+        mass.players.get_player = _player_lookup({"leader": leader, "preset_b": preset_b})
+        sgp.sync_leader = leader
+
+        await sgp.set_members(player_ids_to_remove=["preset_b"])
+
+        assert "preset_b" not in sgp._attr_group_members
+
+    @pytest.mark.asyncio
+    async def test_static_group_members_empty_in_dynamic_mode(self) -> None:
+        """In dynamic mode static_group_members is empty (frontend gating)."""
+        mass = _make_mock_mass()
+        sgp = self._make_dynamic_group_with_preset(mass, ["a", "b", "c"])
+        await sgp.on_config_updated()
+        assert sgp._attr_static_group_members == []
+        # but the configured members are seeded into group_members
+        assert set(sgp._attr_group_members) == {"a", "b", "c"}
+
+    @pytest.mark.asyncio
+    async def test_power_on_re_applies_preset_members(self) -> None:
+        """Powering on re-applies the configured preset, restoring any previously unjoined member."""
+        mass = _make_mock_mass()
+        sgp = self._make_dynamic_group_with_preset(mass, ["leader", "preset_b"])
+        await sgp.on_config_updated()
+
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        preset_b = _make_mock_player("preset_b", provider_domain="sonos")
+        mass.players.get_player = _player_lookup({"leader": leader, "preset_b": preset_b})
+        sgp._attr_group_members = ["leader"]  # preset_b was unjoined in a previous session
+
+        with patch.object(sgp, "update_state"):
+            await sgp.power(True)
+
+        assert "preset_b" in sgp._attr_group_members
+
+    @pytest.mark.asyncio
+    async def test_form_syncgroup_does_not_re_add_unjoined_preset(self) -> None:
+        """Mid-session unjoins must stick: _form_syncgroup must NOT re-add preset members."""
+        mass = _make_mock_mass()
+        sgp = self._make_dynamic_group_with_preset(mass, ["leader", "preset_b"])
+        await sgp.on_config_updated()
+
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        leader.state.group_members = ["leader"]
+        preset_b = _make_mock_player("preset_b", provider_domain="sonos")
+        mass.players.get_player = _player_lookup({"leader": leader, "preset_b": preset_b})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader"]  # preset_b was unjoined during this session
+
+        with (
+            patch.object(sgp, "update_state"),
+            patch.object(sgp, "_translate_to_parent_ids", side_effect=lambda x: list(x)),
+        ):
+            await sgp._form_syncgroup()
+
+        assert "preset_b" not in sgp._attr_group_members
+
+    def test_preset_member_bypasses_allow_list_filter(self) -> None:
+        """A preset member that was unjoined must still pass the allow-list filter.
+
+        Regression: after unjoining a preset member, the user must be able to
+        re-add it via the OSD even when allowed_members doesn't list it.
+        """
+        mass = _make_mock_mass()
+        provider = MagicMock()
+        provider.domain = "sync_group"
+        provider.instance_id = "sync_group_test"
+        provider.name = "Sync Group"
+        provider.mass = mass
+
+        def _config_get_value(key: str, default: object = None) -> object:
+            if key == "dynamic_members":
+                return True
+            if key == "group_members":
+                return ["preset_a", "preset_b"]
+            if key == "allowed_members":
+                return ["other"]
+            return default
+
+        mass.config.get_base_player_config.return_value = MagicMock(
+            name=None, default_name="Test Group", get_value=_config_get_value
+        )
+        sgp = SyncGroupPlayer(provider, "syncgroup_test")
+        sgp._cache.clear()
+
+        # preset members bypass the allow-list filter
+        assert sgp._is_member_allowed("preset_a") is True
+        assert sgp._is_member_allowed("preset_b") is True
+        # the explicit allow-list entry still passes
+        assert sgp._is_member_allowed("other") is True
+        # an unrelated player is rejected
+        assert sgp._is_member_allowed("outsider") is False
+
+
+class TestMembersFilterMigration:
+    """Test the members_filter (exclusion) -> allowed_members (inclusion) migration."""
+
+    def _run_migrate(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Run the migration block against a copy of the provided data dict."""
+        all_player_configs = data.get(CONF_PLAYERS, {})
+        if isinstance(all_player_configs, dict):
+            group_provider_domains = {"sync_group", "universal_group"}
+            universe = {
+                pid
+                for pid, cfg in all_player_configs.items()
+                if isinstance(cfg, dict) and cfg.get("provider") not in group_provider_domains
+            }
+            for player_cfg in all_player_configs.values():
+                if not isinstance(player_cfg, dict):
+                    continue
+                if player_cfg.get("provider") != "sync_group":
+                    continue
+                values = player_cfg.setdefault("values", {})
+                old_exclude = values.get("members_filter") or []
+                if not old_exclude or values.get("allowed_members") is not None:
+                    continue
+                values["allowed_members"] = sorted(universe - set(old_exclude))
+                values["members_filter"] = []
+        return data
+
+    def test_inverts_exclusion_to_inclusion(self) -> None:
+        """An exclusion list of [X] becomes an inclusion list of universe - {X}."""
+        data = {
+            CONF_PLAYERS: {
+                "a": {"provider": "sonos", "player_id": "a"},
+                "b": {"provider": "airplay", "player_id": "b"},
+                "c": {"provider": "chromecast", "player_id": "c"},
+                "syncgroup_1": {
+                    "provider": "sync_group",
+                    "player_id": "syncgroup_1",
+                    "values": {"members_filter": ["b"]},
+                },
+            }
+        }
+        out = self._run_migrate(data)
+        sg = out[CONF_PLAYERS]["syncgroup_1"]["values"]
+        assert sg["allowed_members"] == ["a", "c"]
+        assert sg["members_filter"] == []
+
+    def test_idempotent_when_already_migrated(self) -> None:
+        """Re-running migration on already-migrated config is a no-op."""
+        data = {
+            CONF_PLAYERS: {
+                "a": {"provider": "sonos", "player_id": "a"},
+                "syncgroup_1": {
+                    "provider": "sync_group",
+                    "player_id": "syncgroup_1",
+                    "values": {"allowed_members": ["a"], "members_filter": []},
+                },
+            }
+        }
+        out = self._run_migrate(data)
+        sg = out[CONF_PLAYERS]["syncgroup_1"]["values"]
+        assert sg["allowed_members"] == ["a"]
+        assert sg["members_filter"] == []
+
+    def test_skips_when_no_exclusion_list(self) -> None:
+        """A sync_group without a members_filter is left untouched."""
+        data = {
+            CONF_PLAYERS: {
+                "syncgroup_1": {
+                    "provider": "sync_group",
+                    "player_id": "syncgroup_1",
+                    "values": {},
+                },
+            }
+        }
+        out = self._run_migrate(data)
+        sg = out[CONF_PLAYERS]["syncgroup_1"]["values"]
+        assert "allowed_members" not in sg
+
+    def test_excludes_group_providers_from_universe(self) -> None:
+        """Group-providing players (sync_group/universal_group) are not in the universe."""
+        data = {
+            CONF_PLAYERS: {
+                "a": {"provider": "sonos", "player_id": "a"},
+                "ug": {"provider": "universal_group", "player_id": "ug"},
+                "sg": {"provider": "sync_group", "player_id": "sg"},
+                "syncgroup_1": {
+                    "provider": "sync_group",
+                    "player_id": "syncgroup_1",
+                    "values": {"members_filter": ["a"]},
+                },
+            }
+        }
+        out = self._run_migrate(data)
+        sg = out[CONF_PLAYERS]["syncgroup_1"]["values"]
+        # Universe = {a} (sg/ug/syncgroup_1 are group providers excluded).
+        # Inversion removes a, so allowed_members is empty.
+        assert sg["allowed_members"] == []
+
+
+class TestIsActiveSession:
+    """The is_active_session property gates whether children report active_group."""
+
+    def test_dormant_group_is_not_active(self) -> None:
+        """A freshly-initialized group has no leader and no grace timer."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        assert sgp.is_active_session is False
+
+    def test_group_with_sync_leader_is_active(self) -> None:
+        """A group with a sync leader is considered active even without playback."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        sgp.sync_leader = _make_mock_player("leader")
+        assert sgp.is_active_session is True
+
+    def test_group_in_grace_window_is_active(self) -> None:
+        """While the idle-grace task is pending, the group still claims captured members."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        # simulate a pending grace task without actually running asyncio
+        sgp._idle_grace_task = MagicMock()
+        assert sgp.is_active_session is True
+
+
+class TestPowerlessLifecycle:
+    """Form-on-play / deform-on-stop semantics when no power control is assigned."""
+
+    @pytest.mark.asyncio
+    async def test_play_media_forms_group_when_dormant(self) -> None:
+        """play_media on a dormant group should select a leader and forward to it."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp._attr_group_members = ["leader"]
+        assert sgp.sync_leader is None
+
+        with patch.object(sgp, "update_state"):
+            await sgp.play_media(MagicMock(source_id="src", uri="x"))
+
+        assert sgp.sync_leader == leader
+        # mypy narrows sync_leader to None from the earlier assert; the
+        # play_media call is what re-populates it, but mypy can't track that
+        # mutation through the patch context — hence the ignore.
+        mass.players._handle_play_media.assert_awaited_once()  # type: ignore[unreachable]
+
+    @pytest.mark.asyncio
+    async def test_stop_dissolves_group_when_powerless(self) -> None:
+        """stop() on a group without power control should dissolve the session."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader"]
+        # _attr_powered is None by default (no power control) so stop dissolves
+        assert sgp._attr_powered is None
+
+        with patch.object(sgp, "update_state"):
+            await sgp.stop()
+
+        # leader was stopped via the internal handler ...
+        mass.players._handle_cmd_stop.assert_any_await("leader")
+        # ... and the session was dissolved (sync_leader cleared)
+        assert sgp.sync_leader is None
+
+    @pytest.mark.asyncio
+    async def test_stop_preserves_group_when_pinned_with_fake_power(self) -> None:
+        """stop() should NOT dissolve when the user has pinned the group on."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader"]
+        sgp._attr_powered = True  # user explicitly pinned via Fake control
+
+        await sgp.stop()
+
+        mass.players._handle_cmd_stop.assert_any_await("leader")
+        # session stays intact
+        assert sgp.sync_leader == leader
+
+
+class TestIdleGraceTimer:
+    """The idle-grace timer absorbs natural PLAYING→IDLE transitions."""
+
+    def test_grace_scheduled_on_playing_to_idle(self) -> None:
+        """_update_attributes schedules a grace task when the leader transitions to IDLE."""
+        mass = _make_mock_mass()
+        # create_task should return a sentinel we can inspect
+        sentinel = MagicMock()
+        mass.create_task = MagicMock(return_value=sentinel)
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", playback_state=PlaybackState.IDLE)
+        sgp.sync_leader = leader
+        # previous state was PLAYING
+        sgp._attr_playback_state = PlaybackState.PLAYING
+        sgp._attr_powered = None  # no pin → debounce applies
+
+        sgp._update_attributes()
+
+        assert sgp._idle_grace_task is sentinel
+        mass.create_task.assert_called_once()
+
+    def test_grace_not_scheduled_when_pinned(self) -> None:
+        """No grace task when the user has pinned the group with Fake power."""
+        mass = _make_mock_mass()
+        mass.create_task = MagicMock()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", playback_state=PlaybackState.IDLE)
+        sgp.sync_leader = leader
+        sgp._attr_playback_state = PlaybackState.PLAYING
+        sgp._attr_powered = True  # explicit pin
+
+        sgp._update_attributes()
+
+        assert sgp._idle_grace_task is None
+        mass.create_task.assert_not_called()
+
+    def test_grace_cancelled_on_resume(self) -> None:
+        """A pending grace task is cancelled when the leader resumes playback."""
+        mass = _make_mock_mass()
+        mass.create_task = MagicMock()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", playback_state=PlaybackState.PLAYING)
+        sgp.sync_leader = leader
+        # pretend a grace task is pending
+        prior_task = MagicMock()
+        prior_task.done.return_value = False
+        sgp._idle_grace_task = prior_task
+        sgp._attr_playback_state = PlaybackState.IDLE
+
+        sgp._update_attributes()
+
+        prior_task.cancel.assert_called_once()
+        assert sgp._idle_grace_task is None
+
+    def test_grace_cancelled_on_explicit_stop(self) -> None:
+        """An explicit stop cancels the pending grace task immediately."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader")
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp.sync_leader = leader
+        prior_task = MagicMock()
+        prior_task.done.return_value = False
+        sgp._idle_grace_task = prior_task
+
+        async def _run() -> None:
+            with patch.object(sgp, "update_state"):
+                await sgp.stop()
+
+        import asyncio  # noqa: PLC0415
+
+        asyncio.run(_run())
+
+        prior_task.cancel.assert_called_once()
+        assert sgp._idle_grace_task is None
+
+
+class TestFormWaitsForLeaderUnsynced:
+    """The form path must wait for a stale leader to report synced_to=None."""
+
+    @pytest.mark.asyncio
+    async def test_form_waits_when_leader_still_synced(self) -> None:
+        """If the new leader still reports synced_to, we wait before proceeding."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        # leader reports stale synced_to
+        leader.state.synced_to = "old_leader"
+        # but make _wait_member_unsynced succeed (clears state) so the form proceeds
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp._attr_group_members = ["leader"]
+
+        async def fake_wait(
+            _member_id: str,
+            _timeout: float = 5.0,
+        ) -> bool:
+            leader.state.synced_to = None  # simulate provider catching up
+            return True
+
+        with (
+            patch.object(sgp, "update_state"),
+            patch.object(sgp, "_wait_member_unsynced", side_effect=fake_wait) as wait_mock,
+        ):
+            await sgp._form_syncgroup()
+
+        wait_mock.assert_awaited_once_with("leader")
+        assert sgp.sync_leader == leader
+
+    @pytest.mark.asyncio
+    async def test_form_aborts_when_leader_stuck(self) -> None:
+        """If the wait returns False (leader genuinely stuck), abort the form."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        leader.state.synced_to = "old_leader"
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp._attr_group_members = ["leader"]
+
+        with (
+            patch.object(sgp, "update_state"),
+            patch.object(sgp, "_wait_member_unsynced", return_value=False),
+        ):
+            await sgp._form_syncgroup()
+
+        # form must NOT have left a sync_leader set, so the caller's play_media
+        # won't be issued against a stuck player (the original Poolhouse race).
+        assert sgp.sync_leader is None
+
+
+class TestWaitMemberUnsynced:
+    """The helper that waits for a member's synced_to to clear (with recovery)."""
+
+    @pytest.mark.asyncio
+    async def test_returns_true_when_already_unsynced(self) -> None:
+        """Member already reports synced_to=None → return True without recovery."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        member = _make_mock_player("m1")
+        member.synced_to = None
+        mass.players.get_player = _player_lookup({"m1": member})
+        mass.players.cmd_ungroup = AsyncMock()
+
+        ok = await sgp._wait_member_unsynced("m1")
+
+        assert ok is True
+        mass.players.cmd_ungroup.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_attempts_recovery_when_stuck(self) -> None:
+        """If the first wait doesn't clear it, issue a recovery ungroup and wait again."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        member = _make_mock_player("m1")
+        member.synced_to = "old_leader"  # still stale after first wait
+        mass.players.get_player = _player_lookup({"m1": member})
+
+        # cmd_ungroup is what should be called as the recovery action.
+        # We make it succeed by side-effect-clearing synced_to.
+        async def _ungroup(_player_id: str) -> None:
+            member.synced_to = None
+
+        mass.players.cmd_ungroup = AsyncMock(side_effect=_ungroup)
+
+        ok = await sgp._wait_member_unsynced("m1")
+
+        assert ok is True
+        mass.players.cmd_ungroup.assert_awaited_once_with("m1")
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_genuinely_stuck(self) -> None:
+        """If recovery doesn't help either, return False so callers can abort."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        member = _make_mock_player("m1")
+        member.synced_to = "old_leader"  # stays stuck even after recovery
+        mass.players.get_player = _player_lookup({"m1": member})
+        mass.players.cmd_ungroup = AsyncMock()  # no-op: state stays stale
+
+        ok = await sgp._wait_member_unsynced("m1")
+
+        assert ok is False
+        mass.players.cmd_ungroup.assert_awaited_once_with("m1")
+
+
+class TestSupportedFeaturesPower:
+    """POWER feature is only advertised when the user opts in via Fake control."""
+
+    def test_power_not_in_base_features_by_default(self) -> None:
+        """No power_control config → POWER feature not advertised."""
+        mass = _make_mock_mass()
+        # default config: no CONF_POWER_CONTROL
+        mass.config.get_raw_player_config_value = MagicMock(return_value=None)
+        sgp = _make_sync_group(mass)
+        assert PlayerFeature.POWER not in sgp.supported_features
+
+    def test_power_advertised_when_fake_control_assigned(self) -> None:
+        """User assigns Fake power control → POWER feature shows up."""
+        mass = _make_mock_mass()
+
+        # CONF_POWER_CONTROL is the only key we care about; for everything
+        # else return whatever the default config helper returns.
+        def _get_raw(_player_id: str, key: str, default: object = None) -> object:
+            if key == "power_control":
+                return "fake"
+            return default
+
+        mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
+        sgp = _make_sync_group(mass)
+        assert PlayerFeature.POWER in sgp.supported_features

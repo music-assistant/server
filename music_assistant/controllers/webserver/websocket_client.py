@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import inspect
 import logging
 from concurrent import futures
@@ -26,6 +27,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
 )
 from music_assistant_models.event import MassEvent
+from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
@@ -53,7 +55,7 @@ class WebsocketClientHandler:
         self.webserver = webserver
         self.mass = webserver.mass
         self.request = request
-        self.wsock = web.WebSocketResponse(heartbeat=30)
+        self.wsock = web.WebSocketResponse(heartbeat=25)
         self._to_write: asyncio.Queue[str | None] = asyncio.Queue(maxsize=MAX_PENDING_MSG)
         self._handle_task: asyncio.Task[Any] | None = None
         self._writer_task: asyncio.Task[None] | None = None
@@ -281,9 +283,17 @@ class WebsocketClientHandler:
 
         Async friendly.
         """
-        # Run JSON serialization in executor to avoid blocking for large messages
+        # Run JSON serialization in executor to avoid blocking for large messages.
+        # copy_context() propagates the IMAGE_PROXY_ID_RESOLVER ContextVar into
+        # the executor thread so that MediaItemImage instances nested in the
+        # message can inject `proxy_id` via their `__post_serialize__` hook.
         loop = asyncio.get_running_loop()
-        _message = await loop.run_in_executor(None, message.to_json)
+        token = IMAGE_PROXY_ID_RESOLVER.set(self.mass.metadata.compute_image_id)
+        try:
+            ctx = contextvars.copy_context()
+            _message = await loop.run_in_executor(None, ctx.run, message.to_json)
+        finally:
+            IMAGE_PROXY_ID_RESOLVER.reset(token)
 
         try:
             self._to_write.put_nowait(_message)
@@ -297,7 +307,11 @@ class WebsocketClientHandler:
 
         Serializes inline without executor overhead since events are typically small.
         """
-        _message = message.to_json()
+        token = IMAGE_PROXY_ID_RESOLVER.set(self.mass.metadata.compute_image_id)
+        try:
+            _message = message.to_json()
+        finally:
+            IMAGE_PROXY_ID_RESOLVER.reset(token)
 
         try:
             self._to_write.put_nowait(_message)

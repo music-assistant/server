@@ -5,8 +5,6 @@ import pathlib
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items.audio_format import AudioFormat
 
-from music_assistant.constants import create_sample_rates_config_entry
-
 CONF_SERVER_HOST = "snapcast_server_host"
 CONF_SERVER_CONTROL_PORT = "snapcast_server_control_port"
 CONF_USE_EXTERNAL_SERVER = "snapcast_use_external_server"
@@ -23,11 +21,6 @@ CONF_CATEGORY_BUILT_IN = "Built-in Snapserver Settings"
 
 CONF_HELP_LINK = (
     "https://raw.githubusercontent.com/badaix/snapcast/refs/heads/master/server/etc/snapserver.conf"
-)
-
-# snapcast has fixed sample rate/bit depth so make this config entry static and hidden
-CONF_ENTRY_SAMPLE_RATES_SNAPCAST = create_sample_rates_config_entry(
-    supported_sample_rates=[48000], supported_bit_depths=[16], hidden=True
 )
 
 DEFAULT_SNAPSERVER_IP = "127.0.0.1"

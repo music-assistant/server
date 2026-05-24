@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import (
@@ -30,6 +29,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.datetime import now
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
@@ -642,7 +642,7 @@ class PhishInProvider(MusicProvider):
     async def _browse_today(self) -> list[Album]:
         """Get shows that happened on this day in history."""
         try:
-            today = datetime.now()
+            today = now()
             target_date = today.strftime("%Y-%m-%d")
 
             shows_data = await api_request(

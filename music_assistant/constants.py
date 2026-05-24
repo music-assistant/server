@@ -31,7 +31,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 30
+API_SCHEMA_VERSION: Final[int] = 31
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -87,6 +87,7 @@ CONF_PLAYER_DSP: Final[str] = "player_dsp"
 CONF_PLAYER_DSP_PRESETS: Final[str] = "player_dsp_presets"
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
 CONF_FLOW_MODE: Final[str] = "flow_mode"
+CONF_FLOW_MODE_SAMPLE_RATE: Final[str] = "flow_mode_sample_rate"
 CONF_LOG_LEVEL: Final[str] = "log_level"
 CONF_HIDE_GROUP_CHILDS: Final[str] = "hide_group_childs"
 CONF_CROSSFADE_DURATION: Final[str] = "crossfade_duration"
@@ -94,6 +95,7 @@ CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
 CONF_AUTO_PLAY: Final[str] = "auto_play"
+CONF_PLAY_MEDIA_OVERRIDES_GROUP: Final[str] = "play_media_overrides_group"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
 CONF_DYNAMIC_GROUP_MEMBERS: Final[str] = "dynamic_members"
 CONF_HIDE_IN_UI: Final[str] = "hide_in_ui"
@@ -140,11 +142,22 @@ CONF_ENABLED: Final[str] = "enabled"
 CONF_PROTOCOL_KEY_SPLITTER: Final[str] = "||protocol||"
 CONF_PROTOCOL_CATEGORY_PREFIX: Final[str] = "protocol"
 CONF_DEFAULT_PROVIDERS_SETUP: Final[str] = "default_providers_setup"
+CONF_BACKGROUND_SCAN_CONCURRENCY: Final[str] = "background_scan_concurrency"
+
+
+def _default_background_scan_concurrency() -> int:
+    cpu_count = os.process_cpu_count() or os.cpu_count() or 4
+    if cpu_count >= 16:
+        return 4
+    if cpu_count >= 8:
+        return 2
+    return 1
 
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
 DEFAULT_PORT: Final[int] = 8095
+DEFAULT_BACKGROUND_SCAN_CONCURRENCY: Final[int] = _default_background_scan_concurrency()
 
 
 # common db tables
@@ -216,7 +229,7 @@ DEFAULT_GENRES: Final[tuple[str, ...]] = tuple(entry["genre"] for entry in DEFAU
 
 # all other
 MASS_LOGO_ONLINE: Final[str] = (
-    "https://github.com/music-assistant/server/blob/dev/music_assistant/logo.png"
+    "https://raw.githubusercontent.com/music-assistant/server/refs/heads/dev/music_assistant/logo.png"
 )
 ENCRYPT_SUFFIX = "_encrypted_"
 CONFIGURABLE_CORE_CONTROLLERS = (
@@ -268,6 +281,45 @@ CONF_ENTRY_FLOW_MODE = ConfigEntry(
 )
 
 
+FLOW_MODE_SAMPLE_RATE_SMART: Final[str] = "smart"
+FLOW_MODE_SAMPLE_RATE_BIT_PERFECT: Final[str] = "bit_perfect"
+FLOW_MODE_SAMPLE_RATE_48000: Final[str] = "48000"
+FLOW_MODE_SAMPLE_RATE_96000: Final[str] = "96000"
+FLOW_MODE_SAMPLE_RATE_HIGHEST: Final[str] = "highest"
+
+CONF_ENTRY_FLOW_MODE_SAMPLE_RATE = ConfigEntry(
+    key=CONF_FLOW_MODE_SAMPLE_RATE,
+    type=ConfigEntryType.STRING,
+    label="Flow Mode sample rate",
+    options=[
+        ConfigValueOption("Smart (upsample only)", FLOW_MODE_SAMPLE_RATE_SMART),
+        ConfigValueOption("Bit-perfect (no resampling)", FLOW_MODE_SAMPLE_RATE_BIT_PERFECT),
+        ConfigValueOption("48 kHz (balanced quality and bandwidth)", FLOW_MODE_SAMPLE_RATE_48000),
+        ConfigValueOption("96 kHz (high quality)", FLOW_MODE_SAMPLE_RATE_96000),
+        ConfigValueOption("Highest supported by player", FLOW_MODE_SAMPLE_RATE_HIGHEST),
+    ],
+    default_value=FLOW_MODE_SAMPLE_RATE_SMART,
+    description="When streaming in Flow Mode, the entire queue is sent as one gapless stream "
+    "and must use a single sample rate for the whole stream.\n\n"
+    "- 'Smart (upsample only)': Starts the flow stream at the sample rate of the first "
+    "track. Subsequent tracks with an equal or lower sample rate are upsampled to match; "
+    "if the next track has a higher sample rate, the flow stream is restarted at that "
+    "higher rate. This is the best balance between quality and seamless playback.\n"
+    "- 'Bit-perfect (no resampling)': Never resamples audio (unless the player does not "
+    "support the track's sample rate). Playback is restarted between queue tracks when "
+    "their sample rates differ, which disables gapless and crossfade between those tracks.\n"
+    "- '48 kHz': Resamples all audio to a fixed 48 kHz (or the closest rate supported by "
+    "the player) using a high quality resampler. A good compromise of quality and bandwidth.\n"
+    "- '96 kHz': Resamples all audio to a fixed 96 kHz (or the closest rate supported by "
+    "the player) using a high quality resampler.\n"
+    "- 'Highest supported by player': Resamples all audio to the highest sample rate the "
+    "player supports. Note that this can waste a lot of bandwidth.",
+    category="protocol_generic",
+    advanced=True,
+    requires_reload=True,
+)
+
+
 CONF_ENTRY_AUTO_PLAY = ConfigEntry(
     key=CONF_AUTO_PLAY,
     type=ConfigEntryType.BOOLEAN,
@@ -278,6 +330,21 @@ CONF_ENTRY_AUTO_PLAY = ConfigEntry(
     depends_on=CONF_POWER_CONTROL,
     depends_on_value_not="none",
     category="player_controls",
+)
+
+CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP = ConfigEntry(
+    key=CONF_PLAY_MEDIA_OVERRIDES_GROUP,
+    type=ConfigEntryType.BOOLEAN,
+    label="Play Media overrides active group",
+    description="When this player is currently captured by an active group or sync session, "
+    "an explicit Play Media command (e.g. starting a new playlist or track from Home "
+    "Assistant) will release this player from the group/sync and play the new media "
+    "directly on this player. Disable this to keep the legacy behavior where Play "
+    "Media is redirected to the group leader. Other commands (next/prev/pause/resume) "
+    "are always forwarded to the group leader as they act on the existing playback.",
+    default_value=True,
+    category="generic",
+    advanced=False,
 )
 
 CONF_ENTRY_MIN_VOLUME = ConfigEntry(

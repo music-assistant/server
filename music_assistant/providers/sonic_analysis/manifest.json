@@ -1,0 +1,21 @@
+{
+  "type": "audio_analysis",
+  "domain": "sonic_analysis",
+  "name": "Sonic Analysis (on-device)",
+  "description": "On-device audio analysis extracting measurement-based and CLAP-derived perceptual features (plus a per-track embedding) to power similarity and discovery. First activation downloads ~300MB of model weights.",
+  "codeowners": ["@music-assistant"],
+  "requirements": [
+    "transformers==5.6.2",
+    "huggingface-hub==1.12.0",
+    "PyYAML==6.0.3",
+    "torchlibrosa==0.1.0"
+  ],
+  "credits": [
+    "[Microsoft CLAP](https://github.com/microsoft/CLAP)",
+    "[librosa](https://librosa.org)"
+  ],
+  "documentation": "https://music-assistant.io/audio-analysis-providers/sonic-analysis/",
+  "multi_instance": false,
+  "builtin": false,
+  "icon": "pulse"
+}

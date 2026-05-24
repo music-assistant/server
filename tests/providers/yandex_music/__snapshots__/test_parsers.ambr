@@ -15,6 +15,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -66,6 +67,7 @@
 # ---
 # name: test_parse_artist_snapshot[minimal]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
     ]),
@@ -77,6 +79,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -127,6 +130,7 @@
 # ---
 # name: test_parse_artist_snapshot[with_cover]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
     ]),
@@ -138,6 +142,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -145,6 +150,7 @@
         dict({
           'path': 'https://avatars.yandex.net/get-music-content/xxx/yyy/1000x1000',
           'provider': 'yandex_music_instance',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -208,6 +214,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -275,6 +282,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'A shared playlist',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -346,6 +354,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -412,6 +421,7 @@
         'chapters': None,
         'copyright': None,
         'description': None,
+        'description_language': None,
         'explicit': None,
         'genres': None,
         'grouping': None,
@@ -419,6 +429,7 @@
           dict({
             'path': 'https://avatars.yandex.net/get-music-content/aaa/bbb/1000x1000',
             'provider': 'yandex_music_instance',
+            'proxy_id': None,
             'remotely_accessible': True,
             'type': 'thumb',
           }),
@@ -469,6 +480,7 @@
     }),
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -480,6 +492,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -542,6 +555,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -549,6 +563,7 @@
         dict({
           'path': 'https://avatars.yandex.net/get-music-content/aaa/bbb/1000x1000',
           'provider': 'yandex_music_instance',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),

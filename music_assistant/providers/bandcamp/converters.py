@@ -1,7 +1,7 @@
 """Converters for Bandcamp API models to Music Assistant models."""
 
 from contextlib import suppress
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TypedDict
 
 from bandcamp_async_api.models import BCAlbum as APIAlbum
@@ -362,7 +362,9 @@ class BandcampConverters:
                     url=album.url,
                 )
             },
-            year=datetime.fromtimestamp(album.release_date).year if album.release_date else None,
+            year=datetime.fromtimestamp(album.release_date, tz=UTC).year
+            if album.release_date
+            else None,
         )
         output.metadata.add_image(
             MediaItemImage(
