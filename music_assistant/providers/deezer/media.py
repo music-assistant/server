@@ -69,7 +69,7 @@ class DeezerMediaManager:
         self.instance_id = provider.instance_id
         self.domain = provider.domain
         self.logger = provider.logger
-        self._audiobook_ids_cache: set[str] | None = None
+        self._audiobook_ids_in_favorites: set[str] | None = None
 
     # -- Pagination helper --
 
@@ -125,8 +125,8 @@ class DeezerMediaManager:
         lifetime of this manager instance so both get_library_albums and
         get_library_audiobooks can share it without extra API calls.
         """
-        if self._audiobook_ids_cache is not None:
-            return self._audiobook_ids_cache
+        if self._audiobook_ids_in_favorites is not None:
+            return self._audiobook_ids_in_favorites
         album_ids: list[str] = []
         async for edge in self._iter_paged(
             self.provider.gql_client.get_favorite_albums,
@@ -134,23 +134,33 @@ class DeezerMediaManager:
         ):
             album_ids.append(edge.node.id)
         if not album_ids:
-            self._audiobook_ids_cache = set()
+            self._audiobook_ids_in_favorites = set()
         else:
-            self._audiobook_ids_cache = await self.provider.gql_client.check_audiobook_ids(
+            self._audiobook_ids_in_favorites = await self.provider.gql_client.check_audiobook_ids(
                 album_ids
             )
-        return self._audiobook_ids_cache
+        return self._audiobook_ids_in_favorites
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Deezer."""
-        # Deezer returns audiobooks mixed into the favorite albums list.
-        # Use check_audiobook_ids to identify and exclude them.
-        audiobook_ids = await self._get_audiobook_ids_in_albums()
+        # Collect all favorite album edges in a single pass, then determine
+        # which are audiobooks via check_audiobook_ids, and yield the rest.
+        all_edges: list[Any] = []
         async for edge in self._iter_paged(
             self.provider.gql_client.get_favorite_albums,
             lambda r: r.user_favorites.albums,
         ):
-            if edge.node.id in audiobook_ids:
+            all_edges.append(edge)
+        # Populate the favorites-audiobook cache (shared with get_library_audiobooks)
+        if self._audiobook_ids_in_favorites is None:
+            album_ids = [edge.node.id for edge in all_edges]
+            self._audiobook_ids_in_favorites = (
+                await self.provider.gql_client.check_audiobook_ids(album_ids)
+                if album_ids
+                else set()
+            )
+        for edge in all_edges:
+            if edge.node.id in self._audiobook_ids_in_favorites:
                 continue
             item = parse_album(self.provider, edge.node)
             if edge.favorited_at:
