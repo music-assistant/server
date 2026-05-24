@@ -2098,8 +2098,9 @@ class PlayerQueuesController(CoreController):
 
         :param podcast: Podcast to enqueue, or `None` if `episode` is a
             concrete `PodcastEpisode`.
-        :param episode: An `item_id` / `uri`, a case-insensitive substring
-            of an episode name or the keyword "latest"` / `"newest"`.
+        :param episode: A concrete `PodcastEpisode`, an `item_id` / `uri`,
+            a case-insensitive substring of an episode name, or one of the
+            reserved lowercase keywords `"latest"` / `"newest"`.
         :param userid: User whose resume position should be applied.
         """
         if podcast is None and isinstance(episode, str | NoneType):
