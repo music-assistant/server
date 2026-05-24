@@ -107,7 +107,7 @@ CONF_DEFAULT_ENQUEUE_OPTION_ARTIST = "default_enqueue_option_artist"
 CONF_DEFAULT_ENQUEUE_OPTION_ALBUM = "default_enqueue_option_album"
 CONF_DEFAULT_ENQUEUE_OPTION_TRACK = "default_enqueue_option_track"
 CONF_DEFAULT_ENQUEUE_OPTION_GENRE = "default_enqueue_option_genre"
-CONF_DEFAULT_ENQUEUE_OPTION_RADIO = "default_enqueue_option_radio"
+CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES = "default_enqueue_option_live_sources"
 CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST = "default_enqueue_option_playlist"
 CONF_DEFAULT_ENQUEUE_OPTION_AUDIOBOOK = "default_enqueue_option_audiobook"
 CONF_DEFAULT_ENQUEUE_OPTION_PODCAST = "default_enqueue_option_podcast"
@@ -292,12 +292,15 @@ class PlayerQueuesController(CoreController):
                 description="Define the default enqueue action for this mediatype.",
             ),
             ConfigEntry(
-                key=CONF_DEFAULT_ENQUEUE_OPTION_RADIO,
+                key=CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES,
                 type=ConfigEntryType.STRING,
                 default_value=QueueOption.REPLACE.value,
-                label="Default enqueue option for Radio item(s).",
+                label="Default enqueue option for Radio and Live Input item(s).",
                 options=enqueue_options,
-                description="Define the default enqueue action for this mediatype.",
+                description=(
+                    "Default enqueue action for live, infinite streams — radio stations and "
+                    "plugin AudioSources (Spotify Connect, AirPlay receiver, etc.)."
+                ),
             ),
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST,
@@ -428,7 +431,6 @@ class PlayerQueuesController(CoreController):
             )
         queue = self._queues[queue_id]
         queue.dont_stop_the_music_enabled = dont_stop_the_music_enabled
-        self.signal_update(queue_id=queue_id)
         # if this happens to be the last track in the queue, fill the radio source
         if (
             queue.dont_stop_the_music_enabled
@@ -437,8 +439,10 @@ class PlayerQueuesController(CoreController):
             and (queue.items - queue.current_index) <= 1
         ):
             queue.radio_source = queue.enqueued_media_items
+            queue.is_dynamic = _is_radio_source_dynamic(queue.radio_source)
             task_id = f"fill_radio_tracks_{queue_id}"
             self.mass.call_later(5, self._fill_radio_tracks, queue_id, task_id=task_id)
+        self.signal_update(queue_id=queue_id)
 
     @api_command("player_queues/repeat")
     def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
@@ -611,6 +615,7 @@ class PlayerQueuesController(CoreController):
         """Clear all items in the queue."""
         queue = self._queues[queue_id]
         queue.radio_source = []
+        queue.is_dynamic = False
         if queue.state != PlaybackState.IDLE and not skip_stop:
             self.mass.create_task(self.stop(queue_id))
         queue.current_index = None
@@ -1008,11 +1013,19 @@ class PlayerQueuesController(CoreController):
         if target_player.state.active_group or target_player.state.synced_to:
             # edge case: the user wants to move playback from the group as a whole, to a single
             # player in the group or it is grouped and the command targeted at the single player.
-            # We need to dissolve the group first.
+            # We need to dissolve the group/sync first, and wait for the state to actually
+            # propagate before we hand the queue over to the target player.
             group_id = target_player.state.active_group or target_player.state.synced_to
             assert group_id is not None  # checked in if condition above
-            await self.mass.players.cmd_ungroup(group_id)
-            await asyncio.sleep(3)
+            async with self.mass.players.wait_for_player_update(
+                target_queue_id,
+                attribute_name=(
+                    "active_group" if target_player.state.active_group else "synced_to"
+                ),
+                attribute_value=None,
+                timeout=5,
+            ):
+                await self.mass.players.cmd_ungroup(group_id)
 
         # capture source state before stopping (stop resets these)
         source_items = self._queue_items[source_queue_id]
@@ -1029,6 +1042,7 @@ class PlayerQueuesController(CoreController):
         target_queue.shuffle_enabled = source_queue.shuffle_enabled
         target_queue.dont_stop_the_music_enabled = source_queue.dont_stop_the_music_enabled
         target_queue.radio_source = source_queue.radio_source
+        target_queue.is_dynamic = source_queue.is_dynamic
         target_queue.enqueued_media_items = source_queue.enqueued_media_items
         target_queue.resume_pos = source_resume_pos
         target_queue.current_index = source_current_index
@@ -1062,9 +1076,12 @@ class PlayerQueuesController(CoreController):
                 # reset the play action in progress flag on restore
                 # this can happen if MA was killed while a play action was in progress
                 queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
-                # from_cache reconstructs radio_source and enqueued_media_items,
-                # which mashumaro deserializes as plain dicts instead of MediaItemType objects.
+                # from_cache properly deserializes radio_source and enqueued_media_items
+                # back into MediaItemType objects (from_dict/mashumaro leaves them as plain dicts).
                 queue.from_cache(prev_state)
+                # recalculate is_dynamic after radio_source is restored from cache
+                # (old cache entries won't have is_dynamic set)
+                queue.is_dynamic = _is_radio_source_dynamic(queue.radio_source)
                 prev_items = await self.mass.cache.get(
                     key=queue_id,
                     provider=self.domain,
@@ -1338,9 +1355,16 @@ class PlayerQueuesController(CoreController):
 
                 # handle default enqueue option if needed
                 if option is None:
+                    # Radio + AudioSource share a single "live_sources" enqueue default —
+                    # both are live infinite streams where REPLACE is almost always the
+                    # right semantic. Other media types use their per-type config key.
+                    if media_item.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
+                        config_key = CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES
+                    else:
+                        config_key = f"default_enqueue_option_{media_item.media_type.value}"
                     config_value = await self.mass.config.get_core_config_value(
                         self.domain,
-                        f"default_enqueue_option_{media_item.media_type.value}",
+                        config_key,
                         return_type=str,
                     )
                     option = QueueOption(config_value)
@@ -1385,6 +1409,7 @@ class PlayerQueuesController(CoreController):
             queue.radio_source = radio_source
         else:
             queue.radio_source += radio_source
+        queue.is_dynamic = _is_radio_source_dynamic(queue.radio_source)
         # Use collected media items to calculate the radio if radio mode is on
         if radio_mode:
             radio_tracks = await self._get_radio_tracks(
@@ -2864,6 +2889,7 @@ class PlayerQueuesController(CoreController):
                     ", ".join([x.uri for x in queue.enqueued_media_items]),  # type: ignore[misc]  # uri set in __post_init__
                 )
                 queue.radio_source = queue.enqueued_media_items
+                queue.is_dynamic = _is_radio_source_dynamic(queue.radio_source)
             # auto fill radio tracks if less than 5 tracks left in the queue
             if (
                 queue.radio_source
@@ -3283,6 +3309,15 @@ class PlayerQueuesController(CoreController):
                 buffers_cleared,
                 queue_id,
             )
+
+
+def _is_radio_source_dynamic(radio_source: list[MediaItemType]) -> bool:
+    """Return True if radio_source is a single dynamic playlist."""
+    return (
+        len(radio_source) == 1
+        and isinstance(radio_source[0], Playlist)
+        and radio_source[0].is_dynamic
+    )
 
 
 async def _smart_shuffle(items: list[QueueItem]) -> list[QueueItem]:

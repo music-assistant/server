@@ -621,7 +621,9 @@ class InternetArchiveProvider(MusicProvider):
 
         return track_number
 
-    @use_cache(expiration=86400 * 30)  # Cache for 30 days - artist catalogs change infrequently
+    @use_cache(
+        expiration=86400 * 30, allow_expired_cache=True
+    )  # Cache for 30 days - artist catalogs change infrequently
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """
         Get albums for a specific artist.
@@ -680,7 +682,7 @@ class InternetArchiveProvider(MusicProvider):
             page += 1
         return albums
 
-    @use_cache(expiration=86400 * 7)  # Cache for 1 week
+    @use_cache(expiration=86400 * 7, allow_expired_cache=True)  # Cache for 1 week
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """
         Get top tracks for a specific artist.

@@ -46,7 +46,7 @@ class AppleMusicRecommendationManager:
         self.api = provider.api_client
         self.logger = provider.logger
 
-    @use_cache(3600 * 24)
+    @use_cache(3600 * 24, allow_expired_cache=True)
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         # Apple Music only provides ~2 tracks per call, cap at 6 to avoid flooding the API.

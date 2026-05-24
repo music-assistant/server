@@ -177,11 +177,15 @@ class SonosPlayerProvider(PlayerProvider):
         context_version = request.query.get("contextVersion", "1")
         queue_version = request.query.get("queueVersion", str(int(player.sonos_queue.last_updated)))
         # because Sonos does not show our queue in the app anyways,
-        # we just return the previous, current and next item in the queue
+        # we just return the previous, current and next item in the queue.
+        # the beginning/end flags must be honest though: signalling end-of-queue
+        # tells Sonos to drop any older items it may still have cached past our
+        # window, which is what prevents stale tracks from resurrecting after a
+        # queue rewrite (e.g. replace_next).
         items = list(player.sonos_queue.items)
         result = {
-            "includesBeginningOfQueue": False,
-            "includesEndOfQueue": False,
+            "includesBeginningOfQueue": player.sonos_queue.includes_beginning,
+            "includesEndOfQueue": player.sonos_queue.includes_end,
             "contextVersion": context_version,
             "queueVersion": queue_version,
             "items": [self._parse_sonos_queue_item(x) for x in items],
