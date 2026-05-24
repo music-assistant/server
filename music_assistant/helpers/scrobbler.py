@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Collection
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import (
@@ -34,14 +33,12 @@ class ScrobblerHelper:
         self,
         logger: logging.Logger,
         config: ScrobblerConfig | None = None,
-        supported_media_types: Collection[MediaType] | None = None,
+        supported_media_types: frozenset[MediaType] | None = None,
     ) -> None:
         """Initialize."""
         self.logger = logger
         self.config = config or ScrobblerConfig(suffix_version=False)
-        self.supported_media_types = (
-            frozenset(supported_media_types) if supported_media_types is not None else None
-        )
+        self.supported_media_types = supported_media_types
 
     def _is_configured(self) -> bool:
         """Override if subclass needs specific configuration."""

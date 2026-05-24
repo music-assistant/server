@@ -38,7 +38,7 @@ _DEFAULT_API_SECRET: str = app_var(13)
 # updating the PluginProvider base class
 # as well as other similar classes that also use set[ProviderFeature].
 SUPPORTED_FEATURES: Final[set[ProviderFeature]] = set()
-SUPPORTED_SCROBBLE_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (MediaType.TRACK,)
+SUPPORTED_SCROBBLE_MEDIA_TYPES: Final[frozenset[MediaType]] = frozenset({MediaType.TRACK})
 
 # Configuration keys
 CONF_API_KEY: Final[str] = "_api_key"

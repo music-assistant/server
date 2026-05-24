@@ -3,6 +3,7 @@
 import logging
 import time
 from collections.abc import Callable
+from typing import Final
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import EventType, MediaType
@@ -19,10 +20,12 @@ from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.opensubsonic.parsers import EP_CHAN_SEP
 from music_assistant.providers.opensubsonic.sonic_provider import OpenSonicProvider
 
-SUPPORTED_SCROBBLE_MEDIA_TYPES: tuple[MediaType, ...] = (
-    MediaType.TRACK,
-    MediaType.AUDIOBOOK,
-    MediaType.PODCAST_EPISODE,
+SUPPORTED_SCROBBLE_MEDIA_TYPES: Final[frozenset[MediaType]] = frozenset(
+    {
+        MediaType.TRACK,
+        MediaType.AUDIOBOOK,
+        MediaType.PODCAST_EPISODE,
+    }
 )
 
 

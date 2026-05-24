@@ -8,6 +8,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
+from typing import Final
 
 from liblistenbrainz import Listen, ListenBrainz
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
@@ -29,7 +30,7 @@ LISTENBRAINZ_API_URL = "https://api.listenbrainz.org"
 SUPPORTED_FEATURES: set[ProviderFeature] = (
     set()
 )  # we don't have any special supported features (yet)
-SUPPORTED_SCROBBLE_MEDIA_TYPES: tuple[MediaType, ...] = (MediaType.TRACK,)
+SUPPORTED_SCROBBLE_MEDIA_TYPES: Final[frozenset[MediaType]] = frozenset({MediaType.TRACK})
 
 
 async def setup(
