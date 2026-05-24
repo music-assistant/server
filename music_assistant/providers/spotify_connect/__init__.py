@@ -30,6 +30,7 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import (
+    AudioError,
     MediaNotFoundError,
     UnsupportedFeaturedException,
 )
@@ -55,7 +56,6 @@ CONF_MASS_PLAYER_ID = "mass_player_id"
 CONF_HANDOFF_MODE = "handoff_mode"
 CONNECT_ITEM_ID = "spotify_connect"
 CONF_PUBLISH_NAME = "publish_name"
-CONF_ALLOW_PLAYER_SWITCH = "allow_player_switch"
 
 # Special value for auto player selection
 PLAYER_ID_AUTO = "__auto__"
@@ -114,15 +114,6 @@ async def get_config_entries(
             required=True,
         ),
         ConfigEntry(
-            key=CONF_ALLOW_PLAYER_SWITCH,
-            type=ConfigEntryType.BOOLEAN,
-            label="Allow manual player switching",
-            description="When enabled, you can select this plugin as a source on any player "
-            "to switch playback to that player. When disabled, playback is fixed to the "
-            "configured default player.",
-            default_value=True,
-        ),
-        ConfigEntry(
             key=CONF_PUBLISH_NAME,
             type=ConfigEntryType.STRING,
             label="Name to display in the Spotify app",
@@ -162,11 +153,6 @@ class SpotifyConnectProvider(PluginProvider):
         # Default player ID from config (PLAYER_ID_AUTO or a specific player_id)
         self._default_player_id: str = (
             cast("str", self.config.get_value(CONF_MASS_PLAYER_ID)) or PLAYER_ID_AUTO
-        )
-        # Whether manual player switching is allowed (default to True for upgrades)
-        allow_switch_value = self.config.get_value(CONF_ALLOW_PLAYER_SWITCH)
-        self._allow_player_switch: bool = (
-            cast("bool", allow_switch_value) if allow_switch_value is not None else True
         )
         # Currently active player (the one currently playing or selected)
         self._active_player_id: str | None = None
@@ -211,7 +197,15 @@ class SpotifyConnectProvider(PluginProvider):
         # stream request — used to reject stale on_source_unselected callbacks
         # after a same-queue reconnect supersedes the previous request.
         self._active_session_id: str | None = None
-        self._audio_buffer: asyncio.Queue[bytes] = asyncio.Queue(10)
+        # tracks librespot's play/pause state from its 'playing' / 'paused' /
+        # session_disconnected events; gates the Web API kick in on_source_selected
+        # (skip if already playing) and the play_media trigger in the event handler
+        self._librespot_playing: bool = False
+        # holds the single in-flight deferred play_media task scheduled from a
+        # librespot 'playing' event; cancelled if a 'paused' or 'session_connected'
+        # arrives during the debounce so we don't act on stale state from a dying
+        # session and end up in a play→pause→reconnect loop
+        self._pending_play_media_task: asyncio.Task[None] | None = None
         self._on_unload_callbacks: list[Callable[..., None]] = []
         self._runner_error_count = 0
         self._spotify_device_id: str | None = None
@@ -241,6 +235,7 @@ class SpotifyConnectProvider(PluginProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
         self._stop_called = True
+        self._cancel_pending_play_media()
         if self._runner_task and not self._runner_task.done():
             self._runner_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -253,16 +248,31 @@ class SpotifyConnectProvider(PluginProvider):
         return [self._audio_source]
 
     async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
-        """Return StreamDetails for streaming the Spotify Connect audio.
+        """
+        Return StreamDetails for streaming the Spotify Connect audio.
 
         Side-effect-free: ownership is claimed in on_source_selected (which the
         streams controller fires before this method on the actual stream
         request). Keeping this idempotent means preload paths like
         player_queues._load_item can fetch streamdetails without claiming the
         source and blocking a subsequent cross-queue handoff.
+
+        Raises AudioError when MA has no way to acquire the source (librespot
+        idle and no Spotify music provider for Web API control).
         """
         if source_id != AUDIO_SOURCE_ID:
             raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
+        if not self._librespot_playing and not self._spotify_provider:
+            raise AudioError(
+                "Spotify Connect cannot be acquired from Music Assistant — "
+                "start playback from the Spotify app, or configure the matching "
+                "Spotify music provider to enable Web API control"
+            )
+        # NAMED_PIPE (not CUSTOM): the core opens the FIFO with ffmpeg directly
+        # using `-re`, which paces the read at native rate. Going through a
+        # Python generator + StreamReader would let librespot's pipe backend
+        # (which is not realtime-paced) fill an arbitrary-size buffer ahead of
+        # us; pause/skip would then take seconds to react.
         return StreamDetails(
             provider=self.instance_id,
             item_id=source_id,
@@ -319,6 +329,8 @@ class SpotifyConnectProvider(PluginProvider):
             can_next_previous=has_web_api,
             exclusive=True,
             allow_external_trigger=True,
+            # Web API is required to kick librespot when MA initiates
+            can_initiate=has_web_api,
         )
 
     @property
@@ -371,6 +383,52 @@ class SpotifyConnectProvider(PluginProvider):
         )
         return None
 
+    def _cancel_pending_play_media(self) -> None:
+        """Cancel any pending deferred play_media trigger."""
+        task = self._pending_play_media_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._pending_play_media_task = None
+
+    async def _deferred_play_media_fire(self) -> None:
+        """
+        Trigger play_media after a short debounce.
+
+        librespot can emit a stale 'playing' event from a dying session moments
+        before reconnecting; firing play_media synchronously on that event lands
+        our stream on a pipe that's about to lose its writer. Waiting briefly
+        and aborting on a 'paused' or 'session_connected' event in the meantime
+        avoids the restart loop.
+        """
+        try:
+            await asyncio.sleep(0.5)
+        except asyncio.CancelledError:
+            return
+        if not self._librespot_playing or self._in_use_by_queue:
+            return
+        if not self._connected_spotify_username or not self._spotify_provider:
+            await self._check_spotify_provider_match()
+        # ensure we're the active Spotify device (no play override — librespot
+        # is already playing, we don't want to disrupt it)
+        if self._spotify_provider:
+            self.mass.create_task(self._ensure_active_device())
+        target_player_id = self._get_target_player_id()
+        if not target_player_id:
+            self.logger.warning(
+                "Spotify Connect playback started but no player available. "
+                "Select this source on a player to start playback."
+            )
+            return
+        self.logger.info(
+            "Starting Spotify Connect playback [%s] on player %s",
+            self.instance_id,
+            target_player_id,
+        )
+        self._active_player_id = target_player_id
+        self.mass.create_task(
+            self.mass.player_queues.play_media(target_player_id, str(self._audio_source.uri))
+        )
+
     async def on_source_selected(
         self,
         source_id: str,
@@ -382,36 +440,21 @@ class SpotifyConnectProvider(PluginProvider):
         if source_id != AUDIO_SOURCE_ID or not player_id:
             return
 
-        # Check if manual player switching is allowed
-        if not self._allow_player_switch:
-            # Player switching disabled - redirect to the configured target
-            current_target = self._get_target_player_id()
-            if player_id != current_target and current_target:
-                self.logger.debug(
-                    "Manual player switching disabled, redirecting selection from %s to %s",
-                    player_id,
-                    current_target,
-                )
-                await self.mass.player_queues.play_media(
-                    current_target, str(self._audio_source.uri)
-                )
-                # Raising aborts the original request so it cannot continue
-                # into get_stream_details and claim the exclusive source for
-                # the disallowed player. The redirect above starts the stream
-                # on the configured target via a separate request.
-                raise RuntimeError(
-                    f"Player switching disabled; source must remain on {current_target}"
-                )
+        # Cache the queue_id (== user-facing MA player) rather than the
+        # protocol-level player_id. Some protocol players are ephemeral bridges
+        # (e.g. Sendspin's spb_… bridges that tear down between streams) — their
+        # ID is invalid for play_media / queue lookups once the bridge is gone.
+        active_player_id = queue_id
 
         # If there's already an active player and it's different, kick it out.
         # The lock claim a few lines below replaces the previous queue's claim;
         # the prior stream's on_source_unselected may fire later, but its
         # session-id guard keeps it from clobbering the new claim.
-        if self._active_player_id and self._active_player_id != player_id:
+        if self._active_player_id and self._active_player_id != active_player_id:
             prev_player_id = self._active_player_id
             self.logger.info(
                 "Source selected on player %s, stopping playback on %s",
-                player_id,
+                active_player_id,
                 prev_player_id,
             )
             try:
@@ -430,12 +473,26 @@ class SpotifyConnectProvider(PluginProvider):
         self._active_session_id = stream_session_id
 
         # Update the active player
-        self._active_player_id = player_id
-        self.logger.debug("Active player set to: %s", player_id)
+        self._active_player_id = active_player_id
+        self.logger.debug("Active player set to: %s", active_player_id)
 
         # Only persist the selected player as the new default if not in auto mode
         if self._default_player_id != PLAYER_ID_AUTO:
-            self._save_last_player_id(player_id)
+            self._save_last_player_id(active_player_id)
+
+        # MA-initiated: librespot is idle; kick Spotify via Web API.
+        # Externally triggered: librespot is already playing → skip.
+        if not self._librespot_playing:
+            if not self._spotify_provider:
+                raise AudioError(
+                    "Spotify Connect requires the matching Spotify music provider "
+                    "for MA-initiated playback"
+                )
+            try:
+                # combined transfer + play in one Web API call
+                await self._ensure_active_device(play=True)
+            except Exception as err:
+                raise AudioError(f"Failed to acquire Spotify Connect via Web API: {err}") from err
 
     async def on_source_unselected(
         self, source_id: str, queue_id: str, stream_session_id: str
@@ -464,6 +521,7 @@ class SpotifyConnectProvider(PluginProvider):
         self._active_player_id = None
         self._in_use_by_queue = None
         self._active_session_id = None
+        self._librespot_playing = False
 
         if prev_player_id:
             self.logger.debug("Playback ended on player %s, clearing active player", prev_player_id)
@@ -547,9 +605,9 @@ class SpotifyConnectProvider(PluginProvider):
                 "Playback control requires a matching Spotify music provider"
             )
         try:
-            # First try to transfer playback to this device if needed
-            await self._ensure_active_device()
-            await self._spotify_provider._put_data("me/player/play")
+            # combined transfer + play in one call (avoids ~2 s of API throttle
+            # we'd otherwise hit doing them sequentially)
+            await self._ensure_active_device(play=True)
         except Exception as err:
             self.logger.warning("Failed to send play command via Spotify Web API: %s", err)
             raise
@@ -657,48 +715,32 @@ class SpotifyConnectProvider(PluginProvider):
             self.logger.debug("Failed to get Spotify devices: %s", err)
             return None
 
-    async def _ensure_active_device(self) -> None:
+    async def _ensure_active_device(self, play: bool | None = None) -> None:
         """
         Ensure this Spotify Connect device is the active player on Spotify.
 
-        Transfers playback to this device if it's not already active.
+        Combined transfer-and-(optionally-)play in a single Web API call —
+        Spotify's API is heavily throttled (~2 s/call) so each round trip we
+        avoid is two seconds shaved off perceived play latency.
+
+        :param play: When True, also start playback on this device. When False,
+            pause it. When None (default), leave the playback state of the
+            previous device untouched (useful for externally-triggered flows
+            where librespot is already playing).
         """
         if not self._spotify_provider:
             return
-
+        # cache device ID on first call; subsequent calls reuse it
+        if not self._spotify_device_id:
+            self._spotify_device_id = await self._get_spotify_device_id()
+        if not self._spotify_device_id:
+            self.logger.debug("Cannot transfer playback - device ID not found")
+            return
+        data: dict[str, object] = {"device_ids": [self._spotify_device_id]}
+        if play is not None:
+            data["play"] = play
         try:
-            # Get current playback state
-            try:
-                playback_data = await self._spotify_provider._get_data("me/player")
-                current_device = playback_data.get("device", {}) if playback_data else {}
-                current_device_id = current_device.get("id")
-            except Exception as err:
-                if getattr(err, "status", None) == 204:
-                    # No active device
-                    current_device_id = None
-                else:
-                    raise
-
-            # Get our device ID if we don't have it cached
-            if not self._spotify_device_id:
-                self._spotify_device_id = await self._get_spotify_device_id()
-
-            # If we couldn't find our device ID, we can't transfer
-            if not self._spotify_device_id:
-                self.logger.debug("Cannot transfer playback - device ID not found")
-                return
-
-            # Check if we're already the active device
-            if current_device_id == self._spotify_device_id:
-                self.logger.debug("Already the active Spotify device")
-                return
-
-            # Transfer playback to this device
-            self.logger.info("Transferring Spotify playback to this device")
-            await self._spotify_provider._put_data(
-                "me/player",
-                data={"device_ids": [self._spotify_device_id], "play": False},
-            )
+            await self._spotify_provider._put_data("me/player", data=data)
         except Exception as err:
             self.logger.debug("Failed to ensure active device: %s", err)
             # Don't raise - this is a best-effort operation
@@ -868,46 +910,42 @@ class SpotifyConnectProvider(PluginProvider):
         # MA-side resume path (each resume created a new play_media session),
         # so we leave it set until session_disconnected or an external stop.
 
-        # handle session connected event
-        # this player has become the active spotify connect player
-        # we need to start the playback
-        if event_name in ("sink", "playing") and (not self._in_use_by_queue):
-            # If we receive a 'sink' event but we are not officially connected
-            # (i.e. we just disconnected), ignore it to prevent accidental
-            # re-activation of this player (trailing event from dying session).
-            if event_name == "sink" and not self._connected_spotify_username:
-                self.logger.debug("Ignoring trailing sink event while disconnected")
-                return Response()
+        # 'sink' = audio sink active, 'playing' = playback started — both mean
+        # librespot is producing audio. They often arrive in the same tick in
+        # either order; treat both as active so downstream gates see consistent
+        # state regardless of which lands first.
+        if event_name in ("sink", "playing"):
+            self._librespot_playing = True
+        elif event_name == "paused":
+            self._librespot_playing = False
+            # cancel any deferred play_media — pause is the definitive "don't".
+            # We deliberately do NOT cmd_stop the consumer here even though it
+            # would make pause UX feel snappier: cmd_stop ends the stream →
+            # ffmpeg closes the pipe read fd → librespot gets EPIPE and resets
+            # its Spotify Connect session. The reset emits a stale 'playing'
+            # before re-syncing to paused, which would loop play_media → pause
+            # → cmd_stop forever. Slower consumer-buffer drain is the trade.
+            self._cancel_pending_play_media()
+        elif event_name == "session_connected":
+            # a session reconnect means the previous 'playing' event was from
+            # a now-dying session — acting on it would land our stream on a
+            # closing pipe; cancel any deferred fire from that event
+            self._cancel_pending_play_media()
 
-            # Check for matching Spotify provider now that playback is starting
-            # This ensures the Spotify music provider has had time to initialize
-            if not self._connected_spotify_username or not self._spotify_provider:
-                await self._check_spotify_provider_match()
-
-            # Make this device the active Spotify player via Web API
-            if self._spotify_provider:
-                self.mass.create_task(self._ensure_active_device())
-
-            # Determine target player for playback
-            target_player_id = self._get_target_player_id()
-            if target_player_id:
-                # initiate playback by selecting this source on the target player
-                self.logger.info(
-                    "Starting Spotify Connect playback [%s] on player %s",
-                    self.instance_id,
-                    target_player_id,
-                )
-                self._active_player_id = target_player_id
-                self.mass.create_task(
-                    self.mass.player_queues.play_media(
-                        target_player_id, str(self._audio_source.uri)
-                    )
-                )
-            else:
-                self.logger.warning(
-                    "Spotify Connect playback started but no player available. "
-                    "Select this source on a player to start playback."
-                )
+        # An externally-triggered 'playing' event means Spotify (the app on a
+        # phone/desktop) has started playback on us — kick a play_media on the
+        # target MA player so the audio actually reaches a speaker. We only
+        # fire on 'playing' (not 'sink' — that's just the audio-sink-active
+        # signal which fires before actual playback and would race with
+        # 'playing' to double-fire play_media). The fire is deferred so a
+        # rapid sink/playing/session-connect burst from a reconnecting session
+        # can cancel it before we act on a stale state.
+        if (
+            event_name == "playing"
+            and not self._in_use_by_queue
+            and (self._pending_play_media_task is None or self._pending_play_media_task.done())
+        ):
+            self._pending_play_media_task = self.mass.create_task(self._deferred_play_media_fire())
 
         # parse metadata fields (_stream_metadata is always set in __init__)
         if common_meta := json_data.get("common_metadata_fields", {}):

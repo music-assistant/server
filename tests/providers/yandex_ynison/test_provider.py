@@ -18,7 +18,6 @@ from ya_passport_auth import SecretStr
 
 from music_assistant.providers.yandex_ynison.config_helpers import list_yandex_music_instances
 from music_assistant.providers.yandex_ynison.constants import (
-    CONF_ALLOW_PLAYER_SWITCH,
     CONF_DEVICE_ID,
     CONF_MASS_PLAYER_ID,
     CONF_PUBLISH_NAME,
@@ -57,7 +56,6 @@ def _make_mock_config(values: dict[str, Any] | None = None) -> MagicMock:
         CONF_TOKEN: "test-music-token",
         CONF_YM_INSTANCE: YM_INSTANCE_OWN,
         CONF_MASS_PLAYER_ID: PLAYER_ID_AUTO,
-        CONF_ALLOW_PLAYER_SWITCH: True,
         CONF_PUBLISH_NAME: DEFAULT_DISPLAY_NAME,
         CONF_DEVICE_ID: "test-device-uuid",
         "log_level": "GLOBAL",
@@ -241,24 +239,6 @@ class TestSourceSelection:
         await provider.on_source_selected("main", "new-player", "new-player", "session_1")
         assert provider._active_player_id == "new-player"
         assert provider._active_session_id == "session_1"
-
-    async def test_on_source_selected_switching_disabled(self) -> None:
-        """Rejects source selection when player switching is disabled."""
-        mass = _make_mock_mass()
-        config = _make_mock_config({CONF_ALLOW_PLAYER_SWITCH: False})
-        manifest = _make_mock_manifest()
-        provider = YandexYnisonProvider(mass, manifest, config, {ProviderFeature.AUDIO_SOURCE})
-
-        # Set default player
-        provider._default_player_id = "default-player"
-        mass.players.get_player.return_value = MagicMock()
-
-        with pytest.raises(RuntimeError, match="Player switching is disabled"):
-            await provider.on_source_selected("main", "other-player", "other-player", "session_1")
-
-        # Should have redirected to the configured default via play_media
-        mass.player_queues.play_media.assert_awaited()
-        assert provider._active_player_id is None
 
 
 # ------------------------------------------------------------------

@@ -254,11 +254,8 @@ class AudioAnalysisController:
         :param analysis_version: Version of the AA provider's algorithm.
         :param media_type: The media type of the item being analyzed.
         """
-        if not (
-            provider := self.mass.get_provider(
-                provider_instance_id_or_domain, provider_type=MusicProvider
-            )
-        ):
+        provider = self.mass.get_provider(provider_instance_id_or_domain)
+        if not isinstance(provider, MusicProvider):
             return
         prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
         data_json = json_dumps(analysis.to_dict())
@@ -290,11 +287,8 @@ class AudioAnalysisController:
         :param provider_instance_id_or_domain: Music provider instance ID or domain.
         :param media_type: The media type of the item.
         """
-        if not (
-            provider := self.mass.get_provider(
-                provider_instance_id_or_domain, provider_type=MusicProvider
-            )
-        ):
+        provider = self.mass.get_provider(provider_instance_id_or_domain)
+        if not isinstance(provider, MusicProvider):
             return None
         prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
         rows = await self.mass.music.database.get_rows(
@@ -369,11 +363,8 @@ class AudioAnalysisController:
         :param aa_provider_domain: Domain of the AA provider.
         :param media_type: The media type of the item.
         """
-        if not (
-            provider := self.mass.get_provider(
-                provider_instance_id_or_domain, provider_type=MusicProvider
-            )
-        ):
+        provider = self.mass.get_provider(provider_instance_id_or_domain)
+        if not isinstance(provider, MusicProvider):
             return None
         prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
         row = await self.mass.music.database.get_row(
