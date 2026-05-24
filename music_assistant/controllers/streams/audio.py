@@ -1192,12 +1192,16 @@ class StreamsAudio:
         rate the player supports that is <= the source rate, so the source is never
         upsampled. The bit depth follows the source unless audio processing
         (crossfade, volume normalization, DSP) is active — those need F32 headroom
-        to avoid clipping/precision loss.
+        to avoid clipping/precision loss. Realtime AudioSource items skip all
+        processing and get a pure passthrough format (source rate/bit depth when
+        the player supports them).
 
         :param player: The player requesting the stream.
         :param streamdetails: Stream details for the current item.
         :param smartfades_enabled: Whether crossfade is enabled for this stream.
         """
+        if streamdetails.media_type == MediaType.AUDIO_SOURCE:
+            return self._select_audio_source_pcm_format(player, streamdetails)
         supported_sample_rates = [sr for sr, _ in player.get_supported_sample_rates()]
         # snap-down: pick the highest supported rate <= source. when the source rate
         # is below every supported rate (e.g. 22 kHz content on a 44.1k-only player),
@@ -1236,7 +1240,9 @@ class StreamsAudio:
         modes it snaps to the configured rate. The bit depth follows the first
         track's source unless audio processing is active (then F32 for headroom),
         avoiding an unnecessary up-convert to 32-bit when none of the consumers
-        will benefit from it.
+        will benefit from it. When the first item is a realtime AudioSource, the
+        flow mode config is ignored and a pure passthrough format is used so the
+        source audio is delivered with minimum overhead and latency.
 
         :param player: The player the flow stream is being prepared for.
         :param start_streamdetails: Stream details of the first track in the flow.
@@ -1245,6 +1251,10 @@ class StreamsAudio:
             omitted the bit depth defaults to F32.
         :param smartfades_enabled: Whether the queue will use crossfade transitions.
         """
+        if start_streamdetails is not None and (
+            start_streamdetails.media_type == MediaType.AUDIO_SOURCE
+        ):
+            return self._select_audio_source_pcm_format(player, start_streamdetails)
         supported_sample_rates = sorted({sr for sr, _ in player.get_supported_sample_rates()})
         flow_mode_conf = cast(
             "str",
@@ -2391,6 +2401,38 @@ class StreamsAudio:
             return INTERNAL_PCM_FORMAT.content_type, INTERNAL_PCM_FORMAT.bit_depth
         bit_depth = streamdetails.audio_format.bit_depth
         return ContentType.from_bit_depth(bit_depth), bit_depth
+
+    def _select_audio_source_pcm_format(
+        self, player: Player, streamdetails: StreamDetails
+    ) -> AudioFormat:
+        """
+        Return a passthrough PCM format for a realtime AudioSource item.
+
+        The format matches the source's native sample rate, bit depth and
+        channel count whenever the player can accept them; if the player does
+        not support the source's sample rate, it is snapped down to the
+        closest supported rate. No F32 widening, no forced stereo — realtime
+        sources skip every processing stage that would otherwise need them.
+
+        :param player: The player requesting the stream.
+        :param streamdetails: Stream details for the AudioSource item.
+        """
+        supported_sample_rates = [sr for sr, _ in player.get_supported_sample_rates()]
+        source_rate = streamdetails.audio_format.sample_rate
+        if source_rate in supported_sample_rates:
+            output_sample_rate = source_rate
+        else:
+            output_sample_rate = max(
+                (r for r in supported_sample_rates if r <= source_rate),
+                default=min(supported_sample_rates),
+            )
+        bit_depth = streamdetails.audio_format.bit_depth
+        return AudioFormat(
+            content_type=ContentType.from_bit_depth(bit_depth),
+            sample_rate=output_sample_rate,
+            bit_depth=bit_depth,
+            channels=streamdetails.audio_format.channels,
+        )
 
     def _flow_stream_needs_restart(
         self,
