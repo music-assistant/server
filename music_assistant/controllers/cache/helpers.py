@@ -4,7 +4,16 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Protocol, TypeVar, cast, get_type_hints
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Concatenate,
+    ParamSpec,
+    Protocol,
+    TypeVar,
+    cast,
+    get_type_hints,
+)
 
 from music_assistant.controllers.cache.constants import (
     DEFAULT_CACHE_EXPIRATION,
