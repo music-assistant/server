@@ -13,7 +13,11 @@ from typing import TYPE_CHECKING, Any, cast
 from mashumaro import DataClassDictMixin
 from mashumaro.exceptions import MissingField
 from music_assistant_models.enums import ExternalID, LinkType, ProviderFeature
-from music_assistant_models.errors import InvalidDataError, ResourceTemporarilyUnavailable, RetriesExhausted
+from music_assistant_models.errors import (
+    InvalidDataError,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+)
 from music_assistant_models.media_items import MediaItemLink, MediaItemMetadata
 
 from music_assistant.controllers.cache import use_cache
