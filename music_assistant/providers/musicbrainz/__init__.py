@@ -369,14 +369,22 @@ class MusicbrainzProvider(MetadataProvider):
             that MBID could not be resolved.
         """
         results: list[tuple[str, str, str] | None] = []
-        for mbid in mbids:
+        for index, mbid in enumerate(mbids):
             try:
                 artist = await self.get_artist_details(mbid)
                 results.append((artist.name, mbid, artist.sort_name))
-            except (InvalidDataError, RetriesExhausted) as err:
-                # transport errors propagate; they signal a broken mirror, not a per-artist issue
+            except InvalidDataError as err:
                 self.logger.warning("Failed to lookup MusicBrainz artist %s: %s", mbid, err)
                 results.append(None)
+            except RetriesExhausted as err:
+                self.logger.warning(
+                    "Aborting MusicBrainz artist lookup after transport failure for %s: %s",
+                    mbid,
+                    err,
+                )
+                results.append(None)
+                results.extend([None] * (len(mbids) - index - 1))
+                break
         return results
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
