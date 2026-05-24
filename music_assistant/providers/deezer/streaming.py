@@ -24,7 +24,7 @@ from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-define
 from music_assistant.helpers.datetime import utc_timestamp
 
 from .gw_client import DeezerGWError
-from .helpers import fetch_all_audiobook_chapter_edges
+from .helpers import fetch_all_audiobook_chapter_edges, fetch_all_bookmarks
 
 if TYPE_CHECKING:
     from .provider import DeezerProvider
@@ -54,21 +54,10 @@ class DeezerStreamingManager:
         """
         if media_type != MediaType.PODCAST_EPISODE:
             return (False, 0, None)
-        cursor: str | None = None
-        while True:
-            result = await self.provider.gql_client.get_podcast_episode_bookmarks(
-                first=50, after=cursor
-            )
-            if not result:
-                break
-            for edge in result.podcast_episode_bookmarks.edges:
-                if edge.node is None:
-                    continue
-                if edge.node.episode.id == item_id:
-                    return (edge.node.is_played, edge.node.position * 1000, None)
-            if not result.podcast_episode_bookmarks.page_info.has_next_page:
-                break
-            cursor = result.podcast_episode_bookmarks.page_info.end_cursor
+        bookmarks = await fetch_all_bookmarks(self.provider.gql_client)
+        if item_id in bookmarks:
+            is_played, position_ms = bookmarks[item_id]
+            return (is_played, position_ms, None)
         return (False, 0, None)
 
     # -- Playback callbacks --

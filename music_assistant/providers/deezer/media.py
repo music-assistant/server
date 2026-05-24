@@ -30,7 +30,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.controllers.cache import use_cache
 
-from .helpers import fetch_all_audiobook_chapter_edges
+from .helpers import fetch_all_audiobook_chapter_edges, fetch_all_bookmarks
 from .parsers import (
     apply_web_url,
     parse_album,
@@ -540,34 +540,13 @@ class DeezerMediaManager:
         episodes = await self._fetch_podcast_episodes(prov_podcast_id)
         if not episodes:
             return
-        bookmarks = await self._fetch_all_bookmarks()
+        bookmarks = await fetch_all_bookmarks(self.provider.gql_client)
         for ep in episodes:
             ep.fully_played = False
             ep.resume_position_ms = 0
             if ep.item_id in bookmarks:
                 ep.fully_played, ep.resume_position_ms = bookmarks[ep.item_id]
             yield ep
-
-    async def _fetch_all_bookmarks(self) -> dict[str, tuple[bool, int]]:
-        """Fetch all podcast episode bookmarks, paginating until exhausted."""
-        bookmarks: dict[str, tuple[bool, int]] = {}
-        cursor: str | None = None
-        while True:
-            result = await self.provider.gql_client.get_podcast_episode_bookmarks(
-                first=50, after=cursor
-            )
-            if not result:
-                break
-            for edge in result.podcast_episode_bookmarks.edges:
-                if edge.node is not None:
-                    bookmarks[edge.node.episode.id] = (
-                        edge.node.is_played,
-                        edge.node.position * 1000,
-                    )
-            if not result.podcast_episode_bookmarks.page_info.has_next_page:
-                break
-            cursor = result.podcast_episode_bookmarks.page_info.end_cursor
-        return bookmarks
 
     @use_cache(3600 * 24)
     async def _fetch_podcast_episodes(self, prov_podcast_id: str) -> list[PodcastEpisode]:
