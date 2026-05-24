@@ -264,6 +264,20 @@ async def _resolve_item(
     )
     if result is None:
         LOGGER.debug("Could not resolve %s: %s", item_mapping.media_type.value, item_mapping.name)
+        return None
+
+    # Streaming providers expose ISRCs (and sometimes MBIDs) that Last.fm doesn't always
+    # provide; re-check the library against the resolved item's external IDs so we prefer
+    # the user's own copy when it exists.
+    if result.external_ids:
+        if library_item := await ctrl.get_library_item_by_external_ids(result.external_ids):
+            LOGGER.debug(
+                "Found %s in library via resolved external IDs: %s",
+                item_mapping.media_type.value,
+                library_item.name,
+            )
+            return library_item
+
     return result
 
 

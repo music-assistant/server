@@ -10,7 +10,7 @@ This package provides a centralized caching layer backed by SQLite. All data sto
 - Provide a `base_class` parameter on `get()` to automatically reconstruct model objects from cached dicts using `from_dict()`.
 - Provide a `use_cache` decorator for transparently caching provider/controller method results with automatic serialization and deserialization based on type annotations.
 - Run scheduled cleanup of expired entries.
-- Detect and reset oversized cache databases on startup.
+- Warn when the cache database exceeds the recommended maximum size on startup.
 
 ## Package Layout
 
@@ -24,5 +24,7 @@ This package provides a centralized caching layer backed by SQLite. All data sto
 - All data passes through `json_dumps` on write and `json_loads` on read. This means callers must use `.to_dict()` before storing model objects and `.from_dict()` (or the `base_class` parameter) after retrieval. Both `cache.get()` and the `use_cache` decorator accept a `base_class` parameter for automatic reconstruction.
 - Cache entries are namespaced by `(category, provider, key)`. The `category` is an integer, `provider` and `key` are strings.
 - Entries with `persistent=True` survive calls to `clear()` unless `include_persistent=True` is passed.
+- Entries with `allow_expired_cache=True` survive the daily auto-cleanup task even after they have expired, so they remain available as fallback data for the stale-while-revalidate path of `@use_cache`. This is independent of `persistent`: `persistent` controls explicit `clear()` calls, `allow_expired_cache` controls auto-cleanup of expired rows.
+- The `@use_cache` decorator accepts `allow_expired_cache=True` to enable stale-while-revalidate: an expired entry is returned immediately and a background refresh updates the cache for the next request. The `BYPASS_CACHE` context variable still forces a synchronous re-fetch.
 - The `BYPASS_CACHE` context variable, managed through `handle_refresh()`, forces cache misses for the duration of a context — useful for refresh operations.
-- A daily cleanup task removes expired entries. Oversized databases (>2GB) are removed entirely on startup.
+- A daily cleanup task removes expired entries (unless `allow_expired_cache=True`). Databases that exceed the recommended max size (2GB) are logged with a warning at startup but kept in place.

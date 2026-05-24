@@ -2431,7 +2431,7 @@ class YandexMusicProvider(MusicProvider):
 
     # Get related items
 
-    @use_cache(3600 * 24 * 30)
+    @use_cache(3600 * 24 * 30, allow_expired_cache=True)
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks.
 
@@ -2941,7 +2941,7 @@ class YandexMusicProvider(MusicProvider):
             icon="mdi-weather-sunny",
         )
 
-    @use_cache(3600 * 3)
+    @use_cache(3600 * 3, allow_expired_cache=True)
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks.
 
@@ -3041,7 +3041,7 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing playlist track: %s", err)
         return tracks
 
-    @use_cache(3600 * 24 * 7)
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get artist's albums.
 
@@ -3057,7 +3057,7 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing artist album: %s", err)
         return result
 
-    @use_cache(3600 * 24 * 7)
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get artist's top tracks.
 

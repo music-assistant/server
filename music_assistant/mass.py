@@ -548,6 +548,9 @@ class MusicAssistant:
             if abort_existing:
                 existing.cancel()
             else:
+                # close any already-constructed coroutine to avoid "never awaited" warning
+                if inspect.iscoroutine(target):
+                    target.close()
                 return existing
         self.verify_event_loop_thread("create_task")
 
@@ -827,6 +830,7 @@ class MusicAssistant:
             self.player_queues,
             self.webserver,
             self.webserver.auth,
+            self.streams.audio_analysis,
         ):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):

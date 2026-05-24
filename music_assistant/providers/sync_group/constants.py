@@ -9,6 +9,12 @@ from music_assistant_models.enums import ConfigEntryType, PlayerFeature
 
 SGP_PREFIX: Final[str] = "syncgroup_"
 
+# Grace period (seconds) before a sync group dissolves itself after the queue
+# naturally finishes (playback_state transitions to IDLE without an explicit
+# stop). A short grace window absorbs end-of-track gaps and a quick "play next"
+# from the user without disrupting the live sync session.
+IDLE_GRACE_SECONDS: Final[float] = 10.0
+
 CONF_ENTRY_SGP_NOTE = ConfigEntry(
     key="sgp_note",
     type=ConfigEntryType.ALERT,

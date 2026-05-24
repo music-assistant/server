@@ -1339,7 +1339,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
         return self._parse_artist(artist_obj)
 
-    @use_cache(3600 * 24)
+    @use_cache(3600 * 24, allow_expired_cache=True)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get all albums for an artist."""
         limit = 100
@@ -1374,7 +1374,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 break
         return albums
 
-    @use_cache(3600 * 24)
+    @use_cache(3600 * 24, allow_expired_cache=True)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get top tracks for given artist."""
         payload = await self._client.get(
@@ -1415,7 +1415,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Album {prov_album_id} not found")
         return self._parse_album(album_obj)
 
-    @use_cache()
+    @use_cache(allow_expired_cache=True)
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for album id."""
         payload = await self._client.get(
