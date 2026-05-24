@@ -29,9 +29,11 @@ jobs:
   apply_label:
     name: Apply
     runs-on: ubuntu-latest
-    # Bot-authored PRs (Dependabot, etc.) don't follow the PR
-    # template and apply their own labels — the release-notes
-    # generator picks those up without this job's help.
+    # GitHub-typed bots (Dependabot, etc.) don't follow the PR
+    # template and apply their own labels — skip them outright.
+    # PAT-driven service accounts (e.g. music-assistant-machine)
+    # report user.type == 'User', so we additionally skip below
+    # whenever the PR already carries a known-set label.
     if: github.event.pull_request.user.type != 'Bot'
     steps:
       - name: 🏷 Apply label from PR description checkbox
@@ -43,6 +45,25 @@ jobs:
               'new-feature', 'enhancement', 'new-provider',
               'maintenance', 'ci', 'dependencies', 'documentation',
             ];
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const current = (context.payload.pull_request.labels || [])
+              .map(l => l.name);
+
+            // If the PR already carries exactly one known-set label
+            // (e.g. applied by auto-update-frontend or backport-to-stable
+            // tooling that doesn't use the PR template), trust it and
+            // exit. Zero or 2+ known labels still fall through to the
+            // checkbox-driven path so a stray manual label can't hide
+            // a missing template tick.
+            const alreadyLabelled = current.filter(n => known.includes(n));
+            if (alreadyLabelled.length === 1) {
+              core.info(
+                `Skipping: PR already labelled '${alreadyLabelled[0]}'.`
+              );
+              return;
+            }
 
             // Match a ticked checkbox bullet whose line ends with a
             // backticked label, e.g.  - [x] CI / workflow change — `ci`
@@ -57,9 +78,6 @@ jobs:
                 ticked.push(name);
               }
             }
-
-            const { owner, repo } = context.repo;
-            const issue_number = context.payload.pull_request.number;
 
             if (ticked.length === 0) {
               core.setFailed(
@@ -78,8 +96,6 @@ jobs:
             }
 
             const desired = ticked[0];
-            const current = (context.payload.pull_request.labels || [])
-              .map(l => l.name);
 
             // Strip any stale labels from the known set so a
             // contributor changing their mind in the description
