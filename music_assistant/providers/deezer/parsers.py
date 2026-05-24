@@ -800,7 +800,8 @@ def get_flow_config_image(
     """Extract the square icon URL from a FlowConfig node's visuals."""
     icon = node.visuals.hardware_square_icon
     if icon and icon.urls:
-        return icon.urls[0]
+        url: str = icon.urls[0]
+        return url
     return None
 
 
