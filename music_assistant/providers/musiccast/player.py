@@ -693,11 +693,7 @@ class MusicCastPlayer(Player):
         return _input_sources.difference(_net_sources)
 
     async def _set_player_unavailable(self) -> None:
-        """Set this player and associated zone players unavailable.
-
-        Only called from a main zone player.
-        """
-        assert self.zone_device.zone_name == "main", "Call only from main player!"
+        """Set this player and associated zone players unavailable."""
         self.logger.debug("Player %s became unavailable.", self.display_name)
 
         if TYPE_CHECKING:
@@ -707,19 +703,17 @@ class MusicCastPlayer(Player):
         # the next poll can recover it.
         self.physical_device.disable_polling()
 
-        async with self.update_lock:
-            self._attr_available = False
-            self.update_state()
+        # no update_lock: _cmd_run can call this while play_media already holds it
+        self._attr_available = False
+        self.update_state()
 
-        # set other zones unavailable
         for zone_device in self.zone_device.other_zones:
             if zone_device_player := self.mass.players.get_player(
                 self._get_player_id_from_zone_device(zone_device)
             ):
                 assert isinstance(zone_device_player, MusicCastPlayer)  # for type checking
-                async with zone_device_player.update_lock:
-                    zone_device_player._attr_available = False
-                    zone_device_player.update_state()
+                zone_device_player._attr_available = False
+                zone_device_player.update_state()
 
     async def _set_player_available(self) -> None:
         """Re-enable UDP polling and refresh zone players after recovery."""
