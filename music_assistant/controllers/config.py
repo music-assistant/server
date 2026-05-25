@@ -396,10 +396,40 @@ class ConfigController:
 
         # add dynamic optional config entries that depend on features
         if instance_id and (provider := self.mass.get_provider(instance_id)):
-            supported_features = provider.supported_features
+            # When the user is editing a loaded provider and the form contains a new
+            # library_type, prefer the dynamic feature set from the form so sync
+            # options match the selected type rather than the old loaded type.
+            new_library_type = (values or {}).get("library_type")
+            if (
+                new_library_type is not None
+                and hasattr(provider, "_get_library_type")
+                and new_library_type != provider._get_library_type()
+            ):
+                raw_features = getattr(prov_mod, "get_supported_features", None)
+                if callable(raw_features):
+                    supported_features: set[ProviderFeature] = cast(
+                        "set[ProviderFeature]", raw_features(values)
+                    )
+                else:
+                    supported_features = provider.supported_features
+            else:
+                supported_features = provider.supported_features
         else:
             provider = None
-            supported_features = getattr(prov_mod, "SUPPORTED_FEATURES", set())
+            # Prefer a dynamic callable that can react to intermediate form
+            # values (e.g. library type selector). Fall back to static set.
+            raw_features = getattr(prov_mod, "get_supported_features", None)
+            if raw_features is None:
+                raw_features = getattr(prov_mod, "SUPPORTED_FEATURES", None)
+            if raw_features is None:
+                _sf: set[ProviderFeature] = set()
+            elif callable(raw_features):
+                _sf = cast("set[ProviderFeature]", raw_features(values))
+            elif isinstance(raw_features, set):
+                _sf = raw_features
+            else:
+                _sf = set()
+            supported_features = _sf
         extra_entries: list[ConfigEntry] = []
         if manifest.type == ProviderType.MUSIC:
             # library sync settings
