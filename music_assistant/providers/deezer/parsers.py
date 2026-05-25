@@ -77,6 +77,7 @@ if TYPE_CHECKING:
         GetFlowConfigsMeFlowConfigsGenresEdgesNode,
         GetFlowConfigsMeFlowConfigsMoodsEdgesNode,
     )
+    from deezer_python_gql.generated.get_track import GetTrackTrack
     from deezer_python_gql.generated.search import (
         SearchSearchResultsAlbumsEdgesNode,
         SearchSearchResultsArtistsEdgesNode,
@@ -148,9 +149,21 @@ def _provider_mapping(
 # -- GQL model parsers --
 
 
+def _track_available(
+    track: TrackFields | SearchSearchResultsTracksEdgesNode | GetTrackTrack,
+) -> bool:
+    """Determine if a track is available for streaming."""
+    media = track.media
+    if media is None:
+        return False
+    if media.rights.sub is None:
+        return False
+    return media.rights.sub.available
+
+
 def parse_track(
     provider: DeezerProvider,
-    track: TrackFields | SearchSearchResultsTracksEdgesNode,
+    track: TrackFields | SearchSearchResultsTracksEdgesNode | GetTrackTrack,
     position: int = 0,
 ) -> Track:
     """
@@ -191,10 +204,15 @@ def parse_track(
                         name=edge.node.name,
                     )
                 )
+        year: int | None = None
+        if release_date := getattr(track, "release_date", None):
+            if parsed := parse_date(str(release_date)):
+                year = parsed.year
         album = Album(
             item_id=track.album.id,
             provider=provider.instance_id,
             name=track.album.display_title,
+            year=year,
             artists=album_artists,
             provider_mappings={_provider_mapping(provider, track.album.id)},
             metadata=MediaItemMetadata(images=album_images)
@@ -217,7 +235,9 @@ def parse_track(
         duration=track.duration,
         artists=artists,
         album=album,
-        provider_mappings={_provider_mapping(provider, track.id, available=True)},
+        provider_mappings={
+            _provider_mapping(provider, track.id, available=_track_available(track))
+        },
         metadata=_parse_track_metadata(provider, track),
         track_number=track_number,
         position=position,
@@ -233,7 +253,8 @@ def parse_track(
 
 
 def _parse_track_metadata(
-    provider: DeezerProvider, track: TrackFields | SearchSearchResultsTracksEdgesNode
+    provider: DeezerProvider,
+    track: TrackFields | SearchSearchResultsTracksEdgesNode | GetTrackTrack,
 ) -> MediaItemMetadata:
     """Parse track metadata (images, explicit flag, lyrics) from a GQL track model."""
     metadata = MediaItemMetadata(explicit=track.is_explicit)
