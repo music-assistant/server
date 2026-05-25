@@ -103,7 +103,7 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
                     deezer_type = part
                     deezer_id = parts[i + 1]
                     break
-            if deezer_type is None or not deezer_id:
+            if deezer_type is None or not deezer_id or not deezer_id.isdigit():
                 raise KeyError
             provider_instance_id_or_domain = "deezer"
             media_type = _deezer_type_map[deezer_type]

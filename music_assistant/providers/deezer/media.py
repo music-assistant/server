@@ -455,8 +455,12 @@ class DeezerMediaManager:
     @use_cache(3600 * 24 * 30, allow_expired_cache=True)
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
+        try:
+            track_id_int = int(prov_track_id)
+        except ValueError as err:
+            raise MediaNotFoundError(f"Invalid Deezer track ID: {prov_track_id}") from err
         # Personal tracks (negative IDs) don't exist in the GQL API
-        if int(prov_track_id) < 0:
+        if track_id_int < 0:
             personal_songs = await self._get_personal_songs()
             for song in personal_songs:
                 if str(song["SNG_ID"]) == prov_track_id:

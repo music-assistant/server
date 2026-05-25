@@ -1059,10 +1059,9 @@ class DeezerBrowseManager:
 
     async def _get_personal_songs(self) -> list[Track]:
         """Get user-uploaded personal songs via the GW API."""
-        results = await self.provider.gw_client.get_personal_songs(start=0, nb=500)
-        data = results.get("data", [])
+        songs = await self.provider.media_manager._get_personal_songs()
         return [
-            parse_gw_track(self.provider, song, position=idx) for idx, song in enumerate(data, 1)
+            parse_gw_track(self.provider, song, position=idx) for idx, song in enumerate(songs, 1)
         ]
 
     async def invalidate_playlist_cache(self, prov_playlist_id: str) -> None:
