@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import os
 import pathlib
 import random
+import threading
 import urllib.parse
 from base64 import b64encode
+from collections import OrderedDict
 from contextlib import suppress
 from dataclasses import replace
 from time import time
@@ -72,6 +75,7 @@ from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.images import (
     cleanup_thumb_cache,
     create_collage,
+    create_thumb_hash,
     get_image_data,
     get_image_thumb,
 )
@@ -100,6 +104,64 @@ def _detect_image_format(path: str) -> str:
             return "png"
         case _:
             return "jpg"
+
+
+# Map of normalised imageproxy `fmt` values to standards-compliant MIME types.
+# Used both to validate the client-supplied `fmt` query parameter and to set
+# the Content-Type on the response.
+_IMAGEPROXY_CONTENT_TYPES: dict[str, str] = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "svg": "image/svg+xml",
+}
+
+
+def _normalize_imageproxy_format(value: str | None) -> str | None:
+    """Return a validated, lowercase imageproxy format, or None when invalid."""
+    if not value:
+        return None
+    normalized = value.strip().lower()
+    if normalized in _IMAGEPROXY_CONTENT_TYPES:
+        return normalized
+    return None
+
+
+# Schemes accepted from a client on the legacy /imageproxy?path= endpoint.
+# Allowlist (not blacklist) so a leading-whitespace or unknown-scheme value
+# cannot sneak through. Provider-supplied paths resolved internally via
+# `resolve_image` are not subject to this — only inbound client paths are.
+_ALLOWED_IMAGEPROXY_REQUEST_SCHEMES: frozenset[str] = frozenset({"", "http", "https"})
+
+
+def _is_safe_imageproxy_request_path(path: str) -> bool:
+    r"""
+    Return True if `path` is safe to fetch on behalf of an imageproxy client.
+
+    Rejects any input containing control characters or surrounding whitespace
+    (so a leading `\t`, ` `, or `\x00` cannot mask an otherwise-forbidden
+    scheme), restricts the scheme to http, https, or empty (local / relative
+    path), and for http(s) targets rejects IP-literal hosts that resolve to
+    loopback, private, link-local or multicast ranges. DNS-resolved hostnames
+    are trusted; full DNS-rebinding mitigation is out of scope here.
+    """
+    if any(ord(c) < 0x20 for c in path) or path != path.strip():
+        return False
+    parsed = urllib.parse.urlparse(path)
+    scheme = parsed.scheme.lower()
+    if scheme not in _ALLOWED_IMAGEPROXY_REQUEST_SCHEMES:
+        return False
+    if scheme in ("http", "https"):
+        host = parsed.hostname  # already lowercased; brackets stripped for IPv6
+        if not host or host == "localhost":
+            return False
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return True
+        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_multicast:
+            return False
+    return True
 
 
 LOCALES = {
@@ -162,6 +224,26 @@ METADATA_SCAN_BATCH_SIZE = 5
 CONF_THUMB_CACHE_MAX_SIZE = "thumb_cache_max_size"
 DEFAULT_THUMB_CACHE_MAX_SIZE_MB = 500
 
+# Image-id system: maps a sha256(provider+path) hash to the (provider, path) tuple
+# so the imageproxy can be addressed by an opaque short id instead of a long
+# query string carrying the raw (often URL-shaped) path. The high category
+# number matches the convention used elsewhere in this controller and avoids
+# collisions with providers that use low category integers under the default
+# cache namespace.
+CACHE_CATEGORY_IMAGE_IDS = 102
+_IMAGE_ID_LRU_MAX = 10000
+_IMAGE_ID_CACHE_TTL = 86400 * 365  # 1 year, refreshed on each write
+
+# Sizes accepted by the imageproxy. 0 means "no resize". The set is small enough
+# to bound PIL memory + thumbnail cache cardinality; expand if a real use case appears.
+_ALLOWED_IMAGEPROXY_SIZES = frozenset({0, 80, 160, 256, 512, 1024})
+
+_IMAGEPROXY_PATH_PREFIX = "/imageproxy/"
+
+# Deprecation logging for the legacy /imageproxy query-string endpoint.
+_LEGACY_DEPRECATION_LOG_INTERVAL = 60  # seconds between log lines per IP
+_LEGACY_DEPRECATION_PRUNE_AFTER = 300  # drop tracking entries idle this long
+
 
 class MetaDataController(CoreController):
     """Several helpers to search and store metadata for mediaitems."""
@@ -180,6 +262,15 @@ class MetaDataController(CoreController):
         )
         self.manifest.icon = "book-information-variant"
         self._throttler = Throttler(1, 30)
+        # image-id LRU: image_id -> (provider, path). Acts as a write-through
+        # hot cache in front of the cache controller so that resolving an image
+        # by id never blocks on sqlite if the URL was generated recently.
+        # The lock is needed because compute_image_id() runs from the executor
+        # thread during outbound websocket serialization.
+        self._image_id_lru: OrderedDict[str, tuple[str, str]] = OrderedDict()
+        self._image_id_lock = threading.Lock()
+        # per-IP throttle for the legacy /imageproxy deprecation warning
+        self._legacy_imageproxy_warn_at: dict[str, float] = {}
 
     async def get_config_entries(
         self,
@@ -262,11 +353,18 @@ class MetaDataController(CoreController):
 
     async def post_setup(self) -> None:
         """Handle logic after all core controllers have been set up."""
-        self.mass.streams.register_dynamic_route("/imageproxy", self.handle_imageproxy)
+        # canonical opaque-id endpoint, served by both the public webserver
+        # and the streams server (the latter is what player metadata URLs hit)
+        self.mass.streams.register_dynamic_route("/imageproxy/*", self.handle_imageproxy)
+        self.mass.webserver.register_dynamic_route("/imageproxy/*", self.handle_imageproxy)
+        # deprecated /imageproxy?provider=&path=&size=&fmt= form (kept for back-compat)
+        self.mass.streams.register_dynamic_route("/imageproxy", self.handle_legacy_imageproxy)
         self._register_maintenance_tasks()
 
     async def close(self) -> None:
         """Handle logic on server stop."""
+        self.mass.streams.unregister_dynamic_route("/imageproxy/*")
+        self.mass.webserver.unregister_dynamic_route("/imageproxy/*")
         self.mass.streams.unregister_dynamic_route("/imageproxy")
 
     @property
@@ -398,6 +496,65 @@ class MetaDataController(CoreController):
             },
         )
 
+    def compute_image_id(self, provider: str, path: str) -> str:
+        """
+        Return the opaque imageproxy image id for the given image.
+
+        The id is deterministic: the same (provider, path) pair always
+        yields the same id, across processes and restarts. Calling this
+        also ensures the id is resolvable back to (provider, path) by
+        a subsequent imageproxy request.
+
+        Safe to call from any thread.
+
+        :param provider: Provider id that owns / can resolve the image.
+        :param path: Image path or URL as the provider knows it.
+        """
+        image_id = create_thumb_hash(provider, path)
+        with self._image_id_lock:
+            if image_id in self._image_id_lru:
+                self._image_id_lru.move_to_end(image_id)
+                return image_id
+            self._image_id_lru[image_id] = (provider, path)
+            while len(self._image_id_lru) > _IMAGE_ID_LRU_MAX:
+                self._image_id_lru.popitem(last=False)
+        # the to_dict hook calls us from the executor when running under
+        # _send_message; only call create_task directly when we know we are
+        # on the loop thread, otherwise hop across via call_soon_threadsafe
+        coro = self._persist_image_id(image_id, provider, path)
+        if threading.get_ident() == self.mass.loop_thread_id:
+            self.mass.create_task(coro)
+        else:
+            self.mass.loop.call_soon_threadsafe(self.mass.create_task, coro)
+        return image_id
+
+    async def resolve_image_id(self, image_id: str) -> tuple[str, str] | None:
+        """
+        Return the (provider, path) tuple for a previously registered image id.
+
+        :param image_id: The opaque id as produced by `compute_image_id`.
+        """
+        with self._image_id_lock:
+            if cached := self._image_id_lru.get(image_id):
+                self._image_id_lru.move_to_end(image_id)
+                return cached
+        cached_db = await self.cache.get(
+            key=image_id,
+            category=CACHE_CATEGORY_IMAGE_IDS,
+            provider=self.domain,
+        )
+        if isinstance(cached_db, dict):
+            provider = cached_db.get("provider")
+            path = cached_db.get("path")
+            if isinstance(provider, str) and isinstance(path, str):
+                result = (provider, path)
+                with self._image_id_lock:
+                    self._image_id_lru[image_id] = result
+                    while len(self._image_id_lru) > _IMAGE_ID_LRU_MAX:
+                        self._image_id_lru.popitem(last=False)
+                return result
+        return None
+
     async def get_image_data_for_item(
         self,
         media_item: MediaItemType,
@@ -480,16 +637,12 @@ class MetaDataController(CoreController):
             # SVGs don't need resizing
             size = 0
         if not image.remotely_accessible or prefer_proxy or size:
-            # return imageproxy url for images that need to be resolved
-            # the original path is double encoded
-            encoded_url = urllib.parse.quote(urllib.parse.quote(image.path))
+            # short opaque id form; same id as the thumbnail cache key
+            image_id = self.compute_image_id(image.provider, image.path)
             base_url = (
                 self.mass.streams.base_url if prefer_stream_server else self.mass.webserver.base_url
             )
-            return (
-                f"{base_url}/imageproxy?provider={image.provider}"
-                f"&size={size}&fmt={image_format}&path={encoded_url}"
-            )
+            return f"{base_url}/imageproxy/{image_id}?size={size}&fmt={image_format}"
         return image.path
 
     async def get_thumbnail(
@@ -526,32 +679,86 @@ class MetaDataController(CoreController):
         return thumbnail_bytes
 
     async def handle_imageproxy(self, request: web.Request) -> web.Response:
-        """Handle request for image proxy."""
-        path = request.query["path"]
+        """
+        Serve an image for a `/imageproxy/<image_id>?size=&fmt=` request.
+
+        This is the canonical imageproxy endpoint: clients build the URL by
+        taking the `proxy_id` from a `MediaItemImage` and appending it as a
+        single path segment, optionally with `size` and `fmt` query parameters.
+        """
+        # require exactly /imageproxy/<id> (optionally with a trailing slash);
+        # extra path segments such as /imageproxy/foo/<id> must not validate
+        if not request.path.startswith(_IMAGEPROXY_PATH_PREFIX):
+            return web.Response(status=400)
+        image_id = request.path[len(_IMAGEPROXY_PATH_PREFIX) :].rstrip("/").lower()
+        if len(image_id) != 64 or any(c not in "0123456789abcdef" for c in image_id):
+            return web.Response(status=400)
+        try:
+            size = int(request.query.get("size", "0"))
+        except ValueError:
+            return web.Response(status=400)
+        if size not in _ALLOWED_IMAGEPROXY_SIZES:
+            return web.Response(status=400)
+        resolved = await self.resolve_image_id(image_id)
+        if resolved is None:
+            return web.Response(status=404)
+        provider, path = resolved
+        image_format = _normalize_imageproxy_format(
+            request.query.get("fmt")
+        ) or _detect_image_format(path)
+        return await self._serve_thumbnail(path, provider, size, image_format)
+
+    async def handle_legacy_imageproxy(self, request: web.Request) -> web.Response:
+        """
+        Serve an image for a legacy `/imageproxy?provider=&path=&size=&fmt=` request.
+
+        DEPRECATED: this form requires the client to carry the full provider id
+        and (often URL-shaped) path on the query string, which produces
+        unwieldy double-encoded URLs and an open surface for arbitrary path
+        injection. New clients must use the `proxy_id` field on
+        `MediaItemImage` and hit `handle_imageproxy` instead. Each remote IP
+        gets a throttled deprecation `warning` log per minute.
+        """
+        self._maybe_log_legacy_imageproxy(request)
+        try:
+            path = request.query["path"]
+        except KeyError:
+            return web.Response(status=400)
         provider = request.query.get("provider", "builtin")
         if provider in ("url", "file", "http"):
-            # temporary for backwards compatibility
+            # legacy aliases kept for backwards compatibility with old clients
             provider = "builtin"
-        size = int(request.query.get("size", "0"))
-        image_format = request.query.get("fmt", None)
-        if image_format is None:
-            image_format = _detect_image_format(path)
+        try:
+            size = int(request.query.get("size", "0"))
+        except ValueError:
+            return web.Response(status=400)
+        if size not in _ALLOWED_IMAGEPROXY_SIZES:
+            return web.Response(status=400)
+        image_format = _normalize_imageproxy_format(
+            request.query.get("fmt")
+        ) or _detect_image_format(path)
+        # path was double-encoded by old get_image_url(); decode iteratively
+        # until stable so we cope with any extra wrapping clients may have done
+        for _ in range(3):
+            if "%" not in path:
+                break
+            decoded = urllib.parse.unquote_plus(path)
+            if decoded == path:
+                break
+            path = decoded
+        if not _is_safe_imageproxy_request_path(path):
+            return web.Response(status=400)
         if not self.mass.get_provider(provider) and not path.startswith("http"):
             return web.Response(status=404)
-        if "%" in path:
-            # assume (double) encoded url, decode it
-            path = urllib.parse.unquote_plus(path)
+        return await self._serve_thumbnail(path, provider, size, image_format)
+
+    async def _serve_thumbnail(
+        self, path: str, provider: str, size: int, image_format: str
+    ) -> web.Response:
+        """Fetch (or render+cache) the thumbnail and produce an HTTP response."""
         try:
             image_data = await self.get_thumbnail(
                 path, size=size, provider=provider, image_format=image_format
-            )
-            # we set the cache header to 1 year (forever)
-            # assuming that images do not/rarely change
-            content_type = "image/svg+xml" if image_format == "svg" else f"image/{image_format}"
-            return web.Response(
-                body=image_data,
-                headers={"Cache-Control": "max-age=31536000", "Access-Control-Allow-Origin": "*"},
-                content_type=content_type,
             )
         except Exception as err:
             # broadly catch all exceptions here to ensure we dont crash the request handler
@@ -564,7 +771,36 @@ class MetaDataController(CoreController):
                     str(err),
                     exc_info=err if self.logger.isEnabledFor(10) else None,
                 )
-        return web.Response(status=404)
+            return web.Response(status=404)
+        return web.Response(
+            body=image_data,
+            headers={"Cache-Control": "max-age=31536000", "Access-Control-Allow-Origin": "*"},
+            content_type=_IMAGEPROXY_CONTENT_TYPES[image_format],
+        )
+
+    def _maybe_log_legacy_imageproxy(self, request: web.Request) -> None:
+        """Emit a throttled deprecation warning for the legacy /imageproxy form."""
+        remote = request.remote or "unknown"
+        now = time()
+        if len(self._legacy_imageproxy_warn_at) > 100:
+            self._legacy_imageproxy_warn_at = {
+                ip: ts
+                for ip, ts in self._legacy_imageproxy_warn_at.items()
+                if now - ts < _LEGACY_DEPRECATION_PRUNE_AFTER
+            }
+        if (
+            now - self._legacy_imageproxy_warn_at.get(remote, 0.0)
+            < _LEGACY_DEPRECATION_LOG_INTERVAL
+        ):
+            return
+        self._legacy_imageproxy_warn_at[remote] = now
+        self.logger.warning(
+            "Deprecated /imageproxy?provider=&path= request from %s (UA: %s); "
+            "clients should read the proxy_id field on MediaItemImage and use "
+            "the canonical /imageproxy/<proxy_id> endpoint instead",
+            remote,
+            request.headers.get("User-Agent", "?"),
+        )
 
     async def create_collage_image(
         self,
@@ -1752,3 +1988,14 @@ class MetaDataController(CoreController):
         removed = await cleanup_thumb_cache(self.mass.cache_path, max_size_mb * 1024 * 1024)
         if removed:
             self.logger.debug("Thumbnail cache cleanup: removed %s file(s)", removed)
+
+    async def _persist_image_id(self, image_id: str, provider: str, path: str) -> None:
+        """Store an image-id mapping so a later imageproxy request can resolve it."""
+        await self.cache.set(
+            key=image_id,
+            data={"provider": provider, "path": path},
+            category=CACHE_CATEGORY_IMAGE_IDS,
+            provider=self.domain,
+            expiration=_IMAGE_ID_CACHE_TTL,
+            persistent=True,
+        )

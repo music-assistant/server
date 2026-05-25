@@ -441,6 +441,18 @@ class SendspinPlayer(SendspinBasePlayer):
             if PlayerCommand.MUTE in _supported_commands:
                 self._attr_supported_features.add(PlayerFeature.VOLUME_MUTE)
 
+    @property
+    def supported_sample_rates(self) -> list[tuple[int, int]] | None:
+        """Return supported (sample_rate, bit_depth) tuples derived from the player role."""
+        # not cached: the player role / reported formats can change after the
+        # client (re)registers, so we always re-resolve from the live role state
+        if (player_role := self._player_role) is not None:
+            formats = player_role.get_supported_formats() or []
+            rates = sorted({(fmt.sample_rate, fmt.bit_depth) for fmt in formats})
+            if rates:
+                return rates
+        return [(44100, 16)]
+
     def preserve_control_features_from(self, other: SendspinPlayer) -> None:
         """Keep the first registration's volume/mute features as a workaround for Cast."""
         for feature in (PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE):

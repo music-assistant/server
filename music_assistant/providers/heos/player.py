@@ -13,17 +13,17 @@ from music_assistant_models.player import DeviceInfo, PlayerSource
 from pyheos import Heos, HeosError, const
 from pyheos import PlayState as HeosPlayState
 
-from music_assistant.constants import (
-    VERBOSE_LOG_LEVEL,
-    create_sample_rates_config_entry,
-)
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.models.player import Player, PlayerMedia
 from music_assistant.providers.heos.helpers import media_uri_from_now_playing_media
 
-from .constants import HEOS_MEDIA_TYPE_TO_MEDIA_TYPE, HEOS_PLAY_STATE_TO_PLAYBACK_STATE
+from .constants import (
+    HEOS_MEDIA_TYPE_TO_MEDIA_TYPE,
+    HEOS_PLAY_STATE_TO_PLAYBACK_STATE,
+    NON_HIRES_HEOS_MODELS,
+)
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
     from pyheos import HeosPlayer as PyHeosPlayer
 
     from .provider import HeosPlayerProvider
@@ -105,6 +105,15 @@ class HeosPlayer(Player):
         self._attr_device_info = _device_info
         self._attr_available = self._device.available
         self._attr_name = self._device.name
+
+        # Gen 1 HEOS hardware is capped at 48kHz/16-bit; HS2 and newer models
+        # are hi-res capable up to 192kHz/24-bit
+        if model in NON_HIRES_HEOS_MODELS:
+            self._attr_supported_sample_rates = [(44100, 16), (48000, 16)]
+        else:
+            self._attr_supported_sample_rates = [
+                (sr, bd) for sr in (44100, 48000, 88200, 96000, 176400, 192000) for bd in (16, 24)
+            ]
 
     async def build_group_list(self) -> None:
         """Build group list based on group info from controller."""
@@ -435,19 +444,3 @@ class HeosPlayer(Player):
         self._ma_controls_playback = False
         self._queue_cleanup_pending = False
         await self._device.play_input_source(source)
-
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
-        """Return all (provider/player specific) Config Entries for the player."""
-        return [
-            # Gen 1 devices, like HEOS Link, only support up to 48kHz/16bit
-            create_sample_rates_config_entry(
-                max_sample_rate=192000,
-                safe_max_sample_rate=48000,
-                max_bit_depth=24,
-                safe_max_bit_depth=16,
-            ),
-        ]

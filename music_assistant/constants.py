@@ -31,7 +31,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 30
+API_SCHEMA_VERSION: Final[int] = 31
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -87,6 +87,7 @@ CONF_PLAYER_DSP: Final[str] = "player_dsp"
 CONF_PLAYER_DSP_PRESETS: Final[str] = "player_dsp_presets"
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
 CONF_FLOW_MODE: Final[str] = "flow_mode"
+CONF_FLOW_MODE_SAMPLE_RATE: Final[str] = "flow_mode_sample_rate"
 CONF_LOG_LEVEL: Final[str] = "log_level"
 CONF_HIDE_GROUP_CHILDS: Final[str] = "hide_group_childs"
 CONF_CROSSFADE_DURATION: Final[str] = "crossfade_duration"
@@ -274,6 +275,45 @@ CONF_ENTRY_FLOW_MODE = ConfigEntry(
     type=ConfigEntryType.BOOLEAN,
     label="Enforce Gapless playback with Queue Flow Mode streaming",
     default_value=False,
+    category="protocol_generic",
+    advanced=True,
+    requires_reload=True,
+)
+
+
+FLOW_MODE_SAMPLE_RATE_SMART: Final[str] = "smart"
+FLOW_MODE_SAMPLE_RATE_BIT_PERFECT: Final[str] = "bit_perfect"
+FLOW_MODE_SAMPLE_RATE_48000: Final[str] = "48000"
+FLOW_MODE_SAMPLE_RATE_96000: Final[str] = "96000"
+FLOW_MODE_SAMPLE_RATE_HIGHEST: Final[str] = "highest"
+
+CONF_ENTRY_FLOW_MODE_SAMPLE_RATE = ConfigEntry(
+    key=CONF_FLOW_MODE_SAMPLE_RATE,
+    type=ConfigEntryType.STRING,
+    label="Flow Mode sample rate",
+    options=[
+        ConfigValueOption("Smart (upsample only)", FLOW_MODE_SAMPLE_RATE_SMART),
+        ConfigValueOption("Bit-perfect (no resampling)", FLOW_MODE_SAMPLE_RATE_BIT_PERFECT),
+        ConfigValueOption("48 kHz (balanced quality and bandwidth)", FLOW_MODE_SAMPLE_RATE_48000),
+        ConfigValueOption("96 kHz (high quality)", FLOW_MODE_SAMPLE_RATE_96000),
+        ConfigValueOption("Highest supported by player", FLOW_MODE_SAMPLE_RATE_HIGHEST),
+    ],
+    default_value=FLOW_MODE_SAMPLE_RATE_SMART,
+    description="When streaming in Flow Mode, the entire queue is sent as one gapless stream "
+    "and must use a single sample rate for the whole stream.\n\n"
+    "- 'Smart (upsample only)': Starts the flow stream at the sample rate of the first "
+    "track. Subsequent tracks with an equal or lower sample rate are upsampled to match; "
+    "if the next track has a higher sample rate, the flow stream is restarted at that "
+    "higher rate. This is the best balance between quality and seamless playback.\n"
+    "- 'Bit-perfect (no resampling)': Never resamples audio (unless the player does not "
+    "support the track's sample rate). Playback is restarted between queue tracks when "
+    "their sample rates differ, which disables gapless and crossfade between those tracks.\n"
+    "- '48 kHz': Resamples all audio to a fixed 48 kHz (or the closest rate supported by "
+    "the player) using a high quality resampler. A good compromise of quality and bandwidth.\n"
+    "- '96 kHz': Resamples all audio to a fixed 96 kHz (or the closest rate supported by "
+    "the player) using a high quality resampler.\n"
+    "- 'Highest supported by player': Resamples all audio to the highest sample rate the "
+    "player supports. Note that this can waste a lot of bandwidth.",
     category="protocol_generic",
     advanced=True,
     requires_reload=True,

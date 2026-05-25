@@ -1675,7 +1675,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if next_item is None or not next_item.image:
             return
         next_url = self.mass.metadata.get_image_url(
-            next_item.image, size=500, prefer_stream_server=True
+            next_item.image, size=512, prefer_stream_server=True
         )
         self._schedule_palette_fetch(player_id, next_url, trigger_update=False)
 

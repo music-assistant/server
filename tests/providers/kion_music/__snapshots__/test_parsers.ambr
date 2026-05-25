@@ -150,6 +150,7 @@
         dict({
           'path': 'https://avatars.yandex.net/get-music-content/xxx/yyy/1000x1000',
           'provider': 'kion_music_instance',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -428,6 +429,7 @@
           dict({
             'path': 'https://avatars.yandex.net/get-music-content/aaa/bbb/1000x1000',
             'provider': 'kion_music_instance',
+            'proxy_id': None,
             'remotely_accessible': True,
             'type': 'thumb',
           }),
@@ -561,6 +563,7 @@
         dict({
           'path': 'https://avatars.yandex.net/get-music-content/aaa/bbb/1000x1000',
           'provider': 'kion_music_instance',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),

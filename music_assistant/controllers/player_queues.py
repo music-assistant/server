@@ -464,6 +464,13 @@ class PlayerQueuesController(CoreController):
             if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
                 self._enqueue_next_item(queue_id, next_item)
 
+    # Two timebases are used in this controller when variable playback speed is in
+    # effect (atempo applied server-side):
+    #   "stream-time"  — seconds of audio the player has played (post-atempo).
+    #   "media-time"   — seconds of the original content the listener has heard.
+    #                    What the user expects to see on the progress bar and what
+    #                    we use for resume positions.
+    # Conversion: media-time = stream-time x playback_speed.
     @api_command("player_queues/set_playback_speed")
     async def set_playback_speed(
         self, queue_id: str, speed: float, queue_item_id: str | None = None
@@ -471,14 +478,16 @@ class PlayerQueuesController(CoreController):
         """
         Set the playback speed for the given queue item.
 
+        Variable playback speed is supported only for audiobooks and podcast episodes.
+
         If queue_item_id is not provided,
         the speed will be set for the current item in the queue.
 
         :param queue_id: queue_id of the queue to configure.
-        :param speed: playback speed multiplier (0.5 to 2.0). 1.0 = normal speed.
+        :param speed: playback speed multiplier (0.5 to 3.0). 1.0 = normal speed.
         """
-        if not (0.5 <= speed <= 2.0):
-            raise InvalidDataError(f"Playback speed must be between 0.5 and 2.0, got {speed}")
+        if not (0.5 <= speed <= 3.0):
+            raise InvalidDataError(f"Playback speed must be between 0.5 and 3.0, got {speed}")
         queue = self._queues[queue_id]
         if not queue.current_item:
             raise QueueEmpty("Cannot set playback speed: queue is empty")
@@ -486,13 +495,26 @@ class PlayerQueuesController(CoreController):
         queue_item = self.get_item(queue_id, queue_item_id)
         if not queue_item:
             raise InvalidDataError(f"Queue item {queue_item_id} not found in queue")
-        if not queue_item.duration or queue_item.media_type == MediaType.RADIO:
+        if queue_item.media_type not in (MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE):
+            raise InvalidCommand(
+                "Variable playback speed is only supported for audiobooks and podcast episodes"
+            )
+        if not queue_item.duration:
             raise InvalidCommand("Cannot set playback speed for items with unknown duration")
         current_speed = float(queue_item.extra_attributes.get("playback_speed") or 1.0)
         if abs(current_speed - speed) < 0.001:
             return  # no change
         # use extra_attributes of the queue item to store the playback speed
         queue_item.extra_attributes["playback_speed"] = speed
+        # mirror onto the queue so corrected_elapsed_time advances in media-time
+        # immediately, before the next on_player_elapsed_time_corrected snapshot.
+        if queue.current_item and queue.current_item.queue_item_id == queue_item_id:
+            # close off the wallclock seconds that already ticked by at the old speed
+            # before switching, so corrected_elapsed_time doesn't multiply them by the new speed
+            if queue.state == PlaybackState.PLAYING:
+                queue.elapsed_time = queue.corrected_elapsed_time
+                queue.elapsed_time_last_updated = time.time()
+            queue.playback_speed = speed
         self.signal_update(queue_id)
         if queue.state == PlaybackState.PLAYING:
             await self.resume(queue_id)
@@ -1160,21 +1182,34 @@ class PlayerQueuesController(CoreController):
         if player_elapsed is None:
             return
         now = time.time()
+        # queue.elapsed_time is stored in media-time so it can be displayed and
+        # used as a resume position directly. The player reports stream-time
+        # (post-atempo), so we scale by the current item's playback_speed.
+        speed = self._current_playback_speed(queue)
         if queue.flow_mode:
-            # in flow mode the player reports cumulative stream elapsed time,
+            # _get_flow_queue_stream_index returns media-time in the current item
+            # using each playlog entry's recorded speed.
             _, elapsed_time = self._get_flow_queue_stream_index(queue, player)
         else:
-            elapsed_time = player_elapsed
+            elapsed_time = player_elapsed * speed
             if queue.current_item and queue.current_item.streamdetails:
                 if seek_pos := queue.current_item.streamdetails.seek_position:
                     elapsed_time += seek_pos
         queue.elapsed_time = elapsed_time
         queue.elapsed_time_last_updated = now
+        queue.playback_speed = speed
         self.mass.signal_event(
             EventType.QUEUE_TIME_UPDATED,
             object_id=queue_id,
             data=queue.elapsed_time,
         )
+
+    @staticmethod
+    def _current_playback_speed(queue: PlayerQueue) -> float:
+        """Return the playback_speed of the queue's current item (1.0 if unset)."""
+        if queue.current_item is None:
+            return 1.0
+        return float(queue.current_item.extra_attributes.get("playback_speed") or 1.0)
 
     def on_player_remove(self, player_id: str, permanent: bool) -> None:
         """Call when a player is removed from the registry."""
@@ -1250,6 +1285,17 @@ class PlayerQueuesController(CoreController):
             self.update_items(queue_id, self._queue_items[queue_id])
         if next_item is None:
             raise QueueEmpty("No more (playable) tracks left in the queue.")
+
+        # carry playback_speed forward across consecutive audiobook/podcast items
+        current_item = self.get_item(queue_id, current_item_id)
+        if (
+            current_item
+            and current_item.media_type in (MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE)
+            and next_item.media_type in (MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE)
+        ):
+            next_item.extra_attributes["playback_speed"] = current_item.extra_attributes.get(
+                "playback_speed", 1.0
+            )
 
         return next_item
 
@@ -1638,7 +1684,8 @@ class PlayerQueuesController(CoreController):
         # when the player requests it. For the current/first track this ensures
         # immediate playback start. For preloaded next tracks we skip this and
         # initialize the buffer ~30s before the current track ends instead.
-        if is_start:
+        # AudioSource items are realtime/live and bypass the AudioBuffer.
+        if is_start and queue_item.streamdetails.media_type != MediaType.AUDIO_SOURCE:
             await AudioBuffer.get_buffer(
                 self.mass,
                 queue_item.streamdetails,
@@ -1867,11 +1914,11 @@ class PlayerQueuesController(CoreController):
                 album.name if (album := getattr(queue_item.media_item, "album", None)) else ""
             )
             if queue_item.image:
-                # the image format needs to be 500x500 jpeg for maximum compatibility with players
+                # the image format needs to be 512x512 jpeg for maximum compatibility with players
                 # we prefer the imageproxy on the streamserver here because this request is sent
                 # to the player itself which may not be able to reach the regular webserver
                 media.image_url = self.mass.metadata.get_image_url(
-                    queue_item.image, size=500, prefer_stream_server=True
+                    queue_item.image, size=512, prefer_stream_server=True
                 )
         return media
 
@@ -2366,6 +2413,9 @@ class PlayerQueuesController(CoreController):
         if not queue or not queue.next_item:
             return
         next_item = queue.next_item
+        # AudioSource items are realtime/live and bypass the AudioBuffer
+        if next_item.media_type == MediaType.AUDIO_SOURCE:
+            return
         # guard against race condition where queue.next_item still points to the
         # currently playing track because the player state hasn't been updated yet
         if queue.current_item and next_item.queue_item_id == queue.current_item.queue_item_id:
@@ -2666,6 +2716,7 @@ class PlayerQueuesController(CoreController):
             if queue.flow_mode:
                 # flow mode active, the player is playing one long stream
                 # so we need to calculate the current index and elapsed time
+                # (already returned in media-time)
                 current_index, elapsed_time = self._get_flow_queue_stream_index(queue, player)
             elif item_id := self._parse_player_current_item_id(queue_id, player):
                 # normal mode, the player itself will report the current item
@@ -2685,16 +2736,20 @@ class PlayerQueuesController(CoreController):
                 else None
             )
 
-            # correct elapsed time when seeking
-            if (
-                not queue.flow_mode
-                and current_item
-                and current_item.streamdetails
-                and current_item.streamdetails.seek_position
-            ):
-                elapsed_time += current_item.streamdetails.seek_position
+            # convert player's stream-time to media-time and add seek offset (non-flow only;
+            # flow mode already returns media-time from _get_flow_queue_stream_index above)
+            speed = self._current_playback_speed(queue)
+            if not queue.flow_mode:
+                elapsed_time *= speed
+                if (
+                    current_item
+                    and current_item.streamdetails
+                    and current_item.streamdetails.seek_position
+                ):
+                    elapsed_time += current_item.streamdetails.seek_position
             queue.elapsed_time = elapsed_time
             queue.elapsed_time_last_updated = time.time()
+            queue.playback_speed = speed
 
         elif not queue.current_item and queue.current_index is not None:
             current_index = queue.current_index
@@ -2902,7 +2957,12 @@ class PlayerQueuesController(CoreController):
     def _get_flow_queue_stream_index(
         self, queue: PlayerQueue, player: Player
     ) -> tuple[int | None, float]:
-        """Calculate current queue index and current track elapsed time when flow mode is active."""
+        """Calculate current queue index and current track elapsed time when flow mode is active.
+
+        The player reports cumulative stream-time (post-atempo). The returned
+        track elapsed time is in media-time, scaled by the current item's
+        playback_speed when we hit the active entry.
+        """
         elapsed_time_queue_total = player.state.corrected_elapsed_time or 0
         if queue.current_index is None and not queue.flow_mode_stream_log:
             return queue.current_index, queue.elapsed_time
@@ -2917,16 +2977,18 @@ class PlayerQueuesController(CoreController):
         queue_index: int | None = queue.current_index or 0
         track_time = 0.0
         for play_log_entry in queue.flow_mode_stream_log:
-            queue_item_duration = (
-                # NOTE: 'seconds_streamed' can actually be 0 if there was a stream error!
-                play_log_entry.seconds_streamed
-                if play_log_entry.seconds_streamed is not None
-                else play_log_entry.duration or 3600 * 24 * 7
-            )
-            if elapsed_time_queue_total > (queue_item_duration + played_time):
+            # seconds_streamed is bytes-derived stream-time, so the boundary check
+            # doesn't need a speed factor. Only the still-streaming tail entry has
+            # seconds_streamed=None; we'll break inside it before the sentinel matters.
+            if play_log_entry.seconds_streamed is not None:
+                # NOTE: 'seconds_streamed' can be 0 if there was a stream error
+                entry_stream_duration = play_log_entry.seconds_streamed
+            else:
+                entry_stream_duration = 3600 * 24 * 7
+            if elapsed_time_queue_total > (entry_stream_duration + played_time):
                 # total elapsed time is more than (streamed) track duration
                 # this track has been fully played, move on.
-                played_time += queue_item_duration
+                played_time += entry_stream_duration
             else:
                 # no more seconds left to divide, this is our track
                 # account for any seeking by adding the skipped/seeked seconds
@@ -2936,7 +2998,16 @@ class PlayerQueuesController(CoreController):
                     track_sec_skipped = queue_item.streamdetails.seek_position
                 else:
                     track_sec_skipped = 0
-                track_time = elapsed_time_queue_total + track_sec_skipped - played_time
+                # stream-time within this entry, scaled to media-time using the
+                # speed of the entry we broke on (queue.current_item may still be
+                # the previous entry during a transition)
+                entry_speed = (
+                    float(queue_item.extra_attributes.get("playback_speed") or 1.0)
+                    if queue_item
+                    else 1.0
+                )
+                stream_pos_in_item = elapsed_time_queue_total - played_time
+                track_time = track_sec_skipped + stream_pos_in_item * entry_speed
                 break
         if player.state.playback_state != PlaybackState.PLAYING:
             # if the player is not playing, we can't be sure that the elapsed time is correct

@@ -14,7 +14,6 @@ from propcache import under_cached_property as cached_property
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS, CONF_ENTRY_HTTP_PROFILE_HIDDEN
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
-from music_assistant.providers.snapcast.constants import CONF_ENTRY_SAMPLE_RATES_SNAPCAST
 from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
 from music_assistant.providers.sync_group.constants import SGP_PREFIX
 
@@ -53,6 +52,9 @@ class TrackedPlayerState(TypedDict, total=False):
 
 class SnapCastPlayer(Player):
     """SnapCastPlayer."""
+
+    # snapcast has fixed sample rate/bit depth
+    _attr_supported_sample_rates = [(48000, 16)]
 
     def __init__(
         self,
@@ -362,7 +364,6 @@ class SnapCastPlayer(Player):
     ) -> list[ConfigEntry]:
         """Player config."""
         return [
-            CONF_ENTRY_SAMPLE_RATES_SNAPCAST,
             # we don't use the http server for streaming
             CONF_ENTRY_HTTP_PROFILE_HIDDEN,
         ]
