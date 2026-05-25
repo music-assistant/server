@@ -49,6 +49,7 @@ from music_assistant.providers.musiccast.avt_helpers import (
     search_xml,
 )
 from music_assistant.providers.musiccast.constants import (
+    CONF_PLAYER_AUTO_ADVANCE,
     CONF_PLAYER_HANDLE_SOURCE_DISABLED,
     CONF_PLAYER_SWITCH_SOURCE_NON_NET,
     CONF_PLAYER_TURN_OFF_ON_LEAVE,
@@ -145,6 +146,10 @@ class MusicCastPlayer(Player):
         self.upnp_update_helper: UpnpUpdateHelper | None = None
         # last netusb_track value, used to detect device-driven gapless transitions
         self._last_netusb_track: str | None = None
+        # used to detect when the device dropped to idle mid-queue without
+        # honouring the queued NextURI (Yamaha gapless can fail this way)
+        self._last_playback_state: PlaybackState | None = None
+        self._last_playing_elapsed_time: float = 0.0
 
     async def setup(self) -> None:
         """Set up player in Music Assistant."""
@@ -530,6 +535,63 @@ class MusicCastPlayer(Player):
             and self.upnp_update_helper.current_uri != _prev_current_uri
         ):
             self.mass.player_queues.on_player_update(self, {})
+
+        self._maybe_advance_on_track_end()
+
+    def _maybe_advance_on_track_end(self) -> None:
+        """Schedule a queue advance if the device went idle at end of track."""
+        # The device sometimes drops the queued NextURI and stops instead of
+        # transitioning. Recover by calling next() on the queue. Gated by a
+        # per-player config so users who don't want the safety net can opt out.
+        _prev_state = self._last_playback_state
+        self._last_playback_state = self._attr_playback_state
+        if self._attr_playback_state == PlaybackState.PLAYING:
+            if self._attr_elapsed_time is not None:
+                self._last_playing_elapsed_time = self._attr_elapsed_time
+            return
+        if (
+            _prev_state != PlaybackState.PLAYING
+            or self._attr_playback_state != PlaybackState.IDLE
+            or self.upnp_update_helper is None
+            or not self.upnp_update_helper.controlled_by_mass
+        ):
+            return
+        if not bool(
+            self.mass.config.get_raw_player_config_value(
+                self.player_id, CONF_PLAYER_AUTO_ADVANCE, default=True
+            )
+        ):
+            return
+        queue = self.mass.player_queues.get(self.player_id)
+        if queue is None or queue.current_item is None or queue.next_item is None:
+            return
+        _duration = queue.current_item.duration or 0
+        # only act within 4 s of track duration to minimise hijacking a user stop
+        if not _duration or self._last_playing_elapsed_time < _duration - 4:
+            return
+        self.mass.call_later(
+            3,
+            self._advance_queue_after_idle,
+            queue.current_item.queue_item_id,
+            task_id=f"musiccast_advance_after_idle_{self.player_id}",
+        )
+
+    async def _advance_queue_after_idle(self, expected_current_item_id: str) -> None:
+        """Advance the queue if the player is still idle on the same item."""
+        if self._attr_playback_state != PlaybackState.IDLE:
+            return
+        queue = self.mass.player_queues.get(self.player_id)
+        if queue is None or not queue.active:
+            return
+        if (
+            queue.current_item is None
+            or queue.current_item.queue_item_id != expected_current_item_id
+        ):
+            return
+        if queue.next_item is None:
+            return
+        self.logger.debug("Advancing queue to next item after end-of-track idle")
+        await self.mass.player_queues.next(self.player_id)
 
     @property
     def synced_to(self) -> str | None:
@@ -989,4 +1051,16 @@ class MusicCastPlayer(Player):
                     ),
                 ]
 
-        return base_entries + zone_entries + PLAYER_CONFIG_ENTRIES
+        auto_advance_entry = ConfigEntry(
+            key=CONF_PLAYER_AUTO_ADVANCE,
+            type=ConfigEntryType.BOOLEAN,
+            label="Auto-advance queue when the device stops at end of track",
+            default_value=True,
+            description="Yamaha receivers occasionally drop the queued next track and "
+            "stop playback. With this enabled, MA detects the stop and advances the "
+            "queue. As a side effect, a user-initiated stop within the last 4 seconds "
+            "of a track will also advance to the next item; disable if you prefer the "
+            "device's stop behaviour to always be respected.",
+        )
+
+        return base_entries + zone_entries + [auto_advance_entry] + PLAYER_CONFIG_ENTRIES
