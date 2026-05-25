@@ -870,23 +870,48 @@ class MusicCastPlayer(Player):
         children_zones: list[str] = []  # list[ma_player_id]
         player_ids_to_add = [] if player_ids_to_add is None else player_ids_to_add
         for child_id in player_ids_to_add:
-            if child_player := self.mass.players.get_player(child_id):
-                assert isinstance(child_player, MusicCastPlayer)  # for type checking
-                _other_zone_mc: MusicCastZoneDevice | None = None
-                for x in child_player.zone_device.other_zones:
-                    if x.is_netusb:
-                        _other_zone_mc = x
-                if _other_zone_mc and _other_zone_mc != child_player.zone_device:
-                    # of the same device, we use main_sync as input
-                    if _other_zone_mc.zone_name == "main":
-                        children_zones.append(child_id)
-                    else:
-                        self.logger.warning(
-                            "It is impossible to join as a normal zone to another zone of the same "
-                            "device. Only joining to main is possible. Please refer to the docs."
-                        )
-                else:
-                    children.add(child_id)
+            child_player = self.mass.players.get_player(child_id)
+            if child_player is None:
+                continue
+            assert isinstance(child_player, MusicCastPlayer)  # for type checking
+
+            # find a sibling zone on the child's device currently using netusb;
+            # skip disabled zones (user opted out of MA managing them)
+            _other_zone_mc: MusicCastZoneDevice | None = None
+            for x in child_player.zone_device.other_zones:
+                if not x.is_netusb:
+                    continue
+                _other_player_id = self._get_player_id_from_zone_device(x)
+                _other_player = self.mass.players.get_player(_other_player_id)
+                if _other_player is None or not _other_player.enabled:
+                    continue
+                _other_zone_mc = x
+                # only one zone can hold netusb at a time
+                break
+
+            # no conflicting sibling -> standard client join
+            if _other_zone_mc is None:
+                children.add(child_id)
+                continue
+
+            # child is a non-main zone of a device whose main is the netusb consumer;
+            # join the group via main_sync so the child follows main locally
+            if child_player.zone_device.zone_name != "main" and _other_zone_mc.zone_name == "main":
+                children_zones.append(child_id)
+                continue
+
+            # child is main but a sibling holds netusb; free the sibling so main
+            # can become the netusb client, then join normally
+            if child_player.zone_device.zone_name == "main":
+                await child_player._handle_zone_grouping(_other_zone_mc)
+                children.add(child_id)
+                continue
+
+            # non-main child while another non-main sibling holds netusb is unsupported
+            self.logger.warning(
+                "It is impossible to join as a normal zone to another zone of the same "
+                "device. Only joining to main is possible. Please refer to the docs."
+            )
 
         for child_id in children_zones:
             child_player = self.mass.players.get_player(child_id)
