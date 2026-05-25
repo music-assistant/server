@@ -1472,7 +1472,7 @@ class ConfigController:
         LOGGER.warning(
             "Migrated %d legacy Fully Kiosk provider instance(s) into a single instance. "
             "Devices and their passwords have been preserved, but any Fully Kiosk player "
-            "that was part of a universal group will need to be re-added to it. "
+            "that was part of a universal group will need to be re-added to it. ",
             len(legacy_ids),
         )
         return True
