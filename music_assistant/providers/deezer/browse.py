@@ -29,6 +29,18 @@ from music_assistant_models.media_items import (
 from music_assistant.controllers.cache import use_cache
 
 from .helpers import (
+    BROWSE_AUDIOBOOKS,
+    BROWSE_EXPLORE,
+    BROWSE_GENRES,
+    BROWSE_MADE_FOR_YOU,
+    BROWSE_MOODS,
+    BROWSE_PERSONALIZED_PLAYLISTS,
+    BROWSE_RECENTLY_PLAYED,
+    BROWSE_RECOMMENDED_ARTIST_PLAYLISTS,
+    BROWSE_RECOMMENDED_PLAYLISTS,
+    BROWSE_SHAKER,
+    BROWSE_YOUR_TOP_ALBUMS,
+    BROWSE_YOUR_TOP_ARTISTS,
     FLOW_CONFIG_PREFIX,
     FLOW_PLAYLIST_ID,
     PERSONAL_SONGS_PLAYLIST_ID,
@@ -98,24 +110,24 @@ class DeezerBrowseManager:
         subpath = path_parts[0] if path_parts else None
         sub_subpath = path_parts[1] if len(path_parts) > 1 else None
 
-        if subpath == "Made For You":
+        if subpath == BROWSE_MADE_FOR_YOU:
             return await self._browse_made_for_you(path, sub_subpath)
 
-        if subpath == "Explore":
+        if subpath == BROWSE_EXPLORE:
             if sub_subpath:
                 return await self._browse_explore_category(sub_subpath)
             return await self._browse_explore_root(path)
 
-        if subpath == "Recently Played":
+        if subpath == BROWSE_RECENTLY_PLAYED:
             return await self._get_recently_played_items()
 
-        if subpath == "Shaker":
+        if subpath == BROWSE_SHAKER:
             if sub_subpath:
                 group_id = self._browse_slug_cache.get(f"shaker/{sub_subpath}", sub_subpath)
                 return await self._browse_shaker_group(group_id)
             return await self._browse_shaker_root(path)
 
-        if subpath == "Discover Audiobooks":
+        if subpath == BROWSE_AUDIOBOOKS:
             if sub_subpath:
                 page_path = self._browse_slug_cache.get(
                     f"audiobooks/{sub_subpath}", f"channels/{sub_subpath}"
@@ -137,32 +149,32 @@ class DeezerBrowseManager:
                     BrowseFolder(
                         item_id="made_for_me",
                         provider=self.instance_id,
-                        path=f"{base}Made For You",
-                        name="Made For You",
+                        path=f"{base}{BROWSE_MADE_FOR_YOU}",
+                        name=BROWSE_MADE_FOR_YOU,
                     ),
                     BrowseFolder(
                         item_id="explore",
                         provider=self.instance_id,
-                        path=f"{base}Explore",
-                        name="Explore",
+                        path=f"{base}{BROWSE_EXPLORE}",
+                        name=BROWSE_EXPLORE,
                     ),
                     BrowseFolder(
                         item_id="recently_played",
                         provider=self.instance_id,
-                        path=f"{base}Recently Played",
-                        name="Recently Played",
+                        path=f"{base}{BROWSE_RECENTLY_PLAYED}",
+                        name=BROWSE_RECENTLY_PLAYED,
                     ),
                     BrowseFolder(
                         item_id="shaker",
                         provider=self.instance_id,
-                        path=f"{base}Shaker",
-                        name="Shaker",
+                        path=f"{base}{BROWSE_SHAKER}",
+                        name=BROWSE_SHAKER,
                     ),
                     BrowseFolder(
                         item_id="discover_audiobooks",
                         provider=self.instance_id,
-                        path=f"{base}Discover Audiobooks",
-                        name="Discover Audiobooks",
+                        path=f"{base}{BROWSE_AUDIOBOOKS}",
+                        name=BROWSE_AUDIOBOOKS,
                     ),
                     create_virtual_playlist(
                         self.provider, PERSONAL_SONGS_PLAYLIST_ID, "My Uploads"
@@ -180,17 +192,17 @@ class DeezerBrowseManager:
         self, path: str, sub_subpath: str | None
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Route Made For You sub-paths or return the root listing."""
-        if sub_subpath in ("Moods", "Genres"):
+        if sub_subpath in (BROWSE_MOODS, BROWSE_GENRES):
             return await self._browse_flow_configs(sub_subpath.lower())
-        if sub_subpath == "Your Top Artists":
+        if sub_subpath == BROWSE_YOUR_TOP_ARTISTS:
             return await self._browse_user_charts_category("your_top_artists")
-        if sub_subpath == "Your Top Albums":
+        if sub_subpath == BROWSE_YOUR_TOP_ALBUMS:
             return await self._browse_user_charts_category("your_top_albums")
-        if sub_subpath == "Recommended Playlists":
+        if sub_subpath == BROWSE_RECOMMENDED_PLAYLISTS:
             return await self._browse_editorial_playlists()
-        if sub_subpath == "Recommended Artist Playlists":
+        if sub_subpath == BROWSE_RECOMMENDED_ARTIST_PLAYLISTS:
             return await self._browse_artist_playlists()
-        if sub_subpath == "Personalized Playlists":
+        if sub_subpath == BROWSE_PERSONALIZED_PLAYLISTS:
             return await self._get_smart_tracklist_playlists()
         return await self._browse_made_for_me(path)
 
@@ -201,46 +213,46 @@ class DeezerBrowseManager:
             BrowseFolder(
                 item_id="moods",
                 provider=self.instance_id,
-                path=f"{base}Moods",
-                name="Moods",
+                path=f"{base}{BROWSE_MOODS}",
+                name=BROWSE_MOODS,
             ),
             BrowseFolder(
                 item_id="genres",
                 provider=self.instance_id,
-                path=f"{base}Genres",
-                name="Genres",
+                path=f"{base}{BROWSE_GENRES}",
+                name=BROWSE_GENRES,
             ),
             create_virtual_playlist(self.provider, USER_TOP_TRACKS_PLAYLIST_ID, "Your Top Tracks"),
             create_virtual_playlist(self.provider, RECOMMENDED_TRACKS_PLAYLIST_ID, "Hot Tracks"),
             BrowseFolder(
                 item_id="your_top_artists",
                 provider=self.instance_id,
-                path=f"{base}Your Top Artists",
-                name="Your Top Artists",
+                path=f"{base}{BROWSE_YOUR_TOP_ARTISTS}",
+                name=BROWSE_YOUR_TOP_ARTISTS,
             ),
             BrowseFolder(
                 item_id="your_top_albums",
                 provider=self.instance_id,
-                path=f"{base}Your Top Albums",
-                name="Your Top Albums",
+                path=f"{base}{BROWSE_YOUR_TOP_ALBUMS}",
+                name=BROWSE_YOUR_TOP_ALBUMS,
             ),
             BrowseFolder(
                 item_id="mixes",
                 provider=self.instance_id,
-                path=f"{base}Personalized Playlists",
-                name="Personalized Playlists",
+                path=f"{base}{BROWSE_PERSONALIZED_PLAYLISTS}",
+                name=BROWSE_PERSONALIZED_PLAYLISTS,
             ),
             BrowseFolder(
                 item_id="recommended_playlists",
                 provider=self.instance_id,
-                path=f"{base}Recommended Playlists",
-                name="Recommended Playlists",
+                path=f"{base}{BROWSE_RECOMMENDED_PLAYLISTS}",
+                name=BROWSE_RECOMMENDED_PLAYLISTS,
             ),
             BrowseFolder(
                 item_id="recommended_artist_playlists",
                 provider=self.instance_id,
-                path=f"{base}Recommended Artist Playlists",
-                name="Recommended Artist Playlists",
+                path=f"{base}{BROWSE_RECOMMENDED_ARTIST_PLAYLISTS}",
+                name=BROWSE_RECOMMENDED_ARTIST_PLAYLISTS,
             ),
         ]
         return items
@@ -588,7 +600,7 @@ class DeezerBrowseManager:
                 RecommendationFolder(
                     item_id="recently_played",
                     provider=self.instance_id,
-                    name="Recently Played",
+                    name=BROWSE_RECENTLY_PLAYED,
                     items=UniqueList(recently_played),
                 )
             )
@@ -628,7 +640,7 @@ class DeezerBrowseManager:
                 RecommendationFolder(
                     item_id="made_for_you",
                     provider=self.instance_id,
-                    name="Made for you",
+                    name=BROWSE_MADE_FOR_YOU,
                     items=UniqueList(made_for_me_items),
                 )
             )
@@ -670,7 +682,7 @@ class DeezerBrowseManager:
                 RecommendationFolder(
                     item_id="recommended_playlists",
                     provider=self.instance_id,
-                    name="Recommended Playlists",
+                    name=BROWSE_RECOMMENDED_PLAYLISTS,
                     items=UniqueList(items),
                 )
             )
@@ -693,7 +705,7 @@ class DeezerBrowseManager:
                 RecommendationFolder(
                     item_id="recommended_artist_playlists",
                     provider=self.instance_id,
-                    name="Recommended Artist Playlists",
+                    name=BROWSE_RECOMMENDED_ARTIST_PLAYLISTS,
                     items=UniqueList(items),
                 )
             )
