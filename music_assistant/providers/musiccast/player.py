@@ -755,17 +755,23 @@ class MusicCastPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Play media command."""
+        _zone_handling_attempted = False
         if len(self.physical_device.zone_devices) > 1:
             # zone handling
             # only a single zone may have netusb capability
             for zone_name, dev in self.physical_device.zone_devices.items():
                 if zone_name == self.zone_device.zone_name:
                     continue
-                if dev.is_netusb:
+                # skip powered-off zones: their remembered source can match netusb_input
+                # without actually consuming the resource, and switching can affect main
+                if dev.is_netusb and dev.zone_data is not None and dev.zone_data.power == "on":
                     await self._handle_zone_grouping(dev)
+                    _zone_handling_attempted = True
         async with self.update_lock:
-            # just in case
-            if self.zone_device.source_id != "server":
+            # re-assert "server" if zone handling ran (the device may have switched
+            # main as a side effect) or if the cached source is something else; AVT
+            # Play returns UPnPError 500 if main is not on the DLNA renderer input
+            if _zone_handling_attempted or self.zone_device.source_id != "server":
                 await self.select_source("server")
             media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
             await avt_set_url(self.mass.http_session, self.physical_device, player_media=media)
