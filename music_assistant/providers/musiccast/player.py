@@ -143,6 +143,8 @@ class MusicCastPlayer(Player):
         # refers to being controlled by upnp.
         self.update_lock = asyncio.Lock()
         self.upnp_update_helper: UpnpUpdateHelper | None = None
+        # last netusb_track value, used to detect device-driven gapless transitions
+        self._last_netusb_track: str | None = None
 
     async def setup(self) -> None:
         """Set up player in Music Assistant."""
@@ -282,7 +284,27 @@ class MusicCastPlayer(Player):
 
         # UPDATE UPNP HELPER
         now = time.time()
-        if self.upnp_update_helper is None or now - self.upnp_update_helper.last_poll > 5:
+        _current_netusb_track = (
+            self.physical_device.device.data.netusb_track if self.zone_device.is_netusb else None
+        )
+        _netusb_track_changed = (
+            self._last_netusb_track is not None
+            and _current_netusb_track is not None
+            and _current_netusb_track != self._last_netusb_track
+        )
+        self._last_netusb_track = _current_netusb_track
+        _upnp_cache_age = (
+            None if self.upnp_update_helper is None else now - self.upnp_update_helper.last_poll
+        )
+        # invalidate the cache on a netusb_track change so a gapless transition
+        # reflects in current_uri without waiting for the regular 5s refresh
+        _upnp_cache_hit = (
+            _upnp_cache_age is not None and _upnp_cache_age <= 5 and not _netusb_track_changed
+        )
+        _prev_current_uri = (
+            self.upnp_update_helper.current_uri if self.upnp_update_helper is not None else None
+        )
+        if not _upnp_cache_hit:
             # Let's not do this too often
             # Note: The devices always return the last UPnP xmls, even if
             # currently another source/ playback method is used
@@ -317,6 +339,9 @@ class MusicCastPlayer(Player):
                 controlled_by_mass=controlled_by_mass,
                 current_uri=_player_current_url,
             )
+
+        # either freshly assigned above or a cache hit (which implies it was set before)
+        assert self.upnp_update_helper is not None
 
         # UPDATE PLAYBACK INFORMATION
         # Note to self:
@@ -496,6 +521,15 @@ class MusicCastPlayer(Player):
 
         if update_state:
             self.update_state()
+
+        # state.current_media is queue-derived, so a current_uri change alone does not
+        # produce a state diff. Nudge the queue directly so it re-parses the new URI.
+        if (
+            update_state
+            and self.upnp_update_helper.controlled_by_mass
+            and self.upnp_update_helper.current_uri != _prev_current_uri
+        ):
+            self.mass.player_queues.on_player_update(self, {})
 
     @property
     def synced_to(self) -> str | None:
