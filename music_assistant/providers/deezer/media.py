@@ -7,7 +7,7 @@ library mutations, and playlist CRUD operations.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from deezer_python_gql import GraphQLClientGraphQLMultiError
 from music_assistant_models.enums import MediaType
@@ -54,6 +54,25 @@ if TYPE_CHECKING:
 FAVORITES_PAGE_SIZE = 50
 
 
+# -- Protocols for typed pagination --
+
+
+class _PageInfo(Protocol):
+    @property
+    def has_next_page(self) -> bool: ...
+
+    @property
+    def end_cursor(self) -> str | None: ...
+
+
+class _Connection(Protocol):
+    @property
+    def edges(self) -> list[Any]: ...
+
+    @property
+    def page_info(self) -> _PageInfo: ...
+
+
 def _is_complexity_error(err: GraphQLClientGraphQLMultiError) -> bool:
     """Check if a GraphQL error is a query complexity limit violation."""
     return any("complexity" in e.message.lower() for e in err.errors)
@@ -76,9 +95,9 @@ class DeezerMediaManager:
     async def _iter_paged(
         self,
         fetch: Callable[..., Awaitable[Any]],
-        extract: Callable[..., Any],
+        extract: Callable[..., _Connection | None],
     ) -> AsyncGenerator[Any, None]:
-        """Iterate a cursor-paginated connection, yielding edges."""
+        """Iterate a cursor-paginated connection, yielding edges with non-null nodes."""
         cursor: str | None = None
         while True:
             result = await fetch(first=FAVORITES_PAGE_SIZE, after=cursor)
