@@ -10,7 +10,7 @@ import contextlib
 import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from deezer_python_gql.generated.enums import AlbumType as DeezerAlbumType
 from deezer_python_gql.generated.enums import AudiobookContributorRoles
@@ -95,12 +95,29 @@ if TYPE_CHECKING:
 DEEZER_CDN_IMAGE = "https://e-cdns-images.dzcdn.net/images"
 
 
-def _cover_image(provider: DeezerProvider, cover: object | None) -> MediaItemImage | None:
+# -- Protocols for typed GQL attributes --
+
+
+class _CoverLike(Protocol):
+    """Protocol for GQL cover/picture objects with a `.urls` list."""
+
+    @property
+    def urls(self) -> list[str]: ...
+
+
+class _HasUrl(Protocol):
+    """Protocol for GQL result objects with a `.url` field."""
+
+    @property
+    def url(self) -> object: ...
+
+
+def _cover_image(provider: DeezerProvider, cover: _CoverLike | None) -> MediaItemImage | None:
     """Create a THUMB image from a GQL cover/picture object with a `.urls` list.
 
     Returns None when the cover is absent or has no URLs.
     """
-    if cover and hasattr(cover, "urls") and cover.urls:
+    if cover and cover.urls:
         return MediaItemImage(
             type=ImageType.THUMB,
             path=cover.urls[0],
@@ -836,11 +853,11 @@ def get_gw_item_image(provider: DeezerProvider, item: dict[str, Any]) -> MediaIt
     return None
 
 
-def apply_web_url(item: Artist | Album, gql_result: object) -> None:
+def apply_web_url(item: Artist | Album, gql_result: _HasUrl) -> None:
     """Set web URL on provider mappings if available in the GQL result."""
-    if hasattr(gql_result, "url") and hasattr(gql_result.url, "web_url"):
+    if web_url := getattr(gql_result.url, "web_url", None):
         for pm in item.provider_mappings:
-            pm.url = gql_result.url.web_url
+            pm.url = web_url
 
 
 def map_album_type(deezer_type: DeezerAlbumType | None, title: str) -> AlbumType:
