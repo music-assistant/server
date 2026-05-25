@@ -46,6 +46,7 @@ from music_assistant.constants import (
     CONF_ENTRY_LOG_LEVEL,
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CODEC,
+    CONF_PUBLISH_BASE_URL,
     CONF_PUBLISH_IP,
     CONF_SMART_FADES_MODE,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
@@ -270,6 +271,25 @@ class StreamsController(CoreController):
                 requires_reload=True,
             ),
             ConfigEntry(
+                key=CONF_PUBLISH_BASE_URL,
+                type=ConfigEntryType.STRING,
+                default_value="",
+                label="Published base URL",
+                description="Optional full base URL advertised to players, in the form "
+                "`scheme://host[:port][/path]` (e.g. `https://music.example.com/streamer`). "
+                "Use this to put the streamserver behind a TLS-terminating reverse proxy "
+                "(required for Sonos S2 artwork). Leave empty to publish "
+                "`http://<Published IP>:<TCP Port>` (default behavior). "
+                "The `Published IP address` setting MUST remain a literal IP address for "
+                "the local discovery / mDNS providers (AirPlay, Sendspin, Chromecast, ...) "
+                "to keep working — this URL is only used to advertise the streamserver to "
+                "HTTP clients (Sonos Cloud Queue, ...).",
+                required=False,
+                category="generic",
+                advanced=True,
+                requires_reload=True,
+            ),
+            ConfigEntry(
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
                 default_value="0.0.0.0",
@@ -320,27 +340,42 @@ class StreamsController(CoreController):
         # perform check for ffmpeg version
         await check_ffmpeg_version()
         # start the webserver
-        self.publish_port = config.get_value(CONF_BIND_PORT, DEFAULT_PORT)
+        bind_port = cast("int", config.get_value(CONF_BIND_PORT, DEFAULT_PORT))
+        self.publish_port = bind_port
         self.publish_ip = config.get_value(CONF_PUBLISH_IP)
         self._bind_ip = bind_ip = str(config.get_value(CONF_BIND_IP))
+        # The published base URL is what stream clients (Sonos Cloud Queue, ...) use to
+        # fetch /single/<id>.flac, /imageproxy?path=..., /sonos_queue/.../itemWindow, etc.
+        # If the user provides a custom value (e.g. when running behind a TLS-terminating
+        # reverse proxy on a different FQDN), use it as-is. Otherwise fall back to the
+        # legacy http://<publish_ip>:<bind_port> form, which preserves prior behavior.
+        # NOTE: `publish_ip` MUST remain a literal IP for local-discovery providers
+        # (AirPlay, Sendspin, Chromecast, ...) — see their use of inet_pton / ip_address.
+        publish_base_url_cfg = str(config.get_value(CONF_PUBLISH_BASE_URL, "") or "").strip()
+        if publish_base_url_cfg:
+            published_base_url = publish_base_url_cfg.rstrip("/")
+        else:
+            published_base_url = f"http://{format_ip_for_url(str(self.publish_ip))}:{bind_port}"
         # print a big fat message in the log where the streamserver is running
         # because this is a common source of issues for people with more complex setups
         self.logger.log(
             logging.INFO if self.mass.config.onboard_done else logging.WARNING,
             "\n\n################################################################################\n"
-            "Starting streamserver on  %s:%s\n"
-            "This is the IP address that is communicated to players.\n"
+            "Streamserver binding on %s:%s\n"
+            "Streamserver published URL %s\n"
+            "This is the URL that is communicated to players.\n"
             "If this is incorrect, audio will not play!\n"
             "See the documentation how to configure the publish IP for the Streamserver\n"
             "in Settings --> Core modules --> Streamserver\n"
             "################################################################################\n",
-            self.publish_ip,
-            self.publish_port,
+            bind_ip,
+            bind_port,
+            published_base_url,
         )
         await self._server.setup(
             bind_ip=bind_ip,
-            bind_port=cast("int", self.publish_port),
-            base_url=f"http://{format_ip_for_url(str(self.publish_ip))}:{self.publish_port}",
+            bind_port=bind_port,
+            base_url=published_base_url,
             static_routes=[
                 (
                     "*",

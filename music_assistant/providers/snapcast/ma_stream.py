@@ -15,7 +15,7 @@ import random
 import time
 import urllib.parse
 from contextlib import suppress
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.providers.snapcast.socket_server import SnapcastSocketServer
@@ -612,7 +612,7 @@ class SnapcastMAStream:
             queue_id=self._cntrl_queue_id,
             socket_path=socket_path,
             streamserver_ip=str(self._mass.streams.publish_ip),
-            streamserver_port=cast("int", self._mass.streams.publish_port),
+            streamserver_port=self._mass.streams.publish_port,
         )
         await socket_server.start()
         self._socket_server = socket_server
