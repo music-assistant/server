@@ -768,12 +768,13 @@ class MusicCastPlayer(Player):
                     await self._handle_zone_grouping(dev)
                     _zone_handling_attempted = True
         async with self.update_lock:
-            # re-assert "server" if zone handling ran (the device may have switched
-            # main as a side effect) or if the cached source is something else; AVT
-            # Play returns UPnPError 500 if main is not on the DLNA renderer input
+            # re-assert "server" when zone handling ran or the cached source is stale;
+            # autoplay_disabled stops the device resuming the input's last queue
             if _zone_handling_attempted or self.zone_device.source_id != "server":
-                await self.select_source("server")
+                await self._cmd_run(self.zone_device.select_source, "server", "autoplay_disabled")
             media.uri = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
+            # clear any pending AVT state to avoid wedging on rapid play_media
+            await avt_stop(self.mass.http_session, self.physical_device)
             await avt_set_url(self.mass.http_session, self.physical_device, player_media=media)
             await avt_play(self.mass.http_session, self.physical_device)
 

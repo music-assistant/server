@@ -340,9 +340,14 @@ class MusicCastZoneDevice:
         """Play http url."""
         await self.device.play_url_media(self.zone_name, media_url=url, title=MC_PLAY_TITLE)
 
-    async def select_source(self, source_id: str) -> None:
-        """Select input source. Internal source name."""
-        await self.device.select_source(self.zone_name, source_id)
+    async def select_source(self, source_id: str, mode: str = "") -> None:
+        """
+        Select input source. Internal source name.
+
+        :param source_id: Internal MusicCast source name.
+        :param mode: Optional MusicCast source mode, e.g. "autoplay_disabled".
+        """
+        await self.device.select_source(self.zone_name, source_id, mode)
 
     async def select_sound_mode(self, sound_mode_id: str) -> None:
         """Select sound mode. Internal sound_mode name."""
