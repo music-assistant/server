@@ -89,9 +89,9 @@ class SmartFadesProvider(AudioAnalysisProvider):
         beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
         # torch aarch64 wheels advertise fbgemm in supported_engines but its kernels are x86-only.
         is_arm = platform.machine().lower() in ("arm64", "aarch64", "armv8l", "armv7l")
-        preference = ("qnnpack", "fbgemm") if is_arm else ("fbgemm", "qnnpack")
+        preference = "qnnpack" if is_arm else "fbgemm"
         supported_engines = torch.backends.quantized.supported_engines
-        quantized_engine = next((e for e in preference if e in supported_engines), None)
+        quantized_engine = preference if preference in supported_engines else None
         if quantized_engine is not None and torch.backends.quantized.engine != quantized_engine:
             torch.backends.quantized.engine = quantized_engine
         beat_this_model.model = torch.ao.quantization.quantize_dynamic(  # type: ignore[no-untyped-call]
