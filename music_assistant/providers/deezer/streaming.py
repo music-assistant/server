@@ -1,4 +1,5 @@
-"""Streaming, decryption, and playback callbacks for the Deezer provider.
+"""
+Streaming, decryption, and playback callbacks for the Deezer provider.
 
 Handles stream URL resolution, Blowfish decryption for track audio,
 radio/podcast stream details, and listen logging callbacks.
@@ -46,7 +47,8 @@ class DeezerStreamingManager:
     async def get_resume_position(
         self, item_id: str, media_type: MediaType
     ) -> tuple[bool, int, datetime | None]:
-        """Get the resume position for a podcast episode.
+        """
+        Get the resume position for a podcast episode.
 
         :param item_id: The provider-specific episode ID.
         :param media_type: The media type (only PODCAST_EPISODE is supported).
@@ -71,7 +73,8 @@ class DeezerStreamingManager:
         media_item: MediaItemType,
         is_playing: bool = False,
     ) -> None:
-        """Handle callback when a podcast episode has been played or is playing.
+        """
+        Handle callback when a podcast episode has been played or is playing.
 
         Syncs playback progress back to Deezer's bookmark/play-state system.
         Only handles podcast episodes — Deezer's Pipe API has no track listen logging.
@@ -126,7 +129,8 @@ class DeezerStreamingManager:
         )
 
     async def _get_audiobook_stream_details(self, item_id: str) -> StreamDetails:
-        """Return stream details for a Deezer audiobook.
+        """
+        Return stream details for a Deezer audiobook.
 
         Resolves all chapter IDs and durations. Each chapter is streamed
         as a regular encrypted track via get_audio_stream.
@@ -321,6 +325,10 @@ class DeezerStreamingManager:
         async with self.mass.http_session.get(
             streamdetails.data["url"], headers=headers, timeout=timeout
         ) as resp:
+            if resp.status != 200:
+                raise MediaNotFoundError(
+                    f"Failed to stream track {streamdetails.item_id}: HTTP {resp.status}"
+                )
             async for chunk in resp.content.iter_chunked(2048):
                 buffer += chunk
                 if len(buffer) >= 2048:

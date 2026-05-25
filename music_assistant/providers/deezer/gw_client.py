@@ -1,4 +1,5 @@
-"""A minimal client for the unofficial gw-API, which deezer is using on their website and app.
+"""
+A minimal client for the unofficial gw-API, which deezer is using on their website and app.
 
 Credits go out to RemixDev (https://gitlab.com/RemixDev) for figuring out, how to get the arl
 cookie based on the api_token.
@@ -135,7 +136,8 @@ class GWClient:
     }
 
     async def get_page(self, page: str, language: str = "en") -> dict[str, Any]:
-        """Fetch a content page from the Deezer page.get GW API.
+        """
+        Fetch a content page from the Deezer page.get GW API.
 
         :param page: The page path (e.g., 'channels/audiobooks').
         :param language: Language code for localized content.
@@ -249,7 +251,8 @@ class GWClient:
         await self._gw_api_call("log.listen", args=payload)
 
     async def get_personal_songs(self, start: int = 0, nb: int = 500) -> dict[str, Any]:
-        """Get user-uploaded personal songs via the GW API.
+        """
+        Get user-uploaded personal songs via the GW API.
 
         :param start: Offset for pagination.
         :param nb: Number of songs to fetch per page.

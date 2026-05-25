@@ -1,4 +1,5 @@
-"""Deezer provider - provider facade.
+"""
+Deezer provider - provider facade.
 
 Thin facade that delegates to specialized manager classes:
 - DeezerMediaManager: library, search, item getters, mutations
@@ -73,7 +74,8 @@ CONF_ARL_TOKEN = "arl_token"
 
 
 class DeezerProvider(MusicProvider):
-    """Deezer provider support.
+    """
+    Deezer provider support.
 
     Delegates to specialized manager classes for clean separation of concerns.
     """
@@ -83,7 +85,7 @@ class DeezerProvider(MusicProvider):
     media_manager: DeezerMediaManager
     browse_manager: DeezerBrowseManager
     streaming_manager: DeezerStreamingManager
-    _user_id: str
+    user_id: str
 
     async def handle_async_init(self) -> None:
         """Handle async init of the Deezer provider."""
@@ -95,7 +97,7 @@ class DeezerProvider(MusicProvider):
             if not me:
                 msg = "Authentication returned no user data"
                 raise GraphQLClientError(msg)
-            self._user_id = me.id
+            self.user_id = me.id
             self.gw_client = GWClient(self.mass.http_session, arl_token)
             await self.gw_client.setup()
         except (GraphQLClientError, DeezerGWError) as err:
@@ -107,6 +109,7 @@ class DeezerProvider(MusicProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        await super().unload(is_removed)
 
     # -- Library retrieval --
 

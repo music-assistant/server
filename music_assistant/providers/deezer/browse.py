@@ -1,4 +1,5 @@
-"""Browse and recommendations manager for the Deezer provider.
+"""
+Browse and recommendations manager for the Deezer provider.
 
 Handles browse tree routing, recommendation folders, virtual playlist
 infrastructure, and all track-fetching methods for virtual playlists.
@@ -101,7 +102,8 @@ class DeezerBrowseManager:
             [str], Coroutine[None, None, Sequence[MediaItemType | ItemMapping | BrowseFolder]]
         ],
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse Deezer content.
+        """
+        Browse Deezer content.
 
         :param path: The browse path.
         :param base_browse: Coroutine for the base class browse method.
@@ -314,7 +316,8 @@ class DeezerBrowseManager:
         ]
 
     async def _browse_flow_configs(self, category: str) -> list[Playlist]:
-        """Fetch mood or genre flow configs and return as virtual playlists.
+        """
+        Fetch mood or genre flow configs and return as virtual playlists.
 
         :param category: Either "moods" or "genres".
         """
@@ -878,10 +881,7 @@ class DeezerBrowseManager:
 
     @use_cache(3600, allow_expired_cache=True)
     async def _get_smart_tracklist_playlists(self) -> list[Playlist]:
-        """Get SmartTracklist items from Made For Me as virtual playlists (cached).
-
-        Shared by browse (Made For You) and recommendations.
-        """
+        """Get SmartTracklist items from Made For Me as virtual playlists."""
         made_for_me = await self.provider.gql_client.get_made_for_me(first=20)
         if not made_for_me or not made_for_me.made_for_me:
             return []
@@ -903,13 +903,8 @@ class DeezerBrowseManager:
                 )
         return playlists
 
-    @use_cache(3600)
     async def _get_flow_tracks(self) -> list[Track]:
-        """Get Flow tracks by fetching 4 batches in a single request.
-
-        Uses the batched flow query to get 4 fresh random batches in one API call,
-        then deduplicates by track ID to build a larger playlist (~80-100 unique tracks).
-        """
+        """Get a fresh batch of personalized Flow tracks."""
         result = await self.provider.gql_client.get_flow_batch()
         if result is None or result.flow is None:
             return []
@@ -956,12 +951,9 @@ class DeezerBrowseManager:
             if edge.node is not None
         ]
 
-    @use_cache(3600)
     async def _get_flow_config_tracks(self, config_id: str) -> list[Track]:
-        """Get tracks for a mood/genre Flow config.
-
-        Fetches 4 batches from the API and deduplicates by track ID
-        to build a richer playlist. Each API call returns a fresh random batch.
+        """
+        Get a fresh batch of tracks for a mood/genre Flow config.
 
         :param config_id: The Flow config identifier (e.g. "happy", "chill", "genre-rock").
         """
@@ -979,7 +971,8 @@ class DeezerBrowseManager:
 
     @use_cache(3600)
     async def _get_smart_tracklist_tracks(self, tracklist_id: str) -> list[Track]:
-        """Get tracks for a SmartTracklist.
+        """
+        Get tracks for a SmartTracklist.
 
         :param tracklist_id: The SmartTracklist identifier.
         """
@@ -1002,7 +995,8 @@ class DeezerBrowseManager:
         return all_tracks
 
     async def _get_shaker_tracks(self, group_id: str) -> list[Track]:
-        """Get suggested tracks for a Shaker (Music Together) group.
+        """
+        Get suggested tracks for a Shaker (Music Together) group.
 
         :param group_id: The Music Together group identifier.
         """
@@ -1026,7 +1020,8 @@ class DeezerBrowseManager:
         ]
 
     async def _get_shaker_curated_tracks(self, group_id: str) -> list[Track]:
-        """Get curated playlist tracks for a Shaker (Music Together) group.
+        """
+        Get curated playlist tracks for a Shaker (Music Together) group.
 
         :param group_id: The Music Together group identifier.
         """

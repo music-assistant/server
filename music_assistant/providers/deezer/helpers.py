@@ -1,4 +1,5 @@
-"""Shared helper functions for the Deezer provider.
+"""
+Shared helper functions for the Deezer provider.
 
 Utility functions used across multiple modules (parsers, browse, media, streaming).
 """
@@ -79,7 +80,8 @@ VIRTUAL_PLAYLIST_TYPES: dict[str, VirtualPlaylistMeta] = {
 
 
 def get_virtual_playlist_meta(item_id: str) -> VirtualPlaylistMeta | None:
-    """Look up canonical metadata for a virtual playlist by its item_id.
+    """
+    Look up canonical metadata for a virtual playlist by its item_id.
 
     Tries exact match first, then longest prefix match.
     """
@@ -102,7 +104,8 @@ def create_virtual_playlist(
     image_url: str | None = None,
     is_dynamic: bool | None = None,
 ) -> Playlist:
-    """Create a virtual playlist for Flow, recommended content, etc.
+    """
+    Create a virtual playlist for Flow, recommended content, etc.
 
     :param provider: The Deezer provider instance.
     :param item_id: The unique identifier (e.g., "flow", "smart_tracklist_123").
@@ -151,7 +154,8 @@ async def fetch_all_audiobook_chapter_edges(
     initial_edges: list[GetAudiobookAudiobookChaptersEdges] | None = None,
     initial_page_info: GetAudiobookAudiobookChaptersPageInfo | None = None,
 ) -> list[GetAudiobookAudiobookChaptersEdges]:
-    """Paginate through all chapters of an audiobook and return the full edge list.
+    """
+    Paginate through all chapters of an audiobook and return the full edge list.
 
     :param gql_client: The Deezer GQL client to use.
     :param audiobook_id: The audiobook ID to fetch chapters for.
@@ -182,7 +186,8 @@ async def fetch_all_audiobook_chapter_edges(
 
 
 async def fetch_all_bookmarks(gql_client: DeezerGQLClient) -> dict[str, tuple[bool, int]]:
-    """Paginate through all podcast episode bookmarks and return a lookup dict.
+    """
+    Paginate through all podcast episode bookmarks and return a lookup dict.
 
     :param gql_client: The Deezer GQL client to use.
     :returns: Dict mapping episode ID to (is_played, position_ms).

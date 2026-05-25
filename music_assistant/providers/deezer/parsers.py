@@ -1,4 +1,5 @@
-"""Parsers for Deezer API response objects (GQL + GW).
+"""
+Parsers for Deezer API response objects (GQL + GW).
 
 Standalone functions that convert Deezer GQL Pydantic models and GW API
 dicts into Music Assistant media item models.
@@ -6,10 +7,9 @@ dicts into Music Assistant media item models.
 
 from __future__ import annotations
 
-import contextlib
 import re
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
 from deezer_python_gql.generated.enums import AlbumType as DeezerAlbumType
@@ -113,7 +113,8 @@ class _HasUrl(Protocol):
 
 
 def _cover_image(provider: DeezerProvider, cover: _CoverLike | None) -> MediaItemImage | None:
-    """Create a THUMB image from a GQL cover/picture object with a `.urls` list.
+    """
+    Create a THUMB image from a GQL cover/picture object with a `.urls` list.
 
     Returns None when the cover is absent or has no URLs.
     """
@@ -152,7 +153,8 @@ def parse_track(
     track: TrackFields | SearchSearchResultsTracksEdgesNode,
     position: int = 0,
 ) -> Track:
-    """Parse a GQL track model to Music Assistant Track.
+    """
+    Parse a GQL track model to Music Assistant Track.
 
     :param provider: The Deezer provider instance.
     :param track: A GQL track model (fragment-based or slim search result).
@@ -304,8 +306,8 @@ def parse_album(
 
     year: int | None = None
     if album.release_date:
-        with contextlib.suppress(ValueError, TypeError):
-            year = parse_date(str(album.release_date)).year
+        if parsed := parse_date(str(album.release_date)):
+            year = parsed.year
 
     item = Album(
         album_type=album_type,
@@ -336,7 +338,8 @@ def parse_playlist(
     playlist: PlaylistFields | SearchSearchResultsPlaylistsEdgesNode,
     is_editable: bool = False,
 ) -> Playlist:
-    """Parse a GQL playlist model to Music Assistant Playlist.
+    """
+    Parse a GQL playlist model to Music Assistant Playlist.
 
     :param provider: The Deezer provider instance.
     :param playlist: A GQL playlist model (fragment-based or slim search result).
@@ -348,7 +351,7 @@ def parse_playlist(
     owner_name = "Unknown"
     if playlist.owner:
         owner_name = playlist.owner.name
-        if not is_editable and playlist.owner.id == provider._user_id:
+        if not is_editable and playlist.owner.id == provider.user_id:
             is_editable = True
 
     metadata = MediaItemMetadata(images=images) if images else MediaItemMetadata()
@@ -374,7 +377,8 @@ def parse_playlist(
 def parse_radio(
     provider: DeezerProvider, livestream: LivestreamFields | SearchSearchResultsLivestreamsEdgesNode
 ) -> Radio:
-    """Parse a GQL Livestream model to Music Assistant Radio.
+    """
+    Parse a GQL Livestream model to Music Assistant Radio.
 
     :param provider: The Deezer provider instance.
     :param livestream: A GQL livestream model (fragment-based or slim search result).
@@ -398,7 +402,8 @@ def parse_radio(
 def parse_podcast(
     provider: DeezerProvider, podcast: PodcastFields | SearchSearchResultsPodcastsEdgesNode
 ) -> Podcast:
-    """Parse a GQL podcast model to Music Assistant Podcast.
+    """
+    Parse a GQL podcast model to Music Assistant Podcast.
 
     :param provider: The Deezer provider instance.
     :param podcast: A GQL podcast model (fragment-based or slim search result).
@@ -432,7 +437,8 @@ def parse_podcast_episode(
     position: int = 0,
     podcast_image_url: str | None = None,
 ) -> PodcastEpisode:
-    """Parse a GQL podcast episode model to Music Assistant PodcastEpisode.
+    """
+    Parse a GQL podcast episode model to Music Assistant PodcastEpisode.
 
     :param provider: The Deezer provider instance.
     :param episode: A GQL podcast episode model inheriting from PodcastEpisodeFields.
@@ -457,8 +463,7 @@ def parse_podcast_episode(
         metadata.description = episode.description
     episode_name = episode.title
     if episode.publication_date:
-        with contextlib.suppress(ValueError, TypeError):
-            pub_date = parse_date(str(episode.publication_date))
+        if pub_date := parse_date(str(episode.publication_date)):
             metadata.release_date = pub_date
             episode_name = f"{pub_date.strftime('%Y-%m-%d')} - {episode.title}"
     return PodcastEpisode(
@@ -475,7 +480,8 @@ def parse_podcast_episode(
 
 
 def parse_audiobook(provider: DeezerProvider, audiobook: AudiobookFields) -> Audiobook:
-    """Parse a GQL audiobook model to Music Assistant Audiobook.
+    """
+    Parse a GQL audiobook model to Music Assistant Audiobook.
 
     :param provider: The Deezer provider instance.
     :param audiobook: A GQL audiobook model inheriting from AudiobookFields.
@@ -520,7 +526,8 @@ def parse_audiobook(provider: DeezerProvider, audiobook: AudiobookFields) -> Aud
 def parse_audiobook_from_album(
     provider: DeezerProvider, album: AlbumFields | SearchSearchResultsAlbumsEdgesNode
 ) -> Audiobook:
-    """Create an Audiobook from an AlbumFields result (search context).
+    """
+    Create an Audiobook from an AlbumFields result (search context).
 
     Used when an album search result is identified as an audiobook via
     check_audiobook_ids. Provides basic metadata from the album fields.
@@ -554,9 +561,8 @@ def parse_audiobook_from_album(
 def parse_audiobook_chapters(
     chapter_edges: Sequence[GetAudiobookAudiobookChaptersEdges],
 ) -> list[MediaItemChapter]:
-    """Build MediaItemChapter list from audiobook chapter edges.
-
-    Computes cumulative start/end positions from individual chapter durations.
+    """
+    Build MediaItemChapter list from audiobook chapter edges.
 
     :param chapter_edges: List of chapter edge objects with `.node` attribute.
     """
@@ -627,12 +633,15 @@ def parse_gw_item(provider: DeezerProvider, item: dict[str, Any]) -> MediaItemTy
     """Parse a GW page item to a Music Assistant media item."""
     item_type = item.get("type")
     data = item.get("data", {})
-    if item_type == "album" and data.get("ALB_ID"):
-        return parse_gw_audiobook(provider, data)
-    if item_type == "playlist" and data.get("PLAYLIST_ID"):
-        return parse_gw_playlist(provider, data)
-    if item_type == "artist" and data.get("ART_ID"):
-        return parse_gw_artist(provider, data)
+    try:
+        if item_type == "album" and data.get("ALB_ID"):
+            return parse_gw_audiobook(provider, data)
+        if item_type == "playlist" and data.get("PLAYLIST_ID"):
+            return parse_gw_playlist(provider, data)
+        if item_type == "artist" and data.get("ART_ID"):
+            return parse_gw_artist(provider, data)
+    except KeyError:
+        provider.logger.debug("Incomplete GW item data for type=%s, skipping", item_type)
     return None
 
 
@@ -723,7 +732,8 @@ def parse_gw_artist(provider: DeezerProvider, data: dict[str, Any]) -> Artist:
 
 
 def parse_gw_track(provider: DeezerProvider, song: dict[str, Any], position: int = 0) -> Track:
-    """Parse a GW API song dict into a Music Assistant Track.
+    """
+    Parse a GW API song dict into a Music Assistant Track.
 
     :param provider: The Deezer provider instance.
     :param song: Raw song dict from the GW API (personal_song.getList, etc.).
@@ -880,9 +890,9 @@ def map_album_type(deezer_type: DeezerAlbumType | None, title: str) -> AlbumType
             return AlbumType.UNKNOWN
 
 
-def parse_date(date_value: str | None) -> datetime:
+def parse_date(date_value: str | None) -> datetime | None:
     """Parse a date value from the GQL API to a timezone-aware datetime."""
     try:
         return datetime.fromisoformat(str(date_value))
     except (ValueError, TypeError):
-        return datetime.now(tz=UTC)
+        return None

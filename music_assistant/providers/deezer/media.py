@@ -1,4 +1,5 @@
-"""Media operations manager for the Deezer provider.
+"""
+Media operations manager for the Deezer provider.
 
 Handles library retrieval, search, item getters, content getters,
 library mutations, and playlist CRUD operations.
@@ -11,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from deezer_python_gql import GraphQLClientGraphQLMultiError
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, UnsupportedFeaturedException
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -153,14 +154,12 @@ class DeezerMediaManager:
                     yield artist
 
     async def _get_audiobook_ids_in_albums(self) -> set[str]:
-        """Identify which favorite album IDs are actually audiobooks.
-
-        Deezer stores audiobook favorites in the albums list, not in the
-        dedicated (deprecated) audiobook favorites endpoint.  We use
-        check_audiobook_ids to tell them apart.  Result is cached for the
-        lifetime of this manager instance so both get_library_albums and
-        get_library_audiobooks can share it without extra API calls.
-        """
+        """Identify which favorite album IDs are actually audiobooks."""
+        # Deezer stores audiobook favorites in the albums list, not in the
+        # dedicated (deprecated) audiobook favorites endpoint. We use
+        # check_audiobook_ids to tell them apart. Result is cached for the
+        # lifetime of this manager instance so both get_library_albums and
+        # get_library_audiobooks can share it without extra API calls.
         if self._audiobook_ids_in_favorites is not None:
             return self._audiobook_ids_in_favorites
         album_ids: list[str] = []
@@ -260,7 +259,8 @@ class DeezerMediaManager:
             yield item
 
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
-        """Retrieve library/subscribed audiobooks from Deezer.
+        """
+        Retrieve library/subscribed audiobooks from Deezer.
 
         Checks both the dedicated (deprecated) audiobook favorites endpoint
         and the regular favorite albums list, since Deezer stores audiobook
@@ -392,13 +392,13 @@ class DeezerMediaManager:
                 if str(song["SNG_ID"]) == song_id:
                     return Artist(
                         item_id=prov_artist_id,
-                        provider=self.provider.instance_id,
+                        provider=self.instance_id,
                         name=song.get("ART_NAME", ""),
                         provider_mappings={
                             ProviderMapping(
                                 item_id=prov_artist_id,
-                                provider_domain=self.provider.domain,
-                                provider_instance=self.provider.instance_id,
+                                provider_domain=self.domain,
+                                provider_instance=self.instance_id,
                             )
                         },
                     )
@@ -427,20 +427,20 @@ class DeezerMediaManager:
                             ItemMapping(
                                 media_type=MediaType.ARTIST,
                                 item_id=personal_art_id,
-                                provider=self.provider.instance_id,
+                                provider=self.instance_id,
                                 name=art_name,
                             )
                         )
                     return Album(
                         item_id=prov_album_id,
-                        provider=self.provider.instance_id,
+                        provider=self.instance_id,
                         name=song.get("ALB_TITLE", ""),
                         artists=artists,
                         provider_mappings={
                             ProviderMapping(
                                 item_id=prov_album_id,
-                                provider_domain=self.provider.domain,
-                                provider_instance=self.provider.instance_id,
+                                provider_domain=self.domain,
+                                provider_instance=self.instance_id,
                             )
                         },
                     )
@@ -475,7 +475,7 @@ class DeezerMediaManager:
         result = await self.provider.gql_client.get_playlist(playlist_id=prov_playlist_id)
         if result is None:
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found on Deezer")
-        is_editable = result.owner is not None and result.owner.id == self.provider._user_id
+        is_editable = result.owner is not None and result.owner.id == self.provider.user_id
         return parse_playlist(self.provider, result, is_editable=is_editable)
 
     @use_cache(3600 * 24 * 30, allow_expired_cache=True)
@@ -568,11 +568,7 @@ class DeezerMediaManager:
     async def get_podcast_episodes(
         self, prov_podcast_id: str
     ) -> AsyncGenerator[PodcastEpisode, None]:
-        """Get all episodes for a given podcast.
-
-        Episode metadata is cached for 3 hours. Bookmark/resume state is
-        applied on top of the cached data so it stays fresh.
-        """
+        """Get all episodes for a given podcast with current resume state."""
         episodes = await self._fetch_podcast_episodes(prov_podcast_id)
         if not episodes:
             return
@@ -586,15 +582,13 @@ class DeezerMediaManager:
 
     @use_cache(3600)
     async def _fetch_podcast_episodes(self, prov_podcast_id: str) -> list[PodcastEpisode]:
-        """Fetch and cache all episodes for a podcast.
-
-        Uses a two-layer caching strategy:
-        - Outer (this decorator, 1h): avoids repeated cache lookups during
-          rapid navigation (e.g., user browsing back and forth between podcasts).
-        - Inner (per-episode, 30 days): prevents re-fetching episode details
-          that rarely change. When the outer cache expires, only genuinely new
-          episodes require an API call.
-        """
+        """Fetch all episodes for a podcast (cached 1h)."""
+        # Two-layer caching strategy:
+        # - Outer (this decorator, 1h): avoids repeated cache lookups during
+        #   rapid navigation (e.g., user browsing back and forth between podcasts).
+        # - Inner (per-episode, 30 days): prevents re-fetching episode details
+        #   that rarely change. When the outer cache expires, only genuinely new
+        #   episodes require an API call.
         result = await self.provider.gql_client.get_podcast(
             podcast_id=prov_podcast_id, episodes_first=0
         )
@@ -743,7 +737,9 @@ class DeezerMediaManager:
         elif item.media_type == MediaType.AUDIOBOOK:
             await self.provider.gql_client.add_album_to_favorite(album_id=item.item_id)
         else:
-            raise NotImplementedError
+            raise UnsupportedFeaturedException(
+                f"Unsupported media type for library_add: {item.media_type}"
+            )
         return True
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
@@ -761,7 +757,9 @@ class DeezerMediaManager:
         elif media_type == MediaType.AUDIOBOOK:
             await self.provider.gql_client.remove_album_from_favorite(album_id=prov_item_id)
         else:
-            raise NotImplementedError
+            raise UnsupportedFeaturedException(
+                f"Unsupported media type for library_remove: {media_type}"
+            )
         return True
 
     # -- Playlist CRUD --
