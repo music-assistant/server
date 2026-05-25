@@ -321,9 +321,6 @@ class MusicController(CoreController):
         :param limit: number of items to return in the search (per type).
         """
         # use cache to avoid repeated searches
-        # include music providers (deduped per streaming domain) plus any
-        # plugin providers that declare SEARCH so plugin-supplied content
-        # (e.g. smart playlists) participates in global search
         plugin_search_providers = [
             p.instance_id
             for p in self.mass.get_providers_supporting_feature(
