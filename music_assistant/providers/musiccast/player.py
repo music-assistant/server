@@ -641,14 +641,15 @@ class MusicCastPlayer(Player):
         if TYPE_CHECKING:
             assert isinstance(self.provider, MusicCastProvider)
 
-        # disable polling
-        self.physical_device.remove()
+        # UDP polling is stopped but the physical device stays registered so
+        # the next poll can recover it.
+        self.physical_device.disable_polling()
 
         async with self.update_lock:
             self._attr_available = False
             self.update_state()
 
-        # set other zone unavailable
+        # set other zones unavailable
         for zone_device in self.zone_device.other_zones:
             if zone_device_player := self.mass.players.get_player(
                 self._get_player_id_from_zone_device(zone_device)
@@ -657,6 +658,19 @@ class MusicCastPlayer(Player):
                 async with zone_device_player.update_lock:
                     zone_device_player._attr_available = False
                     zone_device_player.update_state()
+
+    async def _set_player_available(self) -> None:
+        """Re-enable UDP polling and refresh zone players after recovery."""
+        assert self.zone_device.zone_name == "main", "Call only from main player!"
+        self.logger.debug("Player %s became available again.", self.display_name)
+        await self.physical_device.enable_polling()
+        for zone_device in self.zone_device.other_zones:
+            if zone_device_player := self.mass.players.get_player(
+                self._get_player_id_from_zone_device(zone_device)
+            ):
+                assert isinstance(zone_device_player, MusicCastPlayer)  # for type checking
+                async with zone_device_player.update_lock:
+                    await zone_device_player.set_dynamic_attributes()
 
     async def poll(self) -> None:
         """Poll player."""
@@ -667,7 +681,7 @@ class MusicCastPlayer(Player):
             # we only poll main, which polls the whole device
             return
         async with self.update_lock:
-            # explicit polling on main
+            _was_unavailable = not self._attr_available
             try:
                 await self.physical_device.fetch()
             except (MusicCastConnectionException, MusicCastGroupException):
@@ -675,6 +689,8 @@ class MusicCastPlayer(Player):
                 return
             except ClientError:
                 return
+            if _was_unavailable:
+                await self._set_player_available()
             await self.set_dynamic_attributes()
 
     def _non_async_udp_callback(self, physical_device: MusicCastPhysicalDevice) -> None:

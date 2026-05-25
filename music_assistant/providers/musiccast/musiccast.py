@@ -559,7 +559,9 @@ class MusicCastPhysicalDevice:
 
     def disable_polling(self) -> None:
         """Disable udp polling."""
-        self.device.device.disable_polling()
+        with suppress(AttributeError):
+            # aiomusiccast raises if polling was never enabled or was already disabled
+            self.device.device.disable_polling()
 
     async def fetch(self) -> None:
         """Fetch device information.
@@ -583,11 +585,9 @@ class MusicCastPhysicalDevice:
 
     def remove(self) -> None:
         """Remove physical device."""
-        with suppress(AttributeError):
-            # might already be closed
-            self.device.device.disable_polling()
+        self.disable_polling()
         with suppress(ValueError):
-            # might already be closed
+            # might already be removed from controller
             self.controller.physical_devices.remove(self)
 
 
