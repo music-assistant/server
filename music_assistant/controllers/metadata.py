@@ -547,7 +547,14 @@ class MetaDataController(CoreController):
             )
             # we set the cache header to 1 year (forever)
             # assuming that images do not/rarely change
-            content_type = "image/svg+xml" if image_format == "svg" else f"image/{image_format}"
+            # normalize jpg -> jpeg (image/jpg is non-standard, some clients like
+            # the Sonos S2 controller app reject it silently for artwork display)
+            if image_format == "svg":
+                content_type = "image/svg+xml"
+            elif image_format in ("jpg", "jpeg"):
+                content_type = "image/jpeg"
+            else:
+                content_type = f"image/{image_format}"
             return web.Response(
                 body=image_data,
                 headers={"Cache-Control": "max-age=31536000", "Access-Control-Allow-Origin": "*"},
