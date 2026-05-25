@@ -321,7 +321,17 @@ class MusicController(CoreController):
         :param limit: number of items to return in the search (per type).
         """
         # use cache to avoid repeated searches
-        search_providers = sorted(self.get_unique_providers())
+        # include music providers (deduped per streaming domain) plus any
+        # plugin providers that declare SEARCH so plugin-supplied content
+        # (e.g. smart playlists) participates in global search
+        plugin_search_providers = [
+            p.instance_id
+            for p in self.mass.get_providers_supporting_feature(
+                ProviderFeature.SEARCH,
+                priority=(ProviderType.PLUGIN,),
+            )
+        ]
+        search_providers = sorted(self.get_unique_providers() + plugin_search_providers)
         cache_provider_key = "library" if library_only else ",".join(search_providers)
         cache_key = f"{search_query}{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}-{library_only}-{cache_provider_key}"
         if cache := await self.mass.cache.get(

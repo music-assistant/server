@@ -49,6 +49,7 @@ from music_assistant_models.media_items import (
     AudioSource,
     Playlist,
     ProviderMapping,
+    SearchResults,
 )
 from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
@@ -372,6 +373,21 @@ class MyDemoPluginprovider(PluginProvider):
         #     self._active_session_id = None
         #     if self._in_use_by_queue == queue_id:
         #         self._in_use_by_queue = None
+
+    async def search(
+        self,
+        search_query: str,
+        media_types: list[MediaType],
+        limit: int = 5,
+    ) -> SearchResults:
+        """Perform a search against this plugin's content."""
+        # OPTIONAL
+        # Will only be called if ProviderFeature.SEARCH is declared.
+        # Return a SearchResults with items belonging to this plugin (typically
+        # Playlist items whose provider_mappings point back to this plugin).
+        # The global search controller interleaves the result with results
+        # from other providers.
+        return SearchResults()
 
     async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
         """Retrieve a list of similar tracks for the given track."""
