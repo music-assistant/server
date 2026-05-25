@@ -54,7 +54,7 @@ class SubsonicScrobbleProvider(PluginProvider):
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
 
-        handler = SubsonicScrobbleEventHandler(self.mass, self.logger)
+        handler = SubsonicScrobbleEventHandler(self.mass, self.logger, self.config)
 
         # subscribe to media_item_played event
         self._on_unload.append(
@@ -74,9 +74,15 @@ class SubsonicScrobbleProvider(PluginProvider):
 class SubsonicScrobbleEventHandler(ScrobblerHelper):
     """Handles the scrobbling event handling."""
 
-    def __init__(self, mass: MusicAssistant, logger: logging.Logger) -> None:
+    def __init__(
+        self, mass: MusicAssistant, logger: logging.Logger, config: ProviderConfig
+    ) -> None:
         """Initialize."""
-        super().__init__(logger, supported_media_types=SUPPORTED_SCROBBLE_MEDIA_TYPES)
+        super().__init__(
+            logger,
+            ScrobblerConfig.create_from_config(config),
+            SUPPORTED_SCROBBLE_MEDIA_TYPES,
+        )
         self.mass = mass
 
     async def _get_subsonic_provider_and_item_id(
