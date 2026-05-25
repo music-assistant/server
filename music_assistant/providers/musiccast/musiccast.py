@@ -340,9 +340,14 @@ class MusicCastZoneDevice:
         """Play http url."""
         await self.device.play_url_media(self.zone_name, media_url=url, title=MC_PLAY_TITLE)
 
-    async def select_source(self, source_id: str) -> None:
-        """Select input source. Internal source name."""
-        await self.device.select_source(self.zone_name, source_id)
+    async def select_source(self, source_id: str, mode: str = "") -> None:
+        """
+        Select input source. Internal source name.
+
+        :param source_id: Internal MusicCast source name.
+        :param mode: Optional MusicCast source mode, e.g. "autoplay_disabled".
+        """
+        await self.device.select_source(self.zone_name, source_id, mode)
 
     async def select_sound_mode(self, sound_mode_id: str) -> None:
         """Select sound mode. Internal sound_mode name."""
@@ -559,7 +564,9 @@ class MusicCastPhysicalDevice:
 
     def disable_polling(self) -> None:
         """Disable udp polling."""
-        self.device.device.disable_polling()
+        with suppress(AttributeError):
+            # aiomusiccast raises if polling was never enabled or was already disabled
+            self.device.device.disable_polling()
 
     async def fetch(self) -> None:
         """Fetch device information.
@@ -583,11 +590,9 @@ class MusicCastPhysicalDevice:
 
     def remove(self) -> None:
         """Remove physical device."""
-        with suppress(AttributeError):
-            # might already be closed
-            self.device.device.disable_polling()
+        self.disable_polling()
         with suppress(ValueError):
-            # might already be closed
+            # might already be removed from controller
             self.controller.physical_devices.remove(self)
 
 

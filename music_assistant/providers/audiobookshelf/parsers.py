@@ -1,7 +1,7 @@
 """Parser for ABS -> MASS."""
 
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import datetime
 
 from aioaudiobookshelf.schema.library import (
     LibraryItemExpandedBook as AbsLibraryItemExpandedBook,
@@ -37,6 +37,8 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items import Playlist as MassPlaylist
 from music_assistant_models.media_items import Podcast as MassPodcast
 from music_assistant_models.media_items import PodcastEpisode as MassPodcastEpisode
+
+from music_assistant.helpers.datetime import from_utc_timestamp
 
 
 def parse_playlist(
@@ -182,7 +184,7 @@ def parse_podcast_episode(
     if episode.published_at is not None:
         position = -episode.published_at
         # abs published_at is ms epoch
-        release_date = datetime.fromtimestamp(episode.published_at / 1000, tz=UTC)
+        release_date = from_utc_timestamp(episode.published_at / 1000)
     else:
         position = 0
         if fallback_episode_cnt is not None:
@@ -303,6 +305,6 @@ def parse_audiobook(
         mass_audiobook.resume_position_ms = int(media_progress.current_time * 1000)
         mass_audiobook.fully_played = media_progress.is_finished
 
-    mass_audiobook.date_added = datetime.fromtimestamp(abs_audiobook.added_at / 1000, tz=UTC)
+    mass_audiobook.date_added = from_utc_timestamp(abs_audiobook.added_at / 1000)
 
     return mass_audiobook
