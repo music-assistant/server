@@ -1871,7 +1871,8 @@ class PlayerQueuesController(CoreController):
 
     def index_by_id(self, queue_id: str, queue_item_id: str) -> int | None:
         """Get index by queue_item_id."""
-        queue_items = self._queue_items[queue_id]
+        if (queue_items := self._queue_items.get(queue_id)) is None:
+            return None
         for index, item in enumerate(queue_items):
             if item.queue_item_id == queue_item_id:
                 return index
