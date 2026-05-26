@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, Mock
 
-from music_assistant_models.enums import ProviderFeature, ProviderType
-from music_assistant_models.media_items import ProviderMapping
+from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
+from music_assistant_models.media_items import ProviderMapping, SearchResults
 
 from music_assistant.controllers.media.artists import ArtistsController
 from music_assistant.controllers.media.tracks import TracksController
@@ -13,6 +13,7 @@ from music_assistant.controllers.music import MusicController
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.plugin import PluginProvider
 
 
 def _make_prov(
@@ -214,3 +215,59 @@ async def test_browse_root_includes_non_music_providers() -> None:
         for c in mass.get_providers_supporting_feature.call_args_list
     ]
     assert ProviderFeature.BROWSE in calls
+
+
+async def test_global_search_includes_plugin_providers_with_search() -> None:
+    """Plugins declaring SEARCH should be queried alongside music providers."""
+    mass = Mock()
+    mass.cache.get = AsyncMock(return_value=None)
+    mass.cache.set = AsyncMock(return_value=None)
+    plugin_prov = _make_prov("plug_a", ProviderType.PLUGIN, {ProviderFeature.SEARCH})
+    mass.get_providers_supporting_feature.return_value = [plugin_prov]
+
+    controller = MusicController.__new__(MusicController)
+    controller.mass = mass
+    controller.domain = "music"
+    controller.get_unique_providers = Mock(return_value=["m_a"])  # type: ignore[method-assign]
+    controller.search_library = AsyncMock(return_value=SearchResults())  # type: ignore[method-assign]
+    controller._search_provider = AsyncMock(return_value=SearchResults())  # type: ignore[method-assign]
+    controller._sort_search_result = Mock(side_effect=lambda _query, items: items)  # type: ignore[method-assign]
+
+    await controller.search("foo", media_types=[MediaType.TRACK], limit=5)
+
+    queried_provider_ids = sorted(
+        call.args[1] for call in controller._search_provider.await_args_list
+    )
+    assert queried_provider_ids == ["m_a", "plug_a"]
+    args, kwargs = mass.get_providers_supporting_feature.call_args
+    assert (args[0] if args else kwargs["feature"]) == ProviderFeature.SEARCH
+    assert kwargs.get("priority") == (ProviderType.PLUGIN,)
+
+
+async def test_plugin_search_default_stub_contract() -> None:
+    """PluginProvider.search returns empty unless SEARCH is declared, then raises NotImplementedError."""
+
+    class _StubPlugin(PluginProvider):
+        _features: set[ProviderFeature] = set()
+
+        @property
+        def supported_features(self) -> set[ProviderFeature]:
+            return self._features
+
+    plugin = _StubPlugin.__new__(_StubPlugin)
+    plugin._features = set()
+
+    result = await plugin.search("foo", [MediaType.TRACK], limit=5)
+    assert isinstance(result, SearchResults)
+    assert not result.tracks
+    assert not result.artists
+    assert not result.albums
+
+    plugin._features = {ProviderFeature.SEARCH}
+    try:
+        await plugin.search("foo", [MediaType.TRACK], limit=5)
+    except NotImplementedError:
+        pass
+    else:
+        msg = "expected NotImplementedError when SEARCH is declared but not overridden"
+        raise AssertionError(msg)

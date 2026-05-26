@@ -36,6 +36,7 @@ from music_assistant.models.music_provider import MusicProvider
 LOUDNESS_ANALYSIS_DOMAIN = "loudness_analysis"
 BACKGROUND_SCAN_TASK_ID = "audio_analysis_background_scan"
 BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
+BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER = 1.5
 # Per-run wall-clock cap; in-flight tracks finish, new ones defer to the next run.
 BACKGROUND_SCAN_RUN_BUDGET_SECONDS = 4 * 3600
 # Per-chunk dispatch interval bounds. One PCM chunk = one audio-second of decoded data:
@@ -348,6 +349,58 @@ class AudioAnalysisController:
             media_type=media_type,
         )
 
+    async def get_extra_data_for_album_tracks(
+        self,
+        track_item_ids: list[str],
+        provider_instance_id_or_domain: str,
+        aa_provider_domain: str,
+    ) -> list[dict[str, Any]]:
+        """
+        Return one AA provider's ``extra_data`` for each given track that has one.
+
+        :param track_item_ids: Provider-native track IDs to look up.
+        :param provider_instance_id_or_domain: Music provider instance ID or domain.
+        :param aa_provider_domain: Domain of the AA provider whose rows to fetch.
+        """
+        if not track_item_ids:
+            return []
+        provider = self.mass.get_provider(
+            provider_instance_id_or_domain, provider_type=MusicProvider
+        )
+        if provider is None:
+            return []
+        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
+
+        placeholders = ",".join(f":id{i}" for i in range(len(track_item_ids)))
+        params: dict[str, Any] = {f"id{i}": tid for i, tid in enumerate(track_item_ids)}
+        params["provider"] = prov_key
+        params["domain"] = aa_provider_domain
+        params["media_type"] = MediaType.TRACK.value
+
+        query = (
+            f"SELECT analysis_data FROM {DB_TABLE_AUDIO_ANALYSIS} "
+            f"WHERE aa_provider_domain = :domain "
+            f"AND media_type = :media_type "
+            f"AND provider = :provider "
+            f"AND item_id IN ({placeholders})"
+        )
+        rows = await self.mass.music.database.get_rows_from_query(
+            query, params, limit=len(track_item_ids)
+        )
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                data = json_loads(row["analysis_data"])
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            extra = data.get("extra_data")
+            if isinstance(extra, dict):
+                results.append(extra)
+        return results
+
     async def get_audio_analysis_version(
         self,
         item_id: str,
@@ -641,6 +694,12 @@ class AudioAnalysisController:
             )
             return
 
+        # Floor at the fixed budget so short tracks keep ffmpeg-startup headroom.
+        timeout_seconds = max(
+            BACKGROUND_PER_TRACK_TIMEOUT_SECONDS,
+            int((streamdetails.duration or 0) * BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER),
+        )
+
         try:
             await asyncio.wait_for(
                 self._run_background_streaming_inner(
@@ -650,7 +709,7 @@ class AudioAnalysisController:
                     min_interval=min_interval,
                     max_interval=max_interval,
                 ),
-                timeout=BACKGROUND_PER_TRACK_TIMEOUT_SECONDS,
+                timeout=timeout_seconds,
             )
         except asyncio.CancelledError:
             # CancelledError inherits from BaseException — the broad except below
@@ -661,13 +720,13 @@ class AudioAnalysisController:
         except TimeoutError:
             self.logger.warning(
                 "Background analysis exceeded %ds budget for %s, skipping",
-                BACKGROUND_PER_TRACK_TIMEOUT_SECONDS,
+                timeout_seconds,
                 session_key,
             )
             self._cancel_providers(session_key)
             self.mass.tasks.add_task_failure(
                 BACKGROUND_SCAN_TASK_ID,
-                f"Timed out after {BACKGROUND_PER_TRACK_TIMEOUT_SECONDS}s: {session_key}",
+                f"Timed out after {timeout_seconds}s: {session_key}",
             )
         except Exception as err:
             self.logger.warning("Background analysis failed for %s: %s", session_key, err)
