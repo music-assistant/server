@@ -735,6 +735,17 @@ class SonicSimilarityPlugin(PluginProvider):
             except OSError as err:
                 self.logger.debug("Could not unlink %s during uninstall: %s", path, err)
 
+    def _empty_similar_response(self, params: SimilarParams, reason: str) -> dict[str, Any]:
+        """Build the early-return shape for _handle_similar."""
+        return {
+            "analyzed": False,
+            "reason": reason,
+            "seed_track_ids": params.item_ids,
+            "blend_mode": params.blend_mode,
+            "depth": params.depth,
+            "items": [],
+        }
+
     async def _handle_similar(  # noqa: PLR0913
         self,
         item_id: str | None = None,
@@ -778,14 +789,10 @@ class SonicSimilarityPlugin(PluginProvider):
         weights = _parse_weights({**params.weight_overrides, "preset": params.preset})
 
         seed_sigs, valid_seed_ids = self._lookup_seed_signatures(params.item_ids)
-        if not seed_sigs or self.corpus_means is None or self.corpus_stds is None:
-            return {
-                "analyzed": False,
-                "seed_track_ids": params.item_ids,
-                "blend_mode": params.blend_mode,
-                "depth": params.depth,
-                "items": [],
-            }
+        if self.corpus_means is None or self.corpus_stds is None:
+            return self._empty_similar_response(params, "corpus_not_ready")
+        if not seed_sigs:
+            return self._empty_similar_response(params, "seed_not_in_index")
 
         # Centroid of seed_sigs is invariant across search/MMR/debug paths;
         # compute once and pass through the context.

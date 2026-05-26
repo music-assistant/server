@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 
 from music_assistant.providers.sonic_similarity import (
@@ -11,6 +13,10 @@ from music_assistant.providers.sonic_similarity import (
     apply_filters,
 )
 from music_assistant.providers.sonic_similarity.similarity import ScoredCandidate
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from typing import Any
 
 
 class TestParseSimilarParams:
@@ -222,3 +228,29 @@ class TestSingleSeedAPI:
         """Weight kwargs pass through."""
         params = _parse_similar_params(item_id="abc", timbre_weight="0.5")
         assert params.weight_overrides["timbre_weight"] == "0.5"
+
+
+class TestHandleSimilarReason:
+    """_handle_similar surfaces a `reason` that distinguishes empty-response causes."""
+
+    @pytest.mark.asyncio
+    async def test_corpus_not_ready_reason(self, make_plugin: Callable[..., Any]) -> None:
+        """No corpus → reason = corpus_not_ready (regardless of seed match)."""
+        plugin = make_plugin()  # no signatures → corpus_means/stds stay None
+
+        result = await plugin._handle_similar(item_id="anything")
+
+        assert result["analyzed"] is False
+        assert result["reason"] == "corpus_not_ready"
+        assert result["items"] == []
+
+    @pytest.mark.asyncio
+    async def test_seed_not_in_index_reason(self, make_plugin: Callable[..., Any]) -> None:
+        """Corpus ready but no matching seed → reason = seed_not_in_index."""
+        plugin = make_plugin(signatures={("spotify", "known_seed"): [0.1] * 18})
+
+        result = await plugin._handle_similar(item_id="unknown_seed")
+
+        assert result["analyzed"] is False
+        assert result["reason"] == "seed_not_in_index"
+        assert result["items"] == []
