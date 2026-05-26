@@ -2421,13 +2421,17 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                     1, self.mass.player_queues.resume, resume_queue.queue_id, False
                 )
 
-    async def on_player_dsp_change(self, player_id: str) -> None:
-        """Call (by config manager) when the DSP settings of a player change."""
-        # signal player provider that the config changed
+    async def on_player_dsp_change(self, player_id: str, was_enabled: bool = True) -> None:
+        """Call (by config manager) when the DSP settings of a player change.
+
+        :param player_id: The player ID whose DSP config changed.
+        :param was_enabled: Whether DSP was enabled before this change.
+        """
         if not (player := self.get_player(player_id)):
             return
-        # DSP is disabled, changes won't affect the active audio stream
-        if not self.mass.config.get_player_dsp_config(player_id).enabled:
+        # skip restart only when DSP was already disabled before this change and still is;
+        # toggling DSP off requires a restart to remove DSP processing from the active stream
+        if not was_enabled and not self.mass.config.get_player_dsp_config(player_id).enabled:
             return
         if player.state.playback_state == PlaybackState.PLAYING:
             self.logger.info("Restarting playback of Player %s after DSP change", player_id)
