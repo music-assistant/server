@@ -13,11 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 from mashumaro import DataClassDictMixin
 from mashumaro.exceptions import MissingField
 from music_assistant_models.enums import ExternalID, LinkType, ProviderFeature
-from music_assistant_models.errors import (
-    InvalidDataError,
-    ResourceTemporarilyUnavailable,
-    RetriesExhausted,
-)
+from music_assistant_models.errors import InvalidDataError, ResourceTemporarilyUnavailable
 from music_assistant_models.media_items import MediaItemLink, MediaItemMetadata
 
 from music_assistant.controllers.cache import use_cache
@@ -367,28 +363,23 @@ class MusicbrainzProvider(MetadataProvider):
         """
         Look up canonical artist names for a sequence of MusicBrainz artist IDs.
 
+        Transient failures (MusicBrainz unreachable, retries exhausted) are left
+        to propagate so the caller can retry later rather than persist degraded
+        data; only a genuinely unresolvable MBID yields ``None``.
+
         :param mbids: MusicBrainz artist IDs to look up.
         :return: One entry per input MBID, in the same order, as a
             ``(name, mbid, sort_name)`` tuple. ``None`` at a position means
             that MBID could not be resolved.
         """
         results: list[tuple[str, str, str] | None] = []
-        for index, mbid in enumerate(mbids):
+        for mbid in mbids:
             try:
                 artist = await self.get_artist_details(mbid)
                 results.append((artist.name, mbid, artist.sort_name))
             except InvalidDataError as err:
                 self.logger.warning("Failed to lookup MusicBrainz artist %s: %s", mbid, err)
                 results.append(None)
-            except RetriesExhausted as err:
-                self.logger.warning(
-                    "Aborting MusicBrainz artist lookup after transport failure for %s: %s",
-                    mbid,
-                    err,
-                )
-                results.append(None)
-                results.extend([None] * (len(mbids) - index - 1))
-                break
         return results
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
