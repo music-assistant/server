@@ -948,9 +948,11 @@ class ConfigController:
         # validate the new config
         config.validate()
 
+        old_dsp_enabled = self.get_player_dsp_config(player_id).enabled
         # Save and apply the new config to the player
         self.set(f"{CONF_PLAYER_DSP}/{player_id}", config.to_dict())
-        await self.mass.players.on_player_dsp_change(player_id)
+        if old_dsp_enabled or config.enabled:
+            await self.mass.players.on_player_dsp_change(player_id)
         # send the dsp config updated event
         self.mass.signal_event(
             EventType.PLAYER_DSP_CONFIG_UPDATED,
