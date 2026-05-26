@@ -1851,9 +1851,17 @@ class StreamsAudio:
                     pcm_format=pcm_format,
                 ):
                     if first_part_written < fadeout_share_bytes:
-                        yield mix_chunk
-                        first_part_written += len(mix_chunk)
-                        bytes_written += len(mix_chunk)
+                        # split this chunk so A gets exactly fadeout_share_bytes
+                        remaining = fadeout_share_bytes - first_part_written
+                        if len(mix_chunk) > remaining:
+                            yield mix_chunk[:remaining]
+                            first_part_written += remaining
+                            bytes_written += remaining
+                            second_part_buf.extend(mix_chunk[remaining:])
+                        else:
+                            yield mix_chunk
+                            first_part_written += len(mix_chunk)
+                            bytes_written += len(mix_chunk)
                     else:
                         second_part_buf.extend(mix_chunk)
                 self._crossfade_data[queue_item.queue_id] = CrossfadeData(
@@ -1876,6 +1884,9 @@ class StreamsAudio:
                     crossfade_elapsed,
                 )
             except Exception as err:
+                if first_part_written or second_part_buf:
+                    # partial mix already played — concat'd fade_out_data would duplicate audio
+                    raise
                 # crossfade failed, fall back to just yielding the fade_out_data
                 self.logger.warning(
                     "Crossfade failed for queue %s: %s",
@@ -2085,7 +2096,9 @@ class StreamsAudio:
                 )
                 timing_info = crossfade_smart_fade.timing_info
                 queue_track.streamdetails.seek_position = (
-                    timing_info.fadein_trimmed_duration + timing_info.crossfade_duration
+                    raw_seek_position
+                    + timing_info.fadein_trimmed_duration
+                    + timing_info.crossfade_duration
                 )
             # append to play log so the queue controller can work out which track is playing
             play_log_entry = PlayLogEntry(queue_track.queue_item_id)
@@ -2163,6 +2176,9 @@ class StreamsAudio:
                             yield mix_chunk
                             crossfade_bytes_written += len(mix_chunk)
                     except Exception as mix_err:
+                        if crossfade_bytes_written:
+                            # partial mix already played — concat'd tail would duplicate audio
+                            raise
                         self.logger.warning(
                             "Crossfade mixer failed for %s, falling back to simple concat: %s",
                             queue_track.name,

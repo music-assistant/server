@@ -709,11 +709,6 @@ class StandardCrossFade(SmartFade):
 
             post_crossfade = _post_crossfade()
 
-        # Adjust the duration to match actual sizes
-        self.crossfade_duration = min(
-            len(adjusted_fade_in_part) / pcm_format.pcm_sample_size,
-            len(adjusted_fade_out_part) / pcm_format.pcm_sample_size,
-        )
         # Yield pre-crossfade, crossfaded section, and post-crossfade
         for pcm_slice in iter_pcm_slices(pre_crossfade, pcm_format, 1000):
             yield pcm_slice
