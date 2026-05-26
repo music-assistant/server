@@ -3,8 +3,28 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.media_items import Album, Artist
 
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
+
+MBID_A = "11111111-1111-1111-1111-111111111111"
+MBID_B = "22222222-2222-2222-2222-222222222222"
+
+
+def _make_artist(name: str, mbid: str | None = None) -> Artist:
+    """Create a minimal Artist, optionally carrying a MusicBrainz ID."""
+    artist = Artist(item_id=name, provider="test", name=name, provider_mappings=set())
+    if mbid:
+        artist.mbid = mbid
+    return artist
+
+
+def _make_album(*artists: Artist) -> Album:
+    """Create a minimal Album with the given artists."""
+    album = Album(item_id="album", provider="test", name="Album", provider_mappings=set())
+    for artist in artists:
+        album.artists.append(artist)
+    return album
 
 
 def _create_provider(mb_provider: object | None = None) -> LocalFileSystemProvider:
@@ -150,3 +170,48 @@ class TestResolveArtistsWithMbids:
         )
         assert result == [("Artist A & Artist B", "mbid-a", None)]
         provider.logger.warning.assert_called_once()  # type: ignore[attr-defined]
+
+
+class TestMatchAlbumArtist:
+    """Test reuse of an existing album artist when parsing track artists."""
+
+    def test_no_album_returns_none(self) -> None:
+        """With no album there is nothing to match against."""
+        provider = _create_provider()
+        assert provider._match_album_artist(None, "Artist A", MBID_A) is None
+
+    def test_matches_on_mbid_despite_different_name(self) -> None:
+        """The album artist is reused when MBIDs agree even if names differ.
+
+        This is the mixed case: the album-artist tag count matched its MBID
+        count (so it kept the tag-parsed name), while the track-artist count
+        mismatched and was resolved to a canonical MusicBrainz name.
+        """
+        album_artist = _make_artist("Above & Beyond", mbid=MBID_A)
+        album = _make_album(album_artist)
+        provider = _create_provider()
+        assert provider._match_album_artist(album, "Above and Beyond", MBID_A) is album_artist
+
+    def test_matches_on_name_when_no_mbid(self) -> None:
+        """Without a track-artist MBID, fall back to an exact name match."""
+        album_artist = _make_artist("Artist A")
+        album = _make_album(album_artist)
+        provider = _create_provider()
+        assert provider._match_album_artist(album, "Artist A", None) is album_artist
+
+    def test_no_match_creates_nothing(self) -> None:
+        """A different artist (no shared MBID, no shared name) does not match."""
+        album = _make_album(_make_artist("Artist A", mbid=MBID_A))
+        provider = _create_provider()
+        assert provider._match_album_artist(album, "Artist B", MBID_B) is None
+
+    def test_name_match_still_applies_with_unset_album_mbid(self) -> None:
+        """A track MBID does not prevent the legacy name match when album has none.
+
+        Matching is additive (MBID or name), so an album artist with no MBID is
+        still reused by name even when the track artist carries one.
+        """
+        album_artist = _make_artist("Artist A")
+        album = _make_album(album_artist)
+        provider = _create_provider()
+        assert provider._match_album_artist(album, "Artist A", MBID_A) is album_artist

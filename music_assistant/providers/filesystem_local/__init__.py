@@ -1064,10 +1064,8 @@ class LocalFileSystemProvider(MusicProvider):
             log_label="ARTISTS tag",
         )
         for name, mbid, sort_name in resolved_track_artists:
-            # prefer album artist if match
-            if album and (
-                album_artist_match := next((x for x in album.artists if x.name == name), None)
-            ):
+            # prefer the existing album artist object when it's the same artist
+            if album_artist_match := self._match_album_artist(album, name, mbid):
                 track.artists.append(album_artist_match)
                 continue
             artist = await self._parse_artist(name, sort_name=sort_name, mbid=mbid)
@@ -1211,6 +1209,26 @@ class LocalFileSystemProvider(MusicProvider):
             [r[0] for r in resolved],
         )
         return resolved
+
+    def _match_album_artist(
+        self, album: Album | None, name: str, mbid: str | None
+    ) -> Artist | ItemMapping | None:
+        """
+        Return an existing album artist representing the same artist, if any.
+
+        Matches on MusicBrainz ID when available (names may differ when only one
+        side was resolved against MusicBrainz), otherwise on exact name.
+
+        :param album: The track's album, if known.
+        :param name: Resolved track-artist name.
+        :param mbid: Resolved track-artist MusicBrainz ID, if any.
+        """
+        if not album:
+            return None
+        return next(
+            (x for x in album.artists if (mbid and x.mbid == mbid) or x.name == name),
+            None,
+        )
 
     async def _parse_artist(
         self,
