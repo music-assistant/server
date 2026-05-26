@@ -39,6 +39,7 @@ from music_assistant.providers.sonic_similarity.clap_index import (
 )
 from music_assistant.providers.sonic_similarity.similarity import (
     Candidate,
+    ScoredCandidate,
     apply_mmr,
     combine_seeds_centroid,
     expand_recursive,
@@ -326,27 +327,27 @@ def _parse_similar_params(  # noqa: PLR0913
 
 
 def apply_filters(
-    candidates: list[tuple[str, str, float]],
+    candidates: list[ScoredCandidate],
     seed_ids: set[str],
     exclude_track_ids: set[str] | None,
     filter_providers: set[str] | None,
-) -> list[tuple[str, str, float]]:
+) -> list[ScoredCandidate]:
     """Apply cheap post-ANN filters to candidate list.
 
-    :param candidates: List of (item_id, provider, distance) tuples.
+    :param candidates: ScoredCandidate results from the ANN search.
     :param seed_ids: Seed track IDs to exclude.
     :param exclude_track_ids: Additional track IDs to exclude.
     :param filter_providers: If set, only keep candidates from these providers.
     """
-    result: list[tuple[str, str, float]] = []
+    result: list[ScoredCandidate] = []
     exclude = seed_ids | (exclude_track_ids or set())
 
-    for item_id, provider, dist in candidates:
-        if item_id in exclude:
+    for cand in candidates:
+        if cand.item_id in exclude:
             continue
-        if filter_providers is not None and provider not in filter_providers:
+        if filter_providers is not None and cand.provider not in filter_providers:
             continue
-        result.append((item_id, provider, dist))
+        result.append(cand)
 
     return result
 
@@ -826,8 +827,12 @@ class SonicSimilarityPlugin(PluginProvider):
                     if cand_id not in seen:
                         candidate_ids.append((cand_id, cos_dist))
 
-            raw_tuples: list[tuple[str, str, float]] = [
-                (cand_id, id_to_prov.get(cand_id, "library"), cos_dist)
+            raw_candidates: list[ScoredCandidate] = [
+                ScoredCandidate(
+                    item_id=cand_id,
+                    provider=id_to_prov.get(cand_id, "library"),
+                    distance=cos_dist,
+                )
                 for cand_id, cos_dist in candidate_ids
             ]
 
@@ -838,18 +843,20 @@ class SonicSimilarityPlugin(PluginProvider):
             filter_prov_set = (
                 set(ctx.params.filter_providers) if ctx.params.filter_providers else None
             )
-            filtered = apply_filters(raw_tuples, seed_id_set | seen, exclude_set, filter_prov_set)
+            filtered = apply_filters(
+                raw_candidates, seed_id_set | seen, exclude_set, filter_prov_set
+            )
 
             results: list[tuple[str, str, list[float], float]] = []
-            for cand_id, cand_provider, _cos_dist in filtered:
-                cand_features = self._signature_cache.get((cand_id, cand_provider))
+            for cand in filtered:
+                cand_features = self._signature_cache.get((cand.item_id, cand.provider))
                 if cand_features is None:
                     continue
                 cand_normalized = normalize_features(
                     cand_features, ctx.corpus_means, ctx.corpus_stds
                 )
                 dist = compute_weighted_distance(ctx.orig_normalized, cand_normalized, ctx.weights)
-                results.append((cand_id, cand_provider, cand_features, dist))
+                results.append((cand.item_id, cand.provider, cand_features, dist))
 
             results.sort(key=lambda x: x[3])
             return results
@@ -1143,7 +1150,9 @@ class SonicSimilarityPlugin(PluginProvider):
             except MusicAssistantError:
                 return None
 
-        resolved = await asyncio.gather(*[_resolve(p, i) for p, i, _d in matches])
+        resolved = await asyncio.gather(
+            *[_resolve(cand.provider, cand.item_id) for cand in matches]
+        )
         return SearchResults(tracks=[t for t in resolved if t is not None])
 
     async def _embed_text_query(self, query: str) -> np.ndarray | None:
@@ -1599,10 +1608,12 @@ class SonicSimilarityPlugin(PluginProvider):
         # +1 because the seed itself is the nearest neighbour; we drop it after.
         raw_results = await self._clap_index.search(seed_embedding, limit + 1)
         items: list[dict[str, Any]] = []
-        for provider, found_item_id, distance in raw_results:
-            if found_item_id == item_id:
+        for cand in raw_results:
+            if cand.item_id == item_id:
                 continue
-            items.append({"item_id": found_item_id, "provider": provider, "distance": distance})
+            items.append(
+                {"item_id": cand.item_id, "provider": cand.provider, "distance": cand.distance}
+            )
             if len(items) >= limit:
                 break
         return {
@@ -1682,11 +1693,11 @@ class SonicSimilarityPlugin(PluginProvider):
                 "query": query,
                 "items": [
                     {
-                        "provider": prov,
-                        "item_id": iid,
-                        "distance": round(float(dist), 4),
+                        "provider": cand.provider,
+                        "item_id": cand.item_id,
+                        "distance": round(float(cand.distance), 4),
                     }
-                    for prov, iid, dist in matches
+                    for cand in matches
                 ],
             }
 
@@ -1706,5 +1717,9 @@ class SonicSimilarityPlugin(PluginProvider):
                 self.logger.debug("Could not resolve %s/%s: %s", provider, item_id, err)
             return entry
 
-        items = list(await asyncio.gather(*[_resolve(p, i, d) for p, i, d in matches]))
+        items = list(
+            await asyncio.gather(
+                *[_resolve(cand.provider, cand.item_id, cand.distance) for cand in matches]
+            )
+        )
         return {"analyzed": True, "query": query, "items": items}

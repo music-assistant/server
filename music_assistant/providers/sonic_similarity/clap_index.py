@@ -32,6 +32,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from .similarity import ScoredCandidate
+
 if TYPE_CHECKING:
     import logging
 
@@ -195,7 +197,7 @@ class ClapIndex:
             return prov, arr
         return None
 
-    def query_sync(self, embedding: np.ndarray, k: int) -> list[tuple[str, str, float]]:
+    def query_sync(self, embedding: np.ndarray, k: int) -> list[ScoredCandidate]:
         """Return the top-k nearest tracks synchronously (sibling of search() for sync callers).
 
         :param embedding: 1024-dim query embedding.
@@ -204,16 +206,19 @@ class ClapIndex:
         if self._index is None or len(self._index) == 0:
             return []
         vec = np.asarray(embedding, dtype=np.float32).reshape(-1)
-        results: list[tuple[str, str, float]] = []
+        results: list[ScoredCandidate] = []
         for label, distance in self._search_sync(vec, k):
             entry = self._reverse.get(int(label))
             if entry is None:
                 continue
-            results.append((entry[0], entry[1], float(distance)))
+            provider, item_id = entry
+            results.append(
+                ScoredCandidate(item_id=item_id, provider=provider, distance=float(distance))
+            )
         return results
 
-    async def search(self, embedding: np.ndarray, k: int) -> list[tuple[str, str, float]]:
-        """Return the top-k nearest (provider, item_id, cosine_distance) tuples.
+    async def search(self, embedding: np.ndarray, k: int) -> list[ScoredCandidate]:
+        """Return the top-k nearest ScoredCandidate results.
 
         :param embedding: 1024-dim query embedding (from CLAP text encoder).
         :param k: Max number of neighbors to return.
@@ -222,12 +227,15 @@ class ClapIndex:
             return []
         vec = np.asarray(embedding, dtype=np.float32).reshape(-1)
         matches = await asyncio.to_thread(self._search_sync, vec, k)
-        results: list[tuple[str, str, float]] = []
+        results: list[ScoredCandidate] = []
         for label, distance in matches:
             entry = self._reverse.get(int(label))
             if entry is None:
                 continue
-            results.append((entry[0], entry[1], float(distance)))
+            provider, item_id = entry
+            results.append(
+                ScoredCandidate(item_id=item_id, provider=provider, distance=float(distance))
+            )
         return results
 
     def _search_sync(self, vec: np.ndarray, k: int) -> list[tuple[int, float]]:

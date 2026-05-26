@@ -11,6 +11,7 @@ from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.providers.sonic_similarity import setup
+from music_assistant.providers.sonic_similarity.similarity import ScoredCandidate
 from tests.providers.sonic_similarity.conftest import make_track
 
 if TYPE_CHECKING:
@@ -140,8 +141,8 @@ class TestSearch:
         plugin._load_text_encoder = lambda: _make_mock_encoder(vector)
         plugin._clap_index.search = AsyncMock(
             return_value=[
-                ("spotify", "track_a", 0.1),
-                ("tidal", "track_b", 0.2),
+                ScoredCandidate("track_a", "spotify", 0.1),
+                ScoredCandidate("track_b", "tidal", 0.2),
             ]
         )
         track_a = make_track("track_a", provider="spotify", name="A")
@@ -164,8 +165,8 @@ class TestSearch:
         plugin._load_text_encoder = lambda: _make_mock_encoder(vector)
         plugin._clap_index.search = AsyncMock(
             return_value=[
-                ("spotify", "track_a", 0.1),
-                ("tidal", "track_b", 0.2),
+                ScoredCandidate("track_a", "spotify", 0.1),
+                ScoredCandidate("track_b", "tidal", 0.2),
             ]
         )
         track_b = make_track("track_b", provider="tidal", name="B")

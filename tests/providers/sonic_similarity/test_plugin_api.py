@@ -10,6 +10,7 @@ from music_assistant.providers.sonic_similarity import (
     _parse_weights,
     apply_filters,
 )
+from music_assistant.providers.sonic_similarity.similarity import ScoredCandidate
 
 
 class TestParseSimilarParams:
@@ -90,7 +91,7 @@ class TestApplyFilters:
 
     def test_no_filters_passes_all(self) -> None:
         """All candidates pass with no active filters."""
-        candidates = [("a", "prov1", 0.1), ("b", "prov2", 0.2)]
+        candidates = [ScoredCandidate("a", "prov1", 0.1), ScoredCandidate("b", "prov2", 0.2)]
         result = apply_filters(
             candidates, seed_ids=set(), exclude_track_ids=None, filter_providers=None
         )
@@ -98,41 +99,49 @@ class TestApplyFilters:
 
     def test_exclude_seed_ids(self) -> None:
         """Seed IDs are always excluded."""
-        candidates = [("seed", "prov1", 0.1), ("other", "prov1", 0.2)]
+        candidates = [ScoredCandidate("seed", "prov1", 0.1), ScoredCandidate("other", "prov1", 0.2)]
         result = apply_filters(
             candidates, seed_ids={"seed"}, exclude_track_ids=None, filter_providers=None
         )
         assert len(result) == 1
-        assert result[0][0] == "other"
+        assert result[0].item_id == "other"
 
     def test_exclude_track_ids(self) -> None:
         """Explicitly excluded track IDs are removed."""
-        candidates = [("a", "p", 0.1), ("b", "p", 0.2), ("c", "p", 0.3)]
+        candidates = [
+            ScoredCandidate("a", "p", 0.1),
+            ScoredCandidate("b", "p", 0.2),
+            ScoredCandidate("c", "p", 0.3),
+        ]
         result = apply_filters(
             candidates, seed_ids=set(), exclude_track_ids={"a", "c"}, filter_providers=None
         )
-        assert [r[0] for r in result] == ["b"]
+        assert [r.item_id for r in result] == ["b"]
 
     def test_filter_providers(self) -> None:
         """Only candidates from listed providers are kept."""
-        candidates = [("a", "prov1", 0.1), ("b", "prov2", 0.2), ("c", "prov1", 0.3)]
+        candidates = [
+            ScoredCandidate("a", "prov1", 0.1),
+            ScoredCandidate("b", "prov2", 0.2),
+            ScoredCandidate("c", "prov1", 0.3),
+        ]
         result = apply_filters(
             candidates, seed_ids=set(), exclude_track_ids=None, filter_providers={"prov1"}
         )
-        assert [r[0] for r in result] == ["a", "c"]
+        assert [r.item_id for r in result] == ["a", "c"]
 
     def test_all_filters_combined(self) -> None:
         """Filters stack: seed exclusion + exclude_track_ids + filter_providers."""
         candidates = [
-            ("seed", "prov1", 0.0),
-            ("a", "prov1", 0.1),
-            ("b", "prov2", 0.2),
-            ("c", "prov1", 0.3),
+            ScoredCandidate("seed", "prov1", 0.0),
+            ScoredCandidate("a", "prov1", 0.1),
+            ScoredCandidate("b", "prov2", 0.2),
+            ScoredCandidate("c", "prov1", 0.3),
         ]
         result = apply_filters(
             candidates, seed_ids={"seed"}, exclude_track_ids={"c"}, filter_providers={"prov1"}
         )
-        assert [r[0] for r in result] == ["a"]
+        assert [r.item_id for r in result] == ["a"]
 
 
 class TestParseWeights:

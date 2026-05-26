@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import numpy as np
 import pytest
 
+from music_assistant.providers.sonic_similarity.similarity import ScoredCandidate
 from tests.providers.sonic_similarity.conftest import make_analysis_row
 
 if TYPE_CHECKING:
@@ -47,9 +48,9 @@ class TestHandleSimilarClap:
         )
         plugin._clap_index.search = AsyncMock(
             return_value=[
-                ("spotify", "seed", 0.0),
-                ("tidal", "other1", 0.2),
-                ("apple", "other2", 0.3),
+                ScoredCandidate("seed", "spotify", 0.0),
+                ScoredCandidate("other1", "tidal", 0.2),
+                ScoredCandidate("other2", "apple", 0.3),
             ]
         )
         result = await plugin._handle_similar_clap("seed", limit=2)
@@ -71,7 +72,9 @@ class TestHandleSimilarClap:
             np.zeros(1024, dtype=np.float32),
         )
         plugin._clap_index.search = AsyncMock(
-            return_value=[("spotify", f"track_{i}", float(i) * 0.01) for i in range(10)]
+            return_value=[
+                ScoredCandidate(f"track_{i}", "spotify", float(i) * 0.01) for i in range(10)
+            ]
         )
         result = await plugin._handle_similar_clap("seed", limit=3)
         assert result["analyzed"] is True

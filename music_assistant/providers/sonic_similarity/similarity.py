@@ -24,6 +24,19 @@ class Candidate(NamedTuple):
     generation: int
 
 
+class ScoredCandidate(NamedTuple):
+    """An ANN-search result without features/generation — the cheap variant of Candidate.
+
+    Field order matches Candidate and the project's tracks.get(item_id, provider)
+    convention, so the CLAP and 18-dim paths can share post-search helpers
+    without slot-order hazards.
+    """
+
+    item_id: str
+    provider: str
+    distance: float
+
+
 def combine_seeds_centroid(
     seeds: list[list[float]],
     weights: list[float] | None = None,

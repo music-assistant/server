@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 from music_assistant_models.errors import MusicAssistantError
 
+from music_assistant.providers.sonic_similarity.similarity import ScoredCandidate
 from tests.providers.sonic_similarity.conftest import make_track
 
 if TYPE_CHECKING:
@@ -117,8 +118,8 @@ class TestHandleTextSearch:
         plugin._load_text_encoder = lambda: _make_mock_encoder(vector)
         plugin._clap_index.search = AsyncMock(
             return_value=[
-                ("spotify", "track_a", 0.1),
-                ("tidal", "track_b", 0.2),
+                ScoredCandidate("track_a", "spotify", 0.1),
+                ScoredCandidate("track_b", "tidal", 0.2),
             ]
         )
 
@@ -142,8 +143,8 @@ class TestHandleTextSearch:
         plugin._load_text_encoder = lambda: _make_mock_encoder(vector)
         plugin._clap_index.search = AsyncMock(
             return_value=[
-                ("spotify", "track_a", 0.1),
-                ("tidal", "track_b", 0.2),
+                ScoredCandidate("track_a", "spotify", 0.1),
+                ScoredCandidate("track_b", "tidal", 0.2),
             ]
         )
         mock_mass.music.tracks.get.side_effect = [
@@ -171,8 +172,8 @@ class TestHandleTextSearch:
         plugin._load_text_encoder = lambda: _make_mock_encoder(vector)
         plugin._clap_index.search = AsyncMock(
             return_value=[
-                ("spotify", "track_a", 0.1),
-                ("tidal", "track_b", 0.2),
+                ScoredCandidate("track_a", "spotify", 0.1),
+                ScoredCandidate("track_b", "tidal", 0.2),
             ]
         )
         mock_mass.music.tracks.get.side_effect = [
