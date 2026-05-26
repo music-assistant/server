@@ -1464,11 +1464,12 @@ class MetaDataController(CoreController):
         unique_keys: set[str] = set()
 
         # The bio is re-derived from the providers on every refresh. Each provider's
-        # description is collected as a candidate (tagged with its source tier and language)
-        # and excluded from the field merge; _select_description picks the winner below.
+        # description is collected as a (language, text) candidate and excluded from the
+        # field merge; _select_description picks the winner below. Candidates are appended
+        # in priority order: music providers first, then metadata providers (TADB, Wikipedia).
         prev_description = artist.metadata.description
         prev_description_language = artist.metadata.description_language
-        description_candidates: list[tuple[str, str | None, str]] = []
+        description_candidates: list[tuple[str | None, str]] = []
 
         # collect (local) metadata from all local providers
         local_provs = get_global_cache_value("non_streaming_providers")
@@ -1497,11 +1498,7 @@ class MetaDataController(CoreController):
                 )
                 if prov_item.metadata.description:
                     description_candidates.append(
-                        (
-                            "music",
-                            prov_item.metadata.description_language,
-                            prov_item.metadata.description,
-                        )
+                        (prov_item.metadata.description_language, prov_item.metadata.description)
                     )
                 artist.metadata.update(
                     replace(prov_item.metadata, description=None, description_language=None)
@@ -1532,7 +1529,7 @@ class MetaDataController(CoreController):
                         metadata = replace(metadata, genres=None)
                     if metadata.description:
                         description_candidates.append(
-                            ("metadata", metadata.description_language, metadata.description)
+                            (metadata.description_language, metadata.description)
                         )
                         metadata = replace(metadata, description=None, description_language=None)
                     artist.metadata.update(metadata)
@@ -1554,39 +1551,34 @@ class MetaDataController(CoreController):
 
     def _select_description(
         self,
-        candidates: Sequence[tuple[str, str | None, str]],
+        candidates: Sequence[tuple[str | None, str]],
         prev_description: str | None,
         prev_description_language: str | None,
     ) -> tuple[str | None, str | None]:
         """
         Return the chosen ``(description, language)`` for the artist this refresh.
 
-        :param candidates: ``(tier, language, text)`` tuples in provider-priority order,
-            where ``tier`` is ``"metadata"`` or ``"music"``.
+        :param candidates: ``(language, text)`` tuples in provider-priority order
+            (music providers first, then TADB, then Wikipedia).
         :param prev_description: Bio stored before this refresh.
         :param prev_description_language: Language of the bio stored before this refresh.
         """
-        # metadata providers report a known language, so prefer them over music bios (whose
-        # language we can only assume); never downgrade a stored preferred-language bio
         pref = self.preferred_language
-        metadata = [(lang, text) for tier, lang, text in candidates if tier == "metadata"]
-        music = [(lang, text) for tier, lang, text in candidates if tier == "music"]
-        # 1. highest-priority metadata bio in the user's preferred language
-        for lang, text in metadata:
+        # 1. first candidate in the user's preferred language
+        for lang, text in candidates:
             if lang == pref:
                 return text, lang
-        # 2. keep a stored preferred-language bio rather than fall back to another language
+        # 2. keep a stored preferred-language bio rather than downgrade
         if prev_description is not None and prev_description_language == pref:
             return prev_description, prev_description_language
-        # 3. English fallback from the highest-priority metadata provider that offers it
-        for lang, text in metadata:
+        # 3. English fallback, same priority order
+        for lang, text in candidates:
             if lang == "en":
                 return text, lang
-        # 4. last resort: any other metadata bio, then a music-provider bio, then the previous
-        if metadata:
-            return metadata[0][1], metadata[0][0]
-        if music:
-            return music[0][1], music[0][0]
+        # 4. last resort: highest-priority bio in any (incl. unknown) language
+        if candidates:
+            lang, text = candidates[0]
+            return text, lang
         return prev_description, prev_description_language
 
     async def _update_album_metadata(self, album: Album, force_refresh: bool = False) -> None:
