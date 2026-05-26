@@ -86,3 +86,43 @@ async def test_get_embedding_by_item_id_missing_returns_none(
     idx = ClapIndex(_make_mass(tmp_path), logger)  # type: ignore[arg-type]
     await idx.load()
     assert idx.get_embedding_by_item_id("not_in_index") is None
+
+
+@pytest.mark.asyncio
+async def test_save_does_not_leave_tmp_file_behind(tmp_path: Path, logger: logging.Logger) -> None:
+    """The atomic-rename path consumes the .tmp file; nothing lingers after success."""
+    idx = ClapIndex(_make_mass(tmp_path), logger)  # type: ignore[arg-type]
+    await idx.load()
+    await idx.add("spotify", "track1", _unit_vec(1))
+
+    await idx.save()
+
+    assert not (tmp_path / "sonic_similarity_clap_keys.json.tmp").exists()
+    assert (tmp_path / "sonic_similarity_clap_keys.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_save_writes_keys_before_index_so_a_crash_doesnt_orphan_labels(
+    tmp_path: Path,
+    logger: logging.Logger,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the binary index save fails mid-flight, the keys file is already up-to-date."""
+    idx = ClapIndex(_make_mass(tmp_path), logger)  # type: ignore[arg-type]
+    await idx.load()
+    await idx.add("spotify", "track1", _unit_vec(1))
+
+    # Force the index save to fail after the keys file has already been written.
+    def _boom(_path: str) -> None:
+        raise RuntimeError("disk full mid-save")
+
+    monkeypatch.setattr(idx._index, "save", _boom)
+
+    with pytest.raises(RuntimeError, match="disk full"):
+        await idx.save()
+
+    # Keys file was renamed in before the index step blew up; no .tmp lingers.
+    keys_path = tmp_path / "sonic_similarity_clap_keys.json"
+    assert keys_path.exists()
+    assert "track1" in keys_path.read_text(encoding="utf-8")
+    assert not (tmp_path / "sonic_similarity_clap_keys.json.tmp").exists()
