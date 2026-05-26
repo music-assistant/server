@@ -948,13 +948,10 @@ class ConfigController:
         # validate the new config
         config.validate()
 
-        # Read the old enabled state before overwriting it so on_player_dsp_change
-        # can skip unnecessary restarts when DSP was already disabled.
-        old_enabled = self.get_player_dsp_config(player_id).enabled
-
-        # Save and apply the new config to the player
+        old_dsp_enabled = self.get_player_dsp_config(player_id).enabled
         self.set(f"{CONF_PLAYER_DSP}/{player_id}", config.to_dict())
-        await self.mass.players.on_player_dsp_change(player_id, was_enabled=old_enabled)
+        if old_dsp_enabled or config.enabled:
+            await self.mass.players.on_player_dsp_change(player_id)
         # send the dsp config updated event
         self.mass.signal_event(
             EventType.PLAYER_DSP_CONFIG_UPDATED,
