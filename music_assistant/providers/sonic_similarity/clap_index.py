@@ -111,8 +111,8 @@ class ClapIndex:
                     self._index_path,
                     len(self._index),
                 )
-            except Exception as err:
-                self._logger.warning("Failed to load CLAP index file (%s), starting fresh", err)
+            except Exception:
+                self._logger.exception("Failed to load CLAP index file, starting fresh")
                 self._index_path.unlink(missing_ok=True)
                 self._index = Index(
                     ndim=CLAP_EMBEDDING_DIM,
@@ -124,8 +124,8 @@ class ClapIndex:
             try:
                 raw = json.loads(self._keys_path.read_text(encoding="utf-8"))
                 self._reverse = {int(k): (v[0], v[1]) for k, v in raw.items()}
-            except Exception as err:
-                self._logger.warning("Failed to load CLAP keys file (%s), starting fresh", err)
+            except Exception:
+                self._logger.exception("Failed to load CLAP keys file, starting fresh")
                 self._reverse = {}
 
     async def close(self) -> None:
