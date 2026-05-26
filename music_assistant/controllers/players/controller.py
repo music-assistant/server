@@ -2426,6 +2426,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # signal player provider that the config changed
         if not (player := self.get_player(player_id)):
             return
+        # DSP is disabled, changes won't affect the active audio stream
+        if not self.mass.config.get_player_dsp_config(player_id).enabled:
+            return
         if player.state.playback_state == PlaybackState.PLAYING:
             self.logger.info("Restarting playback of Player %s after DSP change", player_id)
             # this will restart the queue stream/playback
