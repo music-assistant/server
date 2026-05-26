@@ -1,4 +1,4 @@
-"""Unit tests for _safe_aa_domain, _collect_status_text, and action dispatch."""
+"""Unit tests for plugin setup-time behavior, status text, and action dispatch."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.errors import SetupFailedError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -16,6 +17,8 @@ if TYPE_CHECKING:
 from music_assistant.providers.sonic_similarity import (
     ACTION_REBUILD_18DIM,
     ACTION_REBUILD_CLAP,
+    SUPPORTED_FEATURES,
+    SonicSimilarityPlugin,
     _collect_status_text,
     _safe_aa_domain,
     get_config_entries,
@@ -249,3 +252,41 @@ class TestConfigEntriesActions:
         await get_config_entries(mock_mass, instance_id="iid", action=ACTION_REBUILD_18DIM)
 
         assert mock_mass.create_task.call_count == 0
+
+
+def _build_plugin_for_init(mock_mass: MagicMock) -> Any:
+    """Construct a plugin without going through handle_async_init / loaded_in_mass.
+
+    Returned as ``Any`` to match the project's existing test convention for
+    plugin instances whose private methods get mock-swapped.
+    """
+    manifest = MagicMock()
+    manifest.instance_id = "iid"
+    manifest.domain = "sonic_similarity"
+    config = MagicMock()
+    config_values = {"log_level": "GLOBAL", "aa_provider_domain": "sonic_analysis"}
+    config.get_value = lambda key: config_values.get(key)
+    return SonicSimilarityPlugin(mock_mass, manifest, config, SUPPORTED_FEATURES)
+
+
+class TestHandleAsyncInit:
+    """handle_async_init surfaces rebuild failures as SetupFailedError so MA's loader sees them."""
+
+    @pytest.mark.asyncio
+    async def test_raises_setup_failed_when_rebuild_raises(self, mock_mass: MagicMock) -> None:
+        """A rebuild failure during initial setup must surface as SetupFailedError."""
+        plugin = _build_plugin_for_init(mock_mass)
+        plugin._rebuild_search_index = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with pytest.raises(SetupFailedError, match="18-dim search index"):
+            await plugin.handle_async_init()
+
+    @pytest.mark.asyncio
+    async def test_succeeds_when_rebuild_succeeds(self, mock_mass: MagicMock) -> None:
+        """The happy path: rebuild runs once, no exception escapes."""
+        plugin = _build_plugin_for_init(mock_mass)
+        plugin._rebuild_search_index = AsyncMock()
+
+        await plugin.handle_async_init()
+
+        plugin._rebuild_search_index.assert_awaited_once()

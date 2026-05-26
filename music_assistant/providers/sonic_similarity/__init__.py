@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import MusicAssistantError, SetupFailedError
 from music_assistant_models.media_items import Album, RecommendationFolder, SearchResults
 from music_assistant_models.unique_list import UniqueList
 
@@ -618,8 +618,31 @@ class SonicSimilarityPlugin(PluginProvider):
         self._text_encoder: Any = None
         self._text_encoder_lock = asyncio.Lock()
 
+    async def handle_async_init(self) -> None:
+        """Build the 18-dim search index before the provider is registered.
+
+        Failures here raise SetupFailedError so the loader surfaces them through
+        MA's standard provider-failure UI (a silent failure in loaded_in_mass
+        would be swallowed by its fire-and-forget task wrapper).
+        """
+        self._aa_domain = _safe_aa_domain(self.config.get_value(CONF_AA_PROVIDER), self.logger)
+        self.logger.info(
+            "Sonic Similarity initializing (aa_provider=%s), building search index...",
+            self._aa_domain,
+        )
+        try:
+            await self._rebuild_search_index()
+        except Exception as err:
+            msg = f"Failed to build 18-dim search index: {err}"
+            raise SetupFailedError(msg) from err
+        self.logger.info(
+            "Search index ready: %d signatures cached, corpus_stats=%s",
+            len(self._signature_cache),
+            self.corpus_means is not None,
+        )
+
     async def loaded_in_mass(self) -> None:
-        """Register similarity API commands and build the search index."""
+        """Register similarity API commands and set up the optional CLAP engine."""
         self._unregister_handles.append(
             self.mass.register_api_command("sonic_similarity/similar", self._handle_similar)
         )
@@ -630,17 +653,6 @@ class SonicSimilarityPlugin(PluginProvider):
             self.mass.register_api_command(
                 "sonic_similarity/rebuild_index", self._handle_rebuild_index
             )
-        )
-        self._aa_domain = _safe_aa_domain(self.config.get_value(CONF_AA_PROVIDER), self.logger)
-        self.logger.info(
-            "Sonic Similarity loaded (aa_provider=%s), rebuilding search index...",
-            self._aa_domain,
-        )
-        await self._rebuild_search_index()
-        self.logger.info(
-            "Search index ready: %d signatures cached, corpus_stats=%s",
-            len(self._signature_cache),
-            self.corpus_means is not None,
         )
 
         text_search_enabled = bool(self.config.get_value(CONF_ENABLE_TEXT_SEARCH))
