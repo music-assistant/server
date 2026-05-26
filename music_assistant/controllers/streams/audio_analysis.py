@@ -36,6 +36,7 @@ from music_assistant.models.music_provider import MusicProvider
 LOUDNESS_ANALYSIS_DOMAIN = "loudness_analysis"
 BACKGROUND_SCAN_TASK_ID = "audio_analysis_background_scan"
 BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
+BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER = 1.5
 # Per-run wall-clock cap; in-flight tracks finish, new ones defer to the next run.
 BACKGROUND_SCAN_RUN_BUDGET_SECONDS = 4 * 3600
 # Per-chunk dispatch interval bounds. One PCM chunk = one audio-second of decoded data:
@@ -693,6 +694,12 @@ class AudioAnalysisController:
             )
             return
 
+        # Floor at the fixed budget so short tracks keep ffmpeg-startup headroom.
+        timeout_seconds = max(
+            BACKGROUND_PER_TRACK_TIMEOUT_SECONDS,
+            int((streamdetails.duration or 0) * BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER),
+        )
+
         try:
             await asyncio.wait_for(
                 self._run_background_streaming_inner(
@@ -702,7 +709,7 @@ class AudioAnalysisController:
                     min_interval=min_interval,
                     max_interval=max_interval,
                 ),
-                timeout=BACKGROUND_PER_TRACK_TIMEOUT_SECONDS,
+                timeout=timeout_seconds,
             )
         except asyncio.CancelledError:
             # CancelledError inherits from BaseException — the broad except below
@@ -713,13 +720,13 @@ class AudioAnalysisController:
         except TimeoutError:
             self.logger.warning(
                 "Background analysis exceeded %ds budget for %s, skipping",
-                BACKGROUND_PER_TRACK_TIMEOUT_SECONDS,
+                timeout_seconds,
                 session_key,
             )
             self._cancel_providers(session_key)
             self.mass.tasks.add_task_failure(
                 BACKGROUND_SCAN_TASK_ID,
-                f"Timed out after {BACKGROUND_PER_TRACK_TIMEOUT_SECONDS}s: {session_key}",
+                f"Timed out after {timeout_seconds}s: {session_key}",
             )
         except Exception as err:
             self.logger.warning("Background analysis failed for %s: %s", session_key, err)
