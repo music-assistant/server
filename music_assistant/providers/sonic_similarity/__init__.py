@@ -623,8 +623,7 @@ class SonicSimilarityPlugin(PluginProvider):
         # CLAP text encoder — lazy: stays None until the first text_search call.
         self._text_encoder: Any = None
         self._text_encoder_lock = asyncio.Lock()
-        # Captures the last exception message per background rebuild label so
-        # the status row can surface fire-and-forget rebuild-button failures.
+        # Per-label last error from fire-and-forget rebuild tasks.
         self._last_rebuild_error: dict[str, str] = {}
 
     async def _safe_rebuild(self, label: str, rebuild_fn: Callable[[], Awaitable[None]]) -> None:
@@ -694,9 +693,7 @@ class SonicSimilarityPlugin(PluginProvider):
                 await self._rebuild_clap_index_from_database()
                 self.logger.info("CLAP index ready: %d embeddings", len(self._clap_index))
             except Exception:
-                # CLAP is optional — failure here must not prevent the required
-                # 18-dim engine from serving queries. Status row will show
-                # "CLAP engine: disabled" via the _clap_index is None check.
+                # CLAP is optional — failure must not block the 18-dim engine.
                 self.logger.exception("CLAP index setup failed; CLAP engine will be unavailable")
                 self._clap_index = None
 

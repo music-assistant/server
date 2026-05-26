@@ -252,12 +252,8 @@ class ClapIndex:
     def _save_sync(self) -> None:
         if self._index is None:
             return
-        # Write keys first via tempfile + atomic rename, then save the binary
-        # index. A crash between the two writes leaves _reverse carrying
-        # phantom entries — labels not present in the older index file —
-        # which query_sync silently drops because the index never returns
-        # them. The reverse order would put labels in the index that the
-        # older _reverse can't resolve, silently dropping real search hits.
+        # Keys first (atomic rename): a crash leaves phantom labels (silently
+        # dropped) rather than orphan vectors (silently dropped from results).
         tmp_keys_path = self._keys_path.with_name(self._keys_path.name + ".tmp")
         tmp_keys_path.write_text(
             json.dumps({str(k): list(v) for k, v in self._reverse.items()}),
