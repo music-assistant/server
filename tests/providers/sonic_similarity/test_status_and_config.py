@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -12,6 +13,7 @@ from music_assistant_models.errors import SetupFailedError
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
     from typing import Any
 
 from music_assistant.providers.sonic_similarity import (
@@ -400,3 +402,111 @@ class TestStatusTextRebuildErrors:
         _eighteen, clap, _text = await _collect_status_text(mock_mass, "iid")
 
         assert "last rebuild failed: usearch native crash" in clap
+
+
+def _make_analysis_data() -> Any:
+    """Return an AudioAnalysisData with every assemble_vector-required field set."""
+    from music_assistant.models.audio_analysis import AudioAnalysisData  # noqa: PLC0415
+
+    return AudioAnalysisData(
+        bpm=120.0,
+        energy=0.5,
+        danceability=0.6,
+        loudness_integrated=-9.0,
+        loudness_range=4.0,
+        brightness=0.7,
+        harmonic_complexity=0.3,
+        roughness=0.2,
+        rhythmic_regularity=0.8,
+        key="C",
+        mode="major",
+    )
+
+
+class TestRebuildSearchIndexLocked:
+    """The 18-dim rebuild path: corpus stats, atomic swap, versioned file writes."""
+
+    @pytest.mark.asyncio
+    async def test_empty_iter_preserves_prior_state(self, mock_mass: MagicMock) -> None:
+        """No rows from the controller → early return, prior state untouched."""
+        plugin = _build_plugin_for_init(mock_mass)
+        plugin._signature_cache = {("spotify", "old"): [0.5] * 18}
+        plugin.corpus_means = [0.0] * 18
+        plugin.corpus_stds = [1.0] * 18
+        mock_mass._iter_merged_audio_analysis_rows_data = []
+
+        await plugin._rebuild_search_index_locked()
+
+        # Prior state preserved (no swap happened).
+        assert plugin._signature_cache == {("spotify", "old"): [0.5] * 18}
+        assert plugin.corpus_means == [0.0] * 18
+
+    @pytest.mark.asyncio
+    async def test_rows_present_but_unassemblable_preserves_prior_state(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Rows without the required scalar fields are skipped; index isn't rebuilt."""
+        plugin = _build_plugin_for_init(mock_mass)
+        plugin._signature_cache = {("spotify", "old"): [0.5] * 18}
+        plugin.corpus_means = [0.0] * 18
+
+        from music_assistant.models.audio_analysis import AudioAnalysisData  # noqa: PLC0415
+
+        unassemblable = AudioAnalysisData()  # all fields None
+        mock_mass._iter_merged_audio_analysis_rows_data = [
+            ("track_a", "spotify", unassemblable),
+        ]
+
+        await plugin._rebuild_search_index_locked()
+
+        # Prior state preserved — assemble_vector returned None for every row.
+        assert plugin._signature_cache == {("spotify", "old"): [0.5] * 18}
+
+    @pytest.mark.asyncio
+    async def test_happy_path_populates_state_and_writes_file(
+        self, mock_mass: MagicMock, tmp_path: Path
+    ) -> None:
+        """Valid rows produce a populated signature cache, corpus stats, and an on-disk index file."""
+        plugin = _build_plugin_for_init(mock_mass)
+        mock_mass.storage_path = str(tmp_path)
+        mock_mass._iter_merged_audio_analysis_rows_data = [
+            ("track_a", "spotify", _make_analysis_data()),
+            ("track_b", "tidal", _make_analysis_data()),
+        ]
+
+        await plugin._rebuild_search_index_locked()
+
+        assert ("track_a", "spotify") in plugin._signature_cache
+        assert ("track_b", "tidal") in plugin._signature_cache
+        assert plugin.corpus_means is not None
+        assert len(plugin.corpus_means) == 18
+        assert plugin.corpus_stds is not None
+        assert len(plugin.corpus_stds) == 18
+        assert len(plugin._search_index) == 2
+        # Versioned file matches the domain-aware template.
+        files = list(tmp_path.glob("sonic_signatures_sonic_analysis_*.usearch"))
+        assert len(files) == 1
+
+    @pytest.mark.asyncio
+    async def test_rebuild_cleans_up_prior_versioned_file(
+        self, mock_mass: MagicMock, tmp_path: Path
+    ) -> None:
+        """A successful rebuild unlinks the previous versioned file for the same domain."""
+        plugin = _build_plugin_for_init(mock_mass)
+        mock_mass.storage_path = str(tmp_path)
+        mock_mass._iter_merged_audio_analysis_rows_data = [
+            ("track_a", "spotify", _make_analysis_data()),
+        ]
+
+        await plugin._rebuild_search_index_locked()
+        first_files = list(tmp_path.glob("sonic_signatures_sonic_analysis_*.usearch"))
+        assert len(first_files) == 1
+
+        # Sleep one ms so the next rebuild's version timestamp differs.
+        await asyncio.sleep(0.002)
+
+        await plugin._rebuild_search_index_locked()
+        after_files = list(tmp_path.glob("sonic_signatures_sonic_analysis_*.usearch"))
+        assert len(after_files) == 1
+        # The new file replaces the old one (different timestamp).
+        assert after_files[0] != first_files[0]

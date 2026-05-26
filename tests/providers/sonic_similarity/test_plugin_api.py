@@ -1,18 +1,21 @@
-"""Tests for the sonic similarity plugin API parameter handling."""
+"""Tests for the sonic similarity plugin API parameter handling and metadata filters."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from music_assistant.providers.sonic_similarity import (
+    METADATA_BONUS_SCALE,
     SIMILARITY_PRESETS,
     _parse_similar_params,
     _parse_weights,
     apply_filters,
 )
-from music_assistant.providers.sonic_similarity.similarity import ScoredCandidate
+from music_assistant.providers.sonic_similarity.similarity import Candidate, ScoredCandidate
+from tests.providers.sonic_similarity.conftest import make_track
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -254,3 +257,197 @@ class TestHandleSimilarReason:
         assert result["analyzed"] is False
         assert result["reason"] == "seed_not_in_index"
         assert result["items"] == []
+
+
+def _track_with_metadata(
+    item_id: str,
+    *,
+    provider: str = "spotify",
+    genres: list[str] | None = None,
+    artist_names: tuple[str, ...] = (),
+) -> MagicMock:
+    """Build a Track-like mock with ``metadata.genres`` set (make_track doesn't)."""
+    track = make_track(item_id, provider=provider, artists=artist_names)
+    if genres is not None:
+        track.metadata = MagicMock()
+        track.metadata.genres = genres
+    else:
+        track.metadata = None
+    return track
+
+
+def _make_candidate(item_id: str, *, distance: float = 0.5) -> Candidate:
+    """Build a Candidate with the minimum fields needed for filter/rerank tests."""
+    return Candidate(
+        item_id=item_id, provider="spotify", features=[0.0] * 18, distance=distance, generation=0
+    )
+
+
+class TestApplyMetadataFilters:
+    """_apply_metadata_filters drops candidates that don't pass the genre/artist gates."""
+
+    @pytest.mark.asyncio
+    async def test_no_filters_returns_input_unchanged(
+        self, make_plugin: Callable[..., Any], mock_mass: MagicMock
+    ) -> None:
+        """With no filter_genres and no exclude_artists the input passes through."""
+        plugin = make_plugin(signatures={("spotify", "a"): [0.1] * 18})
+        cands = [_make_candidate("a"), _make_candidate("b")]
+
+        result = await plugin._apply_metadata_filters(cands)
+
+        assert result == cands
+        # No resolution work should happen on the no-filter early return.
+        mock_mass.music.tracks.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_genre_filter_drops_non_matching(
+        self, make_plugin: Callable[..., Any], mock_mass: MagicMock
+    ) -> None:
+        """Candidates without overlapping genres are dropped."""
+        plugin = make_plugin(signatures={("spotify", "a"): [0.1] * 18})
+        mock_mass.music.tracks.get = AsyncMock(
+            side_effect=[
+                _track_with_metadata("a", genres=["Rock", "Indie"]),
+                _track_with_metadata("b", genres=["Pop"]),
+            ]
+        )
+
+        result = await plugin._apply_metadata_filters(
+            [_make_candidate("a"), _make_candidate("b")],
+            filter_genres=["rock"],
+        )
+
+        assert [c.item_id for c in result] == ["a"]
+
+    @pytest.mark.asyncio
+    async def test_artist_exclusion_drops_matching(
+        self, make_plugin: Callable[..., Any], mock_mass: MagicMock
+    ) -> None:
+        """Candidates whose artist is in exclude_artists are dropped (case-insensitive)."""
+        plugin = make_plugin(signatures={("spotify", "a"): [0.1] * 18})
+        mock_mass.music.tracks.get = AsyncMock(
+            side_effect=[
+                _track_with_metadata("a", artist_names=("Banned Artist",)),
+                _track_with_metadata("b", artist_names=("Other Artist",)),
+            ]
+        )
+
+        result = await plugin._apply_metadata_filters(
+            [_make_candidate("a"), _make_candidate("b")],
+            exclude_artists=["banned artist"],
+        )
+
+        assert [c.item_id for c in result] == ["b"]
+
+    @pytest.mark.asyncio
+    async def test_unresolved_tracks_are_dropped(
+        self, make_plugin: Callable[..., Any], mock_mass: MagicMock
+    ) -> None:
+        """Candidates whose track resolve returned None are silently dropped."""
+        from music_assistant_models.errors import MusicAssistantError  # noqa: PLC0415
+
+        plugin = make_plugin(signatures={("spotify", "a"): [0.1] * 18})
+
+        async def _fake_get(item_id: str, _provider: str) -> MagicMock:
+            if item_id == "a":
+                raise MusicAssistantError("nope")
+            return _track_with_metadata("b", genres=["rock"])
+
+        mock_mass.music.tracks.get = AsyncMock(side_effect=_fake_get)
+
+        result = await plugin._apply_metadata_filters(
+            [_make_candidate("a"), _make_candidate("b")],
+            filter_genres=["rock"],
+        )
+
+        assert [c.item_id for c in result] == ["b"]
+
+
+class TestApplyMetadataReranking:
+    """_apply_metadata_reranking shifts distances based on shared genre/year metadata."""
+
+    @pytest.mark.asyncio
+    async def test_no_seed_tracks_returns_unchanged(
+        self, make_plugin: Callable[..., Any], mock_mass: MagicMock
+    ) -> None:
+        """If every seed resolve fails, return the input list as-is."""
+        from music_assistant_models.errors import MusicAssistantError  # noqa: PLC0415
+
+        plugin = make_plugin(signatures={("spotify", "seed"): [0.1] * 18})
+        mock_mass.music.tracks.get = AsyncMock(side_effect=MusicAssistantError("seed missing"))
+        cands = [_make_candidate("a", distance=0.5)]
+
+        result = await plugin._apply_metadata_reranking(["seed"], cands, {"genre": 1.0})
+
+        assert result == cands
+
+    @pytest.mark.asyncio
+    async def test_genre_overlap_reduces_distance(
+        self, make_plugin: Callable[..., Any], mock_mass: MagicMock
+    ) -> None:
+        """A candidate sharing all genres with the seed gets a negative bonus."""
+        plugin = make_plugin(signatures={("spotify", "seed"): [0.1] * 18})
+        seed = _track_with_metadata("seed", genres=["rock", "indie"])
+        cand_track = _track_with_metadata("a", genres=["rock", "indie"])
+        mock_mass.music.tracks.get = AsyncMock(side_effect=[seed, cand_track])
+
+        result = await plugin._apply_metadata_reranking(
+            ["seed"], [_make_candidate("a", distance=0.5)], {"genre": 1.0}
+        )
+
+        # Full overlap (jaccard = 1.0) with weight 1.0 → bonus = -METADATA_BONUS_SCALE
+        assert result[0].distance == pytest.approx(0.5 - METADATA_BONUS_SCALE)
+
+    @pytest.mark.asyncio
+    async def test_zero_weight_leaves_distance_unchanged(
+        self, make_plugin: Callable[..., Any], mock_mass: MagicMock
+    ) -> None:
+        """genre/era weights of 0 produce no rerank bonus even with full overlap."""
+        plugin = make_plugin(signatures={("spotify", "seed"): [0.1] * 18})
+        seed = _track_with_metadata("seed", genres=["rock"])
+        cand_track = _track_with_metadata("a", genres=["rock"])
+        mock_mass.music.tracks.get = AsyncMock(side_effect=[seed, cand_track])
+
+        result = await plugin._apply_metadata_reranking(
+            ["seed"], [_make_candidate("a", distance=0.5)], {"genre": 0.0, "era": 0.0}
+        )
+
+        assert result[0].distance == pytest.approx(0.5)
+
+    @pytest.mark.asyncio
+    async def test_results_sorted_by_distance_after_rerank(
+        self, make_plugin: Callable[..., Any], mock_mass: MagicMock
+    ) -> None:
+        """After rerank, candidates are sorted by the new distance ascending."""
+        plugin = make_plugin(signatures={("spotify", "seed"): [0.1] * 18})
+        seed = _track_with_metadata("seed", genres=["rock"])
+        cand_a_track = _track_with_metadata("a", genres=["pop"])  # no overlap → no bonus
+        cand_b_track = _track_with_metadata("b", genres=["rock"])  # overlap → bonus
+        mock_mass.music.tracks.get = AsyncMock(side_effect=[seed, cand_a_track, cand_b_track])
+
+        result = await plugin._apply_metadata_reranking(
+            ["seed"],
+            [_make_candidate("a", distance=0.4), _make_candidate("b", distance=0.45)],
+            {"genre": 1.0},
+        )
+
+        # b started farther (0.45) but got the -0.1 bonus → ends ahead of a (0.4).
+        assert [c.item_id for c in result] == ["b", "a"]
+
+    @pytest.mark.asyncio
+    async def test_bonus_is_bounded_by_scale(
+        self, make_plugin: Callable[..., Any], mock_mass: MagicMock
+    ) -> None:
+        """Even max overlap with weight=1.0 doesn't shift distance more than METADATA_BONUS_SCALE."""
+        plugin = make_plugin(signatures={("spotify", "seed"): [0.1] * 18})
+        seed = _track_with_metadata("seed", genres=["rock", "indie", "alt"])
+        cand_track = _track_with_metadata("a", genres=["rock", "indie", "alt"])
+        mock_mass.music.tracks.get = AsyncMock(side_effect=[seed, cand_track])
+
+        result = await plugin._apply_metadata_reranking(
+            ["seed"], [_make_candidate("a", distance=0.5)], {"genre": 1.0}
+        )
+
+        shift = 0.5 - result[0].distance
+        assert shift <= METADATA_BONUS_SCALE + 1e-9
