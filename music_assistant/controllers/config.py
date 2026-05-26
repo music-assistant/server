@@ -949,6 +949,7 @@ class ConfigController:
         config.validate()
 
         old_dsp_enabled = self.get_player_dsp_config(player_id).enabled
+        # Save and apply the new config to the player
         self.set(f"{CONF_PLAYER_DSP}/{player_id}", config.to_dict())
         if old_dsp_enabled or config.enabled:
             await self.mass.players.on_player_dsp_change(player_id)

@@ -2423,6 +2423,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
     async def on_player_dsp_change(self, player_id: str) -> None:
         """Call (by config manager) when the DSP settings of a player change."""
+        # signal player provider that the config changed
         if not (player := self.get_player(player_id)):
             return
         if player.state.playback_state == PlaybackState.PLAYING:
