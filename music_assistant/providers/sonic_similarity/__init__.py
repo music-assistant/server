@@ -107,15 +107,9 @@ CONF_LABEL_STATUS_TEXT = "status_label_text"
 ACTION_REBUILD_18DIM = "rebuild_18dim_index"
 ACTION_REBUILD_CLAP = "rebuild_clap_index"
 
-# Features exposed to the cross-provider dispatchers.
-# * SIMILAR_TRACKS — controllers/media/tracks.py:378-387 fans out to plugins after
-#   music-provider mappings have been tried. We're the local fallback engine.
-# * RECOMMENDATIONS — controllers/music.py:803 gathers folders from every plugin
-#   declaring this feature and zip-merges them into music/recommendations, which
-#   the frontend's HomeWidgetRows.vue renders as discover-page widget rows
-#   without any client-side wiring per plugin.
-# Both methods return [] when the engine isn't ready, which the dispatchers treat
-# as "this provider has nothing right now" — no dynamic feature-set tricks needed.
+# Both hooks return [] when the engine isn't ready, which the cross-provider
+# dispatchers treat as "this provider has nothing right now" — no dynamic
+# feature-set tricks needed.
 SUPPORTED_FEATURES = {
     ProviderFeature.SIMILAR_TRACKS,
     ProviderFeature.RECOMMENDATIONS,
@@ -1010,12 +1004,10 @@ class SonicSimilarityPlugin(PluginProvider):
     async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
         """Implement ProviderFeature.SIMILAR_TRACKS via the 18-dim engine.
 
-        Called by mass.music.tracks.similar_tracks() when no MusicProvider
-        mapping yielded similar tracks itself (see
-        controllers/media/tracks.py:378-387). Returns [] when the corpus
-        isn't ready, when none of the track's provider mappings are
-        indexed, or when the engine returns no candidates — all three
-        states are interchangeable to the dispatcher's truthy check.
+        Returns [] when the corpus isn't ready, when none of the track's
+        provider mappings are indexed, or when the engine returns no
+        candidates — all three states are interchangeable to the
+        cross-provider dispatcher's truthy check.
 
         :param track: Full Track object (with provider_mappings) as
             handed to us by the cross-provider dispatcher.
@@ -1064,16 +1056,9 @@ class SonicSimilarityPlugin(PluginProvider):
     async def recommendations(self) -> list[RecommendationFolder]:  # noqa: PLR0915
         """Yield an 'Inspired by recently played' folder for the discover page.
 
-        Picked up by the music/recommendations dispatcher (controllers/music.py:803)
-        and rendered by HomeWidgetRows.vue alongside the library's own
-        recommendation folders. Returns [] when the engine isn't ready or when
-        no recent tracks intersect the index — the dispatcher then simply
+        Returns [] when the engine isn't ready or when no recent tracks
+        intersect the index — the cross-provider dispatcher then simply
         omits us from the response (no empty card on the page).
-
-        Internally: sample up to RECOMMEND_SEED_COUNT recent tracks, find the
-        ones we have indexed, fan out per-seed via _handle_similar to get a
-        diverse pool, dedupe by (provider, item_id), and resolve the first
-        RECOMMEND_ITEM_LIMIT to full Tracks.
         """
         if not bool(self.config.get_value(CONF_ENABLE_DISCOVER_ROW)):
             return []
