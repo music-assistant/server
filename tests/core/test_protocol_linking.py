@@ -9,10 +9,12 @@ import pytest
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import OutputProtocol, PlayerMedia
 
+from music_assistant.constants import ATTR_ENABLED, CONF_PLAYERS
 from music_assistant.controllers.players import PlayerController
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.helpers.util import enrich_device_mac_address
 from music_assistant.models.player import DeviceInfo, Player
+from music_assistant.models.player_provider import PlayerProvider
 from music_assistant.providers.universal_player.player import UniversalPlayer
 from music_assistant.providers.universal_player.provider import UniversalPlayerProvider
 
@@ -6736,3 +6738,349 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         mock_mass.players.register_or_update.assert_awaited_once()
         registered = mock_mass.players.register_or_update.call_args.args[0]
         assert protocol_id in registered._protocol_player_ids
+
+    @pytest.mark.asyncio
+    async def test_disabled_parent_reparents_and_disables_orphaned_protocols(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Self-heal: stale UP whose protocols belong to a disabled native parent.
+
+        Restoring such a UP should delete the wrapper, restore each protocol's
+        parent_id back to the rightful (disabled) native parent, and cascade-disable
+        each protocol so the next registration cycle doesn't rebuild the wrapper.
+        """
+        provider = create_mock_universal_provider(mock_mass)
+        universal_id = "up_test"
+        native_parent_id = "sonos_disabled"
+        ap_id = "airplay_1"
+        dlna_id = "dlna_1"
+
+        all_configs = {
+            universal_id: {
+                "values": {
+                    "linked_protocol_ids": [ap_id, dlna_id],
+                    "device_identifiers": {},
+                    "device_info": {},
+                },
+                "name": "Test UP",
+            },
+            native_parent_id: {
+                "enabled": False,
+                "provider": "sonos",
+                "values": {"linked_protocol_ids": [ap_id, dlna_id]},
+            },
+            ap_id: {
+                "player_type": "protocol",
+                "enabled": True,
+                "values": {"protocol_parent_id": universal_id},
+            },
+            dlna_id: {
+                "player_type": "protocol",
+                "enabled": True,
+                "values": {"protocol_parent_id": universal_id},
+            },
+        }
+
+        def _config_get(key: str, default: object = None) -> object:
+            if key == CONF_PLAYERS:
+                return all_configs
+            if key.startswith(f"{CONF_PLAYERS}/"):
+                pid = key.split("/", 1)[1]
+                return all_configs.get(pid, default)
+            return default
+
+        mock_mass.config.get.side_effect = _config_get
+        mock_mass.config.set = MagicMock()
+        mock_mass.config.save_player_config = AsyncMock()
+        mock_mass.config.remove_player_config = AsyncMock()
+        mock_mass.players = MagicMock()
+        mock_mass.players.get_player = MagicMock(return_value=None)
+
+        await provider._restore_player(universal_id)
+
+        # Stale UP is removed
+        mock_mass.config.remove_player_config.assert_awaited_once_with(universal_id)
+
+        # Each protocol's parent_id is restored to the disabled native parent
+        parent_restorations = {
+            call.args[0]: call.args[1]
+            for call in mock_mass.config.set.call_args_list
+            if "protocol_parent_id" in call.args[0]
+        }
+        assert parent_restorations == {
+            f"{CONF_PLAYERS}/{ap_id}/values/protocol_parent_id": native_parent_id,
+            f"{CONF_PLAYERS}/{dlna_id}/values/protocol_parent_id": native_parent_id,
+        }
+
+        # Each protocol is cascade-disabled
+        disabled_ids = {
+            call.args[0] for call in mock_mass.config.save_player_config.await_args_list
+        }
+        assert disabled_ids == {ap_id, dlna_id}
+        for call in mock_mass.config.save_player_config.await_args_list:
+            assert call.args[1] == {ATTR_ENABLED: False}
+
+
+class TestParentDisableCascade:
+    """Tests for cascading enable/disable from a native parent to its protocols."""
+
+    @staticmethod
+    def _make_config(player_id: str, *, enabled: bool, provider: str = "sonos") -> MagicMock:
+        """Build a minimal PlayerConfig mock for on_player_config_change."""
+        config = MagicMock()
+        config.player_id = player_id
+        config.provider = provider
+        config.enabled = enabled
+        config.values = {}
+        return config
+
+    @pytest.mark.asyncio
+    async def test_disabling_native_parent_cascades_disable_to_linked_protocols(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Disabling a native parent saves enabled=False for each linked protocol."""
+        controller = PlayerController(mock_mass)
+
+        native_provider = MockProvider("sonos", mass=mock_mass)
+        native_player = MockPlayer(
+            native_provider,
+            "sonos_native",
+            "Native Speaker",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        # Bypass the power-off branch in on_player_config_change
+        native_player._attr_available = False
+        native_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="ap_1",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                ),
+                OutputProtocol(
+                    output_protocol_id="dlna_1",
+                    name="DLNA",
+                    protocol_domain="dlna",
+                    priority=20,
+                ),
+            ]
+        )
+        controller._players = {native_player.player_id: native_player}
+
+        protocol_configs = {
+            "ap_1": {"enabled": True, "player_type": "protocol"},
+            "dlna_1": {"enabled": True, "player_type": "protocol"},
+        }
+
+        def _config_get(key: str, default: object = None) -> object:
+            if key.startswith(f"{CONF_PLAYERS}/"):
+                pid = key.split("/", 1)[1]
+                return protocol_configs.get(pid, default)
+            return default
+
+        mock_mass.config.get = MagicMock(side_effect=_config_get)
+        mock_mass.config.save_player_config = MagicMock()
+        mock_mass.create_task = MagicMock()
+        mock_mass.get_provider = MagicMock(return_value=MagicMock(spec=PlayerProvider))
+
+        config = self._make_config(native_player.player_id, enabled=False)
+
+        await controller.on_player_config_change(config, {ATTR_ENABLED})
+
+        called = mock_mass.config.save_player_config.call_args_list
+        assert {call.args[0] for call in called} == {"ap_1", "dlna_1"}
+        for call in called:
+            assert call.args[1] == {ATTR_ENABLED: False}
+
+    @pytest.mark.asyncio
+    async def test_enabling_native_parent_cascades_enable_to_linked_protocols(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Re-enabling a native parent saves enabled=True for each (currently disabled) protocol."""
+        controller = PlayerController(mock_mass)
+
+        native_provider = MockProvider("sonos", mass=mock_mass)
+        native_player = MockPlayer(
+            native_provider,
+            "sonos_native",
+            "Native Speaker",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        native_player._attr_available = False
+        native_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="ap_1",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                ),
+            ]
+        )
+        controller._players = {native_player.player_id: native_player}
+
+        protocol_configs = {
+            "ap_1": {"enabled": False, "player_type": "protocol"},
+        }
+
+        def _config_get(key: str, default: object = None) -> object:
+            if key.startswith(f"{CONF_PLAYERS}/"):
+                pid = key.split("/", 1)[1]
+                return protocol_configs.get(pid, default)
+            return default
+
+        mock_mass.config.get = MagicMock(side_effect=_config_get)
+        mock_mass.config.save_player_config = MagicMock()
+        mock_mass.create_task = MagicMock()
+        mock_mass.get_provider = MagicMock(return_value=MagicMock(spec=PlayerProvider))
+
+        config = self._make_config(native_player.player_id, enabled=True)
+
+        await controller.on_player_config_change(config, {ATTR_ENABLED})
+
+        mock_mass.config.save_player_config.assert_called_once_with("ap_1", {ATTR_ENABLED: True})
+
+    @pytest.mark.asyncio
+    async def test_disabling_native_parent_falls_back_to_cached_protocol_ids(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """When the parent isn't registered, cascade uses cached linked_protocol_ids."""
+        controller = PlayerController(mock_mass)
+
+        # Parent is not in _players (e.g. provider didn't register a disabled parent)
+        controller._players = {}
+
+        cached_protocol_ids = ["ap_cached", "dlna_cached"]
+        protocol_configs = {
+            "ap_cached": {"enabled": True, "player_type": "protocol"},
+            "dlna_cached": {"enabled": True, "player_type": "protocol"},
+        }
+
+        def _config_get(key: str, default: object = None) -> object:
+            if key == f"{CONF_PLAYERS}/unregistered_native/values/linked_protocol_ids":
+                return list(cached_protocol_ids)
+            if key.startswith(f"{CONF_PLAYERS}/"):
+                pid = key.split("/", 1)[1]
+                return protocol_configs.get(pid, default)
+            return default
+
+        mock_mass.config.get = MagicMock(side_effect=_config_get)
+        mock_mass.config.save_player_config = MagicMock()
+        mock_mass.create_task = MagicMock()
+        mock_mass.get_provider = MagicMock(return_value=MagicMock(spec=PlayerProvider))
+
+        config = self._make_config("unregistered_native", enabled=False)
+
+        await controller.on_player_config_change(config, {ATTR_ENABLED})
+
+        called_ids = {call.args[0] for call in mock_mass.config.save_player_config.call_args_list}
+        assert called_ids == set(cached_protocol_ids)
+
+    @pytest.mark.asyncio
+    async def test_toggling_protocol_player_does_not_cascade(self, mock_mass: MagicMock) -> None:
+        """A PROTOCOL-type player flipping enabled must not trigger any cascade."""
+        controller = PlayerController(mock_mass)
+
+        ap_provider = MockProvider("airplay", mass=mock_mass)
+        ap_player = MockPlayer(
+            ap_provider,
+            "ap_1",
+            "AirPlay",
+            player_type=PlayerType.PROTOCOL,
+        )
+        ap_player._attr_available = False
+        controller._players = {ap_player.player_id: ap_player}
+
+        mock_mass.config.save_player_config = MagicMock()
+        mock_mass.create_task = MagicMock()
+        mock_mass.get_provider = MagicMock(return_value=MagicMock(spec=PlayerProvider))
+
+        config = self._make_config(ap_player.player_id, enabled=False, provider="airplay")
+
+        await controller.on_player_config_change(config, {ATTR_ENABLED})
+
+        mock_mass.config.save_player_config.assert_not_called()
+
+
+class TestDelayedEvalDisabledParentGuard:
+    """Tests for the guard in _delayed_protocol_evaluation against disabled parents."""
+
+    @pytest.mark.asyncio
+    async def test_skips_universal_creation_when_cached_parent_is_disabled(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """No universal player is created when the protocol's cached parent is disabled."""
+        controller = PlayerController(mock_mass)
+
+        dlna_provider = MockProvider("dlna", mass=mock_mass)
+        protocol_player = MockPlayer(
+            dlna_provider,
+            "dlna_orphan",
+            "Orphan DLNA",
+            player_type=PlayerType.PROTOCOL,
+        )
+        protocol_player.set_initialized()
+        controller._players = {protocol_player.player_id: protocol_player}
+
+        cached_parent_id = "sonos_disabled"
+
+        def _config_get(key: str, default: object = None) -> object:
+            if key.endswith("/protocol_parent_id"):
+                return cached_parent_id
+            if key == f"{CONF_PLAYERS}/{cached_parent_id}":
+                return {"enabled": False, "provider": "sonos"}
+            return default
+
+        mock_mass.config.get = MagicMock(side_effect=_config_get)
+
+        with (
+            patch.object(controller, "_try_link_to_existing_player", return_value=False),
+            patch.object(controller, "_find_matching_universal_player", return_value=None),
+            patch.object(controller, "_create_or_update_universal_player") as mock_create_up,
+        ):
+            await controller._delayed_protocol_evaluation(protocol_player.player_id)
+
+        mock_create_up.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_creates_universal_when_cached_parent_is_enabled_but_offline(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Sanity check: an enabled-but-unregistered cached parent still falls through."""
+        controller = PlayerController(mock_mass)
+
+        dlna_provider = MockProvider("dlna", mass=mock_mass)
+        protocol_player = MockPlayer(
+            dlna_provider,
+            "dlna_orphan",
+            "Orphan DLNA",
+            player_type=PlayerType.PROTOCOL,
+        )
+        protocol_player.set_initialized()
+        controller._players = {protocol_player.player_id: protocol_player}
+
+        cached_parent_id = "sonos_offline"
+
+        def _config_get(key: str, default: object = None) -> object:
+            if key.endswith("/protocol_parent_id"):
+                return cached_parent_id
+            if key == f"{CONF_PLAYERS}/{cached_parent_id}":
+                return {"enabled": True, "provider": "sonos"}
+            return default
+
+        mock_mass.config.get = MagicMock(side_effect=_config_get)
+
+        with (
+            patch.object(controller, "_try_link_to_existing_player", return_value=False),
+            patch.object(controller, "_find_matching_universal_player", return_value=None),
+            patch.object(controller, "_create_or_update_universal_player") as mock_create_up,
+            patch.object(
+                controller,
+                "_find_matching_protocol_players",
+                return_value=[protocol_player],
+            ),
+        ):
+            await controller._delayed_protocol_evaluation(protocol_player.player_id)
+
+        mock_create_up.assert_called_once()

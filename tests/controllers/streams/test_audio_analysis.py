@@ -167,6 +167,34 @@ async def test_background_streaming_per_track_timeout(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
+async def test_background_streaming_timeout_scales_with_track_duration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per-track timeout is derived from track duration when duration is known."""
+    controller = _make_controller()
+    streamdetails = _make_streamdetails(path="/music/long_mix.flac", duration=3600)
+    p = _make_aa_provider("p1", available=True)
+    p.start_analysis = AsyncMock(return_value=True)
+    p.finalize = AsyncMock(return_value=None)
+    controller.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
+    controller.mass.streams.audio.get_media_stream = _make_stream_mock([])  # type: ignore[method-assign,assignment]
+
+    captured_timeouts: list[float | None] = []
+    real_wait_for = asyncio.wait_for
+
+    async def _spy_wait_for(coro: Any, timeout: float | None) -> Any:
+        captured_timeouts.append(timeout)
+        return await real_wait_for(coro, timeout)
+
+    monkeypatch.setattr("asyncio.wait_for", _spy_wait_for)
+
+    await controller._run_background_streaming_for_track(streamdetails, [p])
+
+    expected = int(3600 * audio_analysis_mod.BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER)
+    assert captured_timeouts[0] == expected
+
+
+@pytest.mark.asyncio
 async def test_background_streaming_ffmpeg_startup_failure() -> None:
     """get_media_stream failure cancels providers cleanly without raising."""
     controller = _make_controller()
@@ -191,7 +219,9 @@ async def test_background_streaming_ffmpeg_startup_failure() -> None:
     assert "ffmpeg startup failed" in failure_args[1]
 
 
-def _make_streamdetails(*, path: str, item_id: str = "test-item") -> MagicMock:
+def _make_streamdetails(
+    *, path: str, item_id: str = "test-item", duration: int | None = None
+) -> MagicMock:
     sd = MagicMock()
     sd.path = path
     sd.uri = f"track://test/{path}"
@@ -204,6 +234,7 @@ def _make_streamdetails(*, path: str, item_id: str = "test-item") -> MagicMock:
     sd.item_id = item_id
     sd.provider = "test-provider"
     sd.media_type = MagicMock()
+    sd.duration = duration
     return sd
 
 

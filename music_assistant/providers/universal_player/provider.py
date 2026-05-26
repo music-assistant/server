@@ -15,7 +15,11 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import IdentifierType, PlayerType
 
-from music_assistant.constants import CONF_LINKED_PROTOCOL_IDS, CONF_PLAYERS
+from music_assistant.constants import (
+    CONF_LINKED_PROTOCOL_IDS,
+    CONF_PLAYERS,
+    CONF_PROTOCOL_PARENT_ID,
+)
 from music_assistant.helpers.util import normalize_mac_for_matching
 from music_assistant.models.player import DeviceInfo
 from music_assistant.models.player_provider import PlayerProvider
@@ -160,6 +164,15 @@ class UniversalPlayerProvider(PlayerProvider):
                         protocol_id,
                         other_player_id,
                     )
+                    # When the rightful parent is disabled, the universal player
+                    # was created because the parent's disable left its protocols
+                    # orphaned. Repair the protocol configs (restore parent link,
+                    # cascade-disable) so they don't immediately wrap into a fresh
+                    # universal player on the next registration cycle.
+                    if not other_config.get("enabled", True):
+                        await self._reparent_disabled_protocols(
+                            other_player_id, stored_protocol_ids
+                        )
                     await self.mass.config.remove_player_config(player_id)
                     return
 
@@ -196,6 +209,34 @@ class UniversalPlayerProvider(PlayerProvider):
             protocol_player_ids=list(stored_protocol_ids),
         )
         await self.mass.players.register_or_update(player)
+
+    async def _reparent_disabled_protocols(
+        self, native_parent_id: str, protocol_ids: list[str]
+    ) -> None:
+        """
+        Restore protocol players' parent link to a disabled native parent and disable them.
+
+        Used to repair configs after a stale universal player is removed: the protocols'
+        cached parent_id was overwritten to point at the universal player when it was
+        created. Resetting it to the rightful (disabled) native parent lets the regular
+        cascade-enable flow restore everything cleanly if the user re-enables that parent.
+        """
+        for protocol_id in protocol_ids:
+            protocol_raw = self.mass.config.get(f"{CONF_PLAYERS}/{protocol_id}")
+            if not protocol_raw:
+                continue
+            self.mass.config.set(
+                f"{CONF_PLAYERS}/{protocol_id}/values/{CONF_PROTOCOL_PARENT_ID}",
+                native_parent_id,
+            )
+            if not protocol_raw.get("enabled", True):
+                continue
+            self.logger.info(
+                "Disabling orphaned protocol player %s to match its disabled parent %s",
+                protocol_id,
+                native_parent_id,
+            )
+            await self.mass.config.save_player_config(protocol_id, {"enabled": False})
 
     async def create_universal_player(
         self,
