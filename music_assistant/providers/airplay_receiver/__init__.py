@@ -724,7 +724,9 @@ class AirPlayReceiverProvider(PluginProvider):
         ):
             # Use a content hash in the path so each unique image gets its own
             # thumbnail cache entry (the thumbnail cache is keyed on provider+path).
-            img_hash = hashlib.md5(self._metadata_reader.cover_art_bytes).hexdigest()[:8]
+            img_hash = hashlib.md5(
+                self._metadata_reader.cover_art_bytes, usedforsecurity=False
+            ).hexdigest()[:8]
             image = MediaItemImage(
                 type=ImageType.THUMB,
                 path=f"cover_art_{img_hash}",
@@ -734,7 +736,9 @@ class AirPlayReceiverProvider(PluginProvider):
             self._stream_metadata.image_url = self.mass.metadata.get_image_url(image)
         elif self._metadata_reader and self._metadata_reader.cover_art_bytes:
             if not self._stream_metadata.image_url:
-                img_hash = hashlib.md5(self._metadata_reader.cover_art_bytes).hexdigest()[:8]
+                img_hash = hashlib.md5(
+                    self._metadata_reader.cover_art_bytes, usedforsecurity=False
+                ).hexdigest()[:8]
                 image = MediaItemImage(
                     type=ImageType.THUMB,
                     path=f"cover_art_{img_hash}",
@@ -748,13 +752,15 @@ class AirPlayReceiverProvider(PluginProvider):
 
         This returns raw bytes of the cover art image received from AirPlay metadata.
 
-        :param path: The image path (starts with "cover_art" for AirPlay cover art).
+        :param path: The image path including the current cover art content hash suffix.
         """
-        if (
-            path.startswith("cover_art")
-            and self._metadata_reader
-            and self._metadata_reader.cover_art_bytes
-        ):
+        if not (self._metadata_reader and self._metadata_reader.cover_art_bytes):
+            return b""
+        current_hash = hashlib.md5(
+            self._metadata_reader.cover_art_bytes, usedforsecurity=False
+        ).hexdigest()[:8]
+        # Only serve when the suffix matches the current artwork's hash, so a
+        # stale request can't cache new bytes under an old hash key.
+        if path == f"cover_art_{current_hash}":
             return self._metadata_reader.cover_art_bytes
-        # Return empty bytes if no cover art is available
         return b""
