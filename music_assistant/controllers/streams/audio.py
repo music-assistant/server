@@ -267,7 +267,7 @@ class StreamsAudio:
             # reuse if the buffer can serve this seek position (fast seek path)
             (
                 queue_item.streamdetails.buffer
-                and queue_item.streamdetails.buffer.is_valid(seek_position * 1000)
+                and queue_item.streamdetails.buffer.is_valid(int(seek_position * 1000))
             )
             # or reuse if streamdetails hasn't expired yet (new buffer will be created)
             or (queue_item.streamdetails.created_at + queue_item.streamdetails.expiration)
@@ -1685,8 +1685,7 @@ class StreamsAudio:
 
         if crossfade_data:
             # reported media-time (TRIM + CF) is decoupled from the raw buffer seek below (X)
-            # TODO: drop round() once StreamDetails.seek_position is widened to float
-            streamdetails.seek_position = round(crossfade_data.elapsed_time_offset)
+            streamdetails.seek_position = crossfade_data.elapsed_time_offset
             # yield the POST portion (resample if previous track's format differs)
             if crossfade_data.pcm_format != pcm_format:
                 async for _chunk in resample_pcm_audio(
@@ -1710,7 +1709,7 @@ class StreamsAudio:
             crossfade_data = None
             self._crossfade_data.pop(queue.queue_id, None)
         else:
-            discard_seconds = streamdetails.seek_position
+            discard_seconds = int(streamdetails.seek_position)
             discard_leftover = 0
 
         # Yield the first WARMUP_DURATION worth of audio immediately so playback starts
@@ -2085,8 +2084,7 @@ class StreamsAudio:
                     fade_in_bytes_len=crossfade_buffer_size,
                 )
                 timing_info = crossfade_smart_fade.timing_info
-                # TODO: drop round() once StreamDetails.seek_position is widened to float
-                queue_track.streamdetails.seek_position = round(
+                queue_track.streamdetails.seek_position = (
                     timing_info.fadein_trimmed_duration + timing_info.crossfade_duration
                 )
             # append to play log so the queue controller can work out which track is playing
@@ -2101,7 +2099,7 @@ class StreamsAudio:
             async for chunk in self.get_queue_item_stream(
                 queue_track,
                 pcm_format=pcm_format,
-                seek_position=raw_seek_position,
+                seek_position=int(raw_seek_position),
                 playback_speed=cast(
                     "float", queue_track.extra_attributes.get("playback_speed", 1.0)
                 ),
