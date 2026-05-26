@@ -23,6 +23,7 @@ from deezer_python_gql.generated.get_recently_played import (
     GetRecentlyPlayedMeRecentlyPlayedEdgesNodePlaylist,
     GetRecentlyPlayedMeRecentlyPlayedEdgesNodeSmartTracklist,
 )
+from deezer_python_gql.generated.get_track import GetTrackTrack
 from music_assistant_models.enums import (
     AlbumType,
     ExternalID,
@@ -49,10 +50,12 @@ from music_assistant_models.media_items import (
 
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 
-from .helpers import (
+from .constants import (
     FLOW_CONFIG_PREFIX,
     FLOW_PLAYLIST_ID,
     SMART_TRACKLIST_PREFIX,
+)
+from .helpers import (
     create_virtual_playlist,
 )
 
@@ -77,7 +80,6 @@ if TYPE_CHECKING:
         GetFlowConfigsMeFlowConfigsGenresEdgesNode,
         GetFlowConfigsMeFlowConfigsMoodsEdgesNode,
     )
-    from deezer_python_gql.generated.get_track import GetTrackTrack
     from deezer_python_gql.generated.search import (
         SearchSearchResultsAlbumsEdgesNode,
         SearchSearchResultsArtistsEdgesNode,
@@ -262,7 +264,7 @@ def _parse_track_metadata(
         if img := _cover_image(provider, track.album.cover):
             metadata.add_image(img)
     # Lyrics (only present on GetTrackTrack, not on fragment-based models)
-    if hasattr(track, "lyrics") and track.lyrics is not None:
+    if isinstance(track, GetTrackTrack) and track.lyrics is not None:
         if track.lyrics.text:
             metadata.lyrics = track.lyrics.text
         if track.lyrics.synchronized_lines:
@@ -549,9 +551,6 @@ def parse_audiobook_from_album(
 ) -> Audiobook:
     """
     Create an Audiobook from an AlbumFields result (search context).
-
-    Used when an album search result is identified as an audiobook via
-    check_audiobook_ids. Provides basic metadata from the album fields.
 
     :param provider: The Deezer provider instance.
     :param album: A GQL album model (fragment-based or slim search result).

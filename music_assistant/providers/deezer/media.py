@@ -497,8 +497,7 @@ class DeezerMediaManager:
         if result is None:
             raise MediaNotFoundError(f"Podcast {prov_podcast_id} not found on Deezer")
         podcast = parse_podcast(self.provider, result)
-        if hasattr(result, "raw_episodes"):
-            podcast.total_episodes = len(result.raw_episodes)
+        podcast.total_episodes = len(result.raw_episodes)
         return podcast
 
     @use_cache(3600 * 24 * 30, allow_expired_cache=True)

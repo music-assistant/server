@@ -29,7 +29,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.controllers.cache import use_cache
 
-from .helpers import (
+from .constants import (
     BROWSE_AUDIOBOOKS,
     BROWSE_EXPLORE,
     BROWSE_GENRES,
@@ -52,6 +52,8 @@ from .helpers import (
     SMART_TRACKLIST_PREFIX,
     TOP_CHARTS_PLAYLIST_ID,
     USER_TOP_TRACKS_PLAYLIST_ID,
+)
+from .helpers import (
     create_virtual_playlist,
 )
 from .parsers import (

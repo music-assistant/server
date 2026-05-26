@@ -18,6 +18,18 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from .constants import (
+    FLOW_CONFIG_PREFIX,
+    FLOW_PLAYLIST_ID,
+    PERSONAL_SONGS_PLAYLIST_ID,
+    RECOMMENDED_TRACKS_PLAYLIST_ID,
+    SHAKER_CURATED_PREFIX,
+    SHAKER_PREFIX,
+    SMART_TRACKLIST_PREFIX,
+    TOP_CHARTS_PLAYLIST_ID,
+    USER_TOP_TRACKS_PLAYLIST_ID,
+)
+
 if TYPE_CHECKING:
     from deezer_python_gql import DeezerGQLClient
     from deezer_python_gql.generated.get_audiobook import (
@@ -26,34 +38,6 @@ if TYPE_CHECKING:
     )
 
     from .provider import DeezerProvider
-
-# -- Virtual playlist IDs --
-
-FLOW_PLAYLIST_ID = "flow"
-FLOW_CONFIG_PREFIX = "flow_config_"
-SMART_TRACKLIST_PREFIX = "smart_tracklist_"
-RECOMMENDED_TRACKS_PLAYLIST_ID = "recommended_tracks"
-TOP_CHARTS_PLAYLIST_ID = "top_charts"
-USER_TOP_TRACKS_PLAYLIST_ID = "user_top_tracks"
-SHAKER_PREFIX = "shaker_"
-SHAKER_CURATED_PREFIX = "shaker_curated_"
-PERSONAL_SONGS_PLAYLIST_ID = "personal_songs"
-SHAKER_MIX_COVER = "https://cdn-assets.dzcdn.net/shaker/_next/static/media/group_mix.d986951b.svg"
-
-# -- Browse folder names (used as path segments for routing) --
-
-BROWSE_MADE_FOR_YOU = "Made For You"
-BROWSE_EXPLORE = "Explore"
-BROWSE_RECENTLY_PLAYED = "Recently Played"
-BROWSE_SHAKER = "Shaker"
-BROWSE_AUDIOBOOKS = "Discover Audiobooks"
-BROWSE_MOODS = "Moods"
-BROWSE_GENRES = "Genres"
-BROWSE_YOUR_TOP_ARTISTS = "Your Top Artists"
-BROWSE_YOUR_TOP_ALBUMS = "Your Top Albums"
-BROWSE_RECOMMENDED_PLAYLISTS = "Recommended Playlists"
-BROWSE_RECOMMENDED_ARTIST_PLAYLISTS = "Recommended Artist Playlists"
-BROWSE_PERSONALIZED_PLAYLISTS = "Personalized Playlists"
 
 
 @dataclass(frozen=True)
