@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for ma-provider-mcp tests.
+"""Shared pytest fixtures for the FastMCP server provider.
 
 Most tests run without a real Music Assistant install — they exercise pure
 logic (URI parsing, tag mapping, config entries shape) or use ``MagicMock``
@@ -13,21 +13,10 @@ for ``mass``.
 from __future__ import annotations
 
 import importlib.util
-import sys
-from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-# Make the provider/ package importable as a top-level "provider" module without
-# requiring a full ``pip install -e .`` step in ad-hoc test runs.
-# Guard: only add when a "provider/" sibling directory exists so that the
-# synced copy at tests/providers/fastmcp_server/conftest.py does NOT add
-# tests/providers/ to sys.path and shadow installed packages.
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-if (_REPO_ROOT / "provider").is_dir() and str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
 
 
 class FakeWebserver:

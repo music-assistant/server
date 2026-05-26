@@ -68,7 +68,7 @@ class MCPServerRuntime:
     @property
     def public_url(self) -> str:
         """Return the externally visible MCP endpoint URL."""
-        base = str(getattr(self._mass.webserver, "base_url", "")).rstrip("/")
+        base = str(self._mass.webserver.base_url).rstrip("/")
         return f"{base}{self._mount_path}"
 
     async def start(self) -> None:
@@ -91,7 +91,7 @@ class MCPServerRuntime:
         )
 
         require_auth = bool(self._config.get_value(CONF_REQUIRE_AUTH))
-        base_url = str(getattr(self._mass.webserver, "base_url", "") or "").rstrip("/")
+        base_url = str(self._mass.webserver.base_url or "").rstrip("/")
         public_resource_uri = f"{base_url}{self._mount_path}" if base_url else None
         enforce_audience = bool(self._config.get_value(CONF_ENFORCE_AUDIENCE))
         verifier = (

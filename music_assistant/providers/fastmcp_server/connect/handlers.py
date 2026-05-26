@@ -93,7 +93,7 @@ def make_info(ctx: WizardContext) -> Callable[[web.Request], Any]:
         if guard is not None:
             return guard
 
-        base_url = str(getattr(ctx.mass.webserver, "base_url", "") or "").rstrip("/")
+        base_url = str(ctx.mass.webserver.base_url or "").rstrip("/")
         mount = "/" + ctx.mount_path.strip("/")
         loopback = _loopback_url(base_url) + mount
         advertised = (base_url + mount) if base_url else loopback

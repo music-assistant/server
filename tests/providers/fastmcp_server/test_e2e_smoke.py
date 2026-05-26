@@ -54,4 +54,4 @@ async def test_runtime_lists_namespaced_tools(mock_mass: MagicMock, mock_config:
 def _stub_logger() -> object:
     import logging  # noqa: PLC0415
 
-    return logging.getLogger("ma-provider-mcp.smoke")
+    return logging.getLogger("fastmcp_server.smoke")

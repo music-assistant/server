@@ -77,21 +77,13 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         timeout=TIMEOUT_MUTATION,
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def clear_queue(queue_id: str, ctx: Context | None = None) -> None:
-        """Clear all items from the given queue.
-
-        Implementation note: MA's ``player_queues`` exposes a ``clear`` method;
-        if the API name diverges, this is the single integration point to fix.
-        """
+        """Clear all items from the given queue."""
         await confirm_or_raise(
             ctx,
             f"Clear all items from queue {queue_id!r}? This cannot be undone.",
             enabled=require_confirmation,
         )
-        clear = getattr(mass.player_queues, "clear", None)
-        if clear is None:
-            msg = "mass.player_queues.clear is not available on this MA build"
-            raise RuntimeError(msg)
-        clear(queue_id)
+        mass.player_queues.clear(queue_id)
 
     @sub.tool(
         tags={Tag.CONTROL_PLAYBACK},

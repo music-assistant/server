@@ -100,14 +100,6 @@ def test_compute_allowlist_with_https_base_url() -> None:
     assert "https://127.0.0.1" in allow
 
 
-def test_compute_allowlist_handles_missing_attrs() -> None:
-    """If ``mass.webserver`` lacks base_url/publish_ip, only loopbacks remain."""
-    mass = SimpleNamespace(webserver=SimpleNamespace())
-    allow = _compute_origin_allowlist(mass)
-    assert "http://localhost" in allow
-    assert "http://127.0.0.1" in allow
-
-
 @pytest.mark.parametrize(
     ("origin", "allowed"),
     [

@@ -33,10 +33,7 @@ def build_players_server(mass: MusicAssistant) -> FastMCP:
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def list_players() -> list[PlayerBrief]:
         """List all players known to MA."""
-        all_players = mass.players.all_players() if hasattr(mass.players, "all_players") else []
-        if callable(all_players):
-            all_players = all_players()
-        return [to_brief_player(p) for p in all_players]
+        return [to_brief_player(p) for p in mass.players.all_players()]
 
     @sub.tool(
         tags={Tag.QUERY_PLAYERS},

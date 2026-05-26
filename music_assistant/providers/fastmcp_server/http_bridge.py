@@ -80,7 +80,7 @@ def _compute_origin_allowlist(mass: MusicAssistant, extra_origins_csv: str = "")
         "http://[::1]",
     }
 
-    base_url = str(getattr(mass.webserver, "base_url", "") or "")
+    base_url = str(mass.webserver.base_url or "")
     base_norm = _normalize_origin(base_url)
     if base_norm:
         allow.add(base_norm)
@@ -97,7 +97,7 @@ def _compute_origin_allowlist(mass: MusicAssistant, extra_origins_csv: str = "")
             allow.add(f"http://{loopback}:{base_port}")
             allow.add(f"https://{loopback}:{base_port}")
 
-    publish_ip = str(getattr(mass.webserver, "publish_ip", "") or "")
+    publish_ip = str(mass.webserver.publish_ip or "")
     if publish_ip:
         # Derive port from base_url; fallback: no port (browsers send port if non-default).
         port = _port_from_base_url(base_url)

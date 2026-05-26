@@ -63,7 +63,7 @@ def build_config_entries(
     :param mass: MusicAssistant instance, used to compose the info label.
     :param values: Current config values (may be empty on first setup).
     """
-    base_url = getattr(mass.webserver, "base_url", "").rstrip("/")
+    base_url = mass.webserver.base_url.rstrip("/")
     raw_mount = str(values.get(CONF_MOUNT_PATH) or DEFAULT_MOUNT_PATH)
     # Mirror ``MCPServerRuntime.__init__``'s normalisation so the info label
     # always renders a valid URL even if the user dropped the leading slash.

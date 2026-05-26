@@ -83,9 +83,11 @@ def _detect_external_base_url(mass: MusicAssistant, current_user: Any) -> str | 
     """
     if current_user is None:
         return None
+    # ``webserver.clients`` is an internal collection (not part of the
+    # documented MA surface), so a missing attribute is treated as "no
+    # forwarded-host info available" rather than a hard failure.
     try:
-        webserver = getattr(mass, "webserver", None)
-        clients = getattr(webserver, "clients", None) or ()
+        clients = getattr(mass.webserver, "clients", None) or ()
     except Exception:
         return None
 
