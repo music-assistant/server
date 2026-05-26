@@ -77,20 +77,38 @@ DISCOVERY_INITIAL_TRACKS: Final[int] = 20
 BROWSE_INITIAL_TRACKS: Final[int] = 15
 
 # Rate-limit / smart-captcha handling.
-# Yandex's smart-captcha edge protection is per-endpoint-family. When it triggers
-# (HTML body with smart-captcha markers), the corresponding throttler "kind" is
-# put in a quarantine for CAPTCHA_COOLDOWN_S. Plain 429 (no captcha markers)
-# only signals backoff_time on the failing request — no kind-wide block.
-CAPTCHA_COOLDOWN_S: Final[float] = 600.0
+# Yandex's smart-captcha edge protection is per-endpoint-family. When it
+# triggers (HTML body with smart-captcha markers), the corresponding
+# throttler "kind" is put in a quarantine for a duration picked from
+# CAPTCHA_COOLDOWN_LADDER_S based on how many captcha strikes that kind has
+# accumulated inside CAPTCHA_STRIKE_RETENTION_S. The first strike is cheap
+# (60s) so a transient burst during initial library sync does not stall the
+# provider for 10 minutes; repeated strikes escalate to the original 600s.
+# Plain 429 (no captcha markers) only signals backoff_time on the failing
+# request — no kind-wide block, no escalation.
+CAPTCHA_COOLDOWN_LADDER_S: Final[tuple[float, ...]] = (60.0, 300.0, 600.0)
+CAPTCHA_STRIKE_RETENTION_S: Final[float] = 3600.0
 RATE_LIMIT_COOLDOWN_S: Final[float] = 60.0
 
 # Per-kind request budgets (requests per second). Tuned by endpoint cost:
 # - file_info is signed + most aggressively rate-limited at Yandex's edge
 # - rotor sits in the middle
-# - everything else (likes, tracks, search, albums, ...) shares the default bucket
-THROTTLE_DEFAULT_RPS: Final[int] = 5
+# - metadata covers the artist/album refresh burst MA fires during initial
+#   sync — kept low so it does not flood smart-captcha
+# - everything else (likes, tracks, search, playlists, ...) shares default
+THROTTLE_DEFAULT_RPS: Final[int] = 3
+THROTTLE_METADATA_RPS: Final[int] = 2
 THROTTLE_FILE_INFO_RPS: Final[int] = 2
 THROTTLE_ROTOR_RPS: Final[int] = 3
+
+# Initial-sync jitter: during the first INITIAL_SYNC_WINDOW_S after a
+# successful connect(), add up to INITIAL_SYNC_JITTER_S of uniform random
+# delay before acquiring the default/metadata throttlers. Smooths out the
+# parallel metadata-refresh burst MA fires immediately after a fresh
+# install + auth, which is what triggers smart-captcha in #146. After the
+# window expires the helper is a no-op — no steady-state overhead.
+INITIAL_SYNC_JITTER_S: Final[float] = 0.5
+INITIAL_SYNC_WINDOW_S: Final[float] = 60.0
 
 # get-file-info LRU cache. Bounded TTL so we never serve a URL after its CDN
 # expiry (Yandex stream URLs live ~60s) but still absorb same-track replays
