@@ -25,22 +25,6 @@ CONF_ALLOW_PLAYER_SWITCH: Final[str] = "allow_player_switch"
 CONF_DEVICE_ID: Final[str] = "device_id"
 CONF_OUTPUT_SAMPLE_RATE: Final[str] = "output_sample_rate"
 CONF_OUTPUT_BIT_DEPTH: Final[str] = "output_bit_depth"
-CONF_PLAYBACK_MODE: Final[str] = "playback_mode"
-CONF_HANDOFF_HEARTBEAT_INTERVAL: Final[str] = "handoff_heartbeat_interval"
-CONF_ENABLE_UI_INTEGRATION: Final[str] = "enable_ui_integration"
-
-# Playback mode values
-# - stream: default — plugin owns the audio source and streams PCM via PluginSource
-# - handoff: experimental — plugin pushes tracks into MA's player_queue,
-#   MA streams natively through yandex_music without our inner ffmpeg
-PLAYBACK_MODE_STREAM: Final[str] = "stream"
-PLAYBACK_MODE_HANDOFF: Final[str] = "handoff"
-
-# Handoff progress heartbeat — guards against Ynison re-balancing the active
-# device away from us when EventType.QUEUE_TIME_UPDATED is sparse (DLNA/UPnP).
-HANDOFF_HEARTBEAT_DEFAULT: Final[float] = 5.0
-HANDOFF_HEARTBEAT_MIN: Final[float] = 3.0
-HANDOFF_HEARTBEAT_MAX: Final[float] = 10.0
 
 # Action keys (own-mode QR auth flow)
 CONF_ACTION_AUTH_QR: Final[str] = "auth_qr"
