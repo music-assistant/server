@@ -348,6 +348,58 @@ class AudioAnalysisController:
             media_type=media_type,
         )
 
+    async def get_extra_data_for_album_tracks(
+        self,
+        track_item_ids: list[str],
+        provider_instance_id_or_domain: str,
+        aa_provider_domain: str,
+    ) -> list[dict[str, Any]]:
+        """
+        Return one AA provider's ``extra_data`` for each given track that has one.
+
+        :param track_item_ids: Provider-native track IDs to look up.
+        :param provider_instance_id_or_domain: Music provider instance ID or domain.
+        :param aa_provider_domain: Domain of the AA provider whose rows to fetch.
+        """
+        if not track_item_ids:
+            return []
+        provider = self.mass.get_provider(
+            provider_instance_id_or_domain, provider_type=MusicProvider
+        )
+        if provider is None:
+            return []
+        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
+
+        placeholders = ",".join(f":id{i}" for i in range(len(track_item_ids)))
+        params: dict[str, Any] = {f"id{i}": tid for i, tid in enumerate(track_item_ids)}
+        params["provider"] = prov_key
+        params["domain"] = aa_provider_domain
+        params["media_type"] = MediaType.TRACK.value
+
+        query = (
+            f"SELECT analysis_data FROM {DB_TABLE_AUDIO_ANALYSIS} "
+            f"WHERE aa_provider_domain = :domain "
+            f"AND media_type = :media_type "
+            f"AND provider = :provider "
+            f"AND item_id IN ({placeholders})"
+        )
+        rows = await self.mass.music.database.get_rows_from_query(
+            query, params, limit=len(track_item_ids)
+        )
+
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                data = json_loads(row["analysis_data"])
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            extra = data.get("extra_data")
+            if isinstance(extra, dict):
+                results.append(extra)
+        return results
+
     async def get_audio_analysis_version(
         self,
         item_id: str,
