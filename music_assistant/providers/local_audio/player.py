@@ -59,8 +59,8 @@ class LocalAudioPlayer(Player):
         :param device_name: The device name reported by PortAudio.
         :param hostapi_index: The host API index.
         :param device_index: The PortAudio device index (maps to ALSA card on Linux).
-        :param pa_sink_name: The PulseAudio sink name for this device (Linux only).
-        :param is_remap: True if this is a remap/filter sink (not a physical ALSA sink).
+        :param pa_sink_name: The PulseAudio sink name (Linux PA backend only).
+        :param is_remap: True if this is a PA remap/filter sink (Linux PA backend only).
         """
         super().__init__(provider, player_id)
         self._attr_type = PlayerType.PLAYER
@@ -117,7 +117,7 @@ class LocalAudioPlayer(Player):
         self.update_state()
 
     async def apply_hardware_ceiling(self) -> None:
-        """Set PA sink hardware volume to 100% via pulsectl (Linux only).
+        """Set PA sink hardware volume to 100% via pulsectl (Linux PA backend only).
 
         Ensures the PA sink is at full hardware volume so that software
         volume scaling in the bridge has full dynamic range to work with.
