@@ -4,15 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import aiohttp
 from defusedxml import ElementTree as DefusedET
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, IdentifierType, MediaType
 from music_assistant_models.errors import MusicAssistantError, SetupFailedError
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    Audiobook,
+    Genre,
+    ItemMapping,
+    Playlist,
+    Podcast,
+    Radio,
+    SearchResults,
+    Track,
+)
 
 from music_assistant.models.plugin import PluginProvider
 
@@ -24,7 +35,6 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
     from music_assistant.models.player import Player
 
-LOGGER = logging.getLogger("music_assistant.Bose SoundTouch Favorites")
 PRESET_IDS = range(1, 7)
 SEARCH_RESULT_LIMIT = 25
 SEARCH_TIMEOUT = 10
@@ -33,21 +43,23 @@ NO_SEARCH_RESULTS_VALUE = "__bose_soundtouch_favorites_no_results__"
 
 BOSE_SUBPROTOCOLS = ("gabbo",)
 
+SearchResultItem = (
+    Artist | Album | Genre | Track | Playlist | Radio | Audiobook | Podcast | ItemMapping
+)
+SEARCHABLE_MEDIA_TYPES = (
+    MediaType.ARTIST,
+    MediaType.ALBUM,
+    MediaType.TRACK,
+    MediaType.PLAYLIST,
+    MediaType.RADIO,
+    MediaType.AUDIOBOOK,
+    MediaType.PODCAST,
+    MediaType.GENRE,
+)
+DEFAULT_MEDIA_TYPE = MediaType.PLAYLIST
 MEDIA_TYPE_OPTIONS = [
-    ConfigValueOption(title="Artist", value=MediaType.ARTIST.value),
-    ConfigValueOption(title="Album", value=MediaType.ALBUM.value),
-    ConfigValueOption(title="Track", value=MediaType.TRACK.value),
-    ConfigValueOption(title="Playlist", value=MediaType.PLAYLIST.value),
-    ConfigValueOption(title="Radio", value=MediaType.RADIO.value),
-    ConfigValueOption(title="Audiobook", value=MediaType.AUDIOBOOK.value),
-    ConfigValueOption(title="Podcast", value=MediaType.PODCAST.value),
-    ConfigValueOption(title="Podcast episode", value=MediaType.PODCAST_EPISODE.value),
-    ConfigValueOption(title="Folder", value=MediaType.FOLDER.value),
-    ConfigValueOption(title="Announcement", value=MediaType.ANNOUNCEMENT.value),
-    ConfigValueOption(title="Flow stream", value=MediaType.FLOW_STREAM.value),
-    ConfigValueOption(title="Plugin source", value=MediaType.PLUGIN_SOURCE.value),
-    ConfigValueOption(title="Sound effect", value=MediaType.SOUND_EFFECT.value),
-    ConfigValueOption(title="Genre", value=MediaType.GENRE.value),
+    ConfigValueOption(title=media_type.value.replace("_", " ").title(), value=media_type.value)
+    for media_type in SEARCHABLE_MEDIA_TYPES
 ]
 
 
@@ -106,15 +118,14 @@ def build_bose_players(mass: MusicAssistant) -> list[BosePlayerInfo]:
     for player in mass.players.all_players():
         info = build_bose_player_info(player)
         if info:
-            LOGGER.debug("Detected Bose player: %s", info)
             bose_players.append(info)
 
     return sorted(bose_players, key=lambda item: item.name.lower())
 
 
-def _unknown_if_empty(value: Any) -> str:
+def _unknown_if_empty(value: str | None) -> str:
     """Return a readable fallback for missing config detail values."""
-    return str(value) if value not in (None, "") else "unknown"
+    return value if value else "unknown"
 
 
 def _target_player_option_title(player: BosePlayerInfo) -> str:
@@ -138,7 +149,7 @@ def _target_player_detail_entries(player: BosePlayerInfo) -> tuple[ConfigEntry, 
         ConfigEntry(
             key=f"target_player_detail_{index}",
             type=ConfigEntryType.LABEL,
-            label=f"{label}: {value if value not in (None, '') else 'unknown'}",
+            label=f"{label}: {_unknown_if_empty(value)}",
             required=False,
             category="Target player",
             advanced=True,
@@ -147,174 +158,94 @@ def _target_player_detail_entries(player: BosePlayerInfo) -> tuple[ConfigEntry, 
     )
 
 
-def _config_value(
+def _string_config_value(
     values: dict[str, ConfigValueType] | None,
     key: str,
-    default: ConfigValueType = "",
-) -> ConfigValueType:
-    """Return an intermediate config value."""
-    if values and key in values and values[key] is not None:
-        return values[key]
+    default: str = "",
+) -> str:
+    """Return a string config value."""
+    if values and isinstance(value := values.get(key), str):
+        return value
     return default
 
 
-def _media_type_value(media_type: str) -> Any:
-    """Return a MA MediaType enum value when available."""
-    try:
-        return MediaType(media_type)
-    except ValueError:
-        return media_type
+def _media_type_config_value(
+    values: dict[str, ConfigValueType] | None,
+    key: str,
+    default: MediaType = DEFAULT_MEDIA_TYPE,
+) -> MediaType:
+    """Return a searchable media type from config values."""
+    media_type = MediaType(_string_config_value(values, key, default.value))
+    return media_type if media_type in SEARCHABLE_MEDIA_TYPES else default
 
 
-def _media_item_title(item: Any) -> str:
-    """Build a readable config option title for a media item."""
-    name = getattr(item, "name", None) or getattr(item, "sort_name", None)
-    provider = getattr(item, "provider", None) or getattr(item, "provider_instance", None)
-    media_type = getattr(getattr(item, "media_type", None), "value", None) or getattr(
-        item, "media_type", None
-    )
-
-    if not provider:
-        provider_mappings = getattr(item, "provider_mappings", None) or []
-        for mapping in provider_mappings:
-            provider = getattr(mapping, "provider_domain", None) or getattr(
-                mapping, "provider_instance", None
-            )
-            if provider:
-                break
-
-    details = [str(part) for part in (media_type, provider) if part]
-    if name and details:
-        return f"{name} ({', '.join(details)})"
-    if name:
-        return str(name)
-    return str(getattr(item, "uri", None) or getattr(item, "item_id", "Unknown radio"))
-
-
-def _media_item_value(item: Any) -> str | None:
-    """Return the best value to pass to MA play_media."""
-    value = (
-        getattr(item, "uri", None) or getattr(item, "item_id", None) or getattr(item, "name", None)
-    )
-    return str(value) if value else None
-
-
-def _iter_search_result_items(search_result: Any, media_type: str) -> list[Any]:
-    """Extract media items from a MA search result across known API shapes."""
-    items = getattr(search_result, "items", None)
-    if items is not None:
-        return list(items)
-
-    if isinstance(search_result, list | tuple):
-        return list(search_result)
-
-    if isinstance(search_result, dict):
-        for key in (f"{media_type}s", media_type):
-            if key in search_result:
-                return list(search_result[key] or [])
-        return []
-
-    attr_names = (f"{media_type}s", media_type)
-    if media_type == "radio":
-        attr_names = ("radio", "radios")
-
-    for attr_name in attr_names:
-        items = getattr(search_result, attr_name, None)
-        if items is not None:
-            return list(items)
-
-    return []
+def _iter_search_result_items(
+    search_result: SearchResults,
+    media_type: MediaType,
+) -> list[SearchResultItem]:
+    """Extract media items from a typed MA search result."""
+    match media_type:
+        case MediaType.ARTIST:
+            return list(search_result.artists)
+        case MediaType.ALBUM:
+            return list(search_result.albums)
+        case MediaType.GENRE:
+            return list(search_result.genres)
+        case MediaType.TRACK:
+            return list(search_result.tracks)
+        case MediaType.PLAYLIST:
+            return list(search_result.playlists)
+        case MediaType.RADIO:
+            return list(search_result.radio)
+        case MediaType.AUDIOBOOK:
+            return list(search_result.audiobooks)
+        case MediaType.PODCAST:
+            return list(search_result.podcasts)
+        case _:
+            return []
 
 
 async def _search_media_items(
     mass: MusicAssistant,
-    media_type: str,
+    media_type: MediaType,
     query: str,
-) -> list[Any]:
+) -> list[SearchResultItem]:
     """Search MA media items for config result options."""
     if not query:
         return []
 
-    music = getattr(mass, "music", None)
-    if music is None:
+    if media_type not in SEARCHABLE_MEDIA_TYPES:
         return []
 
-    search = getattr(music, "search", None)
-    if search is None:
+    try:
+        search_result = await asyncio.wait_for(
+            mass.music.search(
+                search_query=query,
+                media_types=[media_type],
+                limit=SEARCH_RESULT_LIMIT,
+                library_only=False,
+            ),
+            timeout=SEARCH_TIMEOUT,
+        )
+    except (MusicAssistantError, TimeoutError):
         return []
 
-    media_type_value = _media_type_value(media_type)
-    kwargs_candidates = (
-        {
-            "search_query": query,
-            "media_types": [media_type_value],
-            "limit": SEARCH_RESULT_LIMIT,
-        },
-        {"query": query, "media_types": [media_type_value], "limit": SEARCH_RESULT_LIMIT},
-    )
-
-    for kwargs in kwargs_candidates:
-        try:
-            search_result = await asyncio.wait_for(
-                search(**kwargs),
-                timeout=SEARCH_TIMEOUT,
-            )
-            return _iter_search_result_items(search_result, media_type)
-        except TimeoutError:
-            LOGGER.warning(
-                "Timed out searching %s media for query %r after %s seconds",
-                media_type,
-                query,
-                SEARCH_TIMEOUT,
-            )
-            return []
-        except TypeError:
-            continue
-        except (MusicAssistantError, ValueError) as err:
-            LOGGER.warning("Unable to search media items: %s", err)
-            break
-
-    for args in (
-        (query, [media_type_value], SEARCH_RESULT_LIMIT),
-        (query, [media_type_value]),
-        (query,),
-    ):
-        try:
-            search_result = await asyncio.wait_for(
-                search(*args),
-                timeout=SEARCH_TIMEOUT,
-            )
-            return _iter_search_result_items(search_result, media_type)
-        except TimeoutError:
-            LOGGER.warning(
-                "Timed out searching %s media for query %r after %s seconds",
-                media_type,
-                query,
-                SEARCH_TIMEOUT,
-            )
-            return []
-        except TypeError:
-            continue
-        except (MusicAssistantError, ValueError) as err:
-            LOGGER.warning("Unable to search media items with positional args: %s", err)
-            break
-
-    return []
+    return _iter_search_result_items(search_result, media_type)
 
 
 async def build_media_options(
     mass: MusicAssistant,
-    media_type: str,
+    media_type: MediaType,
     query: str,
 ) -> list[ConfigValueOption]:
     """Build dropdown options for a favorite media search."""
     options_by_value: dict[str, ConfigValueOption] = {}
     for item in await _search_media_items(mass, media_type, query):
-        value = _media_item_value(item)
+        value = item.uri
         if not value or value in options_by_value:
             continue
         options_by_value[value] = ConfigValueOption(
-            title=_media_item_title(item),
+            title=f"{item.name} ({item.media_type.value}, {item.provider})",
             value=value,
         )
 
@@ -341,7 +272,7 @@ def _xml_local_name(tag: str) -> str:
 
 async def _build_preset_media_options(
     mass: MusicAssistant,
-    media_type: str,
+    media_type: MediaType,
     query: str,
     selected_media: str,
     refresh_results: bool,
@@ -392,7 +323,9 @@ async def get_config_entries(
         )
         for player in configurable_players
     ]
-    selected_target_player_id = str(_config_value(values, "target_player", player_options[0].value))
+    selected_target_player_id = _string_config_value(
+        values, "target_player", configurable_players[0].player_id
+    )
     selected_target_player = next(
         (
             player
@@ -411,10 +344,10 @@ async def get_config_entries(
         search_action = f"preset_{preset_id}_search_media"
         copy_action = f"preset_{preset_id}_copy_media"
 
-        media_type = str(_config_value(values, media_type_key, "playlist"))
-        query = str(_config_value(values, search_key, "")).strip()
-        selected_media = str(_config_value(values, selected_key, ""))
-        media_value = str(_config_value(values, media_key, ""))
+        media_type = _media_type_config_value(values, media_type_key)
+        query = _string_config_value(values, search_key).strip()
+        selected_media = _string_config_value(values, selected_key)
+        media_value = _string_config_value(values, media_key)
 
         if action == copy_action and _is_real_media_selection(selected_media):
             media_value = selected_media
@@ -428,7 +361,8 @@ async def get_config_entries(
         )
 
         show_media_selection = any(
-            _is_real_media_selection(str(option.value)) for option in media_options
+            isinstance(option.value, str) and _is_real_media_selection(option.value)
+            for option in media_options
         )
 
         preset_entries.append(
@@ -447,8 +381,8 @@ async def get_config_entries(
                     type=ConfigEntryType.STRING,
                     label=f"Favorite {preset_id} media type",
                     required=False,
-                    default_value=media_type,
-                    value=media_type,
+                    default_value=media_type.value,
+                    value=media_type.value,
                     options=MEDIA_TYPE_OPTIONS,
                     description=(
                         "Type of media used for this SoundTouch favorite search and playback."
@@ -546,20 +480,18 @@ def extract_preset_id(message: str) -> int | None:
     except DefusedET.ParseError:
         return None
 
-    preset = next(
-        (element for element in root.iter() if _xml_local_name(element.tag) == "preset"),
+    preset_id = next(
+        (
+            element.attrib.get("id")
+            for element in root.iter()
+            if _xml_local_name(element.tag) == "preset"
+        ),
         None,
     )
-    if preset is None:
-        return None
-
-    preset_id = preset.attrib.get("id")
-    if not preset_id:
-        return None
 
     try:
-        return int(preset_id)
-    except ValueError:
+        return int(preset_id) if preset_id else None
+    except (TypeError, ValueError):
         return None
 
 
@@ -723,26 +655,10 @@ class BoseSoundTouchFavoritesProvider(PluginProvider):
             player_id,
         )
 
-        play_kwargs = {
-            "queue_id": player_id,
-            "media": media_id,
-            "media_type": _media_type_value(media_type),
-        }
-
-        for kwargs in (
-            play_kwargs,
-            {"queue_id": player_id, "media": media_id},
-        ):
-            try:
-                await self.mass.player_queues.play_media(**kwargs)
-                return
-            except TypeError:
-                continue
-            except MusicAssistantError:
-                self.logger.exception(
-                    "Unable to play configured media for Bose SoundTouch favorite_%s",
-                    preset_id,
-                )
-                return
-
-        self.logger.error("Unable to call play_media with the available Music Assistant API")
+        try:
+            await self.mass.player_queues.play_media(queue_id=player_id, media=media_id)
+        except MusicAssistantError:
+            self.logger.exception(
+                "Unable to play configured media for Bose SoundTouch favorite_%s",
+                preset_id,
+            )
