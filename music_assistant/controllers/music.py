@@ -29,6 +29,7 @@ from music_assistant_models.errors import (
     InvalidProviderURI,
     MediaNotFoundError,
     MusicAssistantError,
+    UnsupportedFeaturedException,
 )
 from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import (
@@ -88,6 +89,7 @@ from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import TaskManager, parse_optional_bool, parse_title_and_version
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.plugin import PluginProvider
 
 from .media.albums import AlbumsController
 from .media.artists import ArtistsController
@@ -104,8 +106,8 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import Audiobook, PodcastEpisode
 
     from music_assistant import MusicAssistant
+    from music_assistant.models import ProviderInstanceType
     from music_assistant.models.metadata_provider import MetadataProvider
-    from music_assistant.models.plugin import PluginProvider
     from music_assistant.models.provider import Provider
 
 
@@ -223,13 +225,25 @@ class MusicController(CoreController):
 
         Note that this applies user provider filters (for all user types).
         """
-        user = get_current_user()
-        user_provider_filter = user.provider_filter if user else None
         return [
             x
-            for x in self.mass.providers
+            for x in self._apply_user_provider_filter(self.mass.providers)
             if x.type == ProviderType.MUSIC
-            and (not user_provider_filter or x.instance_id in user_provider_filter)
+        ]
+
+    def _apply_user_provider_filter(
+        self,
+        providers: Iterable[ProviderInstanceType],
+    ) -> list[ProviderInstanceType]:
+        """Filter providers by the current user's music provider filter."""
+        user = get_current_user()
+        user_provider_filter = user.provider_filter if user else None
+        if not user_provider_filter:
+            return list(providers)
+        return [
+            p
+            for p in providers
+            if p.type != ProviderType.MUSIC or p.instance_id in user_provider_filter
         ]
 
     @api_command("music/sync")
@@ -307,7 +321,14 @@ class MusicController(CoreController):
         :param limit: number of items to return in the search (per type).
         """
         # use cache to avoid repeated searches
-        search_providers = sorted(self.get_unique_providers())
+        plugin_search_providers = [
+            p.instance_id
+            for p in self.mass.get_providers_supporting_feature(
+                ProviderFeature.SEARCH,
+                priority=(ProviderType.PLUGIN,),
+            )
+        ]
+        search_providers = sorted(self.get_unique_providers() + plugin_search_providers)
         cache_provider_key = "library" if library_only else ",".join(search_providers)
         cache_key = f"{search_query}{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}-{library_only}-{cache_provider_key}"
         if cache := await self.mass.cache.get(
@@ -556,8 +577,11 @@ class MusicController(CoreController):
         """Browse Music providers."""
         if not path or path == "root":
             # root level; folder per provider that declares BROWSE
-            root_items: list[BrowseFolder] = []
-            for prov in self.mass.get_providers_supporting_feature(ProviderFeature.BROWSE):
+            root_items: list[MediaItemType | BrowseFolder] = []
+            providers_with_browse = self.mass.get_providers_supporting_feature(
+                ProviderFeature.BROWSE
+            )
+            for prov in self._apply_user_provider_filter(providers_with_browse):
                 root_items.append(
                     BrowseFolder(
                         item_id="root",
@@ -567,6 +591,32 @@ class MusicController(CoreController):
                         name=prov.name,
                     )
                 )
+            # AudioSource providers surface at root like regular providers; a
+            # provider with a single user-initiable source is promoted to that
+            # source directly so it's playable in one tap.
+            audio_source_providers = self.mass.get_providers_supporting_feature(
+                ProviderFeature.AUDIO_SOURCE
+            )
+            for prov in self._apply_user_provider_filter(audio_source_providers):
+                if not isinstance(prov, PluginProvider):
+                    continue
+                initiable = [
+                    source for source in await prov.get_audio_sources() if source.can_initiate
+                ]
+                if not initiable:
+                    continue
+                if len(initiable) == 1:
+                    root_items.append(initiable[0])
+                else:
+                    root_items.append(
+                        BrowseFolder(
+                            item_id="root",
+                            provider=prov.domain,
+                            path=f"{prov.instance_id}://",
+                            uri=f"{prov.instance_id}://",
+                            name=prov.name,
+                        )
+                    )
             return root_items
 
         # provider level
@@ -590,6 +640,15 @@ class MusicController(CoreController):
                     name="..",
                 )
             )
+        # AudioSource providers don't implement browse(); list their initiable sources directly
+        if (
+            isinstance(prov, PluginProvider)
+            and ProviderFeature.AUDIO_SOURCE in prov.supported_features
+        ):
+            initiable: list[MediaItemType | BrowseFolder] = [
+                source for source in await prov.get_audio_sources() if source.can_initiate
+            ]
+            return [*prepend_items, *initiable]
         # limit -1 to account for the prepended items
         prov_items = await prov.browse(path=path)
         return prepend_items + prov_items
@@ -803,9 +862,10 @@ class MusicController(CoreController):
     @api_command("music/recommendations")
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get all recommendations."""
-        recommendation_providers = self.mass.get_providers_supporting_feature(
+        providers_with_recommendations = self.mass.get_providers_supporting_feature(
             ProviderFeature.RECOMMENDATIONS,
         )
+        recommendation_providers = self._apply_user_provider_filter(providers_with_recommendations)
         results_per_provider: list[list[RecommendationFolder]] = await asyncio.gather(
             self._get_default_recommendations(),
             *[
@@ -842,6 +902,18 @@ class MusicController(CoreController):
                 provider=provider_instance_id_or_domain,
                 name=item_id,
             )
+        if media_type == MediaType.AUDIO_SOURCE:
+            # AudioSources are not library-backed; resolve them through the owning
+            # plugin provider's get_audio_sources() catalog. Returning the live
+            # MediaItem lets play_media create a queue item the standard way.
+            prov = self.mass.get_provider(provider_instance_id_or_domain)
+            if isinstance(prov, PluginProvider):
+                for source in await prov.get_audio_sources():
+                    if source.item_id == item_id:
+                        return source
+            raise MediaNotFoundError(
+                f"AudioSource {provider_instance_id_or_domain}/{item_id} not found"
+            )
         ctrl = self.get_controller(media_type)
         return await ctrl.get(
             item_id=item_id,
@@ -870,7 +942,21 @@ class MusicController(CoreController):
     ) -> None:
         """Add an item to the favorites."""
         if isinstance(item, str):
+            # Inspect the URI's media_type first so a stale audio-source URI
+            # whose plugin is unloaded gives the honest rejection error
+            # instead of bubbling MediaNotFoundError from get_item_by_uri.
+            try:
+                uri_media_type, _, _ = await parse_uri(item)
+            except (InvalidProviderURI, InvalidProviderID):
+                uri_media_type = None
+            if uri_media_type == MediaType.AUDIO_SOURCE:
+                raise UnsupportedFeaturedException("AudioSource items can not be favorites")
             item = await self.get_item_by_uri(item)
+        if item.media_type == MediaType.AUDIO_SOURCE:
+            # AudioSources are dynamic plugin surfaces (existence depends on a
+            # running plugin and its current device state) and have no stable
+            # library identity, so they can not be persisted as favorites.
+            raise UnsupportedFeaturedException("AudioSource items can not be favorites")
         # make sure we have a full library item
         # a favorite must always be in the library
         full_item = await self.get_item(
@@ -952,6 +1038,16 @@ class MusicController(CoreController):
             item = item.uri
         # ensure we have a full item
         if isinstance(item, str):
+            # Inspect the URI's media_type first so a stale audio-source URI
+            # whose plugin is unloaded gives the honest rejection error
+            # instead of bubbling MediaNotFoundError from get_item_by_uri.
+            # Mirrors the same guard in add_item_to_favorites.
+            try:
+                uri_media_type, _, _ = await parse_uri(item)
+            except (InvalidProviderURI, InvalidProviderID):
+                uri_media_type = None
+            if uri_media_type == MediaType.AUDIO_SOURCE:
+                raise UnsupportedFeaturedException("AudioSource items can not be library items")
             full_item = await self.get_item_by_uri(item)
         # For builtin provider (manual URLs), use the provided item directly
         # to preserve custom modifications (name, images, etc.)
@@ -964,6 +1060,11 @@ class MusicController(CoreController):
                 item.item_id,
                 item.provider,
             )
+        if full_item.media_type == MediaType.AUDIO_SOURCE:
+            # AudioSources are dynamic plugin surfaces (existence depends on a
+            # running plugin and its current device state) and have no stable
+            # library identity, so they can not be persisted as library items.
+            raise UnsupportedFeaturedException("AudioSource items can not be library items")
         # add to provider(s) library first
         for prov_mapping in full_item.provider_mappings:
             # we optimistically set in library to True to prevent items
@@ -1206,8 +1307,10 @@ class MusicController(CoreController):
         # also update playcount in library table (if fully played)
         if not fully_played or is_playing:
             return
-        if not (ctrl := self.get_controller(media_item.media_type)):
-            # skip non media items (e.g. plugin source)
+        try:
+            ctrl = self.get_controller(media_item.media_type)
+        except NotImplementedError:
+            # skip non-library media types (e.g. AudioSource plugin sources)
             return
         db_item = await ctrl.get_library_item_by_prov_id(media_item.item_id, media_item.provider)
         if db_item:

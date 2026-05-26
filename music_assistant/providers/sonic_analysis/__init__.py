@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import math
 import time
 from dataclasses import dataclass, field
@@ -11,7 +10,6 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import soxr
-import torch
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ContentType
 
@@ -27,7 +25,6 @@ from .clap_prompts import (
     SCALAR_PROMPT_PAIRS,
     hash_scalar_prompt_pairs,
     load_precomputed_prompt_embeddings,
-    validate_calibration_freshness,
 )
 from .helpers import (
     BlockFeatures,
@@ -228,6 +225,8 @@ def _pcm_bytes_to_audio(audio_format: AudioFormat, pcm_chunk: bytes) -> np.ndarr
     :param audio_format: The audio format describing the PCM data.
     :param pcm_chunk: Raw PCM audio data.
     """
+    import torch  # noqa: PLC0415
+
     content_type = audio_format.content_type
     writable = bytearray(pcm_chunk)
 
@@ -311,32 +310,20 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         self._clap_model: Any = None
         self._clap_text_embeddings: Any = None
         self._clap_prompt_order: list[tuple[str, tuple[str, str]]] = []
-        self._clap_load_task: asyncio.Task[None] | None = None
 
     async def handle_async_init(self) -> None:
-        """Schedule the CLAP model load in the background and return immediately."""
-        validate_calibration_freshness()
-        self._clap_load_task = self.mass.create_task(self._load_clap_in_background())
+        """Load the CLAP model synchronously so provider.available gates analysis until ready.
 
-    async def _load_clap_in_background(self) -> None:
-        """Run the CLAP model load in a worker thread and record the result."""
-        try:
-            (
-                self._clap_model,
-                self._clap_text_embeddings,
-                self._clap_prompt_order,
-            ) = await asyncio.to_thread(self._load_clap)
-        except asyncio.CancelledError:
-            raise
-        except Exception as err:
-            self.logger.error(
-                "CLAP model failed to load; sonic_analysis will skip background "
-                "scans until the provider is reloaded: %s",
-                err,
-                exc_info=err,
-            )
-            self._clap_model = None
-            return
+        Blocks the provider's setup until the model is loaded (first-run downloads
+        ~500MB). On failure the exception propagates and the provider stays
+        available=False, which the AudioAnalysisController already honors when
+        scheduling work.
+        """
+        (
+            self._clap_model,
+            self._clap_text_embeddings,
+            self._clap_prompt_order,
+        ) = await asyncio.to_thread(self._load_clap)
         self.logger.info(
             "CLAP model loaded; %d prompt pairs ready",
             len(self._clap_prompt_order),
@@ -346,6 +333,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         self,
     ) -> tuple[Any, Any, list[tuple[str, tuple[str, str]]]]:
         """Load and return the CLAP model, text embeddings, and prompt ordering."""
+        import torch  # noqa: PLC0415
+
         from .vendored_clap import CLAP  # noqa: PLC0415
 
         prompt_order: list[tuple[str, tuple[str, str]]] = list(SCALAR_PROMPT_PAIRS.items())
@@ -387,11 +376,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Release the CLAP model."""
-        if self._clap_load_task is not None and not self._clap_load_task.done():
-            self._clap_load_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._clap_load_task
-        self._clap_load_task = None
         self._clap_model = None
         self._clap_text_embeddings = None
         await super().unload(is_removed)
@@ -636,6 +620,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         :param source_sr: Sample rate of window_audio.
         :returns: (1024-dim embedding, similarity logit row), or None if the model is unloaded.
         """
+        import torch  # noqa: PLC0415
+
         model = self._clap_model
         text_embeddings = self._clap_text_embeddings
         if model is None or text_embeddings is None:

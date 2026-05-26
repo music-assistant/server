@@ -205,7 +205,7 @@ class MSXPlayer(Player):
                     duration = getattr(queue_item.media_item, "duration", None) or duration
                 if queue_item.image:
                     image_url = self.mass.metadata.get_image_url(
-                        queue_item.image, size=500, prefer_stream_server=True
+                        queue_item.image, size=512, prefer_stream_server=True
                     )
                 if duration is None and queue_item.duration:
                     duration = queue_item.duration

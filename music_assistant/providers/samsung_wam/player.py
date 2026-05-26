@@ -16,7 +16,6 @@ from music_assistant.models.player import Player
 
 from .consts import (
     CONF_ENTRY_HTTP_PROFILE_WAM,
-    CONF_ENTRY_SAMPLE_RATES_WAM,
     MANUFACTURER_NAME,
     PLAYER_FEATURES_BASE,
 )
@@ -36,6 +35,10 @@ if TYPE_CHECKING:
 
 class WamPlayer(Player):
     """Representation of a Samsung WAM speaker."""
+
+    _attr_supported_sample_rates = [
+        (sr, bd) for sr in (44100, 48000, 88200, 96000, 176400, 192000) for bd in (16, 24)
+    ]
 
     def __init__(
         self,
@@ -125,7 +128,7 @@ class WamPlayer(Player):
         :param values: The current configuration values.
         :return: A list of ConfigEntry objects.
         """
-        return [CONF_ENTRY_SAMPLE_RATES_WAM, CONF_ENTRY_HTTP_PROFILE_WAM]
+        return [CONF_ENTRY_HTTP_PROFILE_WAM]
 
     async def on_config_updated(self) -> None:
         """Handle player config updates."""

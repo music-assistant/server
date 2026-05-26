@@ -305,7 +305,7 @@ class ChromecastPlayer(Player):
             or current_media.media_type
             in (
                 MediaType.RADIO,
-                MediaType.PLUGIN_SOURCE,
+                MediaType.AUDIO_SOURCE,
             )
         ):
             # only update metadata for streams without known duration

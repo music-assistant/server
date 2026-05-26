@@ -22,7 +22,6 @@ from ya_passport_auth import SecretStr
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.providers.yandex_ynison.config_helpers import list_yandex_music_instances
 from music_assistant.providers.yandex_ynison.constants import (
-    CONF_ALLOW_PLAYER_SWITCH,
     CONF_DEVICE_ID,
     CONF_MASS_PLAYER_ID,
     CONF_PUBLISH_NAME,
@@ -78,7 +77,6 @@ def _make_mock_config(values: dict[str, Any] | None = None) -> MagicMock:
         CONF_TOKEN: "test-music-token",
         CONF_YM_INSTANCE: YM_INSTANCE_OWN,
         CONF_MASS_PLAYER_ID: PLAYER_ID_AUTO,
-        CONF_ALLOW_PLAYER_SWITCH: True,
         CONF_PUBLISH_NAME: DEFAULT_DISPLAY_NAME,
         CONF_DEVICE_ID: "test-device-uuid",
         "log_level": "GLOBAL",

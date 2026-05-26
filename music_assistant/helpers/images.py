@@ -7,6 +7,7 @@ import hashlib
 import itertools
 import os
 import random
+import re
 import urllib.parse
 from base64 import b64decode
 from collections import OrderedDict
@@ -37,12 +38,17 @@ _THUMB_CACHE_DIR = "thumbnails"
 _THUMB_MEMORY_CACHE_MAX = 50
 _ALLOWED_THUMB_FORMATS: frozenset[str] = frozenset({"PNG", "JPEG"})
 
+# By construction the filename is `<sha256>_<int>.(jpg|png)`; the regex is an
+# explicit sanitizer that also lets CodeQL prove the value is safe to join
+# into a filesystem path.
+_THUMB_FILENAME_RE = re.compile(r"^[0-9a-f]{64}_\d+\.(?:jpg|png)$")
+
 _thumb_memory_cache: OrderedDict[str, bytes] = OrderedDict()
 
 _MAX_IMAGEPROXY_RECURSION_DEPTH = 5
 
 
-def _create_thumb_hash(provider: str, path_or_url: str) -> str:
+def create_thumb_hash(provider: str, path_or_url: str) -> str:
     """Create a safe filesystem hash from provider and image path."""
     raw = f"{provider}/{path_or_url}"
     return hashlib.sha256(raw.encode(), usedforsecurity=False).hexdigest()
@@ -72,8 +78,11 @@ def _put_in_memory_cache(key: str, data: bytes) -> None:
         _thumb_memory_cache.popitem(last=False)
 
 
+_IMAGEPROXY_V2_PREFIX = "/imageproxy/"
+
+
 def _extract_imageproxy_params(url: str) -> tuple[str, str] | None:
-    """Extract path and provider from an imageproxy URL.
+    """Extract (path, provider) from a *legacy* /imageproxy?... URL.
 
     :param url: The URL to check for imageproxy format.
     :return: Tuple of (path, provider) if this is an imageproxy URL, None otherwise.
@@ -100,6 +109,26 @@ def _extract_imageproxy_params(url: str) -> tuple[str, str] | None:
     return None
 
 
+def _extract_imageproxy_id(url: str) -> str | None:
+    """Return the 64-hex image_id from a /imageproxy/<id> URL, or None.
+
+    The path must match the canonical shape `/imageproxy/<id>` (optionally
+    with a single trailing slash) — extra segments are rejected so this
+    helper agrees with what `MetaDataController.handle_imageproxy` accepts.
+    """
+    # bail out early on anything that obviously can't be a v2 imageproxy URL
+    # (non-strings such as MagicMock from tests; urlparse would TypeError)
+    if not isinstance(url, str) or _IMAGEPROXY_V2_PREFIX not in url:
+        return None
+    parsed = urllib.parse.urlparse(url)
+    if not parsed.path.startswith(_IMAGEPROXY_V2_PREFIX):
+        return None
+    remainder = parsed.path[len(_IMAGEPROXY_V2_PREFIX) :].rstrip("/").lower()
+    if len(remainder) != 64 or any(c not in "0123456789abcdef" for c in remainder):
+        return None
+    return remainder
+
+
 def player_image_url(mass: MusicAssistant, url: str | None) -> str | None:
     """Rewrite a public-webserver imageproxy URL to the internal streams server.
 
@@ -109,7 +138,7 @@ def player_image_url(mass: MusicAssistant, url: str | None) -> str | None:
     if not url:
         return url
     webserver_base = mass.webserver.base_url
-    if webserver_base and url.startswith(f"{webserver_base}/imageproxy?"):
+    if webserver_base and url.startswith(f"{webserver_base}/imageproxy"):
         return mass.streams.base_url + url[len(webserver_base) :]
     return url
 
@@ -146,6 +175,17 @@ async def get_image_data(
             if (p := urllib.parse.urlparse(b)).netloc
         }
         if url_origin in server_origins:
+            # new opaque-id form: /imageproxy/<image_id>?size=...&fmt=...
+            if image_id := _extract_imageproxy_id(path_or_url):
+                resolved = await mass.metadata.resolve_image_id(image_id)
+                if resolved is None:
+                    msg = f"Unknown image id in URL: {path_or_url}"
+                    raise FileNotFoundError(msg)
+                extracted_provider, extracted_path = resolved
+                return await get_image_data(
+                    mass, extracted_path, extracted_provider, _depth=_depth + 1
+                )
+            # legacy form: /imageproxy?provider=X&path=Y
             if imageproxy_params := _extract_imageproxy_params(path_or_url):
                 extracted_path, extracted_provider = imageproxy_params
                 # Validate extracted path before recursive call
@@ -208,18 +248,23 @@ async def get_image_thumb(
         msg = f"Unsupported thumbnail format: {image_format}"
         raise ValueError(msg)
 
-    thumb_hash = _create_thumb_hash(provider, path_or_url)
+    thumb_hash = create_thumb_hash(provider, path_or_url)
     cache_filename = _thumb_cache_filename(thumb_hash, size, image_format)
+    if not _THUMB_FILENAME_RE.fullmatch(cache_filename):
+        # cache_filename is built from a sha256 + int + fixed extension, so this
+        # is unreachable in practice — it is here so a future change to either
+        # builder cannot silently let an unsafe value reach the filesystem path
+        msg = f"Refusing to use unexpected cache filename: {cache_filename!r}"
+        raise OSError(msg)
 
     # 1. Check in-memory FIFO cache
     if cached := _get_from_memory_cache(cache_filename):
         return cached
 
     # 2. Check on-disk cache
-    thumb_dir = os.path.join(mass.cache_path, _THUMB_CACHE_DIR)
-    cache_filepath = os.path.join(thumb_dir, cache_filename)
-    resolved = os.path.realpath(cache_filepath)
-    if not resolved.startswith(os.path.realpath(thumb_dir) + os.sep):
+    thumb_dir_resolved = os.path.realpath(os.path.join(mass.cache_path, _THUMB_CACHE_DIR))
+    cache_filepath = os.path.realpath(os.path.join(thumb_dir_resolved, cache_filename))
+    if not cache_filepath.startswith(thumb_dir_resolved + os.sep):
         msg = f"Cache path escapes thumbnail directory: {cache_filepath}"
         raise OSError(msg)
     if await asyncio.to_thread(os.path.isfile, cache_filepath):

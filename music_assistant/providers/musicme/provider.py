@@ -423,7 +423,7 @@ class MusicMeProvider(MusicProvider):
         item = data.get("item", data)
         return self._parse_playlist(item)
 
-    @use_cache(3600 * 24 * 14)
+    @use_cache(3600 * 24 * 14, allow_expired_cache=True)
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
         data = await self._api_get(f"/album/{prov_album_id}?resources=tracks")
@@ -432,7 +432,7 @@ class MusicMeProvider(MusicProvider):
         tracks = data.get("results", {}).get("tracks", [])
         return [self._parse_track(t) for t in tracks if t.get("barcode")]
 
-    @use_cache(3600 * 24 * 7)
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of top/popular tracks for the given artist.
 
@@ -462,7 +462,7 @@ class MusicMeProvider(MusicProvider):
                 break
         return top_tracks
 
-    @use_cache(3600 * 24 * 14)
+    @use_cache(3600 * 24 * 14, allow_expired_cache=True)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of albums for the given artist."""
         data = await self._api_get(f"/artist/{prov_artist_id}?resources=albums{{maxResults:50}}")
@@ -471,7 +471,7 @@ class MusicMeProvider(MusicProvider):
         albums = data.get("results", {}).get("albums", [])
         return [self._parse_album(a) for a in albums if a.get("barcode")]
 
-    @use_cache(3600 * 3)
+    @use_cache(3600 * 3, allow_expired_cache=True)
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         if page > 0:

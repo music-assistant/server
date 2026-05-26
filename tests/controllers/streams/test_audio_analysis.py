@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+import inspect
+from collections.abc import AsyncGenerator, Mapping
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ContentType, StreamType
+from music_assistant_models.audio_analysis import AudioAnalysisCoverage
+from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import AudioFormat
 
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
@@ -77,27 +81,26 @@ async def test_distribute_chunk_evicts_provider_on_exception() -> None:
     assert "ok" in controller._active_sessions[session_key]
 
 
-@pytest.mark.asyncio
-async def test_get_scan_concurrency_returns_default_on_unset() -> None:
+def test_get_scan_concurrency_returns_default_on_unset() -> None:
     """When the config value is unset/None, fall back to DEFAULT_BACKGROUND_SCAN_CONCURRENCY."""
     controller = _make_controller()
     controller.mass.config.get_raw_core_config_value = MagicMock(return_value=None)  # type: ignore[method-assign]
     assert controller._get_scan_concurrency() == DEFAULT_BACKGROUND_SCAN_CONCURRENCY
 
 
-@pytest.mark.asyncio
-async def test_get_scan_concurrency_clamps_to_max() -> None:
+def test_get_scan_concurrency_clamps_to_max() -> None:
     """Values above 8 are clamped to 8."""
     controller = _make_controller()
     controller.mass.config.get_raw_core_config_value = MagicMock(return_value=99)  # type: ignore[method-assign]
     assert controller._get_scan_concurrency() == 8
 
 
-@pytest.mark.asyncio
-async def test_get_scan_concurrency_clamps_to_min() -> None:
+def test_get_scan_concurrency_clamps_to_min() -> None:
     """Values below 1 are clamped to 1."""
     controller = _make_controller()
-    controller.mass.config.get_raw_core_config_value = MagicMock(return_value=0)  # type: ignore[method-assign]
+    # Use a truthy negative value so the controller's `value or DEFAULT` fallback
+    # doesn't swap us out for the default before the min-clamp runs.
+    controller.mass.config.get_raw_core_config_value = MagicMock(return_value=-1)  # type: ignore[method-assign]
     assert controller._get_scan_concurrency() == 1
 
 
@@ -353,7 +356,7 @@ async def test_run_background_scan_concurrency_semaphore(
             "provider_instance": "filesystem_local",
             "missing_domains": ["p1"],
         }
-        for i in range(5)
+        for i in range(4)
     ]
     monkeypatch.setattr(
         controller, "_find_candidates_missing_analysis", AsyncMock(return_value=candidates)
@@ -372,6 +375,7 @@ async def test_run_background_scan_concurrency_semaphore(
 
     in_flight = 0
     max_in_flight = 0
+    barrier = asyncio.Barrier(2)
 
     async def _track_streaming(
         _streamdetails: MagicMock, _providers: object, **_kwargs: object
@@ -379,7 +383,7 @@ async def test_run_background_scan_concurrency_semaphore(
         nonlocal in_flight, max_in_flight
         in_flight += 1
         max_in_flight = max(max_in_flight, in_flight)
-        await asyncio.sleep(0.05)
+        await barrier.wait()
         in_flight -= 1
 
     monkeypatch.setattr(controller, "_run_background_streaming_for_track", _track_streaming)
@@ -488,3 +492,420 @@ async def test_close_drains_sessions_and_workers() -> None:
     assert controller._active_sessions == {}
     # Provider cancel scheduled with the session key.
     p.cancel.assert_called_once_with("track://test/a")
+
+
+def _stub_controller(
+    count_result: int = 0,
+    iter_rows: list[dict[str, Any]] | None = None,
+) -> tuple[AudioAnalysisController, MagicMock]:
+    """Build a bare AudioAnalysisController whose database is mocked."""
+    c = AudioAnalysisController.__new__(AudioAnalysisController)
+    c.logger = MagicMock()
+    db = MagicMock()
+    db.get_count_from_query = AsyncMock(return_value=count_result)
+    rows_to_yield = list(iter_rows or [])
+
+    async def _iter_stub(*_args: Any, **_kwargs: Any) -> AsyncGenerator[Mapping[str, Any]]:
+        for row in rows_to_yield:
+            yield row
+
+    db.iter_rows_from_query = MagicMock(side_effect=_iter_stub)
+    c.mass = MagicMock()
+    c.mass.music = MagicMock()
+    c.mass.music.database = db
+    c.mass.get_providers = MagicMock(return_value=[])
+    return c, db
+
+
+@pytest.mark.asyncio
+async def test_get_audio_analysis_count_returns_helper_result() -> None:
+    """The controller forwards whatever get_count_from_query returns."""
+    c, _ = _stub_controller(count_result=42)
+    assert await c.get_audio_analysis_count("sonic_analysis") == 42
+
+
+@pytest.mark.asyncio
+async def test_get_audio_analysis_count_filters_by_domain_and_track_media_type() -> None:
+    """Default count filters on aa_provider_domain AND media_type=track."""
+    c, db = _stub_controller(count_result=0)
+    await c.get_audio_analysis_count("sonic_analysis")
+    sql, params = db.get_count_from_query.await_args.args
+    assert "aa_provider_domain = :aa_provider_domain" in sql
+    assert "media_type = :media_type" in sql
+    assert params == {"aa_provider_domain": "sonic_analysis", "media_type": MediaType.TRACK.value}
+
+
+@pytest.mark.asyncio
+async def test_get_audio_analysis_count_respects_media_type_override() -> None:
+    """Caller can count rows for a non-track media type."""
+    c, db = _stub_controller(count_result=7)
+    result = await c.get_audio_analysis_count(
+        "sonic_analysis", media_type=MediaType.PODCAST_EPISODE
+    )
+    assert result == 7
+    params = db.get_count_from_query.await_args.args[1]
+    assert params["media_type"] == MediaType.PODCAST_EPISODE.value
+
+
+@pytest.mark.asyncio
+async def test_iter_audio_analysis_rows_yields_all_rows() -> None:
+    """iter_audio_analysis_rows yields each DB row in order; no filtering or parsing."""
+    rows: list[dict[str, Any]] = [
+        {"item_id": "a", "provider": "filesystem_local", "analysis_data": "{}"},
+        {"item_id": "b", "provider": "filesystem_local", "analysis_data": "{}"},
+    ]
+    c, _ = _stub_controller(iter_rows=rows)
+    result = [r async for r in c.iter_audio_analysis_rows("sonic_analysis")]
+    assert result == rows
+
+
+@pytest.mark.asyncio
+async def test_iter_audio_analysis_rows_filters_by_domain_and_track_media_type() -> None:
+    """Default query filters on aa_provider_domain + media_type=track."""
+    c, db = _stub_controller(iter_rows=[])
+    [r async for r in c.iter_audio_analysis_rows("sonic_analysis")]
+    sql, params = db.iter_rows_from_query.call_args.args
+    assert "aa_provider_domain = :aa_provider_domain" in sql
+    assert "media_type = :media_type" in sql
+    assert params == {
+        "aa_provider_domain": "sonic_analysis",
+        "media_type": MediaType.TRACK.value,
+    }
+
+
+@pytest.mark.asyncio
+async def test_iter_audio_analysis_rows_respects_media_type_override() -> None:
+    """Caller can stream rows for a non-track media type."""
+    c, db = _stub_controller(iter_rows=[])
+    [
+        r
+        async for r in c.iter_audio_analysis_rows(
+            "sonic_analysis", media_type=MediaType.PODCAST_EPISODE
+        )
+    ]
+    params = db.iter_rows_from_query.call_args.args[1]
+    assert params["media_type"] == MediaType.PODCAST_EPISODE.value
+
+
+def _aa_provider_stub(domain: str, available: bool = True) -> MagicMock:
+    """Build a provider stub that satisfies the get_providers().available filter."""
+    p = MagicMock()
+    p.domain = domain
+    p.available = available
+    return p
+
+
+@pytest.mark.asyncio
+async def test_iter_merged_audio_analysis_rows_merges_within_group() -> None:
+    """Two rows for the same (item_id, provider) merge in timestamp order."""
+    rows: list[dict[str, Any]] = [
+        {
+            "item_id": "t1",
+            "provider": "filesystem_local",
+            "aa_provider_domain": "sonic_analysis",
+            "analysis_data": '{"bpm": 100.0, "energy": 0.5}',
+        },
+        {
+            "item_id": "t1",
+            "provider": "filesystem_local",
+            "aa_provider_domain": "smart_fades",
+            "analysis_data": '{"bpm": 120.0, "key": "C"}',
+        },
+    ]
+    c, _ = _stub_controller(iter_rows=rows)
+    c.mass.get_providers = MagicMock(  # type: ignore[method-assign]
+        return_value=[
+            _aa_provider_stub("sonic_analysis"),
+            _aa_provider_stub("smart_fades"),
+        ]
+    )
+
+    result = [x async for x in c.iter_merged_audio_analysis_rows("sonic_analysis")]
+    assert len(result) == 1
+    item_id, provider, merged = result[0]
+    assert (item_id, provider) == ("t1", "filesystem_local")
+    assert merged.bpm == 120.0  # smart_fades wins on bpm (later row)
+    assert merged.energy == 0.5  # sonic_analysis still wins where smart_fades is None
+    assert merged.key == "C"
+
+
+@pytest.mark.asyncio
+async def test_iter_merged_audio_analysis_rows_skips_unavailable_providers() -> None:
+    """Rows from unavailable AA providers are skipped during merge."""
+    rows: list[dict[str, Any]] = [
+        {
+            "item_id": "t1",
+            "provider": "filesystem_local",
+            "aa_provider_domain": "sonic_analysis",
+            "analysis_data": '{"bpm": 100.0}',
+        },
+        {
+            "item_id": "t1",
+            "provider": "filesystem_local",
+            "aa_provider_domain": "disabled_provider",
+            "analysis_data": '{"bpm": 999.0}',
+        },
+    ]
+    c, _ = _stub_controller(iter_rows=rows)
+    c.mass.get_providers = MagicMock(return_value=[_aa_provider_stub("sonic_analysis")])  # type: ignore[method-assign]
+
+    result = [x async for x in c.iter_merged_audio_analysis_rows("sonic_analysis")]
+    assert len(result) == 1
+    assert result[0][2].bpm == 100.0  # disabled_provider's row ignored
+
+
+@pytest.mark.asyncio
+async def test_iter_merged_audio_analysis_rows_groups_by_item_provider() -> None:
+    """Rows from different (item_id, provider) pairs are emitted as separate entries."""
+    rows: list[dict[str, Any]] = [
+        {
+            "item_id": "t1",
+            "provider": "filesystem_local",
+            "aa_provider_domain": "sonic_analysis",
+            "analysis_data": '{"bpm": 100.0}',
+        },
+        {
+            "item_id": "t2",
+            "provider": "filesystem_local",
+            "aa_provider_domain": "sonic_analysis",
+            "analysis_data": '{"bpm": 200.0}',
+        },
+    ]
+    c, _ = _stub_controller(iter_rows=rows)
+    c.mass.get_providers = MagicMock(return_value=[_aa_provider_stub("sonic_analysis")])  # type: ignore[method-assign]
+
+    result = [x async for x in c.iter_merged_audio_analysis_rows("sonic_analysis")]
+    assert len(result) == 2
+    assert {r[0] for r in result} == {"t1", "t2"}
+
+
+@pytest.mark.asyncio
+async def test_iter_merged_audio_analysis_rows_skips_unparsable_rows() -> None:
+    """A row with corrupt JSON is silently skipped without aborting the merge."""
+    rows: list[dict[str, Any]] = [
+        {
+            "item_id": "t1",
+            "provider": "filesystem_local",
+            "aa_provider_domain": "sonic_analysis",
+            "analysis_data": "not-json",
+        },
+        {
+            "item_id": "t1",
+            "provider": "filesystem_local",
+            "aa_provider_domain": "smart_fades",
+            "analysis_data": '{"bpm": 120.0}',
+        },
+    ]
+    c, _ = _stub_controller(iter_rows=rows)
+    c.mass.get_providers = MagicMock(  # type: ignore[method-assign]
+        return_value=[
+            _aa_provider_stub("sonic_analysis"),
+            _aa_provider_stub("smart_fades"),
+        ]
+    )
+
+    result = [x async for x in c.iter_merged_audio_analysis_rows("sonic_analysis")]
+    assert len(result) == 1
+    assert result[0][2].bpm == 120.0
+
+
+@pytest.mark.asyncio
+async def test_iter_merged_audio_analysis_rows_empty_db_yields_nothing() -> None:
+    """An empty DB result yields no entries without flushing a sentinel group."""
+    c, _ = _stub_controller(iter_rows=[])
+    c.mass.get_providers = MagicMock(return_value=[_aa_provider_stub("sonic_analysis")])  # type: ignore[method-assign]
+
+    result = [x async for x in c.iter_merged_audio_analysis_rows("sonic_analysis")]
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_iter_merged_audio_analysis_rows_logs_warning_for_unparsable_rows(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Unparsable rows must surface a WARNING so storage corruption is observable."""
+    rows: list[dict[str, Any]] = [
+        {
+            "id": 42,
+            "item_id": "t1",
+            "provider": "filesystem_local",
+            "aa_provider_domain": "sonic_analysis",
+            "analysis_data": "not-json",
+        },
+        {
+            "id": 43,
+            "item_id": "t1",
+            "provider": "filesystem_local",
+            "aa_provider_domain": "smart_fades",
+            "analysis_data": '{"bpm": 120.0}',
+        },
+    ]
+    c, _ = _stub_controller(iter_rows=rows)
+    c.mass.get_providers = MagicMock(  # type: ignore[method-assign]
+        return_value=[
+            _aa_provider_stub("sonic_analysis"),
+            _aa_provider_stub("smart_fades"),
+        ]
+    )
+
+    with caplog.at_level("WARNING", logger=audio_analysis_mod.LOGGER.name):
+        [x async for x in c.iter_merged_audio_analysis_rows("sonic_analysis")]
+
+    assert any(
+        "Skipping unparsable audio_analysis row" in r.message
+        and "id=42" in r.message
+        and "sonic_analysis" in r.message
+        for r in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_iter_merged_audio_analysis_rows_drops_groups_with_only_corrupt_rows() -> None:
+    """A group whose only row has corrupt JSON is not emitted at all."""
+    rows: list[dict[str, Any]] = [
+        {
+            "item_id": "broken",
+            "provider": "filesystem_local",
+            "aa_provider_domain": "sonic_analysis",
+            "analysis_data": "not-json",
+        },
+        {
+            "item_id": "good",
+            "provider": "filesystem_local",
+            "aa_provider_domain": "sonic_analysis",
+            "analysis_data": '{"bpm": 100.0}',
+        },
+    ]
+    c, _ = _stub_controller(iter_rows=rows)
+    c.mass.get_providers = MagicMock(return_value=[_aa_provider_stub("sonic_analysis")])  # type: ignore[method-assign]
+
+    result = [x async for x in c.iter_merged_audio_analysis_rows("sonic_analysis")]
+    assert len(result) == 1
+    assert result[0][0] == "good"
+
+
+@pytest.mark.asyncio
+async def test_iter_merged_audio_analysis_rows_warns_when_primary_domain_offline(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Offline primary AA domain yields nothing and surfaces a WARNING."""
+    c, db = _stub_controller(iter_rows=[])
+    # Only smart_fades is available; sonic_analysis (the queried domain) isn't.
+    c.mass.get_providers = MagicMock(return_value=[_aa_provider_stub("smart_fades")])  # type: ignore[method-assign]
+
+    with caplog.at_level("WARNING", logger=audio_analysis_mod.LOGGER.name):
+        result = [x async for x in c.iter_merged_audio_analysis_rows("sonic_analysis")]
+
+    assert result == []
+    # Early return must short-circuit before any DB work.
+    assert not db.iter_rows_from_query.called
+    assert any(
+        "offline primary AA domain" in r.message and "sonic_analysis" in r.message
+        for r in caplog.records
+    )
+
+
+def _make_aa_provider_with_domain(
+    domain: str,
+    *,
+    available: bool = True,
+    analysis_version: int = 1,
+) -> MagicMock:
+    """AA provider mock with domain and analysis_version set."""
+    provider = MagicMock(spec=AudioAnalysisProvider)
+    provider.domain = domain
+    provider.available = available
+    provider.analysis_version = analysis_version
+    return provider
+
+
+@pytest.mark.asyncio
+async def test_coverage_returns_three_counts_and_version() -> None:
+    """get_coverage() reports analyzed, pending, stale_version, analysis_version."""
+    c, _ = _stub_controller()
+    p = _make_aa_provider_with_domain("sonic_analysis", analysis_version=3)
+    c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
+    c.get_audio_analysis_count = AsyncMock(return_value=100)  # type: ignore[method-assign]
+    c._count_candidates_missing_analysis = AsyncMock(return_value=20)  # type: ignore[method-assign]
+    c.mass.music.database.get_count_from_query = AsyncMock(  # type: ignore[method-assign]
+        return_value=5
+    )
+
+    result = await c.get_coverage(aa_domain="sonic_analysis")
+
+    assert result == AudioAnalysisCoverage(
+        analyzed=100,
+        pending=20,
+        stale_version=5,
+        analysis_version=3,
+    )
+
+
+@pytest.mark.asyncio
+async def test_coverage_raises_for_unknown_aa_domain() -> None:
+    """Unloaded AA provider raises ProviderUnavailableError."""
+    c, _ = _stub_controller()
+    c.mass.get_provider = MagicMock(return_value=None)  # type: ignore[method-assign]
+
+    with pytest.raises(ProviderUnavailableError):
+        await c.get_coverage(aa_domain="nope")
+
+
+@pytest.mark.asyncio
+async def test_coverage_stale_query_counts_null_analysis_version_as_stale() -> None:
+    """Rows with NULL analysis_version must be counted as stale (SQLite `NULL < N` is NULL)."""
+    c, db = _stub_controller(count_result=0)
+    p = _make_aa_provider_with_domain("sonic_analysis", analysis_version=3)
+    c.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
+    c.get_audio_analysis_count = AsyncMock(return_value=0)  # type: ignore[method-assign]
+    c._count_candidates_missing_analysis = AsyncMock(return_value=0)  # type: ignore[method-assign]
+
+    await c.get_coverage(aa_domain="sonic_analysis")
+
+    sql, params = db.get_count_from_query.await_args.args
+    assert "analysis_version IS NULL" in sql
+    assert "analysis_version < :current_version" in sql
+    assert params == {
+        "aa_domain": "sonic_analysis",
+        "media_type": MediaType.TRACK.value,
+        "current_version": 3,
+    }
+
+
+@pytest.mark.asyncio
+async def test_count_candidates_missing_analysis_zero_without_filesystem() -> None:
+    """No available filesystem music providers -> 0 pending (no DB query)."""
+    c, _ = _stub_controller()
+    c.mass.get_providers = MagicMock(return_value=[])  # type: ignore[method-assign]
+
+    assert await c._count_candidates_missing_analysis("sonic_analysis") == 0
+
+
+@pytest.mark.asyncio
+async def test_count_candidates_missing_analysis_queries_with_available_filesystem() -> None:
+    """With an available filesystem provider, the NOT EXISTS count query runs with bound params."""
+    c, db = _stub_controller(count_result=7)
+    domain = next(iter(audio_analysis_mod.FILESYSTEM_PROVIDER_DOMAINS))
+    fs_prov = MagicMock()
+    fs_prov.domain = domain
+    fs_prov.available = True
+    c.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
+
+    result = await c._count_candidates_missing_analysis("sonic_analysis")
+
+    assert result == 7
+    db.get_count_from_query.assert_awaited_once()
+    sql, params = db.get_count_from_query.await_args.args
+    assert "NOT EXISTS" in sql
+    assert f"'{domain}'" in sql
+    assert params == {"media_type": MediaType.TRACK.value, "aa_domain": "sonic_analysis"}
+
+
+def test_controller_has_no_provider_specific_extra_data_keys() -> None:
+    """Generic controller must not reference any provider extra_data key names."""
+    source = inspect.getsource(audio_analysis_mod)
+    # Deliberately a raw source-substring guard: the generic controller must never
+    # name provider specifics, even in a comment. The brittleness is intentional --
+    # do not weaken this to an import/attribute check.
+    assert "_EXPORT_STRIP_EXTRA_DATA_KEYS" not in source
+    assert "clap_embedding" not in source

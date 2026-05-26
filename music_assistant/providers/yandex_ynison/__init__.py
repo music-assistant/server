@@ -14,7 +14,6 @@ from .constants import (
     CONF_ACCOUNT_LOGIN,
     CONF_ACTION_AUTH_QR,
     CONF_ACTION_CLEAR_AUTH,
-    CONF_ALLOW_PLAYER_SWITCH,
     CONF_DEVICE_ID,
     CONF_MASS_PLAYER_ID,
     CONF_OUTPUT_BIT_DEPTH,
@@ -254,15 +253,6 @@ async def get_config_entries(  # noqa: PLR0915 — flow naturally returns ~12 Co
                 ),
             ],
             required=True,
-        ),
-        ConfigEntry(
-            key=CONF_ALLOW_PLAYER_SWITCH,
-            type=ConfigEntryType.BOOLEAN,
-            label="Allow manual player switching",
-            description="When enabled, you can select this plugin as a source on any player "
-            "to switch playback to that player. When disabled, playback is fixed to the "
-            "configured default player.",
-            default_value=True,
         ),
         ConfigEntry(
             key=CONF_OUTPUT_SAMPLE_RATE,
