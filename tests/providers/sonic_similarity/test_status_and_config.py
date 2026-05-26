@@ -327,3 +327,76 @@ class TestLoadedInMassClapResilience:
         await plugin.loaded_in_mass()
 
         assert plugin._clap_index is None
+
+
+class TestSafeRebuild:
+    """_safe_rebuild swallows background-task failures into _last_rebuild_error."""
+
+    @pytest.mark.asyncio
+    async def test_failure_populates_last_rebuild_error(self, mock_mass: MagicMock) -> None:
+        """A raising rebuild fn is caught; the error message lands in the dict."""
+        plugin = _build_plugin_for_init(mock_mass)
+
+        async def _boom() -> None:
+            raise RuntimeError("disk full")
+
+        await plugin._safe_rebuild("18-dim", _boom)
+
+        assert plugin._last_rebuild_error == {"18-dim": "disk full"}
+
+    @pytest.mark.asyncio
+    async def test_success_clears_prior_error(self, mock_mass: MagicMock) -> None:
+        """A subsequent successful rebuild removes the stale error entry."""
+        plugin = _build_plugin_for_init(mock_mass)
+        plugin._last_rebuild_error["18-dim"] = "earlier failure"
+
+        async def _ok() -> None:
+            return None
+
+        await plugin._safe_rebuild("18-dim", _ok)
+
+        assert "18-dim" not in plugin._last_rebuild_error
+
+    @pytest.mark.asyncio
+    async def test_errors_are_per_label(self, mock_mass: MagicMock) -> None:
+        """A CLAP failure does not clobber an unrelated 18-dim error entry."""
+        plugin = _build_plugin_for_init(mock_mass)
+        plugin._last_rebuild_error["18-dim"] = "existing 18-dim error"
+
+        async def _boom() -> None:
+            raise RuntimeError("clap broke")
+
+        await plugin._safe_rebuild("CLAP", _boom)
+
+        assert plugin._last_rebuild_error == {
+            "18-dim": "existing 18-dim error",
+            "CLAP": "clap broke",
+        }
+
+
+class TestStatusTextRebuildErrors:
+    """_collect_status_text surfaces _last_rebuild_error entries on the matching engine line."""
+
+    @pytest.mark.asyncio
+    async def test_18dim_error_appears_on_18dim_line(self, mock_mass: MagicMock) -> None:
+        """A 18-dim rebuild error is appended to the 18-dim status line."""
+        plugin = _build_plugin_for_init(mock_mass)
+        plugin._last_rebuild_error["18-dim"] = "disk full"
+        mock_mass.get_provider.return_value = plugin
+
+        eighteen, _clap, _text = await _collect_status_text(mock_mass, "iid")
+
+        assert "last rebuild failed: disk full" in eighteen
+
+    @pytest.mark.asyncio
+    async def test_clap_error_appears_on_clap_line(self, mock_mass: MagicMock) -> None:
+        """A CLAP rebuild error is appended to the CLAP status line."""
+        plugin = _build_plugin_for_init(mock_mass)
+        plugin._clap_index = MagicMock()
+        plugin._clap_index.__len__ = MagicMock(return_value=42)
+        plugin._last_rebuild_error["CLAP"] = "usearch native crash"
+        mock_mass.get_provider.return_value = plugin
+
+        _eighteen, clap, _text = await _collect_status_text(mock_mass, "iid")
+
+        assert "last rebuild failed: usearch native crash" in clap

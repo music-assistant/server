@@ -21,7 +21,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -405,6 +405,8 @@ async def _collect_status_text(
     if coverage_pct is not None:
         parts.append(f"{coverage_pct}% coverage")
     eighteen = "18-dim engine: " + " · ".join(parts)
+    if (err_18dim := provider._last_rebuild_error.get("18-dim")) is not None:
+        eighteen += f" — last rebuild failed: {err_18dim}"
 
     # CLAP line (only meaningful when the index is built).
     if provider._clap_index is not None:
@@ -413,6 +415,8 @@ async def _collect_status_text(
         if coverage_pct is not None:
             clap_parts.append(f"{coverage_pct}% coverage")
         clap = "CLAP engine: " + " · ".join(clap_parts)
+        if (err_clap := provider._last_rebuild_error.get("CLAP")) is not None:
+            clap += f" — last rebuild failed: {err_clap}"
 
     # Text-encoder line — encoder state is independent of the index.
     if bool(provider.config.get_value(CONF_ENABLE_TEXT_SEARCH)):
@@ -451,9 +455,11 @@ async def get_config_entries(
         provider = mass.get_provider(instance_id)
         if isinstance(provider, SonicSimilarityPlugin):
             if action == ACTION_REBUILD_18DIM:
-                mass.create_task(provider._rebuild_search_index())
+                mass.create_task(provider._safe_rebuild("18-dim", provider._rebuild_search_index))
             elif action == ACTION_REBUILD_CLAP and provider._clap_index is not None:
-                mass.create_task(provider._rebuild_clap_index_from_database())
+                mass.create_task(
+                    provider._safe_rebuild("CLAP", provider._rebuild_clap_index_from_database)
+                )
 
     status_18, status_clap, status_text = await _collect_status_text(mass, instance_id)
 
@@ -617,6 +623,22 @@ class SonicSimilarityPlugin(PluginProvider):
         # CLAP text encoder — lazy: stays None until the first text_search call.
         self._text_encoder: Any = None
         self._text_encoder_lock = asyncio.Lock()
+        # Captures the last exception message per background rebuild label so
+        # the status row can surface fire-and-forget rebuild-button failures.
+        self._last_rebuild_error: dict[str, str] = {}
+
+    async def _safe_rebuild(self, label: str, rebuild_fn: Callable[[], Awaitable[None]]) -> None:
+        """Run a rebuild fn from a background task, swallowing failures into status state.
+
+        :param label: Engine label used as the status-row error key (e.g. "18-dim", "CLAP").
+        :param rebuild_fn: Zero-arg coroutine-returning callable to execute.
+        """
+        try:
+            await rebuild_fn()
+            self._last_rebuild_error.pop(label, None)
+        except Exception as err:
+            self.logger.exception("%s rebuild failed", label)
+            self._last_rebuild_error[label] = str(err)
 
     async def handle_async_init(self) -> None:
         """Build the 18-dim search index before the provider is registered.
