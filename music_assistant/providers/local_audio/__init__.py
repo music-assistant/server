@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+import sys
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
 from music_assistant.mass import MusicAssistant
 
+from .constants import (
+    AUDIO_BACKEND_ALSA,
+    AUDIO_BACKEND_AUTO,
+    AUDIO_BACKEND_PULSEAUDIO,
+    CONF_AUDIO_BACKEND,
+)
 from .provider import LocalAudioProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.models import ProviderInstanceType
