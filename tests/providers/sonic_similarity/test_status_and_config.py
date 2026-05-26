@@ -23,6 +23,7 @@ from music_assistant.providers.sonic_similarity import (
     _safe_aa_domain,
     get_config_entries,
 )
+from music_assistant.providers.sonic_similarity import clap_index as clap_index_module
 
 
 class TestSafeAaDomain:
@@ -290,3 +291,39 @@ class TestHandleAsyncInit:
         await plugin.handle_async_init()
 
         plugin._rebuild_search_index.assert_awaited_once()
+
+
+def _build_plugin_for_loaded(mock_mass: MagicMock, *, clap_enabled: bool) -> Any:
+    """Construct a plugin configured to attempt CLAP setup in loaded_in_mass."""
+    manifest = MagicMock()
+    manifest.instance_id = "iid"
+    manifest.domain = "sonic_similarity"
+    config = MagicMock()
+    config_values = {
+        "log_level": "GLOBAL",
+        "aa_provider_domain": "sonic_analysis",
+        "enable_clap_index": clap_enabled,
+        "enable_text_search": False,
+    }
+    config.get_value = lambda key: config_values.get(key)
+    return SonicSimilarityPlugin(mock_mass, manifest, config, SUPPORTED_FEATURES)
+
+
+class TestLoadedInMassClapResilience:
+    """loaded_in_mass must keep the 18-dim engine alive when optional CLAP setup fails."""
+
+    @pytest.mark.asyncio
+    async def test_clap_setup_failure_leaves_plugin_loaded(
+        self, mock_mass: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A ClapIndex.load() failure is swallowed; _clap_index ends up None."""
+
+        async def _boom(_self: Any) -> None:
+            raise RuntimeError("usearch missing")
+
+        monkeypatch.setattr(clap_index_module.ClapIndex, "load", _boom)
+
+        plugin = _build_plugin_for_loaded(mock_mass, clap_enabled=True)
+        await plugin.loaded_in_mass()
+
+        assert plugin._clap_index is None

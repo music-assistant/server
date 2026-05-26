@@ -661,15 +661,22 @@ class SonicSimilarityPlugin(PluginProvider):
         clap_enabled = bool(self.config.get_value(CONF_ENABLE_CLAP_INDEX)) or text_search_enabled
 
         if clap_enabled:
-            self._clap_index = ClapIndex(self.mass, self.logger)
-            await self._clap_index.load()
-            self._unregister_handles.append(
-                self.mass.register_api_command(
-                    "sonic_similarity/similar_clap", self._handle_similar_clap
+            try:
+                self._clap_index = ClapIndex(self.mass, self.logger)
+                await self._clap_index.load()
+                self._unregister_handles.append(
+                    self.mass.register_api_command(
+                        "sonic_similarity/similar_clap", self._handle_similar_clap
+                    )
                 )
-            )
-            await self._rebuild_clap_index_from_database()
-            self.logger.info("CLAP index ready: %d embeddings", len(self._clap_index))
+                await self._rebuild_clap_index_from_database()
+                self.logger.info("CLAP index ready: %d embeddings", len(self._clap_index))
+            except Exception:
+                # CLAP is optional — failure here must not prevent the required
+                # 18-dim engine from serving queries. Status row will show
+                # "CLAP engine: disabled" via the _clap_index is None check.
+                self.logger.exception("CLAP index setup failed; CLAP engine will be unavailable")
+                self._clap_index = None
 
         if text_search_enabled:
             # Encoder load is deferred to the first /text_search call (lazy).
