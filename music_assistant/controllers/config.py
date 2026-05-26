@@ -948,9 +948,14 @@ class ConfigController:
         # validate the new config
         config.validate()
 
+        # A disabled DSP is not applied to the audio stream, so only restart
+        # playback when the DSP is (or was) actually affecting the stream.
+        prev_config = self.get_player_dsp_config(player_id)
+
         # Save and apply the new config to the player
         self.set(f"{CONF_PLAYER_DSP}/{player_id}", config.to_dict())
-        await self.mass.players.on_player_dsp_change(player_id)
+        if prev_config.enabled or config.enabled:
+            await self.mass.players.on_player_dsp_change(player_id)
         # send the dsp config updated event
         self.mass.signal_event(
             EventType.PLAYER_DSP_CONFIG_UPDATED,
