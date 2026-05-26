@@ -36,9 +36,6 @@ from music_assistant.models.music_provider import MusicProvider
 LOUDNESS_ANALYSIS_DOMAIN = "loudness_analysis"
 BACKGROUND_SCAN_TASK_ID = "audio_analysis_background_scan"
 BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
-# Multiplier applied to a known track duration to scale the per-track analysis
-# timeout above BACKGROUND_PER_TRACK_TIMEOUT_SECONDS for long tracks. The floor
-# is enforced so short tracks and unknown-duration paths keep the original budget.
 BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER = 1.5
 # Per-run wall-clock cap; in-flight tracks finish, new ones defer to the next run.
 BACKGROUND_SCAN_RUN_BUDGET_SECONDS = 4 * 3600
@@ -697,9 +694,7 @@ class AudioAnalysisController:
             )
             return
 
-        # Scale the timeout up for long tracks while keeping the original fixed
-        # budget as a floor — short tracks and unknown-duration paths must still
-        # have enough headroom for ffmpeg startup and the analysis pipeline.
+        # Floor at the fixed budget so short tracks keep ffmpeg-startup headroom.
         timeout_seconds = max(
             BACKGROUND_PER_TRACK_TIMEOUT_SECONDS,
             int((streamdetails.duration or 0) * BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER),
