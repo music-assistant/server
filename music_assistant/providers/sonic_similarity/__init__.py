@@ -1152,9 +1152,7 @@ class SonicSimilarityPlugin(PluginProvider):
         if encoder is None:
             return None
         text_emb = await asyncio.to_thread(encoder.get_text_embeddings, [query])
-        return cast(
-            "np.ndarray", text_emb[0].detach().cpu().numpy().astype(np.float32).reshape(-1)
-        )
+        return cast("np.ndarray", text_emb[0].detach().cpu().numpy().astype(np.float32).reshape(-1))
 
     async def _handle_status(self) -> dict[str, Any]:
         """Return current analysis status."""
