@@ -24,12 +24,12 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MusicAssistantError
-from music_assistant_models.media_items import Album, RecommendationFolder
+from music_assistant_models.media_items import Album, RecommendationFolder, SearchResults
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.models.plugin import PluginProvider
@@ -355,7 +355,10 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider instance with given configuration."""
-    return SonicSimilarityPlugin(mass, manifest, config, SUPPORTED_FEATURES)
+    features = SUPPORTED_FEATURES.copy()
+    if bool(config.get_value(CONF_ENABLE_TEXT_SEARCH)):
+        features.add(ProviderFeature.SEARCH)
+    return SonicSimilarityPlugin(mass, manifest, config, features)
 
 
 async def _collect_status_text(
@@ -1118,6 +1121,41 @@ class SonicSimilarityPlugin(PluginProvider):
             ),
         ]
 
+    async def search(
+        self,
+        search_query: str,
+        media_types: list[MediaType],
+        limit: int = 5,
+    ) -> SearchResults:
+        """Implement ProviderFeature.SEARCH via CLAP free-text → track similarity."""
+        if MediaType.TRACK not in media_types:
+            return SearchResults()
+        if self._clap_index is None or len(self._clap_index) == 0:
+            return SearchResults()
+        emb_np = await self._embed_text_query(search_query)
+        if emb_np is None:
+            return SearchResults()
+        matches = await self._clap_index.search(emb_np, limit)
+
+        async def _resolve(provider: str, item_id: str) -> Track | None:
+            try:
+                return await self.mass.music.tracks.get(item_id, provider)
+            except MusicAssistantError:
+                return None
+
+        resolved = await asyncio.gather(*[_resolve(p, i) for p, i, _d in matches])
+        return SearchResults(tracks=[t for t in resolved if t is not None])
+
+    async def _embed_text_query(self, query: str) -> np.ndarray | None:
+        """Encode a free-text query through the CLAP text encoder, or None if unavailable."""
+        encoder = await self._get_text_encoder()
+        if encoder is None:
+            return None
+        text_emb = await asyncio.to_thread(encoder.get_text_embeddings, [query])
+        return cast(
+            "np.ndarray", text_emb[0].detach().cpu().numpy().astype(np.float32).reshape(-1)
+        )
+
     async def _handle_status(self) -> dict[str, Any]:
         """Return current analysis status."""
         index_size = len(self._search_index) if self._search_index is not None else 0
@@ -1630,16 +1668,14 @@ class SonicSimilarityPlugin(PluginProvider):
                 "query": query,
                 "items": [],
             }
-        encoder = await self._get_text_encoder()
-        if encoder is None:
+        emb_np = await self._embed_text_query(query)
+        if emb_np is None:
             return {
                 "analyzed": False,
                 "reason": "text_encoder_unavailable",
                 "query": query,
                 "items": [],
             }
-        text_emb = await asyncio.to_thread(encoder.get_text_embeddings, [query])
-        emb_np = text_emb[0].detach().cpu().numpy().astype(np.float32).reshape(-1)
         matches = await self._clap_index.search(emb_np, limit)
 
         if not resolve:
