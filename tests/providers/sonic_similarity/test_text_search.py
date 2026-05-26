@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
@@ -9,6 +10,10 @@ import pytest
 from music_assistant_models.errors import MusicAssistantError
 
 from tests.providers.sonic_similarity.conftest import make_track
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from typing import Any
 
 
 def _make_tensor_chain(vector: np.ndarray) -> MagicMock:
@@ -31,7 +36,9 @@ class TestGetTextEncoder:
     """Tests for SonicSimilarityPlugin._get_text_encoder (lazy load + cache)."""
 
     @pytest.mark.asyncio
-    async def test_returns_cached_encoder_on_second_call(self, make_plugin) -> None:
+    async def test_returns_cached_encoder_on_second_call(
+        self, make_plugin: Callable[..., Any]
+    ) -> None:
         """Second call returns the cached encoder without reloading."""
         plugin = make_plugin()
         loader = MagicMock(return_value="ENCODER_SENTINEL")
@@ -45,7 +52,7 @@ class TestGetTextEncoder:
         assert loader.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_returns_none_when_load_raises(self, make_plugin) -> None:
+    async def test_returns_none_when_load_raises(self, make_plugin: Callable[..., Any]) -> None:
         """Encoder load failure is swallowed; method returns None and caches None."""
         plugin = make_plugin()
         plugin._load_text_encoder = MagicMock(side_effect=RuntimeError("boom"))
@@ -60,7 +67,9 @@ class TestHandleTextSearch:
     """Tests for SonicSimilarityPlugin._handle_text_search."""
 
     @pytest.mark.asyncio
-    async def test_returns_clap_index_empty_when_no_index(self, make_plugin) -> None:
+    async def test_returns_clap_index_empty_when_no_index(
+        self, make_plugin: Callable[..., Any]
+    ) -> None:
         """Missing CLAP index short-circuits with clap_index_empty."""
         plugin = make_plugin()
 
@@ -71,7 +80,9 @@ class TestHandleTextSearch:
         assert result["items"] == []
 
     @pytest.mark.asyncio
-    async def test_returns_clap_index_empty_when_index_is_empty(self, make_plugin) -> None:
+    async def test_returns_clap_index_empty_when_index_is_empty(
+        self, make_plugin: Callable[..., Any]
+    ) -> None:
         """Empty CLAP index (len == 0) short-circuits with clap_index_empty."""
         plugin = make_plugin(clap_enabled=True)
 
@@ -81,7 +92,9 @@ class TestHandleTextSearch:
         assert result["reason"] == "clap_index_empty"
 
     @pytest.mark.asyncio
-    async def test_text_encoder_unavailable_when_load_fails(self, make_plugin) -> None:
+    async def test_text_encoder_unavailable_when_load_fails(
+        self, make_plugin: Callable[..., Any]
+    ) -> None:
         """When the encoder fails to load the hook reports text_encoder_unavailable."""
         plugin = make_plugin(clap_enabled=True)
         plugin._clap_index.__len__ = MagicMock(return_value=5)
@@ -94,7 +107,9 @@ class TestHandleTextSearch:
         assert result["items"] == []
 
     @pytest.mark.asyncio
-    async def test_happy_path_returns_ranked_items_without_resolve(self, make_plugin) -> None:
+    async def test_happy_path_returns_ranked_items_without_resolve(
+        self, make_plugin: Callable[..., Any]
+    ) -> None:
         """resolve=False returns ranked (provider, item_id, distance) entries."""
         plugin = make_plugin(clap_enabled=True)
         plugin._clap_index.__len__ = MagicMock(return_value=5)
@@ -118,7 +133,7 @@ class TestHandleTextSearch:
 
     @pytest.mark.asyncio
     async def test_happy_path_resolve_true_adds_name_and_artist(
-        self, make_plugin, mock_mass
+        self, make_plugin: Callable[..., Any], mock_mass: MagicMock
     ) -> None:
         """resolve=True augments each entry with name + comma-joined artist string."""
         plugin = make_plugin(clap_enabled=True)
@@ -147,7 +162,7 @@ class TestHandleTextSearch:
 
     @pytest.mark.asyncio
     async def test_resolve_true_handles_music_assistant_error(
-        self, make_plugin, mock_mass
+        self, make_plugin: Callable[..., Any], mock_mass: MagicMock
     ) -> None:
         """A failed resolve falls back to '(unknown)'/'' but still returns the entry."""
         plugin = make_plugin(clap_enabled=True)

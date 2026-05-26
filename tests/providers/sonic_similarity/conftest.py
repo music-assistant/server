@@ -27,8 +27,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable
     from pathlib import Path
+
+    from music_assistant.providers.sonic_similarity import SonicSimilarityPlugin
 
 
 @pytest.fixture
@@ -86,8 +88,10 @@ def mock_mass(tmp_path: Path) -> MagicMock:
 
 
 @pytest.fixture
-def make_plugin(mock_mass: MagicMock, logger: logging.Logger):
-    """Factory returning a SonicSimilarityPlugin with a primed corpus.
+def make_plugin(
+    mock_mass: MagicMock, logger: logging.Logger
+) -> Callable[..., SonicSimilarityPlugin]:
+    """Return a factory that builds a SonicSimilarityPlugin with a primed corpus.
 
     Bypasses loaded_in_mass — the corpus is populated directly on the
     instance so dispatcher-hook tests don't need to mock out rebuild
@@ -123,8 +127,10 @@ def make_plugin(mock_mass: MagicMock, logger: logging.Logger):
     ) -> SonicSimilarityPlugin:
         manifest = MagicMock()
         manifest.instance_id = "test-instance-id"
+        manifest.domain = "sonic_similarity"
         config = MagicMock()
         config_values = {
+            "log_level": "GLOBAL",
             "aa_provider_domain": "sonic_analysis",
             "enable_clap_index": clap_enabled,
             "enable_text_search": text_search_enabled,
@@ -135,19 +141,19 @@ def make_plugin(mock_mass: MagicMock, logger: logging.Logger):
         config.get_value = lambda key: config_values.get(key)
         plugin = SonicSimilarityPlugin(mock_mass, manifest, config, SUPPORTED_FEATURES)
         plugin.logger = logger
-        plugin._aa_domain = "sonic_analysis"  # noqa: SLF001
+        plugin._aa_domain = "sonic_analysis"
         if signatures:
             for (provider, item_id), vec in signatures.items():
-                plugin._signature_cache[(item_id, provider)] = vec  # noqa: SLF001
-                plugin._signatures_by_id[item_id] = vec  # noqa: SLF001
-                plugin._provider_by_item_id[item_id] = provider  # noqa: SLF001
+                plugin._signature_cache[(item_id, provider)] = vec
+                plugin._signatures_by_id[item_id] = vec
+                plugin._provider_by_item_id[item_id] = provider
             plugin.corpus_means = [0.0] * 18
             plugin.corpus_stds = [1.0] * 18
             # Minimal search-index double: len() / search() responding
             # convincingly is enough for the dispatcher-hook tests.
             search_index = MagicMock()
             search_index.__len__ = MagicMock(return_value=len(signatures))
-            plugin._search_index = search_index  # noqa: SLF001
+            plugin._search_index = search_index
         if clap_enabled:
             clap_index = MagicMock()
             clap_index.__len__ = MagicMock(return_value=0)
@@ -156,7 +162,7 @@ def make_plugin(mock_mass: MagicMock, logger: logging.Logger):
             clap_index.save = AsyncMock()
             clap_index.search = AsyncMock(return_value=[])
             clap_index.get_embedding_by_item_id = MagicMock(return_value=None)
-            plugin._clap_index = clap_index  # noqa: SLF001
+            plugin._clap_index = clap_index
         return plugin
 
     return _make

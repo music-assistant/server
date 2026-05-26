@@ -8,6 +8,7 @@ sin/cos + mode, [16-17] RMS and spectral-centroid time-series variance.
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 
@@ -203,7 +204,7 @@ def build_debug_breakdown(
     cand_normalized: list[float],
     weights: dict[str, float],
     displayed_dist: float,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     """Build a per-track diagnostic dict (weighted_distance, metadata_bonus, group_distances).
 
     :param seed_normalized: Normalized seed feature vector.

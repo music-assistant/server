@@ -381,10 +381,10 @@ async def _collect_status_text(
 
     # Optional coverage lookup against the upstream AA provider via #3851's API.
     coverage_pct: float | None = None
-    aa_domain = provider._aa_domain  # noqa: SLF001
+    aa_domain = provider._aa_domain
     try:
         coverage = await mass.streams.audio_analysis.get_coverage(aa_domain)
-    except Exception:  # noqa: BLE001
+    except Exception:
         coverage = None
     if coverage is not None:
         total = coverage.analyzed + coverage.pending
@@ -392,12 +392,10 @@ async def _collect_status_text(
             coverage_pct = round(100.0 * coverage.analyzed / total, 1)
 
     # 18-dim line.
-    index_size = (
-        len(provider._search_index) if provider._search_index is not None else 0  # noqa: SLF001
-    )
+    index_size = len(provider._search_index) if provider._search_index is not None else 0
     parts = [
         f"{index_size:,} tracks indexed",
-        f"{len(provider._signature_cache):,} signatures cached",  # noqa: SLF001
+        f"{len(provider._signature_cache):,} signatures cached",
         f"corpus stats {'ready' if provider.corpus_means is not None else 'pending'}",
     ]
     if coverage_pct is not None:
@@ -405,8 +403,8 @@ async def _collect_status_text(
     eighteen = "18-dim engine: " + " · ".join(parts)
 
     # CLAP line (only meaningful when the index is built).
-    if provider._clap_index is not None:  # noqa: SLF001
-        clap_size = len(provider._clap_index)  # noqa: SLF001
+    if provider._clap_index is not None:
+        clap_size = len(provider._clap_index)
         clap_parts = [f"{clap_size:,} embeddings indexed"]
         if coverage_pct is not None:
             clap_parts.append(f"{coverage_pct}% coverage")
@@ -414,7 +412,7 @@ async def _collect_status_text(
 
     # Text-encoder line — encoder state is independent of the index.
     if bool(provider.config.get_value(CONF_ENABLE_TEXT_SEARCH)):
-        if provider._text_encoder is not None:  # noqa: SLF001
+        if provider._text_encoder is not None:
             text = "Text encoder: loaded (warm)"
         else:
             text = "Text encoder: cold (downloads on first query, ~500MB)"
@@ -574,7 +572,6 @@ async def get_config_entries(
             label="Discover row diversity",
             description="0.0 keeps results closest to the seeds; 1.0 maximises variety via "
             "MMR (some results may be less similar but more distinct from each other).",
-            range=(0.0, 1.0),
             category="discover",
             depends_on=CONF_ENABLE_DISCOVER_ROW,
             depends_on_value=True,
@@ -630,9 +627,7 @@ class SonicSimilarityPlugin(PluginProvider):
                 "sonic_similarity/rebuild_index", self._handle_rebuild_index
             )
         )
-        self._aa_domain = _safe_aa_domain(
-            self.config.get_value(CONF_AA_PROVIDER), self.logger
-        )
+        self._aa_domain = _safe_aa_domain(self.config.get_value(CONF_AA_PROVIDER), self.logger)
         self.logger.info(
             "Sonic Similarity loaded (aa_provider=%s), rebuilding search index...",
             self._aa_domain,
@@ -677,7 +672,7 @@ class SonicSimilarityPlugin(PluginProvider):
         if self._clap_index is not None:
             try:
                 await self._clap_index.close()
-            except Exception as err:  # noqa: BLE001
+            except Exception as err:
                 self.logger.debug("CLAP index close failed: %s", err)
             self._clap_index = None
         # Drop encoder ref so its (large) tensors can be GC'd.
@@ -1011,7 +1006,7 @@ class SonicSimilarityPlugin(PluginProvider):
     # Cross-provider RECOMMENDATIONS hook (home/discover page)
     # ------------------------------------------------------------------
 
-    async def recommendations(self) -> list[RecommendationFolder]:
+    async def recommendations(self) -> list[RecommendationFolder]:  # noqa: PLR0915
         """Yield an 'Inspired by recently played' folder for the discover page.
 
         Picked up by the music/recommendations dispatcher (controllers/music.py:803)
@@ -1036,7 +1031,7 @@ class SonicSimilarityPlugin(PluginProvider):
                 media_types=[MediaType.TRACK],
                 fully_played_only=False,
             )
-        except Exception as err:  # noqa: BLE001
+        except Exception as err:
             self.logger.debug("recently_played failed: %s", err)
             return []
         if not recent:
@@ -1072,7 +1067,7 @@ class SonicSimilarityPlugin(PluginProvider):
 
         preset = str(self.config.get_value(CONF_DISCOVER_PRESET) or "discover")
         try:
-            diversity = float(self.config.get_value(CONF_DISCOVER_DIVERSITY) or 0.0)
+            diversity = float(str(self.config.get_value(CONF_DISCOVER_DIVERSITY) or 0.0))
         except (TypeError, ValueError):
             diversity = 0.0
 
@@ -1189,7 +1184,7 @@ class SonicSimilarityPlugin(PluginProvider):
         async with self._rebuild_lock:
             await self._rebuild_search_index_locked()
 
-    async def _rebuild_search_index_locked(self) -> None:
+    async def _rebuild_search_index_locked(self) -> None:  # noqa: PLR0915
         """Rebuild body — assumes self._rebuild_lock is held."""
         # Cross-AA-provider merge runs in the controller, streamed as an
         # AsyncGenerator (iter_merged_audio_analysis_rows). Conflict resolution
@@ -1214,9 +1209,11 @@ class SonicSimilarityPlugin(PluginProvider):
         sampled_for_diag: list[tuple[str, str, Any]] = []
         total_merged_rows = 0
 
-        async for item_id, provider, data in (
-            self.mass.streams.audio_analysis.iter_merged_audio_analysis_rows(self._aa_domain)
-        ):
+        async for (
+            item_id,
+            provider,
+            data,
+        ) in self.mass.streams.audio_analysis.iter_merged_audio_analysis_rows(self._aa_domain):
             total_merged_rows += 1
             if len(sampled_for_diag) < 3:
                 sampled_for_diag.append((item_id, provider, data))
@@ -1508,8 +1505,8 @@ class SonicSimilarityPlugin(PluginProvider):
         async with self._clap_rebuild_lock:
             added = 0
             seen: set[tuple[str, str]] = set()
-            async for row in (
-                self.mass.streams.audio_analysis.iter_audio_analysis_rows(self._aa_domain)
+            async for row in self.mass.streams.audio_analysis.iter_audio_analysis_rows(
+                self._aa_domain
             ):
                 key = (row["provider"], row["item_id"])
                 if key in seen:
@@ -1521,15 +1518,15 @@ class SonicSimilarityPlugin(PluginProvider):
                     raw = json.loads(row["analysis_data"])
                 except (json.JSONDecodeError, TypeError):
                     continue
-                emb = _parse_clap_embedding((raw.get("extra_data") or {}).get(
-                    EXTRA_DATA_CLAP_EMBEDDING
-                ))
+                emb = _parse_clap_embedding(
+                    (raw.get("extra_data") or {}).get(EXTRA_DATA_CLAP_EMBEDDING)
+                )
                 if emb is None:
                     continue
                 try:
                     await self._clap_index.add(row["provider"], row["item_id"], emb)
                     added += 1
-                except Exception as err:  # noqa: BLE001
+                except Exception as err:
                     self.logger.debug(
                         "Add to CLAP index failed for %s/%s: %s",
                         row["provider"],
@@ -1540,9 +1537,7 @@ class SonicSimilarityPlugin(PluginProvider):
                 await self._clap_index.save()
                 self.logger.info("Added %d new embeddings to CLAP index", added)
 
-    async def _handle_similar_clap(
-        self, item_id: str, limit: int = 25
-    ) -> dict[str, Any]:
+    async def _handle_similar_clap(self, item_id: str, limit: int = 25) -> dict[str, Any]:
         """Return tracks whose CLAP audio embedding is closest to the seed track's.
 
         :param item_id: Seed track identifier (provider-agnostic). The first
@@ -1571,9 +1566,7 @@ class SonicSimilarityPlugin(PluginProvider):
         for provider, found_item_id, distance in raw_results:
             if found_item_id == item_id:
                 continue
-            items.append(
-                {"item_id": found_item_id, "provider": provider, "distance": distance}
-            )
+            items.append({"item_id": found_item_id, "provider": provider, "distance": distance})
             if len(items) >= limit:
                 break
         return {
@@ -1602,7 +1595,7 @@ class SonicSimilarityPlugin(PluginProvider):
             try:
                 self._text_encoder = await asyncio.to_thread(self._load_text_encoder)
                 self.logger.info("CLAP text encoder loaded (lazy)")
-            except Exception as err:  # noqa: BLE001
+            except Exception as err:
                 self.logger.warning("CLAP text encoder load failed: %s", err)
                 self._text_encoder = None
         return self._text_encoder

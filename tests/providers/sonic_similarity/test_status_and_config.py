@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from typing import Any
 
 from music_assistant.providers.sonic_similarity import (
     ACTION_REBUILD_18DIM,
@@ -44,9 +49,7 @@ class TestSafeAaDomain:
         assert _safe_aa_domain(value, logger) == "sonic_analysis"
         assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
-    @pytest.mark.parametrize(
-        "value", ["../etc/passwd", "_/../../sensitive", "foo/bar"]
-    )
+    @pytest.mark.parametrize("value", ["../etc/passwd", "_/../../sensitive", "foo/bar"])
     def test_path_traversal_strings_rejected_and_warn(
         self,
         value: str,
@@ -107,7 +110,7 @@ class TestCollectStatusText:
 
     @pytest.mark.asyncio
     async def test_returns_populated_18dim_status_when_provider_is_loaded(
-        self, mock_mass: MagicMock, make_plugin
+        self, mock_mass: MagicMock, make_plugin: Callable[..., Any]
     ) -> None:
         """Loaded plugin with a primed corpus yields a populated 18-dim status line."""
         plugin = make_plugin(
@@ -125,7 +128,7 @@ class TestCollectStatusText:
 
     @pytest.mark.asyncio
     async def test_clap_engine_disabled_when_clap_index_is_none(
-        self, mock_mass: MagicMock, make_plugin
+        self, mock_mass: MagicMock, make_plugin: Callable[..., Any]
     ) -> None:
         """Without CLAP enabled the clap status string is the disabled sentinel."""
         plugin = make_plugin(signatures={("spotify", "a"): [0.1] * 18})
@@ -137,14 +140,14 @@ class TestCollectStatusText:
 
     @pytest.mark.asyncio
     async def test_clap_engine_status_reports_size_when_enabled(
-        self, mock_mass: MagicMock, make_plugin
+        self, mock_mass: MagicMock, make_plugin: Callable[..., Any]
     ) -> None:
         """When CLAP is enabled the clap line reports the index size."""
         plugin = make_plugin(
             clap_enabled=True,
             signatures={("spotify", "a"): [0.1] * 18},
         )
-        plugin._clap_index.__len__ = MagicMock(return_value=42)  # noqa: SLF001
+        plugin._clap_index.__len__ = MagicMock(return_value=42)
         mock_mass.get_provider.return_value = plugin
 
         _eighteen, clap, _text = await _collect_status_text(mock_mass, "iid")
@@ -153,7 +156,7 @@ class TestCollectStatusText:
 
     @pytest.mark.asyncio
     async def test_text_encoder_cold_message_when_enabled_and_encoder_none(
-        self, mock_mass: MagicMock, make_plugin
+        self, mock_mass: MagicMock, make_plugin: Callable[..., Any]
     ) -> None:
         """Text-search-enabled with no encoder loaded reports a cold-state message."""
         plugin = make_plugin(
@@ -169,12 +172,10 @@ class TestCollectStatusText:
 
     @pytest.mark.asyncio
     async def test_coverage_pct_included_when_get_coverage_returns_counts(
-        self, mock_mass: MagicMock, make_plugin
+        self, mock_mass: MagicMock, make_plugin: Callable[..., Any]
     ) -> None:
         """A real coverage object produces a percentage substring in the 18-dim line."""
-        coverage = SimpleNamespace(
-            analyzed=80, pending=20, stale_version=0, analysis_version=1
-        )
+        coverage = SimpleNamespace(analyzed=80, pending=20, stale_version=0, analysis_version=1)
         mock_mass.streams.audio_analysis.get_coverage = AsyncMock(return_value=coverage)
         plugin = make_plugin(signatures={("spotify", "a"): [0.1] * 18})
         mock_mass.get_provider.return_value = plugin
@@ -189,11 +190,11 @@ class TestConfigEntriesActions:
 
     @pytest.mark.asyncio
     async def test_action_rebuild_18dim_dispatches_to_provider(
-        self, mock_mass: MagicMock, make_plugin
+        self, mock_mass: MagicMock, make_plugin: Callable[..., Any]
     ) -> None:
         """The 18-dim rebuild action fires create_task once and still returns entries."""
         plugin = make_plugin(signatures={("spotify", "a"): [0.1] * 18})
-        plugin._rebuild_search_index = AsyncMock()  # noqa: SLF001
+        plugin._rebuild_search_index = AsyncMock()
         mock_mass.get_provider.return_value = plugin
 
         entries = await get_config_entries(
@@ -205,44 +206,36 @@ class TestConfigEntriesActions:
 
     @pytest.mark.asyncio
     async def test_action_rebuild_clap_dispatches_when_clap_enabled(
-        self, mock_mass: MagicMock, make_plugin
+        self, mock_mass: MagicMock, make_plugin: Callable[..., Any]
     ) -> None:
         """The CLAP rebuild action fires create_task when _clap_index is present."""
         plugin = make_plugin(
             clap_enabled=True,
             signatures={("spotify", "a"): [0.1] * 18},
         )
-        plugin._rebuild_clap_index_from_database = AsyncMock()  # noqa: SLF001
+        plugin._rebuild_clap_index_from_database = AsyncMock()
         mock_mass.get_provider.return_value = plugin
 
-        await get_config_entries(
-            mock_mass, instance_id="iid", action=ACTION_REBUILD_CLAP
-        )
+        await get_config_entries(mock_mass, instance_id="iid", action=ACTION_REBUILD_CLAP)
 
         assert mock_mass.create_task.call_count == 1
 
     @pytest.mark.asyncio
     async def test_action_rebuild_clap_noops_when_clap_disabled(
-        self, mock_mass: MagicMock, make_plugin
+        self, mock_mass: MagicMock, make_plugin: Callable[..., Any]
     ) -> None:
         """The CLAP rebuild action is a no-op when the index isn't built."""
         plugin = make_plugin(signatures={("spotify", "a"): [0.1] * 18})
         mock_mass.get_provider.return_value = plugin
 
-        await get_config_entries(
-            mock_mass, instance_id="iid", action=ACTION_REBUILD_CLAP
-        )
+        await get_config_entries(mock_mass, instance_id="iid", action=ACTION_REBUILD_CLAP)
 
         assert mock_mass.create_task.call_count == 0
 
     @pytest.mark.asyncio
-    async def test_action_without_instance_id_noops(
-        self, mock_mass: MagicMock
-    ) -> None:
+    async def test_action_without_instance_id_noops(self, mock_mass: MagicMock) -> None:
         """Without an instance_id the action branch is skipped entirely."""
-        await get_config_entries(
-            mock_mass, instance_id=None, action=ACTION_REBUILD_18DIM
-        )
+        await get_config_entries(mock_mass, instance_id=None, action=ACTION_REBUILD_18DIM)
 
         assert mock_mass.create_task.call_count == 0
 
@@ -253,8 +246,6 @@ class TestConfigEntriesActions:
         """A non-plugin provider returned from get_provider skips the dispatch."""
         mock_mass.get_provider.return_value = MagicMock()
 
-        await get_config_entries(
-            mock_mass, instance_id="iid", action=ACTION_REBUILD_18DIM
-        )
+        await get_config_entries(mock_mass, instance_id="iid", action=ACTION_REBUILD_18DIM)
 
         assert mock_mass.create_task.call_count == 0
