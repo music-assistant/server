@@ -14,9 +14,15 @@ DEVICE_UUID_NAMESPACE = uuid.UUID("a7d68578-af81-4e3e-a8b8-df8f9d6d1f05")
 # Bump the integer to invalidate old cached values when the format changes.
 CACHE_CATEGORY_PREV_STATE = 1
 
+# Audio backend selector
+CONF_AUDIO_BACKEND = "audio_backend"
+AUDIO_BACKEND_AUTO = "auto"
+AUDIO_BACKEND_PULSEAUDIO = "pulseaudio"
+AUDIO_BACKEND_ALSA = "alsa"
+
 # Volume control — software only
 VOLUME_CONTROL_SOFTWARE = "software"
 
 # Defaults
 DEFAULT_PLAYER_VOLUME = 25  # initial volume for new players (percent)
-DEFAULT_BUFFER_FRAMES = 1024  # sounddevice blocksize for macOS PortAudio output (frames)
+DEFAULT_BUFFER_FRAMES = 1024  # sounddevice blocksize for macOS/ALSA PortAudio output (frames)
