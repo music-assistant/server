@@ -235,14 +235,30 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
             fmt = parts[0]  # e.g. 's32le'
             channels = int(parts[1].replace("ch", ""))
             sample_rate = int(parts[2].replace("Hz", ""))
-            bit_depth = int("".join(filter(str.isdigit, fmt.split("le")[0].split("be")[0])))
+            # Parse bit depth from PA format string using explicit lookup.
+            # Avoids s24-32le parsing as 2432 with the digit-filter approach.
+            _fmt_to_depth = {
+                "u8": 8,
+                "s16le": 16,
+                "s16be": 16,
+                "s24le": 24,
+                "s24be": 24,
+                "s24-32le": 32,
+                "s24-32be": 32,
+                "s32le": 32,
+                "s32be": 32,
+                "float32le": 32,
+                "float32be": 32,
+            }
+            bit_depth = _fmt_to_depth.get(fmt.lower(), 16)
         except (IndexError, ValueError):
             continue
         if channels < 2:
             continue
         sinks.append(
             {
-                "name": desc,
+                "name": name,  # stable PA sink name — used for UUID/player-id generation
+                "description": desc,  # human-readable label — used as MA player display name
                 "pa_sink_name": name,
                 "max_output_channels": channels,
                 "sample_rate": sample_rate,
