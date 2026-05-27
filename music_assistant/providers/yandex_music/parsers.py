@@ -450,9 +450,6 @@ def parse_playlist(
     # Metadata
     if playlist_obj.description:
         playlist.metadata.description = playlist_obj.description
-        playlist.metadata.description_language = detect_description_language(
-            playlist_obj.description
-        )
 
     # Add cover image
     if playlist_obj.cover:
@@ -538,7 +535,6 @@ def parse_podcast(provider: YandexMusicProvider, album_obj: YandexAlbum) -> Podc
     description = album_obj.description or album_obj.short_description
     if description:
         podcast.metadata.description = description
-        podcast.metadata.description_language = detect_description_language(description)
     if album_obj.content_warning:
         podcast.metadata.explicit = album_obj.content_warning == "explicit"
 
@@ -600,9 +596,6 @@ def parse_podcast_episode(
 
     if track_obj.short_description:
         episode.metadata.description = track_obj.short_description
-        episode.metadata.description_language = detect_description_language(
-            track_obj.short_description
-        )
     if track_obj.content_warning:
         episode.metadata.explicit = track_obj.content_warning == "explicit"
 
@@ -694,7 +687,6 @@ def parse_audiobook(provider: YandexMusicProvider, album_obj: YandexAlbum) -> Au
     description = album_obj.description or album_obj.short_description
     if description:
         audiobook.metadata.description = description
-        audiobook.metadata.description_language = detect_description_language(description)
     if album_obj.content_warning:
         audiobook.metadata.explicit = album_obj.content_warning == "explicit"
 
