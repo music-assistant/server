@@ -655,13 +655,20 @@ class SonicSimilarityPlugin(PluginProvider):
                 self._clap_index = None
 
         if text_search_enabled:
-            # Encoder load is deferred to the first /text_search call (lazy).
             self._unregister_handles.append(
                 self.mass.register_api_command(
                     "sonic_similarity/text_search", self._handle_text_search
                 )
             )
-            self.logger.info("Text search ready (encoder will load on first query)")
+            # Warm the encoder off the event loop so the global SEARCH dispatcher
+            # (which gathers all providers with no per-provider timeout) never
+            # blocks on the ~500MB GPT2 download. search() short-circuits until
+            # _text_encoder is set; direct /text_search calls keep the lazy
+            # fallback. task_id makes the warm idempotent across reloads.
+            self.mass.create_task(
+                self._get_text_encoder, task_id="sonic_similarity_text_encoder_warm"
+            )
+            self.logger.info("Text search ready (encoder warming in background)")
 
     async def unload(self, is_removed: bool = False) -> None:
         """Unregister API commands; delete on-disk indexes when the provider is uninstalled."""
@@ -1131,6 +1138,10 @@ class SonicSimilarityPlugin(PluginProvider):
         if MediaType.TRACK not in media_types:
             return SearchResults()
         if self._clap_index is None or len(self._clap_index) == 0:
+            return SearchResults()
+        # Only serve once the encoder is warm; never hold up the global search
+        # gather waiting on the lazy load (background-scheduled in loaded_in_mass).
+        if self._text_encoder is None:
             return SearchResults()
         emb_np = await self._embed_text_query(search_query)
         if emb_np is None:

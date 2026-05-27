@@ -10,7 +10,8 @@ import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MusicAssistantError
 
-from music_assistant.providers.sonic_similarity import setup
+from music_assistant.providers.sonic_similarity import SonicSimilarityPlugin, setup
+from music_assistant.providers.sonic_similarity import clap_index as clap_index_module
 from music_assistant.providers.sonic_similarity.similarity import ScoredCandidate
 from tests.providers.sonic_similarity.conftest import make_track
 
@@ -61,6 +62,43 @@ class TestSetupConditionalSearch:
         """CONF_ENABLE_TEXT_SEARCH=False → plugin does not advertise SEARCH."""
         plugin = await setup(mock_mass, _make_manifest(), _make_config(enable_text_search=False))
         assert ProviderFeature.SEARCH not in plugin.supported_features
+
+
+class TestLoadedInMassWarmsTextEncoder:
+    """loaded_in_mass schedules the GPT2 text encoder warm off the request path.
+
+    The global SEARCH dispatcher gathers across all providers without a
+    per-provider timeout, so warming the ~500MB encoder via mass.create_task
+    prevents the first cold search() call from blocking the entire gather.
+    """
+
+    @pytest.mark.asyncio
+    async def test_schedules_warm_task_when_text_search_enabled(
+        self, mock_mass: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """text_search_enabled → mass.create_task called with the warm coroutine + task_id."""
+
+        async def _noop_load(_self: Any) -> None:
+            return None
+
+        # text_search auto-enables CLAP; stub its load() so we don't touch disk.
+        monkeypatch.setattr(clap_index_module.ClapIndex, "load", _noop_load)
+
+        plugin = await setup(mock_mass, _make_manifest(), _make_config(enable_text_search=True))
+        assert isinstance(plugin, SonicSimilarityPlugin)
+        await plugin.loaded_in_mass()
+
+        mock_mass.create_task.assert_called_once_with(
+            plugin._get_text_encoder, task_id="sonic_similarity_text_encoder_warm"
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_warm_task_when_text_search_disabled(self, mock_mass: MagicMock) -> None:
+        """text_search_enabled=False → no background warm scheduled."""
+        plugin = await setup(mock_mass, _make_manifest(), _make_config(enable_text_search=False))
+        await plugin.loaded_in_mass()
+
+        mock_mass.create_task.assert_not_called()
 
 
 def _make_tensor_chain(vector: np.ndarray) -> MagicMock:
@@ -118,17 +156,23 @@ class TestSearch:
         plugin._clap_index.search.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_returns_empty_when_encoder_load_fails(
-        self, make_plugin: Callable[..., Any]
-    ) -> None:
-        """When the text encoder fails to load, return empty rather than raising."""
+    async def test_returns_empty_when_encoder_cold(self, make_plugin: Callable[..., Any]) -> None:
+        """A cold _text_encoder short-circuits without attempting a lazy load.
+
+        The lazy load happens off the request path (loaded_in_mass schedules it
+        as a background task) so the global SEARCH dispatcher never blocks on
+        the ~500MB GPT2 download.
+        """
         plugin = make_plugin(clap_enabled=True)
         plugin._clap_index.__len__ = MagicMock(return_value=5)
-        plugin._load_text_encoder = MagicMock(side_effect=RuntimeError("nope"))
+        # Sentinel: if search() reached the lazy-load path, this would fire.
+        plugin._load_text_encoder = MagicMock(side_effect=RuntimeError("must not load"))
 
         result = await plugin.search("disco", [MediaType.TRACK])
 
         assert list(result.tracks) == []
+        plugin._load_text_encoder.assert_not_called()
+        plugin._clap_index.search.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_happy_path_returns_resolved_tracks(
@@ -138,7 +182,7 @@ class TestSearch:
         plugin = make_plugin(clap_enabled=True)
         plugin._clap_index.__len__ = MagicMock(return_value=5)
         vector = np.zeros((1024,), dtype=np.float32)
-        plugin._load_text_encoder = lambda: _make_mock_encoder(vector)
+        plugin._text_encoder = _make_mock_encoder(vector)
         plugin._clap_index.search = AsyncMock(
             return_value=[
                 ScoredCandidate("track_a", "spotify", 0.1),
@@ -162,7 +206,7 @@ class TestSearch:
         plugin = make_plugin(clap_enabled=True)
         plugin._clap_index.__len__ = MagicMock(return_value=5)
         vector = np.zeros((1024,), dtype=np.float32)
-        plugin._load_text_encoder = lambda: _make_mock_encoder(vector)
+        plugin._text_encoder = _make_mock_encoder(vector)
         plugin._clap_index.search = AsyncMock(
             return_value=[
                 ScoredCandidate("track_a", "spotify", 0.1),
@@ -190,7 +234,7 @@ class TestSearch:
         plugin = make_plugin(clap_enabled=True)
         plugin._clap_index.__len__ = MagicMock(return_value=20)
         vector = np.zeros((1024,), dtype=np.float32)
-        plugin._load_text_encoder = lambda: _make_mock_encoder(vector)
+        plugin._text_encoder = _make_mock_encoder(vector)
         plugin._clap_index.search = AsyncMock(return_value=[])
         mock_mass.music.tracks.get = AsyncMock()
 
