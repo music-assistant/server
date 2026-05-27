@@ -8,6 +8,7 @@ import hmac
 import re
 import time
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any, cast
 from unittest import mock
 
@@ -1875,6 +1876,99 @@ async def test_jitter_skipped_under_bypass_throttler() -> None:
             BYPASS_THROTTLER.reset(token)
 
     sleep_mock.assert_not_awaited()
+
+
+# -- M5: BadRequestError handling (4xx is terminal, not retryable) -----------
+
+
+async def test_search_swallows_bad_request_as_empty_result() -> None:
+    """A 4xx from Yandex search is terminal — return None, do not signal retry.
+
+    Wrapping ``BadRequestError`` as ``ResourceTemporarilyUnavailable`` tells
+    Music Assistant the request can be retried, which reproduces the same
+    failure in a loop. The right answer is "no result".
+    """
+    client, underlying = _make_client()
+    underlying.search = mock.AsyncMock(side_effect=BadRequestError("malformed query"))
+
+    result = await client.search("any query")
+
+    assert result is None
+    underlying.search.assert_awaited_once()
+
+
+async def test_get_liked_tracks_swallows_bad_request_as_empty_list() -> None:
+    """Terminal 4xx for liked tracks returns ``[]`` — not a retryable failure."""
+    client, underlying = _make_client()
+    underlying.users_likes_tracks = mock.AsyncMock(side_effect=BadRequestError("not allowed"))
+
+    result = await client.get_liked_tracks()
+
+    assert result == []
+
+
+async def test_get_liked_albums_swallows_bad_request_as_empty_list() -> None:
+    """Terminal 4xx for liked albums returns ``[]`` — not a retryable failure."""
+    client, underlying = _make_client()
+    underlying.users_likes_albums = mock.AsyncMock(side_effect=BadRequestError("not allowed"))
+
+    result = await client.get_liked_albums()
+
+    assert result == []
+
+
+# -- M8: get_liked_tracks tolerates naive timestamps from yandex-music --------
+
+
+async def test_get_liked_tracks_sort_survives_naive_timestamp() -> None:
+    """Sorting must not crash when ``TrackShort.timestamp`` is timezone-naive.
+
+    The upstream ``yandex-music`` library is inconsistent about tz on
+    ``TrackShort.timestamp``. Comparing a naive ``datetime`` against the
+    previous ``datetime.min.replace(tzinfo=UTC)`` sentinel raises
+    ``TypeError: can't compare offset-naive and offset-aware datetimes``
+    and the whole liked-tracks collection fails to load.
+    """
+    client, underlying = _make_client()
+
+    naive_ts = datetime(2024, 1, 1, 12, 0, 0)  # noqa: DTZ001 — naive on purpose
+    aware_ts = datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC)
+    track_naive = type("T", (), {"id": 1, "timestamp": naive_ts})()
+    track_aware = type("T", (), {"id": 2, "timestamp": aware_ts})()
+    track_missing = type("T", (), {"id": 3})()  # no .timestamp at all
+
+    result_obj = type("R", (), {"tracks": [track_naive, track_aware, track_missing]})()
+    underlying.users_likes_tracks = mock.AsyncMock(return_value=result_obj)
+
+    result = await client.get_liked_tracks()
+
+    assert {t.id for t in result} == {1, 2, 3}
+
+
+# -- M9: _call_with_retry re-acquires the throttler on reconnect retry ---------
+
+
+async def test_call_with_retry_reacquires_throttler_on_reconnect() -> None:
+    """The reconnect-retry path must consume a throttler token too.
+
+    Skipping ``throttler.acquire()`` on the second attempt doubles the
+    effective request rate during connection flap — exactly the conditions
+    that already increase the risk of Yandex's smart-captcha tripping.
+    """
+    client, underlying = _make_client()
+
+    # Make .tracks fail once with a connection error, then succeed.
+    track = type("T", (), {"id": 42})()
+    underlying.tracks = mock.AsyncMock(side_effect=[NetworkError("ECONNRESET"), [track]])
+
+    result = await client.get_tracks(["42"])
+
+    assert result == [track]
+    # The throttler used by get_tracks falls under the "default" kind.
+    default_throttler = client._throttlers["default"]
+    assert default_throttler.acquire.await_count == 2, (  # type: ignore[attr-defined]
+        "throttler must be re-acquired on the reconnect-retry attempt"
+    )
 
 
 async def test_jitter_skipped_when_kind_already_blocked() -> None:

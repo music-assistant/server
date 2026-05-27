@@ -370,6 +370,9 @@ class YandexMusicProvider(MusicProvider):
             await self._client.disconnect()
         self._client = None
         self._streaming = None
+        self._wave_states.clear()
+        self._wave_bg_colors.clear()
+        self._liked_albums_cache = None
         self._audiobook_chapter_cache.clear()
         self._audiobook_play_ids.clear()
         await super().unload(is_removed)
@@ -1978,7 +1981,7 @@ class YandexMusicProvider(MusicProvider):
 
     # Search
 
-    @use_cache(3600 * 24 * 14)
+    @use_cache(3600 * 24)
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
@@ -3019,15 +3022,18 @@ class YandexMusicProvider(MusicProvider):
             batch = track_ids[i : i + batch_size]
             batch_result = await self.client.get_tracks(batch)
             if not batch_result:
+                # Skip this batch but keep going — the terminal guard below
+                # raises if every batch comes back empty. Aborting on a single
+                # empty batch threw away tracks already fetched from earlier
+                # batches and forced a full retry hours later (under the
+                # @use_cache TTL above).
                 self.logger.warning(
-                    "Received empty result for playlist %s tracks batch %s-%s",
-                    prov_playlist_id,
+                    "Empty batch %s-%s for playlist %s, skipping",
                     i,
                     i + len(batch) - 1,
+                    prov_playlist_id,
                 )
-                raise ResourceTemporarilyUnavailable(
-                    "Playlist tracks not fully available; try again later"
-                )
+                continue
             full_tracks.extend(batch_result)
 
         if track_ids and not full_tracks:

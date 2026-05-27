@@ -68,6 +68,22 @@ LOGGER = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 
+def _liked_track_sort_key(track: Any) -> datetime:
+    """Return a naive ``datetime`` for sorting liked tracks chronologically.
+
+    Yandex's ``TrackShort.timestamp`` is sometimes tz-aware and sometimes
+    tz-naive depending on the upstream library version; mixing the two
+    triggers ``TypeError`` in ``sorted``. Strip ``tzinfo`` and fall back to
+    ``datetime.min`` when the field is missing.
+    """
+    ts = getattr(track, "timestamp", None)
+    if not isinstance(ts, datetime):
+        return datetime.min  # noqa: DTZ901 — naive sentinel by design (see docstring)
+    if ts.tzinfo is not None:
+        return ts.replace(tzinfo=None)
+    return ts
+
+
 class YandexMusicClient:
     """Wrapper around yandex-music-api ClientAsync."""
 
@@ -164,7 +180,15 @@ class YandexMusicClient:
         return cast("ClientAsync", self._client)
 
     def _is_connection_error(self, err: Exception) -> bool:
-        """Return True if the exception indicates a connection or server drop."""
+        """Return True if the exception indicates a connection or server drop.
+
+        ``BadRequestError`` upstream extends ``NetworkError`` but represents a
+        terminal 4xx response (malformed query, geo-block) — retry-on-reconnect
+        would just reproduce the same failure and waste a connection cycle,
+        so it is explicitly excluded.
+        """
+        if isinstance(err, BadRequestError):
+            return False
         if isinstance(err, NetworkError) and not self._is_rate_limit_error(err):
             return True
         msg = str(err).lower()
@@ -365,11 +389,15 @@ class YandexMusicClient:
             except Exception as recon_err:
                 raise ProviderUnavailableError("Reconnect failed") from recon_err
             client = cast("ClientAsync", self._client)
-            # Re-check the block before the retry: while we were reconnecting,
-            # another concurrent task may have engaged the kind cooldown
-            # (e.g. captcha 429). BYPASS_THROTTLER paths skip this so an
+            # Re-check the block AND re-acquire a throttler token before the
+            # retry. Skipping ``acquire()`` here lets reconnect-retries
+            # bypass rate-limiting, doubling the effective request rate
+            # during connection flap — the conditions that already increase
+            # captcha-trip risk. BYPASS_THROTTLER paths skip this so an
             # in-flight stream refresh can still attempt the retry.
             if not BYPASS_THROTTLER.get():
+                self._check_block(kind)
+                await self._get_throttler(kind).acquire()
                 self._check_block(kind)
             # Reconnect-retry must also go through 429 classification —
             # otherwise a captcha on the retry attempt bypasses the cooldown
@@ -839,18 +867,17 @@ class YandexMusicClient:
             if result is None:
                 return []
             tracks = result.tracks or []
-            # Sort by timestamp in descending order (most recently liked first)
-            # TrackShort objects have a timestamp field containing the date the track was liked
-            return sorted(
-                tracks,
-                key=lambda t: getattr(t, "timestamp", datetime.min.replace(tzinfo=UTC)),
-                reverse=True,
-            )
+            # Sort by timestamp in descending order (most recently liked first).
+            # ``TrackShort.timestamp`` is sometimes tz-aware and sometimes
+            # tz-naive depending on the upstream library version, so we
+            # normalise to naive before comparing.
+            return sorted(tracks, key=_liked_track_sort_key, reverse=True)
         except BadRequestError as err:
-            LOGGER.error("Error fetching liked tracks: %s", err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch liked tracks") from err
+            # 4xx is terminal — do not signal retry. MA would otherwise loop.
+            LOGGER.warning("Liked tracks unavailable (4xx): %s", err)
+            return []
         except (NetworkError, ProviderUnavailableError) as err:
-            LOGGER.error("Error fetching liked tracks: %s", err)
+            LOGGER.warning("Error fetching liked tracks: %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch liked tracks") from err
 
     async def get_liked_albums(self, batch_size: int = 50) -> list[YandexAlbum]:
@@ -864,10 +891,10 @@ class YandexMusicClient:
         try:
             result = await self._call_with_retry(lambda c: c.users_likes_albums())
         except BadRequestError as err:
-            LOGGER.error("Error fetching liked albums: %s", err)
-            raise ResourceTemporarilyUnavailable("Failed to fetch liked albums") from err
+            LOGGER.warning("Liked albums unavailable (4xx): %s", err)
+            return []
         except (NetworkError, ProviderUnavailableError) as err:
-            LOGGER.error("Error fetching liked albums: %s", err)
+            LOGGER.warning("Error fetching liked albums: %s", err)
             raise ResourceTemporarilyUnavailable("Failed to fetch liked albums") from err
 
         if result is None:
@@ -976,10 +1003,12 @@ class YandexMusicClient:
                 lambda c: c.search(query, type_=search_type, page=0, nocorrect=False)
             )
         except BadRequestError as err:
-            LOGGER.error("Search error: %s", err)
-            raise ResourceTemporarilyUnavailable("Search failed") from err
+            # 4xx is terminal (malformed query, geo-block) — return None so MA
+            # surfaces "no results" instead of retrying the same failure.
+            LOGGER.warning("Search rejected by Yandex (4xx): %s", err)
+            return None
         except (NetworkError, ProviderUnavailableError) as err:
-            LOGGER.error("Search error: %s", err)
+            LOGGER.warning("Search error: %s", err)
             raise ResourceTemporarilyUnavailable("Search failed") from err
 
     # Get single items

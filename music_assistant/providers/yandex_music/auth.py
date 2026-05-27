@@ -356,9 +356,20 @@ async def refresh_credentials_via_passport(
 
 
 async def validate_x_token(x_token: SecretStr) -> bool:
-    """Return True if *x_token* is still accepted by Yandex Passport."""
+    """Return True if *x_token* is still accepted by Yandex Passport.
+
+    A ``False`` return signals "rejected by Passport" — a terminal credential
+    failure. Transient network or rate-limit errors are re-raised so callers
+    can distinguish them from invalid credentials and avoid clearing a good
+    token on a temporary outage.
+
+    :raises NetworkError: Transient network failure reaching Passport.
+    :raises RateLimitedError: Passport returned 429.
+    """
     try:
         async with PassportClient.create() as client:
             return bool(await client.validate_x_token(x_token))
+    except (NetworkError, RateLimitedError):
+        raise
     except YaPassportError:
         return False
