@@ -739,3 +739,39 @@ async def test_get_library_item_does_not_filter_in_library() -> None:
 
     call_kwargs = ctrl.get_library_items_by_query.call_args[1]
     assert call_kwargs["in_library_only"] is False
+
+
+async def test_update_item_in_library_skips_non_music_providers() -> None:
+    """Test update callback dispatch skips provider mappings that are not music providers."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl._update_library_item = AsyncMock()
+    ctrl.get_library_item = AsyncMock(
+        return_value=Mock(
+            uri="library://album/1",
+            provider_mappings=[
+                create_provider_mapping(
+                    provider_instance="smart_playlist_1",
+                    provider_domain="smart_playlist",
+                    item_id="abc",
+                )
+            ],
+        )
+    )
+
+    mass = Mock()
+    mass.music = Mock()
+    mass.music.match_provider_instances = Mock()
+    mass.signal_event = Mock()
+    mass.get_provider = Mock(return_value=Mock(type=ProviderType.PLUGIN))
+    ctrl.mass = mass
+
+    ctrl.update_item_in_library = MediaControllerBase.update_item_in_library.__get__(ctrl)
+
+    update = create_mock_album(item_id="1")
+
+    updated = await ctrl.update_item_in_library(item_id=1, update=update, overwrite=False)
+
+    assert updated is not None
+    ctrl._update_library_item.assert_called_once()
+    mass.music.match_provider_instances.assert_called_once_with(update)
+    mass.get_provider.assert_called_once_with("smart_playlist_1")

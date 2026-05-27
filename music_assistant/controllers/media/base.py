@@ -10,7 +10,13 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypeVar, cast, final
 
-from music_assistant_models.enums import EventType, ExternalID, MediaType, ProviderFeature
+from music_assistant_models.enums import (
+    EventType,
+    ExternalID,
+    MediaType,
+    ProviderFeature,
+    ProviderType,
+)
 from music_assistant_models.errors import (
     InsufficientPermissions,
     MediaNotFoundError,
@@ -208,6 +214,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # notify music providers of the update so they can sync their own storage
         for prov_mapping in library_item.provider_mappings:
             if provider := self.mass.get_provider(prov_mapping.provider_instance):
+                if provider.type != ProviderType.MUSIC:
+                    continue
                 provider = cast("MusicProvider", provider)
                 await provider.on_item_updated(library_item)
         return library_item
