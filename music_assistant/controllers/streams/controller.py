@@ -701,7 +701,7 @@ class StreamsController(CoreController):
                 audio_input = self.audio.get_queue_item_stream(
                     queue_item=queue_item,
                     pcm_format=pcm_format,
-                    seek_position=queue_item.streamdetails.seek_position,
+                    seek_position=int(queue_item.streamdetails.seek_position),
                     playback_speed=cast(
                         "float", queue_item.extra_attributes.get("playback_speed", 1.0)
                     ),
