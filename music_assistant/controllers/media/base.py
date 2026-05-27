@@ -10,7 +10,13 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypeVar, cast, final
 
-from music_assistant_models.enums import EventType, ExternalID, MediaType, ProviderFeature
+from music_assistant_models.enums import (
+    EventType,
+    ExternalID,
+    MediaType,
+    ProviderFeature,
+    ProviderType,
+)
 from music_assistant_models.errors import (
     InsufficientPermissions,
     MediaNotFoundError,
@@ -1185,13 +1191,18 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         user_provider_filter = user.provider_filter if user and user.provider_filter else None
         final_provider_filter: list[str] | None = None
         if user_provider_filter:
+            plugin_provider_instances = {
+                prov.instance_id for prov in self.mass.providers if prov.type == ProviderType.PLUGIN
+            }
             # User has a provider filter set
             if provider:
                 # Explicit provider filter provided - validate against user's allowed providers
                 requested_providers = [provider] if isinstance(provider, str) else provider
-                # Only include providers that are in both the user's filter and the requested list
+                # Only restrict access to music providers.
                 final_provider_filter = [
-                    p for p in requested_providers if p in user_provider_filter
+                    p
+                    for p in requested_providers
+                    if p in user_provider_filter or p in plugin_provider_instances
                 ]
                 if not final_provider_filter:
                     # No overlap - user requested providers they don't have access to
@@ -1199,8 +1210,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         "User does not have permission to access the requested provider(s)."
                     )
             else:
-                # No explicit filter - use user's provider filter
-                final_provider_filter = user_provider_filter
+                # No explicit filter - apply user music provider filter but keep plugin providers.
+                final_provider_filter = list(
+                    dict.fromkeys([*user_provider_filter, *plugin_provider_instances])
+                )
         elif provider is not None:
             # No user filter - use the provided filter as is
             final_provider_filter = [provider] if isinstance(provider, str) else provider
@@ -1213,8 +1226,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         user_provider_filter = user.provider_filter if user and user.provider_filter else None
         # prefer user provider filter if available
         for mapping in library_item.provider_mappings:
-            if user_provider_filter and mapping.provider_instance not in user_provider_filter:
-                continue
+            if user_provider_filter:
+                provider = self.mass.get_provider(mapping.provider_instance)
+                if provider and provider.type == ProviderType.PLUGIN:
+                    return (mapping.provider_instance, mapping.item_id)
+                if mapping.provider_instance not in user_provider_filter:
+                    continue
             return (mapping.provider_instance, mapping.item_id)
         # fallback to first mapping
         mapping = next(iter(library_item.provider_mappings))
