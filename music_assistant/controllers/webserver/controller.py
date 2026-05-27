@@ -352,7 +352,7 @@ class WebserverController(CoreController):
                 "Webserver available on: %s\n"
                 "\n"
                 "If this address is incorrect, see the documentation on how to configure\n"
-                "the Webserver in Settings --> Core modules --> Webserver\n"
+                "the Webserver in Settings --> System --> Webserver\n"
                 "\n"
                 "################################################################################\n",
                 base_url,
