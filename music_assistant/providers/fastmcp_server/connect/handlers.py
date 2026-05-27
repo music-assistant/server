@@ -52,6 +52,93 @@ def _origin_guard(ctx: WizardContext, request: web.Request) -> web.Response | No
     return None
 
 
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "[::1]", "::1"})
+
+
+def _is_loopback_host(host: str | None) -> bool:
+    """Return True if ``host`` (``Host`` header, may include ``:port``) is loopback."""
+    if not host:
+        return False
+    # Strip optional port; IPv6 literals are bracketed (``[::1]:8095``), so
+    # rsplit-on-colon-after-bracket-close is the simplest correct approach.
+    if host.startswith("["):
+        # ``[::1]`` or ``[::1]:8095``
+        end = host.find("]")
+        bare = host[: end + 1] if end != -1 else host
+    else:
+        bare = host.rsplit(":", 1)[0]
+    return bare.lower() in _LOOPBACK_HOSTS
+
+
+def _is_request_via_ha_ingress(request: web.Request) -> bool:
+    """Return True when MA recognises the request as arriving via HA ingress.
+
+    Home Assistant terminates TLS at its own ``https://ha.example/...``
+    front door and forwards the request to MA over a *local* socket, so the
+    transport on MA's side is plain HTTP — but the bytes never crossed the
+    public network. MA's ``is_request_from_ingress`` helper verifies that
+    by checking the trusted ingress socket; we mirror its
+    ``ImportError → fail closed`` / ``unexpected → log and fail closed``
+    contract here (same pattern as :func:`provider.origins.is_origin_allowed_for_request`).
+    """
+    try:
+        from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
+            is_request_from_ingress,
+        )
+    except (ImportError, ModuleNotFoundError):
+        # Bare provider venv — MA helper unavailable. Fail closed without noise.
+        return False
+    except Exception:
+        LOGGER.exception("Connect Wizard: unexpected error importing ingress helper")
+        return False
+    try:
+        return bool(is_request_from_ingress(request))
+    except Exception:
+        LOGGER.exception("Connect Wizard: is_request_from_ingress raised")
+        return False
+
+
+def _scheme_guard(request: web.Request) -> web.Response | None:
+    """Reject plaintext-http credential traffic from untrusted-transport hosts.
+
+    ``/connect/login`` carries the MA admin password; ``/connect/exchange``
+    and ``/connect/token`` carry bootstrap / session tokens. Over plain HTTP
+    from a LAN host any of these is sniffable. The guard waves through:
+
+    * **HTTPS** — encrypted end-to-end.
+    * **Loopback** — the bytes never leave the box.
+    * **Home-Assistant ingress** — HA terminates TLS at its public front
+      door and forwards the request to MA over a local socket the HA
+      auth-middleware verifies; the public hop *is* HTTPS even though
+      MA's transport sees plain HTTP.
+
+    Everything else gets a JSON 400 the wizard UI can surface to the user.
+    """
+    if request.scheme == "https":
+        return None
+    if _is_loopback_host(request.host):
+        return None
+    if _is_request_via_ha_ingress(request):
+        return None
+    LOGGER.warning(
+        "Connect Wizard: refused plaintext credential request to %r from %s "
+        "(use HTTPS, or open the wizard via http://localhost, or open the "
+        "Music Assistant UI via Home Assistant ingress)",
+        request.path,
+        request.remote,
+    )
+    return web.json_response(
+        {
+            "success": False,
+            "error": (
+                "Plaintext credential traffic from non-loopback hosts is not "
+                "allowed. Use HTTPS, or open the wizard via http://localhost."
+            ),
+        },
+        status=400,
+    )
+
+
 async def _read_json(request: web.Request) -> dict[str, Any]:
     """Best-effort JSON parse; missing/malformed body becomes an empty dict."""
     try:
@@ -78,7 +165,24 @@ def make_serve_page(_ctx: WizardContext) -> Callable[[web.Request], Any]:
                 # to be framed so a hostile page cannot UI-redress the user
                 # into pressing "Generate config" inside an invisible iframe.
                 "X-Frame-Options": "DENY",
-                "Content-Security-Policy": "frame-ancestors 'none'",
+                # Belt-and-braces with X-Frame-Options for frame-ancestors,
+                # plus a tight script/style/connect/img policy so a future
+                # edit that interpolates server-side data into the inline
+                # HTML can't turn into stored XSS that reads the per-client
+                # tokens cached in sessionStorage.
+                "Content-Security-Policy": (
+                    "default-src 'none'; "
+                    "script-src 'unsafe-inline'; "
+                    "style-src 'unsafe-inline'; "
+                    "connect-src 'self'; "
+                    "img-src 'self' data:; "
+                    "frame-ancestors 'none'"
+                ),
+                # The bootstrap now rides in the URL fragment (so it doesn't
+                # appear in access logs), but we still suppress Referer so
+                # the GitHub footer link (or any future outbound link) can't
+                # leak the path + state of the wizard either.
+                "Referrer-Policy": "no-referrer",
             },
         )
 
@@ -124,7 +228,7 @@ def make_exchange(ctx: WizardContext) -> Callable[[web.Request], Any]:
     """Build the ``POST /connect/exchange`` handler — bootstrap → session token."""
 
     async def handler(request: web.Request) -> web.Response:
-        guard = _origin_guard(ctx, request)
+        guard = _origin_guard(ctx, request) or _scheme_guard(request)
         if guard is not None:
             return guard
 
@@ -179,7 +283,7 @@ def make_login(ctx: WizardContext) -> Callable[[web.Request], Any]:
     """Build the ``POST /connect/login`` handler — username/password fallback."""
 
     async def handler(request: web.Request) -> web.Response:
-        guard = _origin_guard(ctx, request)
+        guard = _origin_guard(ctx, request) or _scheme_guard(request)
         if guard is not None:
             return guard
 
@@ -190,7 +294,11 @@ def make_login(ctx: WizardContext) -> Callable[[web.Request], Any]:
             return web.json_response({"error": "missing credentials"}, status=400)
 
         try:
-            result = await ctx.mass.webserver.auth.login(
+            # ``Any`` deliberately — MA currently types this as ``dict[str, Any]``
+            # but the shape is not part of the documented contract. A future
+            # migration to a typed ``LoginResult`` dataclass would otherwise
+            # silently flip the success branch to "always invalid credentials".
+            result: Any = await ctx.mass.webserver.auth.login(
                 username=username,
                 password=password,
                 provider_id="builtin",
@@ -199,19 +307,22 @@ def make_login(ctx: WizardContext) -> Callable[[web.Request], Any]:
             LOGGER.exception("Connect Wizard: login raised")
             return web.json_response({"success": False, "error": "login failed"}, status=401)
 
-        if not isinstance(result, dict) or not result.get("success"):
-            err = (
-                result.get("error", "invalid credentials")
-                if isinstance(result, dict)
-                else "invalid credentials"
-            )
+        def _get(key: str, default: Any = None) -> Any:
+            if result is None:
+                return default
+            if isinstance(result, dict):
+                return result.get(key, default)
+            return getattr(result, key, default)
+
+        if not _get("success", False):
+            err = _get("error", "invalid credentials")
             return web.json_response({"success": False, "error": str(err)}, status=401)
 
         return web.json_response(
             {
                 "success": True,
-                "session_token": result.get("access_token"),
-                "user": result.get("user", {}),
+                "session_token": _get("access_token"),
+                "user": _get("user", {}),
             }
         )
 
@@ -222,7 +333,7 @@ def make_mint_token(ctx: WizardContext) -> Callable[[web.Request], Any]:
     """Build the ``POST /connect/token`` handler — mint per-client long-lived token."""
 
     async def handler(request: web.Request) -> web.Response:
-        guard = _origin_guard(ctx, request)
+        guard = _origin_guard(ctx, request) or _scheme_guard(request)
         if guard is not None:
             return guard
 

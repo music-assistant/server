@@ -10,13 +10,19 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from music_assistant.providers.fastmcp_server.http_bridge import (
-    _compute_origin_allowlist,
-    _is_origin_allowed,
-    _is_origin_allowed_for_request,
-    _normalize_origin,
     build_protected_resource_metadata,
     mount_into_mass,
     mount_well_known,
+)
+from music_assistant.providers.fastmcp_server.origins import (
+    _is_origin_allowed,
+    _normalize_origin,
+)
+from music_assistant.providers.fastmcp_server.origins import (
+    compute_origin_allowlist as _compute_origin_allowlist,
+)
+from music_assistant.providers.fastmcp_server.origins import (
+    is_origin_allowed_for_request as _is_origin_allowed_for_request,
 )
 
 from .conftest import FakeWebserver, build_aiohttp_app

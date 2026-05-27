@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastmcp import Client, FastMCP
+from fastmcp.exceptions import ToolError
 
 from music_assistant.providers.fastmcp_server.tools import build_media_server, build_queue_server
 
@@ -60,7 +61,7 @@ async def test_clear_queue_blocked_when_user_declines(mock_mass: MagicMock) -> N
     mcp = _server(mock_mass, require_confirmation=True)
 
     async with Client(mcp, elicitation_handler=_decliner()) as client:
-        with pytest.raises(Exception):  # noqa: B017,PT011
+        with pytest.raises(ToolError):
             await client.call_tool("queue_clear_queue", {"queue_id": "q1"})
     mock_mass.player_queues.clear.assert_not_called()
 
@@ -177,7 +178,7 @@ async def test_remove_from_library_raises_when_not_in_library(
     mcp = _server(mock_mass, require_confirmation=False)
 
     async with Client(mcp) as client:
-        with pytest.raises(Exception):  # noqa: B017,PT011
+        with pytest.raises(ToolError):
             await client.call_tool(
                 "media_remove_from_library", {"uri": "yandex_music://track/prov-abc"}
             )

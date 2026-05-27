@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from music_assistant.providers.fastmcp_server.models import (
     AlbumBrief,
     ArtistBrief,
@@ -162,14 +164,49 @@ def test_to_brief_player_no_current_media() -> None:
     assert to_brief_player(player).current_item is None
 
 
-def test_to_brief_player_reads_powered_from_player_state() -> None:
-    """``powered`` is sourced from ``Player.state.powered``.
+@pytest.mark.parametrize(
+    ("player_powered", "state_powered", "expected", "case"),
+    [
+        # 1. ``state`` present, value differs from raw ``powered`` →
+        #    canonical state wins.
+        (False, True, True, "state.powered=True overrides raw .powered=False"),
+        # 2. Contradictory direction — the other way — also wins via state.
+        #    Without this case, a test that always read raw .powered would
+        #    still pass case #1 (because it happens to match expected=True
+        #    when state.powered=True).
+        (True, False, False, "state.powered=False overrides raw .powered=True"),
+    ],
+)
+def test_to_brief_player_powered_prefers_state(
+    player_powered: bool, state_powered: bool, expected: bool, case: str
+) -> None:
+    """When ``Player.state.powered`` is present, it wins over raw ``Player.powered``.
 
     MA core builds ``_state.powered`` from ``__final_power_state`` and
     serialises it in the REST API; the raw ``Player.powered`` property
     returns ``_attr_powered`` which lags behind (and stays ``False`` for
     some virtual player types). The brief must match what
-    ``Player.state.to_dict()`` would emit.
+    ``Player.state.to_dict()`` would emit — i.e. the canonical ``state.powered``
+    value, not the raw attribute.
+    """
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=100,
+        powered=player_powered,
+        current_media=None,
+        state=SimpleNamespace(powered=state_powered, current_media=None),
+    )
+    assert to_brief_player(player).powered is expected, case
+
+
+def test_to_brief_player_powered_falls_back_to_raw_when_no_state() -> None:
+    """Without a ``state`` attribute, the raw ``Player.powered`` is the only signal.
+
+    Pairs with the parametrized test above to pin both branches of the
+    canonical-vs-raw selection: state present (state wins) and state absent
+    (raw wins).
     """
     player = SimpleNamespace(
         player_id="p1",
@@ -178,9 +215,9 @@ def test_to_brief_player_reads_powered_from_player_state() -> None:
         volume_level=100,
         powered=False,
         current_media=None,
-        state=SimpleNamespace(powered=True, current_media=None),
+        # NO `state` attribute at all.
     )
-    assert to_brief_player(player).powered is True
+    assert to_brief_player(player).powered is False
 
 
 def test_to_brief_player_current_item_uses_state_current_media() -> None:
@@ -202,6 +239,61 @@ def test_to_brief_player_current_item_uses_state_current_media() -> None:
         state=SimpleNamespace(powered=True, current_media=None),
     )
     assert to_brief_player(player).current_item is None
+
+
+def test_to_brief_player_exposes_available_and_enabled() -> None:
+    """``available`` / ``enabled`` flow through from the upstream player object."""
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=0,
+        powered=True,
+        current_media=None,
+        available=False,
+        enabled=False,
+    )
+    brief = to_brief_player(player)
+    assert brief.available is False
+    assert brief.enabled is False
+
+
+def test_to_brief_player_available_enabled_default_true_when_attrs_missing() -> None:
+    """Legacy stubs without ``available`` / ``enabled`` keep working (defaults to True).
+
+    Pins back-compat: tests built before this feature use bare
+    ``SimpleNamespace`` players, and they must still produce a usable brief.
+    """
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=50,
+        powered=True,
+        current_media=None,
+    )
+    brief = to_brief_player(player)
+    assert brief.available is True
+    assert brief.enabled is True
+
+
+def test_to_brief_player_unavailable_overrides_state() -> None:
+    """``state`` becomes ``"unavailable"`` when the player is offline.
+
+    Without the override the brief reports the cached ``playback_state``
+    (typically ``"idle"``) and an LLM cannot distinguish a quiet speaker
+    from one that fell off the network.
+    """
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        powered=True,
+        current_media=None,
+        available=False,
+    )
+    assert to_brief_player(player).state == "unavailable"
 
 
 def test_to_brief_queue_with_items() -> None:
@@ -260,3 +352,23 @@ def test_page_args_clamps() -> None:
     assert page_args(-5, 5000) == (0, 200)
     assert page_args(0, 0) == (0, 1)
     assert page_args(10, 25) == (10, 25)
+
+
+def test_to_brief_queue_returns_none_count_when_unknown() -> None:
+    """When the queue exposes no canonical count, report ``item_count=None``.
+
+    A silent ``0`` (formerly returned via ``len(brief_items)`` when the
+    truncated lookahead was empty) would tell the LLM the queue is empty
+    when in fact it just doesn't know. ``None`` is the honest answer and
+    lets clients prompt the user instead of acting on false data.
+    """
+    queue = SimpleNamespace(
+        queue_id="q",
+        current_index=0,
+        # No `items` / `items_count` / `items_total` exposed at all.
+        shuffle_enabled=False,
+        repeat_mode=None,
+    )
+    brief = to_brief_queue(queue, items=None)
+    assert brief.item_count is None
+    assert brief.items == []

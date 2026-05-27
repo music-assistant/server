@@ -104,6 +104,14 @@ class MASTokenVerifier(TokenVerifier):
         :return: ``AccessToken`` if the token is valid and the user is enabled,
             otherwise ``None``.
         """
+        # Audience check runs FIRST — it is pure (no side effects) and rejects
+        # tokens minted for other MA endpoints in strict mode. Calling
+        # ``authenticate_with_token`` first would refresh MA's sliding-window
+        # expiry for that token on every MCP request, keeping an attacker's
+        # stolen non-MCP token alive indefinitely via the MCP endpoint.
+        if not self._check_audience(token):
+            return None
+
         try:
             user = await self._mass.webserver.auth.authenticate_with_token(token)
         except Exception:
@@ -111,9 +119,6 @@ class MASTokenVerifier(TokenVerifier):
             return None
 
         if user is None or not getattr(user, "enabled", True):
-            return None
-
-        if not self._check_audience(token):
             return None
 
         # MCP SDK's AccessToken pydantic model has no `claims` field — extras

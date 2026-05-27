@@ -160,6 +160,19 @@ def to_brief_player(player: Any) -> PlayerBrief:
             getattr(current_media, "uri", None)
         )
 
+    # Default ``available`` / ``enabled`` to ``True`` so legacy fixtures (and
+    # any partial stub built before this field existed) keep working. MA's
+    # real :class:`Player` always sets both.
+    available_val = bool(getattr(player, "available", True))
+    enabled_val = bool(getattr(player, "enabled", True))
+
+    # An offline device's cached ``playback_state`` is whatever MA last saw —
+    # usually ``"idle"``, which is indistinguishable from a genuinely quiet
+    # speaker. Surface the offline status in ``state`` so a single field
+    # tells the caller everything they need to triage the device.
+    if not available_val:
+        state_value = "unavailable"
+
     return PlayerBrief(
         player_id=str(getattr(player, "player_id", "")),
         name=str(getattr(player, "display_name", None) or getattr(player, "name", "")),
@@ -167,6 +180,8 @@ def to_brief_player(player: Any) -> PlayerBrief:
         volume_level=_int(getattr(player, "volume_level", None)),
         powered=powered_val,
         current_item=current_item,
+        available=available_val,
+        enabled=enabled_val,
     )
 
 
@@ -190,10 +205,10 @@ def to_brief_queue(queue: Any, items: Sequence[Any] | None = None) -> QueueBrief
                 )
             )
     # In the canonical MA model PlayerQueue.items is an int (total queue
-    # length), not a list. Fall back to alternate field names for older builds,
-    # and only as a last resort to len(brief_items) — which would under-report
-    # the real length, since `brief_items` is the truncated lookahead from
-    # get_active_queue, not the full queue.
+    # length), not a list. Fall back to alternate field names for older builds.
+    # If none of those resolve, return ``None`` instead of len(brief_items) —
+    # the latter would under-report the real length, since ``brief_items`` is
+    # only the truncated lookahead from get_active_queue, not the full queue.
     raw_total = getattr(queue, "items", None)
     explicit_count = _int(raw_total) if isinstance(raw_total, int) else None
     if explicit_count is None:
@@ -203,7 +218,7 @@ def to_brief_queue(queue: Any, items: Sequence[Any] | None = None) -> QueueBrief
     return QueueBrief(
         queue_id=str(getattr(queue, "queue_id", "")),
         current_index=_int(getattr(queue, "current_index", None)),
-        item_count=explicit_count if explicit_count is not None else len(brief_items),
+        item_count=explicit_count,
         shuffle=bool(getattr(queue, "shuffle_enabled", False)),
         repeat=repeat_value,
         items=brief_items,
