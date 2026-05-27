@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
@@ -22,72 +21,9 @@ from music_assistant.providers.sonic_similarity import (
     SUPPORTED_FEATURES,
     SonicSimilarityPlugin,
     _collect_status_text,
-    _safe_aa_domain,
     get_config_entries,
 )
 from music_assistant.providers.sonic_similarity import clap_index as clap_index_module
-
-
-class TestSafeAaDomain:
-    """Tests for the _safe_aa_domain validator helper."""
-
-    @pytest.mark.parametrize(
-        "value",
-        ["sonic_analysis", "spotify", "lastfm_recommendations", "foo123"],
-    )
-    def test_accepts_canonical_domain_strings(
-        self, value: str, logger: logging.Logger, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Valid alphanumeric+underscore domains pass through unchanged and silently."""
-        caplog.set_level(logging.WARNING, logger=logger.name)
-        assert _safe_aa_domain(value, logger) == value
-        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
-
-    @pytest.mark.parametrize("value", [None, ""])
-    def test_falls_back_to_default_when_none_or_empty(
-        self,
-        value: object,
-        logger: logging.Logger,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """None and empty-string fall back to 'sonic_analysis' without warning."""
-        caplog.set_level(logging.WARNING, logger=logger.name)
-        assert _safe_aa_domain(value, logger) == "sonic_analysis"
-        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
-
-    @pytest.mark.parametrize("value", ["../etc/passwd", "_/../../sensitive", "foo/bar"])
-    def test_path_traversal_strings_rejected_and_warn(
-        self,
-        value: str,
-        logger: logging.Logger,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """Strings containing slashes or '..' fall back to default and emit a warning."""
-        caplog.set_level(logging.WARNING, logger=logger.name)
-        assert _safe_aa_domain(value, logger) == "sonic_analysis"
-        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert len(warnings) == 1
-
-    @pytest.mark.parametrize("value", ["foo bar", "foo.bar", "foo-bar"])
-    def test_other_invalid_chars_rejected(
-        self,
-        value: str,
-        logger: logging.Logger,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """Spaces, periods, and hyphens are rejected by the strict pattern."""
-        caplog.set_level(logging.WARNING, logger=logger.name)
-        assert _safe_aa_domain(value, logger) == "sonic_analysis"
-        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert len(warnings) == 1
-
-    def test_whitespace_padded_values_are_stripped_before_validation(
-        self, logger: logging.Logger, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Leading/trailing whitespace is stripped, then the inner value matches."""
-        caplog.set_level(logging.WARNING, logger=logger.name)
-        assert _safe_aa_domain("  spotify  ", logger) == "spotify"
-        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
 class TestCollectStatusText:
@@ -267,7 +203,7 @@ def _build_plugin_for_init(mock_mass: MagicMock) -> Any:
     manifest.instance_id = "iid"
     manifest.domain = "sonic_similarity"
     config = MagicMock()
-    config_values = {"log_level": "GLOBAL", "aa_provider_domain": "sonic_analysis"}
+    config_values = {"log_level": "GLOBAL"}
     config.get_value = lambda key: config_values.get(key)
     return SonicSimilarityPlugin(mock_mass, manifest, config, SUPPORTED_FEATURES)
 
@@ -303,7 +239,6 @@ def _build_plugin_for_loaded(mock_mass: MagicMock, *, clap_enabled: bool) -> Any
     config = MagicMock()
     config_values = {
         "log_level": "GLOBAL",
-        "aa_provider_domain": "sonic_analysis",
         "enable_clap_index": clap_enabled,
         "enable_text_search": False,
     }

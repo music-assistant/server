@@ -131,7 +131,6 @@ def make_plugin(
         config = MagicMock()
         config_values = {
             "log_level": "GLOBAL",
-            "aa_provider_domain": "sonic_analysis",
             "enable_clap_index": clap_enabled,
             "enable_text_search": text_search_enabled,
             "enable_discover_row": discover_row_enabled,
@@ -141,7 +140,6 @@ def make_plugin(
         config.get_value = lambda key: config_values.get(key)
         plugin = SonicSimilarityPlugin(mock_mass, manifest, config, SUPPORTED_FEATURES)
         plugin.logger = logger
-        plugin._aa_domain = "sonic_analysis"
         if signatures:
             for (provider, item_id), vec in signatures.items():
                 plugin._signature_cache[(item_id, provider)] = vec

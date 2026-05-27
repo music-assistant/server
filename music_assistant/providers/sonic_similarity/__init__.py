@@ -18,8 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
-import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -64,33 +62,12 @@ if TYPE_CHECKING:
 
 USEARCH_INDEX_FILENAME_TPL = "sonic_signatures_{domain}_v{version}.usearch"
 USEARCH_INDEX_FILENAME_GLOB = "sonic_signatures_{domain}_v*.usearch"
-CONF_AA_PROVIDER = "aa_provider_domain"
 
-# aa_provider_domain is interpolated into on-disk filename templates above.
-# Allow only the shape every real MA provider domain uses (e.g. sonic_analysis,
-# spotify, lastfm_recommendations) so a stray '/' or '..' in the config value
-# can't escape mass.storage_path during writes/unlinks.
-_AA_DOMAIN_PATTERN = re.compile(r"^[a-zA-Z0-9_]+$")
-_AA_DOMAIN_DEFAULT = "sonic_analysis"
-
-
-def _safe_aa_domain(raw: Any, logger: logging.Logger) -> str:
-    """Return ``raw`` if it's a valid AA-provider domain, else the default.
-
-    :param raw: The raw value read from the CONF_AA_PROVIDER config entry.
-    :param logger: Logger to warn on when falling back to the default.
-    """
-    candidate = str(raw or _AA_DOMAIN_DEFAULT).strip()
-    if _AA_DOMAIN_PATTERN.fullmatch(candidate):
-        return candidate
-    logger.warning(
-        "aa_provider_domain %r is not a valid provider domain (expected "
-        "alphanumeric + underscore only); falling back to %r.",
-        candidate,
-        _AA_DOMAIN_DEFAULT,
-    )
-    return _AA_DOMAIN_DEFAULT
-
+# The only AudioAnalysisProvider whose rows carry every scalar the 18-dim
+# vector assembler needs (plus the CLAP embedding the optional index uses).
+# Hardcoded because `depends_on: sonic_analysis` in manifest.json already
+# forecloses any other choice; revisit if a second compatible AA provider ships.
+AA_PROVIDER_DOMAIN = "sonic_analysis"
 
 CONF_ENABLE_CLAP_INDEX = "enable_clap_index"
 CONF_ENABLE_TEXT_SEARCH = "enable_text_search"
@@ -379,9 +356,8 @@ async def _collect_status_text(
 
     # Optional coverage lookup against the upstream AA provider via #3851's API.
     coverage_pct: float | None = None
-    aa_domain = provider._aa_domain
     try:
-        coverage = await mass.streams.audio_analysis.get_coverage(aa_domain)
+        coverage = await mass.streams.audio_analysis.get_coverage(AA_PROVIDER_DOMAIN)
     except Exception:
         coverage = None
     if coverage is not None:
@@ -458,14 +434,6 @@ async def get_config_entries(
     status_18, status_clap, status_text = await _collect_status_text(mass, instance_id)
 
     return (
-        ConfigEntry(
-            key=CONF_AA_PROVIDER,
-            type=ConfigEntryType.STRING,
-            default_value="sonic_analysis",
-            label="Analysis Provider",
-            description="Which audio analysis provider's data to use for similarity vectors. "
-            "Default: sonic_analysis (librosa + CLAP, on-device).",
-        ),
         # --- 18-dim engine: status + rebuild ---
         ConfigEntry(
             key=CONF_LABEL_STATUS_18DIM,
@@ -595,7 +563,6 @@ class SonicSimilarityPlugin(PluginProvider):
     ) -> None:
         """Initialize the Sonic Similarity plugin."""
         super().__init__(mass, manifest, config, supported_features)
-        self._aa_domain: str = "sonic_analysis"
         self._label_map: dict[int, tuple[str, str]] = {}
         # _signature_cache is keyed on (item_id, provider) so a track that
         # exists in two providers under the same item_id doesn't overwrite
@@ -640,11 +607,7 @@ class SonicSimilarityPlugin(PluginProvider):
         MA's standard provider-failure UI (a silent failure in loaded_in_mass
         would be swallowed by its fire-and-forget task wrapper).
         """
-        self._aa_domain = _safe_aa_domain(self.config.get_value(CONF_AA_PROVIDER), self.logger)
-        self.logger.info(
-            "Sonic Similarity initializing (aa_provider=%s), building search index...",
-            self._aa_domain,
-        )
+        self.logger.info("Sonic Similarity initializing, building search index...")
         try:
             await self._rebuild_search_index()
         except Exception as err:
@@ -1201,7 +1164,7 @@ class SonicSimilarityPlugin(PluginProvider):
             "index_size": index_size,
             "has_corpus_stats": self.corpus_means is not None,
             "cached_signatures": len(self._signature_cache),
-            "aa_provider_domain": self._aa_domain,
+            "aa_provider_domain": AA_PROVIDER_DOMAIN,
             "clap_index_enabled": self._clap_index is not None,
             "text_search_enabled": text_search_enabled,
             "text_encoder_loaded": self._text_encoder is not None,
@@ -1223,9 +1186,9 @@ class SonicSimilarityPlugin(PluginProvider):
         return result
 
     def _existing_index_files(self) -> list[Path]:
-        """List on-disk index files for the active aa_domain, oldest first."""
+        """List on-disk index files for the 18-dim engine, oldest first."""
         storage = Path(self.mass.storage_path)
-        pattern = USEARCH_INDEX_FILENAME_GLOB.format(domain=self._aa_domain)
+        pattern = USEARCH_INDEX_FILENAME_GLOB.format(domain=AA_PROVIDER_DOMAIN)
         return sorted(storage.glob(pattern), key=lambda p: p.stat().st_mtime)
 
     @staticmethod
@@ -1288,7 +1251,7 @@ class SonicSimilarityPlugin(PluginProvider):
             item_id,
             provider,
             data,
-        ) in self.mass.streams.audio_analysis.iter_merged_audio_analysis_rows(self._aa_domain):
+        ) in self.mass.streams.audio_analysis.iter_merged_audio_analysis_rows(AA_PROVIDER_DOMAIN):
             total_merged_rows += 1
             if len(sampled_for_diag) < 3:
                 sampled_for_diag.append((item_id, provider, data))
@@ -1333,13 +1296,11 @@ class SonicSimilarityPlugin(PluginProvider):
                 ]
                 missing_report.append(f"{item_id}: missing {missing}")
             self.logger.info(
-                "No valid signatures assembled from %d merged tracks in domain=%s, "
-                "skipping index rebuild. Sample diagnostics: %s. "
-                "Common cause: current aa_provider_domain lacks required scalar fields — "
-                "switch Similarity Source to sonic_analysis (which populates all "
-                "required hard scalars).",
+                "No valid signatures assembled from %d merged tracks, skipping index "
+                "rebuild. Sample diagnostics: %s. Common cause: sonic_analysis hasn't "
+                "yet populated the required scalar fields for these tracks — verify "
+                "analysis has finished.",
                 total_merged_rows,
-                self._aa_domain,
                 "; ".join(missing_report),
             )
             return
@@ -1349,7 +1310,7 @@ class SonicSimilarityPlugin(PluginProvider):
         # Each rebuild writes a NEW versioned file so the previous viewer's mmap
         # is never disturbed. After the atomic swap the old file gets cleaned up.
         new_index_path = Path(self.mass.storage_path) / USEARCH_INDEX_FILENAME_TPL.format(
-            domain=self._aa_domain, version=int(time.time() * 1000)
+            domain=AA_PROVIDER_DOMAIN, version=int(time.time() * 1000)
         )
 
         def _build_save_and_view() -> Any:
@@ -1581,7 +1542,7 @@ class SonicSimilarityPlugin(PluginProvider):
             added = 0
             seen: set[tuple[str, str]] = set()
             async for row in self.mass.streams.audio_analysis.iter_audio_analysis_rows(
-                self._aa_domain
+                AA_PROVIDER_DOMAIN
             ):
                 key = (row["provider"], row["item_id"])
                 if key in seen:
