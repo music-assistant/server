@@ -36,6 +36,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.media_items.metadata import MediaItemMetadata
 
+from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
 from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.plugin import PluginProvider
@@ -202,9 +203,8 @@ class SmartPlaylistProvider(PluginProvider):
         """Evaluate rules and return fresh tracks.
 
         Returns a full batch on page 0; empty list on subsequent pages.
-        Because is_dynamic=True, MA always calls with force_refresh so results stay fresh.
-        For dynamic playlists a small buffer of 5 tracks is returned per call so that
-        dedup and shuffle stay effective across successive refreshes.
+        For dynamic playlists a bounded buffer is returned per call so the browse overview
+        shows a representative sample and queue refills stay deduped/shuffled across refreshes.
         """
         if page > 0:
             return []
@@ -212,7 +212,7 @@ class SmartPlaylistProvider(PluginProvider):
         if rules is None:
             return []
         if rules.is_dynamic:
-            rules = dc_replace(rules, limit=5)
+            rules = dc_replace(rules, limit=DYNAMIC_PLAYLIST_SAMPLE_SIZE)
         return await self._evaluate_rules(rules)
 
     async def _on_media_item_deleted(self, event: MassEvent) -> None:
