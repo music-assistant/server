@@ -338,6 +338,9 @@ class MyDemoMusicprovider(MusicProvider):
         # to avoid too many calls to the provider's API.
         # You can use the @use_cache decorator from music_assistant.controllers.cache
         # to easily apply caching to this method.
+        # As this returns a collection that also serves as good fallback data, decorate it with
+        # allow_expired_cache=True, e.g. @use_cache(3600 * 24, allow_expired_cache=True).
+        # That serves the stale result instantly while refreshing it in the background.
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:  # type: ignore[empty-body]
         """Get a list of most popular tracks for the given artist."""
@@ -348,6 +351,9 @@ class MyDemoMusicprovider(MusicProvider):
         # to avoid too many calls to the provider's API.
         # You can use the @use_cache decorator from music_assistant.controllers.cache
         # to easily apply caching to this method.
+        # As this returns a collection that also serves as good fallback data, decorate it with
+        # allow_expired_cache=True, e.g. @use_cache(3600 * 24, allow_expired_cache=True).
+        # That serves the stale result instantly while refreshing it in the background.
 
     async def get_album(self, prov_album_id: str) -> Album:  # type: ignore[empty-body]
         """Get full album details by id."""
@@ -396,6 +402,9 @@ class MyDemoMusicprovider(MusicProvider):
         # to avoid too many calls to the provider's API.
         # You can use the @use_cache decorator from music_assistant.controllers.cache
         # to easily apply caching to this method.
+        # As this returns a collection that also serves as good fallback data, decorate it with
+        # allow_expired_cache=True, e.g. @use_cache(3600 * 24, allow_expired_cache=True).
+        # That serves the stale result instantly while refreshing it in the background.
 
     async def get_playlist_tracks(  # type: ignore[empty-body]
         self,
@@ -409,6 +418,9 @@ class MyDemoMusicprovider(MusicProvider):
         # to avoid too many calls to the provider's API.
         # You can use the @use_cache decorator from music_assistant.controllers.cache
         # to easily apply caching to this method.
+        # As this returns a collection that also serves as good fallback data, decorate it with
+        # allow_expired_cache=True, e.g. @use_cache(3600 * 3, allow_expired_cache=True).
+        # That serves the stale result instantly while refreshing it in the background.
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to provider's library. Return true on success."""
@@ -449,6 +461,9 @@ class MyDemoMusicprovider(MusicProvider):
         # to avoid too many calls to the provider's API.
         # You can use the @use_cache decorator from music_assistant.controllers.cache
         # to easily apply caching to this method.
+        # As this returns a collection that also serves as good fallback data, decorate it with
+        # allow_expired_cache=True, e.g. @use_cache(3600 * 24, allow_expired_cache=True).
+        # That serves the stale result instantly while refreshing it in the background.
 
     async def get_resume_position(  # type: ignore[empty-body]
         self, item_id: str, media_type: MediaType
