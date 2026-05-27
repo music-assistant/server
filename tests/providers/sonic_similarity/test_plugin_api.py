@@ -7,14 +7,14 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from music_assistant.providers.sonic_similarity import (
-    _parse_similar_params,
-    _parse_weights,
-    apply_filters,
-)
 from music_assistant.providers.sonic_similarity.constants import (
     METADATA_BONUS_SCALE,
     SIMILARITY_PRESETS,
+)
+from music_assistant.providers.sonic_similarity.helpers import (
+    _parse_similar_params,
+    _parse_weights,
+    apply_filters,
 )
 from music_assistant.providers.sonic_similarity.similarity import Candidate, ScoredCandidate
 from tests.providers.sonic_similarity.conftest import make_track
