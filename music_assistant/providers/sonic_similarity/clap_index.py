@@ -197,26 +197,6 @@ class ClapIndex:
             return prov, arr
         return None
 
-    def query_sync(self, embedding: np.ndarray, k: int) -> list[ScoredCandidate]:
-        """Return the top-k nearest tracks synchronously (sibling of search() for sync callers).
-
-        :param embedding: 1024-dim query embedding.
-        :param k: Max number of neighbors to return.
-        """
-        if self._index is None or len(self._index) == 0:
-            return []
-        vec = np.asarray(embedding, dtype=np.float32).reshape(-1)
-        results: list[ScoredCandidate] = []
-        for label, distance in self._search_sync(vec, k):
-            entry = self._reverse.get(int(label))
-            if entry is None:
-                continue
-            provider, item_id = entry
-            results.append(
-                ScoredCandidate(item_id=item_id, provider=provider, distance=float(distance))
-            )
-        return results
-
     async def search(self, embedding: np.ndarray, k: int) -> list[ScoredCandidate]:
         """Return the top-k nearest ScoredCandidate results.
 
@@ -274,16 +254,6 @@ class ClapIndex:
         if time.monotonic() - self._last_save < SAVE_MIN_INTERVAL_SECONDS:
             return
         await self.save()
-
-    async def reset(self) -> None:
-        """Drop all state and delete the on-disk files."""
-        async with self._save_lock:
-            self._index = None
-            self._reverse.clear()
-            self._dirty_adds = 0
-            self._index_path.unlink(missing_ok=True)
-            self._keys_path.unlink(missing_ok=True)
-        await self.load()
 
     def __len__(self) -> int:
         """Return the number of tracks currently in the index."""
