@@ -1,5 +1,9 @@
 """Tests for playlist parsing and generation helpers."""
 
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 from music_assistant_models.enums import ContentType, ExternalID, ImageType, MediaType
 from music_assistant_models.media_items import (
     AudioFormat,
@@ -12,6 +16,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.controllers.media.playlists import PlaylistController
 from music_assistant.helpers.playlists import (
     ImageInfo,
     PlaylistItem,
@@ -619,3 +624,45 @@ def test_media_item_to_playlist_item_multiple_providers() -> None:
     assert domains == {"spotify", "tidal"}
     # primary URI uses the highest quality provider
     assert result.path == "tidal://track/t2"
+
+
+# --------------------------------------------------------------------------- #
+#  PlaylistController.tracks() — provider-driven pagination                    #
+# --------------------------------------------------------------------------- #
+
+
+def _make_controller() -> PlaylistController:
+    """Return a PlaylistController with a minimal mock mass."""
+    controller = PlaylistController.__new__(PlaylistController)
+    controller.mass = MagicMock()
+    return controller
+
+
+@pytest.mark.asyncio
+async def test_tracks_relays_all_provider_pages() -> None:
+    """tracks() relays every non-empty provider page until exhausted (provider decides size)."""
+    controller = _make_controller()
+    page0 = [MagicMock(spec=Track) for _ in range(20)]
+    page1 = [MagicMock(spec=Track) for _ in range(15)]
+    get_tracks = AsyncMock(side_effect=[page0, page1, []])
+    cast("Any", controller)._get_provider_playlist_tracks = get_tracks
+
+    result = [t async for t in controller.tracks("abc", "some_provider")]
+
+    # No controller-side cap: a multi-page (e.g. dynamic) list is relayed in full.
+    assert len(result) == 35
+    assert get_tracks.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_tracks_stops_on_empty_page() -> None:
+    """tracks() stops fetching once the provider yields an empty page."""
+    controller = _make_controller()
+    page0 = [MagicMock(spec=Track) for _ in range(7)]
+    get_tracks = AsyncMock(side_effect=[page0, []])
+    cast("Any", controller)._get_provider_playlist_tracks = get_tracks
+
+    result = [t async for t in controller.tracks("abc", "some_provider")]
+
+    assert len(result) == 7
+    assert get_tracks.await_count == 2

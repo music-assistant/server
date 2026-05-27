@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.errors import InvalidDataError
 
+from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
 from music_assistant.providers.smart_playlist import (
     SmartPlaylistProvider,
 )
@@ -552,8 +553,8 @@ async def test_dedup_fallback_when_pool_exhausted() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_playlist_tracks_dynamic_limit_5(tmp_path: Any) -> None:
-    """get_playlist_tracks uses limit=5 for dynamic playlists."""
+async def test_get_playlist_tracks_dynamic_uses_sample_size(tmp_path: Any) -> None:
+    """get_playlist_tracks caps dynamic playlists at the sample size."""
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
     manifest = MagicMock()
@@ -570,7 +571,8 @@ async def test_get_playlist_tracks_dynamic_limit_5(tmp_path: Any) -> None:
     plugin._rules_store["abc"] = rules
 
     result = await plugin.get_playlist_tracks("abc")
-    assert len(result) <= 5
+    assert len(result) <= DYNAMIC_PLAYLIST_SAMPLE_SIZE
+    assert len(result) > 5  # proves the buffer is no longer capped at 5
 
 
 @pytest.mark.asyncio
