@@ -268,9 +268,11 @@ class YandexYnisonProvider(PluginProvider):
         # state-handler twice in quick succession.
         self._command_idempotency: dict[tuple[str, str | None], float] = {}
 
-        # "We paused via cmd_stop, expect resume" — survives a stray
-        # `_stream_stop_event` clear independent of the stop signal.
-        self._paused: bool = False
+        # "Ynison paused us externally — expect a resume that needs
+        # `play_media` re-issuance." Set in `_pause_playback`, read in
+        # `_activate_playback`. Survives a stray `_stream_stop_event` clear
+        # independent of the stop signal (which covers non-pause stop reasons).
+        self._externally_paused: bool = False
 
         # In-memory music-token cache keyed by SHA-256(x_token). 50-min TTL,
         # 4-entry LRU. Coalesces concurrent refresh attempts via a single
@@ -938,12 +940,12 @@ class YandexYnisonProvider(PluginProvider):
             return
 
         # Resume after pause / fresh start: either signal triggers
-        # play_media below. `_paused` survives a stray stop-event
+        # play_media below. `_externally_paused` survives a stray stop-event
         # clear; the stop event covers non-pause stop reasons
         # (`_stream_track` warning branch, `_clear_active_player`).
-        needs_reselect = self._stream_stop_event.is_set() or self._paused
+        needs_reselect = self._stream_stop_event.is_set() or self._externally_paused
         self._stream_stop_event.clear()
-        self._paused = False
+        self._externally_paused = False
 
         # Start playback via the standard play_media flow if not already active.
         # Guard on _active_player_id (set immediately) rather than in_use_by_queue
@@ -1201,7 +1203,7 @@ class YandexYnisonProvider(PluginProvider):
         # `PlayerUnavailableError`. Post-success only so a failure
         # path keeps the bridge id intact for the next attempt.
         self._active_player_id = target
-        self._paused = True
+        self._externally_paused = True
 
     # ------------------------------------------------------------------
     # Player selection
@@ -1348,7 +1350,7 @@ class YandexYnisonProvider(PluginProvider):
 
         Returns one of:
 
-        - ``"ignore"`` — drift below ``threshold_ms``; no seek needed.
+        - ``"ignore"`` — drift at or below ``threshold_ms``; no seek needed.
         - ``"queue_rebuild"`` — Ynison reports near-zero progress while we
           are past 5s into the track; treat as a RADIO queue-rebuild echo,
           not a user seek (otherwise we'd yank playback to the start every
@@ -1425,7 +1427,7 @@ class YandexYnisonProvider(PluginProvider):
         self._streaming_progress_ms = 0
         self._prefetched_list = None
         self._command_idempotency.clear()
-        self._paused = False
+        self._externally_paused = False
         if self._prefetch_task and not self._prefetch_task.done():
             self._prefetch_task.cancel()
 
@@ -1643,15 +1645,29 @@ class YandexYnisonProvider(PluginProvider):
             return self._ynison.state.duration_ms
         return 0
 
-    async def _on_play(self) -> None:
-        """Handle play command — send resume to Ynison."""
+    def _require_connected_ynison(self) -> YnisonClient:
+        """Return the live Ynison client or raise an MA player-control error.
+
+        :raises UnsupportedFeaturedException: When the provider's Ynison
+            client has not been initialised yet (pre-`handle_async_init`
+            or post-`unload`).
+        :raises PlayerCommandFailed: When the Ynison WebSocket is currently
+            disconnected (e.g. mid-reconnect after a transient network
+            error). Surface to MA so the UI shows a clear failure toast
+            instead of accepting the command and stalling.
+        """
         if not self._ynison:
             raise UnsupportedFeaturedException("Ynison client not initialized")
         if not self._ynison.connected:
             raise PlayerCommandFailed("Ynison WebSocket disconnected")
+        return self._ynison
+
+    async def _on_play(self) -> None:
+        """Handle play command — send resume to Ynison."""
+        client = self._require_connected_ynison()
         if not self._idempotent("on_play", None):
             return
-        state = self._ynison.state
+        state = client.state
         try:
             await self._send_progress_to_ynison(
                 progress_ms=state.progress_ms,
@@ -1664,13 +1680,10 @@ class YandexYnisonProvider(PluginProvider):
 
     async def _on_pause(self) -> None:
         """Handle pause command — send pause to Ynison."""
-        if not self._ynison:
-            raise UnsupportedFeaturedException("Ynison client not initialized")
-        if not self._ynison.connected:
-            raise PlayerCommandFailed("Ynison WebSocket disconnected")
+        client = self._require_connected_ynison()
         if not self._idempotent("on_pause", None):
             return
-        state = self._ynison.state
+        state = client.state
         try:
             await self._send_progress_to_ynison(
                 progress_ms=state.progress_ms,
@@ -1966,19 +1979,13 @@ class YandexYnisonProvider(PluginProvider):
 
     async def _on_next(self) -> None:
         """Handle next track command — signal track end so Yandex advances."""
-        if not self._ynison:
-            raise UnsupportedFeaturedException("Ynison client not initialized")
-        if not self._ynison.connected:
-            raise PlayerCommandFailed("Ynison WebSocket disconnected")
+        self._require_connected_ynison()
         await self._signal_track_completion()
 
     async def _on_previous(self) -> None:
         """Handle previous track command — update queue index in Ynison."""
-        if not self._ynison:
-            raise UnsupportedFeaturedException("Ynison client not initialized")
-        if not self._ynison.connected:
-            raise PlayerCommandFailed("Ynison WebSocket disconnected")
-        queue = self._ynison.state.player_state.get("player_queue", {})
+        client = self._require_connected_ynison()
+        queue = client.state.player_state.get("player_queue", {})
         current_index = queue.get("current_playable_index", 0)
         if current_index > 0:
             self._actual_duration_ms = 0
@@ -1989,12 +1996,9 @@ class YandexYnisonProvider(PluginProvider):
 
         :param position: Position in seconds from Music Assistant.
         """
-        if not self._ynison:
-            raise UnsupportedFeaturedException("Ynison client not initialized")
-        if not self._ynison.connected:
-            raise PlayerCommandFailed("Ynison WebSocket disconnected")
+        client = self._require_connected_ynison()
         seek_ms = position * 1000
-        state = self._ynison.state
+        state = client.state
         try:
             await self._send_progress_to_ynison(
                 progress_ms=seek_ms,

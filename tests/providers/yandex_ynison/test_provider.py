@@ -1848,10 +1848,10 @@ class TestPausePlayback:
 
         assert captured["active_player_id_at_call"] == "spb_bridge1"
         assert provider._active_player_id == "player1"
-        # _paused flag set so the resume edge in _activate_playback can
+        # _externally_paused flag set so the resume edge in _activate_playback can
         # detect us even if _stream_stop_event has been cleared by some
         # other code path.
-        assert provider._paused is True
+        assert provider._externally_paused is True
 
     async def test_cmd_stop_failure_keeps_bridge_id_intact(self) -> None:
         """A cmd_stop failure must not demote `_active_player_id`.
@@ -1874,9 +1874,9 @@ class TestPausePlayback:
         # never confirmed; otherwise we'd serve real audio against a
         # player MA thinks is detached.
         assert provider._stream_stop_event.is_set()
-        # _paused stays False on the failure path — we're not in a
+        # _externally_paused stays False on the failure path — we're not in a
         # "successfully paused, expecting resume" state.
-        assert provider._paused is False
+        assert provider._externally_paused is False
 
     async def test_no_active_player_is_a_noop(self) -> None:
         """Pause with no active queue does not call cmd_stop or set the stop event."""
@@ -2297,11 +2297,11 @@ class TestActivatePlayback:
         assert uri == str(provider._audio_source.uri)
         assert not provider._stream_stop_event.is_set()
 
-    async def test_resume_via_paused_flag_alone(self) -> None:
+    async def test_resume_via_externally_paused_flag_alone(self) -> None:
         """Resume fires play_media even if `_stream_stop_event` was cleared."""
         provider = _make_provider()
         provider._stream_stop_event.clear()
-        provider._paused = True
+        provider._externally_paused = True
         provider._active_player_id = "player1"
         provider._in_use_by_queue = None
 
@@ -2316,7 +2316,7 @@ class TestActivatePlayback:
         await asyncio.sleep(0)
 
         assert play_media_calls, "play_media must fire even without stop event"
-        assert provider._paused is False  # cleared by _activate_playback
+        assert provider._externally_paused is False  # cleared by _activate_playback
 
     async def test_detects_track_change(self) -> None:
         """Detects track change and updates streaming track id."""
@@ -3345,3 +3345,37 @@ class TestStrictModeDeliverySignal:
 
         # Must not raise
         await provider._send_progress_to_ynison(progress_ms=1000, duration_ms=2000, paused=False)
+
+
+# ------------------------------------------------------------------
+# Connected-Ynison guard helper (spec 0005)
+# ------------------------------------------------------------------
+
+
+class TestRequireConnectedYnison:
+    """Tests for the extracted `_require_connected_ynison` helper."""
+
+    def test_raises_unsupported_when_client_missing(self) -> None:
+        """`_ynison is None` raises `UnsupportedFeaturedException`."""
+        provider = _make_provider()
+        provider._ynison = None
+
+        with pytest.raises(UnsupportedFeaturedException, match="not initialized"):
+            provider._require_connected_ynison()
+
+    def test_raises_command_failed_when_disconnected(self) -> None:
+        """`_ynison.connected is False` raises `PlayerCommandFailed`."""
+        provider = _make_provider()
+        provider._ynison = _mock_ynison(connected=False)
+
+        with pytest.raises(PlayerCommandFailed, match="disconnected"):
+            provider._require_connected_ynison()
+
+    def test_returns_client_when_ready(self) -> None:
+        """Happy path returns the live client unchanged."""
+        provider = _make_provider()
+        mock_yn = _mock_ynison(connected=True)
+        provider._ynison = mock_yn
+
+        result = provider._require_connected_ynison()
+        assert result is mock_yn
