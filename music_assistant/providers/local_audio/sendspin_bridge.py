@@ -110,7 +110,7 @@ class SendspinLocalAudioBridge:
         self._write_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._writer_task: asyncio.Task[None] | None = None
         self._output_stream: sd.RawOutputStream | None = None
-        self._pa_stream: PASimpleStream | None = None  # type: ignore[name-defined]
+        self._pa_stream: PASimpleStream | None = None
         self._lock = asyncio.Lock()
 
     @property
@@ -321,7 +321,7 @@ class SendspinLocalAudioBridge:
         """Write queued audio data to a PulseAudio sink via PASimpleStream."""
         loop = asyncio.get_running_loop()
         write_future: asyncio.Future[None] | None = None
-        stream: PASimpleStream | None = None  # type: ignore[name-defined]
+        stream: PASimpleStream | None = None
         try:
             pa_sink_name = self.pa_sink_name
             assert pa_sink_name is not None  # guarded by caller
@@ -335,7 +335,7 @@ class SendspinLocalAudioBridge:
             )
             stream = await loop.run_in_executor(
                 None,
-                lambda: PASimpleStream(  # type: ignore[name-defined]
+                lambda: PASimpleStream(
                     sink_name=pa_sink_name,
                     app_name="music-assistant",
                     rate=self.sample_rate,
@@ -436,7 +436,7 @@ class LocalAudioBridgeManager:
         try:
             devices: list[dict[str, Any]] = await loop.run_in_executor(
                 None,
-                self._enumerate_output_devices,  # type: ignore[arg-type]
+                self._enumerate_output_devices,
             )
         except Exception as err:
             self.logger.warning("Failed to enumerate audio devices: %s", err)
@@ -511,7 +511,7 @@ class LocalAudioBridgeManager:
         self.logger.debug("Audio backend: %s (configured=%s)", backend, configured)
 
         if backend == AUDIO_BACKEND_PULSEAUDIO:
-            return enumerate_pa_sinks()  # type: ignore[name-defined]
+            return enumerate_pa_sinks()
 
         # ALSA / macOS / fallback: use sounddevice
         devices: list[dict[str, Any]] = []
