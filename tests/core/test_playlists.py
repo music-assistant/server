@@ -645,7 +645,7 @@ async def test_tracks_relays_all_provider_pages() -> None:
     page0 = [MagicMock(spec=Track) for _ in range(20)]
     page1 = [MagicMock(spec=Track) for _ in range(15)]
     get_tracks = AsyncMock(side_effect=[page0, page1, []])
-    cast("Any", controller)._get_provider_playlist_tracks = get_tracks
+    cast(Any, controller)._get_provider_playlist_tracks = get_tracks
 
     result = [t async for t in controller.tracks("abc", "some_provider")]
 
@@ -660,7 +660,7 @@ async def test_tracks_stops_on_empty_page() -> None:
     controller = _make_controller()
     page0 = [MagicMock(spec=Track) for _ in range(7)]
     get_tracks = AsyncMock(side_effect=[page0, []])
-    cast("Any", controller)._get_provider_playlist_tracks = get_tracks
+    cast(Any, controller)._get_provider_playlist_tracks = get_tracks
 
     result = [t async for t in controller.tracks("abc", "some_provider")]
 
