@@ -249,15 +249,30 @@ class SendspinLocalAudioBridge:
         self._write_queue.put_nowait(chunk.data)
 
     def _apply_software_volume(self, pcm_data: bytes) -> bytes:
-        """Apply software volume scaling to PCM data."""
+        """Apply software volume scaling to PCM data.
+
+        Uses BRIDGE_BIT_DEPTH to select the correct numpy dtype — the wire
+        format sent by Sendspin, which may differ from the sink's native depth.
+        """
         if self.player.volume_muted:
             return b"\x00" * len(pcm_data)
         volume = self.player.volume_level
         if volume is None or volume >= 100:
             return pcm_data
-        samples = np.frombuffer(pcm_data, dtype=np.int16).copy()
+        # Select dtype and clip range to match the actual wire format
+        if BRIDGE_BIT_DEPTH == 32:
+            dtype: np.dtype = np.dtype(np.int32)
+            clip_min, clip_max = -(2**31), 2**31 - 1
+        elif BRIDGE_BIT_DEPTH == 24:
+            # s24 arrives in 32-bit containers (s24-32le); treat as int32
+            dtype = np.dtype(np.int32)
+            clip_min, clip_max = -(2**23), 2**23 - 1
+        else:
+            dtype = np.dtype(np.int16)
+            clip_min, clip_max = -32768, 32767
         scale = volume / 100.0
-        samples = np.clip(samples * scale, -32768, 32767).astype(np.int16)
+        samples = np.frombuffer(pcm_data, dtype=dtype).copy()
+        samples = np.clip(samples * scale, clip_min, clip_max).astype(dtype)
         return samples.tobytes()
 
     async def _audio_writer(self) -> None:
@@ -311,10 +326,11 @@ class SendspinLocalAudioBridge:
             pa_sink_name = self.pa_sink_name
             assert pa_sink_name is not None  # guarded by caller
             self.logger.debug(
-                "Opening PA stream: sink=%s rate=%d channels=%d bit_depth=%d",
+                "Opening PA stream: sink=%s rate=%d channels=%d bit_depth=%d (wire) sink_depth=%d (native)",
                 pa_sink_name,
                 self.sample_rate,
                 BRIDGE_CHANNELS,
+                BRIDGE_BIT_DEPTH,
                 self.bit_depth,
             )
             stream = await loop.run_in_executor(
@@ -324,7 +340,7 @@ class SendspinLocalAudioBridge:
                     app_name="music-assistant",
                     rate=self.sample_rate,
                     channels=BRIDGE_CHANNELS,
-                    bit_depth=self.bit_depth,
+                    bit_depth=BRIDGE_BIT_DEPTH,  # wire format, not sink native depth
                 ),
             )
             self.logger.debug("PA stream opened for %s", pa_sink_name)
