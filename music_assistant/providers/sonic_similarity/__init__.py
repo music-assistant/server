@@ -25,11 +25,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
+from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MusicAssistantError, SetupFailedError
 from music_assistant_models.media_items import Album, RecommendationFolder, SearchResults
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.constants import DB_TABLE_AUDIO_ANALYSIS
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.sonic_similarity.clap_index import (
     CLAP_EMBEDDING_DIM,
@@ -83,6 +85,9 @@ CONF_LABEL_STATUS_TEXT = "status_label_text"
 # Action keys dispatched back into get_config_entries via the ACTION button entries.
 ACTION_REBUILD_18DIM = "rebuild_18dim_index"
 ACTION_REBUILD_CLAP = "rebuild_clap_index"
+
+PERIODIC_REFRESH_TASK_ID = "sonic_similarity_periodic_refresh"
+PERIODIC_REFRESH_INTERVAL_HOURS = 1
 
 # Both hooks return [] when the engine isn't ready, which the cross-provider
 # dispatchers treat as "this provider has nothing right now" — no dynamic
@@ -586,6 +591,7 @@ class SonicSimilarityPlugin(PluginProvider):
         self._text_encoder_lock = asyncio.Lock()
         # Per-label last error from fire-and-forget rebuild tasks.
         self._last_rebuild_error: dict[str, str] = {}
+        self._last_seen_row_count: int = 0
 
     async def _safe_rebuild(self, label: str, rebuild_fn: Callable[[], Awaitable[None]]) -> None:
         """Run a rebuild fn from a background task, swallowing failures into status state.
@@ -599,6 +605,32 @@ class SonicSimilarityPlugin(PluginProvider):
         except Exception as err:
             self.logger.exception("%s rebuild failed", label)
             self._last_rebuild_error[label] = str(err)
+
+    async def _count_analysis_rows(self) -> int:
+        """Return the current count of sonic_analysis track rows in the database."""
+        return await self.mass.music.database.get_count_from_query(
+            f"SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS} "
+            "WHERE aa_provider_domain = :aa_provider_domain AND media_type = :media_type",
+            {"aa_provider_domain": AA_PROVIDER_DOMAIN, "media_type": MediaType.TRACK.value},
+        )
+
+    async def _periodic_refresh(self) -> None:
+        """Scheduled-task handler: rebuild indexes when the analysis row count changed."""
+        try:
+            current = await self._count_analysis_rows()
+        except Exception:
+            self.logger.exception("Periodic refresh: row count query failed; skipping")
+            return
+        if current == self._last_seen_row_count:
+            return
+        self.logger.info(
+            "Periodic refresh: analysis row count changed %d → %d, rebuilding indexes",
+            self._last_seen_row_count,
+            current,
+        )
+        await self._safe_rebuild("18-dim", self._rebuild_search_index)
+        if self._clap_index is not None:
+            await self._safe_rebuild("CLAP", self._rebuild_clap_index_from_database)
 
     async def handle_async_init(self) -> None:
         """Build the 18-dim search index before the provider is registered.
@@ -670,11 +702,23 @@ class SonicSimilarityPlugin(PluginProvider):
             )
             self.logger.info("Text search ready (encoder warming in background)")
 
+        self.mass.tasks.register_scheduled_task(
+            task_id=PERIODIC_REFRESH_TASK_ID,
+            name="Sonic Similarity — periodic index refresh",
+            handler=self._periodic_refresh,
+            schedule=TaskSchedule.hourly(every=PERIODIC_REFRESH_INTERVAL_HOURS),
+            allow_retry=True,
+        )
+
     async def unload(self, is_removed: bool = False) -> None:
         """Unregister API commands; delete on-disk indexes when the provider is uninstalled."""
         for unregister in self._unregister_handles:
             unregister()
         self._unregister_handles.clear()
+        try:
+            self.mass.tasks.unregister_scheduled_task(PERIODIC_REFRESH_TASK_ID)
+        except Exception as err:
+            self.logger.debug("Periodic refresh task unregister failed: %s", err)
         if self._clap_index is not None:
             try:
                 await self._clap_index.close()
@@ -1230,8 +1274,18 @@ class SonicSimilarityPlugin(PluginProvider):
 
     async def _rebuild_search_index(self) -> None:
         """Rebuild the search index from all stored analysis rows."""
+        # SQLite SELECT is snapshot-isolated: rows added mid-rebuild aren't
+        # indexed. Snapshot the count BEFORE the rebuild so the next periodic
+        # tick re-rebuilds for them; bumping after would silently miss them.
+        try:
+            pre_count = await self._count_analysis_rows()
+        except Exception:
+            self.logger.debug("Pre-rebuild row count failed; counter unchanged", exc_info=True)
+            pre_count = None
         async with self._rebuild_lock:
             await self._rebuild_search_index_locked()
+        if pre_count is not None:
+            self._last_seen_row_count = pre_count
 
     async def _rebuild_search_index_locked(self) -> None:  # noqa: PLR0915
         """Rebuild body — assumes self._rebuild_lock is held."""

@@ -60,6 +60,12 @@ def mock_mass(tmp_path: Path) -> MagicMock:
     mass.music.tracks = MagicMock()
     mass.music.tracks.get = AsyncMock()
     mass.music.database = MagicMock()
+    mass.music.database.get_count_from_query = AsyncMock(return_value=0)
+
+    # tasks controller (scheduled background jobs)
+    mass.tasks = MagicMock()
+    mass.tasks.register_scheduled_task = MagicMock()
+    mass.tasks.unregister_scheduled_task = MagicMock()
 
     # streams.audio_analysis controller (the #3851 surface). The iter_*
     # methods return AsyncGenerators; tests configure their contents by
