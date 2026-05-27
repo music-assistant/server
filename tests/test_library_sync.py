@@ -762,7 +762,7 @@ async def test_update_item_in_library_skips_non_music_providers() -> None:
     mass.music = Mock()
     mass.music.match_provider_instances = Mock()
     mass.signal_event = Mock()
-    mass.get_provider = Mock(return_value=object())
+    mass.get_provider = Mock(return_value=Mock(type=ProviderType.PLUGIN))
     ctrl.mass = mass
 
     ctrl.update_item_in_library = MediaControllerBase.update_item_in_library.__get__(ctrl)
