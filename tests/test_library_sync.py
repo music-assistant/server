@@ -806,6 +806,80 @@ def test_ensure_provider_filter_does_not_auto_allow_other_non_music_providers() 
     assert "meta_1" not in result
 
 
+def test_select_provider_id_prefers_allowed_music_over_plugin() -> None:
+    """Test that allowed music mappings are preferred over plugin mappings."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    ctrl.mass.get_provider = Mock(
+        side_effect=lambda instance: {
+            "smart_playlist_1": Mock(type=ProviderType.PLUGIN),
+            "spotify_1": Mock(type=ProviderType.MUSIC),
+        }.get(instance)
+    )
+    ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
+
+    item = create_mock_album(
+        provider_mappings=[
+            create_provider_mapping(
+                provider_instance="smart_playlist_1",
+                provider_domain="smart_playlist",
+                item_id="plugin_item",
+            ),
+            create_provider_mapping(
+                provider_instance="spotify_1",
+                provider_domain="spotify",
+                item_id="music_item",
+            ),
+        ]
+    )
+
+    with patch(
+        "music_assistant.controllers.media.base.get_current_user",
+        return_value=Mock(provider_filter=["spotify_1"]),
+    ):
+        provider_instance, provider_item = ctrl._select_provider_id(item)
+
+    assert provider_instance == "spotify_1"
+    assert provider_item == "music_item"
+
+
+def test_select_provider_id_falls_back_to_plugin_when_no_allowed_music() -> None:
+    """Test that plugin mapping is selected if no allowed music mapping exists."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    ctrl.mass.get_provider = Mock(
+        side_effect=lambda instance: {
+            "smart_playlist_1": Mock(type=ProviderType.PLUGIN),
+            "qobuz_1": Mock(type=ProviderType.MUSIC),
+        }.get(instance)
+    )
+    ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
+
+    item = create_mock_album(
+        provider_mappings=[
+            create_provider_mapping(
+                provider_instance="smart_playlist_1",
+                provider_domain="smart_playlist",
+                item_id="plugin_item",
+            ),
+            create_provider_mapping(
+                provider_instance="qobuz_1",
+                provider_domain="qobuz",
+                item_id="music_item",
+            ),
+        ]
+    )
+
+    with patch(
+        "music_assistant.controllers.media.base.get_current_user",
+        return_value=Mock(provider_filter=["spotify_1"]),
+    ):
+        provider_instance, provider_item = ctrl._select_provider_id(item)
+
+    assert provider_instance == "smart_playlist_1"
+    assert provider_item == "plugin_item"
+
+
 async def test_get_library_item_does_not_filter_in_library() -> None:
     """Test that get_library_item always passes in_library_only=False.
 
