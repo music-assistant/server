@@ -68,6 +68,20 @@ SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 # combined with the provider instance_id this forms the persistent uri
 AUDIO_SOURCE_ID = "main"
 
+# How long to wait for librespot to confirm playback actually started after
+# we ask Spotify to play. /me/player/play returns 200 even when Spotify
+# silently refuses (e.g. another device became the active player in the
+# Spotify app and our context was handed away). We need an observed
+# 'playing' event from librespot to know it really started.
+PLAYBACK_START_TIMEOUT_S = 3.0
+
+# User-facing message for the "not the active Spotify device" failure.
+NOT_ACTIVE_DEVICE_MESSAGE = (
+    "Music Assistant is not the active Spotify playback device. "
+    "Open the Spotify app, pick Music Assistant as the playback device, "
+    "and try again."
+)
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -201,6 +215,14 @@ class SpotifyConnectProvider(PluginProvider):
         # session_disconnected events; gates the Web API kick in on_source_selected
         # (skip if already playing) and the play_media trigger in the event handler
         self._librespot_playing: bool = False
+        # Tracks whether MA is currently the active Spotify Connect device.
+        # Flipped True on session_connected, False on session_disconnected.
+        # Used by get_stream_details to fail fast (with a user-facing message)
+        # when MA tries to resume a Spotify Connect session that the user has
+        # since handed to another device in the Spotify app — without this,
+        # Spotify silently accepts our /me/player/play call and never starts
+        # playback, leaving MA in "playing" with permanent silence.
+        self._spotify_session_active: bool = False
         # holds the single in-flight deferred play_media task scheduled from a
         # librespot 'playing' event; cancelled if a 'paused' or 'session_connected'
         # arrives during the debounce so we don't act on stale state from a dying
@@ -258,7 +280,8 @@ class SpotifyConnectProvider(PluginProvider):
         source and blocking a subsequent cross-queue handoff.
 
         Raises AudioError when MA has no way to acquire the source (librespot
-        idle and no Spotify music provider for Web API control).
+        idle and no Spotify music provider for Web API control, or MA is no
+        longer the active Spotify Connect device).
         """
         if source_id != AUDIO_SOURCE_ID:
             raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
@@ -268,11 +291,24 @@ class SpotifyConnectProvider(PluginProvider):
                 "start playback from the Spotify app, or configure the matching "
                 "Spotify music provider to enable Web API control"
             )
+        # Bail out early if MA is no longer the active Spotify Connect device.
+        # Without this, /me/player/play returns 200 but Spotify hands librespot
+        # a stop (context belongs to whichever device the user picked in the
+        # Spotify app) and MA sits in "playing" with silence. Surfacing the
+        # failure here propagates through play_media so the user sees an error
+        # immediately instead of after a 3 s wait inside the stream handler.
+        if not self._librespot_playing and not self._spotify_session_active:
+            raise AudioError(NOT_ACTIVE_DEVICE_MESSAGE)
         # NAMED_PIPE (not CUSTOM): the core opens the FIFO with ffmpeg directly
         # using `-re`, which paces the read at native rate. Going through a
         # Python generator + StreamReader would let librespot's pipe backend
         # (which is not realtime-paced) fill an arbitrary-size buffer ahead of
         # us; pause/skip would then take seconds to react.
+        # expiration=0 means streamdetails are always considered stale → the
+        # queue re-fetches them on every play_media. We need that because the
+        # session-active / librespot-playing state we check above can change
+        # between plays (pause + Spotify-side device switch is the common
+        # case), and a cached streamdetails would skip the re-check.
         return StreamDetails(
             provider=self.instance_id,
             item_id=source_id,
@@ -281,6 +317,7 @@ class SpotifyConnectProvider(PluginProvider):
             stream_type=StreamType.NAMED_PIPE,
             path=self.named_pipe,
             stream_metadata=self._stream_metadata,
+            expiration=0,
         )
 
     async def on_source_control(
@@ -329,8 +366,14 @@ class SpotifyConnectProvider(PluginProvider):
             can_next_previous=has_web_api,
             exclusive=True,
             allow_external_trigger=True,
-            # Web API is required to kick librespot when MA initiates
-            can_initiate=has_web_api,
+            # Spotify Connect cannot be reliably initiated from MA: the Web API
+            # (transfer / /me/player/play) needs a current playback context to
+            # resume, which is absent after any meaningful idle period — Spotify
+            # then accepts the call but never starts playback. Reliable entry is
+            # always external (Spotify app → pick MA), so we don't offer MA-side
+            # initiation. Pause/play/seek control during an external session
+            # still works via on_source_control.
+            can_initiate=False,
         )
 
     @property
@@ -489,10 +532,16 @@ class SpotifyConnectProvider(PluginProvider):
                     "for MA-initiated playback"
                 )
             try:
-                # combined transfer + play in one Web API call
                 await self._ensure_active_device(play=True)
             except Exception as err:
                 raise AudioError(f"Failed to acquire Spotify Connect via Web API: {err}") from err
+            # Confirm Spotify actually started playback. The Web API returns
+            # 200 even when our device isn't really the active one (e.g. the
+            # user picked another device in the Spotify app while our queue
+            # still pointed at this AudioSource). Without this check MA would
+            # show "playing" with silence forever.
+            if not await self._wait_for_librespot_playing():
+                raise AudioError(NOT_ACTIVE_DEVICE_MESSAGE)
 
     async def on_source_unselected(
         self, source_id: str, queue_id: str, stream_session_id: str
@@ -605,12 +654,15 @@ class SpotifyConnectProvider(PluginProvider):
                 "Playback control requires a matching Spotify music provider"
             )
         try:
-            # combined transfer + play in one call (avoids ~2 s of API throttle
-            # we'd otherwise hit doing them sequentially)
             await self._ensure_active_device(play=True)
         except Exception as err:
             self.logger.warning("Failed to send play command via Spotify Web API: %s", err)
             raise
+        # See on_source_selected: 200 OK doesn't mean Spotify will actually
+        # play, so wait for librespot to confirm and raise a friendly error
+        # otherwise.
+        if not await self._wait_for_librespot_playing():
+            raise AudioError(NOT_ACTIVE_DEVICE_MESSAGE)
 
     async def _on_pause(self) -> None:
         """Handle pause command via Spotify Web API."""
@@ -715,13 +767,37 @@ class SpotifyConnectProvider(PluginProvider):
             self.logger.debug("Failed to get Spotify devices: %s", err)
             return None
 
+    async def _wait_for_librespot_playing(self, timeout: float = PLAYBACK_START_TIMEOUT_S) -> bool:
+        """
+        Wait briefly for librespot to confirm playback started.
+
+        Returns True if librespot's 'playing' event arrived within the timeout,
+        False otherwise. Spotify's Web API returns 200 to /me/player/play even
+        when it silently refuses (e.g. when another device is the active player
+        in the Spotify app and Spotify won't hand the context back via a simple
+        play call), so the only reliable success signal is observing librespot
+        actually enter the playing state.
+
+        :param timeout: Maximum seconds to wait for the 'playing' event.
+        """
+        deadline = self.mass.loop.time() + timeout
+        while True:
+            if self._librespot_playing:
+                return True
+            if self.mass.loop.time() >= deadline:
+                return False
+            await asyncio.sleep(0.1)
+
     async def _ensure_active_device(self, play: bool | None = None) -> None:
         """
         Ensure this Spotify Connect device is the active player on Spotify.
 
-        Combined transfer-and-(optionally-)play in a single Web API call —
-        Spotify's API is heavily throttled (~2 s/call) so each round trip we
-        avoid is two seconds shaved off perceived play latency.
+        When ``play`` is True, prefers ``PUT /me/player/play?device_id=X`` over
+        the transfer-with-play endpoint — empirically the transfer endpoint can
+        leave the device in a stale paused state for up to a minute before
+        actually starting playback, while ``/play`` targeting our device_id
+        starts playback promptly. Falls back to transfer-with-play if ``/play``
+        fails (e.g. nothing to resume / no current context).
 
         :param play: When True, also start playback on this device. When False,
             pause it. When None (default), leave the playback state of the
@@ -736,6 +812,17 @@ class SpotifyConnectProvider(PluginProvider):
         if not self._spotify_device_id:
             self.logger.debug("Cannot transfer playback - device ID not found")
             return
+        if play is True:
+            try:
+                await self._spotify_provider._put_data(
+                    "me/player/play", device_id=self._spotify_device_id
+                )
+                return
+            except Exception as err:
+                self.logger.debug(
+                    "Direct /me/player/play failed (%s), falling back to transfer-with-play",
+                    err,
+                )
         data: dict[str, object] = {"device_ids": [self._spotify_device_id]}
         if play is not None:
             data["play"] = play
@@ -875,6 +962,7 @@ class SpotifyConnectProvider(PluginProvider):
         if event_name == "session_connected":
             # Track when session connected for volume event filtering
             self._last_session_connected_time = time.time()
+            self._spotify_session_active = True
             username = json_data.get("user_name")
             self.logger.debug(
                 "Session connected event - username from event: %s, current username: %s",
@@ -888,14 +976,15 @@ class SpotifyConnectProvider(PluginProvider):
             elif not username:
                 self.logger.warning("Session connected event received but no username in payload")
 
-        # handle session disconnected event
+        # handle session disconnected event.
+        # Keep _connected_spotify_username and _spotify_provider: librespot is
+        # still authenticated and the matching music provider is still loaded,
+        # so Web API control (transfer + play) keeps working — and MA can
+        # re-acquire the device after the Spotify app drops it. Provider-lifecycle
+        # cleanup is handled separately via the PROVIDERS_UPDATED subscription.
         if event_name == "session_disconnected":
             self.logger.info("Spotify Connect session disconnected")
-            self._connected_spotify_username = None
-            if self._spotify_provider is not None:
-                self._spotify_provider = None
-                self._update_source_capabilities()
-            # Clear active player and stop the player on session disconnect
+            self._spotify_session_active = False
             prev_player_id = self._active_player_id
             self._clear_active_player()
             if prev_player_id:

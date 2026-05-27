@@ -288,6 +288,13 @@ class StreamsAudio:
                 preferred_providers = playback_user.provider_filter
             else:
                 preferred_providers = [x.provider_instance for x in media_item.provider_mappings]
+            # Track the last AudioError so we can re-raise it verbatim if no
+            # provider produces streamdetails. AudioError carries a
+            # source-specific, user-facing reason (e.g. "Music Assistant is
+            # not the active Spotify playback device") that we lose if we
+            # always fall back to the generic "Unable to retrieve
+            # streamdetails" MediaNotFoundError below.
+            last_audio_error: AudioError | None = None
             for allow_other_provider in (False, True):
                 if streamdetails:
                     break
@@ -323,6 +330,9 @@ class StreamsAudio:
                             streamdetails = await music_prov.get_stream_details(
                                 prov_media.item_id, media_item.media_type
                             )
+                    except AudioError as err:
+                        last_audio_error = err
+                        self.logger.warning(str(err))
                     except MusicAssistantError as err:
                         self.logger.warning(str(err))
                     else:
@@ -331,6 +341,8 @@ class StreamsAudio:
                         BYPASS_THROTTLER.set(False)
 
             if not streamdetails:
+                if last_audio_error is not None:
+                    raise last_audio_error
                 msg = f"Unable to retrieve streamdetails for {queue_item.name} ({queue_item.uri})"
                 raise MediaNotFoundError(msg)
 
