@@ -126,3 +126,42 @@ async def test_save_writes_keys_before_index_so_a_crash_doesnt_orphan_labels(
     assert keys_path.exists()
     assert "track1" in keys_path.read_text(encoding="utf-8")
     assert not (tmp_path / "sonic_similarity_clap_keys.json.tmp").exists()
+
+
+@pytest.mark.asyncio
+async def test_corrupt_index_with_valid_keys_drops_keys_to_avoid_phantom_contains(
+    tmp_path: Path, logger: logging.Logger
+) -> None:
+    """A corrupt .usearch file alongside a valid keys file must clear both, not strand contains()."""
+    keys_path = tmp_path / "sonic_similarity_clap_keys.json"
+    index_path = tmp_path / "sonic_similarity_clap.usearch"
+    # Plausible-shaped keys file referencing a label that no index backs.
+    stale_label = derive_label("spotify", "phantom_track")
+    keys_path.write_text(f'{{"{stale_label}": ["spotify", "phantom_track"]}}', encoding="utf-8")
+    # Garbage bytes — usearch.load() will raise.
+    index_path.write_bytes(b"not a usearch index")
+
+    idx = ClapIndex(_make_mass(tmp_path), logger)  # type: ignore[arg-type]
+    await idx.load()
+
+    assert len(idx) == 0
+    assert not idx.contains("spotify", "phantom_track")
+    assert not keys_path.exists()
+    assert not index_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_missing_index_with_orphan_keys_drops_keys_to_avoid_phantom_contains(
+    tmp_path: Path, logger: logging.Logger
+) -> None:
+    """A keys file present without its index is meaningless — must be cleaned up on load."""
+    keys_path = tmp_path / "sonic_similarity_clap_keys.json"
+    stale_label = derive_label("tidal", "orphan_track")
+    keys_path.write_text(f'{{"{stale_label}": ["tidal", "orphan_track"]}}', encoding="utf-8")
+
+    idx = ClapIndex(_make_mass(tmp_path), logger)  # type: ignore[arg-type]
+    await idx.load()
+
+    assert len(idx) == 0
+    assert not idx.contains("tidal", "orphan_track")
+    assert not keys_path.exists()

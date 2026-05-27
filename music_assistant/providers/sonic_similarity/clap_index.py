@@ -103,9 +103,17 @@ class ClapIndex:
             metric=MetricKind.Cos,
             dtype=ScalarKind.F16,
         )
+        self._reverse = {}
+
+        # Index + keys are paired: a populated reverse map without a backing
+        # index makes contains() lie and permanently blocks rebuilds from
+        # re-adding embeddings. Drop the keys file whenever the index is
+        # missing or unreadable so the next rebuild starts consistent.
+        index_loaded = False
         if self._index_path.exists():
             try:
                 self._index.load(str(self._index_path))
+                index_loaded = True
                 self._logger.debug(
                     "Loaded CLAP index from %s (%d vectors)",
                     self._index_path,
@@ -120,6 +128,10 @@ class ClapIndex:
                     dtype=ScalarKind.F16,
                 )
 
+        if not index_loaded:
+            self._keys_path.unlink(missing_ok=True)
+            return
+
         if self._keys_path.exists():
             try:
                 raw = json.loads(self._keys_path.read_text(encoding="utf-8"))
@@ -127,6 +139,7 @@ class ClapIndex:
             except Exception:
                 self._logger.exception("Failed to load CLAP keys file, starting fresh")
                 self._reverse = {}
+                self._keys_path.unlink(missing_ok=True)
 
     async def close(self) -> None:
         """Flush to disk and release the index."""
