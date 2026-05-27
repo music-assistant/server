@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import random
 import time
 from collections.abc import AsyncGenerator, Callable
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from music_assistant_models.enums import (
@@ -64,6 +66,7 @@ from .streaming import (
 from .ynison_client import (
     YnisonClient,
     YnisonDeviceInfo,
+    YnisonSendError,
     YnisonState,
     generate_device_id,
     make_version_block,
@@ -104,11 +107,40 @@ _API_MAX_BACKOFF = 30.0
 # Cache TTL for stream details (seconds)
 _STREAM_DETAILS_CACHE_TTL = 300  # 5 minutes
 
+# In-memory music-token cache TTL (seconds). Yandex music tokens live ~60 min;
+# 50 min leaves 10 min headroom before the server would reject them. Tied to
+# the borrow-mode-with-only-x_token + 401-storm path described in spec 0004.
+_MUSIC_TOKEN_TTL_S = 50 * 60
+
+# Maximum number of distinct x_token entries kept in the music-token cache.
+# 4 covers borrow + own simultaneously with one rotation in flight.
+_MUSIC_TOKEN_CACHE_MAX = 4
+
 # Accepted non-auto values for output format overrides; mirrors the options
 # offered in CONF_OUTPUT_SAMPLE_RATE / CONF_OUTPUT_BIT_DEPTH config entries.
 # Used defensively to reject stale/tampered values without raising.
 _VALID_SAMPLE_RATES: frozenset[str] = frozenset({"44100", "48000", "96000"})
 _VALID_BIT_DEPTHS: frozenset[str] = frozenset({"16", "24"})
+
+
+@dataclass(frozen=True)
+class _CachedToken:
+    """Music token entry in the in-memory cache.
+
+    `expires_monotonic` is compared against the provider's `_now()` seam.
+    """
+
+    token: SecretStr
+    expires_monotonic: float
+
+
+def _hash_x_token(x_token: str) -> str:
+    """Return the SHA-256 hex digest of an x_token, used as cache key.
+
+    The raw x_token is never stored in dict keys (defence-in-depth against
+    accidental log / dump leakage of the cache structure).
+    """
+    return hashlib.sha256(x_token.encode("utf-8")).hexdigest()
 
 
 class YandexYnisonProvider(PluginProvider):
@@ -239,6 +271,14 @@ class YandexYnisonProvider(PluginProvider):
         # "We paused via cmd_stop, expect resume" — survives a stray
         # `_stream_stop_event` clear independent of the stop signal.
         self._paused: bool = False
+
+        # In-memory music-token cache keyed by SHA-256(x_token). 50-min TTL,
+        # 4-entry LRU. Coalesces concurrent refresh attempts via a single
+        # asyncio.Lock so a reconnect storm makes at most one Passport call.
+        # `_now` is a seam for tests to advance the clock.
+        self._token_cache: dict[str, _CachedToken] = {}
+        self._token_refresh_lock = asyncio.Lock()
+        self._now: Callable[[], float] = time.monotonic
 
     # ------------------------------------------------------------------
     # Provider lifecycle
@@ -708,15 +748,71 @@ class YandexYnisonProvider(PluginProvider):
         x_token = cast("str | None", ym_provider.config.get_value(YANDEX_MUSIC_CONF_X_TOKEN))
         return (token, x_token)
 
+    async def _refresh_via_x_token(self, x_token: str) -> SecretStr:
+        """Refresh the music token from an x_token, caching the result.
+
+        Within :data:`_MUSIC_TOKEN_TTL_S` of a successful refresh, subsequent
+        calls for the same x_token return the cached :class:`SecretStr`
+        without hitting Yandex Passport. Concurrent callers coalesce via
+        :attr:`_token_refresh_lock`.
+
+        :param x_token: Long-lived session token to exchange for a music
+            token. Hashed before use as a cache key; the raw value is
+            never stored in dict keys or logs.
+        :returns: Fresh or cached music-scoped :class:`SecretStr`.
+        :raises LoginFailed: When the underlying refresh fails (propagated
+            from :func:`provider.auth.refresh_music_token`).
+        """
+        cache_key = _hash_x_token(x_token)
+        cached = self._token_cache.get(cache_key)
+        now = self._now()
+        if cached is not None and cached.expires_monotonic > now:
+            return cached.token
+
+        async with self._token_refresh_lock:
+            # Double-check inside the lock — a peer caller may have refreshed
+            # while we were waiting for the lock, in which case we reuse
+            # their fresh entry instead of issuing a duplicate Passport call.
+            cached = self._token_cache.get(cache_key)
+            now = self._now()
+            if cached is not None and cached.expires_monotonic > now:
+                return cached.token
+
+            token = await refresh_music_token(SecretStr(x_token))
+            self._store_cached_token(cache_key, token)
+            return token
+
+    def _store_cached_token(self, cache_key: str, token: SecretStr) -> None:
+        """Insert a cache entry, enforcing the LRU bound.
+
+        Refreshing an existing key bumps its position to most-recent. When
+        a new key would push the cache over :data:`_MUSIC_TOKEN_CACHE_MAX`,
+        the oldest entry is evicted first.
+        """
+        # Reordering: pop-then-set positions the (possibly-new) key as
+        # most-recent in Python's insertion-ordered dict.
+        self._token_cache.pop(cache_key, None)
+        while len(self._token_cache) >= _MUSIC_TOKEN_CACHE_MAX:
+            oldest = next(iter(self._token_cache))
+            self._token_cache.pop(oldest)
+        self._token_cache[cache_key] = _CachedToken(
+            token=token,
+            expires_monotonic=self._now() + _MUSIC_TOKEN_TTL_S,
+        )
+
+    def _invalidate_cached_token(self, x_token: str) -> None:
+        """Drop the cache entry for an x_token (e.g. after a 401)."""
+        self._token_cache.pop(_hash_x_token(x_token), None)
+
     async def _resolve_token(self) -> SecretStr:
         """Resolve the Yandex Music OAuth token for the Ynison connection.
 
         In borrow mode: read from the linked yandex_music provider's config.
-        If only x_token is present (YM hasn't refreshed yet), do a one-shot
+        If only x_token is present (YM hasn't refreshed yet), do a cached
         in-memory refresh without writing back — YM owns token persistence.
 
         In own mode: return CONF_TOKEN if set; otherwise, when CONF_X_TOKEN
-        is present (QR-with-Remember-session path), refresh in-memory.
+        is present (QR-with-Remember-session path), cached in-memory refresh.
         """
         if self._ym_instance_id is not None:
             token, x_token = self._read_ym_tokens()
@@ -724,7 +820,7 @@ class YandexYnisonProvider(PluginProvider):
                 return SecretStr(token)
             if x_token:
                 self.logger.debug("YM token not yet refreshed — refreshing in-memory")
-                return await refresh_music_token(SecretStr(x_token))
+                return await self._refresh_via_x_token(x_token)
             raise LoginFailed(f"Yandex Music instance '{self._ym_instance_id}' has no credentials")
 
         token = cast("str | None", self.config.get_value(CONF_TOKEN))
@@ -733,7 +829,7 @@ class YandexYnisonProvider(PluginProvider):
         x_token = cast("str | None", self.config.get_value(CONF_X_TOKEN))
         if x_token:
             self.logger.debug("Own-mode token not present — refreshing from stored x_token")
-            return await refresh_music_token(SecretStr(x_token))
+            return await self._refresh_via_x_token(x_token)
         raise LoginFailed("No Yandex Music token configured")
 
     async def _refresh_ynison_token(self) -> SecretStr:
@@ -747,18 +843,24 @@ class YandexYnisonProvider(PluginProvider):
         In own mode: refresh from stored CONF_X_TOKEN when present (QR with
         "Remember session" enabled). When absent (manual token paste only),
         surface LoginFailed so the user knows to paste a new token.
+
+        The cached token entry for the current x_token is invalidated up
+        front — this method is reached only on a server-rejected token, so
+        the cached value is provably stale.
         """
         if self._ym_instance_id is not None:
             _, x_token = self._read_ym_tokens()
             if not x_token:
                 raise LoginFailed("Cannot refresh: linked Yandex Music instance has no x_token")
+            self._invalidate_cached_token(x_token)
             self.logger.info("Refreshing Yandex Music token for Ynison reconnect (borrow mode)")
-            return await refresh_music_token(SecretStr(x_token))
+            return await self._refresh_via_x_token(x_token)
 
         x_token = cast("str | None", self.config.get_value(CONF_X_TOKEN))
         if x_token:
+            self._invalidate_cached_token(x_token)
             self.logger.info("Refreshing Yandex Music token for Ynison reconnect (own mode)")
-            return await refresh_music_token(SecretStr(x_token))
+            return await self._refresh_via_x_token(x_token)
 
         raise LoginFailed(
             "Token expired and no stored x_token to refresh from. Re-authenticate "
@@ -992,7 +1094,12 @@ class YandexYnisonProvider(PluginProvider):
             self.mass.players.trigger_player_update(self._active_player_id, force_update=True)
 
     async def _send_progress_to_ynison(
-        self, progress_ms: int, duration_ms: int, paused: bool
+        self,
+        progress_ms: int,
+        duration_ms: int,
+        paused: bool,
+        *,
+        strict: bool = False,
     ) -> None:
         """Send progress to Ynison.
 
@@ -1002,17 +1109,27 @@ class YandexYnisonProvider(PluginProvider):
 
         Echo detection is done upstream via YnisonState.last_update_is_echo,
         which is set when Ynison rebroadcasts an update we authored.
+
+        :param progress_ms: Current playback position in milliseconds.
+        :param duration_ms: Current track duration in milliseconds.
+        :param paused: Whether playback is paused.
+        :param strict: When ``True``, propagate transport failures as
+            :class:`provider.ynison_client.YnisonSendError`. Used by user-command
+            and end-of-track callers. Heartbeat callers leave the default.
         """
         if duration_ms <= 0:
             # Ynison rejects progress > duration; skip until duration is known.
             return
         if not self._ynison or not self._ynison.connected:
+            if strict:
+                raise YnisonSendError("Ynison not connected")
             return
         progress_ms = min(progress_ms, duration_ms)
         await self._ynison.update_playing_status(
             progress_ms=progress_ms,
             duration_ms=duration_ms,
             paused=paused,
+            strict=strict,
         )
 
     def _bytes_to_ms(self, byte_count: int, fmt: AudioFormat | None = None) -> int:
@@ -1535,11 +1652,15 @@ class YandexYnisonProvider(PluginProvider):
         if not self._idempotent("on_play", None):
             return
         state = self._ynison.state
-        await self._send_progress_to_ynison(
-            progress_ms=state.progress_ms,
-            duration_ms=self._best_duration_ms(),
-            paused=False,
-        )
+        try:
+            await self._send_progress_to_ynison(
+                progress_ms=state.progress_ms,
+                duration_ms=self._best_duration_ms(),
+                paused=False,
+                strict=True,
+            )
+        except YnisonSendError as exc:
+            raise PlayerCommandFailed("Ynison send failed") from exc
 
     async def _on_pause(self) -> None:
         """Handle pause command — send pause to Ynison."""
@@ -1550,11 +1671,15 @@ class YandexYnisonProvider(PluginProvider):
         if not self._idempotent("on_pause", None):
             return
         state = self._ynison.state
-        await self._send_progress_to_ynison(
-            progress_ms=state.progress_ms,
-            duration_ms=self._best_duration_ms(),
-            paused=True,
-        )
+        try:
+            await self._send_progress_to_ynison(
+                progress_ms=state.progress_ms,
+                duration_ms=self._best_duration_ms(),
+                paused=True,
+                strict=True,
+            )
+        except YnisonSendError as exc:
+            raise PlayerCommandFailed("Ynison send failed") from exc
 
     # Entity types that use server-side "radio" queue replenishment.
     # Currently only RADIO (personal wave, genre stations).
@@ -1636,9 +1761,21 @@ class YandexYnisonProvider(PluginProvider):
 
         # 1. Report that playback reached the end.
         # Echo tracking is handled by _send_progress_to_ynison.
-        await self._send_progress_to_ynison(
-            progress_ms=duration, duration_ms=duration, paused=False
-        )
+        # `strict=True`: a dropped end-of-track signal stalls the YM app on
+        # the just-finished track. We log and continue — the reconnect is
+        # already scheduled and the queue-advance below sees the same WS state
+        # — but we don't reraise (this is end-of-stream, there's no command to
+        # fail back to the user).
+        try:
+            await self._send_progress_to_ynison(
+                progress_ms=duration, duration_ms=duration, paused=False, strict=True
+            )
+        except YnisonSendError:
+            self.logger.warning(
+                "Track-completion signal dropped (Ynison transport failure); "
+                "queue advance will retry once the WS reconnects",
+                exc_info=True,
+            )
 
         if next_index < len(playable_list):
             # 2a. Queue has room — advance immediately.
@@ -1798,7 +1935,17 @@ class YandexYnisonProvider(PluginProvider):
         new_state["status"]["duration_ms"] = "0"
         new_state["status"]["paused"] = False
         new_state["status"]["version"] = make_version_block(device_id)
-        await self._ynison.update_player_state(player_state=new_state)
+        # `strict=True`: a dropped queue-advance leaves `_wait_for_track_change`
+        # spinning for its full 30 s timeout. Log and return — the next
+        # reconnect-broadcast picks up our authored version block and resyncs.
+        try:
+            await self._ynison.update_player_state(player_state=new_state, strict=True)
+        except YnisonSendError:
+            self.logger.warning(
+                "Queue-advance dropped (Ynison transport failure); "
+                "stream will stall until reconnect-broadcast resyncs",
+                exc_info=True,
+            )
 
     async def _update_queue_list(self, expanded_list: list[dict[str, Any]]) -> None:
         """Push an expanded playable_list to Ynison without changing index or progress.
@@ -1848,11 +1995,17 @@ class YandexYnisonProvider(PluginProvider):
             raise PlayerCommandFailed("Ynison WebSocket disconnected")
         seek_ms = position * 1000
         state = self._ynison.state
-        await self._send_progress_to_ynison(
-            progress_ms=seek_ms,
-            duration_ms=self._best_duration_ms(),
-            paused=state.is_paused,
-        )
+        try:
+            await self._send_progress_to_ynison(
+                progress_ms=seek_ms,
+                duration_ms=self._best_duration_ms(),
+                paused=state.is_paused,
+                strict=True,
+            )
+        except YnisonSendError as exc:
+            # Do not mutate `_seek_position_ms` / `_seek_grace_until` on failure
+            # — local stream state must not drift past a send that never landed.
+            raise PlayerCommandFailed("Ynison send failed") from exc
         # Also trigger local stream restart so seek takes effect
         # immediately without waiting for the Ynison echo.
         self._seek_position_ms = seek_ms

@@ -1,4 +1,4 @@
-# mypy: disable-error-code="attr-defined"
+# mypy: disable-error-code="attr-defined,unreachable"
 """Tests for the Ynison WebSocket client."""
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from music_assistant.providers.yandex_ynison.constants import (
 from music_assistant.providers.yandex_ynison.ynison_client import (
     YnisonClient,
     YnisonDeviceInfo,
+    YnisonSendError,
     YnisonState,
     generate_device_id,
     make_version_block,
@@ -1289,7 +1290,7 @@ class TestMessageLoop:
 
         async def _aiter(_self: Any) -> Any:
             raise asyncio.CancelledError
-            yield  # type: ignore[unreachable]
+            yield
 
         mock_ws = MagicMock()
         mock_ws.__aiter__ = _aiter
@@ -1740,3 +1741,131 @@ class TestUpdateToken:
         assert client._token == SecretStr("old-token")
         client.update_token(SecretStr("new-token"))
         assert client._token == SecretStr("new-token")
+
+
+# ------------------------------------------------------------------
+# Strict-mode delivery signalling (spec 0003)
+# ------------------------------------------------------------------
+
+
+class TestSendStrictMode:
+    """Tests for `_send`/`update_*` strict-mode raising on transport failure."""
+
+    async def test_send_strict_raises_ynison_send_error_when_disconnected(
+        self, client: YnisonClient
+    ) -> None:
+        """`strict=True` on a disconnected client raises `YnisonSendError`."""
+        client._ws = None
+        with pytest.raises(YnisonSendError):
+            await client._send({"test": True}, strict=True)
+
+    async def test_send_strict_raises_on_client_error_and_schedules_reconnect(
+        self, client: YnisonClient
+    ) -> None:
+        """`strict=True` with a failing send_str raises AND schedules reconnect."""
+        mock_ws = AsyncMock()
+        mock_ws.closed = False
+        mock_ws.send_str = AsyncMock(side_effect=aiohttp.ClientError("connection lost"))
+        client._ws = mock_ws
+        client._connected = True
+
+        with patch.object(client, "_reconnect", new_callable=AsyncMock) as mock_rc:
+            with pytest.raises(YnisonSendError):
+                await client._send({"test": True}, strict=True)
+            await asyncio.sleep(0)
+
+        assert client._connected is False
+        mock_rc.assert_awaited_once()
+
+    async def test_send_non_strict_swallows_and_schedules_reconnect(
+        self, client: YnisonClient
+    ) -> None:
+        """Default (`strict=False`) keeps the existing swallow-and-reconnect behaviour."""
+        mock_ws = AsyncMock()
+        mock_ws.closed = False
+        mock_ws.send_str = AsyncMock(side_effect=aiohttp.ClientError("connection lost"))
+        client._ws = mock_ws
+        client._connected = True
+
+        with patch.object(client, "_reconnect", new_callable=AsyncMock) as mock_rc:
+            # Must NOT raise
+            await client._send({"test": True})
+            await asyncio.sleep(0)
+
+        assert client._connected is False
+        mock_rc.assert_awaited_once()
+
+    async def test_update_playing_status_forwards_strict_kwarg(self, client: YnisonClient) -> None:
+        """`update_playing_status(strict=True)` forwards to `_send`."""
+        with patch.object(client, "_send", new_callable=AsyncMock) as mock_send:
+            await client.update_playing_status(
+                progress_ms=10, duration_ms=100, paused=False, strict=True
+            )
+        mock_send.assert_awaited_once()
+        _args, kwargs = mock_send.call_args
+        assert kwargs.get("strict") is True
+
+    async def test_update_playing_status_default_strict_false(self, client: YnisonClient) -> None:
+        """Default call passes `strict=False` (or omits, equivalent)."""
+        with patch.object(client, "_send", new_callable=AsyncMock) as mock_send:
+            await client.update_playing_status(progress_ms=10, duration_ms=100, paused=False)
+        _args, kwargs = mock_send.call_args
+        assert kwargs.get("strict", False) is False
+
+    async def test_update_player_state_forwards_strict_kwarg(self, client: YnisonClient) -> None:
+        """`update_player_state(strict=True)` forwards to `_send`."""
+        with patch.object(client, "_send", new_callable=AsyncMock) as mock_send:
+            await client.update_player_state(
+                player_state={"player_queue": {}, "status": {}}, strict=True
+            )
+        mock_send.assert_awaited_once()
+        _args, kwargs = mock_send.call_args
+        assert kwargs.get("strict") is True
+
+
+class TestScheduleReconnect:
+    """Tests for the extracted `_schedule_reconnect` helper."""
+
+    async def test_schedule_reconnect_creates_task_when_none_alive(
+        self, client: YnisonClient
+    ) -> None:
+        """First call creates a reconnect task."""
+        assert client._reconnect_task is None
+        with patch.object(client, "_reconnect", new_callable=AsyncMock):
+            client._schedule_reconnect()
+            task = client._reconnect_task
+            assert task is not None
+            await task  # let it finish so we don't leak it
+
+    async def test_schedule_reconnect_idempotent_when_task_alive(
+        self, client: YnisonClient
+    ) -> None:
+        """Second call while a task is alive does not create another."""
+        # Use a real task that we can hold open
+        started = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def slow_reconnect() -> None:
+            started.set()
+            await finish.wait()
+
+        with patch.object(client, "_reconnect", side_effect=slow_reconnect):
+            client._schedule_reconnect()
+            first = client._reconnect_task
+            assert first is not None
+            await started.wait()
+
+            # Try again while first is running
+            client._schedule_reconnect()
+            assert client._reconnect_task is first  # same task, no replacement
+
+            finish.set()
+            await first
+
+    async def test_schedule_reconnect_noop_when_stop_event_set(self, client: YnisonClient) -> None:
+        """Once the client is being torn down, no new reconnect tasks are scheduled."""
+        client._stop_event.set()
+        with patch.object(client, "_reconnect", new_callable=AsyncMock) as mock_rc:
+            client._schedule_reconnect()
+        assert client._reconnect_task is None
+        mock_rc.assert_not_called()

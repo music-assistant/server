@@ -34,6 +34,20 @@ from .constants import (
 )
 
 
+class YnisonSendError(ConnectionError):
+    """Raised by `YnisonClient._send(strict=True)` when a send cannot reach Ynison.
+
+    Indicates a transport-level failure (WebSocket not connected, write raised
+    ``ConnectionError`` / ``aiohttp.ClientError`` / ``RuntimeError`` / ``OSError``).
+    A reconnect is always scheduled before this is raised; callers should
+    translate it to the appropriate user-facing error (e.g.
+    ``PlayerCommandFailed``) or log-and-return for fire-and-forget paths.
+
+    Inherits from ``ConnectionError`` so existing broad transport-error
+    handlers continue to catch it.
+    """
+
+
 def make_version_block(device_id: str) -> dict[str, Any]:
     """Build a version sub-object authored by the given device.
 
@@ -243,10 +257,7 @@ class YnisonClient:
             if self._session and not self._external_session:
                 await self._session.close()
             self._session = None
-            if not self._stop_event.is_set() and (
-                self._reconnect_task is None or self._reconnect_task.done()
-            ):
-                self._reconnect_task = asyncio.create_task(self._reconnect())
+            self._schedule_reconnect()
 
     async def disconnect(self) -> None:
         """Gracefully disconnect from Ynison."""
@@ -291,8 +302,24 @@ class YnisonClient:
             "activity_interception_type": "DO_NOT_INTERCEPT_BY_DEFAULT",
         }
 
-    async def update_playing_status(self, progress_ms: int, duration_ms: int, paused: bool) -> None:
-        """Send playback status update to Ynison."""
+    async def update_playing_status(
+        self,
+        progress_ms: int,
+        duration_ms: int,
+        paused: bool,
+        *,
+        strict: bool = False,
+    ) -> None:
+        """Send playback status update to Ynison.
+
+        :param progress_ms: Current playback position in milliseconds.
+        :param duration_ms: Current track duration in milliseconds.
+        :param paused: Whether playback is paused.
+        :param strict: When ``True``, raise :class:`YnisonSendError` on
+            transport failure instead of silently scheduling a reconnect.
+            Delivery-critical callers (user commands, end-of-track signal)
+            opt in; heartbeat callers leave the default.
+        """
         self._logger.debug(
             "→ update_playing_status: progress=%dms duration=%dms paused=%s",
             progress_ms,
@@ -309,7 +336,7 @@ class YnisonClient:
                 },
             },
         }
-        await self._send(msg)
+        await self._send(msg, strict=strict)
 
     async def update_active_device(self, device_id: str) -> None:
         """Request playback transfer to this device."""
@@ -357,11 +384,22 @@ class YnisonClient:
         self._logger.info("→ sync_state_from_eov: queue_id=%r", actual_queue_id)
         await self._send(msg)
 
-    async def update_player_state(self, player_state: dict[str, Any]) -> None:
+    async def update_player_state(
+        self,
+        player_state: dict[str, Any],
+        *,
+        strict: bool = False,
+    ) -> None:
         """Send player state update (queue changes, track skip).
 
         Unlike send_full_state, this does NOT reset active device status.
         Use this for track advances, queue modifications, repeat/shuffle changes.
+
+        :param player_state: Complete `player_state` dict to broadcast.
+        :param strict: When ``True``, raise :class:`YnisonSendError` on
+            transport failure instead of silently scheduling a reconnect.
+            Delivery-critical callers (queue advance after track end)
+            opt in; queue-list-replenish heartbeats leave the default.
         """
         queue = player_state.get("player_queue", {})
         self._logger.info(
@@ -377,7 +415,7 @@ class YnisonClient:
             **self._message_meta(),
         }
         self._logger.debug("Sending player state: %s", json.dumps(msg)[:500])
-        await self._send(msg)
+        await self._send(msg, strict=strict)
 
     async def send_full_state(
         self,
@@ -658,7 +696,7 @@ class YnisonClient:
             self._reconnect_task is None or self._reconnect_task.done()
         ):
             self._logger.warning("Ynison connection lost, scheduling reconnect")
-            self._reconnect_task = asyncio.create_task(self._reconnect())
+            self._schedule_reconnect()
 
     def _parse_state(self, data: dict[str, Any]) -> None:
         """Parse PutYnisonStateResponse into YnisonState."""
@@ -774,21 +812,41 @@ class YnisonClient:
             except Exception:
                 self._logger.warning("Ynison reconnect attempt %d failed", attempt, exc_info=True)
 
-    async def _send(self, msg: dict[str, Any]) -> None:
-        """Send a JSON message to the state service (thread-safe)."""
+    async def _send(self, msg: dict[str, Any], *, strict: bool = False) -> None:
+        """Send a JSON message to the state service (thread-safe).
+
+        :param msg: JSON-serialisable Ynison envelope.
+        :param strict: When ``True``, transport failures (disconnected socket
+            or write error) raise :class:`YnisonSendError` after scheduling a
+            reconnect. Default is the legacy fire-and-forget behaviour:
+            log + schedule reconnect + return.
+        """
         async with self._send_lock:
             if self._ws is None or self._ws.closed:
                 self._logger.debug("Cannot send to Ynison — not connected")
+                if strict:
+                    raise YnisonSendError("Ynison WebSocket not connected")
                 return
             try:
                 await self._ws.send_str(json.dumps(msg))
-            except (ConnectionError, aiohttp.ClientError, RuntimeError, OSError):
+            except (ConnectionError, aiohttp.ClientError, RuntimeError, OSError) as exc:
                 self._logger.warning("Failed to send message to Ynison, scheduling reconnect")
                 self._connected = False
-                if not self._stop_event.is_set() and (
-                    self._reconnect_task is None or self._reconnect_task.done()
-                ):
-                    self._reconnect_task = asyncio.create_task(self._reconnect())
+                self._schedule_reconnect()
+                if strict:
+                    raise YnisonSendError("Ynison send failed") from exc
+
+    def _schedule_reconnect(self) -> None:
+        """Schedule a background reconnect attempt if none is already in flight.
+
+        Idempotent: a single reconnect task is in flight at any time. Becomes
+        a no-op once :meth:`disconnect` has set ``_stop_event``.
+        """
+        if self._stop_event.is_set():
+            return
+        if self._reconnect_task is not None and not self._reconnect_task.done():
+            return
+        self._reconnect_task = asyncio.create_task(self._reconnect())
 
 
 def generate_device_id() -> str:
