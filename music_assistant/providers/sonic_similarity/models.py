@@ -25,6 +25,9 @@ class SimilarParams:
     exclude_artists: list[str] | None
     resolve: bool
     include_group_distances: bool
+    # When set, uses the (item_id, provider) cache instead of the
+    # item_id-only fallback — avoids wrong-vector picks under id collisions.
+    seed_provider: str | None = None
     weight_overrides: dict[str, Any] = field(default_factory=dict)
 
 

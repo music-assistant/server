@@ -62,6 +62,7 @@ def _parse_similar_params(  # noqa: PLR0913
     exclude_artists: list[str] | None = None,
     resolve: bool = False,
     include_group_distances: bool = False,
+    seed_provider: str | None = None,
     **kwargs: Any,
 ) -> SimilarParams:
     """Validate and normalize parameters for the similar endpoint."""
@@ -104,6 +105,7 @@ def _parse_similar_params(  # noqa: PLR0913
         exclude_artists=exclude_artists,
         resolve=resolve,
         include_group_distances=include_group_distances,
+        seed_provider=seed_provider,
         weight_overrides=kwargs,
     )
 

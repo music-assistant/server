@@ -288,6 +288,7 @@ class SonicSimilarityPlugin(PluginProvider):
         exclude_artists: list[str] | None = None,
         resolve: bool = False,
         include_group_distances: bool = False,
+        seed_provider: str | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Find tracks similar to the given track(s)."""
@@ -308,11 +309,14 @@ class SonicSimilarityPlugin(PluginProvider):
             exclude_artists=exclude_artists,
             resolve=resolve,
             include_group_distances=include_group_distances,
+            seed_provider=seed_provider,
             **kwargs,
         )
         weights = _parse_weights({**params.weight_overrides, "preset": params.preset})
 
-        seed_sigs, valid_seed_ids = self._lookup_seed_signatures(params.item_ids)
+        seed_sigs, valid_seed_ids = self._lookup_seed_signatures(
+            params.item_ids, params.seed_provider
+        )
         if self.corpus_means is None or self.corpus_stds is None:
             return self._empty_similar_response(params, "corpus_not_ready")
         if not seed_sigs:
@@ -347,12 +351,24 @@ class SonicSimilarityPlugin(PluginProvider):
             "items": items,
         }
 
-    def _lookup_seed_signatures(self, item_ids: list[str]) -> tuple[list[list[float]], list[str]]:
-        """Look up signatures by item_id; warn on misses; return (sigs, valid_ids) in input order."""
+    def _lookup_seed_signatures(
+        self, item_ids: list[str], seed_provider: str | None = None
+    ) -> tuple[list[list[float]], list[str]]:
+        """Look up signatures by item_id; warn on misses; return (sigs, valid_ids) in input order.
+
+        :param item_ids: Seed item ids to resolve.
+        :param seed_provider: When set, disambiguates id collisions via the
+            authoritative (item_id, provider) cache; falls back to the
+            item_id-only cache (last-write-wins) when None.
+        """
         seed_sigs: list[list[float]] = []
         valid_seed_ids: list[str] = []
         for sid in item_ids:
-            sig = self._signatures_by_id.get(sid)
+            sig: list[float] | None = None
+            if seed_provider is not None:
+                sig = self._signature_cache.get((sid, seed_provider))
+            if sig is None:
+                sig = self._signatures_by_id.get(sid)
             if sig is not None:
                 seed_sigs.append(sig)
                 valid_seed_ids.append(sid)
@@ -551,24 +567,25 @@ class SonicSimilarityPlugin(PluginProvider):
 
         # Pick the first provider mapping that's actually indexed. Skip the
         # library aggregator since audio_analysis is keyed on the streaming
-        # provider's item_id, not on library numeric ids — the discover row
-        # uses the same logic.
+        # provider's item_id, not on library numeric ids.
         seed_item_id: str | None = None
+        seed_provider: str | None = None
         for mapping in track.provider_mappings or ():
             if mapping.provider_domain == "library":
                 continue
             if (mapping.item_id, mapping.provider_instance) in self._signature_cache:
                 seed_item_id = mapping.item_id
+                seed_provider = mapping.provider_instance
                 break
-            # Fall back to provider_by_item_id (last-write-wins by item_id only),
-            # which is how the public /similar handler resolves seeds too.
             if mapping.item_id in self._signatures_by_id:
                 seed_item_id = mapping.item_id
                 break
         if seed_item_id is None:
             return []
 
-        response = await self._handle_similar(item_id=seed_item_id, limit=limit)
+        response = await self._handle_similar(
+            item_id=seed_item_id, seed_provider=seed_provider, limit=limit
+        )
         items = response.get("items") or []
         if not items:
             return []
@@ -612,35 +629,35 @@ class SonicSimilarityPlugin(PluginProvider):
 
         # Walk each recent mapping into a seed item_id our index has analysed.
         # The mapping is library-aggregated; we need the underlying streaming
-        # provider's id (or the filesystem path) — same logic as
-        # get_similar_tracks but starting from an ItemMapping instead of a Track.
-        seed_ids: list[str] = []
+        # provider's id (or the filesystem path).
+        seeds: list[tuple[str, str | None]] = []
         seen_seeds: set[str] = set()
         for mapping in recent:
             try:
-                # Structural walk only — we read provider_mappings to find an
-                # indexed seed id, never display the track. Skip the metadata
-                # refresh that tracks.get schedules by default.
+                # Structural walk — we read provider_mappings to find an
+                # indexed seed; skip the metadata refresh side effect.
                 track = await self.mass.music.tracks.get(
                     mapping.item_id, mapping.provider, allow_update_metadata=False
                 )
             except MusicAssistantError:
                 continue
             seed_id: str | None = None
+            seed_provider: str | None = None
             for pm in track.provider_mappings or ():
                 if pm.provider_domain == "library":
                     continue
                 if (pm.item_id, pm.provider_instance) in self._signature_cache:
                     seed_id = pm.item_id
+                    seed_provider = pm.provider_instance
                     break
                 if pm.item_id in self._signatures_by_id:
                     seed_id = pm.item_id
                     break
             if seed_id and seed_id not in seen_seeds:
-                seed_ids.append(seed_id)
+                seeds.append((seed_id, seed_provider))
                 seen_seeds.add(seed_id)
 
-        if not seed_ids:
+        if not seeds:
             return []
 
         preset = str(self.config.get_value(CONF_DISCOVER_PRESET) or "discover")
@@ -653,9 +670,10 @@ class SonicSimilarityPlugin(PluginProvider):
         # ordered seeds by recency above, so earlier seeds get priority).
         candidate_order: list[tuple[str, str]] = []
         candidate_seen: set[tuple[str, str]] = set()
-        for sid in seed_ids:
+        for sid, sprov in seeds:
             response = await self._handle_similar(
                 item_id=sid,
+                seed_provider=sprov,
                 limit=RECOMMEND_PER_SEED_LIMIT,
                 preset=preset,
                 diversity=diversity,

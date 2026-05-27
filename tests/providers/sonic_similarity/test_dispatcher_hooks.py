@@ -59,7 +59,9 @@ class TestGetSimilarTracks:
         result = await plugin.get_similar_tracks(track, limit=10)
 
         assert result == [resolved_track]
-        plugin._handle_similar.assert_awaited_once_with(item_id="seed_id", limit=10)
+        plugin._handle_similar.assert_awaited_once_with(
+            item_id="seed_id", seed_provider="spotify", limit=10
+        )
         mock_mass.music.tracks.get.assert_awaited_once_with("result1", "spotify")
 
     @pytest.mark.asyncio
@@ -81,7 +83,9 @@ class TestGetSimilarTracks:
         result = await plugin.get_similar_tracks(track)
 
         assert len(result) == 1
-        plugin._handle_similar.assert_awaited_once_with(item_id="track_a", limit=25)
+        plugin._handle_similar.assert_awaited_once_with(
+            item_id="track_a", seed_provider=None, limit=25
+        )
 
     @pytest.mark.asyncio
     async def test_skips_tracks_that_fail_to_resolve(
