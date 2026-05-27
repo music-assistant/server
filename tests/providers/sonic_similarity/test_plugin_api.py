@@ -351,7 +351,7 @@ class TestApplyMetadataFilters:
 
         plugin = make_plugin(signatures={("spotify", "a"): [0.1] * 18})
 
-        async def _fake_get(item_id: str, _provider: str) -> MagicMock:
+        async def _fake_get(item_id: str, _provider: str, **_kwargs: Any) -> MagicMock:
             if item_id == "a":
                 raise MusicAssistantError("nope")
             return _track_with_metadata("b", genres=["rock"])

@@ -618,7 +618,12 @@ class SonicSimilarityPlugin(PluginProvider):
         seen_seeds: set[str] = set()
         for mapping in recent:
             try:
-                track = await self.mass.music.tracks.get(mapping.item_id, mapping.provider)
+                # Structural walk only — we read provider_mappings to find an
+                # indexed seed id, never display the track. Skip the metadata
+                # refresh that tracks.get schedules by default.
+                track = await self.mass.music.tracks.get(
+                    mapping.item_id, mapping.provider, allow_update_metadata=False
+                )
             except MusicAssistantError:
                 continue
             seed_id: str | None = None
@@ -951,11 +956,18 @@ class SonicSimilarityPlugin(PluginProvider):
     async def _resolve_candidate_tracks(
         self, candidates: list[Candidate], log_context: str
     ) -> list[tuple[Candidate, Track | None]]:
-        """Resolve every candidate's Track concurrently; None marks a lookup miss."""
+        """Resolve every candidate's Track concurrently; None marks a lookup miss.
+
+        Used by metadata-driven filters and rerank — bulk scoring, never
+        display. allow_update_metadata=False prevents this from queuing
+        ~50-250 background metadata-refresh tasks per /similar call.
+        """
 
         async def _one(cand: Candidate) -> tuple[Candidate, Track | None]:
             try:
-                track = await self.mass.music.tracks.get(cand.item_id, cand.provider)
+                track = await self.mass.music.tracks.get(
+                    cand.item_id, cand.provider, allow_update_metadata=False
+                )
             except MusicAssistantError as err:
                 self.logger.debug(
                     "%s lookup failed for %s/%s: %s",
@@ -1057,10 +1069,15 @@ class SonicSimilarityPlugin(PluginProvider):
         return scored
 
     async def _resolve_seed_track(self, seed_item_id: str) -> Track | None:
-        """Resolve a seed track from its item_id, falling back to the 'library' provider."""
+        """Resolve a seed track from its item_id, falling back to the 'library' provider.
+
+        Used by metadata rerank to read seed genres/year — scoring, not display.
+        """
         seed_prov = self._provider_by_item_id.get(seed_item_id, "library")
         try:
-            return await self.mass.music.tracks.get(seed_item_id, seed_prov)
+            return await self.mass.music.tracks.get(
+                seed_item_id, seed_prov, allow_update_metadata=False
+            )
         except MusicAssistantError as err:
             self.logger.debug("Could not resolve seed %s/%s: %s", seed_prov, seed_item_id, err)
             return None

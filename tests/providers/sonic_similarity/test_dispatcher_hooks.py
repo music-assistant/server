@@ -100,7 +100,7 @@ class TestGetSimilarTracks:
         )
         good_track = make_track("good")
 
-        async def _fake_get(item_id: str, _provider: str) -> MagicMock:
+        async def _fake_get(item_id: str, _provider: str, **_kwargs: Any) -> MagicMock:
             if item_id == "bad":
                 raise MusicAssistantError("nope")
             return good_track
@@ -173,7 +173,7 @@ class TestRecommendations:
         recent_track = make_track("seed1", provider="spotify")
         resolved = make_track("r1")
 
-        async def _fake_get(item_id: str, _provider: str) -> MagicMock:
+        async def _fake_get(item_id: str, _provider: str, **_kwargs: Any) -> MagicMock:
             return recent_track if item_id == "recent1" else resolved
 
         mock_mass.music.tracks.get = AsyncMock(side_effect=_fake_get)
@@ -246,7 +246,7 @@ class TestRecommendations:
         recent_track = make_track("seed1", provider="spotify")
         resolved = make_track("r1")
 
-        async def _fake_get(item_id: str, _provider: str) -> MagicMock:
+        async def _fake_get(item_id: str, _provider: str, **_kwargs: Any) -> MagicMock:
             if item_id == "recent1":
                 return recent_track
             return resolved
@@ -288,7 +288,7 @@ class TestRecommendations:
         resolved_a = make_track("cand_a")
         resolved_b = make_track("cand_b")
 
-        async def _fake_get(item_id: str, _provider: str) -> MagicMock:
+        async def _fake_get(item_id: str, _provider: str, **_kwargs: Any) -> MagicMock:
             return {
                 "recent1": recent_track1,
                 "recent2": recent_track2,
