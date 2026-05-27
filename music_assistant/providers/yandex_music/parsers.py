@@ -118,6 +118,9 @@ def detect_description_language(text: str | None) -> Literal["ru"] | None:
     """
     if not text:
         return None
+    text = text.strip()
+    if not text:
+        return None
     if not _NON_RUSSIAN_CYRILLIC_MARKERS.isdisjoint(text):
         return None
     cyrillic = sum(1 for c in text if "Ѐ" <= c <= "ӿ")
@@ -370,11 +373,6 @@ def parse_track(
                         )
                     ]
                 )
-
-    # Parse external IDs
-    if track_obj.real_id:
-        # real_id can be used as an identifier
-        pass
 
     # Metadata
     if track_obj.content_warning:

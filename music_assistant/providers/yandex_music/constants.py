@@ -5,24 +5,22 @@ from __future__ import annotations
 from typing import Final
 
 # Configuration Keys
-CONF_TOKEN = "token"
-CONF_QUALITY = "quality"
-CONF_BASE_URL = "base_url"
+CONF_TOKEN: Final[str] = "token"
+CONF_QUALITY: Final[str] = "quality"
+CONF_BASE_URL: Final[str] = "base_url"
 
 # Actions
-CONF_ACTION_AUTH = "auth"
-CONF_ACTION_AUTH_QR = "auth_qr"
-CONF_ACTION_AUTH_DEVICE = "auth_device"
-CONF_ACTION_CLEAR_AUTH = "clear_auth"
+CONF_ACTION_AUTH_QR: Final[str] = "auth_qr"
+CONF_ACTION_AUTH_DEVICE: Final[str] = "auth_device"
+CONF_ACTION_CLEAR_AUTH: Final[str] = "clear_auth"
 
 # QR authentication config keys
-CONF_X_TOKEN = "x_token"
+CONF_X_TOKEN: Final[str] = "x_token"
 CONF_REFRESH_TOKEN: Final[str] = "refresh_token"
-CONF_REMEMBER_SESSION = "remember_session"
+CONF_REMEMBER_SESSION: Final[str] = "remember_session"
 
-# Labels
-LABEL_TOKEN = "token_label"
-LABEL_AUTH_INSTRUCTIONS = "auth_instructions_label"
+# Session-id key handed to the QR / Device-flow handlers from the MA config flow.
+CONF_SESSION_ID: Final[str] = "session_id"
 
 # API defaults
 DEFAULT_LIMIT: Final[int] = 50
@@ -30,18 +28,18 @@ DEFAULT_BASE_URL: Final[str] = "https://api.music.yandex.net"
 WEB_BASE_URL: Final[str] = "https://music.yandex.ru"
 
 # Quality options (matching reference implementation)
-QUALITY_EFFICIENT = "efficient"  # Low quality, efficient bandwidth (~64kbps AAC)
-QUALITY_BALANCED = "balanced"  # Medium quality, balanced performance (~192kbps AAC)
-QUALITY_HIGH = "high"  # High quality, lossy (~320kbps MP3)
-QUALITY_SUPERB = "superb"  # Highest quality, lossless (FLAC)
+QUALITY_EFFICIENT: Final[str] = "efficient"  # Low quality, efficient bandwidth (~64kbps AAC)
+QUALITY_BALANCED: Final[str] = "balanced"  # Medium quality, balanced performance (~192kbps AAC)
+QUALITY_HIGH: Final[str] = "high"  # High quality, lossy (~320kbps MP3)
+QUALITY_SUPERB: Final[str] = "superb"  # Highest quality, lossless (FLAC)
 
 # Transport modes for get-file-info API
-CONF_TRANSPORT = "transport"
-TRANSPORT_RAW = "raw"  # Direct unencrypted stream (default)
-TRANSPORT_ENCRAW = "encraw"  # AES-CTR encrypted stream
+CONF_TRANSPORT: Final[str] = "transport"
+TRANSPORT_RAW: Final[str] = "raw"  # Direct unencrypted stream (default)
+TRANSPORT_ENCRAW: Final[str] = "encraw"  # AES-CTR encrypted stream
 
 # Custom codecs override (empty = use quality-based default)
-CONF_CODECS = "codecs"
+CONF_CODECS: Final[str] = "codecs"
 
 # Quality → get-file-info parameter mapping
 # Codecs order determines API priority (first codec = preferred by server)
@@ -122,9 +120,8 @@ LIKED_BATCH_JITTER_MIN_S: Final[float] = 0.15
 LIKED_BATCH_JITTER_SPAN_S: Final[float] = 0.20
 
 # Image sizes
-IMAGE_SIZE_SMALL = "200x200"
-IMAGE_SIZE_MEDIUM = "400x400"
-IMAGE_SIZE_LARGE = "1000x1000"
+IMAGE_SIZE_MEDIUM: Final[str] = "400x400"
+IMAGE_SIZE_LARGE: Final[str] = "1000x1000"
 
 # Locale-aware provider display names for owner normalization
 PROVIDER_DISPLAY_NAME_RU: Final[str] = "Яндекс Музыка"

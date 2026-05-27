@@ -989,13 +989,15 @@ class YandexMusicClient:
         self,
         query: str,
         search_type: str = "all",
-        limit: int = DEFAULT_LIMIT,
     ) -> Search | None:
         """Search for tracks, albums, artists, or playlists.
 
+        The upstream ``yandex-music`` client does not accept a per-type result
+        cap at this layer — callers slice the parsed buckets to whatever
+        ``limit`` they need after classification.
+
         :param query: Search query string.
         :param search_type: Type of search ('all', 'track', 'album', 'artist', 'playlist').
-        :param limit: Maximum number of results per type.
         :return: Search results object.
         """
         try:
@@ -1631,7 +1633,11 @@ class YandexMusicClient:
         """
 
         async def _get(c: ClientAsync) -> dict[str, Any]:
-            url = f"{c.base_url}/landing-blocks/{block}"
+            # ``base_url`` is not part of the public ``ClientAsync`` contract;
+            # mirror ``_rotor_session_request`` and fall back defensively so a
+            # library rename does not crash this endpoint with AttributeError.
+            base = getattr(c, "base_url", "https://api.music.yandex.net")
+            url = f"{base}/landing-blocks/{block}"
             return await c._request.get(url)  # type: ignore[no-any-return]
 
         try:

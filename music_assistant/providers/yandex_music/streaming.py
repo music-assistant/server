@@ -261,7 +261,13 @@ class YandexMusicStreamingManager:
         if preferred_normalized == QUALITY_EFFICIENT:
             sorted_infos_asc = sorted(
                 download_infos,
-                key=lambda x: x.bitrate_in_kbps or 999,
+                # ``or float('inf')`` (rather than the previous ``or 999``) makes
+                # the sentinel unambiguous: 999 kbps is conceivably a real
+                # bitrate, but no real Yandex stream reports infinity. Both
+                # ``None`` and ``0`` (which Yandex emits for lossless FLAC) are
+                # falsy and rank last so "efficient" never picks a lossless
+                # stream over a known low-bitrate AAC.
+                key=lambda x: x.bitrate_in_kbps or float("inf"),
             )
             for codec in ("aac-mp4", "aac", "he-aac-mp4", "he-aac", "mp3"):
                 for info in sorted_infos_asc:
@@ -664,11 +670,12 @@ class YandexMusicStreamingManager:
         bytes_yielded: int,
         attempt: int,
         max_retries: int,
-    ) -> bytes | None:
+    ) -> bytes:
         """Handle URL expiry (401/403/410) by refreshing and returning updated key.
 
-        :return: Updated AES key bytes (or empty bytes for raw), None if exhausted.
-        :raises MediaNotFoundError: When refresh fails after retries exhausted.
+        :return: Updated AES key bytes for encrypted streams, or empty ``bytes``
+            for raw streams.
+        :raises MediaNotFoundError: When refresh fails or retries are exhausted.
         """
         if not await self._refresh_stream_url(
             streamdetails,

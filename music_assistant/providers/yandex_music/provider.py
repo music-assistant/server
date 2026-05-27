@@ -2012,7 +2012,7 @@ class YandexMusicProvider(MusicProvider):
         # Use specific type if only one requested, otherwise search all
         search_type = requested_types[0] if len(requested_types) == 1 else "all"
 
-        search_result = await self.client.search(search_query, search_type=search_type, limit=limit)
+        search_result = await self.client.search(search_query, search_type=search_type)
         if not search_result:
             return result
 

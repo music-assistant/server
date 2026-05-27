@@ -520,6 +520,10 @@ def test_parse_podcast_episode_inherits_podcast_image(provider_stub: ProviderStu
         pytest.param(None, None, id="none"),
         pytest.param("", None, id="empty"),
         pytest.param("   ", None, id="whitespace"),
+        # Whitespace must be stripped before the 50% share check, otherwise
+        # padding can dilute the Cyrillic share below the threshold even when
+        # the text itself is unambiguously Russian.
+        pytest.param("   Российский исполнитель.   ", "ru", id="leading-trailing-whitespace-ru"),
         pytest.param("Singer-songwriter from somewhere.", None, id="english-bio"),
         pytest.param("Российский исполнитель из Санкт-Петербурга.", "ru", id="ru-bio"),
         pytest.param(
