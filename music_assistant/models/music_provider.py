@@ -1169,9 +1169,7 @@ class MusicProvider(Provider):
                     library_item = await self.mass.music.tracks.update_item_in_library(
                         library_item.item_id, prov_item
                     )
-                elif prov_item.album and not await self.mass.music.tracks.get_library_track_albums(
-                    library_item.item_id
-                ):
+                elif prov_item.album and not library_item.album:
                     # Backfill missing album_tracks link for existing tracks.
                     library_item = await self.mass.music.tracks.update_item_in_library(
                         library_item.item_id, prov_item

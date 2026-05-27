@@ -122,7 +122,7 @@ class AppleMusicLibraryManager:
             return True
         album_item_id = track.album.item_id
         return (
-            track.album.item_id == track.album.name
+            album_item_id == track.album.name
             and not is_library_id(album_item_id)
             and not is_catalog_id(album_item_id)
         )

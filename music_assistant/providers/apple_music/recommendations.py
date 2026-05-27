@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import ClientResponseError
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MediaNotFoundError, MusicAssistantError
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     Artist,
     ItemMapping,
@@ -64,10 +64,7 @@ class AppleMusicRecommendationManager:
                     )
                     break
                 raise
-            except MusicAssistantError:
-                # Treat upstream server-side failures as "no recommendations".
-                break
-            if not response or "data" not in response:
+            if not response or not response.get("data"):
                 break
             track_ids = [track["id"] for track in response["data"] if track and track["id"]]
             rating_response = await self.api.get_ratings(track_ids, MediaType.TRACK)

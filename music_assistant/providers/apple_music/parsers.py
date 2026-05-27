@@ -187,7 +187,7 @@ def parse_track(
 ) -> Track:
     """Parse track object to generic layout."""
     relationships = track_obj.get("relationships", {})
-    library_attributes = track_obj.get("attributes", {})
+    raw_attributes = track_obj.get("attributes", {})
     if (
         track_obj.get("type") == "library-songs"
         and relationships.get("catalog", {}).get("data", []) != []
@@ -227,7 +227,7 @@ def parse_track(
         artists = relationships["artists"]
         track.artists = [parse_artist(provider, artist) for artist in artists["data"]]
     elif artist_name := normalize_unicode(
-        attributes.get("artistName") or library_attributes.get("artistName")
+        attributes.get("artistName") or raw_attributes.get("artistName")
     ):
         track.artists = [
             ItemMapping(
@@ -243,7 +243,7 @@ def parse_track(
             if parsed_album:
                 track.album = parsed_album
     elif album_name := normalize_unicode(
-        attributes.get("albumName") or library_attributes.get("albumName")
+        attributes.get("albumName") or raw_attributes.get("albumName")
     ):
         track.album = ItemMapping(
             media_type=MediaType.ALBUM,

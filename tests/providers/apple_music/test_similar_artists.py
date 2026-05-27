@@ -148,26 +148,29 @@ async def test_get_similar_tracks_returns_tracks(
     mock_api: MagicMock,
 ) -> None:
     """get_similar_tracks parses station tracks returned by Apple API."""
-    mock_api.post_data.return_value = {
-        "data": [
-            {
-                "id": "track1",
-                "type": "songs",
-                "attributes": {
-                    "name": "Track 1",
-                    "artistName": "Artist 1",
-                    "durationInMillis": 180000,
-                    "playParams": {"id": "track1"},
-                },
-                "relationships": {},
-            }
-        ]
-    }
+    mock_api.post_data.side_effect = [
+        {
+            "data": [
+                {
+                    "id": "track1",
+                    "type": "songs",
+                    "attributes": {
+                        "name": "Track 1",
+                        "artistName": "Artist 1",
+                        "durationInMillis": 180000,
+                        "playParams": {"id": "track1"},
+                    },
+                    "relationships": {},
+                }
+            ]
+        },
+        {"data": []},
+    ]
     mock_api.get_ratings.return_value = {"track1": True}
 
     result = await manager.get_similar_tracks("123", limit=2)
 
-    assert len(result) == 2
+    assert len(result) == 1
     assert result[0].name == "Track 1"
 
 
