@@ -1,4 +1,4 @@
-"""Simple Pocket Casts API client built from scratch."""
+"""API client for the Pocket Casts service."""
 
 from __future__ import annotations
 
@@ -6,349 +6,285 @@ import logging
 from typing import Any, cast
 
 import aiohttp
+from music_assistant_models.errors import (
+    LoginFailed,
+    ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+)
 
-LOGGER = logging.getLogger(__name__)
+from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.throttle_retry import (
+    ThrottlerManager,
+    parse_retry_after,
+    throttle_with_retries,
+)
 
-
-class PocketCastsAPIError(Exception):
-    """Base exception for Pocket Casts API errors."""
-
-
-class LoginError(PocketCastsAPIError):
-    """Login failed."""
+API_BASE_URL = "https://api.pocketcasts.com"
+PODCAST_API_URL = "https://podcast-api.pocketcasts.com"
 
 
 class PocketCastsClient:
-    """Direct API client for Pocket Casts - no external library needed."""
+    """Client for the Pocket Casts API."""
 
-    BASE_URL = "https://api.pocketcasts.com"
+    throttler = ThrottlerManager(rate_limit=5, period=1)
 
-    def __init__(self, session: aiohttp.ClientSession) -> None:
-        """Initialize the client.
+    def __init__(self, session: aiohttp.ClientSession, logger: logging.Logger) -> None:
+        """
+        Initialize the client.
 
         :param session: The aiohttp session to use for requests (typically mass.http_session).
+        :param logger: The provider logger, used for throttle/retry messages.
         """
         self.token: str | None = None
         self.user_uuid: str | None = None
         self.session = session
+        self.logger = logger
 
-    async def login(self, email: str, password: str) -> bool:
-        """Login and get JWT token."""
-        try:
-            LOGGER.info("Attempting login to Pocket Casts API")
+    async def login(self, email: str, password: str) -> None:
+        """
+        Authenticate with Pocket Casts and store the session token.
 
-            async with self.session.post(
-                f"{self.BASE_URL}/user/login", data={"email": email, "password": password}
-            ) as response:
-                if response.status != 200:
-                    text = await response.text()
-                    LOGGER.error("Login failed with status %d: %s", response.status, text)
-                    raise LoginError(f"Login failed with status {response.status}")
-
-                data = await response.json()
-                self.token = data.get("token")
-                self.user_uuid = data.get("uuid")
-
-                if not self.token:
-                    raise LoginError("No token in login response")
-
-                LOGGER.info("Successfully logged in to Pocket Casts")
-                return True
-
-        except aiohttp.ClientError as err:
-            LOGGER.error("Network error during login: %s", err)
-            raise LoginError(f"Network error: {err}") from err
+        :param email: The account email address.
+        :param password: The account password.
+        """
+        data = await self._request(
+            "POST",
+            f"{API_BASE_URL}/user/login",
+            auth=False,
+            data={"email": email, "password": password},
+        )
+        self.token = data.get("token")
+        self.user_uuid = data.get("uuid")
+        if not self.token:
+            raise LoginFailed("No token in Pocket Casts login response")
+        self.logger.info("Successfully logged in to Pocket Casts")
 
     def _headers(self) -> dict[str, str]:
-        """Get headers with auth token."""
         if not self.token:
-            raise PocketCastsAPIError("Not logged in")
+            raise LoginFailed("Not logged in to Pocket Casts")
         return {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
 
+    @throttle_with_retries  # type: ignore[type-var]
+    async def _request(
+        self, method: str, url: str, *, auth: bool = True, **kwargs: Any
+    ) -> dict[str, Any]:
+        """
+        Perform a request against the Pocket Casts API and return the decoded JSON body.
+
+        :param method: The HTTP method to use.
+        :param url: The full request URL.
+        :param auth: Whether to send the authorization header.
+        """
+        headers = self._headers() if auth else None
+        try:
+            async with self.session.request(method, url, headers=headers, **kwargs) as response:
+                if response.status in (401, 403):
+                    raise LoginFailed(f"Pocket Casts authentication failed ({response.status})")
+                if response.status == 429 or response.status >= 500:
+                    # transient: let the throttler back off and retry
+                    raise ResourceTemporarilyUnavailable(
+                        f"Pocket Casts temporarily unavailable ({response.status})",
+                        backoff_time=parse_retry_after(response.headers.get("Retry-After")),
+                    )
+                if response.status != 200:
+                    text = await response.text()
+                    raise ProviderUnavailableError(
+                        f"Pocket Casts request to {url} failed ({response.status}): {text}"
+                    )
+                return cast("dict[str, Any]", await response.json(loads=json_loads))
+        except aiohttp.ClientError as err:
+            raise ResourceTemporarilyUnavailable(
+                f"Network error contacting Pocket Casts: {err}"
+            ) from err
+
     async def get_subscribed_podcasts(self) -> list[dict[str, Any]]:
-        """Get user's subscribed podcasts."""
-        LOGGER.debug("Fetching subscribed podcasts")
+        """Return the user's subscribed podcasts."""
+        data = await self._request("POST", f"{API_BASE_URL}/user/podcast/list")
+        podcasts: list[dict[str, Any]] = data.get("podcasts", [])
+        self.logger.debug("Retrieved %d subscribed podcasts", len(podcasts))
+        return podcasts
 
-        async with self.session.post(
-            f"{self.BASE_URL}/user/podcast/list", headers=self._headers()
-        ) as response:
-            if response.status in (401, 403):
-                raise LoginError(f"Authentication failed with status {response.status}")
-            if response.status != 200:
-                text = await response.text()
-                raise PocketCastsAPIError(f"Failed to get podcasts: {response.status} - {text}")
+    async def get_podcast(self, podcast_uuid: str) -> dict[str, Any]:
+        """
+        Return full details (including episodes) for a podcast by UUID.
 
-            data = await response.json()
-            podcasts: list[dict[str, Any]] = data.get("podcasts", [])
-            LOGGER.info("Retrieved %d subscribed podcasts", len(podcasts))
-            return podcasts
+        :param podcast_uuid: The podcast UUID.
+        """
+        data = await self._request(
+            "GET",
+            f"{PODCAST_API_URL}/podcast/full/{podcast_uuid}",
+            auth=False,
+            allow_redirects=True,
+        )
+        podcast: dict[str, Any] = data.get("podcast", {})
+        return podcast
 
     async def get_podcast_episodes(self, podcast_uuid: str) -> list[dict[str, Any]]:
-        """Get episodes for a specific podcast via API redirect."""
-        LOGGER.debug("Fetching episodes via API redirect for podcast %s", podcast_uuid)
+        """
+        Return all episodes for a podcast.
 
-        async with self.session.get(
-            f"https://podcast-api.pocketcasts.com/podcast/full/{podcast_uuid}",
-            allow_redirects=True,
-        ) as response:
-            if response.status in (401, 403):
-                raise LoginError(f"Authentication failed with status {response.status}")
-            if response.status != 200:
-                raise PocketCastsAPIError(
-                    f"Failed to get episodes for {podcast_uuid}: {response.status}"
-                )
-
-            data = await response.json()
-            podcast_obj = data.get("podcast", {})
-            episodes: list[dict[str, Any]] = podcast_obj.get("episodes", [])
-
-            LOGGER.info("Retrieved %d episodes for podcast %s", len(episodes), podcast_uuid)
-            return episodes
+        :param podcast_uuid: The podcast UUID.
+        """
+        podcast = await self.get_podcast(podcast_uuid)
+        # full-podcast episodes use snake_case keys: uuid, title, url, file_type, file_size,
+        # duration (seconds), published, type, slug, has_generated_transcript. Note this is a
+        # different (leaner) schema than the /user/episode endpoint - no playback status,
+        # episode number, show notes or artwork.
+        episodes: list[dict[str, Any]] = podcast.get("episodes", [])
+        self.logger.debug("Retrieved %d episodes for podcast %s", len(episodes), podcast_uuid)
+        return episodes
 
     async def get_in_progress_episodes(self) -> list[dict[str, Any]]:
-        """Get episodes currently in progress."""
-        LOGGER.debug("Fetching in-progress episodes")
+        """Return episodes currently in progress."""
+        data = await self._request("POST", f"{API_BASE_URL}/user/in_progress")
+        episodes: list[dict[str, Any]] = data.get("episodes", [])
+        self.logger.debug("Retrieved %d in-progress episodes", len(episodes))
+        return episodes
 
-        async with self.session.post(
-            f"{self.BASE_URL}/user/in_progress", headers=self._headers()
-        ) as response:
-            if response.status in (401, 403):
-                raise LoginError(f"Authentication failed with status {response.status}")
-            if response.status != 200:
-                text = await response.text()
-                raise PocketCastsAPIError(f"Failed to get in-progress: {response.status} - {text}")
-
-            data = await response.json()
-            episodes: list[dict[str, Any]] = data.get("episodes", [])
-            LOGGER.debug("Retrieved %d in-progress episodes", len(episodes))
-            return episodes
-
-    async def get_up_next_episodes(self) -> dict[str, dict[str, Any]] | list[dict[str, Any]]:
-        """Get Up Next queue episodes.
-
-        Note: Returns dict with episode UUIDs as keys, unlike other endpoints that return lists.
-        """
-        LOGGER.debug("Fetching Up Next episodes")
-
-        async with self.session.post(
-            f"{self.BASE_URL}/up_next/list", headers=self._headers()
-        ) as response:
-            if response.status in (401, 403):
-                raise LoginError(f"Authentication failed with status {response.status}")
-            if response.status != 200:
-                text = await response.text()
-                raise PocketCastsAPIError(f"Failed to get up next: {response.status} - {text}")
-
-            data = await response.json()
-            episodes: dict[str, dict[str, Any]] | list[dict[str, Any]] = data.get("episodes", {})
-            LOGGER.debug("Retrieved %d up next episodes", len(episodes))
-            return episodes
+    async def get_up_next_episodes(self) -> list[dict[str, Any]]:
+        """Return the Up Next queue episodes."""
+        data = await self._request("POST", f"{API_BASE_URL}/up_next/list")
+        episodes = data.get("episodes", [])
+        # the up_next endpoint returns a uuid-keyed map; normalise to a list carrying the uuid
+        if isinstance(episodes, dict):
+            return [{"uuid": uuid, **episode} for uuid, episode in episodes.items()]
+        return cast("list[dict[str, Any]]", episodes)
 
     async def get_new_releases(self) -> list[dict[str, Any]]:
-        """Get new release episodes from subscriptions."""
-        LOGGER.debug("Fetching new releases")
-
-        async with self.session.post(
-            f"{self.BASE_URL}/user/new_releases", headers=self._headers()
-        ) as response:
-            if response.status in (401, 403):
-                raise LoginError(f"Authentication failed with status {response.status}")
-            if response.status != 200:
-                text = await response.text()
-                raise PocketCastsAPIError(f"Failed to get new releases: {response.status} - {text}")
-
-            data = await response.json()
-            episodes: list[dict[str, Any]] = data.get("episodes", [])
-            LOGGER.debug("Retrieved %d new release episodes", len(episodes))
-            return episodes
+        """Return new release episodes from subscriptions."""
+        data = await self._request("POST", f"{API_BASE_URL}/user/new_releases")
+        episodes: list[dict[str, Any]] = data.get("episodes", [])
+        self.logger.debug("Retrieved %d new release episodes", len(episodes))
+        return episodes
 
     async def get_starred_episodes(self) -> list[dict[str, Any]]:
-        """Get starred/favorited episodes."""
-        LOGGER.debug("Fetching starred episodes")
-
-        async with self.session.post(
-            f"{self.BASE_URL}/user/starred", headers=self._headers()
-        ) as response:
-            if response.status in (401, 403):
-                raise LoginError(f"Authentication failed with status {response.status}")
-            if response.status != 200:
-                text = await response.text()
-                raise PocketCastsAPIError(f"Failed to get starred: {response.status} - {text}")
-
-            data = await response.json()
-            episodes: list[dict[str, Any]] = data.get("episodes", [])
-            LOGGER.debug("Retrieved %d starred episodes", len(episodes))
-            return episodes
+        """Return starred episodes."""
+        data = await self._request("POST", f"{API_BASE_URL}/user/starred")
+        episodes: list[dict[str, Any]] = data.get("episodes", [])
+        self.logger.debug("Retrieved %d starred episodes", len(episodes))
+        return episodes
 
     async def get_history(self) -> list[dict[str, Any]]:
-        """Get listening history episodes."""
-        LOGGER.debug("Fetching history")
+        """Return listening history episodes."""
+        data = await self._request("POST", f"{API_BASE_URL}/user/history")
+        episodes: list[dict[str, Any]] = data.get("episodes", [])
+        self.logger.debug("Retrieved %d history episodes", len(episodes))
+        return episodes
 
-        async with self.session.post(
-            f"{self.BASE_URL}/user/history", headers=self._headers()
-        ) as response:
-            if response.status in (401, 403):
-                raise LoginError(f"Authentication failed with status {response.status}")
-            if response.status != 200:
-                text = await response.text()
-                raise PocketCastsAPIError(f"Failed to get history: {response.status} - {text}")
+    async def get_episode_details(self, episode_uuid: str) -> dict[str, Any]:
+        """
+        Return detailed episode info including correct duration and playback status.
 
-            data = await response.json()
-            episodes: list[dict[str, Any]] = data.get("episodes", [])
-            LOGGER.debug("Retrieved %d history episodes", len(episodes))
-            return episodes
+        :param episode_uuid: The episode UUID.
+        """
+        # /user/episode returns camelCase keys: uuid, title, url, fileType, duration (seconds),
+        # published, episodeNumber, playedUpTo (resume seconds), playingStatus (1=unplayed,
+        # 2=in progress, 3=played), starred, podcastUuid. No show notes or episode artwork.
+        data = await self._request(
+            "POST", f"{API_BASE_URL}/user/episode", json={"uuid": episode_uuid}
+        )
+        self.logger.debug(
+            "Episode %s: duration=%s, status=%s, playedUpTo=%s",
+            episode_uuid,
+            data.get("duration"),
+            data.get("playingStatus"),
+            data.get("playedUpTo"),
+        )
+        return data
+
+    async def search_podcasts(self, query: str) -> list[dict[str, Any]]:
+        """
+        Search for podcasts.
+
+        :param query: The search term.
+        """
+        data = await self._request("POST", f"{API_BASE_URL}/discover/search", json={"term": query})
+        podcasts: list[dict[str, Any]] = data.get("podcasts", [])
+        self.logger.debug("Found %d podcasts for query '%s'", len(podcasts), query)
+        return podcasts
 
     async def update_episode_progress(
         self, podcast_uuid: str, episode_uuid: str, position_seconds: int
-    ) -> bool:
-        """Update playback progress for an episode (status=2, in progress).
+    ) -> None:
+        """
+        Update playback progress for an episode (marks it in progress).
 
         :param podcast_uuid: The podcast UUID.
         :param episode_uuid: The episode UUID.
         :param position_seconds: Current playback position in seconds.
         """
-        try:
-            LOGGER.debug(
-                "Updating progress for episode %s to %d seconds", episode_uuid, position_seconds
-            )
+        await self._request(
+            "POST",
+            f"{API_BASE_URL}/sync/update_episode",
+            json={
+                "uuid": episode_uuid,
+                "podcast": podcast_uuid,
+                "status": 2,  # 2=in_progress
+                "position": str(position_seconds),
+            },
+        )
 
-            async with self.session.post(
-                f"{self.BASE_URL}/sync/update_episode",
-                headers=self._headers(),
-                json={
-                    "uuid": episode_uuid,
-                    "podcast": podcast_uuid,
-                    "status": 2,  # 2=in_progress
-                    "position": str(position_seconds),
-                },
-            ) as response:
-                success = response.status == 200
-                if not success:
-                    text = await response.text()
-                    LOGGER.error("Failed to update progress: %d - %s", response.status, text)
-
-                return success
-
-        except Exception as err:
-            LOGGER.error("Error updating progress: %s", err)
-            return False
-
-    async def mark_episode_played(self, podcast_uuid: str, episode_uuid: str) -> bool:
-        """Mark an episode as played (status=3).
+    async def mark_episode_played(self, podcast_uuid: str, episode_uuid: str) -> None:
+        """
+        Mark an episode as played.
 
         :param podcast_uuid: The podcast UUID.
         :param episode_uuid: The episode UUID.
         """
-        try:
-            LOGGER.debug("Marking episode %s as played", episode_uuid)
+        await self._request(
+            "POST",
+            f"{API_BASE_URL}/sync/update_episode",
+            json={"uuid": episode_uuid, "podcast": podcast_uuid, "status": 3},  # 3=played
+        )
 
-            async with self.session.post(
-                f"{self.BASE_URL}/sync/update_episode",
-                headers=self._headers(),
-                json={
-                    "uuid": episode_uuid,
-                    "podcast": podcast_uuid,
-                    "status": 3,  # 3=played
-                },
-            ) as response:
-                success = response.status == 200
-                if not success:
-                    text = await response.text()
-                    LOGGER.error("Failed to mark as played: %d - %s", response.status, text)
-
-                return success
-
-        except Exception as err:
-            LOGGER.error("Error marking episode as played: %s", err)
-            return False
-
-    async def mark_episode_unplayed(self, podcast_uuid: str, episode_uuid: str) -> bool:
-        """Mark an episode as unplayed (status=1, position=0).
+    async def mark_episode_unplayed(self, podcast_uuid: str, episode_uuid: str) -> None:
+        """
+        Mark an episode as unplayed and reset its position.
 
         :param podcast_uuid: The podcast UUID.
         :param episode_uuid: The episode UUID.
         """
-        try:
-            LOGGER.debug("Marking episode %s as unplayed", episode_uuid)
-
-            async with self.session.post(
-                f"{self.BASE_URL}/sync/update_episode",
-                headers=self._headers(),
-                json={
-                    "uuid": episode_uuid,
-                    "podcast": podcast_uuid,
-                    "status": 1,  # 1=unplayed
-                    "position": "0",
-                },
-            ) as response:
-                success = response.status == 200
-                if not success:
-                    text = await response.text()
-                    LOGGER.error("Failed to mark as unplayed: %d - %s", response.status, text)
-
-                return success
-
-        except Exception as err:
-            LOGGER.error("Error marking episode as unplayed: %s", err)
-            return False
+        await self._request(
+            "POST",
+            f"{API_BASE_URL}/sync/update_episode",
+            json={
+                "uuid": episode_uuid,
+                "podcast": podcast_uuid,
+                "status": 1,  # 1=unplayed
+                "position": "0",
+            },
+        )
 
     async def archive_episode(
         self, podcast_uuid: str, episode_uuid: str, archive: bool = True
-    ) -> bool:
-        """Archive or unarchive an episode.
+    ) -> None:
+        """
+        Archive or unarchive an episode.
 
         :param podcast_uuid: The podcast UUID.
         :param episode_uuid: The episode UUID.
         :param archive: True to archive, False to unarchive.
         """
-        try:
-            LOGGER.debug("Setting archive=%s for episode %s", archive, episode_uuid)
+        await self._request(
+            "POST",
+            f"{API_BASE_URL}/sync/update_episodes_archive",
+            json={
+                "episodes": [{"uuid": episode_uuid, "podcast": podcast_uuid}],
+                "archive": archive,
+            },
+        )
 
-            async with self.session.post(
-                f"{self.BASE_URL}/sync/update_episodes_archive",
-                headers=self._headers(),
-                json={
-                    "episodes": [{"uuid": episode_uuid, "podcast": podcast_uuid}],
-                    "archive": archive,
-                },
-            ) as response:
-                success = response.status == 200
-                if not success:
-                    text = await response.text()
-                    LOGGER.error("Failed to archive episode: %d - %s", response.status, text)
-
-                return success
-
-        except Exception as err:
-            LOGGER.error("Error archiving episode: %s", err)
-            return False
-
-    async def remove_from_up_next(self, episode_uuid: str) -> bool:
-        """Remove an episode from the Up Next queue.
+    async def remove_from_up_next(self, episode_uuid: str) -> None:
+        """
+        Remove an episode from the Up Next queue.
 
         :param episode_uuid: The episode UUID to remove.
         """
-        try:
-            LOGGER.debug("Removing episode %s from Up Next", episode_uuid)
-
-            async with self.session.post(
-                f"{self.BASE_URL}/up_next/remove",
-                headers=self._headers(),
-                json={
-                    "version": 2,
-                    "uuids": [episode_uuid],
-                },
-            ) as response:
-                success = response.status == 200
-                if not success:
-                    text = await response.text()
-                    LOGGER.error("Failed to remove from Up Next: %d - %s", response.status, text)
-
-                return success
-
-        except Exception as err:
-            LOGGER.error("Error removing from Up Next: %s", err)
-            return False
+        await self._request(
+            "POST",
+            f"{API_BASE_URL}/up_next/remove",
+            json={"version": 2, "uuids": [episode_uuid]},
+        )
 
     async def play_now(
         self,
@@ -357,10 +293,9 @@ class PocketCastsClient:
         title: str,
         url: str,
         published: str | None = None,
-    ) -> bool:
-        """Add episode to Up Next at "play now" position (top of queue).
-
-        This is called when starting playback of an episode to sync with Pocketcasts.
+    ) -> None:
+        """
+        Add an episode to the top of the Up Next queue.
 
         :param episode_uuid: The episode UUID.
         :param podcast_uuid: The podcast UUID.
@@ -368,36 +303,17 @@ class PocketCastsClient:
         :param url: The episode audio URL.
         :param published: The episode publish date (ISO format), optional.
         """
-        try:
-            LOGGER.debug("Adding episode %s to Up Next (play now)", episode_uuid)
-
-            episode_data: dict[str, Any] = {
-                "uuid": episode_uuid,
-                "podcast": podcast_uuid,
-                "title": title,
-                "url": url,
-            }
-            if published:
-                episode_data["published"] = published
-
-            async with self.session.post(
-                f"{self.BASE_URL}/up_next/play_now",
-                headers=self._headers(),
-                json={
-                    "version": 2,
-                    "episode": episode_data,
-                },
-            ) as response:
-                success = response.status == 200
-                if not success:
-                    text = await response.text()
-                    LOGGER.error("Failed to add to Up Next: %d - %s", response.status, text)
-
-                return success
-
-        except Exception as err:
-            LOGGER.error("Error adding to Up Next: %s", err)
-            return False
+        episode: dict[str, Any] = {
+            "uuid": episode_uuid,
+            "podcast": podcast_uuid,
+            "title": title,
+            "url": url,
+        }
+        if published:
+            episode["published"] = published
+        await self._request(
+            "POST", f"{API_BASE_URL}/up_next/play_now", json={"version": 2, "episode": episode}
+        )
 
     async def add_to_history(
         self,
@@ -406,10 +322,9 @@ class PocketCastsClient:
         title: str,
         url: str,
         published: str | None = None,
-    ) -> bool:
-        """Record episode playback start in listening history.
-
-        Called when an episode begins playing to add it to the recent history.
+    ) -> None:
+        """
+        Record an episode in the listening history.
 
         :param episode_uuid: The episode UUID.
         :param podcast_uuid: The podcast UUID.
@@ -417,173 +332,33 @@ class PocketCastsClient:
         :param url: The episode audio URL.
         :param published: The episode publish date (ISO format), optional.
         """
-        try:
-            LOGGER.debug("Adding episode %s to history", episode_uuid)
+        payload: dict[str, Any] = {
+            "action": 1,
+            "podcast": podcast_uuid,
+            "episode": episode_uuid,
+            "title": title,
+            "url": url,
+        }
+        if published:
+            payload["published"] = published
+        await self._request("POST", f"{API_BASE_URL}/history/do", json=payload)
 
-            payload: dict[str, Any] = {
-                "action": 1,
-                "podcast": podcast_uuid,
-                "episode": episode_uuid,
-                "title": title,
-                "url": url,
-            }
-            if published:
-                payload["published"] = published
-
-            async with self.session.post(
-                f"{self.BASE_URL}/history/do",
-                headers=self._headers(),
-                json=payload,
-            ) as response:
-                if response.status in (401, 403):
-                    raise LoginError(f"Authentication failed with status {response.status}")
-                if response.status != 200:
-                    text = await response.text()
-                    LOGGER.error("Failed to add to history: %d - %s", response.status, text)
-                    return False
-
-                return True
-
-        except LoginError:
-            raise
-        except Exception as err:
-            LOGGER.error("Error adding to history: %s", err)
-            return False
-
-    async def get_episode_details(self, episode_uuid: str) -> dict[str, Any] | None:
-        """Get detailed episode info including correct duration and playback status.
-
-        This endpoint returns accurate data including:
-        - duration: Correct episode length in seconds
-        - playingStatus: 1=unplayed, 2=in_progress, 3=played
-        - playedUpTo: Resume position in seconds
-        - starred: Whether episode is starred
-
-        :param episode_uuid: The episode UUID.
+    async def subscribe_podcast(self, podcast_uuid: str) -> None:
         """
-        LOGGER.debug("Fetching episode details for %s", episode_uuid)
-
-        async with self.session.post(
-            f"{self.BASE_URL}/user/episode",
-            headers=self._headers(),
-            json={"uuid": episode_uuid},
-        ) as response:
-            if response.status in (401, 403):
-                raise LoginError(f"Authentication failed with status {response.status}")
-            if response.status != 200:
-                text = await response.text()
-                raise PocketCastsAPIError(
-                    f"Failed to get episode details: {response.status} - {text}"
-                )
-
-            data: dict[str, Any] = await response.json()
-            LOGGER.debug(
-                "Episode %s: duration=%s, status=%s, playedUpTo=%s",
-                episode_uuid,
-                data.get("duration"),
-                data.get("playingStatus"),
-                data.get("playedUpTo"),
-            )
-            return data
-
-    async def search_podcasts(self, query: str) -> list[dict[str, Any]]:
-        """Search for podcasts."""
-        LOGGER.debug("Searching for podcasts: %s", query)
-
-        async with self.session.post(
-            f"{self.BASE_URL}/discover/search", headers=self._headers(), json={"term": query}
-        ) as response:
-            if response.status in (401, 403):
-                raise LoginError(f"Authentication failed with status {response.status}")
-            if response.status != 200:
-                text = await response.text()
-                raise PocketCastsAPIError(f"Search failed: {response.status} - {text}")
-
-            data = await response.json()
-            podcasts: list[dict[str, Any]] = data.get("podcasts", [])
-            LOGGER.info("Found %d podcasts for query '%s'", len(podcasts), query)
-            return podcasts
-
-    async def get_podcast_details(self, podcast_uuid: str) -> dict[str, Any] | None:
-        """Get details for any podcast by UUID (not just subscribed)."""
-        LOGGER.debug("Fetching podcast details for %s", podcast_uuid)
-
-        endpoints: list[tuple[str, dict[str, str]]] = [
-            (f"{self.BASE_URL}/discover/podcast", {"uuid": podcast_uuid}),
-            (f"{self.BASE_URL}/podcast/full/{podcast_uuid}", {}),
-        ]
-
-        for endpoint, data in endpoints:
-            async with self.session.post(
-                endpoint, headers=self._headers(), json=data if data else None
-            ) as response:
-                LOGGER.debug("Trying %s: status %d", endpoint, response.status)
-
-                if response.status in (401, 403):
-                    raise LoginError(f"Authentication failed with status {response.status}")
-                if response.status == 200:
-                    result = await response.json()
-                    podcast_data = result.get("podcast")
-                    if podcast_data is not None:
-                        return cast("dict[str, Any]", podcast_data)
-                    return None
-
-        LOGGER.debug("All podcast detail endpoints returned non-200 for %s", podcast_uuid)
-        return None
-
-    async def subscribe_podcast(self, podcast_uuid: str) -> bool:
-        """Subscribe to a podcast.
+        Subscribe to a podcast.
 
         :param podcast_uuid: The UUID of the podcast to subscribe to.
         """
-        try:
-            LOGGER.debug("Subscribing to podcast %s", podcast_uuid)
+        await self._request(
+            "POST", f"{API_BASE_URL}/user/podcast/subscribe", json={"uuid": podcast_uuid}
+        )
 
-            async with self.session.post(
-                f"{self.BASE_URL}/user/podcast/subscribe",
-                headers=self._headers(),
-                json={"uuid": podcast_uuid},
-            ) as response:
-                success = response.status == 200
-                if success:
-                    LOGGER.info("Successfully subscribed to podcast %s", podcast_uuid)
-                else:
-                    text = await response.text()
-                    LOGGER.error(
-                        "Failed to subscribe: %d - %s - Response: %s",
-                        response.status,
-                        response.reason,
-                        text,
-                    )
-
-                return success
-
-        except Exception as err:
-            LOGGER.error("Error subscribing to podcast: %s", err)
-            return False
-
-    async def unsubscribe_podcast(self, podcast_uuid: str) -> bool:
-        """Unsubscribe from a podcast.
+    async def unsubscribe_podcast(self, podcast_uuid: str) -> None:
+        """
+        Unsubscribe from a podcast.
 
         :param podcast_uuid: The UUID of the podcast to unsubscribe from.
         """
-        try:
-            LOGGER.debug("Unsubscribing from podcast %s", podcast_uuid)
-
-            async with self.session.post(
-                f"{self.BASE_URL}/user/podcast/unsubscribe",
-                headers=self._headers(),
-                json={"uuid": podcast_uuid},
-            ) as response:
-                success = response.status == 200
-                if success:
-                    LOGGER.info("Successfully unsubscribed from podcast %s", podcast_uuid)
-                else:
-                    text = await response.text()
-                    LOGGER.error("Failed to unsubscribe: %d - %s", response.status, text)
-
-                return success
-
-        except Exception as err:
-            LOGGER.error("Error unsubscribing from podcast: %s", err)
-            return False
+        await self._request(
+            "POST", f"{API_BASE_URL}/user/podcast/unsubscribe", json={"uuid": podcast_uuid}
+        )
