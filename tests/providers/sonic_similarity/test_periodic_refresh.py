@@ -8,13 +8,15 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from music_assistant.providers.sonic_similarity import (
-    PERIODIC_REFRESH_INTERVAL_HOURS,
-    PERIODIC_REFRESH_TASK_ID,
-    SUPPORTED_FEATURES,
     SonicSimilarityPlugin,
     setup,
 )
 from music_assistant.providers.sonic_similarity import clap_index as clap_index_module
+from music_assistant.providers.sonic_similarity.constants import (
+    PERIODIC_REFRESH_INTERVAL_HOURS,
+    PERIODIC_REFRESH_TASK_ID,
+    SUPPORTED_FEATURES,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable

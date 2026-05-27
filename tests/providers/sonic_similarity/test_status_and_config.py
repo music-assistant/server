@@ -16,14 +16,16 @@ if TYPE_CHECKING:
     from typing import Any
 
 from music_assistant.providers.sonic_similarity import (
-    ACTION_REBUILD_18DIM,
-    ACTION_REBUILD_CLAP,
-    SUPPORTED_FEATURES,
     SonicSimilarityPlugin,
     _collect_status_text,
     get_config_entries,
 )
 from music_assistant.providers.sonic_similarity import clap_index as clap_index_module
+from music_assistant.providers.sonic_similarity.constants import (
+    ACTION_REBUILD_18DIM,
+    ACTION_REBUILD_CLAP,
+    SUPPORTED_FEATURES,
+)
 
 
 class TestCollectStatusText:

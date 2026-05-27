@@ -118,8 +118,10 @@ def make_plugin(
         ``_provider_by_item_id`` and to set non-None corpus_means/stds.
     """
     from music_assistant.providers.sonic_similarity import (  # noqa: PLC0415
-        SUPPORTED_FEATURES,
         SonicSimilarityPlugin,
+    )
+    from music_assistant.providers.sonic_similarity.constants import (  # noqa: PLC0415
+        SUPPORTED_FEATURES,
     )
 
     def _make(
