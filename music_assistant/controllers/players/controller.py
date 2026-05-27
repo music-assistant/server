@@ -2390,10 +2390,34 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # signal player provider that the player got enabled/disabled
         if (player_enabled or player_disabled) and player_provider:
             assert isinstance(player_provider, PlayerProvider)  # for type checking
+            # Collect linked protocol IDs to cascade the enable/disable to.
+            # Without this, a disabled native parent leaves its linked protocols
+            # registered after restart; they then fail to find their parent and
+            # get wrapped in a fresh Universal Player.
+            cascade_protocol_ids: list[str] = []
+            parent_is_protocol = player.state.type == PlayerType.PROTOCOL if player else False
+            if not parent_is_protocol:
+                if player and player.linked_output_protocols:
+                    cascade_protocol_ids = [
+                        link.output_protocol_id for link in player.linked_output_protocols
+                    ]
+                else:
+                    cascade_protocol_ids = self._get_cached_protocol_ids(config.player_id)
             if player_disabled:
                 player_provider.on_player_disabled(config.player_id)
             elif player_enabled:
                 player_provider.on_player_enabled(config.player_id)
+            for protocol_id in cascade_protocol_ids:
+                protocol_raw = self.mass.config.get(f"{CONF_PLAYERS}/{protocol_id}")
+                if not protocol_raw:
+                    continue
+                if bool(protocol_raw.get("enabled", True)) == bool(player_enabled):
+                    continue
+                self.mass.create_task(
+                    self.mass.config.save_player_config(
+                        protocol_id, {ATTR_ENABLED: bool(player_enabled)}
+                    )
+                )
             return  # enabling/disabling a player will be handled by the provider
 
         if not player:

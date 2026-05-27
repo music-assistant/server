@@ -1689,7 +1689,7 @@ class PlayerQueuesController(CoreController):
             await AudioBuffer.get_buffer(
                 self.mass,
                 queue_item.streamdetails,
-                seek_position_ms=seek_position * 1000,
+                seek_position_ms=int(seek_position * 1000),
                 wait_ready=True,
                 reason="prepare",
             )
@@ -1871,7 +1871,8 @@ class PlayerQueuesController(CoreController):
 
     def index_by_id(self, queue_id: str, queue_item_id: str) -> int | None:
         """Get index by queue_item_id."""
-        queue_items = self._queue_items[queue_id]
+        if (queue_items := self._queue_items.get(queue_id)) is None:
+            return None
         for index, item in enumerate(queue_items):
             if item.queue_item_id == queue_item_id:
                 return index
@@ -1889,7 +1890,7 @@ class PlayerQueuesController(CoreController):
             # when seeking, the player only receives the remaining duration
             duration = queue_item.streamdetails.duration or queue_item.duration
             if duration and queue_item.streamdetails.seek_position:
-                duration = duration - queue_item.streamdetails.seek_position
+                duration = int(duration - queue_item.streamdetails.seek_position)
         else:
             duration = queue_item.duration
         if queue.session_id is None:
