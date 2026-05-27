@@ -984,19 +984,15 @@ class PlayerQueuesController(CoreController):
                     break
                 except (MediaNotFoundError, AudioError) as err:
                     item_name = queue_item.name if queue_item else "unknown"
-                    # MediaNotFoundError = item unreachable (deleted, geo-blocked) —
-                    # persist so future plays skip it. AudioError is usually
-                    # transient; leave the item available so a retry can resurface
-                    # the same actionable message.
+                    # Only MediaNotFoundError (item unreachable) is persistent;
+                    # keep AudioError items available so a retry can resurface
+                    # the same actionable error.
                     if queue_item and isinstance(err, MediaNotFoundError):
                         queue_item.available = False
                     next_index = self._get_next_index(queue_id, index, allow_repeat=False)
                     if next_index is None:
-                        # AudioError carries a source-specific message worth
-                        # surfacing verbatim (e.g. "Music Assistant is not the
-                        # active Spotify playback device"). MediaNotFoundError
-                        # just means the item itself wasn't reachable, so the
-                        # generic "no more tracks available" framing fits.
+                        # Surface an AudioError's own (actionable) message;
+                        # MediaNotFoundError gets the generic wording.
                         if isinstance(err, AudioError) and str(err):
                             msg = str(err)
                         else:
@@ -3089,11 +3085,9 @@ class PlayerQueuesController(CoreController):
         # regardless of which code path (flow mode or non-flow mode) creates the task
         prev_item = prev_state["current_item"]
 
-        # Live sources (radio / AudioSource) have no natural end — when they
-        # stop it's because the source itself paused/disconnected, not because
-        # the queue ran out of content. Clearing here would strand a later
-        # resume (the queue would have no item to act on). Leave the queue
-        # intact; the user can clear manually or initiate fresh playback.
+        # Live sources (radio / AudioSource) have no natural end — stopping
+        # means the source stopped, not that the queue is exhausted. Clearing
+        # would strand a later resume, so leave the queue intact.
         if prev_item is not None and prev_item.media_type in (
             MediaType.RADIO,
             MediaType.AUDIO_SOURCE,
