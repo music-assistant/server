@@ -21,6 +21,9 @@ APPLICATION_NAME: Final = "Music Assistant"
 # Type alias for items that can be added to playlists
 PlaylistPlayableItem = Track | Radio | PodcastEpisode | Audiobook
 
+# Default number of tracks a music provider may return as a preview sample for a dynamic playlist
+DYNAMIC_PLAYLIST_SAMPLE_SIZE: Final[int] = 25
+
 # Corresponding MediaType enum values (must match PlaylistPlayableItem types above)
 PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
     MediaType.TRACK,
