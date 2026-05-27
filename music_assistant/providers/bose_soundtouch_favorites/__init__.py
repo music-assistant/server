@@ -39,7 +39,6 @@ PRESET_IDS = range(1, 7)
 SEARCH_RESULT_LIMIT = 25
 SEARCH_TIMEOUT = 10
 RECONNECT_DELAY = 10
-NO_SEARCH_RESULTS_VALUE = "__bose_soundtouch_favorites_no_results__"
 
 BOSE_SUBPROTOCOLS = ("gabbo",)
 
@@ -249,20 +248,7 @@ async def build_media_options(
             value=value,
         )
 
-    if query and not options_by_value:
-        return [
-            ConfigValueOption(
-                title=f"No results found for {query}",
-                value=NO_SEARCH_RESULTS_VALUE,
-            )
-        ]
-
     return sorted(options_by_value.values(), key=lambda option: option.title.lower())
-
-
-def _is_real_media_selection(value: str) -> bool:
-    """Return true if the selected config value points to a playable media item."""
-    return bool(value and value != NO_SEARCH_RESULTS_VALUE)
 
 
 def _xml_local_name(tag: str) -> str:
@@ -279,9 +265,7 @@ async def _build_preset_media_options(
 ) -> list[ConfigValueOption]:
     """Build the result dropdown for a favorite without losing current selection state."""
     media_options = await build_media_options(mass, media_type, query) if refresh_results else []
-    if _is_real_media_selection(selected_media) and selected_media not in {
-        option.value for option in media_options
-    }:
+    if selected_media and selected_media not in {option.value for option in media_options}:
         media_options.append(ConfigValueOption(title=selected_media, value=selected_media))
 
     return media_options
@@ -349,7 +333,7 @@ async def get_config_entries(
         selected_media = _string_config_value(values, selected_key)
         media_value = _string_config_value(values, media_key)
 
-        if action == copy_action and _is_real_media_selection(selected_media):
+        if action == copy_action and selected_media:
             media_value = selected_media
 
         media_options = await _build_preset_media_options(
@@ -360,10 +344,7 @@ async def get_config_entries(
             refresh_results=action in (search_action, copy_action),
         )
 
-        show_media_selection = any(
-            isinstance(option.value, str) and _is_real_media_selection(option.value)
-            for option in media_options
-        )
+        show_media_selection = bool(media_options)
 
         preset_entries.append(
             ConfigEntry(
@@ -431,17 +412,6 @@ async def get_config_entries(
                     ),
                 )
             )
-        elif media_options:
-            preset_entries.append(
-                ConfigEntry(
-                    key=f"preset_{preset_id}_no_results",
-                    type=ConfigEntryType.LABEL,
-                    label=media_options[0].title,
-                    required=False,
-                    category="Favorites",
-                )
-            )
-
         preset_entries.append(
             ConfigEntry(
                 key=media_key,
@@ -637,7 +607,7 @@ class BoseSoundTouchFavoritesProvider(PluginProvider):
 
         speaker_name = self._bose_player.name if self._bose_player else player_id
 
-        if not _is_real_media_selection(media_id):
+        if not media_id:
             self.logger.warning(
                 "[%s] Bose SoundTouch favorite_%s detected, but no media configured for %s",
                 speaker_name,
