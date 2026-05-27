@@ -123,7 +123,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
             library_item = await self.get_library_item(item_id)
             provider_instance_id_or_domain, item_id = self._select_provider_id(library_item)
 
-        # Dynamic playlists always need fresh tracks from the provider.
+        # Playback/refill requests for dynamic playlists need fresh tracks from the provider.
+        # Browse requests may reuse cached tracks.
         if allow_dynamic_tracks:
             force_refresh = True
 

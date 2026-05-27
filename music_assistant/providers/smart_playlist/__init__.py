@@ -203,9 +203,10 @@ class SmartPlaylistProvider(PluginProvider):
         """Evaluate rules and return fresh tracks.
 
         Returns a full batch on page 0; empty list on subsequent pages.
-        Because is_dynamic=True, MA always calls with force_refresh so results stay fresh.
         For dynamic playlists a bounded buffer is returned per call so the browse overview
         shows a representative sample and queue refills stay deduped/shuffled across refreshes.
+        Playback/refill requests force a refresh so results stay fresh; browse requests may
+        reuse cached tracks.
         """
         if page > 0:
             return []
