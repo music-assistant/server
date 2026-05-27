@@ -68,6 +68,8 @@ class SendspinLocalAudioBridge:
         self.sendspin_server = sendspin_server
         self.device_info = device_info
         self.device_name: str = device_info["name"]
+        # Human-readable label for MA player name and Sendspin hello
+        self.display_name: str = device_info.get("description", self.device_name)
         # Linux: PA sink name; Darwin: not used for streaming
         self.pa_sink_name: str | None = device_info.get("pa_sink_name")
         # Linux: from PA sample_spec; Darwin: fixed bridge defaults
@@ -75,7 +77,7 @@ class SendspinLocalAudioBridge:
         self.bit_depth: int = device_info.get("bit_depth", BRIDGE_BIT_DEPTH)
         # Darwin only
         self.device_index: int | None = device_info.get("index")
-        self.logger = provider.logger.getChild(f"bridge.{self.device_name}")
+        self.logger = provider.logger.getChild(f"bridge.{self.display_name}")
 
         self._sendspin_client: SendspinClient | None = None
         self._bridge_client_id: str | None = None
@@ -119,11 +121,11 @@ class SendspinLocalAudioBridge:
 
         hello = ClientHelloPayload(
             client_id=self._bridge_client_id,
-            name=self.device_name,
+            name=self.display_name,
             version=1,
             supported_roles=[BRIDGE_ROLE_ID, "player@v1"],
             device_info=SendspinDeviceInfo(
-                product_name=self.device_name,
+                product_name=self.display_name,
                 manufacturer="Local Audio",
             ),
             player_support=ClientHelloPlayerSupport(
