@@ -1654,7 +1654,7 @@ class ConfigController:
         if buffer_size != BufferSize.MINIMAL:
             smart_fades_options.insert(1, ConfigValueOption("Smart Crossfade", "smart_crossfade"))
 
-        entries += [
+        entries.append(
             ConfigEntry(
                 key=CONF_SMART_FADES_MODE,
                 type=ConfigEntryType.STRING,
@@ -1669,7 +1669,22 @@ class ConfigController:
                 "last/first x-seconds of a track.",
                 category="playback",
                 requires_reload=True,
-            ),
+            )
+        )
+        if buffer_size == BufferSize.MINIMAL:
+            entries.append(
+                ConfigEntry(
+                    key="smart_crossfade_unavailable",
+                    type=ConfigEntryType.ALERT,
+                    label="Smart Crossfade is unavailable because this system has limited "
+                    "memory. It requires more RAM than is currently available for audio "
+                    "buffering.",
+                    category="playback",
+                    required=False,
+                )
+            )
+
+        entries += [
             CONF_ENTRY_CROSSFADE_DURATION,
             # we allow volume normalization/output limiter here as it is a per-queue(player) setting
             CONF_ENTRY_VOLUME_NORMALIZATION,
