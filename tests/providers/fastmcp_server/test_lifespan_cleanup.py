@@ -23,7 +23,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from music_assistant.providers.fastmcp_server.http_bridge import _start_asgi_lifespan, mount_into_mass
+from music_assistant.providers.fastmcp_server.http_bridge import (
+    _start_asgi_lifespan,
+    mount_into_mass,
+)
 
 
 async def _silent_asgi(scope: dict[str, Any], receive: Any, _send: Any) -> None:

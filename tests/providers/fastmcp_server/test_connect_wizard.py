@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from provider import (
+from music_assistant.providers.fastmcp_server._init_helpers import (
     _detect_external_base_url,
     _dispatch_open_connect,
     _sanitize_external_base_url,

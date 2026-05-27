@@ -22,7 +22,10 @@ import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 
-from music_assistant.providers.fastmcp_server.tools.playlists import _coerce_playlist_db_id, build_playlists_server
+from music_assistant.providers.fastmcp_server.tools.playlists import (
+    _coerce_playlist_db_id,
+    build_playlists_server,
+)
 
 
 @pytest.fixture

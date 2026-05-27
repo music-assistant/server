@@ -23,8 +23,12 @@ from unittest.mock import MagicMock
 import pytest
 from fastmcp import Client, FastMCP
 
-from music_assistant.providers.fastmcp_server.resources.library_resources import register_library_resources
-from music_assistant.providers.fastmcp_server.resources.player_resources import register_player_resources
+from music_assistant.providers.fastmcp_server.resources.library_resources import (
+    register_library_resources,
+)
+from music_assistant.providers.fastmcp_server.resources.player_resources import (
+    register_player_resources,
+)
 
 # (kind, mass-controller-attr, uri-stem) — keyed by library resource kind.
 _LIBRARY_KINDS = [
