@@ -27,6 +27,7 @@ ITEM_KEY_INDEX_NUMBER = "IndexNumber"
 ITEM_KEY_PARENT_INDEX_NUMBER = "ParentIndexNumber"
 ITEM_KEY_USER_DATA = "UserData"
 ITEM_KEY_PRIMARY_IMAGE_ITEM_ID = "PrimaryImageItemId"
+ITEM_KEY_GENRES = "Genres"
 
 USER_DATA_KEY_IS_FAVORITE = "IsFavorite"
 
@@ -47,6 +48,7 @@ TRACK_FIELDS = [
     "MediaStreams",
     "ImageTags",
     "DateCreated",
+    "Genres",
 ]
 
 ALBUM_FIELDS = [
@@ -57,6 +59,7 @@ ALBUM_FIELDS = [
     "ImageTags",
     "DateCreated",
     "ProductionYear",
+    "Genres",
 ]
 
 ARTIST_FIELDS = [
@@ -64,4 +67,5 @@ ARTIST_FIELDS = [
     "Overview",
     "ImageTags",
     "DateCreated",
+    "Genres",
 ]
