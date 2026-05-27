@@ -982,16 +982,24 @@ class PlayerQueuesController(CoreController):
                     queue.current_index = index
                     queue.current_item = queue_item
                     break
-                except (MediaNotFoundError, AudioError):
+                except (MediaNotFoundError, AudioError) as err:
                     item_name = queue_item.name if queue_item else "unknown"
-                    if queue_item:
+                    # Only MediaNotFoundError (item unreachable) is persistent;
+                    # keep AudioError items available so a retry can resurface
+                    # the same actionable error.
+                    if queue_item and isinstance(err, MediaNotFoundError):
                         queue_item.available = False
                     next_index = self._get_next_index(queue_id, index, allow_repeat=False)
                     if next_index is None:
-                        msg = f"Playback failed for {item_name} - no more tracks available"
+                        # Surface an AudioError's own (actionable) message;
+                        # MediaNotFoundError gets the generic wording.
+                        if isinstance(err, AudioError) and str(err):
+                            msg = str(err)
+                        else:
+                            msg = f"Playback failed for {item_name} - no more tracks available"
                         self.logger.error(msg)
                         await self.stop(queue_id)
-                        raise MediaNotFoundError(msg)
+                        raise MediaNotFoundError(msg) from err
                     self.logger.warning(
                         "Skipping unplayable item %s",
                         item_name,
@@ -3077,6 +3085,15 @@ class PlayerQueuesController(CoreController):
         # retrieve prev_item here so it's available in the _clear_or_resume_delayed closure
         # regardless of which code path (flow mode or non-flow mode) creates the task
         prev_item = prev_state["current_item"]
+
+        # Live sources (radio / AudioSource) have no natural end — stopping
+        # means the source stopped, not that the queue is exhausted. Clearing
+        # would strand a later resume, so leave the queue intact.
+        if prev_item is not None and prev_item.media_type in (
+            MediaType.RADIO,
+            MediaType.AUDIO_SOURCE,
+        ):
+            return
 
         async def _clear_or_resume_delayed() -> None:
             for _ in range(5):
