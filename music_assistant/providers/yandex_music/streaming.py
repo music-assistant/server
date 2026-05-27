@@ -789,7 +789,12 @@ class YandexMusicStreamingManager:
                     try:
                         response.raise_for_status()
                     except Exception as err:
-                        raise MediaNotFoundError(f"Failed to fetch stream: {err}") from err
+                        # Do not embed err.__str__ — aiohttp's ClientResponseError
+                        # includes the signed CDN URL, which carries an expiring
+                        # signature that should not reach logs or the frontend.
+                        raise MediaNotFoundError(
+                            f"Failed to fetch stream: HTTP {response.status}"
+                        ) from err
 
                     bytes_before = bytes_yielded
                     if is_encrypted:

@@ -507,6 +507,40 @@ async def test_get_audio_stream_http_error_raises_media_not_found(
             pass
 
 
+async def test_get_audio_stream_http_error_does_not_leak_signed_url(
+    streaming_manager: YandexMusicStreamingManager,
+    streaming_provider_stub: StreamingProviderStub,
+) -> None:
+    """Re-raised stream error must not include the signed CDN URL.
+
+    ``aiohttp``'s ``ClientResponseError.__str__`` embeds the request URL, which
+    for Yandex audio responses carries an expiring signature in the query
+    string. The ``MediaNotFoundError`` we re-raise must not propagate that
+    payload to logs or the frontend.
+    """
+    key = b"\x00" * 32
+    sd = _make_encrypted_stream_details(
+        key.hex(),
+        url="https://cdn.example.com/stream.flac?sign=SECRET_SIGNATURE_TOKEN&ts=999",
+    )
+    error_with_url = RuntimeError(
+        "500 Server Error for url 'https://cdn.example.com/stream.flac"
+        "?sign=SECRET_SIGNATURE_TOKEN&ts=999'"
+    )
+    streaming_provider_stub.mass.http_session = _MockHttpSession(
+        _MockResponse([], status=500, error=error_with_url)
+    )
+
+    with pytest.raises(MediaNotFoundError) as exc_info:
+        async for _ in streaming_manager.get_audio_stream(sd):
+            pass
+
+    message = str(exc_info.value)
+    assert "SECRET_SIGNATURE_TOKEN" not in message
+    assert "?sign=" not in message
+    assert "HTTP 500" in message
+
+
 async def test_get_audio_stream_decrypts_aes_ctr_correctly(
     streaming_manager: YandexMusicStreamingManager,
     streaming_provider_stub: StreamingProviderStub,

@@ -279,7 +279,7 @@ async def perform_device_auth(mass: MusicAssistant, session_id: str) -> tuple[st
     except DeviceCodeTimeoutError as err:
         raise LoginFailed("Device authentication timed out. Please try again.") from err
     except YaPassportError as err:
-        raise LoginFailed(f"Yandex device auth error: {err}") from err
+        raise LoginFailed(f"Yandex device auth error ({type(err).__name__})") from err
 
 
 async def perform_qr_auth(mass: MusicAssistant, session_id: str) -> tuple[str, str]:
@@ -309,7 +309,7 @@ async def perform_qr_auth(mass: MusicAssistant, session_id: str) -> tuple[str, s
     except QRTimeoutError as err:
         raise LoginFailed("QR authentication timed out. Please try again.") from err
     except YaPassportError as err:
-        raise LoginFailed(f"Yandex auth error: {err}") from err
+        raise LoginFailed(f"Yandex auth error ({type(err).__name__})") from err
 
 
 async def refresh_music_token(x_token: SecretStr) -> SecretStr:
@@ -323,11 +323,13 @@ async def refresh_music_token(x_token: SecretStr) -> SecretStr:
         async with PassportClient.create() as client:
             return await client.refresh_music_token(x_token)
     except (NetworkError, RateLimitedError) as err:
+        # Library exception strings may carry request bodies or token fragments;
+        # surface only the class name to keep MA logs and the frontend clean.
         raise ResourceTemporarilyUnavailable(
-            f"Yandex Passport temporarily unavailable: {err}"
+            f"Yandex Passport temporarily unavailable ({type(err).__name__})"
         ) from err
     except YaPassportError as err:
-        raise LoginFailed(f"Failed to refresh music token: {err}") from err
+        raise LoginFailed(f"Failed to refresh music token ({type(err).__name__})") from err
 
 
 async def refresh_credentials_via_passport(
@@ -347,10 +349,10 @@ async def refresh_credentials_via_passport(
             )
     except (NetworkError, RateLimitedError) as err:
         raise ResourceTemporarilyUnavailable(
-            f"Yandex Passport temporarily unavailable: {err}"
+            f"Yandex Passport temporarily unavailable ({type(err).__name__})"
         ) from err
     except YaPassportError as err:
-        raise LoginFailed(f"Failed to refresh credentials: {err}") from err
+        raise LoginFailed(f"Failed to refresh credentials ({type(err).__name__})") from err
 
 
 async def validate_x_token(x_token: SecretStr) -> bool:
