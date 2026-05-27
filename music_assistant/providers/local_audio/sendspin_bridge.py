@@ -326,8 +326,10 @@ class SendspinLocalAudioBridge:
             pa_sink_name = self.pa_sink_name
             assert pa_sink_name is not None  # guarded by caller
             self.logger.debug(
-                "Opening PA stream: sink=%s rate=%d channels=%d bit_depth=%d (wire) sink_depth=%d (native)",
+                "Opening PA stream: sink=%s rate=%d (wire) sink_rate=%d (native) "
+                "channels=%d bit_depth=%d (wire) sink_depth=%d (native)",
                 pa_sink_name,
+                BRIDGE_SAMPLE_RATE,
                 self.sample_rate,
                 BRIDGE_CHANNELS,
                 BRIDGE_BIT_DEPTH,
@@ -338,7 +340,7 @@ class SendspinLocalAudioBridge:
                 lambda: PASimpleStream(
                     sink_name=pa_sink_name,
                     app_name="music-assistant",
-                    rate=self.sample_rate,
+                    rate=BRIDGE_SAMPLE_RATE,  # wire format, not sink native rate
                     channels=BRIDGE_CHANNELS,
                     bit_depth=BRIDGE_BIT_DEPTH,  # wire format, not sink native depth
                 ),
