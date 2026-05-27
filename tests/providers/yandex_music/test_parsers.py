@@ -449,6 +449,49 @@ def test_parse_podcast_episode(provider_stub: ProviderStub) -> None:
     assert f"music.yandex.ru/track/{track_obj.id}" in (mapping.url or "")
 
 
+# M17: description_language must remain unset on podcast / audiobook / episode.
+# PR #155 narrowed the field to artist bios only. These guards make a
+# silent re-wire of the four extra parsers fail loudly.
+
+
+@pytest.mark.parametrize("example", PODCAST_FIXTURES, ids=lambda val: val.stem)
+def test_parse_podcast_does_not_set_description_language(
+    example: pathlib.Path, provider_stub: ProviderStub
+) -> None:
+    """``description_language`` must stay unset on podcast — PR #155 regression guard."""
+    album_obj = _album_from_fixture(example)
+    assert album_obj is not None
+    result = parse_podcast(cast("YandexMusicProvider", provider_stub), album_obj)
+    assert result.metadata.description_language is None
+
+
+@pytest.mark.parametrize("example", AUDIOBOOK_FIXTURES, ids=lambda val: val.stem)
+def test_parse_audiobook_does_not_set_description_language(
+    example: pathlib.Path, provider_stub: ProviderStub
+) -> None:
+    """``description_language`` must stay unset on audiobook — PR #155 regression guard."""
+    album_obj = _album_from_fixture(example)
+    assert album_obj is not None
+    result = parse_audiobook(cast("YandexMusicProvider", provider_stub), album_obj)
+    assert result.metadata.description_language is None
+
+
+def test_parse_podcast_episode_does_not_set_description_language(
+    provider_stub: ProviderStub,
+) -> None:
+    """``description_language`` must stay unset on podcast-episode — PR #155 regression."""
+    podcast_album = _album_from_fixture(FIXTURES_DIR / "podcasts" / "basic.json")
+    assert podcast_album is not None
+    podcast = parse_podcast(cast("YandexMusicProvider", provider_stub), podcast_album)
+
+    track_obj = _track_from_fixture(FIXTURES_DIR / "podcast_episodes" / "basic.json")
+    assert track_obj is not None
+    episode = parse_podcast_episode(
+        cast("YandexMusicProvider", provider_stub), track_obj, podcast, position=1
+    )
+    assert episode.metadata.description_language is None
+
+
 def test_parse_podcast_episode_inherits_podcast_image(provider_stub: ProviderStub) -> None:
     """Episode image falls back to parent podcast image when track has none."""
     podcast_album = _album_from_fixture(FIXTURES_DIR / "podcasts" / "basic.json")
