@@ -37,12 +37,12 @@ from music_assistant.helpers.compare import compare_media_item, create_safe_stri
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.util import guard_single_request, parse_optional_bool
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Mapping
 
     from music_assistant import MusicAssistant
-    from music_assistant.models.music_provider import MusicProvider
     from music_assistant.models.plugin import PluginProvider
 
 
@@ -208,7 +208,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         # notify music providers of the update so they can sync their own storage
         for prov_mapping in library_item.provider_mappings:
             if provider := self.mass.get_provider(prov_mapping.provider_instance):
-                provider = cast("MusicProvider", provider)
+                if not isinstance(provider, MusicProvider):
+                    continue
                 await provider.on_item_updated(library_item)
         return library_item
 
