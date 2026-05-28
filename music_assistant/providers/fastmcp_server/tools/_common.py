@@ -166,8 +166,21 @@ def to_brief_player(player: Any) -> PlayerBrief:
     available_val = bool(getattr(player, "available", True))
     enabled_val = bool(getattr(player, "enabled", True))
     needs_setup_val = bool(getattr(player, "needs_setup", False))
-    active_group_val = _str_or_none(getattr(player, "active_group", None))
-    synced_to_val = _str_or_none(getattr(player, "synced_to", None))
+
+    # ``active_group`` / ``synced_to`` follow the same state-first /
+    # raw-fallback pattern as ``powered`` / ``current_media`` above. MA
+    # populates ``state.active_group`` via ``__final_active_group``, which
+    # walks every GROUP-type player and resolves membership / protocol-id
+    # translation; the raw ``Player.active_group`` dataclass attr stays
+    # ``None`` for SyncGroupPlayer followers even while they are streaming
+    # the group's audio. Reading the canonical value is what makes
+    # ``state="synced"`` fire correctly on a live sync follower.
+    if player_state is not None and hasattr(player_state, "active_group"):
+        active_group_val = _str_or_none(player_state.active_group)
+        synced_to_val = _str_or_none(player_state.synced_to)
+    else:
+        active_group_val = _str_or_none(getattr(player, "active_group", None))
+        synced_to_val = _str_or_none(getattr(player, "synced_to", None))
 
     # The cached ``playback_state`` of an unusable device is whatever MA last
     # saw (usually ``"idle"`` or ``"playing"`` for a sync follower), which is

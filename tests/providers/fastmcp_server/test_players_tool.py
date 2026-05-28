@@ -183,6 +183,45 @@ async def test_list_players_synced_player_reports_synced_state(
     assert by_id["follower"].active_group == "syncgroup_x"
 
 
+async def test_list_players_synced_reads_from_state_object(
+    mock_mass: Any, mounted_players: FastMCP
+) -> None:
+    """``state.active_group`` (canonical) wins over the raw dataclass attr.
+
+    Mirrors the live MA shape — ``Player.state.active_group`` is set
+    by ``__final_active_group`` while the raw ``Player.active_group``
+    field stays ``None`` for SyncGroupPlayer followers. The brief must
+    read the canonical signal end-to-end through the tool.
+    """
+    follower = SimpleNamespace(
+        player_id="follower",
+        name="Kitchen",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        powered=True,
+        current_media=None,
+        available=True,
+        enabled=True,
+        needs_setup=False,
+        # Raw attrs are None — the bug condition we shipped in 0.3.32.
+        active_group=None,
+        synced_to=None,
+        # Canonical view carries the resolved group id.
+        state=SimpleNamespace(
+            powered=True,
+            current_media=None,
+            active_group="syncgroup_x",
+            synced_to=None,
+        ),
+    )
+    mock_mass.players.all_players.side_effect = _make_all_players_mock([follower])
+    async with Client(mounted_players) as client:
+        result = await client.call_tool("players_list_players", {})
+    by_id = {p.player_id: p for p in result.data}
+    assert by_id["follower"].state == "synced"
+    assert by_id["follower"].active_group == "syncgroup_x"
+
+
 async def test_list_players_needs_setup_reports_needs_setup_state(
     mock_mass: Any, mounted_players: FastMCP
 ) -> None:

@@ -441,6 +441,86 @@ def test_to_brief_player_new_fields_default_safely_when_attrs_missing() -> None:
     assert brief.synced_to is None
 
 
+def test_to_brief_player_prefers_state_active_group_over_raw_attr() -> None:
+    """``Player.state.active_group`` is the canonical sync-membership signal.
+
+    MA's ``__final_active_group`` walks every GROUP player and resolves
+    membership / protocol translation; the raw ``Player.active_group``
+    dataclass attr lags and stays ``None`` for SyncGroupPlayer
+    followers. The brief must read the canonical value so a follower
+    captured by an active group surfaces as ``state="synced"``.
+    """
+    player = SimpleNamespace(
+        player_id="follower",
+        name="Lenco",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        powered=True,
+        current_media=None,
+        # Raw attribute stays None — the case that broke live verification.
+        active_group=None,
+        synced_to=None,
+        state=SimpleNamespace(
+            powered=True,
+            current_media=None,
+            active_group="syncgroup_x",
+            synced_to=None,
+        ),
+    )
+    brief = to_brief_player(player)
+    assert brief.active_group == "syncgroup_x"
+    assert brief.state == "synced"
+
+
+def test_to_brief_player_prefers_state_synced_to_over_raw_attr() -> None:
+    """``Player.state.synced_to`` translates protocol-player ids; the brief must use it."""
+    player = SimpleNamespace(
+        player_id="follower",
+        name="Speaker",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        powered=True,
+        current_media=None,
+        synced_to=None,
+        active_group=None,
+        state=SimpleNamespace(
+            powered=True,
+            current_media=None,
+            active_group=None,
+            synced_to="visible-leader-id",
+        ),
+    )
+    brief = to_brief_player(player)
+    assert brief.synced_to == "visible-leader-id"
+    assert brief.state == "synced"
+
+
+def test_to_brief_player_falls_back_to_raw_when_state_lacks_group_fields() -> None:
+    """Back-compat: legacy stubs whose ``state`` lacks the new group fields fall through.
+
+    The existing ``test_to_brief_player_powered_prefers_state`` already
+    exercises a stub whose ``state`` has ``powered`` + ``current_media``
+    but no ``active_group`` / ``synced_to``. After this change those
+    older stubs must keep producing valid briefs — the canonical-read
+    branch must guard with ``hasattr(state, "active_group")``.
+    """
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=None,
+        powered=True,
+        current_media=None,
+        active_group="raw-group",
+        synced_to=None,
+        # state lacks the new fields entirely — only the older attrs.
+        state=SimpleNamespace(powered=True, current_media=None),
+    )
+    brief = to_brief_player(player)
+    assert brief.active_group == "raw-group"
+    assert brief.state == "synced"
+
+
 def test_to_brief_queue_with_items() -> None:
     """``to_brief_queue`` builds a ``QueueBrief`` with item summaries."""
     queue = SimpleNamespace(
