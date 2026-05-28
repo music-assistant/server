@@ -719,9 +719,12 @@ async def test_get_seasonal_mix_recommendations_summer(provider_mock: Mock) -> N
 
 @pytest.mark.asyncio
 async def test_get_seasonal_mix_recommendations_spring_fallback(provider_mock: Mock) -> None:
-    """Test _get_seasonal_mix_recommendations falls back to autumn for spring months."""
+    """Spring with no playlists falls back to autumn (Yandex coverage gap)."""
     mock_playlist = Mock()
-    provider_mock.client.get_tag_playlists = AsyncMock(return_value=[mock_playlist])
+    # First call (spring) → empty; second call (autumn) → has playlists
+    provider_mock.client.get_tag_playlists = AsyncMock(
+        side_effect=[[], [mock_playlist]],
+    )
 
     mock_parsed_playlist = Mock(spec=Playlist)
     mock_parsed_playlist.item_id = "playlist_1"
@@ -730,9 +733,6 @@ async def test_get_seasonal_mix_recommendations_spring_fallback(provider_mock: M
     # Patch datetime to return March (month 3 - spring)
     mock_datetime = Mock()
     mock_datetime.now.return_value.month = 3
-
-    # _validate_tag returns False for spring, triggering fallback to autumn
-    provider_mock._validate_tag = AsyncMock(return_value=False)
 
     with (
         patch("music_assistant.providers.yandex_music.provider.datetime", mock_datetime),
@@ -744,8 +744,9 @@ async def test_get_seasonal_mix_recommendations_spring_fallback(provider_mock: M
         result = await YandexMusicProvider._get_seasonal_mix_recommendations(provider_mock)
 
     assert result is not None
-    # Verify it called with autumn tag (spring fallback)
-    provider_mock.client.get_tag_playlists.assert_called_once_with("autumn")
+    # Verify call sequence: spring first, autumn fallback after empty result
+    assert provider_mock.client.get_tag_playlists.await_args_list[0].args == ("spring",)
+    assert provider_mock.client.get_tag_playlists.await_args_list[1].args == ("autumn",)
 
 
 @pytest.mark.asyncio

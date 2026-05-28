@@ -22,6 +22,12 @@ CONF_REMEMBER_SESSION: Final[str] = "remember_session"
 # Session-id key handed to the QR / Device-flow handlers from the MA config flow.
 CONF_SESSION_ID: Final[str] = "session_id"
 
+# Advanced toggle: enable a token-wide concurrency cap to keep MA below
+# Yandex's per-token edge concurrency limit on datacenter / VPN IPs
+# (probed at ~6 simultaneous in-flight before captcha trips). Off by
+# default — residential users tolerate much higher concurrency.
+CONF_RESTRICTIVE_RATE_LIMITS: Final[str] = "restrictive_rate_limits"
+
 # API defaults
 DEFAULT_LIMIT: Final[int] = 50
 DEFAULT_BASE_URL: Final[str] = "https://api.music.yandex.net"
@@ -84,7 +90,11 @@ BROWSE_INITIAL_TRACKS: Final[int] = 15
 # provider for 10 minutes; repeated strikes escalate to the original 600s.
 # Plain 429 (no captcha markers) only signals backoff_time on the failing
 # request — no kind-wide block, no escalation.
-CAPTCHA_COOLDOWN_LADDER_S: Final[tuple[float, ...]] = (60.0, 300.0, 600.0)
+# Ladder tightened after empirical probing against Yandex's edge layer
+# showed a tripped token actually recovers in ~15s; the previous
+# (60, 300, 600) ladder left the provider blocked far beyond Yandex's
+# real cooldown memory.
+CAPTCHA_COOLDOWN_LADDER_S: Final[tuple[float, ...]] = (15.0, 60.0, 120.0)
 CAPTCHA_STRIKE_RETENTION_S: Final[float] = 3600.0
 RATE_LIMIT_COOLDOWN_S: Final[float] = 60.0
 
@@ -94,10 +104,23 @@ RATE_LIMIT_COOLDOWN_S: Final[float] = 60.0
 # - metadata covers the artist/album refresh burst MA fires during initial
 #   sync — kept low so it does not flood smart-captcha
 # - everything else (likes, tracks, search, playlists, ...) shares default
-THROTTLE_DEFAULT_RPS: Final[int] = 3
-THROTTLE_METADATA_RPS: Final[int] = 2
+#
+# Defaults bumped after empirical probing showed Yandex tolerates ≥10
+# sustained sequential RPS on both residential and datacenter IPs — the
+# previous 3/2 RPS caps were over-conservative without measurable
+# anti-scraper benefit.
+THROTTLE_DEFAULT_RPS: Final[int] = 5
+THROTTLE_METADATA_RPS: Final[int] = 3
 THROTTLE_FILE_INFO_RPS: Final[int] = 2
 THROTTLE_ROTOR_RPS: Final[int] = 3
+
+# Restrictive-mode global concurrency cap. When the
+# ``restrictive_rate_limits`` provider setting is enabled, every API
+# request runs through an additional ``asyncio.Semaphore(N)`` so the
+# total in-flight count across all kinds and endpoints can never exceed
+# this value. Sized one below Yandex's observed datacenter-IP captcha
+# threshold (N=8 trips, N≤6 clean) to keep a safety margin.
+RESTRICTIVE_GLOBAL_CONCURRENCY: Final[int] = 5
 
 # Initial-sync jitter: during the first INITIAL_SYNC_WINDOW_S after a
 # successful connect(), add up to INITIAL_SYNC_JITTER_S of uniform random

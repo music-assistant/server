@@ -56,6 +56,7 @@ from .constants import (
     CONF_MY_WAVE_MAX_TRACKS,
     CONF_QUALITY,
     CONF_REFRESH_TOKEN,
+    CONF_RESTRICTIVE_RATE_LIMITS,
     CONF_TOKEN,
     CONF_WAVE_PRESETS_DATA,
     CONF_X_TOKEN,
@@ -282,7 +283,10 @@ class YandexMusicProvider(MusicProvider):
         self._update_config_value(
             CONF_REFRESH_TOKEN, new_refresh_token.get_secret(), encrypted=True
         )
-        self._client = YandexMusicClient(new_music_token, base_url=base_url)
+        restrictive = bool(self.config.get_value(CONF_RESTRICTIVE_RATE_LIMITS, False))
+        self._client = YandexMusicClient(
+            new_music_token, base_url=base_url, restrictive_rate_limits=restrictive
+        )
         await self._client.connect()
         self.logger.info("Re-issued credentials silently from refresh token")
 
@@ -292,6 +296,7 @@ class YandexMusicProvider(MusicProvider):
         x_token = self.config.get_value(CONF_X_TOKEN)
         refresh_token = self.config.get_value(CONF_REFRESH_TOKEN)
         base_url = self.config.get_value(CONF_BASE_URL, DEFAULT_BASE_URL)
+        restrictive = bool(self.config.get_value(CONF_RESTRICTIVE_RATE_LIMITS, False))
 
         if not token and not x_token:
             raise LoginFailed("No Yandex Music token provided. Please authenticate.")
@@ -299,7 +304,11 @@ class YandexMusicProvider(MusicProvider):
         # Try existing music token first (fast path)
         if token:
             try:
-                self._client = YandexMusicClient(SecretStr(str(token)), base_url=str(base_url))
+                self._client = YandexMusicClient(
+                    SecretStr(str(token)),
+                    base_url=str(base_url),
+                    restrictive_rate_limits=restrictive,
+                )
                 await self._client.connect()
             except LoginFailed:
                 self.logger.warning("Music token is invalid or expired")
@@ -317,7 +326,11 @@ class YandexMusicProvider(MusicProvider):
             try:
                 new_music_token = await refresh_music_token(SecretStr(str(x_token)))
                 self._update_config_value(CONF_TOKEN, new_music_token.get_secret(), encrypted=True)
-                self._client = YandexMusicClient(new_music_token, base_url=str(base_url))
+                self._client = YandexMusicClient(
+                    new_music_token,
+                    base_url=str(base_url),
+                    restrictive_rate_limits=restrictive,
+                )
                 await self._client.connect()
                 self.logger.info("Refreshed music token from session token")
             except LoginFailed as err:
@@ -949,29 +962,20 @@ class YandexMusicProvider(MusicProvider):
         return t
 
     @use_cache(3600, allow_expired_cache=True)
-    async def _validate_tag(self, tag_slug: str) -> bool:
-        """Check if a tag has playlists by calling client.get_tag_playlists().
-
-        :param tag_slug: Tag identifier (e.g. 'chill', '80s').
-        :return: True if the tag has at least one playlist.
-        """
-        try:
-            playlists = await self.client.get_tag_playlists(tag_slug)
-            return len(playlists) > 0
-        except Exception as err:
-            self.logger.debug("Tag validation failed for %s: %s", tag_slug, err)
-            return False
-
-    @use_cache(3600, allow_expired_cache=True)
     async def _get_valid_tags_for_category(self, category: str) -> list[str]:
-        """Get validated tags for a category (only those with playlists).
+        """Return tags for a category by combining hardcoded + landing-discovered.
 
-        Combines hardcoded tags from the category lists with any landing-discovered
-        tags, validates each by calling client.tags(), and returns only those with
-        playlists.
+        Trusts the hardcoded ``TAG_CATEGORY_*`` lists (evergreen Yandex
+        categories) and the landing API output (Yandex returns landing tags
+        only when they have playlists). No per-tag runtime validation: that
+        machinery was a parallel ``asyncio.gather`` over
+        ``get_tag_playlists`` for every tag and tripped Yandex's edge
+        per-endpoint concurrency limit on first browse — captcha within
+        ~460ms of the burst. If a tag turns out to be empty at click time,
+        ``_get_tag_playlists_as_browse`` already renders an empty folder.
 
         :param category: Category name ('mood', 'activity', 'era', 'genres').
-        :return: List of valid tag slugs.
+        :return: List of tag slugs (hardcoded order preserved, landing tags appended).
         """
         category_lists: dict[str, list[str]] = {
             "mood": list(TAG_CATEGORY_MOOD),
@@ -980,8 +984,6 @@ class YandexMusicProvider(MusicProvider):
             "genres": list(TAG_CATEGORY_GENRES),
         }
         tags = category_lists.get(category, [])
-
-        # Add landing-discovered tags for this category
         try:
             landing_tags = await self.client.get_landing_tags()
             for slug, _title in landing_tags:
@@ -990,38 +992,25 @@ class YandexMusicProvider(MusicProvider):
                     tags.append(slug)
         except Exception as err:
             self.logger.debug("Landing tag discovery failed: %s", err)
-
-        # Validate tags in parallel with bounded concurrency
-        sem = asyncio.Semaphore(8)
-
-        async def _check(tag: str) -> str | None:
-            async with sem:
-                return tag if await self._validate_tag(tag) else None
-
-        results = await asyncio.gather(*[_check(tag) for tag in tags])
-        return [tag for tag in results if tag is not None]
+        return tags
 
     @use_cache(3600, allow_expired_cache=True)
     async def _get_discovered_tags(self, locale: str) -> list[tuple[str, str]]:
-        """Get all available tags by combining hardcoded tags with landing discovery.
+        """Return all browse-able tags: hardcoded (non-seasonal) + landing-discovered.
 
-        Starts with all hardcoded tags from category lists, adds landing-discovered
-        tags, validates each via client.tags(), and returns only those with playlists.
-        Results are cached for 1 hour. The locale parameter is included in the cache
-        key so that a locale change invalidates the cached result.
+        Same rationale as :meth:`_get_valid_tags_for_category` — runtime
+        validation removed to avoid the per-endpoint concurrency burst that
+        triggered Yandex captcha. The locale parameter is part of the cache
+        key so locale changes invalidate the cached result.
 
         :param locale: Current metadata locale (used as part of cache key).
-        :return: List of (slug, title) tuples for tags that have playlists.
+        :return: List of (slug, title) tuples in hardcoded-then-discovered order.
         """
         names = self._get_browse_names()
-
-        # Collect all hardcoded tags (non-seasonal)
         all_tags: dict[str, str] = {}
         for slug, cat in TAG_SLUG_CATEGORY.items():
             if cat != "seasonal":
                 all_tags[slug] = names.get(slug, slug.title())
-
-        # Add landing-discovered tags
         try:
             landing_tags = await self.client.get_landing_tags()
             for slug, title in landing_tags:
@@ -1029,19 +1018,7 @@ class YandexMusicProvider(MusicProvider):
                     all_tags[slug] = title
         except Exception as err:
             self.logger.debug("Failed to discover tags from landing API: %s", err)
-
-        # Validate tags in parallel with bounded concurrency
-        sem = asyncio.Semaphore(8)
-
-        async def _check(slug: str) -> bool:
-            async with sem:
-                return await self._validate_tag(slug)
-
-        tag_items = list(all_tags.items())
-        results = await asyncio.gather(*[_check(slug) for slug, _ in tag_items])
-        return [
-            (slug, title) for (slug, title), valid in zip(tag_items, results, strict=True) if valid
-        ]
+        return list(all_tags.items())
 
     async def _get_discovered_tag_slugs(self) -> set[str]:
         """Get set of all valid tag slugs (cached).
@@ -1330,8 +1307,12 @@ class YandexMusicProvider(MusicProvider):
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse mixes folder (seasonal collections) using hardcoded tags.
 
-        Uses TAG_MIXES directly and validates each tag via client.tags()
-        to check if it has playlists. Does not depend on landing API discovery.
+        Renders every seasonal tag from ``TAG_MIXES`` unconditionally. The
+        old per-tag validation fired a ``Semaphore(5)+gather`` of
+        ``get_tag_playlists`` calls and tripped Yandex's per-endpoint
+        concurrency limit on first browse. If a season ends up empty at
+        click time, ``_get_tag_playlists_as_browse`` already returns an
+        empty folder.
 
         :param path: Full browse path.
         :param path_parts: Split path parts after ://.
@@ -1340,30 +1321,18 @@ class YandexMusicProvider(MusicProvider):
         names = self._get_browse_names()
         base = path.rstrip("/") + "/"
 
-        # Validate seasonal tags in parallel (no landing dependency)
-        sem = asyncio.Semaphore(5)
-
-        async def _check(tag: str) -> str | None:
-            async with sem:
-                return tag if await self._validate_tag(tag) else None
-
-        results = await asyncio.gather(*[_check(t) for t in TAG_MIXES])
-        available_mixes = [t for t in results if t is not None]
-
-        # mixes/ - show seasonal folders (only valid ones)
+        # mixes/ - show seasonal folders
         if len(path_parts) == 1:
-            folders = []
-            for t in available_mixes:
-                folders.append(
-                    BrowseFolder(
-                        item_id=t,
-                        provider=self.instance_id,
-                        path=f"{base}{t}",
-                        name=names.get(t, t.title()),
-                        is_playable=False,
-                    )
+            return [
+                BrowseFolder(
+                    item_id=t,
+                    provider=self.instance_id,
+                    path=f"{base}{t}",
+                    name=names.get(t, t.title()),
+                    is_playable=False,
                 )
-            return folders
+                for t in TAG_MIXES
+            ]
 
         # mixes/tag - show playlists for the tag
         tag = path_parts[1] if len(path_parts) > 1 else None
@@ -2915,15 +2884,14 @@ class YandexMusicProvider(MusicProvider):
 
         :return: RecommendationFolder with seasonal playlists, or None if unavailable.
         """
-        # Determine current season tag
+        # Determine current season tag; fall back to autumn if the seasonal
+        # endpoint returns nothing (e.g. spring/autumn handover gap).
         current_month = datetime.now(tz=UTC).month
         seasonal_tag = TAG_SEASONAL_MAP.get(current_month, "autumn")
-
-        # Validate the seasonal tag; fall back to autumn if not available
-        if not await self._validate_tag(seasonal_tag):
-            seasonal_tag = "autumn"
-
         playlists = await self.client.get_tag_playlists(seasonal_tag)
+        if not playlists and seasonal_tag != "autumn":
+            seasonal_tag = "autumn"
+            playlists = await self.client.get_tag_playlists(seasonal_tag)
         if not playlists:
             return None
         items: list[Playlist] = []

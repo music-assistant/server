@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -29,6 +30,7 @@ from music_assistant.providers.yandex_music.constants import (
     CAPTCHA_COOLDOWN_LADDER_S,
     INITIAL_SYNC_JITTER_S,
     INITIAL_SYNC_WINDOW_S,
+    RESTRICTIVE_GLOBAL_CONCURRENCY,
     THROTTLE_DEFAULT_RPS,
     THROTTLE_METADATA_RPS,
 )
@@ -878,14 +880,14 @@ def test_truncate_err_msg_caps_long_html() -> None:
 
 
 async def test_call_with_retry_captcha_raises_with_first_strike_backoff() -> None:
-    """Captcha response triggers a 60s cooldown on first strike and the HTML body is truncated out."""
+    """Captcha response triggers a 15s cooldown on first strike and the HTML body is truncated out."""
     client, underlying = _make_client()
     underlying.tracks = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
 
     with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
         await client.get_tracks(["42"])
 
-    assert exc_info.value.backoff_time == 60
+    assert exc_info.value.backoff_time == 15
     # The "default" kind owns c.tracks() — block deadline must be set.
     assert client._block_until["default"] > 0
     # The other kinds must remain untouched.
@@ -1010,7 +1012,7 @@ async def test_captcha_during_bypass_still_engages_block() -> None:
 
     assert result is None
     # The block must have been engaged despite the bypass.
-    assert client._block_until["file_info"] > time.monotonic() + 30
+    assert client._block_until["file_info"] > time.monotonic() + 10
     # Other kinds remain free.
     assert client._block_until["default"] == 0.0
     assert client._block_until["rotor"] == 0.0
@@ -1263,7 +1265,7 @@ async def test_rotor_feedback_no_retry_propagates_429_to_engage_block() -> None:
     # Feedback is fire-and-forget — caller gets False, no raise.
     assert result is False
     # But the rotor cooldown MUST have been engaged (first-strike: 60s).
-    assert client._block_until["rotor"] > time.monotonic() + 30
+    assert client._block_until["rotor"] > time.monotonic() + 10
     # Other kinds untouched.
     assert client._block_until["default"] == 0.0
     assert client._block_until["file_info"] == 0.0
@@ -1289,9 +1291,9 @@ async def test_retry_path_classifies_captcha_after_reconnect() -> None:
         await client.get_tracks(["42"])
 
     # Should have backed off for the first-strike captcha cooldown.
-    assert exc_info.value.backoff_time == 60
+    assert exc_info.value.backoff_time == 15
     # Block engaged on default kind.
-    assert client._block_until["default"] > time.monotonic() + 30
+    assert client._block_until["default"] > time.monotonic() + 10
     # Both attempts ran (connection error + retry).
     assert underlying.tracks.await_count == 2
     # The HTML body must be truncated in the chain, not propagated raw.
@@ -1423,19 +1425,19 @@ async def test_file_info_cache_invalidated_on_unauthorized() -> None:
 
 
 async def test_captcha_first_strike_uses_short_cooldown() -> None:
-    """First captcha strike in the retention window picks 60s, not 600s."""
+    """First captcha strike picks the short rung — empirical Yandex recovery ~15s."""
     client, underlying = _make_client()
     underlying.tracks = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
 
     with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
         await client.get_tracks(["42"])
 
-    assert exc_info.value.backoff_time == 60
+    assert exc_info.value.backoff_time == 15
     assert len(client._captcha_strikes["default"]) == 1
 
 
 async def test_captcha_second_strike_uses_medium_cooldown() -> None:
-    """Second strike in the retention window escalates to 300s."""
+    """Second strike in the retention window escalates to 60s."""
     client, underlying = _make_client()
     underlying.tracks = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
 
@@ -1448,12 +1450,12 @@ async def test_captcha_second_strike_uses_medium_cooldown() -> None:
     with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
         await client.get_tracks(["42"])
 
-    assert exc_info.value.backoff_time == 300
+    assert exc_info.value.backoff_time == 60
     assert len(client._captcha_strikes["default"]) == 2
 
 
 async def test_captcha_third_strike_uses_max_cooldown() -> None:
-    """Third and later strikes cap at 600s."""
+    """Third and later strikes cap at 120s."""
     client, underlying = _make_client()
     underlying.tracks = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
 
@@ -1465,12 +1467,12 @@ async def test_captcha_third_strike_uses_max_cooldown() -> None:
     with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
         await client.get_tracks(["42"])
 
-    assert exc_info.value.backoff_time == 600
+    assert exc_info.value.backoff_time == 120
     assert len(client._captcha_strikes["default"]) == 3
 
 
 async def test_captcha_fourth_strike_stays_at_max_cooldown() -> None:
-    """Strikes beyond the ladder length stay capped at the last rung (600s)."""
+    """Strikes beyond the ladder length stay capped at the last rung (120s)."""
     client, underlying = _make_client()
     underlying.tracks = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
 
@@ -1482,7 +1484,7 @@ async def test_captcha_fourth_strike_stays_at_max_cooldown() -> None:
     with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
         await client.get_tracks(["42"])
 
-    assert exc_info.value.backoff_time == 600
+    assert exc_info.value.backoff_time == 120
 
 
 async def test_captcha_strikes_decay_after_retention_window() -> None:
@@ -1508,7 +1510,7 @@ async def test_captcha_strikes_decay_after_retention_window() -> None:
         await client.get_tracks(["42"])
 
     # Aged strikes were trimmed; this is a "fresh" first strike again.
-    assert exc_info.value.backoff_time == 60
+    assert exc_info.value.backoff_time == 15
     assert len(client._captcha_strikes["default"]) == 1
 
 
@@ -1732,19 +1734,19 @@ async def test_jitter_skipped_for_rotor_kind() -> None:
 # -- regression pins (#146) ---------------------------------------------------
 
 
-def test_throttle_default_rps_lowered_to_3() -> None:
-    """Pin the lowered default RPS so accidental reverts fail loudly."""
-    assert THROTTLE_DEFAULT_RPS == 3
+def test_throttle_default_rps_is_5() -> None:
+    """Pin the default RPS — empirical probing showed Yandex tolerates ≥10."""
+    assert THROTTLE_DEFAULT_RPS == 5
 
 
-def test_throttle_metadata_rps_is_2() -> None:
-    """Pin the new metadata RPS."""
-    assert THROTTLE_METADATA_RPS == 2
+def test_throttle_metadata_rps_is_3() -> None:
+    """Pin the metadata RPS."""
+    assert THROTTLE_METADATA_RPS == 3
 
 
-def test_captcha_cooldown_ladder_is_60_300_600() -> None:
-    """Pin the ladder so future tuning is an explicit, reviewed change."""
-    assert CAPTCHA_COOLDOWN_LADDER_S == (60.0, 300.0, 600.0)
+def test_captcha_cooldown_ladder_is_15_60_120() -> None:
+    """Pin the shortened ladder — empirical recovery time was ~15s, not 60s."""
+    assert CAPTCHA_COOLDOWN_LADDER_S == (15.0, 60.0, 120.0)
 
 
 def test_initial_sync_window_constants() -> None:
@@ -1789,7 +1791,7 @@ async def test_get_album_propagates_captcha_rtu() -> None:
     underlying.albums = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
     with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
         await client.get_album("42")
-    assert exc_info.value.backoff_time == 60
+    assert exc_info.value.backoff_time == 15
 
 
 async def test_get_album_with_tracks_propagates_captcha_rtu() -> None:
@@ -1798,7 +1800,7 @@ async def test_get_album_with_tracks_propagates_captcha_rtu() -> None:
     underlying.albums_with_tracks = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
     with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
         await client.get_album_with_tracks("42")
-    assert exc_info.value.backoff_time == 60
+    assert exc_info.value.backoff_time == 15
 
 
 async def test_get_artist_propagates_captcha_rtu() -> None:
@@ -1807,7 +1809,7 @@ async def test_get_artist_propagates_captcha_rtu() -> None:
     underlying.artists = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
     with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
         await client.get_artist("42")
-    assert exc_info.value.backoff_time == 60
+    assert exc_info.value.backoff_time == 15
 
 
 async def test_get_artist_albums_propagates_captcha_rtu() -> None:
@@ -1818,7 +1820,7 @@ async def test_get_artist_albums_propagates_captcha_rtu() -> None:
     )
     with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
         await client.get_artist_albums("42")
-    assert exc_info.value.backoff_time == 60
+    assert exc_info.value.backoff_time == 15
 
 
 async def test_get_artist_about_propagates_captcha_rtu() -> None:
@@ -1827,7 +1829,7 @@ async def test_get_artist_about_propagates_captcha_rtu() -> None:
     underlying.artists_about = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
     with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
         await client.get_artist_about("42")
-    assert exc_info.value.backoff_time == 60
+    assert exc_info.value.backoff_time == 15
 
 
 async def test_get_artist_tracks_propagates_captcha_rtu() -> None:
@@ -1836,7 +1838,7 @@ async def test_get_artist_tracks_propagates_captcha_rtu() -> None:
     underlying.artists_tracks = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
     with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
         await client.get_artist_tracks("42")
-    assert exc_info.value.backoff_time == 60
+    assert exc_info.value.backoff_time == 15
 
 
 # -- jitter respects BYPASS_THROTTLER (#146) ---------------------------------
@@ -1998,3 +2000,152 @@ async def test_jitter_skipped_when_kind_already_blocked() -> None:
     sleep_mock.assert_not_awaited()
     # Fast-fail: underlying API was never called.
     underlying.tracks.assert_not_awaited()
+
+
+# -- Per-endpoint concurrency lock (defense-in-depth vs Yandex captcha) -------
+
+
+async def test_parallel_same_endpoint_calls_serialize() -> None:
+    """Parallel calls to the same endpoint must run one-at-a-time.
+
+    Yandex's edge treats concurrent requests to the same URL family as a
+    scraper signature and trips captcha within ~460 ms. The per-endpoint
+    lock in ``_call_with_retry`` is the defense-in-depth that prevents a
+    future ``asyncio.gather`` from re-introducing the same burst pattern.
+    """
+    client, underlying = _make_client()
+
+    concurrent_peak = 0
+    in_flight = 0
+    lock = asyncio.Lock()
+
+    async def _slow_tracks(_track_ids: list[str]) -> list[Any]:
+        nonlocal concurrent_peak, in_flight
+        async with lock:
+            in_flight += 1
+            concurrent_peak = max(concurrent_peak, in_flight)
+        try:
+            await asyncio.sleep(0.05)
+            return []
+        finally:
+            async with lock:
+                in_flight -= 1
+
+    underlying.tracks = _slow_tracks
+
+    # Fire 5 parallel calls to the SAME method; per-endpoint lock should
+    # serialise them despite ``asyncio.gather`` queueing them simultaneously.
+    await asyncio.gather(*(client.get_tracks([str(i)]) for i in range(5)))
+
+    assert concurrent_peak == 1, (
+        f"per-endpoint lock failed to serialise; saw {concurrent_peak} concurrent calls"
+    )
+
+
+async def test_restrictive_mode_caps_global_concurrency() -> None:
+    """Restrictive mode caps total in-flight requests to ``RESTRICTIVE_GLOBAL_CONCURRENCY``.
+
+    Yandex's edge enforces a per-token concurrency limit on datacenter /
+    VPN IPs (empirically ~6 simultaneous before captcha). The
+    restrictive_rate_limits toggle adds a token-wide semaphore so the
+    provider stays under that ceiling regardless of how the call sites
+    fan out.
+    """
+    client = YandexMusicClient(token=SecretStr("fake"), restrictive_rate_limits=True)
+    mock_underlying = mock.AsyncMock()
+    client._client = mock_underlying
+    client._user_id = 12345
+    for kind in client._throttlers:
+        client._throttlers[kind] = mock.AsyncMock()
+
+    async def _fake_connect() -> bool:
+        client._client = mock_underlying
+        return True
+
+    client.connect = _fake_connect  # type: ignore[method-assign]
+
+    concurrent_peak = 0
+    in_flight = 0
+    state_lock = asyncio.Lock()
+
+    # Stub direct on YandexMusicClient methods (each one different) so the
+    # per-endpoint lock cannot also bound this — only the global semaphore
+    # should. We hijack ``_call_with_retry`` itself: it's the place every
+    # method funnels through, and instrumenting it lets us count true
+    # in-flight invocations without re-shaping every yandex_music response.
+    real_invoke = client._invoke_under_endpoint_lock
+
+    async def _instrumented(_func: Any, _real_client: Any, _endpoint: Any) -> Any:
+        nonlocal concurrent_peak, in_flight
+        async with state_lock:
+            in_flight += 1
+            concurrent_peak = max(concurrent_peak, in_flight)
+        try:
+            await asyncio.sleep(0.05)
+        finally:
+            async with state_lock:
+                in_flight -= 1
+        # Bypass the actual HTTP call after measuring — we only care about
+        # how many entered the gate at once, not what they return.
+        return mock.MagicMock()
+
+    client._invoke_under_endpoint_lock = _instrumented  # type: ignore[method-assign,assignment]
+
+    async def _call(i: int) -> Any:
+        # Each iteration uses a different ``__qualname__`` so per-endpoint
+        # locks don't interfere with the measurement.
+        async def _fake(_c: Any) -> Any:
+            return None
+
+        _fake.__qualname__ = f"YandexMusicClient.synthetic_{i}.<locals>.<lambda>"
+        return await client._call_with_retry(_fake, kind="default")
+
+    # Fire 8 parallel calls. Without the global semaphore, peak concurrency
+    # would be 8. With it, peak ≤ RESTRICTIVE_GLOBAL_CONCURRENCY.
+    await asyncio.gather(*(_call(i) for i in range(8)))
+
+    # restore
+    client._invoke_under_endpoint_lock = real_invoke  # type: ignore[method-assign]
+
+    assert concurrent_peak <= RESTRICTIVE_GLOBAL_CONCURRENCY, (
+        f"restrictive mode failed to cap global concurrency; "
+        f"peak={concurrent_peak} > {RESTRICTIVE_GLOBAL_CONCURRENCY}"
+    )
+
+
+async def test_parallel_different_endpoints_run_concurrently() -> None:
+    """Calls to different endpoint methods must NOT block each other.
+
+    The per-endpoint lock is keyed on the calling method's qualname, so
+    parallel calls to distinct YandexMusicClient methods proceed in
+    parallel (subject to throttler/RPS).
+    """
+    client, underlying = _make_client()
+
+    concurrent_peak = 0
+    in_flight = 0
+    lock = asyncio.Lock()
+
+    async def _slow(*_args: Any, **_kwargs: Any) -> Any:
+        nonlocal concurrent_peak, in_flight
+        async with lock:
+            in_flight += 1
+            concurrent_peak = max(concurrent_peak, in_flight)
+        try:
+            await asyncio.sleep(0.05)
+            return []
+        finally:
+            async with lock:
+                in_flight -= 1
+
+    underlying.tracks = _slow
+    underlying.users_likes_albums = _slow
+
+    await asyncio.gather(
+        client.get_tracks(["1"]),
+        client.get_liked_albums(),
+    )
+
+    assert concurrent_peak == 2, (
+        f"different endpoints should run in parallel; saw peak={concurrent_peak}"
+    )
