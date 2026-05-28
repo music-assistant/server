@@ -181,12 +181,16 @@ class SpotifyConnectProvider(PluginProvider):
             self._default_player_id,
             self.instance_id,
         )
+        # librespot is started with --passthrough below, so the FIFO carries
+        # the original Ogg-Vorbis bytes from Spotify rather than decoded PCM —
+        # advertise that to the frontend and let ffmpeg decode downstream.
         self._audio_format = AudioFormat(
-            content_type=ContentType.PCM_S16LE,
-            codec_type=ContentType.PCM_S16LE,
+            content_type=ContentType.OGG,
+            codec_type=ContentType.VORBIS,
             sample_rate=44100,
             bit_depth=16,
             channels=2,
+            bit_rate=320,
         )
         self._stream_metadata = StreamMetadata(title=f"Spotify Connect | {connect_name}")
         # Web API integration for playback control - must come before _build_audio_source
@@ -314,6 +318,10 @@ class SpotifyConnectProvider(PluginProvider):
         """Proxy playback control commands to Spotify via the Web API."""
         if source_id != AUDIO_SOURCE_ID:
             return
+        # Without an active Spotify session the Web API answers 403 to every
+        # transport command; fail fast with the user-facing message instead.
+        if not self._librespot_playing and not self._spotify_session_active:
+            raise AudioError(NOT_ACTIVE_DEVICE_MESSAGE)
         if action == SourceControl.PLAY:
             await self._on_play()
         elif action == SourceControl.PAUSE:
@@ -329,6 +337,8 @@ class SpotifyConnectProvider(PluginProvider):
         """Sync the Spotify app's volume slider with the player's new volume."""
         if source_id != AUDIO_SOURCE_ID:
             return
+        if not self._librespot_playing and not self._spotify_session_active:
+            raise AudioError(NOT_ACTIVE_DEVICE_MESSAGE)
         await self._on_volume(volume)
 
     def _build_audio_source(self) -> AudioSource:
@@ -868,8 +878,10 @@ class SpotifyConnectProvider(PluginProvider):
                 "pipe",
                 "--device",
                 self.named_pipe,
-                "--dither",
-                "none",
+                # Forward the raw Ogg-Vorbis bytes to the pipe instead of
+                # librespot's decoded PCM; lets MA expose the real source
+                # codec and bit_rate to the frontend.
+                "--passthrough",
                 # disable volume control
                 "--mixer",
                 "passthrough",
@@ -877,7 +889,6 @@ class SpotifyConnectProvider(PluginProvider):
                 "passthrough",
                 "--initial-volume",
                 str(initial_volume),
-                "--enable-volume-normalisation",
                 # forward events to the events script
                 "--onevent",
                 str(EVENTS_SCRIPT),
