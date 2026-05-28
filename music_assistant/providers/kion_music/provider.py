@@ -1746,7 +1746,7 @@ class KionMusicProvider(MusicProvider):
 
     # Get related items
 
-    @use_cache(3600 * 24 * 30)
+    @use_cache(3600 * 24 * 30, allow_expired_cache=True)
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks.
 
@@ -1769,7 +1769,7 @@ class KionMusicProvider(MusicProvider):
                     self.logger.debug("Error parsing album track: %s", err)
         return tracks
 
-    @use_cache(3600 * 3)
+    @use_cache(3600 * 3, allow_expired_cache=True)
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Get similar tracks using Kion Rotor station for this track.
 
@@ -2183,7 +2183,7 @@ class KionMusicProvider(MusicProvider):
             icon="mdi-weather-sunny",
         )
 
-    @use_cache(3600 * 3)
+    @use_cache(3600 * 3, allow_expired_cache=True)
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks.
 
@@ -2283,7 +2283,7 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing playlist track: %s", err)
         return tracks
 
-    @use_cache(3600 * 24 * 7)
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get artist's albums.
 
@@ -2299,7 +2299,7 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing artist album: %s", err)
         return result
 
-    @use_cache(3600 * 24 * 7)
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get artist's top tracks.
 

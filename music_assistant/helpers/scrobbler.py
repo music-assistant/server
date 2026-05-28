@@ -11,7 +11,7 @@ from music_assistant_models.config_entries import (
     ConfigValueOption,
     ConfigValueType,
 )
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, MediaType
 
 if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
@@ -21,17 +21,24 @@ if TYPE_CHECKING:
 
 
 class ScrobblerHelper:
-    """Base class to aid scrobbling tracks."""
+    """Base class to aid scrobbling media items."""
 
     logger: logging.Logger
     config: ScrobblerConfig
+    supported_media_types: frozenset[MediaType] | None
     currently_playing: str | None = None
     last_scrobbled: str | None = None
 
-    def __init__(self, logger: logging.Logger, config: ScrobblerConfig | None = None) -> None:
+    def __init__(
+        self,
+        logger: logging.Logger,
+        config: ScrobblerConfig | None = None,
+        supported_media_types: frozenset[MediaType] | None = None,
+    ) -> None:
         """Initialize."""
         self.logger = logger
         self.config = config or ScrobblerConfig(suffix_version=False)
+        self.supported_media_types = supported_media_types
 
     def _is_configured(self) -> bool:
         """Override if subclass needs specific configuration."""
@@ -51,11 +58,15 @@ class ScrobblerHelper:
         """Scrobble."""
 
     async def _on_mass_media_item_played(self, event: MassEvent) -> None:
-        """Media item has finished playing, we'll scrobble the track."""
+        """Media item has finished playing, we'll scrobble the item."""
         if not self._is_configured():
             return
 
         report: MediaItemPlaybackProgressReport = event.data
+
+        if self.supported_media_types and report.media_type not in self.supported_media_types:
+            self.logger.debug("skipped scrobbling for unsupported media type %s", report.media_type)
+            return
 
         # handle optional user_id filtering
         if self.config.mass_userids and report.userid not in self.config.mass_userids:

@@ -1031,7 +1031,7 @@ class QQMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
         return self._parse_artist(artist_obj)
 
-    @use_cache(3600 * 12)
+    @use_cache(3600 * 12, allow_expired_cache=True)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get all albums for artist."""
         if prov_artist_id.isdigit():
@@ -1080,7 +1080,7 @@ class QQMusicProvider(MusicProvider):
                 albums.append(self._parse_album(item))
         return albums
 
-    @use_cache(3600 * 6)
+    @use_cache(3600 * 6, allow_expired_cache=True)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get top tracks for artist."""
         if prov_artist_id.isdigit():
@@ -1121,7 +1121,7 @@ class QQMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Album {prov_album_id} returned unexpected payload")
         return self._parse_album(album_obj)
 
-    @use_cache(3600 * 24 * 7)
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for album id."""
         album_value: str | int = int(prov_album_id) if prov_album_id.isdigit() else prov_album_id
@@ -1327,7 +1327,7 @@ class QQMusicProvider(MusicProvider):
         playlist_obj = {**playlist_obj, "dissid": dissid, "dirid": dirid}
         return self._parse_playlist(playlist_obj)
 
-    @use_cache(3600)
+    @use_cache(3600, allow_expired_cache=True)
     async def get_playlist_tracks(
         self,
         prov_playlist_id: str,
@@ -1549,7 +1549,7 @@ class QQMusicProvider(MusicProvider):
             )
         )
 
-    @use_cache(3600 * 24)
+    @use_cache(3600 * 24, allow_expired_cache=True)
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of similar tracks based on the provided track."""
         song_id = await self._resolve_song_id(prov_track_id)

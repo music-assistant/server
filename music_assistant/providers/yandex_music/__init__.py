@@ -22,6 +22,7 @@ from .constants import (
     CONF_QUALITY,
     CONF_REFRESH_TOKEN,
     CONF_REMEMBER_SESSION,
+    CONF_SESSION_ID,
     CONF_TOKEN,
     CONF_WAVE_PRESET_DRAFT_DIVERSITY,
     CONF_WAVE_PRESET_DRAFT_LANGUAGE,
@@ -275,7 +276,7 @@ async def get_config_entries(
 
     # Handle QR auth action
     if action == CONF_ACTION_AUTH_QR:
-        session_id = values.get("session_id")
+        session_id = values.get(CONF_SESSION_ID)
         if not session_id:
             raise InvalidDataError("Missing session_id for QR authentication")
         x_token, music_token = await perform_qr_auth(mass, str(session_id))
@@ -291,7 +292,7 @@ async def get_config_entries(
     # Handle Device Flow auth action (yields x_token + refresh_token,
     # so we get silent auto-refresh on music-token AND x_token expiry)
     if action == CONF_ACTION_AUTH_DEVICE:
-        session_id = values.get("session_id")
+        session_id = values.get(CONF_SESSION_ID)
         if not session_id:
             raise InvalidDataError("Missing session_id for device authentication")
         x_token, music_token, refresh_token = await perform_device_auth(mass, str(session_id))

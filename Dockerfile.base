@@ -164,6 +164,8 @@ RUN set -x \
         libavfilter8 \
         # libsndfile needed for librosa audio file support (smartfades)
         libsndfile1 \
+        # libchromaprint needed for AcoustID fingerprinting (acoustid_lookup)
+        libchromaprint1 \
         # Audio codec runtime libraries (needed for FFmpeg)
         libfdk-aac2 \
         libmp3lame0 \
