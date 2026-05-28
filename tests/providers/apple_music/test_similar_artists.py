@@ -3,7 +3,11 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiohttp.client_exceptions import ClientResponseError
+from aiohttp.client_reqrep import RequestInfo
+from multidict import CIMultiDict, CIMultiDictProxy
 from music_assistant_models.media_items import Artist
+from yarl import URL
 
 from music_assistant.providers.apple_music.recommendations import AppleMusicRecommendationManager
 
@@ -40,6 +44,8 @@ def mock_api() -> MagicMock:
     """Return a MagicMock representing the Apple Music API client."""
     api_client = MagicMock()
     api_client.get_data = AsyncMock()
+    api_client.post_data = AsyncMock()
+    api_client.get_ratings = AsyncMock(return_value={})
     return api_client
 
 
@@ -134,3 +140,60 @@ async def test_get_similar_artists_api_error(
 
     with pytest.raises(Exception, match="API error"):
         await manager.get_similar_artists("123")
+
+
+@pytest.mark.asyncio
+async def test_get_similar_tracks_returns_tracks(
+    manager: AppleMusicRecommendationManager,
+    mock_api: MagicMock,
+) -> None:
+    """get_similar_tracks parses station tracks returned by Apple API."""
+    mock_api.post_data.side_effect = [
+        {
+            "data": [
+                {
+                    "id": "track1",
+                    "type": "songs",
+                    "attributes": {
+                        "name": "Track 1",
+                        "artistName": "Artist 1",
+                        "durationInMillis": 180000,
+                        "playParams": {"id": "track1"},
+                    },
+                    "relationships": {},
+                }
+            ]
+        },
+        {"data": []},
+    ]
+    mock_api.get_ratings.return_value = {"track1": True}
+
+    result = await manager.get_similar_tracks("123", limit=2)
+
+    assert len(result) == 1
+    assert result[0].name == "Track 1"
+
+
+@pytest.mark.asyncio
+async def test_get_similar_tracks_apple_500_returns_empty(
+    manager: AppleMusicRecommendationManager,
+    mock_api: MagicMock,
+) -> None:
+    """Apple 500 on similar tracks should not bubble up to websocket handlers."""
+    request_info = RequestInfo(
+        url=URL("https://api.music.apple.com/v1/me/stations/next-tracks/ra.i.test"),
+        method="POST",
+        headers=CIMultiDictProxy(CIMultiDict()),
+        real_url=URL("https://api.music.apple.com/v1/me/stations/next-tracks/ra.i.test"),
+    )
+    mock_api.post_data.side_effect = ClientResponseError(
+        request_info=request_info,
+        history=(),
+        status=500,
+        message="Internal Server Error",
+        headers=None,
+    )
+
+    result = await manager.get_similar_tracks("i.test", limit=5)
+
+    assert result == []

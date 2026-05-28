@@ -71,13 +71,15 @@ class AppleMusicLibraryManager:
         """Retrieve library tracks from the provider."""
         endpoint = "me/library/songs"
         song_catalog_ids = []
+        library_items_by_catalog_id: dict[str, dict] = {}
         library_only_tracks = []
-        for item in await self.api.get_all_items(endpoint):
+        for item in await self.api.get_all_items(endpoint, include="catalog,albums,artists"):
             catalog_id = item.get("attributes", {}).get("playParams", {}).get("catalogId")
             if not catalog_id:
                 library_only_tracks.append(item)
             else:
                 song_catalog_ids.append(catalog_id)
+                library_items_by_catalog_id[catalog_id] = item
         # Obtain catalog info per 150 songs; the documented limit of 300 results in a 504 timeout.
         max_limit = 150
         for i in range(0, len(song_catalog_ids), max_limit):
@@ -87,14 +89,72 @@ class AppleMusicLibraryManager:
                 catalog_endpoint, ids=",".join(catalog_ids), include="artists,albums"
             )
             rating_response = await self.api.get_ratings(catalog_ids, MediaType.TRACK)
+            returned_catalog_ids: set[str] = set()
             for item in response["data"]:
+                returned_catalog_ids.add(item["id"])
                 is_favourite = rating_response.get(item["id"])
-                yield parse_track(self.provider, item, is_favourite)
+                parsed_track = parse_track(self.provider, item, is_favourite)
+                if self._track_has_weak_album_mapping(parsed_track) and (
+                    library_item := library_items_by_catalog_id.get(item["id"])
+                ):
+                    parsed_library_track = parse_track(self.provider, library_item, is_favourite)
+                    if parsed_library_track.album and not self._track_has_weak_album_mapping(
+                        parsed_library_track
+                    ):
+                        parsed_track.album = parsed_library_track.album
+                yield parsed_track
+
+            # Some library items may not resolve on the catalog endpoint anymore.
+            for missing_catalog_id in set(catalog_ids) - returned_catalog_ids:
+                if library_item := library_items_by_catalog_id.get(missing_catalog_id):
+                    is_favourite = rating_response.get(missing_catalog_id)
+                    yield parse_track(self.provider, library_item, is_favourite)
         library_ids = [item["id"] for item in library_only_tracks if item and item["id"]]
         library_rating_response = await self.api.get_ratings(library_ids, MediaType.TRACK)
         for item in library_only_tracks:
             is_favourite = library_rating_response.get(item["id"])
-            yield parse_track(self.provider, item, is_favourite)
+            parsed_track = await self._parse_library_track_with_detail_fallback(item, is_favourite)
+            yield parsed_track
+
+    def _track_has_weak_album_mapping(self, track: Track) -> bool:
+        """Return True for missing or name-only album mapping."""
+        if not track.album:
+            return True
+        album_item_id = track.album.item_id
+        return (
+            album_item_id == track.album.name
+            and not is_library_id(album_item_id)
+            and not is_catalog_id(album_item_id)
+        )
+
+    async def _parse_library_track_with_detail_fallback(
+        self, item: dict, is_favourite: bool | None
+    ) -> Track:
+        """Parse library track and fetch detail when album mapping is weak."""
+        parsed_track = parse_track(self.provider, item, is_favourite)
+        initial_is_weak = self._track_has_weak_album_mapping(parsed_track)
+        if not initial_is_weak:
+            return parsed_track
+        try:
+            detail_response = await self.api.get_data(
+                f"me/library/songs/{item['id']}", include="catalog,albums,artists"
+            )
+        except MusicAssistantError as err:
+            self.logger.debug("Unable to fetch library song details for %s: %s", item["id"], err)
+            return parsed_track
+        if not detail_response.get("data"):
+            return parsed_track
+        detailed_track = parse_track(self.provider, detail_response["data"][0], is_favourite)
+        if self._track_has_weak_album_mapping(detailed_track):
+            # Keep detail album fallback if list had no album.
+            if not parsed_track.album and detailed_track.album:
+                return detailed_track
+            self.logger.debug(
+                "Library song %s still has no resolvable album mapping after detail fetch",
+                item["id"],
+            )
+            return parsed_track
+        return detailed_track
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve playlists from the provider."""
@@ -112,8 +172,10 @@ class AppleMusicLibraryManager:
             is_favourite = rating_library_response.get(item["id"])
             # Prefer catalog information over library information in case of public playlists
             if item["attributes"]["hasCatalog"]:
-                yield await self.provider.get_playlist(
-                    item["attributes"]["playParams"]["globalId"], is_favourite
+                yield await self.provider.media_manager.get_playlist(
+                    item["attributes"]["playParams"]["globalId"],
+                    is_favourite,
+                    can_edit_hint=item["attributes"].get("canEdit"),
                 )
             elif item and item["id"]:
                 yield parse_playlist(self.provider, item, is_favourite)
