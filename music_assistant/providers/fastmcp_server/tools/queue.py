@@ -35,8 +35,16 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         timeout=TIMEOUT_FAST,
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def get_active_queue(player_id: str, include_items: int = 25) -> QueueBrief | None:
-        """Return the active queue for a player, or ``None`` if the player is idle.
+        """
+        Return the active queue for a player, or ``None`` if the player is idle.
 
+        Returns ``QueueBrief`` with ``queue_id``, ``state``, ``current_item``,
+        shuffle / repeat flags and the requested lookahead. Note that
+        ``QueueBrief.queue_id`` is the identifier the mutation tools
+        (``set_shuffle``, ``clear_queue``, ``transfer_queue``) expect — it is
+        distinct from ``player_id``.
+
+        :param player_id: Player identifier from ``PlayerBrief.player_id``.
         :param include_items: How many lookahead items to materialise. Clamped
             to the ``[0, 500]`` range — 500 matches MA's own queue page size
             and the ``queue://`` resource cap, preventing a hostile or
@@ -62,7 +70,15 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         timeout=TIMEOUT_MUTATION,
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def set_shuffle(queue_id: str, enabled: bool) -> None:
-        """Enable or disable shuffle on the given queue."""
+        """
+        Enable or disable shuffle on the given queue.
+
+        Setting the current value again is a no-op. Returns nothing.
+
+        :param queue_id: Queue identifier from ``QueueBrief.queue_id`` (distinct
+            from ``PlayerBrief.player_id``).
+        :param enabled: ``True`` to shuffle, ``False`` to play in queue order.
+        """
         await mass.player_queues.set_shuffle(queue_id, enabled)
 
     @sub.tool(
@@ -77,7 +93,15 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         timeout=TIMEOUT_MUTATION,
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def clear_queue(queue_id: str, ctx: Context | None = None) -> None:
-        """Clear all items from the given queue."""
+        """
+        Clear all items from the given queue. Cannot be undone.
+
+        When ``Confirm destructive operations`` is enabled in the plugin
+        settings the client is asked to confirm before the queue is cleared.
+        Returns nothing.
+
+        :param queue_id: Queue identifier from ``QueueBrief.queue_id``.
+        """
         await confirm_or_raise(
             ctx,
             f"Clear all items from queue {queue_id!r}? This cannot be undone.",
@@ -90,14 +114,24 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         annotations=ToolAnnotations(
             title="Transfer queue between players",
             readOnlyHint=False,
-            destructiveHint=False,
+            destructiveHint=True,
             idempotentHint=False,
             openWorldHint=False,
         ),
         timeout=TIMEOUT_MUTATION,
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def transfer_queue(source_queue_id: str, target_queue_id: str) -> None:
-        """Move a queue from one player to another."""
+        """
+        Move the contents and playback state of one queue onto another player.
+
+        The source player stops playing and its queue is emptied. Returns
+        nothing.
+
+        :param source_queue_id: Queue identifier of the player currently
+            holding the queue (from ``QueueBrief.queue_id``).
+        :param target_queue_id: Queue identifier of the player that should
+            receive the queue.
+        """
         await mass.player_queues.transfer_queue(source_queue_id, target_queue_id)
 
     return sub

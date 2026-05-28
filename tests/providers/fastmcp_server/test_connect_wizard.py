@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from music_assistant.providers.fastmcp_server import (
+from music_assistant.providers.fastmcp_server._init_helpers import (
     _detect_external_base_url,
     _dispatch_open_connect,
     _sanitize_external_base_url,
@@ -92,6 +92,175 @@ async def test_connect_html_served(wizard_client: TestClient) -> None:
     body = await resp.text()
     assert "Music Assistant" in body
     assert "connect" in body.lower()
+
+
+async def test_connect_page_sets_security_headers(wizard_client: TestClient) -> None:
+    """The wizard response carries Referrer-Policy, CSP, and X-Frame-Options.
+
+    Two leak vectors motivate these:
+
+    * The bootstrap token in the URL would be leaked via ``Referer`` on
+      the GitHub footer link (or any future outbound link) without
+      ``Referrer-Policy: no-referrer``.
+    * Per-client long-lived MA tokens are cached in ``sessionStorage``; a
+      future inline-data XSS in this page would steal them all without a
+      tight Content-Security-Policy.
+    """
+    resp = await wizard_client.get("/mcp/v1/connect", headers={"Origin": "http://localhost:8095"})
+    assert resp.headers.get("Referrer-Policy") == "no-referrer"
+
+    csp = resp.headers.get("Content-Security-Policy") or ""
+    # Each directive is necessary — script-src controls inline JS scope,
+    # connect-src 'self' bars exfiltration to attacker origins, etc.
+    for directive in (
+        "default-src 'none'",
+        "script-src 'unsafe-inline'",
+        "style-src 'unsafe-inline'",
+        "connect-src 'self'",
+        "frame-ancestors 'none'",
+    ):
+        assert directive in csp, f"missing CSP directive: {directive!r}; got {csp!r}"
+
+    assert resp.headers.get("X-Frame-Options") == "DENY"
+    assert resp.headers.get("Cache-Control") == "no-store"
+
+
+async def test_scheme_guard_rejects_plaintext_non_loopback_login(
+    wizard_client: TestClient, wizard_mass: MagicMock
+) -> None:
+    """``/connect/login`` over plaintext http to a non-loopback host is refused.
+
+    The wizard's only credential-bearing endpoints (login/exchange/token) must
+    not accept plaintext HTTP from a LAN-reachable host — the password and
+    bootstrap tokens would be sniffable. HTTPS is allowed, and so is
+    loopback (the bytes never leave the box). Anything else gets a 400.
+    """
+    # TestClient binds to 127.0.0.1, so the request scheme is http and we'd
+    # naturally pass the loopback exception. Force ``request.host`` to a LAN
+    # address via the Host header to exercise the rejection path.
+    resp = await wizard_client.post(
+        "/mcp/v1/connect/login",
+        json={"username": "admin", "password": "hunter2"},
+        headers={"Origin": "http://localhost:8095", "Host": "192.168.1.42:8095"},
+    )
+    assert resp.status == 400
+    body = await resp.json()
+    assert body["success"] is False
+    assert "plaintext" in body["error"].lower() or "https" in body["error"].lower()
+    # MA's login must NOT have been called — credentials never crossed the wire.
+    wizard_mass.webserver.auth.login.assert_not_awaited()
+
+
+async def test_scheme_guard_allows_loopback_plaintext_login(
+    wizard_client: TestClient, wizard_mass: MagicMock
+) -> None:
+    """Loopback plaintext is allowed — the bytes never leave the box."""
+    resp = await wizard_client.post(
+        "/mcp/v1/connect/login",
+        json={"username": "admin", "password": "hunter2"},
+        headers={"Origin": "http://localhost:8095", "Host": "127.0.0.1:8095"},
+    )
+    assert resp.status == 200
+    wizard_mass.webserver.auth.login.assert_awaited_once()
+
+
+async def test_scheme_guard_rejects_plaintext_non_loopback_exchange(
+    wizard_client: TestClient, wizard_mass: MagicMock
+) -> None:
+    """Bootstrap exchange over plaintext non-loopback is refused before any MA call."""
+    resp = await wizard_client.post(
+        "/mcp/v1/connect/exchange",
+        json={"bootstrap": "boot-1"},
+        headers={"Origin": "http://localhost:8095", "Host": "192.168.1.42:8095"},
+    )
+    assert resp.status == 400
+    wizard_mass.webserver.auth.authenticate_with_token.assert_not_awaited()
+
+
+def _install_fake_ingress_helper(monkeypatch: pytest.MonkeyPatch, *, is_ingress: bool) -> None:
+    """Install a stub ``is_request_from_ingress`` MA helper that returns ``is_ingress``.
+
+    HA terminates TLS at its public front door (``https://ha.example/…``)
+    and forwards the request to MA over a local socket — so MA sees plain
+    ``http://`` from a non-loopback host, but the public hop *is* HTTPS.
+    The wizard's scheme guard mirrors the ``Origin``-check pattern: when
+    ``music_assistant.controllers.webserver.helpers.auth_middleware
+    .is_request_from_ingress`` returns True, the request is on MA's
+    trusted ingress socket and the plaintext-LAN concern doesn't apply.
+    """
+    import sys  # noqa: PLC0415
+    import types  # noqa: PLC0415
+
+    pkg = types.ModuleType("music_assistant")
+    pkg.__path__ = []
+    controllers = types.ModuleType("music_assistant.controllers")
+    controllers.__path__ = []
+    webserver_pkg = types.ModuleType("music_assistant.controllers.webserver")
+    webserver_pkg.__path__ = []
+    helpers_pkg = types.ModuleType("music_assistant.controllers.webserver.helpers")
+    helpers_pkg.__path__ = []
+    auth_mod = types.ModuleType("music_assistant.controllers.webserver.helpers.auth_middleware")
+    auth_mod.is_request_from_ingress = lambda _req: is_ingress  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(sys.modules, "music_assistant", pkg)
+    monkeypatch.setitem(sys.modules, "music_assistant.controllers", controllers)
+    monkeypatch.setitem(sys.modules, "music_assistant.controllers.webserver", webserver_pkg)
+    monkeypatch.setitem(sys.modules, "music_assistant.controllers.webserver.helpers", helpers_pkg)
+    monkeypatch.setitem(
+        sys.modules,
+        "music_assistant.controllers.webserver.helpers.auth_middleware",
+        auth_mod,
+    )
+
+
+async def test_scheme_guard_allows_plaintext_via_ha_ingress(
+    wizard_client: TestClient,
+    wizard_mass: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HA ingress: plaintext non-loopback is OK when the request is on the trusted socket.
+
+    Reproduces the production breakage on
+    ``https://ha.nevskiy.su/api/hassio_ingress/<id>/mcp/v1/connect``:
+    HA forwards the request to MA over a local socket, so the wizard
+    sees ``request.scheme == "http"`` and a non-loopback ``request.host``
+    even though the public hop is HTTPS. Without honouring the ingress
+    helper, the wizard's scheme guard rejected the bootstrap exchange
+    and the user was shown the login fields with
+    ``Plaintext credential traffic from non-loopback hosts is not
+    allowed`` on submit. The guard must recognise the trusted-ingress
+    transport and let the request through.
+    """
+    _install_fake_ingress_helper(monkeypatch, is_ingress=True)
+    resp = await wizard_client.post(
+        "/mcp/v1/connect/exchange",
+        json={"bootstrap": "boot-1"},
+        headers={"Origin": "http://localhost:8095", "Host": "ha.example:8123"},
+    )
+    assert resp.status == 200
+    wizard_mass.webserver.auth.authenticate_with_token.assert_awaited_with("boot-1")
+
+
+async def test_scheme_guard_still_rejects_when_ingress_helper_returns_false(
+    wizard_client: TestClient,
+    wizard_mass: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ingress bypass requires MA's helper to actually confirm the trusted socket.
+
+    A direct LAN request (not via HA ingress) with the same shape — plaintext
+    http, non-loopback host — must still be refused. This pins that the
+    bypass is gated on ``is_request_from_ingress``, not on any other property
+    of the request a hostile client could forge.
+    """
+    _install_fake_ingress_helper(monkeypatch, is_ingress=False)
+    resp = await wizard_client.post(
+        "/mcp/v1/connect/login",
+        json={"username": "admin", "password": "hunter2"},
+        headers={"Origin": "http://localhost:8095", "Host": "192.168.1.42:8095"},
+    )
+    assert resp.status == 400
+    wizard_mass.webserver.auth.login.assert_not_awaited()
 
 
 async def test_info_endpoint_shape(wizard_client: TestClient) -> None:
@@ -279,6 +448,52 @@ async def test_login_failure_401(wizard_client: TestClient, wizard_mass: MagicMo
     assert resp.status == 401
     body = await resp.json()
     assert body.get("error") == "bad creds"
+
+
+async def test_login_accepts_dataclass_style_result(
+    wizard_client: TestClient, wizard_mass: MagicMock
+) -> None:
+    """If MA migrates ``login`` to return a typed object, success still surfaces.
+
+    The handler used to ``isinstance(result, dict)`` and fall through to "invalid
+    credentials" for anything else — a silent break on the only credential
+    path. The shape-agnostic accessor handles both forms now.
+    """
+    wizard_mass.webserver.auth.login = AsyncMock(
+        return_value=SimpleNamespace(
+            success=True,
+            access_token="sess-via-dataclass",
+            user={"user_id": "u1", "username": "tester", "role": "admin"},
+        )
+    )
+
+    resp = await wizard_client.post(
+        "/mcp/v1/connect/login",
+        json={"username": "tester", "password": "secret"},
+        headers={"Origin": "http://localhost:8095"},
+    )
+    assert resp.status == 200
+    data = await resp.json()
+    assert data["session_token"] == "sess-via-dataclass"
+    assert data["user"]["username"] == "tester"
+
+
+async def test_login_dataclass_failure_returns_401(
+    wizard_client: TestClient, wizard_mass: MagicMock
+) -> None:
+    """A typed failure result also surfaces correctly (not just dicts)."""
+    wizard_mass.webserver.auth.login = AsyncMock(
+        return_value=SimpleNamespace(success=False, error="dataclass error")
+    )
+
+    resp = await wizard_client.post(
+        "/mcp/v1/connect/login",
+        json={"username": "x", "password": "y"},
+        headers={"Origin": "http://localhost:8095"},
+    )
+    assert resp.status == 401
+    body = await resp.json()
+    assert body.get("error") == "dataclass error"
 
 
 # ── Per-client token mint ────────────────────────────────────────────────────
@@ -479,6 +694,32 @@ async def test_action_handler_signals_url_with_bootstrap(
     # advertised base_url points at an internal IP the browser cannot reach.
     assert url.startswith("/mcp/v1/connect")
     assert "bootstrap=jwt-xyz" in url
+
+
+async def test_action_handler_uses_url_fragment_for_bootstrap(
+    wizard_mass: MagicMock, mock_user: MagicMock
+) -> None:
+    """The bootstrap rides in the URL ``#fragment``, not the query string.
+
+    Query-string form would leak the bootstrap into aiohttp access logs and
+    every reverse-proxy log on the path; the GET request line is logged.
+    Fragments are never sent to the server, so this is the only form that
+    keeps short-lived bootstraps out of log files.
+    """
+    await handle_open_connect_action(
+        wizard_mass,
+        current_user=mock_user,
+        mount_path="/mcp/v1",
+        base_url="http://localhost:8095",
+    )
+
+    _, kwargs = wizard_mass.signal_event.call_args
+    url = kwargs.get("data") if "data" in kwargs else wizard_mass.signal_event.call_args[0][-1]
+    assert isinstance(url, str)
+    assert "#bootstrap=" in url, f"bootstrap should ride in #fragment, got {url!r}"
+    assert "?bootstrap=" not in url, (
+        f"bootstrap must not appear in query string (would leak to logs); got {url!r}"
+    )
 
 
 async def test_action_handler_no_user_signals_plain_url(wizard_mass: MagicMock) -> None:

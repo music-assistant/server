@@ -12,7 +12,7 @@ import asyncio
 import logging
 import secrets
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlencode
+from urllib.parse import quote
 
 from ._revoke import list_user_tokens, revoke_token_by_id
 
@@ -88,7 +88,12 @@ async def handle_open_connect_action(
         # for direct access; loses any reverse-proxy / ingress path prefix.
         url = f"{mount}/connect"
     if bootstrap:
-        url = f"{url}?{urlencode({'bootstrap': bootstrap})}"
+        # Carry the bootstrap in the URL fragment, not the query string.
+        # Fragments are never sent to the server (so they don't appear in
+        # aiohttp access logs or any reverse-proxy log), and they're not
+        # sent in the Referer header on cross-origin navigation. Query
+        # strings were leaking the bootstrap into both.
+        url = f"{url}#bootstrap={quote(bootstrap, safe='')}"
 
     object_id = session_id or f"mcp-connect-{secrets.token_urlsafe(8)}"
     _signal_auth_session(mass, session_id=object_id, url=url)
@@ -113,7 +118,7 @@ def _signal_auth_session(mass: MusicAssistant, *, session_id: str, url: str) -> 
     use for OAuth redirect. Never raises: if the event bus rejects the call we
     log the exception and the failure path (the user can re-trigger the action
     manually) — the URL itself is **not** logged because it carries the
-    short-lived bootstrap token in its query string.
+    short-lived bootstrap token in its URL fragment.
     """
     from music_assistant_models.enums import EventType  # noqa: PLC0415
 

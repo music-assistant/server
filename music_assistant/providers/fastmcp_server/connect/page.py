@@ -419,7 +419,11 @@ HTML: str = """<!doctype html>
   }
 
   async function tryBootstrap() {
-    const params = new URLSearchParams(window.location.search);
+    // Bootstrap arrives in the URL fragment (#bootstrap=…), not the query
+    // string — fragments are never sent to the server (no access-log leak)
+    // and not sent in cross-origin Referer (no leak to external links like
+    // the GitHub footer link). The previous query-string form leaked both.
+    const params = new URLSearchParams(window.location.hash.slice(1));
     const boot = params.get("bootstrap");
     if (!boot) return false;
     const { res, data } = await fetchJSON("./connect/exchange", {
@@ -427,7 +431,7 @@ HTML: str = """<!doctype html>
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ bootstrap: boot }),
     });
-    // Always strip ?bootstrap from the URL bar so a refresh doesn't replay it.
+    // Always strip the fragment so a refresh doesn't replay the bootstrap.
     history.replaceState({}, "", window.location.pathname);
     if (!res.ok || !data || !data.session_token) return false;
     state.sessionToken = data.session_token;

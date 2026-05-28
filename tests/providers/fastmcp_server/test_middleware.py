@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import pytest
 from fastmcp import Client, FastMCP
+from fastmcp.exceptions import ToolError
+from mcp.shared.exceptions import McpError
 
 from music_assistant.providers.fastmcp_server.middleware import TagFilterMiddleware
 from music_assistant.providers.fastmcp_server.server import build_tag_lookup
@@ -54,10 +56,17 @@ async def test_listing_filters_disabled_tools() -> None:
 
 
 async def test_call_disabled_tool_blocked() -> None:
-    """A client cannot bypass the listing filter by calling the disabled tool by name."""
+    """A client cannot bypass the listing filter by calling the disabled tool by name.
+
+    FastMCP's ``call_tool`` raises ``ToolError`` for any server-side rejection
+    (the middleware re-raises ``NotFoundError`` as a tool-call failure).
+    Pinning that type (rather than ``Exception``) keeps a future bug that
+    raises e.g. ``TypeError`` from a wrong call signature from being
+    silently masked.
+    """
     mcp = _build_server(allowed={"query"})
     async with Client(mcp) as client:
-        with pytest.raises(Exception):  # noqa: B017,PT011 - SDK wraps as ToolError or RPC error
+        with pytest.raises(ToolError):
             await client.call_tool("deletes", {})
 
 
@@ -80,10 +89,15 @@ async def test_untagged_tool_always_callable() -> None:
 
 
 async def test_disabled_resource_blocked_on_read() -> None:
-    """Reading a disabled resource by URI raises rather than silently succeeding."""
+    """Reading a disabled resource by URI raises rather than silently succeeding.
+
+    ``read_resource`` lifts server errors to ``McpError`` (the MCP SDK's own
+    JSON-RPC error envelope class), not to ``ToolError`` — different transport
+    path from ``call_tool``.
+    """
     mcp = _build_server(allowed=set())
     async with Client(mcp) as client:
-        with pytest.raises(Exception):  # noqa: B017,PT011
+        with pytest.raises(McpError):
             await client.read_resource("data://thing/42")
 
 
@@ -103,8 +117,8 @@ async def test_template_resource_read_via_concrete_uri() -> None:
 
 
 async def test_disabled_prompt_blocked_on_get() -> None:
-    """Getting a disabled prompt by name raises."""
+    """Getting a disabled prompt by name raises ``McpError`` (RPC envelope)."""
     mcp = _build_server(allowed=set())
     async with Client(mcp) as client:
-        with pytest.raises(Exception):  # noqa: B017,PT011
+        with pytest.raises(McpError):
             await client.get_prompt("suggest", {})
