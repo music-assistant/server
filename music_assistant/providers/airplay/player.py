@@ -867,7 +867,13 @@ class AirPlayPlayer(Player):
             return
 
         cur_volume = self.volume_level or 0
-        if abs(cur_volume - volume) > 1 or (time.time() - self.last_command_sent) > 3:
+        recently_sent = (time.time() - self.last_command_sent) < 3
+        # If a volume command was recently sent and the reported value differs
+        # significantly, the device is likely echoing its pre-command state.
+        # Ignore it to avoid overriding the command we just issued.
+        if recently_sent and abs(cur_volume - volume) > 1:
+            return
+        if abs(cur_volume - volume) > 1 or not recently_sent:
             self.mass.create_task(self.volume_set(volume))
         else:
             self._attr_volume_level = volume
