@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 import shutil
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextlib import suppress
@@ -116,6 +117,10 @@ DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 DB_SCHEMA_VERSION: Final[int] = 40
+# tracks longer that this will not be included in radio mode
+RADIO_TRACK_MAX_DURATION_SECS: Final[int] = 20 * 60
+_DYNAMIC_RADIO_BASE_SAMPLE_SIZE: Final[int] = 5
+_DYNAMIC_RADIO_DYNAMIC_TARGET: Final[int] = 50
 
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
@@ -876,6 +881,83 @@ class MusicController(CoreController):
         # return result from all providers while keeping index
         # so the result is sorted as each provider delivered
         return [item for sublist in zip_longest(*results_per_provider) for item in sublist if item]
+
+    async def get_dynamic_radio_tracks(
+        self,
+        seeds: list[MediaItemType],
+        *,
+        include_base_tracks: bool = False,
+        target_size: int = 25,
+        preferred_provider_instances: list[str] | None = None,
+    ) -> list[Track]:
+        """
+        Generate a dynamic radio track pool from one or more seed media items.
+
+        :param seeds: Seed media items (Track, Artist, Album, Playlist, ...) used as sources.
+        :param include_base_tracks: When True, interleave the sampled base tracks into the result
+            using the BDDBDD pattern. When False, only similar tracks are returned.
+        :param target_size: Maximum number of dynamic (similar) tracks to sample into the result.
+            When ``include_base_tracks`` is True, base tracks are added on top of this cap.
+        :param preferred_provider_instances: Provider instance IDs preferred for similar lookups.
+        :raises UnsupportedFeaturedException: When no base tracks could be derived from any seed.
+        """
+        seen: set[Track] = set()
+        available_base_tracks: list[Track] = []
+        for seed in random.sample(seeds, len(seeds)):
+            ctrl = self.get_controller(seed.media_type)
+            try:
+                base_tracks_for_seed = await ctrl.radio_mode_base_tracks(
+                    seed,  # type: ignore[arg-type]
+                    preferred_provider_instances,
+                )
+            except UnsupportedFeaturedException:
+                continue
+            for track in base_tracks_for_seed:
+                if track not in seen:
+                    seen.add(track)
+                    available_base_tracks.append(track)
+        if not available_base_tracks:
+            raise UnsupportedFeaturedException("Radio mode not available for source items")
+
+        base_tracks = random.sample(
+            available_base_tracks,
+            min(_DYNAMIC_RADIO_BASE_SAMPLE_SIZE, len(available_base_tracks)),
+        )
+        dynamic_tracks: set[Track] = set()
+        for allow_lookup in (False, True):
+            if len(dynamic_tracks) >= _DYNAMIC_RADIO_DYNAMIC_TARGET:
+                break
+            for base_track in base_tracks:
+                try:
+                    similar = await self.tracks.similar_tracks(
+                        base_track.item_id,
+                        base_track.provider,
+                        allow_lookup=allow_lookup,
+                        preferred_provider_instances=preferred_provider_instances,
+                    )
+                except MediaNotFoundError:
+                    continue
+                for track in similar:
+                    if track not in base_tracks and track.duration <= RADIO_TRACK_MAX_DURATION_SECS:
+                        dynamic_tracks.add(track)
+                if len(dynamic_tracks) >= _DYNAMIC_RADIO_DYNAMIC_TARGET:
+                    break
+
+        result: list[Track] = []
+        dynamic_tracks_list = list(dynamic_tracks)
+        if include_base_tracks:
+            result.append(base_tracks[0])
+            if len(base_tracks) > 1:
+                for base_track in base_tracks[1:]:
+                    result.append(base_track)
+                    if len(dynamic_tracks_list) > 2:
+                        result += random.sample(dynamic_tracks_list, 2)
+                    else:
+                        result += dynamic_tracks_list
+        remaining_dynamic = [t for t in dynamic_tracks_list if t not in result]
+        if remaining_dynamic:
+            result += random.sample(remaining_dynamic, min(len(remaining_dynamic), target_size))
+        return result
 
     @api_command("music/item")
     async def get_item(
