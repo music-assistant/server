@@ -313,13 +313,18 @@ class MusicController(CoreController):
         media_types: list[MediaType] = MediaType.ALL,
         limit: int = 25,
         library_only: bool = False,
+        username_or_user_id: str | None = None,
     ) -> SearchResults:
         """Perform global search for media items on all providers.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
+        :param username_or_user_id: get user from either id or name for provider filter
         """
+        user: User | None = None
+        if username_or_user_id:
+            user = await self.mass.webserver.auth.get_user_by_id_or_name(username_or_user_id)
         # use cache to avoid repeated searches
         plugin_search_providers = [
             p.instance_id
@@ -328,7 +333,7 @@ class MusicController(CoreController):
                 priority=(ProviderType.PLUGIN,),
             )
         ]
-        search_providers = sorted(self.get_unique_providers() + plugin_search_providers)
+        search_providers = sorted(self.get_unique_providers(user) + plugin_search_providers)
         cache_provider_key = "library" if library_only else ",".join(search_providers)
         cache_key = f"{search_query}{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}-{library_only}-{cache_provider_key}"
         if cache := await self.mass.cache.get(
@@ -733,10 +738,14 @@ class MusicController(CoreController):
 
     @api_command("music/in_progress_items")
     async def in_progress_items(
-        self, limit: int = 10, all_users: bool = False
+        self, limit: int = 10, all_users: bool = False, username_or_user_id: str | None = None
     ) -> list[ItemMapping]:
         """Return a list of the Audiobooks and PodcastEpisodes that are in progress."""
-        available_providers = ("library", *self.get_unique_providers())
+        user: User | None = None
+        if username_or_user_id:
+            all_users = False
+            user = await self.mass.webserver.auth.get_user_by_id_or_name(username_or_user_id)
+        available_providers = ("library", *self.get_unique_providers(user))
         available_providers_str = "(" + ",".join(f'"{x}"' for x in available_providers) + ")"
 
         # An audiobook can be part of the library, in contrast to podcast episodes.
@@ -756,7 +765,7 @@ class MusicController(CoreController):
             f"EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} m "
             "WHERE m.item_id = p.item_id AND m.media_type = p.media_type "
         )
-        if not all_users and (user := get_current_user()):
+        if not all_users and (user or (user := get_current_user())):
             filter_for_str = available_providers_str
             if user.provider_filter:
                 filter_for_str = "(" + ",".join(f'"{x}"' for x in user.provider_filter) + ")"
@@ -1599,7 +1608,7 @@ class MusicController(CoreController):
             self.mass.get_provider_instances(domain, return_unavailable, ProviderType.MUSIC),
         )
 
-    def get_unique_providers(self) -> list[str]:
+    def get_unique_providers(self, user: User | None = None) -> list[str]:
         """
         Return all unique MusicProvider (instance or domain) ids.
 
@@ -1608,10 +1617,12 @@ class MusicController(CoreController):
 
         Applies user provider filters (for non-admin users).
         """
-        processed_domains: set[str] = set()
+        if not user:
+            # get user from context
+            user = get_current_user()
         # Get user provider filter if set
-        user = get_current_user()
         user_provider_filter = user.provider_filter if user and user.provider_filter else None
+        processed_domains: set[str] = set()
         result: list[str] = []
         for provider in self.providers:
             if provider.is_streaming_provider and provider.domain in processed_domains:
@@ -3339,3 +3350,79 @@ class MusicController(CoreController):
             CONF_ENTRY_LIBRARY_SYNC_BACK.key, CONF_ENTRY_LIBRARY_SYNC_BACK.default_value
         )
         return bool(conf_value)
+
+    async def ha_get_item_by_name(
+        self,
+        name: str,
+        artist: str | None = None,
+        album: str | None = None,
+        media_type: MediaType | None = None,
+        username_or_user_id: str | None = None,
+    ) -> MediaItemType | ItemMapping | None:
+        """Try to find a media item (such as a playlist) by name.
+
+        COPY OF HA METHOD
+        """
+        searchname = name.lower()
+        library_functions = [
+            x
+            for x in (
+                self.playlists.library_items,
+                self.radio.library_items,
+                self.tracks.library_items,
+                self.albums.library_items,
+                self.artists.library_items,
+                self.audiobooks.library_items,
+                self.podcasts.library_items,
+            )
+            if not media_type or media_type.value.lower() in x.__name__
+        ]
+        # prefer (exact) lookup in the library by name
+        for func in library_functions:
+            result = await func(search=searchname, username_or_user_id=username_or_user_id)
+            for item in result:
+                # handle optional artist filter
+                if (
+                    artist
+                    and (artists := getattr(item, "artists", None))
+                    and not any(x for x in artists if x.name.lower() == artist.lower())
+                ):
+                    continue
+                # handle optional album filter
+                if (
+                    album
+                    and (item_album := getattr(item, "album", None))
+                    and item_album.name.lower() != album.lower()
+                ):
+                    continue
+                if searchname == item.name.lower():
+                    return item
+        # nothing found in the library, fallback to global search
+        search_name = name
+        if album and artist:
+            search_name = f"{artist} - {album} - {name}"
+        elif album:
+            search_name = f"{album} - {name}"
+        elif artist:
+            search_name = f"{artist} - {name}"
+        search_results = await self.search(
+            search_query=search_name,
+            media_types=[media_type]
+            if media_type and media_type != MediaType.UNKNOWN
+            else MediaType.ALL,
+            limit=8,
+            username_or_user_id=username_or_user_id,
+        )
+        for results in (
+            search_results.tracks,
+            search_results.albums,
+            search_results.playlists,
+            search_results.artists,
+            search_results.radio,
+            search_results.audiobooks,
+            search_results.podcasts,
+        ):
+            for _item in results:
+                # simply return the first item because search is already sorted by best match
+                return _item
+        return None
