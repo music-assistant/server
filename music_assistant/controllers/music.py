@@ -3351,7 +3351,8 @@ class MusicController(CoreController):
         )
         return bool(conf_value)
 
-    async def ha_get_item_by_name(
+    @api_command("music/item_by_name")
+    async def get_item_by_name(
         self,
         name: str,
         artist: str | None = None,
@@ -3361,7 +3362,8 @@ class MusicController(CoreController):
     ) -> MediaItemType | ItemMapping | None:
         """Try to find a media item (such as a playlist) by name.
 
-        COPY OF HA METHOD
+        This is a copy of the HA integrations method with additional username specification.
+        The HA method shall become obsolete.
         """
         searchname = name.lower()
         library_functions = [
