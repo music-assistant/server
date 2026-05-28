@@ -33,6 +33,8 @@ from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.auth import User
+
     from music_assistant import MusicAssistant
 
 
@@ -115,6 +117,7 @@ class AlbumsController(MediaControllerBase[Album]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
+        username_or_user_id: str | None = None,
         album_types: list[AlbumType] | None = None,
         **kwargs: Any,
     ) -> list[Album]:
@@ -129,6 +132,11 @@ class AlbumsController(MediaControllerBase[Album]):
         :param album_types: Filter by album types.
         :param genre: Filter by genre id(s).
         """
+        user: User | None = None
+        if username_or_user_id:
+            # anything non-web cannot use the web context in _ensure_provider_filter
+            user = await self.mass.webserver.auth.get_user_by_id_or_name(username_or_user_id)
+
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
         extra_join_parts: list[str] = []
@@ -169,7 +177,7 @@ class AlbumsController(MediaControllerBase[Album]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider),
+            provider_filter=self._ensure_provider_filter(provider, user),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             extra_join_parts=extra_join_parts,
@@ -197,7 +205,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 search=None,
                 limit=remaining_limit,
                 order_by=order_by,
-                provider_filter=self._ensure_provider_filter(provider),
+                provider_filter=self._ensure_provider_filter(provider, user),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 extra_join_parts=extra_join_parts,

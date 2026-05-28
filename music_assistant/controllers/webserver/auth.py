@@ -544,6 +544,12 @@ class AuthenticationManager:
 
         return await self.get_user(user_row["user_id"])
 
+    async def get_user_by_id_or_name(self, username_or_user_id: str) -> User | None:
+        """Get user by id or name."""
+        if user := await self.get_user_by_username(username_or_user_id):
+            return user
+        return await self.get_user(username_or_user_id)
+
     async def get_user_by_provider_link(
         self, provider_type: AuthProviderType, provider_user_id: str
     ) -> User | None:

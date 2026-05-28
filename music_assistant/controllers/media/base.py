@@ -47,6 +47,8 @@ from music_assistant.helpers.util import guard_single_request, parse_optional_bo
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Mapping
 
+    from music_assistant_models.auth import User
+
     from music_assistant import MusicAssistant
     from music_assistant.models.music_provider import MusicProvider
     from music_assistant.models.plugin import PluginProvider
@@ -289,6 +291,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
+        username_or_user_id: str | None = None,
         **kwargs: Any,
     ) -> list[ItemCls]:
         """
@@ -301,14 +304,19 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
+        :param username_or_user_id: Filter by providers associated with users.
         """
+        user: User | None = None
+        if username_or_user_id:
+            # anything non-web cannot use the web context in _ensure_provider_filter
+            user = await self.mass.webserver.auth.get_user_by_id_or_name(username_or_user_id)
         return await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider),
+            provider_filter=self._ensure_provider_filter(provider, user),
             genre_ids=genre,
             in_library_only=True,
         )
@@ -1186,10 +1194,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     def _ensure_provider_filter(
         self,
         provider: str | list[str] | None,
+        user: User | None = None,
     ) -> list[str] | None:
         """Ensure the provider filter respects the current user's provider filter."""
+        if not user:
+            # get user from web context if possible
+            user = get_current_user()
         # Apply user provider filter if needed
-        user = get_current_user()
         user_provider_filter = user.provider_filter if user and user.provider_filter else None
         final_provider_filter: list[str] | None = None
         if user_provider_filter:

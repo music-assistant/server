@@ -41,6 +41,8 @@ from music_assistant.models.music_provider import MusicProvider
 from .base import MediaControllerBase
 
 if TYPE_CHECKING:
+    from music_assistant_models.auth import User
+
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.models.plugin import PluginProvider
@@ -178,6 +180,7 @@ class TracksController(MediaControllerBase[Track]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
+        username_or_user_id: str | None = None,
         **kwargs: Any,
     ) -> list[Track]:
         """Get in-database tracks.
@@ -190,6 +193,11 @@ class TracksController(MediaControllerBase[Track]):
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
         """
+        user: User | None = None
+        if username_or_user_id:
+            # anything non-web cannot use the web context in _ensure_provider_filter
+            user = await self.mass.webserver.auth.get_user_by_id_or_name(username_or_user_id)
+
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
         extra_join_parts: list[str] = []
@@ -215,7 +223,7 @@ class TracksController(MediaControllerBase[Track]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider),
+            provider_filter=self._ensure_provider_filter(provider, user),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             extra_join_parts=extra_join_parts,
@@ -237,7 +245,7 @@ class TracksController(MediaControllerBase[Track]):
                 genre_ids=genre,
                 limit=limit,
                 order_by=order_by,
-                provider_filter=self._ensure_provider_filter(provider),
+                provider_filter=self._ensure_provider_filter(provider, user),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 extra_join_parts=extra_join_parts,
