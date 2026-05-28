@@ -72,6 +72,14 @@ AUDIO_SOURCE_ID = "main"
 # play: the Web API returns 200 even when playback never actually starts.
 PLAYBACK_START_TIMEOUT_S = 3.0
 
+# How long to wait after session_connected for a definitive 'playing' or
+# 'paused' event before assuming librespot is wedged (typically blocked on
+# a pipe write because no consumer is reading the FIFO yet).
+SESSION_STALL_TIMEOUT_S = 8.0
+
+# How long the emergency drain reads the FIFO once a stall is detected.
+SESSION_STALL_DRAIN_TIMEOUT_S = 2.0
+
 # User-facing message for the "not the active Spotify device" failure.
 NOT_ACTIVE_DEVICE_MESSAGE = (
     "Music Assistant is not the active Spotify playback device. "
@@ -229,6 +237,11 @@ class SpotifyConnectProvider(PluginProvider):
         self._spotify_device_id: str | None = None
         self._last_session_connected_time: float = 0
         self._last_volume_sent_to_spotify: int | None = None
+        # Armed on session_connected, cancelled on the first definitive
+        # state event ('playing' / 'paused' / 'session_disconnected'). If
+        # neither lands within SESSION_STALL_TIMEOUT_S, the watchdog drains
+        # the FIFO to unblock a likely pipe-write deadlock in librespot.
+        self._session_watchdog: asyncio.Task[None] | None = None
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -254,6 +267,7 @@ class SpotifyConnectProvider(PluginProvider):
         """Handle close/cleanup of the provider."""
         self._stop_called = True
         self._cancel_pending_play_media()
+        self._cancel_session_watchdog()
         if self._runner_task and not self._runner_task.done():
             self._runner_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -422,6 +436,73 @@ class SpotifyConnectProvider(PluginProvider):
         if task is not None and not task.done():
             task.cancel()
         self._pending_play_media_task = None
+
+    def _arm_session_watchdog(self) -> None:
+        """Arm the post-session_connected stall watchdog."""
+        self._cancel_session_watchdog()
+        self._session_watchdog = self.mass.create_task(self._session_watchdog_body())
+
+    def _cancel_session_watchdog(self) -> None:
+        """Cancel the stall watchdog."""
+        task = self._session_watchdog
+        if task is not None and not task.done():
+            task.cancel()
+        self._session_watchdog = None
+
+    async def _session_watchdog_body(self) -> None:
+        """
+        Recover librespot when a session_connected isn't followed by a state event.
+
+        The typical cause is a pipe-write deadlock: librespot starts producing
+        audio, the FIFO has no consumer yet, the kernel pipe buffer fills, the
+        next write blocks, and the main loop is stuck — so no 'playing' or
+        'paused' event ever fires. Draining the FIFO unblocks the write; the
+        normal flow then resumes on its own.
+        """
+        try:
+            await asyncio.sleep(SESSION_STALL_TIMEOUT_S)
+        except asyncio.CancelledError:
+            return
+        if self._librespot_playing or self._in_use_by_queue:
+            return
+        self.logger.warning(
+            "Spotify Connect session connected but no playing/paused event "
+            "within %ss — draining FIFO to unblock librespot",
+            SESSION_STALL_TIMEOUT_S,
+        )
+        await self._emergency_drain_fifo()
+
+    async def _emergency_drain_fifo(self) -> None:
+        """Open the FIFO and read+discard briefly to unblock librespot."""
+        try:
+            fd = os.open(self.named_pipe, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+        except OSError as err:
+            self.logger.debug("Emergency drain: cannot open FIFO: %s", err)
+            return
+        drained = 0
+        deadline = self.mass.loop.time() + SESSION_STALL_DRAIN_TIMEOUT_S
+        try:
+            while self.mass.loop.time() < deadline:
+                # Bail out as soon as librespot recovers or the normal stream
+                # pipeline is about to attach; closing our fd before ffmpeg
+                # opens avoids two readers splitting the audio bytes.
+                if self._librespot_playing or self._in_use_by_queue:
+                    break
+                try:
+                    data = os.read(fd, 65536)
+                except BlockingIOError:
+                    await asyncio.sleep(0.01)
+                    continue
+                except OSError:
+                    break
+                if data == b"":
+                    await asyncio.sleep(0.01)
+                else:
+                    drained += len(data)
+        finally:
+            with suppress(Exception):
+                os.close(fd)
+        self.logger.info("Emergency FIFO drain complete: %d bytes", drained)
 
     async def _deferred_play_media_fire(self) -> None:
         """
@@ -936,6 +1017,7 @@ class SpotifyConnectProvider(PluginProvider):
             # Track when session connected for volume event filtering
             self._last_session_connected_time = time.time()
             self._spotify_session_active = True
+            self._arm_session_watchdog()
             username = json_data.get("user_name")
             self.logger.debug(
                 "Session connected event - username from event: %s, current username: %s",
@@ -955,6 +1037,7 @@ class SpotifyConnectProvider(PluginProvider):
         if event_name == "session_disconnected":
             self.logger.info("Spotify Connect session disconnected")
             self._spotify_session_active = False
+            self._cancel_session_watchdog()
             prev_player_id = self._active_player_id
             self._clear_active_player()
             if prev_player_id:
@@ -975,8 +1058,13 @@ class SpotifyConnectProvider(PluginProvider):
         # state regardless of which lands first.
         if event_name in ("sink", "playing"):
             self._librespot_playing = True
+            # Definitive state signal — the watchdog can stand down.
+            if event_name == "playing":
+                self._cancel_session_watchdog()
         elif event_name == "paused":
             self._librespot_playing = False
+            # Definitive state signal — the watchdog can stand down.
+            self._cancel_session_watchdog()
             # cancel any deferred play_media — pause is the definitive "don't".
             # We deliberately do NOT cmd_stop the consumer here even though it
             # would make pause UX feel snappier: cmd_stop ends the stream →
