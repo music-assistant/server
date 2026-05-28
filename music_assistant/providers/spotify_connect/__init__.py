@@ -12,7 +12,7 @@ import asyncio
 import os
 import pathlib
 import time
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
@@ -38,8 +38,6 @@ from music_assistant_models.media_items import AudioFormat, AudioSource, Provide
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
-from music_assistant.controllers.streams.ogg_handler import chain_ogg_pages
-from music_assistant.helpers.named_pipe import read_named_pipe
 from music_assistant.helpers.process import AsyncProcess, check_output
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.spotify.helpers import get_librespot_binary
@@ -191,16 +189,12 @@ class SpotifyConnectProvider(PluginProvider):
             self._default_player_id,
             self.instance_id,
         )
-        # librespot is started with --passthrough below, so the FIFO carries
-        # the original Ogg-Vorbis bytes from Spotify rather than decoded PCM —
-        # advertise that to the frontend and let ffmpeg decode downstream.
         self._audio_format = AudioFormat(
-            content_type=ContentType.OGG,
-            codec_type=ContentType.VORBIS,
+            content_type=ContentType.PCM_S16LE,
+            codec_type=ContentType.PCM_S16LE,
             sample_rate=44100,
             bit_depth=16,
             channels=2,
-            bit_rate=320,
         )
         self._stream_metadata = StreamMetadata(title=f"Spotify Connect | {connect_name}")
         # Web API integration for playback control - must come before _build_audio_source
@@ -307,10 +301,11 @@ class SpotifyConnectProvider(PluginProvider):
         # API would accept a play call but never actually start playback on us.
         if not self._librespot_playing and not self._spotify_session_active:
             raise AudioError(NOT_ACTIVE_DEVICE_MESSAGE)
-        # CUSTOM (not NAMED_PIPE): librespot --passthrough emits a fresh OGG
-        # bitstream per Spotify track and ffmpeg can't demux those chained
-        # streams; get_audio_stream below pipes through chain_ogg_pages so
-        # ffmpeg sees one continuous OGG.
+        # NAMED_PIPE (not CUSTOM): the core opens the FIFO with ffmpeg directly
+        # using `-re`, which paces the read at native rate. Going through a
+        # Python generator + StreamReader would let librespot's pipe backend
+        # (which is not realtime-paced) fill an arbitrary-size buffer ahead of
+        # us; pause/skip would then take seconds to react.
         # expiration=0: never reuse a cached streamdetails so the active-device
         # check above re-runs on every play attempt.
         return StreamDetails(
@@ -318,22 +313,11 @@ class SpotifyConnectProvider(PluginProvider):
             item_id=source_id,
             audio_format=self._audio_format,
             media_type=MediaType.AUDIO_SOURCE,
-            stream_type=StreamType.CUSTOM,
+            stream_type=StreamType.NAMED_PIPE,
+            path=self.named_pipe,
             stream_metadata=self._stream_metadata,
             expiration=0,
         )
-
-    async def get_audio_stream(
-        self,
-        streamdetails: StreamDetails,
-        seek_position: int = 0,
-    ) -> AsyncGenerator[bytes, None]:
-        """Stream chained-OGG bytes from librespot's FIFO."""
-        # Each Spotify track is a separate OGG bitstream from librespot
-        # --passthrough; chain_ogg_pages stitches them so ffmpeg sees one
-        # continuous stream and doesn't choke on bitstream boundaries.
-        async for chunk in chain_ogg_pages(read_named_pipe(self.named_pipe)):
-            yield chunk
 
     async def on_source_control(
         self,
@@ -973,10 +957,8 @@ class SpotifyConnectProvider(PluginProvider):
                 "pipe",
                 "--device",
                 self.named_pipe,
-                # Forward the raw Ogg-Vorbis bytes to the pipe instead of
-                # librespot's decoded PCM; lets MA expose the real source
-                # codec and bit_rate to the frontend.
-                "--passthrough",
+                "--dither",
+                "none",
                 # disable volume control
                 "--mixer",
                 "passthrough",
@@ -984,6 +966,7 @@ class SpotifyConnectProvider(PluginProvider):
                 "passthrough",
                 "--initial-volume",
                 str(initial_volume),
+                "--enable-volume-normalisation",
                 # forward events to the events script
                 "--onevent",
                 str(EVENTS_SCRIPT),
