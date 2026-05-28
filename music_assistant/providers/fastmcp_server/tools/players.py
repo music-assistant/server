@@ -31,27 +31,41 @@ def build_players_server(mass: MusicAssistant) -> FastMCP:
         ),
         timeout=TIMEOUT_FAST,
     )  # type: ignore[untyped-decorator, unused-ignore]
-    async def list_players(include_unavailable: bool = False) -> list[PlayerBrief]:
+    async def list_players(
+        include_unavailable: bool = False,
+        include_disabled: bool = False,
+    ) -> list[PlayerBrief]:
         """
         List players known to Music Assistant.
 
         Returns ``PlayerBrief`` items with ``player_id``, ``name``, ``state``,
-        ``powered``, ``volume_level``, ``available``, ``enabled`` and the
-        currently playing item (if any). Players that MA has lost contact
-        with are hidden by default — pass ``include_unavailable=True`` to
-        get them back, with ``state="unavailable"`` so they are easy to
-        distinguish. Does not include queue contents — use the ``queue``
-        tools for that.
+        ``powered``, ``volume_level``, ``available``, ``enabled``,
+        ``needs_setup``, ``active_group``, ``synced_to`` and the currently
+        playing item (if any). ``state`` summarises usability — values are
+        ``unavailable`` (offline), ``disabled`` (admin-disabled),
+        ``needs_setup`` (first-run config pending), ``synced`` (member of an
+        active sync group; its queue belongs to the group leader), or the
+        normal playback states (``idle`` / ``playing`` / ``paused`` / ...).
+        Offline and admin-disabled players are hidden by default — flip the
+        corresponding ``include_*`` flag to get them back. Does not include
+        queue contents — use the ``queue`` tools for that.
 
         :param include_unavailable: When ``True``, include players whose
             ``available`` flag is ``False`` (offline / unreachable
             devices). Defaults to ``False``.
+        :param include_disabled: When ``True``, include players that the
+            admin has disabled in Music Assistant settings. Defaults to
+            ``False`` (matching MA's own ``return_disabled`` default).
         """
-        # Delegate filtering to MA's native ``return_unavailable`` knob rather
-        # than re-implementing it in Python — MA short-circuits the build at
-        # the controller level and applies the same user-role visibility
-        # filters as every other consumer.
-        players = mass.players.all_players(return_unavailable=include_unavailable)
+        # Delegate filtering to MA's native ``return_unavailable`` /
+        # ``return_disabled`` knobs rather than re-implementing them in
+        # Python — MA short-circuits the build at the controller level and
+        # applies the same user-role visibility filters as every other
+        # consumer.
+        players = mass.players.all_players(
+            return_unavailable=include_unavailable,
+            return_disabled=include_disabled,
+        )
         return [to_brief_player(p) for p in players]
 
     @sub.tool(

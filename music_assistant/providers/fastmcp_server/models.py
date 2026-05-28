@@ -71,6 +71,9 @@ class PlayerBrief:
     current_item: str | None = None
     available: bool = True
     enabled: bool = True
+    needs_setup: bool = False
+    active_group: str | None = None
+    synced_to: str | None = None
 
 
 @dataclass
@@ -99,6 +102,7 @@ class QueueBrief:
     shuffle: bool
     repeat: str
     items: list[QueueItemBrief] = field(default_factory=list)
+    available: bool = True
 
 
 @dataclass

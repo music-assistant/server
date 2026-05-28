@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -94,7 +95,15 @@ def test_to_brief_radio() -> None:
 
 
 def test_to_brief_player_reads_playback_state() -> None:
-    """``to_brief_player`` reads the canonical ``Player.playback_state`` enum."""
+    """``to_brief_player`` reads the canonical ``Player.playback_state`` enum.
+
+    The expected ``PlayerBrief`` pins every defaulted field explicitly —
+    leaving them implicit means the test passes only as long as the
+    dataclass defaults match what ``to_brief_player`` falls back to for
+    legacy stubs. Pinning them here keeps a future default flip from
+    silently breaking the playback-state-read contract this test is
+    actually about.
+    """
     player = SimpleNamespace(
         player_id="kitchen",
         name="Kitchen",
@@ -105,7 +114,17 @@ def test_to_brief_player_reads_playback_state() -> None:
     )
     brief = to_brief_player(player)
     assert brief == PlayerBrief(
-        player_id="kitchen", name="Kitchen", state="playing", volume_level=42, powered=True
+        player_id="kitchen",
+        name="Kitchen",
+        state="playing",
+        volume_level=42,
+        powered=True,
+        current_item=None,
+        available=True,
+        enabled=True,
+        needs_setup=False,
+        active_group=None,
+        synced_to=None,
     )
 
 
@@ -242,7 +261,12 @@ def test_to_brief_player_current_item_uses_state_current_media() -> None:
 
 
 def test_to_brief_player_exposes_available_and_enabled() -> None:
-    """``available`` / ``enabled`` flow through from the upstream player object."""
+    """``available`` / ``enabled`` flow through, and the state ladder fires.
+
+    Combined assert: a regression that breaks the state override only
+    when both blocker fields are set would otherwise slip through —
+    the dedicated state tests above use single-axis stubs.
+    """
     player = SimpleNamespace(
         player_id="p1",
         name="P1",
@@ -256,6 +280,10 @@ def test_to_brief_player_exposes_available_and_enabled() -> None:
     brief = to_brief_player(player)
     assert brief.available is False
     assert brief.enabled is False
+    # ``unavailable`` wins because it's higher in the priority ladder
+    # than ``disabled``; pinning both confirms the ladder ordering on
+    # the same stub that exercises the field exposure.
+    assert brief.state == "unavailable"
 
 
 def test_to_brief_player_available_enabled_default_true_when_attrs_missing() -> None:
@@ -294,6 +322,123 @@ def test_to_brief_player_unavailable_overrides_state() -> None:
         available=False,
     )
     assert to_brief_player(player).state == "unavailable"
+
+
+def _blocker_stub(**overrides: Any) -> SimpleNamespace:
+    """Build a minimal player stub for state-ladder tests.
+
+    Every blocker field defaults to its "not blocked" value; tests pass
+    ``overrides`` for the axis they're exercising.
+    """
+    base: dict[str, Any] = {
+        "player_id": "p1",
+        "name": "P1",
+        "playback_state": SimpleNamespace(value="playing"),
+        "volume_level": None,
+        "powered": True,
+        "current_media": None,
+        "available": True,
+        "enabled": True,
+        "needs_setup": False,
+        "active_group": None,
+        "synced_to": None,
+    }
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+@pytest.mark.parametrize(
+    ("blocker", "expected_state"),
+    [
+        ({"available": False}, "unavailable"),
+        ({"enabled": False}, "disabled"),
+        ({"needs_setup": True}, "needs_setup"),
+        ({"synced_to": "leader-id"}, "synced"),
+        ({"active_group": "group-id"}, "synced"),
+    ],
+)
+def test_to_brief_player_state_override_per_blocker(
+    blocker: dict[str, object], expected_state: str
+) -> None:
+    """Each blocker in isolation produces its dedicated ``state`` value.
+
+    Pins the per-rung behaviour of the state ladder. Without these
+    overrides the LLM would see ``state="playing"`` (the cached
+    playback_state on the stub) for every unusable device and pick the
+    wrong target.
+    """
+    assert to_brief_player(_blocker_stub(**blocker)).state == expected_state
+
+
+@pytest.mark.parametrize(
+    ("blockers", "expected_state", "case"),
+    [
+        (
+            {"available": False, "synced_to": "leader"},
+            "unavailable",
+            "unavailable beats synced",
+        ),
+        (
+            {"available": False, "enabled": False},
+            "unavailable",
+            "unavailable beats disabled",
+        ),
+        (
+            {"enabled": False, "needs_setup": True},
+            "disabled",
+            "disabled beats needs_setup",
+        ),
+        (
+            {"needs_setup": True, "active_group": "g"},
+            "needs_setup",
+            "needs_setup beats synced",
+        ),
+    ],
+)
+def test_to_brief_player_state_priority_chain(
+    blockers: dict[str, object], expected_state: str, case: str
+) -> None:
+    """When multiple blockers are set, the most-blocking value wins.
+
+    The single ``state`` field has to summarise usability; an LLM that
+    only reads ``state`` (skipping the explicit booleans) must make the
+    safe call. Priority: unavailable > disabled > needs_setup > synced.
+    """
+    assert to_brief_player(_blocker_stub(**blockers)).state == expected_state, case
+
+
+def test_to_brief_player_exposes_new_blocker_fields() -> None:
+    """``needs_setup`` / ``active_group`` / ``synced_to`` flow through from MA."""
+    player = _blocker_stub(
+        needs_setup=True,
+        active_group="group-x",
+        synced_to="leader-y",
+    )
+    brief = to_brief_player(player)
+    assert brief.needs_setup is True
+    assert brief.active_group == "group-x"
+    assert brief.synced_to == "leader-y"
+
+
+def test_to_brief_player_new_fields_default_safely_when_attrs_missing() -> None:
+    """Legacy stubs without the new attributes still produce a usable brief.
+
+    Mirrors the back-compat pattern already pinned for
+    ``available`` / ``enabled`` — tests built before this feature use
+    bare ``SimpleNamespace`` players, and they must keep working.
+    """
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=50,
+        powered=True,
+        current_media=None,
+    )
+    brief = to_brief_player(player)
+    assert brief.needs_setup is False
+    assert brief.active_group is None
+    assert brief.synced_to is None
 
 
 def test_to_brief_queue_with_items() -> None:
@@ -372,3 +517,33 @@ def test_to_brief_queue_returns_none_count_when_unknown() -> None:
     brief = to_brief_queue(queue, items=None)
     assert brief.item_count is None
     assert brief.items == []
+
+
+def test_to_brief_queue_exposes_available() -> None:
+    """``available`` flows through from ``PlayerQueue`` so callers see the offline case.
+
+    Mirrors the parallel fix on the player side: a queue belonging to
+    an offline player is still returned by ``get_active_queue`` but
+    now carries an explicit ``available=False`` signal.
+    """
+    queue = SimpleNamespace(
+        queue_id="q",
+        current_index=0,
+        items=0,
+        shuffle_enabled=False,
+        repeat_mode=None,
+        available=False,
+    )
+    assert to_brief_queue(queue).available is False
+
+
+def test_to_brief_queue_available_defaults_true_when_attr_missing() -> None:
+    """Legacy queue stubs without ``available`` keep working (defaults to True)."""
+    queue = SimpleNamespace(
+        queue_id="q",
+        current_index=0,
+        items=0,
+        shuffle_enabled=False,
+        repeat_mode=None,
+    )
+    assert to_brief_queue(queue).available is True

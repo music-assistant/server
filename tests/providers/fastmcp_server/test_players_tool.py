@@ -7,6 +7,8 @@ in-process helpers.
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
@@ -23,6 +25,9 @@ def _player(
     available: bool = True,
     enabled: bool = True,
     state: str = "idle",
+    needs_setup: bool = False,
+    active_group: str | None = None,
+    synced_to: str | None = None,
 ) -> SimpleNamespace:
     """Build a minimal player stub that satisfies ``to_brief_player``."""
     return SimpleNamespace(
@@ -34,41 +39,65 @@ def _player(
         current_media=None,
         available=available,
         enabled=enabled,
+        needs_setup=needs_setup,
+        active_group=active_group,
+        synced_to=synced_to,
     )
 
 
 def _make_all_players_mock(roster: list[SimpleNamespace]) -> Any:
-    """Side effect mirroring MA's ``all_players(return_unavailable=...)`` filter.
+    """Side effect mirroring MA's ``all_players(return_unavailable, return_disabled)`` filter.
 
     Lets the tests pin the contract — "we forward the flag to MA" — without
     coupling to a re-implementation in Python.
     """
 
-    def side_effect(*, return_unavailable: bool = True, **_kwargs: Any) -> list[Any]:
-        if return_unavailable:
-            return list(roster)
-        return [p for p in roster if p.available]
+    def side_effect(
+        *,
+        return_unavailable: bool = True,
+        return_disabled: bool = False,
+        **_kwargs: Any,
+    ) -> list[Any]:
+        result = list(roster)
+        if not return_unavailable:
+            result = [p for p in result if p.available]
+        if not return_disabled:
+            result = [p for p in result if p.enabled]
+        return result
 
     return side_effect
 
 
 @pytest.fixture
-def mounted_players(mock_mass: Any) -> FastMCP:
-    """Build a root FastMCP with only the players sub-server mounted."""
+def mounted_players(mock_mass: Any) -> Iterator[FastMCP]:
+    """Build a root FastMCP with only the players sub-server mounted.
+
+    Yields rather than returns so future FastMCP lifecycle methods (e.g.
+    a ``close()`` / ``shutdown()`` once upstream adds one) can be wired
+    into the ``finally`` block without per-test churn. ``contextlib.suppress``
+    keeps the teardown idempotent against an environment where ``close``
+    is later renamed or removed.
+    """
     mcp: FastMCP = FastMCP(name="test")
     mcp.mount(build_players_server(mock_mass), namespace="players")
-    return mcp
+    try:
+        yield mcp
+    finally:
+        close = getattr(mcp, "close", None) or getattr(mcp, "shutdown", None)
+        if callable(close):
+            with contextlib.suppress(Exception):
+                close()
 
 
 async def test_list_players_hides_unavailable_by_default(
     mock_mass: Any, mounted_players: FastMCP
 ) -> None:
-    """Default ``list_players`` call asks MA to omit unavailable players.
+    """Default ``list_players`` call asks MA to omit unavailable and disabled players.
 
     Matches the spec: a model asked to pick a speaker should not see
-    devices MA can no longer reach. The filter lives in MA's controller,
-    so the contract this test pins is that the tool forwards
-    ``return_unavailable=False`` to ``mass.players.all_players``.
+    devices MA can no longer reach or that the admin has disabled.
+    The filter lives in MA's controller, so the contract this test
+    pins is that the tool forwards both flags to ``all_players``.
     """
     roster = [
         _player(player_id="ok", name="Kitchen", available=True),
@@ -79,7 +108,9 @@ async def test_list_players_hides_unavailable_by_default(
         result = await client.call_tool("players_list_players", {})
     ids = {p.player_id for p in result.data}
     assert ids == {"ok"}, "unavailable players must be filtered out by default"
-    mock_mass.players.all_players.assert_called_with(return_unavailable=False)
+    mock_mass.players.all_players.assert_called_with(
+        return_unavailable=False, return_disabled=False
+    )
 
 
 async def test_list_players_include_unavailable_returns_all(
@@ -101,7 +132,75 @@ async def test_list_players_include_unavailable_returns_all(
     assert set(by_id) == {"ok", "gone"}
     assert by_id["gone"].state == "unavailable"
     assert by_id["ok"].state == "idle"
-    mock_mass.players.all_players.assert_called_with(return_unavailable=True)
+    mock_mass.players.all_players.assert_called_with(return_unavailable=True, return_disabled=False)
+
+
+async def test_list_players_include_disabled_returns_disabled(
+    mock_mass: Any, mounted_players: FastMCP
+) -> None:
+    """With ``include_disabled=True`` admin-disabled players surface as ``state="disabled"``.
+
+    Without the flag MA filters them out before they reach the brief,
+    so the ``enabled`` field on the response is always ``True``.
+    """
+    roster = [
+        _player(player_id="ok", name="Kitchen", available=True, enabled=True),
+        _player(player_id="off", name="Closet", available=True, enabled=False),
+    ]
+    mock_mass.players.all_players.side_effect = _make_all_players_mock(roster)
+    async with Client(mounted_players) as client:
+        result = await client.call_tool("players_list_players", {"include_disabled": True})
+    by_id = {p.player_id: p for p in result.data}
+    assert set(by_id) == {"ok", "off"}
+    assert by_id["off"].enabled is False
+    assert by_id["off"].state == "disabled"
+    mock_mass.players.all_players.assert_called_with(return_unavailable=False, return_disabled=True)
+
+
+async def test_list_players_synced_player_reports_synced_state(
+    mock_mass: Any, mounted_players: FastMCP
+) -> None:
+    """A player belonging to an active sync group reports ``state="synced"``.
+
+    The cached ``playback_state`` on a sync follower stays ``idle``
+    because the device doesn't have its own queue — the group plays
+    through it. Without this synthesis an LLM would treat a sync
+    follower as a quiet, idle speaker.
+    """
+    roster = [
+        _player(
+            player_id="follower",
+            name="Lenco LS-500",
+            available=True,
+            active_group="syncgroup_x",
+        ),
+    ]
+    mock_mass.players.all_players.side_effect = _make_all_players_mock(roster)
+    async with Client(mounted_players) as client:
+        result = await client.call_tool("players_list_players", {})
+    by_id = {p.player_id: p for p in result.data}
+    assert by_id["follower"].state == "synced"
+    assert by_id["follower"].active_group == "syncgroup_x"
+
+
+async def test_list_players_needs_setup_reports_needs_setup_state(
+    mock_mass: Any, mounted_players: FastMCP
+) -> None:
+    """A player still awaiting first-run setup reports ``state="needs_setup"``."""
+    roster = [
+        _player(
+            player_id="raw",
+            name="Unboxed Speaker",
+            available=True,
+            needs_setup=True,
+        ),
+    ]
+    mock_mass.players.all_players.side_effect = _make_all_players_mock(roster)
+    async with Client(mounted_players) as client:
+        result = await client.call_tool("players_list_players", {})
+    by_id = {p.player_id: p for p in result.data}
+    assert by_id["raw"].state == "needs_setup"
+    assert by_id["raw"].needs_setup is True
 
 
 async def test_get_player_returns_unavailable_player(

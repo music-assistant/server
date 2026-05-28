@@ -160,18 +160,29 @@ def to_brief_player(player: Any) -> PlayerBrief:
             getattr(current_media, "uri", None)
         )
 
-    # Default ``available`` / ``enabled`` to ``True`` so legacy fixtures (and
-    # any partial stub built before this field existed) keep working. MA's
-    # real :class:`Player` always sets both.
+    # Default the new MA-side fields to "not blocked" so legacy fixtures (and
+    # any partial stub built before these fields existed) keep working. MA's
+    # real :class:`Player` always sets all of them.
     available_val = bool(getattr(player, "available", True))
     enabled_val = bool(getattr(player, "enabled", True))
+    needs_setup_val = bool(getattr(player, "needs_setup", False))
+    active_group_val = _str_or_none(getattr(player, "active_group", None))
+    synced_to_val = _str_or_none(getattr(player, "synced_to", None))
 
-    # An offline device's cached ``playback_state`` is whatever MA last saw —
-    # usually ``"idle"``, which is indistinguishable from a genuinely quiet
-    # speaker. Surface the offline status in ``state`` so a single field
-    # tells the caller everything they need to triage the device.
+    # The cached ``playback_state`` of an unusable device is whatever MA last
+    # saw (usually ``"idle"`` or ``"playing"`` for a sync follower), which is
+    # indistinguishable from a quiet idle speaker. The ladder below surfaces
+    # the most-blocking signal as ``state`` so a caller that only reads that
+    # one field still makes a safe routing decision. Priority: unavailable
+    # beats disabled beats needs-setup beats sync membership.
     if not available_val:
         state_value = "unavailable"
+    elif not enabled_val:
+        state_value = "disabled"
+    elif needs_setup_val:
+        state_value = "needs_setup"
+    elif synced_to_val is not None or active_group_val is not None:
+        state_value = "synced"
 
     return PlayerBrief(
         player_id=str(getattr(player, "player_id", "")),
@@ -182,6 +193,9 @@ def to_brief_player(player: Any) -> PlayerBrief:
         current_item=current_item,
         available=available_val,
         enabled=enabled_val,
+        needs_setup=needs_setup_val,
+        active_group=active_group_val,
+        synced_to=synced_to_val,
     )
 
 
@@ -222,6 +236,7 @@ def to_brief_queue(queue: Any, items: Sequence[Any] | None = None) -> QueueBrief
         shuffle=bool(getattr(queue, "shuffle_enabled", False)),
         repeat=repeat_value,
         items=brief_items,
+        available=bool(getattr(queue, "available", True)),
     )
 
 

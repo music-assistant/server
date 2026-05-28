@@ -104,6 +104,65 @@ async def test_player_resource_returns_json_text_for_brief(mock_mass: MagicMock)
     assert parsed["powered"] is True
 
 
+async def test_player_resource_reports_synced_state(mock_mass: MagicMock) -> None:
+    """A sync follower fetched by URI carries the synthesised ``state="synced"``.
+
+    The Connect Wizard / clients reading ``player://{id}`` should see
+    the same usability signal that ``list_players`` synthesises — the
+    resource and tool share ``to_brief_player``, so any future
+    refactor that bypasses the state ladder for the resource path
+    would be caught here.
+    """
+    player = SimpleNamespace(
+        player_id="follower",
+        display_name="Lenco",
+        name="Lenco",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        powered=True,
+        current_media=None,
+        available=True,
+        enabled=True,
+        active_group="group-leader",
+    )
+    mock_mass.players.get_player.return_value = player
+
+    mcp: FastMCP = FastMCP(name="t")
+    register_player_resources(mcp, mock_mass)
+    async with Client(mcp) as client:
+        contents = await client.read_resource("player://follower")
+
+    parsed = json.loads(next(c.text for c in contents if hasattr(c, "text")))
+    assert parsed["state"] == "synced"
+    assert parsed["active_group"] == "group-leader"
+
+
+async def test_player_resource_reports_needs_setup_state(mock_mass: MagicMock) -> None:
+    """An unconfigured player fetched by URI carries ``state="needs_setup"``."""
+    player = SimpleNamespace(
+        player_id="raw",
+        display_name="Unboxed",
+        name="Unboxed",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        powered=True,
+        current_media=None,
+        available=True,
+        enabled=True,
+        needs_setup=True,
+    )
+    mock_mass.players.get_player.return_value = player
+
+    mcp: FastMCP = FastMCP(name="t")
+    register_player_resources(mcp, mock_mass)
+    async with Client(mcp) as client:
+        contents = await client.read_resource("player://raw")
+
+    parsed = json.loads(next(c.text for c in contents if hasattr(c, "text")))
+    assert parsed["state"] == "needs_setup"
+    assert parsed["needs_setup"] is True
+
+
 async def test_queue_resource_returns_json_text_for_brief(mock_mass: MagicMock) -> None:
     """A ``QueueBrief`` returned by the queue handler is JSON-serialised."""
     queue = SimpleNamespace(
