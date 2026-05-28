@@ -127,5 +127,7 @@ async def test_multiple_seeds_dedup_base_tracks() -> None:
     )
 
     await ctrl.get_dynamic_radio_tracks([seed_a, seed_b], target_size=5)
-    # similar_tracks is called once per sampled base track; 3 unique base tracks → ≤3 calls.
-    assert cast("Any", ctrl.tracks.similar_tracks).call_count <= 3
+    # 3 unique base tracks after dedup. similar_tracks fires once per base per allow_lookup pass;
+    # with only 2 similar mocks per call we never hit the dynamic-target threshold, so both
+    # passes run → 3 * 2 = 6 calls. Without dedup it would be 4 * 2 = 8.
+    assert cast("Any", ctrl.tracks.similar_tracks).call_count <= 6

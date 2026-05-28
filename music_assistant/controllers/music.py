@@ -925,7 +925,7 @@ class MusicController(CoreController):
         )
         dynamic_tracks: set[Track] = set()
         for allow_lookup in (False, True):
-            if dynamic_tracks:
+            if len(dynamic_tracks) >= _DYNAMIC_RADIO_DYNAMIC_TARGET:
                 break
             for base_track in base_tracks:
                 try:
