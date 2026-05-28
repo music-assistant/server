@@ -404,47 +404,67 @@ def _resync_ogg_buffer(buffer: bytearray) -> int:
 _MAX_BUFFER_SIZE = 65536
 
 
+async def chain_ogg_pages(
+    source: AsyncGenerator[bytes, None],
+    metadata_callback: Callable[[dict[str, str]], Any] | None = None,
+) -> AsyncGenerator[bytes, None]:
+    """
+    Yield continuous OGG data from a chained byte source, stitching chain boundaries.
+
+    Use this when the source provides multiple concatenated OGG logical bitstreams
+    (e.g. internet radio reconnects, librespot --passthrough emitting per-track
+    streams). FFmpeg can't demux chained OGG directly; this stitches them into
+    one continuous bitstream so downstream decoding works.
+
+    :param source: Async byte source producing the chained OGG data.
+    :param metadata_callback: Optional callback invoked on metadata changes.
+    """
+    state = _ChainedOggState(metadata_callback)
+    buffer = bytearray()
+
+    async for chunk in source:
+        buffer.extend(chunk)
+
+        while True:
+            result = parse_ogg_page(buffer, 0)
+            if result is None:
+                if len(buffer) > _MAX_BUFFER_SIZE:
+                    skip = _resync_ogg_buffer(buffer)
+                    if skip > 0:
+                        buffer = buffer[skip:]
+                        continue
+                    discard = len(buffer) // 2
+                    LOGGER.warning("Buffer overflow, discarding %d bytes", discard)
+                    buffer = buffer[discard:]
+                break
+
+            page, consumed = result
+            buffer = buffer[consumed:]
+
+            output = state.process_page(page)
+            if output is not None:
+                yield output
+
+
 async def get_chained_ogg_stream(
     mass: MusicAssistant,
     url: str,
     metadata_callback: Callable[[dict[str, str]], Any] | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """
-    Yield continuous OGG data from a chained stream, stitching chain boundaries.
+    Yield continuous OGG data from a chained HTTP stream, stitching chain boundaries.
 
     :param mass: MusicAssistant instance.
     :param url: URL of the OGG radio stream.
     :param metadata_callback: Optional callback invoked on metadata changes.
     """
-    state = _ChainedOggState(metadata_callback)
-    buffer = bytearray()
-
     LOGGER.debug("Starting chained OGG stream handler for %s", url)
-
     try:
-        async for chunk in mass.streams.audio.get_reconnecting_radio_stream(url):
-            buffer.extend(chunk)
-
-            while True:
-                result = parse_ogg_page(buffer, 0)
-                if result is None:
-                    if len(buffer) > _MAX_BUFFER_SIZE:
-                        skip = _resync_ogg_buffer(buffer)
-                        if skip > 0:
-                            buffer = buffer[skip:]
-                            continue
-                        discard = len(buffer) // 2
-                        LOGGER.warning("Buffer overflow, discarding %d bytes", discard)
-                        buffer = buffer[discard:]
-                    break
-
-                page, consumed = result
-                buffer = buffer[consumed:]
-
-                output = state.process_page(page)
-                if output is not None:
-                    yield output
+        async for output in chain_ogg_pages(
+            mass.streams.audio.get_reconnecting_radio_stream(url),
+            metadata_callback,
+        ):
+            yield output
     except aiohttp.ClientError as err:
         raise ProviderUnavailableError(f"Failed to fetch OGG stream: {err}") from err
-
     LOGGER.debug("Chained OGG stream handler ended for %s", url)
