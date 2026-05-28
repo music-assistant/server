@@ -160,6 +160,67 @@ def to_brief_player(player: Any) -> PlayerBrief:
             getattr(current_media, "uri", None)
         )
 
+    # Default the new MA-side fields to "not blocked" so legacy fixtures (and
+    # any partial stub built before these fields existed) keep working. MA's
+    # real :class:`Player` always sets all of them.
+    available_val = bool(getattr(player, "available", True))
+    enabled_val = bool(getattr(player, "enabled", True))
+    needs_setup_val = bool(getattr(player, "needs_setup", False))
+
+    # ``active_group`` / ``synced_to`` follow the same state-first /
+    # raw-fallback pattern as ``powered`` / ``current_media`` above. MA
+    # populates ``state.active_group`` via ``__final_active_group``, which
+    # walks every GROUP-type player and resolves membership / protocol-id
+    # translation; the raw ``Player.active_group`` dataclass attr stays
+    # ``None`` for SyncGroupPlayer followers even while they are streaming
+    # the group's audio. Reading the canonical value is what makes
+    # ``state="synced"`` fire correctly on a live sync follower.
+    if player_state is not None and hasattr(player_state, "active_group"):
+        active_group_val = _str_or_none(player_state.active_group)
+        synced_to_val = _str_or_none(player_state.synced_to)
+    else:
+        active_group_val = _str_or_none(getattr(player, "active_group", None))
+        synced_to_val = _str_or_none(getattr(player, "synced_to", None))
+
+    # Volume / mute fields also live canonically on ``Player.state`` — the
+    # raw dataclass attrs are caches that lag, and ``group_volume`` is
+    # only ever populated on the state for SyncGroupPlayer (the per-player
+    # ``volume_level`` is already read above; this block adds the mute
+    # signal and the group-level pair). Reading state-first means the
+    # SyncGroupPlayer's brief reports a real ``group_volume`` instead of
+    # the bare ``None`` that the un-cached property returns.
+    if player_state is not None and hasattr(player_state, "volume_muted"):
+        volume_muted_val = (
+            bool(player_state.volume_muted) if player_state.volume_muted is not None else None
+        )
+    else:
+        raw_volume_muted = getattr(player, "volume_muted", None)
+        volume_muted_val = bool(raw_volume_muted) if raw_volume_muted is not None else None
+
+    if player_state is not None and hasattr(player_state, "group_volume"):
+        group_volume_val = _int(player_state.group_volume)
+        raw_group_muted = getattr(player_state, "group_volume_muted", None)
+        group_volume_muted_val = bool(raw_group_muted) if raw_group_muted is not None else None
+    else:
+        group_volume_val = _int(getattr(player, "group_volume", None))
+        raw_group_muted = getattr(player, "group_volume_muted", None)
+        group_volume_muted_val = bool(raw_group_muted) if raw_group_muted is not None else None
+
+    # The cached ``playback_state`` of an unusable device is whatever MA last
+    # saw (usually ``"idle"`` or ``"playing"`` for a sync follower), which is
+    # indistinguishable from a quiet idle speaker. The ladder below surfaces
+    # the most-blocking signal as ``state`` so a caller that only reads that
+    # one field still makes a safe routing decision. Priority: unavailable
+    # beats disabled beats needs-setup beats sync membership.
+    if not available_val:
+        state_value = "unavailable"
+    elif not enabled_val:
+        state_value = "disabled"
+    elif needs_setup_val:
+        state_value = "needs_setup"
+    elif synced_to_val is not None or active_group_val is not None:
+        state_value = "synced"
+
     return PlayerBrief(
         player_id=str(getattr(player, "player_id", "")),
         name=str(getattr(player, "display_name", None) or getattr(player, "name", "")),
@@ -167,6 +228,14 @@ def to_brief_player(player: Any) -> PlayerBrief:
         volume_level=_int(getattr(player, "volume_level", None)),
         powered=powered_val,
         current_item=current_item,
+        available=available_val,
+        enabled=enabled_val,
+        needs_setup=needs_setup_val,
+        active_group=active_group_val,
+        synced_to=synced_to_val,
+        volume_muted=volume_muted_val,
+        group_volume=group_volume_val,
+        group_volume_muted=group_volume_muted_val,
     )
 
 
@@ -190,10 +259,10 @@ def to_brief_queue(queue: Any, items: Sequence[Any] | None = None) -> QueueBrief
                 )
             )
     # In the canonical MA model PlayerQueue.items is an int (total queue
-    # length), not a list. Fall back to alternate field names for older builds,
-    # and only as a last resort to len(brief_items) — which would under-report
-    # the real length, since `brief_items` is the truncated lookahead from
-    # get_active_queue, not the full queue.
+    # length), not a list. Fall back to alternate field names for older builds.
+    # If none of those resolve, return ``None`` instead of len(brief_items) —
+    # the latter would under-report the real length, since ``brief_items`` is
+    # only the truncated lookahead from get_active_queue, not the full queue.
     raw_total = getattr(queue, "items", None)
     explicit_count = _int(raw_total) if isinstance(raw_total, int) else None
     if explicit_count is None:
@@ -203,10 +272,11 @@ def to_brief_queue(queue: Any, items: Sequence[Any] | None = None) -> QueueBrief
     return QueueBrief(
         queue_id=str(getattr(queue, "queue_id", "")),
         current_index=_int(getattr(queue, "current_index", None)),
-        item_count=explicit_count if explicit_count is not None else len(brief_items),
+        item_count=explicit_count,
         shuffle=bool(getattr(queue, "shuffle_enabled", False)),
         repeat=repeat_value,
         items=brief_items,
+        available=bool(getattr(queue, "available", True)),
     )
 
 

@@ -8,9 +8,9 @@ callable removes all of them when invoked (called from
 from __future__ import annotations
 
 import contextlib
-import importlib
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
+from ..origins import compute_origin_allowlist, is_origin_allowed_for_request  # noqa: TID252
 from .handlers import (
     WizardContext,
     make_exchange,
@@ -24,22 +24,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from music_assistant.mass import MusicAssistant
-
-
-def _origin_helpers() -> tuple[Any, Any]:
-    """Look up the origin allowlist helpers from the parent provider package.
-
-    The parent package's name differs between contexts — ``provider`` under
-    pytest, ``music_assistant.providers.fastmcp_server`` inside MA — so we
-    resolve it from ``__package__`` at call time. Avoids both the test-only
-    ``provider.*`` import path and the lint-flagged ``from .. import …`` form.
-    """
-    parent = (__package__ or "").rsplit(".", 1)[0]
-    if not parent:
-        msg = "Connect Wizard: cannot resolve parent package for http_bridge import"
-        raise RuntimeError(msg)
-    module = importlib.import_module(f"{parent}.http_bridge")
-    return module._compute_origin_allowlist, module._is_origin_allowed_for_request
 
 
 async def mount_connect_wizard(
@@ -61,8 +45,7 @@ async def mount_connect_wizard(
         accept beyond the auto-derived loopback + base_url + publish_ip set.
     :return: Callable that, when invoked, unregisters every wizard route.
     """
-    compute_allowlist, is_origin_allowed_for_request = _origin_helpers()
-    allowlist = compute_allowlist(mass, extra_origins_csv)
+    allowlist = compute_origin_allowlist(mass, extra_origins_csv)
     ctx = WizardContext(
         mass=mass,
         mount_path=mount_path,

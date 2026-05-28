@@ -24,189 +24,31 @@ import contextlib
 import json
 import logging
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
 
 from aiohttp import web
 
+# Origin allowlist helpers now live in ``provider/origins.py`` as a small
+# standalone module shared with ``provider/connect/mount.py``. Re-export them
+# here under their historical leading-underscore names so existing tests and
+# external callers (if any) keep working without churn.
+from .origins import (  # noqa: F401
+    _is_origin_allowed,
+    _normalize_origin,
+    _port_from_base_url,
+)
+from .origins import (
+    compute_origin_allowlist as _compute_origin_allowlist,
+)
+from .origins import (
+    is_origin_allowed_for_request as _is_origin_allowed_for_request,
+)
+
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from music_assistant.mass import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
-
-
-_DEFAULT_PORTS = {"http": 80, "https": 443}
-
-
-def _normalize_origin(origin: str) -> str | None:
-    """Return ``scheme://host[:port]`` lower-cased, default-port stripped, or None.
-
-    Rejects forms without scheme or netloc; preserves ``"null"`` verbatim so it
-    can be matched against an explicit allowlist entry. IPv6 hosts are
-    re-bracketed (``urlsplit`` strips the brackets via ``hostname``) so the
-    canonical form matches a literal ``http://[::1]`` allowlist entry.
-    """
-    if not origin:
-        return None
-    if origin == "null":
-        return "null"
-    parts = urlsplit(origin)
-    scheme = parts.scheme.lower()
-    host = parts.hostname
-    if not scheme or not host:
-        return None
-    host_lower = host.lower()
-    # urlsplit's `.hostname` returns the bare IPv6 ("::1"); we need brackets
-    # back ("[::1]") so f-string concatenation produces a valid Origin.
-    bracketed_host = f"[{host_lower}]" if ":" in host_lower else host_lower
-    port = parts.port
-    if port is None or port == _DEFAULT_PORTS.get(scheme):
-        return f"{scheme}://{bracketed_host}"
-    return f"{scheme}://{bracketed_host}:{port}"
-
-
-def _compute_origin_allowlist(mass: MusicAssistant, extra_origins_csv: str = "") -> frozenset[str]:
-    """Build the set of accepted ``Origin`` values for the MCP endpoint.
-
-    Always includes loopback variants (``http://localhost``, ``http://127.0.0.1``,
-    ``http://[::1]``), the host derived from ``mass.webserver.base_url``, and the
-    advertised ``mass.webserver.publish_ip``. Additional origins from config
-    (CSV) are normalized and added.
-    """
-    allow: set[str] = {
-        "http://localhost",
-        "http://127.0.0.1",
-        "http://[::1]",
-    }
-
-    base_url = str(mass.webserver.base_url or "")
-    base_norm = _normalize_origin(base_url)
-    if base_norm:
-        allow.add(base_norm)
-        # Same host on https is acceptable when MA is behind TLS-terminating proxy.
-        if base_norm.startswith("http://"):
-            allow.add("https://" + base_norm[len("http://") :])
-
-    # Browsers send the MA port in Origin even for loopback access — add the
-    # loopback variants on the MA port so a Origin like ``http://localhost:8095``
-    # is accepted (the bare loopback entries above only match port 80).
-    base_port = _port_from_base_url(base_url)
-    if base_port:
-        for loopback in ("localhost", "127.0.0.1", "[::1]"):
-            allow.add(f"http://{loopback}:{base_port}")
-            allow.add(f"https://{loopback}:{base_port}")
-
-    publish_ip = str(mass.webserver.publish_ip or "")
-    if publish_ip:
-        # Derive port from base_url; fallback: no port (browsers send port if non-default).
-        port = _port_from_base_url(base_url)
-        suffix = f":{port}" if port else ""
-        ip_lower = publish_ip.lower()
-        # Bracket IPv6 literals so they match the way browsers serialize Origin.
-        ip_token = f"[{ip_lower}]" if ":" in ip_lower else ip_lower
-        allow.add(f"http://{ip_token}{suffix}")
-        allow.add(f"https://{ip_token}{suffix}")
-
-    for raw in (extra_origins_csv or "").split(","):
-        norm = _normalize_origin(raw.strip())
-        if norm:
-            allow.add(norm)
-
-    return frozenset(allow)
-
-
-def _port_from_base_url(base_url: str) -> int | None:
-    """Return the explicit port from a URL, or ``None`` when it's the scheme default."""
-    if not base_url:
-        return None
-    parts = urlsplit(base_url)
-    if parts.port is not None and parts.port != _DEFAULT_PORTS.get(parts.scheme.lower()):
-        return parts.port
-    return None
-
-
-def _is_origin_allowed(origin: str | None, allowlist: frozenset[str]) -> bool:
-    """Return True if the request's ``Origin`` should be accepted.
-
-    Rules:
-
-    * Missing ``Origin`` → allowed (stdio-style or non-browser MCP clients).
-      Spec MUST applies to *present* Origin values.
-    * ``Origin: null`` → allowed only if explicitly listed in the allowlist
-      (some sandboxed iframes / file:// pages send it).
-    * Any other value is normalized and matched literally.
-    """
-    if origin is None:
-        return True
-    norm = _normalize_origin(origin)
-    if norm is None:
-        return False
-    return norm in allowlist
-
-
-def _is_origin_allowed_for_request(
-    request: web.Request,
-    allowlist: frozenset[str],
-) -> bool:
-    """Origin check with a Home-Assistant-ingress fallback.
-
-    Applies :func:`_is_origin_allowed` first. When that rejects, accept the
-    request if **all** of the following hold:
-
-    * the request arrived on the trusted ingress socket Music Assistant
-      verifies via :func:`is_request_from_ingress` (so we are not trusting
-      attacker-supplied headers); and
-    * the request carries an ``X-Forwarded-Host`` set by HA; and
-    * the browser's ``Origin`` matches
-      ``<X-Forwarded-Proto or request.scheme>://<X-Forwarded-Host>``.
-
-    This removes the need for HA add-on users to copy their public hostname
-    into the ``extra_allowed_origins`` config every time the URL changes.
-    """
-    origin = request.headers.get("Origin")
-    if _is_origin_allowed(origin, allowlist):
-        return True
-    if origin is None:
-        return False  # _is_origin_allowed already returned True above; defensive
-
-    forwarded_host = request.headers.get("X-Forwarded-Host")
-    if not forwarded_host:
-        return False
-
-    try:
-        from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
-            is_request_from_ingress,
-        )
-    except (ImportError, ModuleNotFoundError):
-        # ``music_assistant`` is a dev-only / test-extras dep here; absent in
-        # the bare provider venv. Fail closed without log noise.
-        return False
-    except Exception:
-        # Anything else (e.g. partial module init breakage upstream) is a real
-        # surprise — log so it's debuggable, then fail closed.
-        LOGGER.exception("Connect Wizard: unexpected error importing ingress helper")
-        return False
-    try:
-        if not is_request_from_ingress(request):
-            return False
-    except Exception:
-        # MA may evolve the request-app shape; log so a future breakage isn't
-        # silently a 403 with no hint as to why.
-        LOGGER.exception("Connect Wizard: is_request_from_ingress raised")
-        return False
-
-    # Default to the aiohttp transport scheme (canonical aiohttp API) rather
-    # than a hard-coded "https" so an unsecured local HA installation still
-    # works when X-Forwarded-Proto is omitted. Multi-value X-Forwarded-Host
-    # (``ha.example.com, internal.lan``) intentionally fails normalisation
-    # below → reject; supporting it would mean trusting whichever hop the
-    # proxy listed last, which is rarely what you want.
-    forwarded_proto = request.headers.get("X-Forwarded-Proto", request.scheme)
-    forwarded_origin = _normalize_origin(f"{forwarded_proto}://{forwarded_host}")
-    if forwarded_origin is None:
-        return False
-    return _normalize_origin(origin) == forwarded_origin
 
 
 async def mount_into_mass(
@@ -214,7 +56,7 @@ async def mount_into_mass(
     mcp: Any,
     mount_path: str = "/mcp/v1",
     extra_origins_csv: str = "",
-) -> Callable[[], None]:
+) -> Callable[[], Awaitable[None]]:
     """Register the FastMCP streamable-HTTP ASGI app under MA's webserver.
 
     :param mass: MusicAssistant instance.
@@ -252,13 +94,15 @@ async def mount_into_mass(
 
     unregister = mass.webserver.register_dynamic_route(f"{mount_path}/*", handler)
 
-    def _unmount() -> None:
+    async def _unmount() -> None:
         with contextlib.suppress(Exception):
             unregister()
-        # ``MCPServerRuntime.stop`` (the only caller) is ``async def``,
-        # so a running loop is guaranteed — dispatch shutdown onto it
-        # without blocking.
-        asyncio.get_running_loop().create_task(_stop_asgi_lifespan(lifespan_state))
+        # Await shutdown so the caller (``MCPServerRuntime.stop``) doesn't
+        # return — and the next ``start()`` doesn't begin — until the
+        # ASGI lifespan task has drained. Previously this was a
+        # fire-and-forget ``create_task`` that raced restarts and could be
+        # GC'd before running, leaking the session-manager task group.
+        await _stop_asgi_lifespan(lifespan_state)
 
     return _unmount
 

@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import contextlib
+import re
 from typing import TYPE_CHECKING
 
 from fastmcp import Context, FastMCP
+from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from ..models import PlaylistBrief
@@ -15,6 +17,37 @@ from ._common import TIMEOUT_BULK, TIMEOUT_MUTATION, confirm_or_raise, to_brief_
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
+
+
+_PLAYLIST_URI_RE = re.compile(r"^library://playlist/(\d+)$")
+
+
+def _coerce_playlist_db_id(value: str | int) -> int:
+    """
+    Normalise a caller-supplied playlist identifier to MA's integer library id.
+
+    Music Assistant's playlist controller calls ``int()`` on the id internally,
+    so it accepts only the integer library id — not the provider-scoped URI
+    that every other tool consumes. This helper bridges the gap so callers can
+    pass either form.
+
+    :param value: The integer library id, an all-digit string, or a
+        ``library://playlist/<n>`` URI as returned by ``list_playlists`` /
+        ``get_playlist_by_uri``.
+    """
+    if isinstance(value, int):
+        return value
+    s = str(value).strip()
+    if s.isdigit():
+        return int(s)
+    match = _PLAYLIST_URI_RE.match(s)
+    if match:
+        return int(match.group(1))
+    raise ToolError(
+        f"Invalid playlist_id {value!r}: pass the integer library id or a "
+        f"library://playlist/<n> URI (provider-scoped URIs from other "
+        f"providers are not supported here)."
+    )
 
 
 def build_playlists_server(mass: MusicAssistant, *, require_confirmation: bool = True) -> FastMCP:
@@ -33,7 +66,17 @@ def build_playlists_server(mass: MusicAssistant, *, require_confirmation: bool =
         timeout=TIMEOUT_MUTATION,
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def create_playlist(name: str, provider_instance_id: str | None = None) -> PlaylistBrief:
-        """Create a new playlist on a music provider."""
+        """
+        Create a new empty playlist on a music provider.
+
+        Returns the new ``PlaylistBrief``. Pass ``PlaylistBrief.uri`` to
+        ``add_track`` / ``add_tracks`` to populate it.
+
+        :param name: Display name for the playlist.
+        :param provider_instance_id: Music-provider instance to host the
+            playlist (e.g. ``spotify--<account>``); omit to let Music
+            Assistant pick the default writable provider.
+        """
         playlist = await mass.music.playlists.create_playlist(
             name, provider_instance_or_domain=provider_instance_id
         )
@@ -51,8 +94,20 @@ def build_playlists_server(mass: MusicAssistant, *, require_confirmation: bool =
         timeout=TIMEOUT_MUTATION,
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def add_track(playlist_id: str | int, track_uri: str) -> None:
-        """Append one track to a playlist."""
-        await mass.music.playlists.add_playlist_track(playlist_id, track_uri)
+        """
+        Append one track to a playlist.
+
+        Use ``add_tracks`` for multiple tracks in a single call. Returns
+        nothing.
+
+        :param playlist_id: Either the integer library id or the
+            ``library://playlist/<n>`` URI of the destination playlist.
+        :param track_uri: Music Assistant URI of the track to append (e.g.
+            ``TrackBrief.uri``).
+        """
+        await mass.music.playlists.add_playlist_track(
+            _coerce_playlist_db_id(playlist_id), track_uri
+        )
 
     @sub.tool(
         tags={Tag.EDIT_PLAYLISTS},
@@ -70,33 +125,29 @@ def build_playlists_server(mass: MusicAssistant, *, require_confirmation: bool =
         track_uris: list[str],
         ctx: Context | None = None,
     ) -> None:
-        """Append multiple tracks to a playlist.
-
-        For batches up to 10 the call is bulk-dispatched (one round-trip);
-        beyond that, items are added one-by-one with progress reporting so
-        the LLM client can show a meaningful spinner / cancellation handle.
-
-        .. warning::
-
-            The per-item path is **not transactional**. If the client cancels
-            (``notifications/cancelled``) or MA raises on the N-th track,
-            tracks 0..N-1 stay added — there is no rollback. Callers that need
-            atomic semantics should keep batches at ``<= 10`` so the bulk
-            ``add_playlist_tracks`` round-trip is used.
         """
+        Append multiple tracks to a playlist in one call. Returns nothing.
+
+        **Not atomic at any size.** Tracks are added one at a time with
+        progress reporting; on failure or cancellation, tracks added so far
+        remain in the playlist with no rollback.
+
+        :param playlist_id: Either the integer library id or the
+            ``library://playlist/<n>`` URI of the destination playlist.
+        :param track_uris: List of Music Assistant track URIs to append, in
+            order.
+        """
+        db_id = _coerce_playlist_db_id(playlist_id)
         total = len(track_uris)
-        if total <= 10:
-            await mass.music.playlists.add_playlist_tracks(playlist_id, track_uris)
-            return
         added = 0
         try:
             for i, uri in enumerate(track_uris, start=1):
-                await mass.music.playlists.add_playlist_track(playlist_id, uri)
+                await mass.music.playlists.add_playlist_track(db_id, uri)
                 added = i
                 if ctx is not None:
                     await ctx.report_progress(progress=i, total=total)
         except BaseException:
-            # Surface partial-state to the client before re-raising. BaseException
+            # Surface partial state to the client before re-raising. BaseException
             # also catches asyncio.CancelledError, which we want to flag.
             if ctx is not None and added < total:
                 with contextlib.suppress(Exception):
@@ -122,7 +173,19 @@ def build_playlists_server(mass: MusicAssistant, *, require_confirmation: bool =
         positions: list[int],
         ctx: Context | None = None,
     ) -> None:
-        """Remove tracks at the given zero-based positions from a playlist."""
+        """
+        Remove tracks from a playlist by zero-based position.
+
+        All requested positions are removed in a single call — pass them
+        together rather than one at a time, since removals shift the
+        positions of all later items. When ``Confirm destructive
+        operations`` is enabled the client is asked to confirm first.
+        Returns nothing.
+
+        :param playlist_id: Either the integer library id or the
+            ``library://playlist/<n>`` URI of the playlist to modify.
+        :param positions: Zero-based positions of tracks to remove.
+        """
         await confirm_or_raise(
             ctx,
             f"Remove {len(positions)} track(s) from playlist {playlist_id!r}?",
@@ -130,6 +193,8 @@ def build_playlists_server(mass: MusicAssistant, *, require_confirmation: bool =
         )
         # MA's PlaylistController expects an immutable tuple, not a list, so
         # callers can't accidentally mutate it mid-removal.
-        await mass.music.playlists.remove_playlist_tracks(playlist_id, tuple(positions))
+        await mass.music.playlists.remove_playlist_tracks(
+            _coerce_playlist_db_id(playlist_id), tuple(positions)
+        )
 
     return sub

@@ -14,6 +14,7 @@ from yandex_music import Track as YandexTrack
 
 from music_assistant.providers.yandex_music.parsers import (
     classify_album,
+    detect_description_language,
     parse_album,
     parse_artist,
     parse_audiobook,
@@ -117,8 +118,29 @@ def test_parse_artist_with_about(provider_stub: ProviderStub) -> None:
 
     result = parse_artist(cast("YandexMusicProvider", provider_stub), artist_obj, about=about)
     assert result.metadata.description == "Singer-songwriter from somewhere."
+    # English bio: detector can't be confident — leave language unset.
+    assert result.metadata.description_language is None
     # 250000 // 10000 == 25
     assert result.metadata.popularity == 25
+
+
+def test_parse_artist_with_russian_about_sets_language(provider_stub: ProviderStub) -> None:
+    """A Cyrillic-dominant artist bio is tagged as ``ru``."""
+    artist_obj = _artist_from_fixture(FIXTURES_DIR / "artists" / "with_cover.json")
+    assert artist_obj is not None
+
+    about = type(
+        "ArtistAbout",
+        (),
+        {
+            "description": "Российский исполнитель из Санкт-Петербурга.",
+            "stats": None,
+        },
+    )()
+
+    result = parse_artist(cast("YandexMusicProvider", provider_stub), artist_obj, about=about)
+    assert result.metadata.description == "Российский исполнитель из Санкт-Петербурга."
+    assert result.metadata.description_language == "ru"
 
 
 def test_parse_artist_about_missing_fields(provider_stub: ProviderStub) -> None:
@@ -427,6 +449,49 @@ def test_parse_podcast_episode(provider_stub: ProviderStub) -> None:
     assert f"music.yandex.ru/track/{track_obj.id}" in (mapping.url or "")
 
 
+# M17: description_language must remain unset on podcast / audiobook / episode.
+# PR #155 narrowed the field to artist bios only. These guards make a
+# silent re-wire of the four extra parsers fail loudly.
+
+
+@pytest.mark.parametrize("example", PODCAST_FIXTURES, ids=lambda val: val.stem)
+def test_parse_podcast_does_not_set_description_language(
+    example: pathlib.Path, provider_stub: ProviderStub
+) -> None:
+    """``description_language`` must stay unset on podcast — PR #155 regression guard."""
+    album_obj = _album_from_fixture(example)
+    assert album_obj is not None
+    result = parse_podcast(cast("YandexMusicProvider", provider_stub), album_obj)
+    assert result.metadata.description_language is None
+
+
+@pytest.mark.parametrize("example", AUDIOBOOK_FIXTURES, ids=lambda val: val.stem)
+def test_parse_audiobook_does_not_set_description_language(
+    example: pathlib.Path, provider_stub: ProviderStub
+) -> None:
+    """``description_language`` must stay unset on audiobook — PR #155 regression guard."""
+    album_obj = _album_from_fixture(example)
+    assert album_obj is not None
+    result = parse_audiobook(cast("YandexMusicProvider", provider_stub), album_obj)
+    assert result.metadata.description_language is None
+
+
+def test_parse_podcast_episode_does_not_set_description_language(
+    provider_stub: ProviderStub,
+) -> None:
+    """``description_language`` must stay unset on podcast-episode — PR #155 regression."""
+    podcast_album = _album_from_fixture(FIXTURES_DIR / "podcasts" / "basic.json")
+    assert podcast_album is not None
+    podcast = parse_podcast(cast("YandexMusicProvider", provider_stub), podcast_album)
+
+    track_obj = _track_from_fixture(FIXTURES_DIR / "podcast_episodes" / "basic.json")
+    assert track_obj is not None
+    episode = parse_podcast_episode(
+        cast("YandexMusicProvider", provider_stub), track_obj, podcast, position=1
+    )
+    assert episode.metadata.description_language is None
+
+
 def test_parse_podcast_episode_inherits_podcast_image(provider_stub: ProviderStub) -> None:
     """Episode image falls back to parent podcast image when track has none."""
     podcast_album = _album_from_fixture(FIXTURES_DIR / "podcasts" / "basic.json")
@@ -444,3 +509,60 @@ def test_parse_podcast_episode_inherits_podcast_image(provider_stub: ProviderStu
     assert episode.metadata.images == podcast.metadata.images
     # Must be a separate list — mutating one shouldn't affect the other.
     assert episode.metadata.images is not podcast.metadata.images
+
+
+# -- detect_description_language helper --------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param(None, None, id="none"),
+        pytest.param("", None, id="empty"),
+        pytest.param("   ", None, id="whitespace"),
+        # Whitespace must be stripped before the 50% share check, otherwise
+        # padding can dilute the Cyrillic share below the threshold even when
+        # the text itself is unambiguously Russian.
+        pytest.param("   Российский исполнитель.   ", "ru", id="leading-trailing-whitespace-ru"),
+        pytest.param("Singer-songwriter from somewhere.", None, id="english-bio"),
+        pytest.param("Российский исполнитель из Санкт-Петербурга.", "ru", id="ru-bio"),
+        pytest.param(
+            'Группа "Кино" появилась в 1982 году в Ленинграде.',
+            "ru",
+            id="ru-bio-with-punct",
+        ),
+        pytest.param("Привет!", None, id="too-short-ru-only-6-cyrillic"),
+        pytest.param(
+            "An English bio that mentions Москва once in passing.",
+            None,
+            id="english-with-stray-cyrillic",
+        ),
+        # Boundary tests for the floor (>= 8 Cyrillic chars).
+        pytest.param("абвгдеёж", "ru", id="floor-exactly-8-cyrillic"),
+        pytest.param("абвгдеё!", None, id="floor-just-below-7-cyrillic"),
+        # Boundary tests for the share (>= 50% Cyrillic).
+        pytest.param("абвгдеёж01234567", "ru", id="share-exactly-50pct"),  # noqa: RUF001
+        pytest.param("абвгдеёж012345678", None, id="share-just-below-50pct"),  # noqa: RUF001
+        # Latin-heavy bio with embedded Cyrillic name must NOT flip to ru.
+        pytest.param(
+            "Bio of Pyotr Tchaikovsky (Пётр Ильич Чайковский), composer.",
+            None,
+            id="english-bio-with-russian-name",
+        ),
+        # Non-Russian Cyrillic languages must not be tagged ru.
+        pytest.param("Український співак з Києва.", None, id="ukrainian-bio"),
+        pytest.param(
+            "Спявае ў Менску і пакідае след.",  # noqa: RUF001
+            None,
+            id="belarusian-bio",
+        ),
+        pytest.param(
+            "Российский певец, родом из Київа.",
+            None,
+            id="russian-with-ukrainian-spelling",
+        ),
+    ],
+)
+def test_detect_description_language(text: str | None, expected: str | None) -> None:
+    """Cyrillic-dominant Russian text is classified as ru; everything else is None."""
+    assert detect_description_language(text) == expected

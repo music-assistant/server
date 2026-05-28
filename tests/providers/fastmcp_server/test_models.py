@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
+
+import pytest
 
 from music_assistant.providers.fastmcp_server.models import (
     AlbumBrief,
@@ -92,7 +95,15 @@ def test_to_brief_radio() -> None:
 
 
 def test_to_brief_player_reads_playback_state() -> None:
-    """``to_brief_player`` reads the canonical ``Player.playback_state`` enum."""
+    """``to_brief_player`` reads the canonical ``Player.playback_state`` enum.
+
+    The expected ``PlayerBrief`` pins every defaulted field explicitly —
+    leaving them implicit means the test passes only as long as the
+    dataclass defaults match what ``to_brief_player`` falls back to for
+    legacy stubs. Pinning them here keeps a future default flip from
+    silently breaking the playback-state-read contract this test is
+    actually about.
+    """
     player = SimpleNamespace(
         player_id="kitchen",
         name="Kitchen",
@@ -103,7 +114,17 @@ def test_to_brief_player_reads_playback_state() -> None:
     )
     brief = to_brief_player(player)
     assert brief == PlayerBrief(
-        player_id="kitchen", name="Kitchen", state="playing", volume_level=42, powered=True
+        player_id="kitchen",
+        name="Kitchen",
+        state="playing",
+        volume_level=42,
+        powered=True,
+        current_item=None,
+        available=True,
+        enabled=True,
+        needs_setup=False,
+        active_group=None,
+        synced_to=None,
     )
 
 
@@ -162,14 +183,49 @@ def test_to_brief_player_no_current_media() -> None:
     assert to_brief_player(player).current_item is None
 
 
-def test_to_brief_player_reads_powered_from_player_state() -> None:
-    """``powered`` is sourced from ``Player.state.powered``.
+@pytest.mark.parametrize(
+    ("player_powered", "state_powered", "expected", "case"),
+    [
+        # 1. ``state`` present, value differs from raw ``powered`` →
+        #    canonical state wins.
+        (False, True, True, "state.powered=True overrides raw .powered=False"),
+        # 2. Contradictory direction — the other way — also wins via state.
+        #    Without this case, a test that always read raw .powered would
+        #    still pass case #1 (because it happens to match expected=True
+        #    when state.powered=True).
+        (True, False, False, "state.powered=False overrides raw .powered=True"),
+    ],
+)
+def test_to_brief_player_powered_prefers_state(
+    player_powered: bool, state_powered: bool, expected: bool, case: str
+) -> None:
+    """When ``Player.state.powered`` is present, it wins over raw ``Player.powered``.
 
     MA core builds ``_state.powered`` from ``__final_power_state`` and
     serialises it in the REST API; the raw ``Player.powered`` property
     returns ``_attr_powered`` which lags behind (and stays ``False`` for
     some virtual player types). The brief must match what
-    ``Player.state.to_dict()`` would emit.
+    ``Player.state.to_dict()`` would emit — i.e. the canonical ``state.powered``
+    value, not the raw attribute.
+    """
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=100,
+        powered=player_powered,
+        current_media=None,
+        state=SimpleNamespace(powered=state_powered, current_media=None),
+    )
+    assert to_brief_player(player).powered is expected, case
+
+
+def test_to_brief_player_powered_falls_back_to_raw_when_no_state() -> None:
+    """Without a ``state`` attribute, the raw ``Player.powered`` is the only signal.
+
+    Pairs with the parametrized test above to pin both branches of the
+    canonical-vs-raw selection: state present (state wins) and state absent
+    (raw wins).
     """
     player = SimpleNamespace(
         player_id="p1",
@@ -178,9 +234,9 @@ def test_to_brief_player_reads_powered_from_player_state() -> None:
         volume_level=100,
         powered=False,
         current_media=None,
-        state=SimpleNamespace(powered=True, current_media=None),
+        # NO `state` attribute at all.
     )
-    assert to_brief_player(player).powered is True
+    assert to_brief_player(player).powered is False
 
 
 def test_to_brief_player_current_item_uses_state_current_media() -> None:
@@ -202,6 +258,358 @@ def test_to_brief_player_current_item_uses_state_current_media() -> None:
         state=SimpleNamespace(powered=True, current_media=None),
     )
     assert to_brief_player(player).current_item is None
+
+
+def test_to_brief_player_exposes_available_and_enabled() -> None:
+    """``available`` / ``enabled`` flow through, and the state ladder fires.
+
+    Combined assert: a regression that breaks the state override only
+    when both blocker fields are set would otherwise slip through —
+    the dedicated state tests above use single-axis stubs.
+    """
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=0,
+        powered=True,
+        current_media=None,
+        available=False,
+        enabled=False,
+    )
+    brief = to_brief_player(player)
+    assert brief.available is False
+    assert brief.enabled is False
+    # ``unavailable`` wins because it's higher in the priority ladder
+    # than ``disabled``; pinning both confirms the ladder ordering on
+    # the same stub that exercises the field exposure.
+    assert brief.state == "unavailable"
+
+
+def test_to_brief_player_available_enabled_default_true_when_attrs_missing() -> None:
+    """Legacy stubs without ``available`` / ``enabled`` keep working (defaults to True).
+
+    Pins back-compat: tests built before this feature use bare
+    ``SimpleNamespace`` players, and they must still produce a usable brief.
+    """
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=50,
+        powered=True,
+        current_media=None,
+    )
+    brief = to_brief_player(player)
+    assert brief.available is True
+    assert brief.enabled is True
+
+
+def test_to_brief_player_unavailable_overrides_state() -> None:
+    """``state`` becomes ``"unavailable"`` when the player is offline.
+
+    Without the override the brief reports the cached ``playback_state``
+    (typically ``"idle"``) and an LLM cannot distinguish a quiet speaker
+    from one that fell off the network.
+    """
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        powered=True,
+        current_media=None,
+        available=False,
+    )
+    assert to_brief_player(player).state == "unavailable"
+
+
+def _blocker_stub(**overrides: Any) -> SimpleNamespace:
+    """Build a minimal player stub for state-ladder tests.
+
+    Every blocker field defaults to its "not blocked" value; tests pass
+    ``overrides`` for the axis they're exercising.
+    """
+    base: dict[str, Any] = {
+        "player_id": "p1",
+        "name": "P1",
+        "playback_state": SimpleNamespace(value="playing"),
+        "volume_level": None,
+        "powered": True,
+        "current_media": None,
+        "available": True,
+        "enabled": True,
+        "needs_setup": False,
+        "active_group": None,
+        "synced_to": None,
+    }
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+@pytest.mark.parametrize(
+    ("blocker", "expected_state"),
+    [
+        ({"available": False}, "unavailable"),
+        ({"enabled": False}, "disabled"),
+        ({"needs_setup": True}, "needs_setup"),
+        ({"synced_to": "leader-id"}, "synced"),
+        ({"active_group": "group-id"}, "synced"),
+    ],
+)
+def test_to_brief_player_state_override_per_blocker(
+    blocker: dict[str, object], expected_state: str
+) -> None:
+    """Each blocker in isolation produces its dedicated ``state`` value.
+
+    Pins the per-rung behaviour of the state ladder. Without these
+    overrides the LLM would see ``state="playing"`` (the cached
+    playback_state on the stub) for every unusable device and pick the
+    wrong target.
+    """
+    assert to_brief_player(_blocker_stub(**blocker)).state == expected_state
+
+
+@pytest.mark.parametrize(
+    ("blockers", "expected_state", "case"),
+    [
+        (
+            {"available": False, "synced_to": "leader"},
+            "unavailable",
+            "unavailable beats synced",
+        ),
+        (
+            {"available": False, "enabled": False},
+            "unavailable",
+            "unavailable beats disabled",
+        ),
+        (
+            {"enabled": False, "needs_setup": True},
+            "disabled",
+            "disabled beats needs_setup",
+        ),
+        (
+            {"needs_setup": True, "active_group": "g"},
+            "needs_setup",
+            "needs_setup beats synced",
+        ),
+    ],
+)
+def test_to_brief_player_state_priority_chain(
+    blockers: dict[str, object], expected_state: str, case: str
+) -> None:
+    """When multiple blockers are set, the most-blocking value wins.
+
+    The single ``state`` field has to summarise usability; an LLM that
+    only reads ``state`` (skipping the explicit booleans) must make the
+    safe call. Priority: unavailable > disabled > needs_setup > synced.
+    """
+    assert to_brief_player(_blocker_stub(**blockers)).state == expected_state, case
+
+
+def test_to_brief_player_exposes_new_blocker_fields() -> None:
+    """``needs_setup`` / ``active_group`` / ``synced_to`` flow through from MA."""
+    player = _blocker_stub(
+        needs_setup=True,
+        active_group="group-x",
+        synced_to="leader-y",
+    )
+    brief = to_brief_player(player)
+    assert brief.needs_setup is True
+    assert brief.active_group == "group-x"
+    assert brief.synced_to == "leader-y"
+
+
+def test_to_brief_player_new_fields_default_safely_when_attrs_missing() -> None:
+    """Legacy stubs without the new attributes still produce a usable brief.
+
+    Mirrors the back-compat pattern already pinned for
+    ``available`` / ``enabled`` — tests built before this feature use
+    bare ``SimpleNamespace`` players, and they must keep working.
+    """
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=50,
+        powered=True,
+        current_media=None,
+    )
+    brief = to_brief_player(player)
+    assert brief.needs_setup is False
+    assert brief.active_group is None
+    assert brief.synced_to is None
+
+
+def test_to_brief_player_prefers_state_active_group_over_raw_attr() -> None:
+    """``Player.state.active_group`` is the canonical sync-membership signal.
+
+    MA's ``__final_active_group`` walks every GROUP player and resolves
+    membership / protocol translation; the raw ``Player.active_group``
+    dataclass attr lags and stays ``None`` for SyncGroupPlayer
+    followers. The brief must read the canonical value so a follower
+    captured by an active group surfaces as ``state="synced"``.
+    """
+    player = SimpleNamespace(
+        player_id="follower",
+        name="Lenco",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        powered=True,
+        current_media=None,
+        # Raw attribute stays None — the case that broke live verification.
+        active_group=None,
+        synced_to=None,
+        state=SimpleNamespace(
+            powered=True,
+            current_media=None,
+            active_group="syncgroup_x",
+            synced_to=None,
+        ),
+    )
+    brief = to_brief_player(player)
+    assert brief.active_group == "syncgroup_x"
+    assert brief.state == "synced"
+
+
+def test_to_brief_player_prefers_state_synced_to_over_raw_attr() -> None:
+    """``Player.state.synced_to`` translates protocol-player ids; the brief must use it."""
+    player = SimpleNamespace(
+        player_id="follower",
+        name="Speaker",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        powered=True,
+        current_media=None,
+        synced_to=None,
+        active_group=None,
+        state=SimpleNamespace(
+            powered=True,
+            current_media=None,
+            active_group=None,
+            synced_to="visible-leader-id",
+        ),
+    )
+    brief = to_brief_player(player)
+    assert brief.synced_to == "visible-leader-id"
+    assert brief.state == "synced"
+
+
+def test_to_brief_player_falls_back_to_raw_when_state_lacks_group_fields() -> None:
+    """Back-compat: legacy stubs whose ``state`` lacks the new group fields fall through.
+
+    The existing ``test_to_brief_player_powered_prefers_state`` already
+    exercises a stub whose ``state`` has ``powered`` + ``current_media``
+    but no ``active_group`` / ``synced_to``. After this change those
+    older stubs must keep producing valid briefs — the canonical-read
+    branch must guard with ``hasattr(state, "active_group")``.
+    """
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=None,
+        powered=True,
+        current_media=None,
+        active_group="raw-group",
+        synced_to=None,
+        # state lacks the new fields entirely — only the older attrs.
+        state=SimpleNamespace(powered=True, current_media=None),
+    )
+    brief = to_brief_player(player)
+    assert brief.active_group == "raw-group"
+    assert brief.state == "synced"
+
+
+def test_to_brief_player_prefers_state_volume_muted_over_raw() -> None:
+    """``volume_muted`` flows through from the canonical state object."""
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=50,
+        volume_muted=False,
+        powered=True,
+        current_media=None,
+        state=SimpleNamespace(
+            powered=True,
+            current_media=None,
+            volume_muted=True,
+        ),
+    )
+    assert to_brief_player(player).volume_muted is True
+
+
+def test_to_brief_player_prefers_state_group_volume_over_raw() -> None:
+    """``group_volume`` is read from state — SyncGroupPlayer holds it there.
+
+    The raw ``Player.group_volume`` dataclass attr can lag; the canonical
+    property is exposed on ``Player.state`` (line 1497 of MA's
+    ``models/player.py``). A SyncGroupPlayer's brief must surface the
+    real group volume, not the cached ``None`` on the raw attribute.
+    """
+    player = SimpleNamespace(
+        player_id="syncgroup_x",
+        name="Group",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=None,
+        group_volume=None,
+        powered=True,
+        current_media=None,
+        state=SimpleNamespace(
+            powered=True,
+            current_media=None,
+            group_volume=75,
+            group_volume_muted=False,
+        ),
+    )
+    brief = to_brief_player(player)
+    assert brief.group_volume == 75
+    assert brief.group_volume_muted is False
+
+
+def test_to_brief_player_new_volume_fields_default_to_none_when_attrs_missing() -> None:
+    """Legacy stubs without volume_muted / group_volume / group_volume_muted attrs work.
+
+    Mirrors the back-compat pattern already pinned for the
+    ``active_group`` / ``synced_to`` additions.
+    """
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=50,
+        powered=True,
+        current_media=None,
+    )
+    brief = to_brief_player(player)
+    assert brief.volume_muted is None
+    assert brief.group_volume is None
+    assert brief.group_volume_muted is None
+
+
+def test_to_brief_player_volume_fields_fall_back_to_raw_when_state_lacks_them() -> None:
+    """Stubs whose ``state`` lacks the volume fields fall through to raw attrs.
+
+    Back-compat with stubs that carry ``state`` for ``powered`` /
+    ``current_media`` but predate the new volume fields.
+    """
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=50,
+        volume_muted=True,
+        group_volume=80,
+        group_volume_muted=True,
+        powered=True,
+        current_media=None,
+        state=SimpleNamespace(powered=True, current_media=None),
+    )
+    brief = to_brief_player(player)
+    assert brief.volume_muted is True
+    assert brief.group_volume == 80
+    assert brief.group_volume_muted is True
 
 
 def test_to_brief_queue_with_items() -> None:
@@ -260,3 +668,53 @@ def test_page_args_clamps() -> None:
     assert page_args(-5, 5000) == (0, 200)
     assert page_args(0, 0) == (0, 1)
     assert page_args(10, 25) == (10, 25)
+
+
+def test_to_brief_queue_returns_none_count_when_unknown() -> None:
+    """When the queue exposes no canonical count, report ``item_count=None``.
+
+    A silent ``0`` (formerly returned via ``len(brief_items)`` when the
+    truncated lookahead was empty) would tell the LLM the queue is empty
+    when in fact it just doesn't know. ``None`` is the honest answer and
+    lets clients prompt the user instead of acting on false data.
+    """
+    queue = SimpleNamespace(
+        queue_id="q",
+        current_index=0,
+        # No `items` / `items_count` / `items_total` exposed at all.
+        shuffle_enabled=False,
+        repeat_mode=None,
+    )
+    brief = to_brief_queue(queue, items=None)
+    assert brief.item_count is None
+    assert brief.items == []
+
+
+def test_to_brief_queue_exposes_available() -> None:
+    """``available`` flows through from ``PlayerQueue`` so callers see the offline case.
+
+    Mirrors the parallel fix on the player side: a queue belonging to
+    an offline player is still returned by ``get_active_queue`` but
+    now carries an explicit ``available=False`` signal.
+    """
+    queue = SimpleNamespace(
+        queue_id="q",
+        current_index=0,
+        items=0,
+        shuffle_enabled=False,
+        repeat_mode=None,
+        available=False,
+    )
+    assert to_brief_queue(queue).available is False
+
+
+def test_to_brief_queue_available_defaults_true_when_attr_missing() -> None:
+    """Legacy queue stubs without ``available`` keep working (defaults to True)."""
+    queue = SimpleNamespace(
+        queue_id="q",
+        current_index=0,
+        items=0,
+        shuffle_enabled=False,
+        repeat_mode=None,
+    )
+    assert to_brief_queue(queue).available is True

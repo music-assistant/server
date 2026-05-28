@@ -331,8 +331,8 @@ class StreamsController(CoreController):
             "Starting streamserver on  %s:%s\n"
             "This is the IP address that is communicated to players.\n"
             "If this is incorrect, audio will not play!\n"
-            "See the documentation how to configure the publish IP for the Streamserver\n"
-            "in Settings --> Core modules --> Streamserver\n"
+            "See the documentation for how to configure the publish IP for the Streamserver\n"
+            "in Settings --> System --> Streams\n"
             "################################################################################\n",
             self.publish_ip,
             self.publish_port,
@@ -701,7 +701,7 @@ class StreamsController(CoreController):
                 audio_input = self.audio.get_queue_item_stream(
                     queue_item=queue_item,
                     pcm_format=pcm_format,
-                    seek_position=queue_item.streamdetails.seek_position,
+                    seek_position=int(queue_item.streamdetails.seek_position),
                     playback_speed=cast(
                         "float", queue_item.extra_attributes.get("playback_speed", 1.0)
                     ),
