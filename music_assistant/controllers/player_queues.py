@@ -2620,7 +2620,7 @@ class PlayerQueuesController(CoreController):
             target_size=25,
             preferred_provider_instances=preferred_provider_instances,
         )
-        # Drop anything already queued/played (the helper has no concept of queue state).
+        # Drop anything already queued/played
         queued_set = set(queue_track_items)
         return [track for track in radio_tracks if track not in queued_set]
 
