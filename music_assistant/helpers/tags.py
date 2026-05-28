@@ -94,6 +94,7 @@ FEATURING_SPLITTERS = [
     " feat. ",
     " feat ",
     " duet with ",
+    " presents ",
     " ft. ",
     " vs. ",
     " vs ",
@@ -315,14 +316,6 @@ class AudioTags:
             else:
                 # Split on semicolons
                 artists = split_items(tag)
-            # Warn if ARTISTS tag count doesn't match MB Artist ID count
-            if mb_id_count and mb_id_count != len(artists):
-                LOGGER.warning(
-                    "ARTISTS tag count (%d) doesn't match MusicBrainz Artist ID count (%d): %s",
-                    len(artists),
-                    mb_id_count,
-                    tag,
-                )
             return artists
         # Fallback to single artist string, splitting if necessary
         # All formats: parser returns artist (singular)
@@ -374,14 +367,6 @@ class AudioTags:
             else:
                 # Split on semicolons
                 artists = split_items(tag)
-            # Warn if ALBUMARTISTS tag count doesn't match MB Album Artist ID count
-            if mb_id_count and mb_id_count != len(artists):
-                LOGGER.warning(
-                    "ALBUMARTISTS tag count (%d) doesn't match MB Album Artist ID count (%d): %s",
-                    len(artists),
-                    mb_id_count,
-                    tag,
-                )
             return artists
         # Fallback to single album artist string, splitting if necessary
         # All formats: parser returns albumartist (singular)
