@@ -113,13 +113,23 @@ class AppleMusicMediaManager:
         is_favourite = rating_response.get(prov_track_id)
         return parse_track(self.provider, response["data"][0], is_favourite)
 
-    async def get_playlist(self, prov_playlist_id: str, is_favourite: bool = False) -> Playlist:
+    async def get_playlist(
+        self,
+        prov_playlist_id: str,
+        is_favourite: bool = False,
+        can_edit_hint: bool | None = None,
+    ) -> Playlist:
         """Get full playlist details by id."""
-        return await self._get_regular_playlist(prov_playlist_id, is_favourite)
+        return await self._get_regular_playlist(
+            prov_playlist_id, is_favourite, can_edit_hint=can_edit_hint
+        )
 
     @use_cache()
     async def _get_regular_playlist(
-        self, prov_playlist_id: str, is_favourite: bool = False
+        self,
+        prov_playlist_id: str,
+        is_favourite: bool = False,
+        can_edit_hint: bool | None = None,
     ) -> Playlist:
         """Fetch and cache details for a regular (non-station) playlist."""
         if not is_catalog_id(prov_playlist_id):
@@ -127,7 +137,12 @@ class AppleMusicMediaManager:
         else:
             endpoint = f"catalog/{self.provider._storefront}/playlists/{prov_playlist_id}"
         response = await self.api.get_data(endpoint)
-        return parse_playlist(self.provider, response["data"][0], is_favourite)
+        return parse_playlist(
+            self.provider,
+            response["data"][0],
+            is_favourite,
+            can_edit_hint=can_edit_hint,
+        )
 
     @use_cache(allow_expired_cache=True)
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:

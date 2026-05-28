@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from typing import TYPE_CHECKING
 
+from aiohttp import ClientResponseError
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
@@ -54,8 +55,16 @@ class AppleMusicRecommendationManager:
         endpoint = f"me/stations/next-tracks/ra.{prov_track_id}"
         found_tracks: list[Track] = []
         while len(found_tracks) < limit:
-            response = await self.api.post_data(endpoint, include="artists")
-            if not response or "data" not in response:
+            try:
+                response = await self.api.post_data(endpoint, include="artists")
+            except ClientResponseError as err:
+                if err.status == 500:
+                    self.logger.debug(
+                        "Similar tracks unavailable for %s (%s)", prov_track_id, endpoint
+                    )
+                    break
+                raise
+            if not response or not response.get("data"):
                 break
             track_ids = [track["id"] for track in response["data"] if track and track["id"]]
             rating_response = await self.api.get_ratings(track_ids, MediaType.TRACK)
