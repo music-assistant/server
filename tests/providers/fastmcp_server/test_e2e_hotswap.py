@@ -37,10 +37,10 @@ def _build_runtime_with_mounted_server(
     hot-swap behaviour under test.
     """
     from music_assistant.providers.fastmcp_server.tags import enabled_tags  # noqa: PLC0415
-    from music_assistant.providers.fastmcp_server.tools import (
+    from music_assistant.providers.fastmcp_server.tools import (  # noqa: PLC0415
         build_library_server,
         build_volume_server,
-    )  # noqa: PLC0415
+    )
 
     runtime = MCPServerRuntime(mock_mass, mock_config, logging.getLogger("t"))
 
