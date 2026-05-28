@@ -899,7 +899,9 @@ class SpotifyConnectProvider(PluginProvider):
         """
         if (
             not self._librespot_started.is_set()
-            and "Using StdoutSink (pipe) with format: S16" in line
+            # Codec/backend-independent readiness signal: librespot reaches this
+            # only after audio backend + spirc setup completed without errors.
+            and "Connecting to AP" in line
         ):
             self._librespot_started.set()
         if "error sending packet Os" in line:
