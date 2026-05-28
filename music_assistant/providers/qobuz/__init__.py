@@ -591,8 +591,9 @@ class QobuzProvider(MusicProvider):
                     remotely_accessible=True,
                 )
             )
-        if artist_obj.get("biography"):
-            artist.metadata.description = artist_obj["biography"].get("content")
+        if biography := artist_obj.get("biography"):
+            artist.metadata.description = biography.get("content")
+            artist.metadata.description_language = biography.get("language")
         if favorited_at := artist_obj.get("favorited_at"):
             artist.date_added = datetime.datetime.fromtimestamp(favorited_at, tz=datetime.UTC)
         return artist
