@@ -53,8 +53,6 @@ if TYPE_CHECKING:
     from music_assistant.providers.spotify.provider import SpotifyProvider
 
 CONF_MASS_PLAYER_ID = "mass_player_id"
-CONF_HANDOFF_MODE = "handoff_mode"
-CONNECT_ITEM_ID = "spotify_connect"
 CONF_PUBLISH_NAME = "publish_name"
 
 # Special value for auto player selection
@@ -104,9 +102,9 @@ async def get_config_entries(
     """
     Return Config entries to setup this provider.
 
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
+    :param instance_id: id of an existing provider instance (None if new instance setup).
+    :param action: [optional] action key called from config entries UI.
+    :param values: the (intermediate) raw values for config entries sent with the action.
     """
     return (
         CONF_ENTRY_WARN_PREVIEW,
@@ -139,25 +137,6 @@ async def get_config_entries(
             description="How should this Spotify Connect device be named in the Spotify app?",
             default_value="Music Assistant",
         ),
-        # ConfigEntry(
-        #     key=CONF_HANDOFF_MODE,
-        #     type=ConfigEntryType.BOOLEAN,
-        #     label="Enable handoff mode",
-        #     default_value=False,
-        #     description="The default behavior of the Spotify Connect plugin is to "
-        #     "forward the actual Spotify Connect audio stream as-is to the player. "
-        #     "The Spotify audio is basically just a live audio stream. \n\n"
-        #     "For controlling the playback (and queue contents), "
-        #     "you need to use the Spotify app. Also, depending on the player's "
-        #     "buffering strategy and capabilities, the audio may not be fully in sync with "
-        #     "what is shown in the Spotify app. \n\n"
-        #     "When enabling handoff mode, the Spotify Connect plugin will instead "
-        #     "forward the Spotify playback request to the Music Assistant Queue, so basically "
-        #     "the spotify app can be used to initiate playback, but then MA will take over "
-        #     "the playback and manage the queue, which is the normal operating mode of MA. \n\n"
-        #     "This mode however means that the Spotify app will not report the actual playback ",
-        #     required=False,
-        # ),
     )
 
 
@@ -271,6 +250,11 @@ class SpotifyConnectProvider(PluginProvider):
         for callback in self._on_unload_callbacks:
             callback()
 
+    @property
+    def active_player_id(self) -> str | None:
+        """Return the currently active player ID for this plugin."""
+        return self._active_player_id
+
     async def get_audio_sources(self) -> list[AudioSource]:
         """Return the AudioSources this plugin currently exposes."""
         return [self._audio_source]
@@ -318,6 +302,91 @@ class SpotifyConnectProvider(PluginProvider):
             stream_metadata=self._stream_metadata,
             expiration=0,
         )
+
+    async def on_source_selected(
+        self,
+        source_id: str,
+        player_id: str,
+        queue_id: str,
+        stream_session_id: str,
+    ) -> None:
+        """Handle callback when this AudioSource has been selected/started on a player."""
+        if source_id != AUDIO_SOURCE_ID or not player_id:
+            return
+
+        # Cache the queue_id (== user-facing MA player) rather than the
+        # protocol-level player_id. Some protocol players are ephemeral bridges
+        # (e.g. Sendspin's spb_… bridges that tear down between streams) — their
+        # ID is invalid for play_media / queue lookups once the bridge is gone.
+        active_player_id = queue_id
+
+        # If there's already an active player and it's different, kick it out.
+        # The lock claim a few lines below replaces the previous queue's claim;
+        # the prior stream's on_source_unselected may fire later, but its
+        # session-id guard keeps it from clobbering the new claim.
+        if self._active_player_id and self._active_player_id != active_player_id:
+            prev_player_id = self._active_player_id
+            self.logger.info(
+                "Source selected on player %s, stopping playback on %s",
+                active_player_id,
+                prev_player_id,
+            )
+            try:
+                await self.mass.players.cmd_stop(prev_player_id)
+            except Exception as err:
+                self.logger.debug("Failed to stop previous player %s: %s", prev_player_id, err)
+
+        # Claim ownership for this queue. The lock lives here (not in
+        # get_stream_details) so preload paths can fetch streamdetails without
+        # accidentally blocking a subsequent cross-queue handoff at the actual
+        # stream request.
+        self._in_use_by_queue = queue_id
+        # Record this request's session id so a later on_source_unselected can
+        # tell whether it is the live teardown or a stale callback from a
+        # superseded same-queue request.
+        self._active_session_id = stream_session_id
+
+        # Update the active player
+        self._active_player_id = active_player_id
+        self.logger.debug("Active player set to: %s", active_player_id)
+
+        # Only persist the selected player as the new default if not in auto mode
+        if self._default_player_id != PLAYER_ID_AUTO:
+            self._save_last_player_id(active_player_id)
+
+        # MA-initiated: librespot is idle; kick Spotify via Web API.
+        # Externally triggered: librespot is already playing → skip.
+        if not self._librespot_playing:
+            if not self._spotify_provider:
+                raise AudioError(
+                    "Spotify Connect requires the matching Spotify music provider "
+                    "for MA-initiated playback"
+                )
+            try:
+                await self._ensure_active_device(play=True)
+            except Exception as err:
+                raise AudioError(f"Failed to acquire Spotify Connect via Web API: {err}") from err
+            # The Web API returns 200 even when Spotify won't actually start
+            # playing on us; confirm via librespot before reporting success.
+            if not await self._wait_for_librespot_playing():
+                raise AudioError(NOT_ACTIVE_DEVICE_MESSAGE)
+
+    async def on_source_unselected(
+        self, source_id: str, queue_id: str, stream_session_id: str
+    ) -> None:
+        """Release the queue-scoped exclusive claim when MA tears down the stream."""
+        if source_id != AUDIO_SOURCE_ID:
+            return
+        # Reject stale callbacks: only release if this is still the active
+        # session. A queue_id check alone is not sufficient — same-queue
+        # reconnects (player drops + reopens the same stream URL before the
+        # original request's finally fires) would otherwise let the old
+        # request's late callback clear the live claim of the new stream.
+        if self._active_session_id != stream_session_id:
+            return
+        self._active_session_id = None
+        if self._in_use_by_queue == queue_id:
+            self._in_use_by_queue = None
 
     async def on_source_control(
         self,
@@ -375,11 +444,6 @@ class SpotifyConnectProvider(PluginProvider):
             # Spotify context), so only allow external entry via the Spotify app.
             can_initiate=False,
         )
-
-    @property
-    def active_player_id(self) -> str | None:
-        """Return the currently active player ID for this plugin."""
-        return self._active_player_id
 
     def _get_target_player_id(self) -> str | None:
         """
@@ -539,91 +603,6 @@ class SpotifyConnectProvider(PluginProvider):
             self.mass.player_queues.play_media(target_player_id, str(self._audio_source.uri))
         )
 
-    async def on_source_selected(
-        self,
-        source_id: str,
-        player_id: str,
-        queue_id: str,
-        stream_session_id: str,
-    ) -> None:
-        """Handle callback when this AudioSource has been selected/started on a player."""
-        if source_id != AUDIO_SOURCE_ID or not player_id:
-            return
-
-        # Cache the queue_id (== user-facing MA player) rather than the
-        # protocol-level player_id. Some protocol players are ephemeral bridges
-        # (e.g. Sendspin's spb_… bridges that tear down between streams) — their
-        # ID is invalid for play_media / queue lookups once the bridge is gone.
-        active_player_id = queue_id
-
-        # If there's already an active player and it's different, kick it out.
-        # The lock claim a few lines below replaces the previous queue's claim;
-        # the prior stream's on_source_unselected may fire later, but its
-        # session-id guard keeps it from clobbering the new claim.
-        if self._active_player_id and self._active_player_id != active_player_id:
-            prev_player_id = self._active_player_id
-            self.logger.info(
-                "Source selected on player %s, stopping playback on %s",
-                active_player_id,
-                prev_player_id,
-            )
-            try:
-                await self.mass.players.cmd_stop(prev_player_id)
-            except Exception as err:
-                self.logger.debug("Failed to stop previous player %s: %s", prev_player_id, err)
-
-        # Claim ownership for this queue. The lock lives here (not in
-        # get_stream_details) so preload paths can fetch streamdetails without
-        # accidentally blocking a subsequent cross-queue handoff at the actual
-        # stream request.
-        self._in_use_by_queue = queue_id
-        # Record this request's session id so a later on_source_unselected can
-        # tell whether it is the live teardown or a stale callback from a
-        # superseded same-queue request.
-        self._active_session_id = stream_session_id
-
-        # Update the active player
-        self._active_player_id = active_player_id
-        self.logger.debug("Active player set to: %s", active_player_id)
-
-        # Only persist the selected player as the new default if not in auto mode
-        if self._default_player_id != PLAYER_ID_AUTO:
-            self._save_last_player_id(active_player_id)
-
-        # MA-initiated: librespot is idle; kick Spotify via Web API.
-        # Externally triggered: librespot is already playing → skip.
-        if not self._librespot_playing:
-            if not self._spotify_provider:
-                raise AudioError(
-                    "Spotify Connect requires the matching Spotify music provider "
-                    "for MA-initiated playback"
-                )
-            try:
-                await self._ensure_active_device(play=True)
-            except Exception as err:
-                raise AudioError(f"Failed to acquire Spotify Connect via Web API: {err}") from err
-            # The Web API returns 200 even when Spotify won't actually start
-            # playing on us; confirm via librespot before reporting success.
-            if not await self._wait_for_librespot_playing():
-                raise AudioError(NOT_ACTIVE_DEVICE_MESSAGE)
-
-    async def on_source_unselected(
-        self, source_id: str, queue_id: str, stream_session_id: str
-    ) -> None:
-        """Release the queue-scoped exclusive claim when MA tears down the stream."""
-        if source_id != AUDIO_SOURCE_ID:
-            return
-        # Reject stale callbacks: only release if this is still the active
-        # session. A queue_id check alone is not sufficient — same-queue
-        # reconnects (player drops + reopens the same stream URL before the
-        # original request's finally fires) would otherwise let the old
-        # request's late callback clear the live claim of the new stream.
-        if self._active_session_id != stream_session_id:
-            return
-        self._active_session_id = None
-        if self._in_use_by_queue == queue_id:
-            self._in_use_by_queue = None
-
     def _clear_active_player(self) -> None:
         """
         Clear the active player and revert to default if configured.
@@ -777,7 +756,8 @@ class SpotifyConnectProvider(PluginProvider):
             raise
 
     async def _on_volume(self, volume: int) -> None:
-        """Handle volume change command via Spotify Web API.
+        """
+        Handle volume change command via Spotify Web API.
 
         :param volume: Volume level (0-100) from Music Assistant.
         """
@@ -801,7 +781,8 @@ class SpotifyConnectProvider(PluginProvider):
             raise
 
     async def _get_spotify_device_id(self) -> str | None:
-        """Get the Spotify Connect device ID for this instance.
+        """
+        Get the Spotify Connect device ID for this instance.
 
         :return: Device ID if found, None otherwise.
         """
