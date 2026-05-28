@@ -222,6 +222,48 @@ async def test_list_players_synced_reads_from_state_object(
     assert by_id["follower"].active_group == "syncgroup_x"
 
 
+async def test_list_players_syncgroup_reports_group_volume(
+    mock_mass: Any, mounted_players: FastMCP
+) -> None:
+    """A SyncGroupPlayer surfaces its ``group_volume`` round-tripped through MCP.
+
+    Per-player ``volume_level`` is ``None`` on a sync group; the
+    canonical volume signal lives on ``state.group_volume``. The brief
+    must surface this so a caller can answer "what volume is the
+    group at?" without a separate query.
+    """
+    syncgroup = SimpleNamespace(
+        player_id="syncgroup_x",
+        name="Test Group",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=None,
+        powered=True,
+        current_media=None,
+        available=True,
+        enabled=True,
+        needs_setup=False,
+        active_group=None,
+        synced_to=None,
+        state=SimpleNamespace(
+            powered=True,
+            current_media=None,
+            active_group=None,
+            synced_to=None,
+            volume_muted=False,
+            group_volume=60,
+            group_volume_muted=False,
+        ),
+    )
+    mock_mass.players.all_players.side_effect = _make_all_players_mock([syncgroup])
+    async with Client(mounted_players) as client:
+        result = await client.call_tool("players_list_players", {})
+    by_id = {p.player_id: p for p in result.data}
+    assert by_id["syncgroup_x"].group_volume == 60
+    assert by_id["syncgroup_x"].group_volume_muted is False
+    assert by_id["syncgroup_x"].volume_muted is False
+    assert by_id["syncgroup_x"].volume_level is None
+
+
 async def test_list_players_needs_setup_reports_needs_setup_state(
     mock_mass: Any, mounted_players: FastMCP
 ) -> None:
