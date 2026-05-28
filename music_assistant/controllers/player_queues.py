@@ -2610,7 +2610,10 @@ class PlayerQueuesController(CoreController):
             and not is_initial_radio_mode
             and queue_track_items
         ):
-            seeds: list[MediaItemType] = list(queue_track_items)
+            # Helper samples 5 internally; bound the input.
+            seeds: list[MediaItemType] = random.sample(
+                queue_track_items, min(len(queue_track_items), 10)
+            )
         else:
             seeds = list(queue.radio_source)
 

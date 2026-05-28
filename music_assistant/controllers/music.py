@@ -901,6 +901,7 @@ class MusicController(CoreController):
         :param preferred_provider_instances: Provider instance IDs preferred for similar lookups.
         :raises UnsupportedFeaturedException: When no base tracks could be derived from any seed.
         """
+        seen: set[Track] = set()
         available_base_tracks: list[Track] = []
         for seed in random.sample(seeds, len(seeds)):
             ctrl = self.get_controller(seed.media_type)
@@ -912,7 +913,8 @@ class MusicController(CoreController):
             except UnsupportedFeaturedException:
                 continue
             for track in base_tracks_for_seed:
-                if track not in available_base_tracks:
+                if track not in seen:
+                    seen.add(track)
                     available_base_tracks.append(track)
         if not available_base_tracks:
             raise UnsupportedFeaturedException("Radio mode not available for source items")

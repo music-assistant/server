@@ -279,12 +279,7 @@ def validate_rules(rules: SmartPlaylistRules) -> None:
             f"{rules.year_from}>{rules.year_to}"
         )
         raise InvalidDataError(msg)
-    total_seeds = (
-        len(rules.seed_track_uris)
-        + len(rules.seed_artist_uris)
-        + len(rules.seed_album_uris)
-        + len(rules.seed_playlist_uris)
-    )
+    total_seeds = len(rules.all_seed_uris())
     if total_seeds > MAX_SEEDS:
         msg = f"Too many seeds: {total_seeds} > {MAX_SEEDS}"
         raise InvalidDataError(msg)

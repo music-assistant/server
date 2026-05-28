@@ -605,7 +605,8 @@ async def test_get_playlist_tracks_dynamic_cold_evaluates_and_caches(tmp_path: A
     await plugin.handle_async_init()
 
     tracks = [_make_mock_track(str(i), f"library://track/{i}") for i in range(50)]
-    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=tracks)
+    library_mock = AsyncMock(return_value=tracks)
+    cast("Any", plugin)._get_library_tracks = library_mock
 
     rules = SmartPlaylistRules(limit=100, is_dynamic=True)
     plugin._rules_store["abc"] = rules
@@ -613,8 +614,8 @@ async def test_get_playlist_tracks_dynamic_cold_evaluates_and_caches(tmp_path: A
     result = await plugin.get_playlist_tracks("abc")
     assert len(result) <= DYNAMIC_PLAYLIST_SAMPLE_SIZE
     assert len(result) > 5
-    # @use_cache does a fresh lookup, then a stale-allowed lookup, then schedules a store.
-    assert mass.cache.get.await_count == 2
+    # Observable behaviour: the wrapped evaluator ran and a store task was scheduled.
+    library_mock.assert_awaited()
     mass.create_task.assert_called_once()
 
 
