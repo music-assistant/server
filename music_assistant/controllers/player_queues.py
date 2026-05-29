@@ -3114,7 +3114,15 @@ class PlayerQueuesController(CoreController):
         if queue.flow_mode and queue.flow_mode_stream_log:
             last_log_entry = queue.flow_mode_stream_log[-1]
             if last_log_entry.seconds_streamed is not None:
-                # The last track finished streaming, safe to clear queue
+                # Guard: if a next item (e.g. a radio that caused the flow stream to break
+                # out early) is already queued, the queue_buffer_completed path
+                # (_resume_on_idle) is responsible for starting it. Creating
+                # _clear_or_resume_delayed here would race with that restart and could
+                # incorrectly clear the queue or trigger a double play_index call.
+                if queue.current_index is not None and self.get_next_item(
+                    queue.queue_id, queue.current_index
+                ):
+                    return
                 self.mass.create_task(_clear_or_resume_delayed())
             return
 
