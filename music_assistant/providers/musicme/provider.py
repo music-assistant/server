@@ -50,6 +50,7 @@ from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_wi
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
+    SIGNIN_BY_API,
     CLIENT_JSON,
     DATASERVICE_BASE,
     LOGIN_URL,
@@ -80,7 +81,12 @@ class MusicMeProvider(MusicProvider):
         # (each instance has its own MusicMe login cookies)
         self.http_session = create_clientsession(self.mass, cookie_jar=aiohttp.CookieJar())
         self.throttler = ThrottlerManager(rate_limit=1, period=1)
-        await self._login()
+        if self.config.get_value(SIGNIN_BY_API):
+            self.logger.info("Trying to signin by API call")
+            await self._signin_by_api()
+        else:
+            self.logger.info("Trying to login by HTTP authentification")
+            await self._login()
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
@@ -127,7 +133,7 @@ class MusicMeProvider(MusicProvider):
                     result.tracks = [
                         self._parse_track(t)
                         for t in tracks
-                        if t.get("barcode") and t.get("streamable") == 2
+                        if t.get("barcode") and t.get("streamable") != 0
                     ]
 
         if not result.artists and not result.albums and not result.tracks:
@@ -231,7 +237,7 @@ class MusicMeProvider(MusicProvider):
                     )
 
         for album_obj in data.get("results", {}).get("albums", []):
-            if album_obj.get("barcode") and album_obj.get("streamable", 0) == 2:
+            if album_obj.get("barcode") and album_obj.get("streamable", 0) != 0:
                 results.append(self._parse_album(album_obj))
         return results
 
@@ -323,7 +329,7 @@ class MusicMeProvider(MusicProvider):
                 icon="mdi-new-box",
             )
             for album_obj in news_data.get("results", {}).get("albums", []):
-                if album_obj.get("barcode") and album_obj.get("streamable", 0) == 2:
+                if album_obj.get("barcode") and album_obj.get("streamable", 0) != 0:
                     folder.items.append(self._parse_album(album_obj))
             if folder.items:
                 result.append(folder)
@@ -444,7 +450,7 @@ class MusicMeProvider(MusicProvider):
             return []
         albums = data.get("results", {}).get("albums", [])
         streamable_barcodes = [
-            a["barcode"] for a in albums if a.get("barcode") and a.get("streamable", 0) == 2
+            a["barcode"] for a in albums if a.get("barcode") and a.get("streamable", 0) != 0
         ]
         album_results = await asyncio.gather(
             *(self._api_get(f"/album/{bc}?resources=tracks") for bc in streamable_barcodes)
@@ -454,7 +460,7 @@ class MusicMeProvider(MusicProvider):
             if not album_data:
                 continue
             for t in album_data.get("results", {}).get("tracks", []):
-                if t.get("barcode") and t.get("streamable", 0) == 2:
+                if t.get("barcode") and t.get("streamable", 0) != 0:
                     top_tracks.append(self._parse_track(t))
                 if len(top_tracks) >= 20:
                     break
@@ -520,7 +526,7 @@ class MusicMeProvider(MusicProvider):
             raise MediaNotFoundError(msg)
         tracks = data.get("results", {}).get("tracks", [])
         for t in tracks:
-            if t.get("barcode") and t.get("streamable", 0) == 2:
+            if t.get("barcode") and t.get("streamable", 0) != 0:
                 return str(t["barcode"])
         msg = f"No streamable tracks in radio {radio_id}"
         raise MediaNotFoundError(msg)
@@ -567,7 +573,7 @@ class MusicMeProvider(MusicProvider):
                     item_id=barcode,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    available=album_obj.get("streamable", 0) == 2,
+                    available=album_obj.get("streamable", 0) != 0,
                     audio_format=AudioFormat(
                         content_type=ContentType.MP4,
                         codec_type=ContentType.AAC,
@@ -608,7 +614,7 @@ class MusicMeProvider(MusicProvider):
                     item_id=barcode,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    available=track_obj.get("streamable", 0) == 2,
+                    available=track_obj.get("streamable", 0) != 0,
                     audio_format=AudioFormat(
                         content_type=ContentType.MP4,
                         codec_type=ContentType.AAC,
@@ -683,7 +689,7 @@ class MusicMeProvider(MusicProvider):
 
     def _parse_playlist(self, playlist_obj: dict[str, Any]) -> Playlist:
         """Parse a MusicMe playlist object to a Music Assistant Playlist."""
-        playlist_id = str(playlist_obj.get("id", ""))
+        playlist_id = (str(playlist_obj.get("id", ""))).removeprefix("pl-")
         playlist = Playlist(
             item_id=playlist_id,
             provider=self.instance_id,
@@ -768,11 +774,34 @@ class MusicMeProvider(MusicProvider):
                     result.tracks = [
                         self._parse_track(t)
                         for t in tracks[:limit]
-                        if t.get("barcode") and t.get("streamable") == 2
+                        if t.get("barcode") and t.get("streamable") != 0
                     ]
 
         return result if (result.artists or result.albums or result.tracks) else None
+        
+    async def _signin_by_api(self) -> None:
+        login = self.config.get_value(CONF_USERNAME)
+        password = self.config.get_value(CONF_PASSWORD)
 
+        response = await self._api_get(
+            f"/medialibrary/signin"
+            f"?channel=65777&lang=fr&format=json&client=%7B%22type%22%3A%22desktop-web%22%2C%22context%22%3A%22pro.bib.musicme.com%22%7D"
+            f"&key=sKTBA7ybW3nvCUQ6&nocrypt=0&login={login}&password={password}"
+        )
+
+        if response and "results" in response:
+            results = response.get("results", {})
+            if results and "user" in results:
+               self._user_id = results.get("user").get("id")
+
+        if not self._user_id:
+            msg = "Login failed — no user.id in MusicMe API response"
+            raise LoginFailed(msg)
+
+        self.logger.info(
+            "Successfully logged in to MusicMe"
+        )
+        
     async def _login(self) -> None:
         """Authenticate with MusicMe via web login and extract the userId."""
         email = self.config.get_value(CONF_USERNAME)
