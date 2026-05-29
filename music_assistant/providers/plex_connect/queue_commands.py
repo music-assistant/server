@@ -15,10 +15,17 @@ from aiohttp import web
 from music_assistant_models.enums import QueueOption
 from plexapi.playqueue import PlayQueue
 
+from .parsing import plex_item_fields
+
 if TYPE_CHECKING:
     from music_assistant.providers.plex import PlexProvider
 
 LOGGER = logging.getLogger(__name__)
+
+# Maximum number of tracks loaded from a Plex play queue into Music Assistant.
+# Plex play queues can be very large (whole libraries); capping keeps queue loading
+# and MA<->Plex sync responsive.
+MAX_QUEUE_ITEMS = 100
 
 
 class QueueCommandsMixin:
@@ -36,8 +43,6 @@ class QueueCommandsMixin:
 
         async def _broadcast_timeline(self) -> None: ...
 
-        async def _ungroup_player_if_needed(self, player_id: str) -> None: ...
-
         async def _seek_to_offset_after_playback(self, player_id: str, offset: int) -> None: ...
 
         async def _load_remaining_queue_tracks(
@@ -54,19 +59,36 @@ class QueueCommandsMixin:
             self, player_id: str, playqueue: PlayQueue, current_index: int
         ) -> None: ...
 
-        def _collect_synced_keys(self, player_id: str) -> list[str]: ...
+        def _remember_synced_queue(
+            self, player_id: str, keys: list[str] | None = None
+        ) -> list[str]: ...
 
         async def _create_plex_playqueue_from_ma(self) -> None: ...
 
+    async def _play_single_track(self, player_id: str, key: str) -> None:
+        """Resolve a single Plex track key and play it as a fresh (replaced) queue.
+
+        Used as the fallback whenever loading a full Plex play queue fails.
+
+        :param player_id: The Music Assistant player ID.
+        :param key: The Plex track key to play.
+        """
+        track = await self.provider.get_track(key)
+        await self.provider.mass.player_queues.play_media(
+            queue_id=player_id,
+            media=track,
+            option=QueueOption.REPLACE,
+        )
+
     async def _fetch_full_play_queue(self, queue_id: str) -> PlayQueue | None:
-        """Fetch a complete PlayQueue, paginating past the server's per-request window cap.
+        """Fetch a PlayQueue, paginating past the server's per-request window cap.
 
         The Plex server caps each response to ~200 items regardless of the requested
         window size. We use playQueueTotalCount to detect truncation and keep fetching
-        forward pages until we have every item.
+        forward pages until we have every item, up to :data:`MAX_QUEUE_ITEMS`.
 
         :param queue_id: The Plex PlayQueue ID to fetch.
-        :return: A PlayQueue whose items list contains all tracks, or None on failure.
+        :return: A PlayQueue whose items list contains the tracks (capped), or None.
         """
         page_size = 200
         plex_server = self.provider._plex_server
@@ -83,7 +105,8 @@ class QueueCommandsMixin:
         all_items = list(playqueue.items)
         seen_ids = {item.playQueueItemID for item in all_items}
 
-        while len(all_items) < playqueue.playQueueTotalCount:
+        target_count = min(playqueue.playQueueTotalCount, MAX_QUEUE_ITEMS)
+        while len(all_items) < target_count:
             last_id = all_items[-1].playQueueItemID
 
             def fetch_next(_last_id: int = last_id) -> PlayQueue:
@@ -108,6 +131,12 @@ class QueueCommandsMixin:
 
             all_items.extend(new_items)
             seen_ids.update(i.playQueueItemID for i in new_items)
+
+        if len(all_items) > MAX_QUEUE_ITEMS:
+            LOGGER.info(
+                "Capping Plex play queue from %d to %d items", len(all_items), MAX_QUEUE_ITEMS
+            )
+            all_items = all_items[:MAX_QUEUE_ITEMS]
 
         # Patch the cached items property on the PlayQueue object.
         playqueue.__dict__["items"] = all_items
@@ -178,9 +207,7 @@ class QueueCommandsMixin:
                 await self.provider.mass.player_queues.set_shuffle(player_id, True)
                 await asyncio.sleep(0.2)
                 await self._create_plex_playqueue_from_ma()
-                synced_keys = self._collect_synced_keys(player_id)
-                self._last_synced_ma_queue_length = len(synced_keys)
-                self._last_synced_ma_queue_keys = synced_keys
+                self._remember_synced_queue(player_id)
 
             self.provider.mass.create_task(_apply_shuffle_deferred())
             return True
@@ -260,20 +287,12 @@ class QueueCommandsMixin:
                     if selected_offset < len(playqueue.items)
                     else playqueue.items[0]
                 )
-                first_track_key = first_item.key if hasattr(first_item, "key") else None
-                first_play_queue_item_id = (
-                    first_item.playQueueItemID if hasattr(first_item, "playQueueItemID") else None
-                )
+                first_track_key, first_play_queue_item_id = plex_item_fields(first_item)
 
                 if not first_track_key:
                     LOGGER.error("No valid first track in play queue")
                     if starting_key:
-                        track = await self.provider.get_track(starting_key)
-                        await self.provider.mass.player_queues.play_media(
-                            queue_id=player_id,
-                            media=track,
-                            option=QueueOption.REPLACE,
-                        )
+                        await self._play_single_track(player_id, starting_key)
                     return
 
                 try:
@@ -306,31 +325,16 @@ class QueueCommandsMixin:
                 except Exception as e:
                     LOGGER.exception(f"Error starting playback with first track: {e}")
                     if starting_key:
-                        track = await self.provider.get_track(starting_key)
-                        await self.provider.mass.player_queues.play_media(
-                            queue_id=player_id,
-                            media=track,
-                            option=QueueOption.REPLACE,
-                        )
+                        await self._play_single_track(player_id, starting_key)
             else:
                 LOGGER.error("Play queue is empty or could not be fetched")
                 if starting_key:
-                    track = await self.provider.get_track(starting_key)
-                    await self.provider.mass.player_queues.play_media(
-                        queue_id=player_id,
-                        media=track,
-                        option=QueueOption.REPLACE,
-                    )
+                    await self._play_single_track(player_id, starting_key)
 
         except Exception as e:
             LOGGER.exception(f"Error playing from queue: {e}")
             if starting_key:
-                track = await self.provider.get_track(starting_key)
-                await self.provider.mass.player_queues.play_media(
-                    queue_id=player_id,
-                    media=track,
-                    option=QueueOption.REPLACE,
-                )
+                await self._play_single_track(player_id, starting_key)
 
     async def handle_play_media(self, request: web.Request) -> web.Response:
         """Handle playMedia command from Plex controller.
@@ -362,8 +366,6 @@ class QueueCommandsMixin:
             player_id = self._ma_player_id
             if not player_id:
                 return web.Response(status=500, text="No player assigned to this server")
-
-            await self._ungroup_player_if_needed(player_id)
 
             if container_key and "/playQueues/" in container_key:
                 queue_id_match = re.search(r"/playQueues/(\d+)", container_key)
@@ -452,16 +454,21 @@ class QueueCommandsMixin:
                 self.play_queue_id = str(playqueue.playQueueID)
                 self.play_queue_version = 1
 
+                if len(playqueue.items) > MAX_QUEUE_ITEMS:
+                    LOGGER.info(
+                        "Capping created Plex play queue from %d to %d items",
+                        len(playqueue.items),
+                        MAX_QUEUE_ITEMS,
+                    )
+                    playqueue.__dict__["items"] = playqueue.items[:MAX_QUEUE_ITEMS]
+
                 LOGGER.info(
                     f"Created play queue {self.play_queue_id} with {len(playqueue.items)} items"
                 )
 
                 self.play_queue_item_ids = {}
                 first_item = playqueue.items[0]
-                first_track_key = first_item.key if hasattr(first_item, "key") else None
-                first_play_queue_item_id = (
-                    first_item.playQueueItemID if hasattr(first_item, "playQueueItemID") else None
-                )
+                first_track_key, first_play_queue_item_id = plex_item_fields(first_item)
 
                 if not first_track_key:
                     LOGGER.error("No valid first track in created play queue")
@@ -578,9 +585,7 @@ class QueueCommandsMixin:
                 f"Refreshed play queue {play_queue_id} - now has {len(playqueue.items)} items"
             )
 
-            synced_keys = self._collect_synced_keys(player_id)
-            self._last_synced_ma_queue_length = len(synced_keys)
-            self._last_synced_ma_queue_keys = synced_keys
+            self._remember_synced_queue(player_id)
 
             return web.Response(status=200)
 

@@ -9,7 +9,9 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from aiohttp import ClientTimeout
-from music_assistant_models.enums import PlayerType
+from music_assistant_models.enums import PlaybackState, RepeatMode
+
+from .parsing import plex_key_for_item
 
 if TYPE_CHECKING:
     from music_assistant.providers.plex import PlexProvider
@@ -30,6 +32,38 @@ class TimelineMixin:
         _ma_player_id: str | None
         headers: dict[str, str]
         plex_server: Any
+
+    def _resolve_plex_state(self, player: Any, queue: Any) -> str:
+        """Resolve the Plex playback state string from MA player/queue state.
+
+        The queue is the source of truth for playback: for synced or grouped
+        players (and players using a protocol output) the child player's own
+        ``playback_state`` stays idle while the active queue (on the sync
+        leader / group / protocol parent) is actually playing. Relying on
+        ``player.playback_state`` therefore reports "paused" for those players
+        even though MA is playing.
+
+        :param player: The MA player (may be a sync child / group member).
+        :param queue: The active MA queue for the player (if any).
+        :return: One of "playing", "paused" or "stopped".
+        """
+        if queue is not None:
+            state = queue.state
+        elif player is not None:
+            # player.state.playback_state is MA's resolved/final state, which already
+            # follows the active output protocol player and sync leader.
+            state = player.state.playback_state
+        else:
+            return "stopped"
+
+        if state == PlaybackState.PLAYING:
+            return "playing"
+        if state == PlaybackState.PAUSED:
+            return "paused"
+        if state == PlaybackState.IDLE:
+            has_track = bool(queue and queue.current_item and queue.current_item.media_item)
+            return "paused" if has_track else "stopped"
+        return "stopped"
 
     def _build_timeline_attributes(
         self,
@@ -56,16 +90,10 @@ class TimelineMixin:
         :param queue: The MA queue object.
         :return: List of timeline attribute strings.
         """
-        key = None
-        rating_key = None
-        for mapping in track.provider_mappings:
-            if mapping.provider_instance == self.provider.instance_id:
-                key = mapping.item_id
-                rating_key = key.split("/")[-1]
-                break
-
+        key = plex_key_for_item(track, self.provider.instance_id)
         if not key:
             return []
+        rating_key = key.split("/")[-1]
 
         plex_url = urlparse(self.provider._baseurl)
         machine_identifier = self.provider._plex_server.machineIdentifier
@@ -118,55 +146,24 @@ class TimelineMixin:
         player_id = self._ma_player_id
 
         player = self.provider.mass.players.get_player(player_id) if player_id else None
-        queue = self.provider.mass.player_queues.get(player_id) if player_id else None
+        queue = self.provider.mass.players.get_active_queue(player) if player else None
 
         controllable = (
             "volume,repeat,skipPrevious,seekTo,stepBack,stepForward,stop,playPause,shuffle,skipNext"
         )
 
-        state = "stopped"
-        if player and player.playback_state:
-            state_value = (
-                player.playback_state.value
-                if hasattr(player.playback_state, "value")
-                else str(player.playback_state)
-            )
+        state = self._resolve_plex_state(player, queue)
 
-            if state_value == "playing":
-                state = "playing"
-            elif state_value == "paused":
-                state = "paused"
-            elif state_value == "buffering":
-                state = "buffering"
-            elif state_value == "idle":
-                state = (
-                    "paused"
-                    if queue and queue.current_item and queue.current_item.media_item
-                    else "stopped"
-                )
-            else:
-                state = "stopped"
-
-        volume = 0
-        if player:
-            volume = (
-                int(player.group_volume or 0)
-                if (player.type == PlayerType.GROUP or player.group_members)
-                else (int(player.volume_level or 0))
-            )
+        # group_volume is MA's effective, group-aware volume: for groups/syncgroups it
+        # averages the (powered) members, otherwise it returns the player's own resolved
+        # volume (following any attached volume control / protocol player).
+        volume = int(player.group_volume or 0) if player else 0
 
         shuffle = 0
         repeat = 0
         if queue:
             shuffle = 1 if queue.shuffle_enabled else 0
-            if hasattr(queue, "repeat_mode"):
-                repeat_mode = queue.repeat_mode
-                if hasattr(repeat_mode, "value"):
-                    repeat_value = repeat_mode.value
-                    if repeat_value == "one":
-                        repeat = 1
-                    elif repeat_value == "all":
-                        repeat = 2
+            repeat = {RepeatMode.ONE: 1, RepeatMode.ALL: 2}.get(queue.repeat_mode, 0)
 
         if (
             state in ["playing", "paused"]
@@ -237,7 +234,7 @@ class TimelineMixin:
 
         try:
             player = self.provider.mass.players.get_player(self._ma_player_id)
-            queue = self.provider.mass.player_queues.get(self._ma_player_id)
+            queue = self.provider.mass.players.get_active_queue(player) if player else None
 
             if (
                 not player
@@ -249,29 +246,13 @@ class TimelineMixin:
 
             track = queue.current_item.media_item
 
-            plex_key = None
-            for mapping in track.provider_mappings:
-                if mapping.provider_instance == self.provider.instance_id:
-                    plex_key = mapping.item_id
-                    break
-
+            plex_key = plex_key_for_item(track, self.provider.instance_id)
             if not plex_key:
                 return
 
             rating_key = plex_key.split("/")[-1]
 
-            state_value = (
-                player.playback_state.value
-                if hasattr(player.playback_state, "value")
-                else str(player.playback_state)
-            )
-
-            if state_value == "playing":
-                plex_state = "playing"
-            elif state_value == "paused":
-                plex_state = "paused"
-            else:
-                plex_state = "stopped"
+            plex_state = self._resolve_plex_state(player, queue)
 
             position_ms = round(queue.corrected_elapsed_time * 1000)
             duration_ms = round(track.duration * 1000) if track.duration else 0

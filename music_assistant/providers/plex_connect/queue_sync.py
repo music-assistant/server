@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Any
 from music_assistant_models.enums import QueueOption
 from plexapi.playqueue import PlayQueue
 
+from .parsing import plex_item_fields, plex_key_for_item
+
 if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
 
@@ -46,11 +48,20 @@ class QueueSyncMixin:
         """
         synced_keys = []
         for item in self.provider.mass.player_queues.items(player_id):
-            if item.media_item:
-                for mapping in item.media_item.provider_mappings:
-                    if mapping.provider_instance == self.provider.instance_id:
-                        synced_keys.append(mapping.item_id)
-                        break
+            if key := plex_key_for_item(item.media_item, self.provider.instance_id):
+                synced_keys.append(key)
+        return synced_keys
+
+    def _remember_synced_queue(self, player_id: str, keys: list[str] | None = None) -> list[str]:
+        """Snapshot the current MA queue keys as the last state synced to Plex.
+
+        :param player_id: The Music Assistant player ID.
+        :param keys: Pre-collected keys to store (avoids recomputing); collected if None.
+        :return: The stored Plex keys, so callers can reuse them.
+        """
+        synced_keys = self._collect_synced_keys(player_id) if keys is None else keys
+        self._last_synced_ma_queue_length = len(synced_keys)
+        self._last_synced_ma_queue_keys = synced_keys
         return synced_keys
 
     def _reorder_tracks_for_playback(
@@ -108,10 +119,7 @@ class QueueSyncMixin:
                 plex_idx: int, item: Any
             ) -> tuple[int, object | None, int | None]:
                 """Fetch a single track from Plex."""
-                track_key = item.key if hasattr(item, "key") else None
-                play_queue_item_id = (
-                    item.playQueueItemID if hasattr(item, "playQueueItemID") else None
-                )
+                track_key, play_queue_item_id = plex_item_fields(item)
                 if track_key:
                     try:
                         track = await self.provider.get_track(track_key)
@@ -148,9 +156,7 @@ class QueueSyncMixin:
                         option=QueueOption.ADD,
                     )
 
-                    synced_keys = self._collect_synced_keys(player_id)
-                    self._last_synced_ma_queue_length = len(synced_keys)
-                    self._last_synced_ma_queue_keys = synced_keys
+                    self._remember_synced_queue(player_id)
                 finally:
                     self._updating_from_plex = False
 
@@ -176,9 +182,8 @@ class QueueSyncMixin:
         all_tracks = []
         self.play_queue_item_ids = {}
 
-        for i, item in enumerate(playqueue.items):
-            track_key = item.key if hasattr(item, "key") else None
-            play_queue_item_id = item.playQueueItemID if hasattr(item, "playQueueItemID") else None
+        for item in playqueue.items:
+            track_key, play_queue_item_id = plex_item_fields(item)
 
             if track_key:
                 try:
@@ -212,8 +217,7 @@ class QueueSyncMixin:
 
         for i in range(current_index + 1, len(playqueue.items)):
             item = playqueue.items[i]
-            track_key = item.key if hasattr(item, "key") else None
-            play_queue_item_id = item.playQueueItemID if hasattr(item, "playQueueItemID") else None
+            track_key, play_queue_item_id = plex_item_fields(item)
 
             if track_key:
                 try:
@@ -242,7 +246,7 @@ class QueueSyncMixin:
             LOGGER.debug("No tracks after current track in Plex queue")
 
         for i, item in enumerate(playqueue.items):
-            play_queue_item_id = item.playQueueItemID if hasattr(item, "playQueueItemID") else None
+            _, play_queue_item_id = plex_item_fields(item)
             if play_queue_item_id:
                 self.play_queue_item_ids[i] = play_queue_item_id
 
@@ -269,14 +273,7 @@ class QueueSyncMixin:
 
         fetch_tasks = []
         for item in queue_items:
-            if not item.media_item:
-                continue
-            plex_key = None
-            for mapping in item.media_item.provider_mappings:
-                if mapping.provider_instance == self.provider.instance_id:
-                    plex_key = mapping.item_id
-                    break
-            if plex_key:
+            if plex_key := plex_key_for_item(item.media_item, self.provider.instance_id):
                 fetch_tasks.append(fetch_plex_item(plex_key))
 
         plex_items = []
@@ -312,8 +309,9 @@ class QueueSyncMixin:
 
                 self.play_queue_item_ids = {}
                 for i, item in enumerate(playqueue.items):
-                    if hasattr(item, "playQueueItemID"):
-                        self.play_queue_item_ids[i] = item.playQueueItemID
+                    _, play_queue_item_id = plex_item_fields(item)
+                    if play_queue_item_id is not None:
+                        self.play_queue_item_ids[i] = play_queue_item_id
 
                 LOGGER.info(
                     f"Created Plex PlayQueue {self.play_queue_id} with {len(plex_items)} tracks"
@@ -321,8 +319,26 @@ class QueueSyncMixin:
         except Exception as e:
             LOGGER.exception(f"Error creating Plex PlayQueue: {e}")
 
-    async def _handle_player_event(self, event: MassEvent) -> None:
-        """Handle player state change events."""
+    async def _sync_initial_queue_to_plex(self) -> None:
+        """Mirror an already-loaded MA queue to a Plex PlayQueue on startup.
+
+        When the plugin starts the MA player may already have an active queue. Creating
+        the matching Plex PlayQueue immediately makes that queue visible and controllable
+        from Plex apps without waiting for the next queue change. No-op if the queue is
+        empty.
+        """
+        if not self._ma_player_id:
+            return
+        if not self.provider.mass.player_queues.items(self._ma_player_id):
+            return
+        try:
+            await self._create_plex_playqueue_from_ma()
+            self._remember_synced_queue(self._ma_player_id)
+        except Exception as e:
+            LOGGER.debug(f"Failed to sync initial queue to Plex on startup: {e}")
+
+    async def _handle_state_event(self, event: MassEvent) -> None:
+        """Forward an MA player/queue state change to the subscribed Plex controllers."""
         if not self._ma_player_id or event.object_id != self._ma_player_id:
             return
 
@@ -333,21 +349,7 @@ class QueueSyncMixin:
             await self._send_timeline_to_server()
             await self._broadcast_timeline()
         except Exception as e:
-            LOGGER.debug(f"Error handling player event: {e}")
-
-    async def _handle_queue_event(self, event: MassEvent) -> None:
-        """Handle queue change events."""
-        if not self._ma_player_id or event.object_id != self._ma_player_id:
-            return
-
-        if self._updating_from_plex:
-            return
-
-        try:
-            await self._send_timeline_to_server()
-            await self._broadcast_timeline()
-        except Exception as e:
-            LOGGER.debug(f"Error handling queue event: {e}")
+            LOGGER.debug(f"Error handling state event: {e}")
 
     async def _handle_queue_items_updated(self, event: MassEvent) -> None:
         """Handle queue items being added/removed/reordered."""
@@ -357,18 +359,10 @@ class QueueSyncMixin:
         if self._updating_from_plex:
             return
 
-        queue_items = self.provider.mass.player_queues.items(self._ma_player_id)
-        if not queue_items:
+        if not self.provider.mass.player_queues.items(self._ma_player_id):
             return
 
-        current_keys = []
-        for item in queue_items:
-            if not item.media_item:
-                continue
-            for mapping in item.media_item.provider_mappings:
-                if mapping.provider_instance == self.provider.instance_id:
-                    current_keys.append(mapping.item_id)
-                    break
+        current_keys = self._collect_synced_keys(self._ma_player_id)
 
         if (
             len(current_keys) == self._last_synced_ma_queue_length
@@ -383,8 +377,7 @@ class QueueSyncMixin:
 
         try:
             await self._create_plex_playqueue_from_ma()
-            self._last_synced_ma_queue_length = len(current_keys)
-            self._last_synced_ma_queue_keys = current_keys
+            self._remember_synced_queue(self._ma_player_id, current_keys)
         except Exception as e:
             LOGGER.debug(f"Error creating Plex PlayQueue: {e}")
 

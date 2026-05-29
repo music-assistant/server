@@ -7,7 +7,9 @@ import logging
 from typing import TYPE_CHECKING
 
 from aiohttp import web
-from music_assistant_models.enums import PlayerFeature, PlayerType, RepeatMode
+from music_assistant_models.enums import RepeatMode
+
+from .parsing import plex_key_for_item
 
 if TYPE_CHECKING:
     from music_assistant.providers.plex import PlexProvider
@@ -31,35 +33,9 @@ class PlaybackMixin:
 
         async def _create_plex_playqueue_from_ma(self) -> None: ...
 
-        def _collect_synced_keys(self, player_id: str) -> list[str]: ...
-
-    async def _ungroup_player_if_needed(self, player_id: str) -> None:
-        """Ungroup player before playback if it's part of a group/sync.
-
-        :param player_id: The player ID to potentially ungroup.
-        """
-        player = self.provider.mass.players.get_player(player_id)
-        if not player or player.type == PlayerType.GROUP:
-            return
-
-        if not (player.state.synced_to or player.state.group_members or player.state.active_group):
-            return
-
-        LOGGER.debug("Ungrouping player %s before starting playback from Plex", player.display_name)
-        if (
-            player.state.active_group
-            and (group := self.provider.mass.players.get_player(player.state.active_group))
-            and group.supports_feature(PlayerFeature.SET_MEMBERS)
-        ):
-            await group.set_members(player_ids_to_remove=[player_id])
-        elif (
-            player.state.synced_to
-            and (sync_leader := self.provider.mass.players.get_player(player.state.synced_to))
-            and sync_leader.supports_feature(PlayerFeature.SET_MEMBERS)
-        ):
-            await sync_leader.set_members(player_ids_to_remove=[player_id])
-        elif player.state.group_members and player.supports_feature(PlayerFeature.SET_MEMBERS):
-            await player.set_members(player_ids_to_remove=player.group_members)
+        def _remember_synced_queue(
+            self, player_id: str, keys: list[str] | None = None
+        ) -> list[str]: ...
 
     async def _seek_to_offset_after_playback(self, player_id: str, offset: int) -> None:
         """Seek to the specified offset after playback starts.
@@ -92,7 +68,6 @@ class PlaybackMixin:
         self._updating_from_plex = True
         try:
             if self._ma_player_id:
-                await self._ungroup_player_if_needed(self._ma_player_id)
                 await self.provider.mass.players.cmd_play(self._ma_player_id)
             await self._broadcast_timeline()
             return web.Response(status=200)
@@ -215,16 +190,8 @@ class PlaybackMixin:
                     return web.Response(status=404, text="Queue is empty")
 
                 for idx, item in enumerate(queue_items):
-                    if not item.media_item:
-                        continue
-                    for mapping in item.media_item.provider_mappings:
-                        if (
-                            mapping.provider_instance == self.provider.instance_id
-                            and mapping.item_id == key
-                        ):
-                            ma_index = idx
-                            break
-                    if ma_index is not None:
+                    if plex_key_for_item(item.media_item, self.provider.instance_id) == key:
+                        ma_index = idx
                         break
 
                 if ma_index is None:
@@ -253,7 +220,10 @@ class PlaybackMixin:
         try:
             if "volume" in request.query:
                 volume = int(request.query["volume"])
-                await self.provider.mass.players.cmd_volume_set(self._ma_player_id, volume)
+                # Use group_volume so a group/syncgroup adjusts its members relatively
+                # (matching the group-aware volume reported in the timeline). For a solo
+                # player this falls back to a normal volume set.
+                await self.provider.mass.players.cmd_group_volume(self._ma_player_id, volume)
 
             if "shuffle" in request.query:
                 shuffle = request.query["shuffle"] == "1"
@@ -278,8 +248,6 @@ class PlaybackMixin:
             # new order back to Plex so Plexamp sees the updated play queue.
             await asyncio.sleep(0.2)
             await self._create_plex_playqueue_from_ma()
-            synced_keys = self._collect_synced_keys(self._ma_player_id)
-            self._last_synced_ma_queue_length = len(synced_keys)
-            self._last_synced_ma_queue_keys = synced_keys
+            self._remember_synced_queue(self._ma_player_id)
 
         return web.Response(status=200)

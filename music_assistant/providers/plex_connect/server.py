@@ -94,6 +94,7 @@ class PlayerRemoteInstance:
                 version=self.plex_provider.mass.version
                 if self.plex_provider.mass.version != "0.0.0"
                 else "1.0.0",
+                device_class=self.device_class,
             )
             self.gdm.start()
 
@@ -209,22 +210,12 @@ class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin,
         if self._ma_player_id:
             self._unsub_callbacks.append(
                 self.provider.mass.subscribe(
-                    self._handle_player_event,
-                    EventType.PLAYER_UPDATED,
-                    id_filter=self._ma_player_id,
-                )
-            )
-            self._unsub_callbacks.append(
-                self.provider.mass.subscribe(
-                    self._handle_queue_event,
-                    EventType.QUEUE_UPDATED,
-                    id_filter=self._ma_player_id,
-                )
-            )
-            self._unsub_callbacks.append(
-                self.provider.mass.subscribe(
-                    self._handle_queue_event,
-                    EventType.QUEUE_TIME_UPDATED,
+                    self._handle_state_event,
+                    (
+                        EventType.PLAYER_UPDATED,
+                        EventType.QUEUE_UPDATED,
+                        EventType.QUEUE_TIME_UPDATED,
+                    ),
                     id_filter=self._ma_player_id,
                 )
             )
@@ -235,6 +226,10 @@ class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin,
                     id_filter=self._ma_player_id,
                 )
             )
+
+            # Mirror an already-active MA queue to Plex (runs in the background so it
+            # never blocks startup on Plex network calls).
+            self.provider.mass.create_task(self._sync_initial_queue_to_plex())
 
     async def stop(self) -> None:
         """Stop the HTTP server and unsubscribe from events."""
@@ -328,20 +323,16 @@ class PlexRemoteControlServer(QueueCommandsMixin, PlaybackMixin, QueueSyncMixin,
     async def handle_resources(self, request: web.Request) -> web.Response:
         """Return player capabilities and connection information."""
         player_name = "Music Assistant"
-        if self._ma_player_id:
-            player = self.provider.mass.players.get_player(self._ma_player_id)
-            if player:
-                player_name = player.display_name
-
         state = "stopped"
-        if self._ma_player_id:
-            player = self.provider.mass.players.get_player(self._ma_player_id)
-            if player and player.state:
-                state_value = (
-                    player.state.value if hasattr(player.state, "value") else str(player.state)
-                )
-                if state_value in ["playing", "paused"]:
-                    state = state_value
+        player = (
+            self.provider.mass.players.get_player(self._ma_player_id)
+            if self._ma_player_id
+            else None
+        )
+        if player:
+            player_name = player.display_name
+            queue = self.provider.mass.players.get_active_queue(player)
+            state = self._resolve_plex_state(player, queue)
 
         local_ip = self.provider.mass.streams.publish_ip
         version = self.provider.mass.version if self.provider.mass.version != "0.0.0" else "1.0.0"
