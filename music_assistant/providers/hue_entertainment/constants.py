@@ -10,7 +10,6 @@ CONF_ACTION_PAIR: Final[str] = "pair"
 CONF_USERNAME: Final[str] = "hue_username"
 CONF_CLIENTKEY: Final[str] = "hue_clientkey"
 CONF_BRIGHTNESS: Final[str] = "brightness"
-CONF_INTENSITY: Final[str] = "intensity"
 CONF_COLOR_MODE: Final[str] = "color_mode"
 CONF_HUE_LATENCY_MS: Final[str] = "hue_latency_ms"
 

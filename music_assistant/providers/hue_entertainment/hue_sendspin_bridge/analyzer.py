@@ -266,19 +266,16 @@ class HueAudioAnalyzer:
         channels: list[LightChannel],
         color_mode: str = DEFAULT_MODE,
         brightness: int = 100,
-        intensity: int = 70,
     ) -> None:
         """Initialize the analyzer.
 
         ``color_mode`` selects a preset bundle from `_MODES` (defaults to
-        `DEFAULT_MODE` when unknown). ``intensity`` is accepted for backward
-        compatibility but is not used in this beat-driven design.
+        `DEFAULT_MODE` when unknown); reactivity is governed by that preset.
         """
         self._channels = channels
         self._color_mode = color_mode
         self._mode = _MODES.get(color_mode, _MODES[DEFAULT_MODE])
         self._brightness = max(0, min(100, brightness)) / 100.0
-        self._intensity = max(0, min(100, intensity)) / 100.0
 
         self._server_palette: dict[str, tuple[int, int, int] | None] = {}
         self._beats: deque[_ScheduledBeat] = deque()
@@ -328,7 +325,6 @@ class HueAudioAnalyzer:
         self,
         color_mode: str | None = None,
         brightness: int | None = None,
-        intensity: int | None = None,
     ) -> None:
         """Update settings without reset."""
         if color_mode is not None:
@@ -336,8 +332,6 @@ class HueAudioAnalyzer:
             self._mode = _MODES.get(color_mode, _MODES[DEFAULT_MODE])
         if brightness is not None:
             self._brightness = max(0, min(100, brightness)) / 100.0
-        if intensity is not None:
-            self._intensity = max(0, min(100, intensity)) / 100.0
 
     # -- Input events --
 

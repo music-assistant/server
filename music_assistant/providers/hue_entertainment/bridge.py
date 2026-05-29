@@ -43,7 +43,6 @@ from .constants import (
     CONF_BRIGHTNESS,
     CONF_COLOR_MODE,
     CONF_HUE_LATENCY_MS,
-    CONF_INTENSITY,
     DEFAULT_HUE_LATENCY_MS,
 )
 
@@ -116,7 +115,6 @@ class HueEntertainmentBridge:
             channels=self.area.channels,
             color_mode=str(self.provider.config.get_value(CONF_COLOR_MODE) or "smooth"),
             brightness=int(float(str(self.provider.config.get_value(CONF_BRIGHTNESS) or 100))),
-            intensity=int(float(str(self.provider.config.get_value(CONF_INTENSITY) or 70))),
         )
 
         # Create Sendspin client with visualizer role
@@ -203,7 +201,6 @@ class HueEntertainmentBridge:
         self,
         color_mode: str | None = None,
         brightness: int | None = None,
-        intensity: int | None = None,
         hue_latency_ms: int | None = None,
     ) -> None:
         """Update analyzer/bridge settings without restarting the bridge."""
@@ -211,7 +208,6 @@ class HueEntertainmentBridge:
             self._analyzer.update_settings(
                 color_mode=color_mode,
                 brightness=brightness,
-                intensity=intensity,
             )
         if hue_latency_ms is not None:
             self._hue_latency_us = hue_latency_ms * 1000
@@ -388,22 +384,28 @@ class HueEntertainmentBridge:
         self._render_handle = None
         if not self._is_streaming:
             return
-        # Skip this tick when not ready (client/DTLS down) but keep the loop
-        # alive so it recovers once the connection is back.
-        if (
-            self._analyzer is not None
-            and self._sendspin_client is not None
-            and self._dtls_streamer.is_connected
-        ):
-            client_now = int(self.mass.loop.time() * 1_000_000)
-            # Render slightly ahead of the playhead to compensate for Hue+DTLS lag.
-            server_now = self._sendspin_client.compute_server_time(
-                client_now + self._hue_latency_us
-            )
-            commands = self._analyzer.render(server_now)
-            if commands:
-                self._dtls_streamer.send_colors(commands)
-        self._render_handle = self.mass.loop.call_later(_RENDER_PERIOD_S, self._render_tick)
+        try:
+            # Skip this tick when not ready (client/DTLS down) but keep the loop
+            # alive so it recovers once the connection is back.
+            if (
+                self._analyzer is not None
+                and self._sendspin_client is not None
+                and self._dtls_streamer.is_connected
+            ):
+                client_now = int(self.mass.loop.time() * 1_000_000)
+                # Render slightly ahead of the playhead to compensate for Hue+DTLS lag.
+                server_now = self._sendspin_client.compute_server_time(
+                    client_now + self._hue_latency_us
+                )
+                commands = self._analyzer.render(server_now)
+                if commands:
+                    self._dtls_streamer.send_colors(commands)
+        except Exception:
+            # One bad tick must not kill the loop: log and reschedule below.
+            self.logger.exception("Hue render tick failed for area '%s'", self.area.name)
+        finally:
+            if self._is_streaming:
+                self._render_handle = self.mass.loop.call_later(_RENDER_PERIOD_S, self._render_tick)
 
 
 class HueEntertainmentBridgeManager:
@@ -448,7 +450,6 @@ class HueEntertainmentBridgeManager:
         self,
         color_mode: str | None = None,
         brightness: int | None = None,
-        intensity: int | None = None,
         hue_latency_ms: int | None = None,
     ) -> None:
         """Update settings on all bridges."""
@@ -456,7 +457,6 @@ class HueEntertainmentBridgeManager:
             bridge.update_settings(
                 color_mode=color_mode,
                 brightness=brightness,
-                intensity=intensity,
                 hue_latency_ms=hue_latency_ms,
             )
 

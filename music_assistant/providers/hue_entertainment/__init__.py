@@ -28,7 +28,6 @@ from .constants import (
     CONF_CLIENTKEY,
     CONF_COLOR_MODE,
     CONF_HUE_LATENCY_MS,
-    CONF_INTENSITY,
     CONF_USERNAME,
     DEFAULT_HUE_LATENCY_MS,
 )
@@ -179,16 +178,6 @@ async def get_config_entries(
             label="Brightness",
             description="Overall light brightness (0-100).",
             default_value=100,
-            range=(0, 100),
-            category="settings",
-        ),
-        ConfigEntry(
-            key=CONF_INTENSITY,
-            type=ConfigEntryType.INTEGER,
-            label="Intensity",
-            description="Reactivity to the music (0-100). "
-            "Higher values make lights react faster to changes.",
-            default_value=70,
             range=(0, 100),
             category="settings",
         ),
