@@ -241,9 +241,11 @@ class MusicController(CoreController):
     def _apply_user_provider_filter(
         self,
         providers: Iterable[ProviderInstanceType],
+        user: User | None = None,
     ) -> list[ProviderInstanceType]:
         """Filter providers by the current user's music provider filter."""
-        user = get_current_user()
+        if user is None:
+            user = get_current_user()
         user_provider_filter = user.provider_filter if user else None
         if not user_provider_filter:
             return list(providers)
@@ -740,9 +742,13 @@ class MusicController(CoreController):
         return result
 
     @api_command("music/recently_added_tracks")
-    async def recently_added_tracks(self, limit: int = 10) -> list[Track]:
+    async def recently_added_tracks(
+        self, limit: int = 10, username_or_user_id: str | None = None
+    ) -> list[Track]:
         """Return a list of the last added tracks."""
-        return await self.tracks.library_items(limit=limit, order_by="timestamp_added_desc")
+        return await self.tracks.library_items(
+            limit=limit, order_by="timestamp_added_desc", username_or_user_id=username_or_user_id
+        )
 
     @api_command("music/in_progress_items")
     async def in_progress_items(
@@ -752,7 +758,8 @@ class MusicController(CoreController):
         user: User | None = None
         if username_or_user_id:
             all_users = False
-            user = await self.mass.webserver.auth.get_user_by_id_or_name(username_or_user_id)
+            # below will raise if permissions are missing
+            user = await self.get_requested_user_if_authorized(username_or_user_id)
         available_providers = ("library", *self.get_unique_providers(user))
         available_providers_str = "(" + ",".join(f'"{x}"' for x in available_providers) + ")"
 
@@ -877,12 +884,23 @@ class MusicController(CoreController):
         )
 
     @api_command("music/recommendations")
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get all recommendations."""
+    async def recommendations(
+        self, username_or_user_id: str | None = None
+    ) -> list[RecommendationFolder]:
+        """Get all recommendations.
+
+        :param username_or_user_id: Get recommendations for this user instead of authenticated user. Needs sufficient permissions.
+        """
         providers_with_recommendations = self.mass.get_providers_supporting_feature(
             ProviderFeature.RECOMMENDATIONS,
         )
-        recommendation_providers = self._apply_user_provider_filter(providers_with_recommendations)
+        user: User | None = None
+        if username_or_user_id:
+            # below raises if insufficient permissions
+            user = await self.get_requested_user_if_authorized(username_or_user_id)
+        recommendation_providers = self._apply_user_provider_filter(
+            providers_with_recommendations, user=user
+        )
         results_per_provider: list[list[RecommendationFolder]] = await asyncio.gather(
             self._get_default_recommendations(),
             *[
@@ -3524,6 +3542,9 @@ class MusicController(CoreController):
         authenticated_user = get_current_user()
         if not authenticated_user:
             raise InsufficientPermissions("Only an authenticated user may request another user.")
+
+        if requested_user == authenticated_user:
+            return requested_user
 
         if authenticated_user.role == UserRole.ADMIN or not authenticated_user.provider_filter:
             # If no provider filter is set, a user is allowed to access any provider.
