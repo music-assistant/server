@@ -200,7 +200,6 @@ async def get_config_entries(
                 ConfigValueOption("Flashing", "flashing"),
                 ConfigValueOption("Energetic", "energetic"),
             ],
-            immediate_apply=True,
             category="settings",
         ),
         ConfigEntry(
