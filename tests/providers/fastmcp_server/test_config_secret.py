@@ -1,4 +1,9 @@
 """Unit tests for the SECURE_STRING write gate."""
+# ruff: noqa: PLC0415
+#   Fixtures import provider modules lazily (inside the test body). A file-level
+#   suppression is used instead of per-line directives so the intent survives the
+#   upstream import-path rewrite, which lengthens ``from music_assistant.providers.fastmcp_server.X`` lines and
+#   reflows them — detaching any trailing per-line directive.
 
 from __future__ import annotations
 
@@ -57,7 +62,7 @@ async def test_secret_write_blocked_without_secret_tag_e2e(
     mounted_config_no_secret: Any, mock_config_targets: Any
 ) -> None:
     """E2e: set_provider_value rejects SECURE_STRING write when secret tag is off."""
-    from fastmcp import Client  # noqa: PLC0415
+    from fastmcp import Client
 
     async with Client(mounted_config_no_secret) as client:
         with pytest.raises(ToolError, match="config:write:secret"):
@@ -75,9 +80,9 @@ async def test_secret_gate_reevaluated_per_request_via_callable(
 
     Regression for PR #99 review finding A.
     """
-    from fastmcp import Client, FastMCP  # noqa: PLC0415
+    from fastmcp import Client, FastMCP
 
-    from music_assistant.providers.fastmcp_server.tools.config import build_config_server  # noqa: PLC0415
+    from music_assistant.providers.fastmcp_server.tools.config import build_config_server
 
     flag: dict[str, bool] = {"on": False}
     sub = build_config_server(
