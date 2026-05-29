@@ -159,6 +159,7 @@ class MCPServerRuntime:
         mcp.mount(build_metadata_server(self._mass), namespace="metadata")
 
         from .debug.event_buffer import EventBuffer  # noqa: PLC0415
+        from .tags import Tag  # noqa: PLC0415
         from .tools import build_debug_server  # noqa: PLC0415
 
         if bool(self._config.get_value(CONF_DEBUG_EVENTS)):
@@ -172,6 +173,8 @@ class MCPServerRuntime:
                 self._mass,
                 require_confirmation=require_confirmation,
                 event_buffer=self._event_buffer,
+                logs_enabled=Tag.DEBUG_LOGS in enabled_tags(self._config),
+                reload_lock=self._reload_lock,
             ),
             namespace="debug",
         )

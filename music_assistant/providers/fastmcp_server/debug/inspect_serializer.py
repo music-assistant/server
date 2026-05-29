@@ -92,12 +92,21 @@ class _State:
         return self.max_total_bytes is not None and self.bytes_used >= self.max_total_bytes
 
     def charge(self, value: Any) -> None:
+        # Estimate the serialized byte cost of a leaf value directly rather
+        # than round-tripping it through ``json.dumps`` (called once per leaf,
+        # this was the hot path). The budget is a safety bound, so a close
+        # estimate is enough; escaping may add a few bytes we don't count.
         if self.max_total_bytes is None:
             return
-        try:
-            encoded = json.dumps(value, default=str)
-            self.bytes_used += len(encoded.encode("utf-8"))
-        except (TypeError, ValueError):
+        if isinstance(value, str):
+            self.bytes_used += len(value.encode("utf-8")) + 2  # + surrounding quotes
+        elif isinstance(value, bool):
+            self.bytes_used += 4 if value else 5  # "true" / "false"
+        elif value is None:
+            self.bytes_used += 4  # "null"
+        elif isinstance(value, (int, float)):
+            self.bytes_used += len(repr(value))
+        else:
             self.bytes_used += 32
 
 

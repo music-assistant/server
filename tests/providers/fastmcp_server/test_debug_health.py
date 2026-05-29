@@ -8,9 +8,10 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from fastmcp import Client
+from fastmcp import Client, FastMCP
 
 from music_assistant.providers.fastmcp_server.debug import log_reader
+from music_assistant.providers.fastmcp_server.tools.debug import build_debug_server
 
 
 @pytest.fixture
@@ -123,3 +124,30 @@ async def test_health_summary_counts_recent_log_errors(
         result = await client.call_tool("debug_health_summary", {})
     assert result.data.log_errors_last_5min == 3
     assert "DEBUG_LOGS" not in result.data.disabled_capabilities
+
+
+async def test_health_summary_skips_log_read_when_logs_disabled(
+    mock_mass: MagicMock,
+    populated_mass: MagicMock,  # noqa: ARG001 -- populates mock_mass providers/queues
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When DEBUG_LOGS is off, health_summary must not touch the log file at all.
+
+    Reading logs to count errors when the operator disabled log access bypasses
+    the permission. The capability is reported as disabled instead.
+    """
+
+    def boom(_self: Any, **_kwargs: Any) -> int:
+        raise AssertionError("logs must not be read when DEBUG_LOGS is disabled")
+
+    monkeypatch.setattr(log_reader.SafeLogTail, "count_errors_last_5min", boom, raising=True)
+
+    mcp = FastMCP(name="test")
+    mcp.mount(
+        build_debug_server(mock_mass, require_confirmation=False, logs_enabled=False),
+        namespace="debug",
+    )
+    async with Client(mcp) as client:
+        result = await client.call_tool("debug_health_summary", {})
+    assert result.data.log_errors_last_5min is None
+    assert "DEBUG_LOGS" in result.data.disabled_capabilities

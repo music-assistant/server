@@ -12,6 +12,7 @@ import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 
+from music_assistant.providers.fastmcp_server.tools import debug as debug_module
 from music_assistant.providers.fastmcp_server.tools.debug import build_debug_server
 
 
@@ -213,3 +214,44 @@ async def test_reload_tool_uses_interactive_timeout() -> None:
             assert tool.timeout == TIMEOUT_FAST, (
                 f"{name} should keep TIMEOUT_FAST (10s), got {tool.timeout}s"
             )
+
+
+async def test_reload_serialises_on_injected_lock(mock_mass: MagicMock) -> None:
+    """The reload serialises on the per-runtime lock passed to build_debug_server.
+
+    Holding the injected lock blocks the reload from reaching ``_load_provider``;
+    releasing it lets the reload proceed. This pins that the lock is the
+    injected per-runtime one, not module-level state shared across runtimes.
+    """
+    mass = mock_mass
+    mass.config.get_provider_config = AsyncMock(return_value=_provider_config())
+    mass._load_provider = AsyncMock()
+    mass.get_provider = MagicMock(return_value=SimpleNamespace(available=True, last_error=None))
+
+    lock = asyncio.Lock()
+    mcp = FastMCP(name="test")
+    mcp.mount(
+        build_debug_server(mass, require_confirmation=False, reload_lock=lock),
+        namespace="debug",
+    )
+
+    await lock.acquire()
+    try:
+        async with Client(mcp) as client:
+            task = asyncio.create_task(
+                client.call_tool("debug_reload_provider", {"instance_id": "yandex_music_1"})
+            )
+            await asyncio.sleep(0.1)
+            assert not task.done()
+            assert mass._load_provider.called is False
+            lock.release()
+            await task
+    finally:
+        if lock.locked():
+            lock.release()
+    assert mass._load_provider.called is True
+
+
+def test_no_module_level_reload_lock() -> None:
+    """Regression guard: the reload lock is per-runtime, not shared module state."""
+    assert not hasattr(debug_module, "_RELOAD_LOCK")

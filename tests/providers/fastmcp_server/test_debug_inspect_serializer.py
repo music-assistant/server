@@ -9,7 +9,35 @@ import enum
 import json
 from typing import Any
 
-from music_assistant.providers.fastmcp_server.debug.inspect_serializer import dump
+from music_assistant.providers.fastmcp_server.debug.inspect_serializer import _State, dump
+
+
+def test_charge_estimates_bytes_without_json_encoding() -> None:
+    """``_State.charge`` sizes values directly, not via ``json.dumps``.
+
+    For an unescaped string the estimate matches the JSON length (content
+    bytes + 2 quotes). For a string containing a quote, the direct estimate is
+    the UTF-8 length + 2 — strictly less than the JSON-escaped length — which
+    pins that ``json.dumps`` is no longer used.
+    """
+    state = _State(max_depth=10, max_str=1000, max_total_bytes=1_000_000)
+    state.charge("yyyy")
+    assert state.bytes_used == len(b"yyyy") + 2
+
+    quote_state = _State(max_depth=10, max_str=1000, max_total_bytes=1_000_000)
+    quote_state.charge('a"b')
+    assert quote_state.bytes_used == len(b'a"b') + 2  # 5, not json's 6
+
+    none_state = _State(max_depth=10, max_str=1000, max_total_bytes=1_000_000)
+    none_state.charge(None)
+    assert none_state.bytes_used == 4  # "null"
+
+
+def test_charge_is_noop_without_budget() -> None:
+    """With no byte budget configured, ``charge`` does nothing."""
+    state = _State(max_depth=10, max_str=1000, max_total_bytes=None)
+    state.charge("anything")
+    assert state.bytes_used == 0
 
 
 @dataclasses.dataclass

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -11,6 +12,7 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
 from music_assistant.providers.fastmcp_server.debug.log_reader import SafeLogTail
+from music_assistant.providers.fastmcp_server.models import LogTailResult
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -206,3 +208,25 @@ async def test_e2e_debug_tail_log_invalid_name(mounted_debug: Any, tmp_log_dir: 
     async with Client(mounted_debug) as client:
         with pytest.raises(ToolError):
             await client.call_tool("debug_tail_log", {"name": "../etc/passwd"})
+
+
+async def test_debug_tail_log_runs_off_event_loop_thread(
+    mounted_debug: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The blocking log read is offloaded to a worker thread, not the event loop.
+
+    Synchronous file I/O up to the 10 MB scan cap must not run on MA's single
+    event loop. This pins that ``tail_log`` dispatches the read via a worker
+    thread (it would fail if the tool called ``SafeLogTail.tail`` directly).
+    """
+    main_thread = threading.current_thread()
+    captured: dict[str, Any] = {}
+
+    def fake_tail(_self: Any, **_kwargs: Any) -> LogTailResult:
+        captured["thread"] = threading.current_thread()
+        return LogTailResult(log_path="x", lines=[], bytes_scanned=0, truncated=False)
+
+    monkeypatch.setattr(SafeLogTail, "tail", fake_tail)
+    async with Client(mounted_debug) as client:
+        await client.call_tool("debug_tail_log", {"lines": 5})
+    assert captured["thread"] is not main_thread
