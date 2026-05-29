@@ -539,9 +539,14 @@ class StreamsAudio:
         cancelled = False
         first_chunk_received = False
         ffmpeg_loglevel = "debug" if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else "info"
+        # When a provider hands us already-decoded audio (e.g. Spotify Connect /
+        # AirPlay receivers piping PCM after their own decode), audio_format is
+        # the original source format meant for display while decoded_audio_format
+        # is what ffmpeg actually needs to read off the wire.
+        ffmpeg_input_format = streamdetails.decoded_audio_format or streamdetails.audio_format
         ffmpeg_proc = FFMpeg(
             audio_input=audio_source,
-            input_format=streamdetails.audio_format,
+            input_format=ffmpeg_input_format,
             output_format=pcm_format,
             filter_params=filter_params,
             extra_input_args=extra_input_args,
@@ -575,10 +580,15 @@ class StreamsAudio:
                     # At this point ffmpeg has started and should now know the codec used
                     # for encoding the audio.
                     # Note: ffmpeg_proc.input_format is the same object as
-                    # streamdetails.audio_format, so sample_rate / bit_depth / bit_rate
+                    # ffmpeg_input_format, so sample_rate / bit_depth / bit_rate
                     # parsed from the ffmpeg log already live on streamdetails too.
                     first_chunk_received = True
-                    streamdetails.audio_format.codec_type = ffmpeg_proc.input_format.codec_type
+                    # Skip the codec_type writeback when the provider declared a
+                    # decoded format: audio_format already holds the authoritative
+                    # source codec and the probed value would just be the
+                    # post-decode wire format (e.g. PCM for Spotify Connect).
+                    if streamdetails.decoded_audio_format is None:
+                        streamdetails.audio_format.codec_type = ffmpeg_proc.input_format.codec_type
                     # Some providers omit (or report 0 for) the item duration; ffmpeg can
                     # usually probe it from the source. Only apply when missing so we
                     # don't clobber an accurate provider value with a rounded one.
