@@ -929,6 +929,39 @@ class SendspinPlayer(SendspinBasePlayer):
             controller_role.set_repeat(repeat)
             controller_role.set_shuffle(shuffle=shuffle)
 
+    def _compute_track_progress_ms(self, current_media: PlayerMedia, *, is_playing: bool) -> int:
+        """Resolve current track position in ms from queue/media elapsed time.
+
+        Prefer queue/media elapsed as source of truth. Only interpolate while
+        actively playing; for paused/idle states keep the last fixed position.
+        """
+        elapsed_time: float | None = (
+            float(current_media.elapsed_time) if current_media.elapsed_time is not None else None
+        )
+        if is_playing and current_media.corrected_elapsed_time is not None:
+            elapsed_time = current_media.corrected_elapsed_time
+        if elapsed_time is None:
+            elapsed_time = self.corrected_elapsed_time if is_playing else self.elapsed_time
+        return max(0, int(elapsed_time * 1000)) if elapsed_time is not None else 0
+
+    async def _refresh_beat_schedule(self) -> None:
+        """Re-attempt beat hydration only, without re-pushing metadata/artwork.
+
+        Lighter than `send_current_media_metadata`: the retry poller uses this so
+        late-arriving analysis lands without re-running the full pipeline.
+        """
+        current_media = self.state.current_media
+        if current_media is None:
+            return
+        queue_item: QueueItem | None = None
+        if current_media.source_id and current_media.queue_item_id:
+            queue_item = self.mass.player_queues.get_item(
+                current_media.source_id, current_media.queue_item_id
+            )
+        is_playing = self.state.playback_state == PlaybackState.PLAYING
+        track_progress = self._compute_track_progress_ms(current_media, is_playing=is_playing)
+        await self._send_beat_schedule(queue_item, track_progress, is_playing)
+
     async def send_current_media_metadata(self) -> None:
         """Send the current media metadata to the sendspin group."""
         if not self.available:
@@ -980,17 +1013,7 @@ class SendspinPlayer(SendspinBasePlayer):
 
         shuffle = queue.shuffle_enabled if queue else False
         is_playing = self.state.playback_state == PlaybackState.PLAYING
-
-        # Prefer queue/media elapsed as source of truth. Only interpolate while
-        # actively playing; for paused/idle states keep the last fixed position.
-        elapsed_time: float | None = (
-            float(current_media.elapsed_time) if current_media.elapsed_time is not None else None
-        )
-        if is_playing and current_media.corrected_elapsed_time is not None:
-            elapsed_time = current_media.corrected_elapsed_time
-        if elapsed_time is None:
-            elapsed_time = self.corrected_elapsed_time if is_playing else self.elapsed_time
-        track_progress = max(0, int(elapsed_time * 1000)) if elapsed_time is not None else 0
+        track_progress = self._compute_track_progress_ms(current_media, is_playing=is_playing)
 
         metadata = Metadata(
             title=current_media.title,
@@ -1151,9 +1174,13 @@ class SendspinPlayer(SendspinBasePlayer):
                     return  # track changed
                 if self._last_beat_queue_item_id == queue_item_id:
                     return  # beats were pushed via some other path
-                # Re-emit the metadata pipeline; _send_beat_schedule inside
-                # will either push beats now or schedule itself again.
-                await self.send_current_media_metadata()
+                # Re-attempt beat hydration only; _send_beat_schedule will push
+                # beats now or schedule another retry.
+                try:
+                    await self._refresh_beat_schedule()
+                except Exception:
+                    self.logger.exception("Beat-schedule retry failed for %s", queue_item_id)
+                    continue
                 if self._last_beat_queue_item_id == queue_item_id:
                     return
             # Cap exhausted without beats landing. Flip the visualizer to

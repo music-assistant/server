@@ -333,7 +333,7 @@ class HueEntertainmentBridge:
 
         Frames carrying ``is_downbeat`` are beats. The rest carry spectrum and peak data.
         """
-        if self._analyzer is None:
+        if not self._is_streaming or self._analyzer is None:
             return
         beats: list[BeatTiming] = []
         for frame in frames:
@@ -384,21 +384,25 @@ class HueEntertainmentBridge:
             self._render_handle = None
 
     def _render_tick(self) -> None:
-        """One render+send iteration, then reschedule."""
+        """One render+send iteration, then reschedule while streaming."""
         self._render_handle = None
-        if (
-            not self._is_streaming
-            or self._analyzer is None
-            or self._sendspin_client is None
-            or not self._dtls_streamer.is_connected
-        ):
+        if not self._is_streaming:
             return
-        client_now = int(self.mass.loop.time() * 1_000_000)
-        # Render slightly ahead of the playhead to compensate for Hue+DTLS lag.
-        server_now = self._sendspin_client.compute_server_time(client_now + self._hue_latency_us)
-        commands = self._analyzer.render(server_now)
-        if commands:
-            self._dtls_streamer.send_colors(commands)
+        # Skip this tick when not ready (client/DTLS down) but keep the loop
+        # alive so it recovers once the connection is back.
+        if (
+            self._analyzer is not None
+            and self._sendspin_client is not None
+            and self._dtls_streamer.is_connected
+        ):
+            client_now = int(self.mass.loop.time() * 1_000_000)
+            # Render slightly ahead of the playhead to compensate for Hue+DTLS lag.
+            server_now = self._sendspin_client.compute_server_time(
+                client_now + self._hue_latency_us
+            )
+            commands = self._analyzer.render(server_now)
+            if commands:
+                self._dtls_streamer.send_colors(commands)
         self._render_handle = self.mass.loop.call_later(_RENDER_PERIOD_S, self._render_tick)
 
 
