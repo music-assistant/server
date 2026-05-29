@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+import weakref
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
@@ -101,7 +102,6 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.colors import get_palette_for_url, peek_palette_for_url
 from music_assistant.helpers.tags import async_parse_tags
-from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.helpers.util import (
     TaskManager,
     enrich_device_mac_address,
@@ -152,11 +152,12 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         )
         self.manifest.icon = "speaker-multiple"
         self._poll_task: asyncio.Task[None] | None = None
-        self._player_throttlers: dict[str, Throttler] = {}
         self._player_command_locks: dict[str, asyncio.Lock] = {}
-        # Track which lock keys each async task holds (keyed by task id).
-        # Used by get_player_lock for re-entrant detection.
-        self._task_held_locks: dict[int, set[str]] = {}
+        # Re-entrancy tracking for get_player_lock, keyed on the task object
+        # (weak ref auto-clears entries if a task is GC'd before its finally runs).
+        self._task_held_locks: weakref.WeakKeyDictionary[asyncio.Task[Any], set[str]] = (
+            weakref.WeakKeyDictionary()
+        )
         # Lock to prevent race conditions during player registration
         self._register_lock = asyncio.Lock()
         # Track pending protocol player evaluations (delayed to allow all protocols to register)
@@ -179,29 +180,56 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         task skip re-acquisition (preventing deadlocks), while deferred callbacks
         (call_later / create_task) correctly acquire a fresh lock.
 
+        If the lock can't be acquired within 30s the body runs anyway, to keep
+        the player responsive when a previous holder is stuck on a hung command.
+
         :param player_id: The player to lock.
         :param purpose: Lock category. Commands with different purposes can run
             concurrently on the same player.
         """
         lock_key = f"{purpose.value}_{player_id}"
         task = asyncio.current_task()
-        task_id = id(task) if task else 0
 
-        if lock_key in self._task_held_locks.get(task_id, set()):
+        if task is not None and lock_key in self._task_held_locks.get(task, set()):
             yield
             return
 
         lock = self._player_command_locks.setdefault(lock_key, asyncio.Lock())
-        async with lock:
-            self._task_held_locks.setdefault(task_id, set()).add(lock_key)
+        # Two-stage acquire: a slow-acquire log at 5s and a hard give-up at 30s.
+        # If the previous holder is stuck (e.g. on a dead provider socket), we
+        # proceed without the lock so this player stays responsive.
+        acquired = False
+        try:
+            async with asyncio.timeout(5):
+                await lock.acquire()
+            acquired = True
+        except TimeoutError:
+            self.logger.debug(
+                "Acquiring %s lock for player %s is slow (>5s)", purpose.value, player_id
+            )
             try:
-                yield
-            finally:
-                held = self._task_held_locks.get(task_id)
-                if held is not None:
+                async with asyncio.timeout(25):
+                    await lock.acquire()
+                acquired = True
+            except TimeoutError:
+                self.logger.warning(
+                    "Timed out (30s) acquiring %s lock for player %s — "
+                    "previous holder appears stuck; proceeding without lock",
+                    purpose.value,
+                    player_id,
+                )
+
+        if acquired and task is not None:
+            self._task_held_locks.setdefault(task, set()).add(lock_key)
+        try:
+            yield
+        finally:
+            if acquired:
+                if task is not None and (held := self._task_held_locks.get(task)) is not None:
                     held.discard(lock_key)
                     if not held:
-                        del self._task_held_locks[task_id]
+                        del self._task_held_locks[task]
+                lock.release()
 
     async def get_config_entries(
         self,
@@ -973,7 +1001,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         finally:
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
 
-    @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
+    @handle_player_command
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """
         Handle PLAY MEDIA on given player.
@@ -986,6 +1014,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # player is released from its group/sync first, then plays the media
         # standalone. With the preference off, behavior falls back to the
         # legacy "redirect to group leader" path below.
+        # Note: the release step runs outside the PLAYBACK lock to avoid an
+        # AB-BA cycle with cmd_set_members(group), which acquires lock(group)
+        # then lock(sync_leader) via the sync_group provider.
         target_player = self.get_player(player_id, True)
         if target_player is not None and (
             target_player.state.synced_to or target_player.state.active_group
@@ -999,10 +1030,14 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             )
             if override:
                 await self._release_player_for_play_media(target_player)
-                await self._handle_play_media(target_player.player_id, media)
+                async with self.get_player_lock(
+                    target_player.player_id, PlayerLockPurpose.PLAYBACK
+                ):
+                    await self._handle_play_media(target_player.player_id, media)
                 return
         player = self._get_player_with_redirect(player_id)
-        await self._handle_play_media(player.player_id, media)
+        async with self.get_player_lock(player.player_id, PlayerLockPurpose.PLAYBACK):
+            await self._handle_play_media(player.player_id, media)
 
     async def _release_player_for_play_media(self, player: Player) -> None:
         """
@@ -1528,9 +1563,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                         else:
                             player.extra_data["reported_mac"] = cached_reported_mac
 
-            # register throttler for this player
-            self._player_throttlers[player_id] = Throttler(1, 0.05)
-
             # restore 'fake' power state from cache if available.
             # Group players intentionally do NOT restore their fake-power
             # state across restarts: at boot there is no sync session yet, so
@@ -1696,7 +1728,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if player is None:
             return
         del self._players[player_id]
-        self._player_throttlers.pop(player_id, None)
         # clean up all lock entries for this player
         for prefix in [p.value for p in PlayerLockPurpose]:
             self._player_command_locks.pop(f"{prefix}_{player_id}", None)

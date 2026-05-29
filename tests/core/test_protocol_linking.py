@@ -11,7 +11,6 @@ from music_assistant_models.player import OutputProtocol, PlayerMedia
 
 from music_assistant.constants import ATTR_ENABLED, CONF_PLAYERS
 from music_assistant.controllers.players import PlayerController
-from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.helpers.util import enrich_device_mac_address
 from music_assistant.models.player import DeviceInfo, Player
 from music_assistant.models.player_provider import PlayerProvider
@@ -644,10 +643,6 @@ class TestFindMatchingProtocolPlayers:
             "ap_aabbccddee": airplay_player,
             "cc_aabbccddee": chromecast_player,
         }
-        controller._player_throttlers = {
-            "ap_aabbccddee": Throttler(1, 0.05),
-            "cc_aabbccddee": Throttler(1, 0.05),
-        }
 
         # Mark players as initialized so they are returned by all_players()
         airplay_player.set_initialized()
@@ -694,10 +689,6 @@ class TestFindMatchingProtocolPlayers:
         controller._players = {
             "snapcast_client_1": snapcast_player_1,
             "snapcast_client_2": snapcast_player_2,
-        }
-        controller._player_throttlers = {
-            "snapcast_client_1": Throttler(1, 0.05),
-            "snapcast_client_2": Throttler(1, 0.05),
         }
 
         # Find matching players for first Snapcast player
@@ -955,7 +946,6 @@ class TestCachedProtocolParentRestore:
 
         # Register native player
         controller._players = {"native_player_id": native_player}
-        controller._player_throttlers = {"native_player_id": Throttler(1, 0.05)}
 
         # Try to link protocol to native - should load cached parent_id
         controller._try_link_protocol_to_native(protocol_player)
@@ -1029,9 +1019,6 @@ class TestCachedProtocolParentRestore:
         )
         protocol_player.set_initialized()
         controller._players = {protocol_player.player_id: protocol_player}
-        controller._player_throttlers = {
-            protocol_player.player_id: Throttler(1, 0.05),
-        }
 
         controller._try_link_protocol_to_native(protocol_player)
 
@@ -1047,7 +1034,6 @@ class TestCachedProtocolParentRestore:
         )
         native_player.set_initialized()
         controller._players[native_player.player_id] = native_player
-        controller._player_throttlers[native_player.player_id] = Throttler(1, 0.05)
 
         controller._try_link_protocols_to_native(native_player)
 
@@ -1098,7 +1084,6 @@ class TestSelectBestOutputProtocol:
 
         # Register players
         controller._players = {"sonos_123": native_player}
-        controller._player_throttlers = {"sonos_123": Throttler(1, 0.05)}
 
         # Select protocol
         selected_player, output_protocol = controller._select_best_output_protocol(native_player)
@@ -1148,10 +1133,6 @@ class TestSelectBestOutputProtocol:
         controller._players = {
             "sonos_123": native_player,
             "dlna_AABBCCDDEEFF": dlna_player,
-        }
-        controller._player_throttlers = {
-            "sonos_123": Throttler(1, 0.05),
-            "dlna_AABBCCDDEEFF": Throttler(1, 0.05),
         }
 
         # Link DLNA protocol to native player
@@ -1226,11 +1207,6 @@ class TestSelectBestOutputProtocol:
             "airplay_AABBCCDDEEFF": airplay_player,
             "dlna_AABBCCDDEEFF": dlna_player,
         }
-        controller._player_throttlers = {
-            "sonos_123": Throttler(1, 0.05),
-            "airplay_AABBCCDDEEFF": Throttler(1, 0.05),
-            "dlna_AABBCCDDEEFF": Throttler(1, 0.05),
-        }
 
         # Link protocols to native player
         native_player.set_linked_output_protocols(
@@ -1286,7 +1262,6 @@ class TestSelectBestOutputProtocol:
         native_player._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
 
         controller._players = {"sonos_123": native_player}
-        controller._player_throttlers = {"sonos_123": Throttler(1, 0.05)}
 
         # Select protocol with auto preference
         selected_player, output_protocol = controller._select_best_output_protocol(native_player)
@@ -1329,10 +1304,6 @@ class TestPlayerGrouping:
         controller._players = {
             "sonos_123": player_a,
             "sonos_456": player_b,
-        }
-        controller._player_throttlers = {
-            "sonos_123": Throttler(1, 0.05),
-            "sonos_456": Throttler(1, 0.05),
         }
 
         # Translate members for native grouping
@@ -1427,12 +1398,6 @@ class TestPlayerGrouping:
             "wiim_456": wiim_player,
             "airplay_sonos": sonos_airplay,
             "airplay_wiim": wiim_airplay,
-        }
-        controller._player_throttlers = {
-            "sonos_123": Throttler(1, 0.05),
-            "wiim_456": Throttler(1, 0.05),
-            "airplay_sonos": Throttler(1, 0.05),
-            "airplay_wiim": Throttler(1, 0.05),
         }
 
         # Translate members for protocol grouping (via AirPlay)
@@ -1546,13 +1511,6 @@ class TestPlayerGrouping:
             "wiim_789": wiim_player,
             "airplay_sonos": sonos_airplay,
             "airplay_wiim": wiim_airplay,
-        }
-        controller._player_throttlers = {
-            "sonos_123": Throttler(1, 0.05),
-            "sonos_456": Throttler(1, 0.05),
-            "wiim_789": Throttler(1, 0.05),
-            "airplay_sonos": Throttler(1, 0.05),
-            "airplay_wiim": Throttler(1, 0.05),
         }
 
         # Group Sonos B (native) + WiiM (via AirPlay) to Sonos A
@@ -1688,14 +1646,6 @@ class TestPlayerGrouping:
             "airplay_sonos": sonos_airplay,
             "airplay_wiim": wiim_airplay,
         }
-        controller._player_throttlers = {
-            "sonos_123": Throttler(1, 0.05),
-            "wiim_456": Throttler(1, 0.05),
-            "dlna_sonos": Throttler(1, 0.05),
-            "dlna_wiim": Throttler(1, 0.05),
-            "airplay_sonos": Throttler(1, 0.05),
-            "airplay_wiim": Throttler(1, 0.05),
-        }
 
         # Update state after modifying attributes
         sonos_dlna.update_state(signal_event=False)
@@ -1783,11 +1733,6 @@ class TestCanGroupWith:
             "sonos_123": sonos_player,
             "sonos_456": sonos_player_b,
             "airplay_sonos": sonos_airplay,
-        }
-        controller._player_throttlers = {
-            "sonos_123": Throttler(1, 0.05),
-            "sonos_456": Throttler(1, 0.05),
-            "airplay_sonos": Throttler(1, 0.05),
         }
 
         # Update state after modifying attributes and registering with controller
@@ -1898,13 +1843,6 @@ class TestCanGroupWith:
             "wiim_789": wiim_player,
             "airplay_sonos": sonos_airplay,
             "airplay_other": airplay_other,
-        }
-        controller._player_throttlers = {
-            "sonos_123": Throttler(1, 0.05),
-            "sonos_456": Throttler(1, 0.05),
-            "wiim_789": Throttler(1, 0.05),
-            "airplay_sonos": Throttler(1, 0.05),
-            "airplay_other": Throttler(1, 0.05),
         }
 
         # Clear cache after setting linked protocols
@@ -2047,14 +1985,6 @@ class TestCanGroupWith:
             "airplay_other": airplay_other,
             "dlna_sonos": sonos_dlna,
         }
-        controller._player_throttlers = {
-            "sonos_123": Throttler(1, 0.05),
-            "sonos_456": Throttler(1, 0.05),
-            "wiim_789": Throttler(1, 0.05),
-            "airplay_sonos": Throttler(1, 0.05),
-            "airplay_other": Throttler(1, 0.05),
-            "dlna_sonos": Throttler(1, 0.05),
-        }
 
         # Update state after modifying attributes and registering with controller
         # Note: set_linked_output_protocols calls trigger_player_update, but since mass.players
@@ -2133,11 +2063,6 @@ class TestNativePlayerProtocolGrouping:
             "sonos_1": sonos_player,
             "airplay_sonos_1": sonos_airplay,
         }
-        controller._player_throttlers = {
-            "homepod_1": Throttler(1, 0.05),
-            "sonos_1": Throttler(1, 0.05),
-            "airplay_sonos_1": Throttler(1, 0.05),
-        }
 
         # Mark players as initialized so they are returned by all_players()
         homepod.set_initialized()
@@ -2206,11 +2131,6 @@ class TestNativePlayerProtocolGrouping:
             "homepod_1": homepod,
             "sonos_1": sonos_player,
             "airplay_sonos_1": sonos_airplay,
-        }
-        controller._player_throttlers = {
-            "homepod_1": Throttler(1, 0.05),
-            "sonos_1": Throttler(1, 0.05),
-            "airplay_sonos_1": Throttler(1, 0.05),
         }
 
         # Mark players as initialized so they are returned by all_players()
@@ -2289,11 +2209,6 @@ class TestProtocolSwitchingDuringPlayback:
             "sonos_123": sonos_player,
             "sonos_456": sonos_player_b,
             "airplay_sonos": sonos_airplay,
-        }
-        controller._player_throttlers = {
-            "sonos_123": Throttler(1, 0.05),
-            "sonos_456": Throttler(1, 0.05),
-            "airplay_sonos": Throttler(1, 0.05),
         }
 
         # Group players via protocol (simulate grouping through AirPlay)
@@ -2436,11 +2351,6 @@ class TestProtocolSwitchingDuringPlayback:
             "sonos_456": sonos_player_b,
             "airplay_sonos": sonos_airplay,
         }
-        controller._player_throttlers = {
-            "sonos_123": Throttler(1, 0.05),
-            "sonos_456": Throttler(1, 0.05),
-            "airplay_sonos": Throttler(1, 0.05),
-        }
 
         # Update state and set active output protocol AFTER registering with controller
         sonos_player.update_state(signal_event=False)
@@ -2538,11 +2448,6 @@ class TestNativeProtocolPlayerGrouping:
             "sonos_badkamer": sonos_player,
             "airplay_sonos": sonos_airplay,
         }
-        controller._player_throttlers = {
-            "apple_tv_1": Throttler(1, 0.05),
-            "sonos_badkamer": Throttler(1, 0.05),
-            "airplay_sonos": Throttler(1, 0.05),
-        }
 
         # Update states
         sonos_airplay.update_state(signal_event=False)
@@ -2632,11 +2537,6 @@ class TestFinalGroupMembersTranslation:
             "sonos_1": sonos_player,
             "airplay_sonos": sonos_airplay,
         }
-        controller._player_throttlers = {
-            "apple_tv_1": Throttler(1, 0.05),
-            "sonos_1": Throttler(1, 0.05),
-            "airplay_sonos": Throttler(1, 0.05),
-        }
 
         sonos_airplay.update_state(signal_event=False)
         sonos_player.update_state(signal_event=False)
@@ -2691,11 +2591,6 @@ class TestFinalActiveGroupTranslation:
             "group_1": group_player,
             "sonos_1": sonos_player,
             "airplay_sonos": sonos_airplay,
-        }
-        controller._player_throttlers = {
-            "group_1": Throttler(1, 0.05),
-            "sonos_1": Throttler(1, 0.05),
-            "airplay_sonos": Throttler(1, 0.05),
         }
 
         group_player.set_initialized()
@@ -2766,11 +2661,6 @@ class TestFinalSyncedToWithNativeProtocolParent:
             "sonos_1": sonos_player,
             "airplay_sonos": sonos_airplay,
         }
-        controller._player_throttlers = {
-            "apple_tv_1": Throttler(1, 0.05),
-            "sonos_1": Throttler(1, 0.05),
-            "airplay_sonos": Throttler(1, 0.05),
-        }
 
         apple_tv.set_initialized()
         sonos_player.set_initialized()
@@ -2837,11 +2727,6 @@ class TestUngroupTranslation:
             "apple_tv_1": apple_tv,
             "sonos_1": sonos_player,
             "airplay_sonos": sonos_airplay,
-        }
-        controller._player_throttlers = {
-            "apple_tv_1": Throttler(1, 0.05),
-            "sonos_1": Throttler(1, 0.05),
-            "airplay_sonos": Throttler(1, 0.05),
         }
 
         sonos_airplay.update_state(signal_event=False)
@@ -2922,11 +2807,6 @@ class TestNativeProtocolDomainPlayerGrouping:
             "sendspin_kantoor": sendspin_kantoor,
             "sendspin_web": web_player,
         }
-        controller._player_throttlers = {
-            "sonos_kantoor": Throttler(1, 0.05),
-            "sendspin_kantoor": Throttler(1, 0.05),
-            "sendspin_web": Throttler(1, 0.05),
-        }
 
         # Update states
         sendspin_kantoor.update_state(signal_event=False)
@@ -3000,11 +2880,6 @@ class TestNativeProtocolDomainPlayerGrouping:
             "sonos_kantoor": kantoor,
             "sendspin_kantoor": sendspin_kantoor,
             "sendspin_web": web_player,
-        }
-        controller._player_throttlers = {
-            "sonos_kantoor": Throttler(1, 0.05),
-            "sendspin_kantoor": Throttler(1, 0.05),
-            "sendspin_web": Throttler(1, 0.05),
         }
 
         # Update states
@@ -3080,11 +2955,6 @@ class TestNativeProtocolDomainPlayerGrouping:
             "sendspin_kantoor": sendspin_kantoor,
             "sendspin_web": web_player,
         }
-        controller._player_throttlers = {
-            "sonos_kantoor": Throttler(1, 0.05),
-            "sendspin_kantoor": Throttler(1, 0.05),
-            "sendspin_web": Throttler(1, 0.05),
-        }
 
         sendspin_kantoor.update_state(signal_event=False)
         kantoor.update_state(signal_event=False)
@@ -3143,11 +3013,6 @@ class TestNativeProtocolDomainPlayerGrouping:
             "sendspin_parent": sendspin_parent,
             "sendspin_web": web_player,
             "sendspin_other": sendspin_other,
-        }
-        controller._player_throttlers = {
-            "sendspin_parent": Throttler(1, 0.05),
-            "sendspin_web": Throttler(1, 0.05),
-            "sendspin_other": Throttler(1, 0.05),
         }
 
         sendspin_parent.update_state(signal_event=False)
@@ -3221,11 +3086,6 @@ class TestNativeProtocolDomainPlayerGrouping:
             "sonos_mancave": mancave,
             "spb_mancave": sendspin_bridge,
             "hue-mancave": hue_light,
-        }
-        controller._player_throttlers = {
-            "sonos_mancave": Throttler(1, 0.05),
-            "spb_mancave": Throttler(1, 0.05),
-            "hue-mancave": Throttler(1, 0.05),
         }
 
         sendspin_bridge.update_state(signal_event=False)
@@ -3536,11 +3396,6 @@ class TestProtocolToUniversalIdentifierFallback:
             "ap62e5974593d3": airplay_player,
             "spb_62e5974593d3": sendspin_player,
         }
-        controller._player_throttlers = {
-            "up_62e5974593d3": Throttler(1, 0.05),
-            "ap62e5974593d3": Throttler(1, 0.05),
-            "spb_62e5974593d3": Throttler(1, 0.05),
-        }
 
         # Initialize players so all_players() returns them
         airplay_player.set_initialized()
@@ -3595,10 +3450,6 @@ class TestProtocolToUniversalIdentifierFallback:
             "up_aabbccddeeff": universal,
             "spb_112233445566": sendspin_player,
         }
-        controller._player_throttlers = {
-            "up_aabbccddeeff": Throttler(1, 0.05),
-            "spb_112233445566": Throttler(1, 0.05),
-        }
 
         sendspin_player.set_initialized()
 
@@ -3639,10 +3490,6 @@ class TestProtocolToUniversalIdentifierFallback:
         controller._players = {
             "up_aabbccddeeff": universal,
             "ap_aabbccddeeff": airplay_player,
-        }
-        controller._player_throttlers = {
-            "up_aabbccddeeff": Throttler(1, 0.05),
-            "ap_aabbccddeeff": Throttler(1, 0.05),
         }
 
         airplay_player.set_initialized()
@@ -3700,10 +3547,6 @@ class TestCachedParentIdentifierCopying:
         controller._players = {
             "up_62e5974593d3": universal,
             "ap62e5974593d3": airplay_player,
-        }
-        controller._player_throttlers = {
-            "up_62e5974593d3": Throttler(1, 0.05),
-            "ap62e5974593d3": Throttler(1, 0.05),
         }
 
         # Link protocol player via cached parent path
@@ -3768,11 +3611,6 @@ class TestCachedParentIdentifierCopying:
             "ap62e5974593d3": airplay_player,
             "spb_62e5974593d3": sendspin_player,
         }
-        controller._player_throttlers = {
-            "up_62e5974593d3": Throttler(1, 0.05),
-            "ap62e5974593d3": Throttler(1, 0.05),
-            "spb_62e5974593d3": Throttler(1, 0.05),
-        }
 
         # Initialize players so all_players() returns them
         airplay_player.set_initialized()
@@ -3830,10 +3668,6 @@ class TestCachedParentIdentifierCopying:
         controller._players = {
             "sonos_123": sonos_player,
             "dlna_123": dlna_player,
-        }
-        controller._player_throttlers = {
-            "sonos_123": Throttler(1, 0.05),
-            "dlna_123": Throttler(1, 0.05),
         }
 
         controller._try_link_protocol_to_native(dlna_player)
@@ -3999,10 +3833,6 @@ class TestDuplicateProtocolPrevention:
             "sonos_1": sonos_player,
             "ap_1": airplay_player,
         }
-        controller._player_throttlers = {
-            "sonos_1": Throttler(1, 0.05),
-            "ap_1": Throttler(1, 0.05),
-        }
         airplay_player.set_initialized()
         sonos_player.set_initialized()
 
@@ -4036,10 +3866,6 @@ class TestDuplicateProtocolPrevention:
         controller._players = {
             "sonos_1": sonos_player,
             "ap_1": airplay_player,
-        }
-        controller._player_throttlers = {
-            "sonos_1": Throttler(1, 0.05),
-            "ap_1": Throttler(1, 0.05),
         }
         airplay_player.set_initialized()
         sonos_player.set_initialized()
@@ -4091,11 +3917,6 @@ class TestDuplicateProtocolPrevention:
             "sonos_1": sonos_player,
             "ap_1": ap1,
             "ap_2": ap2,
-        }
-        controller._player_throttlers = {
-            "sonos_1": Throttler(1, 0.05),
-            "ap_1": Throttler(1, 0.05),
-            "ap_2": Throttler(1, 0.05),
         }
         ap1.set_initialized()
         ap2.set_initialized()
@@ -4151,11 +3972,6 @@ class TestDuplicateProtocolPrevention:
             "ap_1": ap1,
             "dlna_1": dlna1,
         }
-        controller._player_throttlers = {
-            "sonos_1": Throttler(1, 0.05),
-            "ap_1": Throttler(1, 0.05),
-            "dlna_1": Throttler(1, 0.05),
-        }
         ap1.set_initialized()
         dlna1.set_initialized()
         sonos_player.set_initialized()
@@ -4205,11 +4021,6 @@ class TestDuplicateProtocolPrevention:
             "sonos_1": sonos_player,
             "ap_1": ap1,
             "ap_2": ap2,
-        }
-        controller._player_throttlers = {
-            "sonos_1": Throttler(1, 0.05),
-            "ap_1": Throttler(1, 0.05),
-            "ap_2": Throttler(1, 0.05),
         }
         ap1.set_initialized()
         ap2.set_initialized()
@@ -4266,7 +4077,6 @@ class TestDuplicateProtocolPrevention:
             "snap_1": snap1,
             "snap_2": snap2,
         }
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
         snap1.set_initialized()
         snap2.set_initialized()
         sonos_player.set_initialized()
@@ -4319,11 +4129,6 @@ class TestDuplicateProtocolPrevention:
             "sonos_1": sonos_player,
             "ap_1": ap1,
             "ap_2": ap2,
-        }
-        controller._player_throttlers = {
-            "sonos_1": Throttler(1, 0.05),
-            "ap_1": Throttler(1, 0.05),
-            "ap_2": Throttler(1, 0.05),
         }
         ap1.set_initialized()
         ap2.set_initialized()
@@ -4402,12 +4207,6 @@ class TestDuplicateProtocolPrevention:
             "dlna_1": dlna_player,
             "sonos_1": sonos_player,
         }
-        controller._player_throttlers = {
-            "ap_1": Throttler(1, 0.05),
-            "ap_2": Throttler(1, 0.05),
-            "dlna_1": Throttler(1, 0.05),
-            "sonos_1": Throttler(1, 0.05),
-        }
         ap1.set_initialized()
         ap2.set_initialized()
         dlna_player.set_initialized()
@@ -4471,11 +4270,6 @@ class TestDuplicateProtocolPrevention:
             "ap_1": ap,
             "dlna_1": dlna,
         }
-        controller._player_throttlers = {
-            "sonos_1": Throttler(1, 0.05),
-            "ap_1": Throttler(1, 0.05),
-            "dlna_1": Throttler(1, 0.05),
-        }
         ap.set_initialized()
         dlna.set_initialized()
         sonos_player.set_initialized()
@@ -4527,11 +4321,6 @@ class TestDuplicateProtocolPrevention:
             "sonos_1": sonos_player,
             "ap_1": ap1,
             "ap_2": ap2,
-        }
-        controller._player_throttlers = {
-            "sonos_1": Throttler(1, 0.05),
-            "ap_1": Throttler(1, 0.05),
-            "ap_2": Throttler(1, 0.05),
         }
         ap1.set_initialized()
         ap2.set_initialized()
@@ -4637,7 +4426,6 @@ class TestUniversalPlayerMerging:
             "dlna_uuid_1": dlna_player,
             "ap_1": ap_player,
         }
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
 
         # Link DLNA to up1
         controller._add_protocol_link(up1, dlna_player, "dlna")
@@ -4706,10 +4494,6 @@ class TestUniversalPlayerMerging:
         up2.set_initialized()
 
         controller._players = {"up_1": up1, "up_2": up2}
-        controller._player_throttlers = {
-            "up_1": Throttler(1, 0.05),
-            "up_2": Throttler(1, 0.05),
-        }
 
         # Call merge - should do nothing since MACs are different
         controller._check_merge_universal_players(up1)
@@ -4787,7 +4571,6 @@ class TestUniversalPlayerMerging:
             "ap_1": ap_player,
             "spb_1": spb_player,
         }
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
 
         # Link DLNA to small, AirPlay+Sendspin to big
         controller._add_protocol_link(up1, dlna_player, "dlna")
@@ -4809,7 +4592,7 @@ class TestUniversalPlayerMerging:
         # up1 should have no more links
         assert len(up1.linked_output_protocols) == 0
 
-    async def test_merge_preserves_moved_protocols_during_parent_cleanup(  # noqa: PLR0915
+    async def test_merge_preserves_moved_protocols_during_parent_cleanup(
         self, mock_mass: MagicMock
     ) -> None:
         """Moved protocol ownership must survive the removed parent's permanent cleanup."""
@@ -4902,7 +4685,6 @@ class TestUniversalPlayerMerging:
             "ap_keep": ap_keep,
             "dlna_live": dlna_live,
         }
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
 
         controller._add_protocol_link(keep, ap_keep, "airplay")
         controller._add_protocol_link(remove, dlna_live, "dlna")
@@ -4972,7 +4754,6 @@ class TestUniversalPlayerMerging:
             controller._players[up.player_id] = up
         for proto in protocols:
             controller._players[proto.player_id] = proto
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
 
         # Link each protocol to its UP
         for up, proto in zip(ups, protocols, strict=True):
@@ -5080,7 +4861,6 @@ class TestUniversalPlayerReplacement:
             "sonos_1": native,
             "ap_live": ap_live,
         }
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
 
         controller._add_protocol_link(universal, ap_live, "airplay")
 
@@ -5140,7 +4920,6 @@ class TestEndToEndDuplicateProtocol:
         # Wire register_or_update to add the player to controller._players
         async def fake_register_or_update(player: Player) -> None:
             controller._players[player.player_id] = player
-            controller._player_throttlers[player.player_id] = Throttler(1, 0.05)
             player.set_initialized()
 
         mock_mass.players = MagicMock()
@@ -5207,7 +4986,6 @@ class TestEndToEndDuplicateProtocol:
             "ap_1": ap1,
             "ap_2": ap2,
         }
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
 
         # Run delayed evaluation for ap2 - full async flow
         await controller._delayed_protocol_evaluation("ap_2")
@@ -5276,7 +5054,6 @@ class TestEndToEndDuplicateProtocol:
             "ap_1": ap1,
             "dlna_1": dlna1,
         }
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
 
         # Run delayed evaluation for DLNA
         await controller._delayed_protocol_evaluation("dlna_1")
@@ -5325,7 +5102,6 @@ class TestEndToEndDuplicateProtocol:
             "ap_1": ap1,
             "ap_2": ap2,
         }
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
 
         # First: ap1 goes through delayed evaluation, creates a universal player
         await controller._delayed_protocol_evaluation("ap_1")
@@ -5401,7 +5177,6 @@ class TestEndToEndDuplicateProtocol:
             "dlna_1": dlna1,
             "ap_2": ap2,
         }
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
 
         # First: ap1 arrives at delayed eval, finds dlna1 as matching (different domain)
         # Together they create a universal player
@@ -5470,7 +5245,6 @@ class TestEndToEndDuplicateProtocol:
             "spb_1": spb1,
             "spb_2": spb2,
         }
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
 
         # First: spb1 goes through delayed evaluation
         await controller._delayed_protocol_evaluation("spb_1")
@@ -5522,7 +5296,6 @@ class TestEndToEndDuplicateProtocol:
             players.append(p)
 
         controller._players = {p.player_id: p for p in players}
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
 
         # Run delayed evaluation for each in sequence
         for p in players:
@@ -5567,7 +5340,6 @@ class TestEndToEndDuplicateProtocol:
             players.append(p)
 
         controller._players = {p.player_id: p for p in players}
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
 
         for p in players:
             await controller._delayed_protocol_evaluation(p.player_id)
@@ -5619,7 +5391,6 @@ class TestEndToEndDuplicateProtocol:
         snap2.set_initialized()
 
         controller._players = {"ma_cea0b4ed2221": snap1, "ma_cea0b4ed2220": snap2}
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
 
         await controller._delayed_protocol_evaluation("ma_cea0b4ed2221")
         await controller._delayed_protocol_evaluation("ma_cea0b4ed2220")
@@ -5690,7 +5461,6 @@ class TestEndToEndDuplicateProtocol:
             "cc_1": cc1,
             "ap_2": ap2,
         }
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
 
         # ap1 goes through delayed eval - finds dlna1 and cc1 as matching
         # (different domains), creates universal player with all three
@@ -5762,7 +5532,6 @@ class TestSiblingProtocolMatching:
             "2140037800": heos_player,
             "ap000678747b16": ap_player,
         }
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
         controller._add_protocol_link(heos_player, ap_player, "airplay")
         assert ap_player.protocol_parent_id == "2140037800"
 
@@ -5780,7 +5549,6 @@ class TestSiblingProtocolMatching:
         )
         spb_player.set_initialized()
         controller._players["spb_000678747b16"] = spb_player
-        controller._player_throttlers["spb_000678747b16"] = Throttler(1, 0.05)
 
         # Direct identifier match would fail (HEOS has no identifiers)
         assert controller._identifiers_match(heos_player, spb_player, "sendspin") is False
@@ -5810,7 +5578,6 @@ class TestSiblingProtocolMatching:
         spb_player.set_initialized()
 
         controller._players = {"heos_1": heos_player, "spb_1": spb_player}
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
 
         assert controller._match_via_linked_protocols(heos_player, spb_player, "sendspin") is False
 
@@ -5836,7 +5603,6 @@ class TestSiblingProtocolMatching:
         ap_player.set_initialized()
 
         controller._players = {"heos_1": heos_player, "ap_1": ap_player}
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
         controller._add_protocol_link(heos_player, ap_player, "airplay")
 
         # Sendspin with different MAC, no shared identifiers
@@ -5850,7 +5616,6 @@ class TestSiblingProtocolMatching:
         )
         spb_player.set_initialized()
         controller._players["spb_1"] = spb_player
-        controller._player_throttlers["spb_1"] = Throttler(1, 0.05)
 
         assert controller._match_via_linked_protocols(heos_player, spb_player, "sendspin") is False
         assert spb_player.protocol_parent_id is None
@@ -5877,7 +5642,6 @@ class TestSiblingProtocolMatching:
         ap_player.set_initialized()
 
         controller._players = {"heos_1": heos_player, "ap_1": ap_player}
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
         controller._add_protocol_link(heos_player, ap_player, "airplay")
 
         # Second AirPlay instance with same MAC - should be refused (duplicate domain)
@@ -5890,7 +5654,6 @@ class TestSiblingProtocolMatching:
         )
         ap2.set_initialized()
         controller._players["ap_2"] = ap2
-        controller._player_throttlers["ap_2"] = Throttler(1, 0.05)
 
         assert controller._match_via_linked_protocols(heos_player, ap2, "airplay") is False
         assert ap2.protocol_parent_id is None
@@ -5925,7 +5688,6 @@ class TestSiblingProtocolMatching:
             "2140037800": heos_player,
             "ap000678747b16": ap_player,
         }
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
         controller._add_protocol_link(heos_player, ap_player, "airplay")
 
         # Sendspin with matching AIRPLAY_ID
@@ -5939,7 +5701,6 @@ class TestSiblingProtocolMatching:
         )
         spb_player.set_initialized()
         controller._players["spb_000678747b16"] = spb_player
-        controller._player_throttlers["spb_000678747b16"] = Throttler(1, 0.05)
 
         # _try_link_to_existing_player should succeed via sibling matching
         result = controller._try_link_to_existing_player(spb_player, "sendspin")
@@ -6017,7 +5778,6 @@ class TestDelayedEvalRetry:
             "ap000678747b16": ap_player,
             "spb_000678747b16": spb_player,
         }
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
 
         # Link AirPlay to HEOS
         controller._add_protocol_link(heos_player, ap_player, "airplay")
@@ -6046,7 +5806,6 @@ class TestDelayedEvalRetry:
         spb_player.set_protocol_parent_id("some_parent")
 
         controller._players = {"spb_1": spb_player}
-        controller._player_throttlers = {"spb_1": Throttler(1, 0.05)}
 
         # Should return early without creating universal player
         await controller._delayed_protocol_evaluation("spb_1")
@@ -6144,7 +5903,6 @@ class TestNativePlayerSiblingLinking:
             "spb_000678747b16": spb_player,
             "2140037800": heos_player,
         }
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
 
         # Simulate what happens when HEOS registers
         controller._try_link_protocols_to_native(heos_player)
@@ -6408,7 +6166,6 @@ class TestCleanupProtocolLinks:
             "up_test": parent,
             "airplay_test": protocol_player,
         }
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
 
         controller._cleanup_protocol_links(parent)
 
@@ -6478,7 +6235,6 @@ class TestCleanupProtocolLinks:
             "sonos_1": parent,
             "airplay_live": protocol_player,
         }
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
 
         with patch.object(controller, "_schedule_protocol_evaluation") as mock_schedule:
             controller._cleanup_protocol_links(parent)
@@ -6543,7 +6299,6 @@ class TestCleanupProtocolLinks:
             "up_test": parent,
             "airplay_live": protocol_player,
         }
-        controller._player_throttlers = {k: Throttler(1, 0.05) for k in controller._players}
 
         with patch.object(controller, "_schedule_protocol_evaluation") as mock_schedule:
             controller._cleanup_protocol_links(parent)

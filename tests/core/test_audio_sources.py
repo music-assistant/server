@@ -25,7 +25,6 @@ from music_assistant_models.media_items import AudioFormat, AudioSource, Provide
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.controllers.players import PlayerController
-from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.plugin import PluginProvider
 from tests.common import MockPlayer, MockProvider
 
@@ -72,7 +71,6 @@ def player(provider: MockProvider, controller: PlayerController) -> MockPlayer:
     p = MockPlayer(provider, "player_1", "Test Player")
     p._attr_supported_features = {PlayerFeature.VOLUME_SET}
     controller._players = {"player_1": p}
-    controller._player_throttlers = {"player_1": Throttler(1, 0.05)}
     return p
 
 
@@ -710,7 +708,6 @@ class TestAudioSourceElapsedTimeOverride:
         player._attr_active_source = "player_1"
 
         controller._players = {"player_1": player}
-        controller._player_throttlers = {"player_1": Throttler(1, 0.05)}
 
         queue = _make_audio_source_queue(elapsed_time=42)
         mock_mass.player_queues.get = MagicMock(return_value=queue)
@@ -734,7 +731,6 @@ class TestAudioSourceElapsedTimeOverride:
         player._attr_active_source = "player_1"
 
         controller._players = {"player_1": player}
-        controller._player_throttlers = {"player_1": Throttler(1, 0.05)}
 
         queue = _make_audio_source_queue(elapsed_time=None)
         mock_mass.player_queues.get = MagicMock(return_value=queue)
@@ -766,10 +762,6 @@ class TestAudioSourceElapsedTimeOverride:
         player.set_active_output_protocol("airplay_1")
 
         controller._players = {"player_1": player, "airplay_1": protocol_player}
-        controller._player_throttlers = {
-            "player_1": Throttler(1, 0.05),
-            "airplay_1": Throttler(1, 0.05),
-        }
 
         queue = _make_audio_source_queue(elapsed_time=42)
         mock_mass.player_queues.get = MagicMock(return_value=queue)
@@ -795,7 +787,6 @@ class TestAudioSourceElapsedTimeOverride:
         player._attr_active_source = "player_1"
 
         controller._players = {"player_1": player}
-        controller._player_throttlers = {"player_1": Throttler(1, 0.05)}
 
         queue = _make_audio_source_queue(elapsed_time=42, elapsed_time_last_updated=None)
         mock_mass.player_queues.get = MagicMock(return_value=queue)
