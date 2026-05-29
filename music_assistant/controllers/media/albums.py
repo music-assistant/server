@@ -134,7 +134,6 @@ class AlbumsController(MediaControllerBase[Album]):
         """
         user: User | None = None
         if username_or_user_id:
-            # anything non-web cannot use the web context in _ensure_provider_filter
             user = await self.mass.webserver.auth.get_user_by_id_or_name(username_or_user_id)
 
         extra_query_params: dict[str, Any] = {}

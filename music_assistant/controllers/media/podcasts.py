@@ -69,7 +69,6 @@ class PodcastsController(MediaControllerBase[Podcast]):
         """
         user: User | None = None
         if username_or_user_id:
-            # anything non-web cannot use the web context in _ensure_provider_filter
             user = await self.mass.webserver.auth.get_user_by_id_or_name(username_or_user_id)
 
         result = await self.get_library_items_by_query(
