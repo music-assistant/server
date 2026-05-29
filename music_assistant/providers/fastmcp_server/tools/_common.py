@@ -8,6 +8,8 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from fastmcp.exceptions import ToolError
+from mcp.shared.exceptions import McpError
+from mcp.types import INVALID_REQUEST, METHOD_NOT_FOUND
 
 from ..models import (
     AlbumBrief,
@@ -35,6 +37,11 @@ TIMEOUT_FAST = 10.0
 TIMEOUT_MUTATION = 15.0
 TIMEOUT_QUERY = 30.0
 TIMEOUT_BULK = 60.0
+# Confirmation-gated writes block on an interactive elicitation round-trip
+# (a human reads the prompt and answers) plus the subsequent save+reload.
+# 10s (TIMEOUT_FAST) times out mid-confirmation; allow a generous human-scale
+# window.
+TIMEOUT_INTERACTIVE = 120.0
 
 
 async def confirm_or_raise(ctx: Context | None, prompt: str, *, enabled: bool) -> None:
@@ -57,7 +64,18 @@ async def confirm_or_raise(ctx: Context | None, prompt: str, *, enabled: bool) -
         # is also suppressed.
         result = await ctx.elicit(prompt, response_type=bool)  # type: ignore[arg-type, unused-ignore]
     except NotImplementedError:
+        # Client SDK has no elicitation support at all — pass through to the
+        # permission flag (the primary defense).
         return
+    except McpError as exc:
+        # "Elicitation not supported" arrives as McpError(INVALID_REQUEST) /
+        # METHOD_NOT_FOUND from MCP's default elicitation callback. Treat ONLY
+        # the missing-capability codes as pass-through; any other wire error
+        # (e.g. a throwing client handler → INTERNAL_ERROR) must fail CLOSED so
+        # a destructive op is never silently confirmed.
+        if exc.error.code in (INVALID_REQUEST, METHOD_NOT_FOUND):
+            return
+        raise
     action = getattr(result, "action", None)
     data = getattr(result, "data", None)
     if action != "accept" or not data:

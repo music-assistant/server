@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+import music_assistant.providers.fastmcp_server.models
 from music_assistant.providers.fastmcp_server.models import (
     AlbumBrief,
     ArtistBrief,
@@ -718,3 +720,111 @@ def test_to_brief_queue_available_defaults_true_when_attr_missing() -> None:
         repeat_mode=None,
     )
     assert to_brief_queue(queue).available is True
+
+
+_DEBUG_CLASSES = [
+    ("PlayerInspect", {"player_id", "raw", "state", "truncated"}),
+    ("QueueInspect", {"queue_id", "raw", "current_item", "truncated"}),
+    ("ProviderInspect", {"instance_id", "raw", "manifest", "truncated"}),
+    ("LogLine", {"timestamp", "level", "component", "message"}),
+    ("LogTailResult", {"log_path", "lines", "bytes_scanned", "truncated"}),
+    ("EventRecord", {"timestamp", "event_type", "object_id", "data"}),
+    ("EventSnapshot", {"events", "buffer_capacity", "total_seen"}),
+    (
+        "EventBufferStats",
+        {"capacity", "current_size", "total_seen", "dropped", "subscribed_since", "by_type"},
+    ),
+    ("ProviderSummary", {"instance_id", "domain", "type", "name", "available", "last_error"}),
+    ("ProviderList", {"providers"}),
+    ("ConfigValueDump", {"key", "type", "value"}),
+    ("ProviderConfigDump", {"instance_id", "domain", "values", "truncated"}),
+    ("RouteEntry", {"method", "path", "registered_by"}),
+    ("RouteList", {"routes"}),
+    ("PackageVersions", {"packages"}),
+    ("ReloadResult", {"instance_id", "duration_ms", "new_available", "last_error"}),
+    (
+        "HealthSummary",
+        {
+            "providers_loaded",
+            "providers_disabled",
+            "providers_error",
+            "providers_error_details",
+            "queues_total",
+            "queues_with_active_playback",
+            "queues_with_errors",
+            "events_per_min_by_type",
+            "log_errors_last_5min",
+            "disabled_capabilities",
+        },
+    ),
+]
+
+
+@pytest.mark.parametrize(("name", "fields"), _DEBUG_CLASSES)
+def test_debug_dataclass_shape(name: str, fields: set[str]) -> None:
+    """Debug dataclasses are frozen, kw_only, and have the expected fields."""
+    cls = cast("type", getattr(provider.models, name))
+    assert dataclasses.is_dataclass(cls), f"{name} is not a dataclass"
+    assert cls.__dataclass_params__.frozen, f"{name} must be frozen"  # type: ignore[attr-defined]
+    assert cls.__dataclass_params__.kw_only, f"{name} must be kw_only"  # type: ignore[attr-defined]
+    actual = {f.name for f in dataclasses.fields(cls)}
+    assert actual == fields, f"{name} fields drift: {actual - fields=} {fields - actual=}"
+
+
+_CONFIG_CLASSES = [
+    ("ConfigTarget", {"target_type", "target_id", "domain", "name", "enabled"}),
+    ("ConfigTargetList", {"providers", "core", "players"}),
+    ("CoreConfigDump", {"domain", "values", "truncated"}),
+    ("PlayerConfigDump", {"player_id", "provider", "values", "truncated"}),
+    (
+        "ConfigEntryDump",
+        {
+            "key",
+            "type",
+            "label",
+            "default_value",
+            "required",
+            "description",
+            "options",
+            "range",
+            "advanced",
+            "hidden",
+            "requires_reload",
+            "depends_on",
+            "action",
+            "current_value",
+        },
+    ),
+    ("ConfigEntryList", {"target_type", "target_id", "entries", "truncated"}),
+    ("DSPConfigDump", {"player_id", "enabled", "input_gain", "output_gain", "filters"}),
+    ("ValueChange", {"key", "before", "after", "secret"}),
+    ("DiffResult", {"target_type", "target_id", "changes"}),
+    (
+        "SetValueResult",
+        {"target_type", "target_id", "key", "applied", "requires_reload", "audit_log_id", "diff"},
+    ),
+    (
+        "SaveResult",
+        {
+            "target_type",
+            "target_id",
+            "applied",
+            "changes",
+            "requires_reload",
+            "audit_log_id",
+            "diff",
+        },
+    ),
+    ("ActionResult", {"instance_id", "action_key", "new_entries", "extra_data", "audit_log_id"}),
+]
+
+
+@pytest.mark.parametrize(("name", "fields"), _CONFIG_CLASSES)
+def test_config_dataclass_shape(name: str, fields: set[str]) -> None:
+    """Config dataclasses are frozen, kw_only, and have the expected fields."""
+    cls = cast("type", getattr(provider.models, name))
+    assert dataclasses.is_dataclass(cls), f"{name} is not a dataclass"
+    assert cls.__dataclass_params__.frozen, f"{name} must be frozen"  # type: ignore[attr-defined]
+    assert cls.__dataclass_params__.kw_only, f"{name} must be kw_only"  # type: ignore[attr-defined]
+    actual = {f.name for f in dataclasses.fields(cls)}
+    assert actual == fields, f"{name} fields drift: {actual - fields=} {fields - actual=}"

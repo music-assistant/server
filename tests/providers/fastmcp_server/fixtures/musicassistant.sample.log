@@ -1,0 +1,56 @@
+2026-05-28 09:00:00,001 INFO music_assistant.mass: Starting Music Assistant
+2026-05-28 09:00:00,123 DEBUG music_assistant.controllers.config: Loaded provider config
+2026-05-28 09:00:01,456 WARNING music_assistant.providers.yandex_music: rate-limit retry in 30s
+2026-05-28 09:00:02,789 ERROR music_assistant.providers.sonos: Authorization: Bearer abc.def.ghi expired
+2026-05-28 09:00:03,012 INFO music_assistant.players.kitchen: powered on
+2026-05-28 09:00:04,345 DEBUG music_assistant.streams: token=secret_token_42 starting
+2026-05-28 09:00:05,678 INFO music_assistant.providers.spotify: password=hunter2 ignored (use OAuth)
+2026-05-28 09:00:06,901 ERROR music_assistant.controllers.music: lookup failed for uri=library://track/42
+2026-05-28 09:00:07,124 INFO music_assistant.providers.spotify: loading user library
+2026-05-28 09:00:08,256 DEBUG music_assistant.webserver.auth: token validation completed
+2026-05-28 09:00:09,389 WARNING music_assistant.providers.youtube_music: slow response from API
+2026-05-28 09:00:10,512 INFO music_assistant.players.bedroom: volume set to 50
+2026-05-28 09:00:11,645 ERROR music_assistant.providers.local_database: connection timeout
+2026-05-28 09:00:12,778 DEBUG music_assistant.controllers.artists: fetching artist metadata
+2026-05-28 09:00:13,901 INFO music_assistant.providers.local_files: scanning directory for new tracks
+2026-05-28 09:00:14,234 WARNING music_assistant.providers.yandex_music: unable to fetch album details
+2026-05-28 09:00:15,367 ERROR music_assistant.streams: buffer underrun detected
+2026-05-28 09:00:16,490 INFO music_assistant.players.living_room: stopped
+2026-05-28 09:00:17,123 DEBUG music_assistant.controllers.music: creating search index
+2026-05-28 09:00:18,256 INFO music_assistant.providers.tidal: refreshing access token
+2026-05-28 09:00:19,389 WARNING music_assistant.providers.spotify: rate limit approaching
+2026-05-28 09:00:20,512 ERROR music_assistant.controllers.config: invalid configuration entry
+2026-05-28 09:00:21,645 INFO music_assistant.music: processing recently added
+2026-05-28 09:00:22,778 DEBUG music_assistant.webserver.base: request dispatched
+2026-05-28 09:00:23,901 WARNING music_assistant.providers.local_database: slow query detected
+2026-05-28 09:00:24,234 INFO music_assistant.players.kitchen: now playing Song Title
+2026-05-28 09:00:25,367 ERROR music_assistant.streams: invalid stream format
+2026-05-28 09:00:26,490 DEBUG music_assistant.controllers.music: album load completed
+2026-05-28 09:00:27,123 INFO music_assistant.providers.deezer: playlist loaded
+2026-05-28 09:00:28,256 WARNING music_assistant.webserver.security: request from untrusted origin
+2026-05-28 09:00:29,389 ERROR music_assistant.music: search failed for query
+2026-05-28 09:00:30,512 DEBUG music_assistant.controllers.artists: artist details cached
+2026-05-28 09:00:31,645 INFO music_assistant.players.bedroom: preparing playback
+2026-05-28 09:00:32,778 ERROR music_assistant.providers.tidal: authentication failed
+2026-05-28 09:00:33,901 DEBUG music_assistant.streams: codec detection complete
+2026-05-28 09:00:34,234 INFO music_assistant.providers.youtube_music: syncing playlists
+2026-05-28 09:00:35,367 WARNING music_assistant.controllers.music: duplicate track detected
+2026-05-28 09:00:36,490 ERROR music_assistant.players.living_room: power command timeout
+2026-05-28 09:00:37,123 INFO music_assistant.music: library update complete
+2026-05-28 09:00:38,256 DEBUG music_assistant.webserver.auth: new session created
+2026-05-28 09:00:39,389 WARNING music_assistant.providers.deezer: API rate limit hit
+2026-05-28 09:00:40,512 ERROR music_assistant.controllers.music: corrupted metadata
+2026-05-28 09:00:41,645 INFO music_assistant.players.kitchen: skipped to next track
+2026-05-28 09:00:42,778 DEBUG music_assistant.providers.spotify: OAuth token refreshed
+2026-05-28 09:00:43,901 INFO music_assistant.streams: buffering complete
+2026-05-28 09:00:44,234 WARNING music_assistant.providers.youtube_music: retrying failed request
+2026-05-28 09:00:45,367 ERROR music_assistant.music: tag parsing failed
+2026-05-28 09:00:46,490 DEBUG music_assistant.webserver.base: response sent
+2026-05-28 09:00:47,123 INFO music_assistant.providers.local_files: found 42 new tracks
+2026-05-28 09:00:48,256 ERROR music_assistant.controllers.config: missing required setting
+2026-05-28 09:00:49,389 DEBUG music_assistant.players.bedroom: queue updated
+2026-05-28 09:00:50,512 WARNING music_assistant.providers.tidal: preview quality degraded
+2026-05-28 09:00:51,645 INFO music_assistant.music: recommendations refreshed
+2026-05-28 09:00:52,778 ERROR music_assistant.streams: decoding error on track 5
+2026-05-28 09:00:53,901 DEBUG music_assistant.controllers.music: search cache invalidated
+2026-05-28 09:00:54,234 INFO music_assistant.players.living_room: volume increased
