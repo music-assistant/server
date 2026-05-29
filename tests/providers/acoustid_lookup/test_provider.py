@@ -266,6 +266,7 @@ async def test_start_analysis_gates(
     if track_in_library:
         track = MagicMock()
         track.mbid = track_mbid
+        track.get_external_id.return_value = None
         cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
             return_value=track
         )
