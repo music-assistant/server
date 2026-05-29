@@ -669,7 +669,10 @@ class StreamsController(CoreController):
                 smart_fades_mode = SmartFadesMode.DISABLED
             else:
                 smart_fades_mode = await self.mass.config.get_player_config_value(
-                    queue.queue_id, CONF_SMART_FADES_MODE, return_type=SmartFadesMode
+                    queue.queue_id,
+                    CONF_SMART_FADES_MODE,
+                    default=SmartFadesMode.DISABLED,
+                    return_type=SmartFadesMode,
                 )
                 standard_crossfade_duration = self.mass.config.get_raw_player_config_value(
                     queue.queue_id, CONF_CROSSFADE_DURATION, 10
@@ -840,7 +843,10 @@ class StreamsController(CoreController):
         # select the PCM format for the flow stream, anchored on the first track
         smart_fades_mode = (
             await self.mass.config.get_player_config_value(
-                queue_id, CONF_SMART_FADES_MODE, return_type=SmartFadesMode
+                queue_id,
+                CONF_SMART_FADES_MODE,
+                default=SmartFadesMode.DISABLED,
+                return_type=SmartFadesMode,
             )
             if start_queue_item.media_type == MediaType.TRACK
             else SmartFadesMode.DISABLED
