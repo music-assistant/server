@@ -126,18 +126,14 @@ def handle_player_command[PlayerControllerT: "PlayerController", **P, R](
                 f"by user {current_user.username}" if current_user else "unauthenticated",
             )
 
-            async def execute() -> None:
-                async with self._player_throttlers[player.player_id]:
-                    try:
+            try:
+                if lock:
+                    async with self.get_player_lock(player.player_id, lock):
                         await fn(self, *args, **kwargs)
-                    except Exception as err:
-                        raise PlayerCommandFailed(str(err)) from err
-
-            if lock:
-                async with self.get_player_lock(player.player_id, lock):
-                    await execute()
-            else:
-                await execute()
+                else:
+                    await fn(self, *args, **kwargs)
+            except Exception as err:
+                raise PlayerCommandFailed(str(err)) from err
 
         return wrapper
 

@@ -37,12 +37,12 @@ from music_assistant_models.media_items import (
 from music_assistant_models.media_items.metadata import MediaItemMetadata
 
 from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.smart_playlist.helpers import (
     LOGIC_AND,
-    MAX_SIMILAR_TRACKS,
     RULES_FILENAME,
     SmartPlaylistRules,
     read_json,
@@ -61,6 +61,8 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 FETCH_LIMIT = 2000
+CACHE_CATEGORY_DYNAMIC_SAMPLE = 0
+DYNAMIC_SAMPLE_CACHE_EXPIRATION = 24 * 3600  # 24h; stale entries are still served via SWR
 
 SUPPORTED_FEATURES: set[ProviderFeature] = {
     ProviderFeature.BROWSE,
@@ -170,6 +172,10 @@ class SmartPlaylistProvider(PluginProvider):
             for filename in await asyncio.to_thread(os.listdir, self._rules_dir):
                 filepath = os.path.join(self._rules_dir, filename)
                 await asyncio.to_thread(os.remove, filepath)
+            await self.mass.cache.clear(
+                category_filter=CACHE_CATEGORY_DYNAMIC_SAMPLE,
+                provider_filter=self.instance_id,
+            )
 
     # --- PluginProvider interface ---
 
@@ -200,20 +206,38 @@ class SmartPlaylistProvider(PluginProvider):
         return self._build_playlist(prov_playlist_id, rules)
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
-        """Evaluate rules and return fresh tracks.
+        """Evaluate rules and return tracks.
 
-        Returns a full batch on page 0; empty list on subsequent pages.
-        For dynamic playlists a bounded buffer is returned per call so the browse overview
-        shows a representative sample and queue refills stay deduped/shuffled across refreshes.
+        Returns a full batch on page 0; empty list on subsequent pages. Dynamic playlists
+        return a bounded buffer (``DYNAMIC_PLAYLIST_SAMPLE_SIZE``) cached for
+        ``DYNAMIC_SAMPLE_CACHE_EXPIRATION`` so browsing stays snappy. Stale entries are
+        still served from cache while a fresh sample is rebuilt in the background
+        (stale-while-revalidate). Callers that wrap this in
+        ``mass.cache.handle_refresh(True)`` — notably the player queue when refilling a
+        dynamic playlist — bypass the cache entirely and get a freshly-evaluated sample.
         """
         if page > 0:
             return []
         rules = self._rules_store.get(prov_playlist_id)
         if rules is None:
             return []
-        if rules.is_dynamic:
-            rules = dc_replace(rules, limit=DYNAMIC_PLAYLIST_SAMPLE_SIZE)
-        return await self._evaluate_rules(rules)
+        if not rules.is_dynamic:
+            return await self._evaluate_rules(rules)
+        return await self._cached_dynamic_sample(prov_playlist_id)
+
+    @use_cache(
+        expiration=DYNAMIC_SAMPLE_CACHE_EXPIRATION,
+        category=CACHE_CATEGORY_DYNAMIC_SAMPLE,
+        base_class=Track,
+        allow_expired_cache=True,
+    )
+    async def _cached_dynamic_sample(self, prov_playlist_id: str) -> list[Track]:
+        """Evaluate a fresh sample for a dynamic playlist (wrapped in SWR cache)."""
+        rules = self._rules_store.get(prov_playlist_id)
+        if rules is None:
+            return []
+        sample_rules = dc_replace(rules, limit=DYNAMIC_PLAYLIST_SAMPLE_SIZE)
+        return await self._evaluate_rules(sample_rules)
 
     async def _on_media_item_deleted(self, event: MassEvent) -> None:
         """Remove the rules for a deleted smart playlist."""
@@ -225,6 +249,7 @@ class SmartPlaylistProvider(PluginProvider):
                 prov_id = mapping.item_id
                 self._rules_store.pop(prov_id, None)
                 self._names_store.pop(prov_id, None)
+                await self._invalidate_dynamic_sample_cache(prov_id)
                 await self._flush_rules_to_disk()
                 break
 
@@ -480,18 +505,11 @@ class SmartPlaylistProvider(PluginProvider):
         """Evaluate the rules and return a list of matching Track objects."""
         has_genre_filter = bool(rules.genre_ids)
 
-        if rules.seed_track_uri or rules.seed_artist_uri:
-            # Seed mode: a similar-tracks/artists pool is the exclusive source.
+        seed_uris = rules.all_seed_uris()
+        if seed_uris:
+            # Seed mode: a similar-tracks pool derived from the seeds is the exclusive source.
             # artist_ids and album_ids are ignored per design.
-            if rules.seed_track_uri:
-                tracks = await self._get_similar_tracks(rules.seed_track_uri, MAX_SIMILAR_TRACKS)
-            else:
-                assert rules.seed_artist_uri is not None  # guaranteed by outer condition
-                tracks = await self._get_similar_artists_tracks(
-                    rules.seed_artist_uri,
-                    MAX_SIMILAR_TRACKS,
-                    library_only=rules.seed_artist_library_only,
-                )
+            tracks = await self._tracks_from_seeds(seed_uris, target_size=rules.limit)
             tracks = await self._apply_seed_post_filters(tracks, rules, has_genre_filter)
         else:
             if rules.logic == LOGIC_AND:
@@ -769,98 +787,31 @@ class SmartPlaylistProvider(PluginProvider):
             order_by="random",
         )
 
-    async def _get_similar_tracks(self, seed_track_uri: str, limit: int) -> list[Track]:
-        """Get similar tracks for the given seed track URI."""
-        try:
-            _media_type, provider, item_id = await parse_uri(seed_track_uri)
-        except Exception:
-            self.logger.warning("Cannot parse seed_track_uri: %s", seed_track_uri)
-            return []
-        try:
-            return await self.mass.music.tracks.similar_tracks(
-                item_id=item_id,
-                provider_instance_id_or_domain=provider,
-                limit=limit,
-            )
-        except Exception as exc:
-            self.logger.warning("Could not get similar tracks for %s: %s", seed_track_uri, exc)
-            return []
-
-    async def _get_similar_artists_tracks(
-        self, seed_artist_uri: str, limit: int, library_only: bool
-    ) -> list[Track]:
-        """Get tracks for artists similar to the given seed artist URI."""
-        try:
-            _media_type, provider, item_id = await parse_uri(seed_artist_uri)
-        except Exception:
-            self.logger.warning("Cannot parse seed_artist_uri: %s", seed_artist_uri)
-            return []
-        try:
-            similar_artists = await self.mass.music.artists.similar_artists(
-                item_id=item_id,
-                provider_instance_id_or_domain=provider,
-                limit=20,
-            )
-        except Exception as exc:
-            self.logger.warning("Could not get similar artists for %s: %s", seed_artist_uri, exc)
-            return []
-
-        similar_names = {a.name.lower() for a in similar_artists}
-        if not similar_names:
-            return []
-
-        if library_only:
-            # Match against library tracks by artist name.
-            all_tracks = await self._get_library_tracks(limit=min(limit * 20, 2000))
-            result: dict[str, Track] = {}
-            for track in all_tracks:
-                for artist in track.artists:
-                    if artist.name.lower() in similar_names and track.uri:
-                        result[track.uri] = track
-                        break
-            return list(result.values())
-
-        # Provider mode: fetch top tracks for each similar artist directly from the provider.
-        result_provider: dict[str, Track] = {}
-        per_artist = max(1, limit // max(len(similar_artists), 1))
-        self.logger.debug(
-            "seed_artist provider mode: %d similar artists, per_artist=%d",
-            len(similar_artists),
-            per_artist,
-        )
-        for artist in similar_artists:
-            if len(result_provider) >= limit:
-                break
-            mapping = next(
-                (
-                    m
-                    for m in artist.provider_mappings
-                    if provider in {m.provider_instance, m.provider_domain}
-                ),
-                None,
-            ) or next(iter(artist.provider_mappings), None)
-            if not mapping:
-                self.logger.debug("No mapping found for artist %s", artist.name)
+    async def _tracks_from_seeds(self, seed_uris: list[str], target_size: int) -> list[Track]:
+        """Resolve seed URIs to media items and feed them through the dynamic radio helper."""
+        seeds: list[MediaItemType] = []
+        for uri in seed_uris:
+            try:
+                media_type, provider, item_id = await parse_uri(uri)
+            except Exception:
+                self.logger.warning("Cannot parse seed URI: %s", uri)
                 continue
             try:
-                artist_tracks = await self.mass.music.artists.get_provider_artist_toptracks(
-                    item_id=mapping.item_id,
-                    provider_instance_id_or_domain=mapping.provider_instance,
-                )
-                self.logger.debug(
-                    "Artist %s (%s): %d top tracks",
-                    artist.name,
-                    mapping.item_id,
-                    len(artist_tracks),
-                )
+                ctrl = self.mass.music.get_controller(media_type)
+                seeds.append(await ctrl.get(item_id, provider))
             except Exception as exc:
-                self.logger.debug("Error fetching tracks for artist %s: %s", artist.name, exc)
-                continue
-            for track in artist_tracks[:per_artist]:
-                if track.uri:
-                    result_provider[track.uri] = track
-        self.logger.debug("seed_artist provider mode: %d total tracks", len(result_provider))
-        return list(result_provider.values())
+                self.logger.warning("Could not resolve seed %s: %s", uri, exc)
+        if not seeds:
+            return []
+        try:
+            return await self.mass.music.get_dynamic_radio_tracks(
+                seeds,
+                include_base_tracks=True,
+                target_size=target_size,
+            )
+        except Exception as exc:
+            self.logger.warning("Dynamic radio generation failed for seeds %s: %s", seed_uris, exc)
+            return []
 
     async def _update_playlist_description(
         self, library_item_id: int | str, rules: SmartPlaylistRules
@@ -892,7 +843,16 @@ class SmartPlaylistProvider(PluginProvider):
     async def _save_rules(self, playlist_id: str, rules: SmartPlaylistRules) -> None:
         """Persist rules to disk and update in-memory store."""
         self._rules_store[playlist_id] = rules
+        await self._invalidate_dynamic_sample_cache(playlist_id)
         await self._flush_rules_to_disk()
+
+    async def _invalidate_dynamic_sample_cache(self, playlist_id: str) -> None:
+        """Drop the cached dynamic sample for this playlist so the next browse refreshes."""
+        await self.mass.cache.clear(
+            key_filter=playlist_id,
+            category_filter=CACHE_CATEGORY_DYNAMIC_SAMPLE,
+            provider_filter=self.instance_id,
+        )
 
     async def _flush_rules_to_disk(self) -> None:
         """Write all rules + names to disk as a single JSON file."""

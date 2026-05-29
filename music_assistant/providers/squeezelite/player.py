@@ -273,7 +273,10 @@ class SqueezelitePlayer(Player):
         )
         smart_fades_mode = (
             await self.mass.config.get_player_config_value(
-                self.player_id, CONF_SMART_FADES_MODE, return_type=SmartFadesMode
+                self.player_id,
+                CONF_SMART_FADES_MODE,
+                default=SmartFadesMode.DISABLED,
+                return_type=SmartFadesMode,
             )
             if media.media_type == MediaType.TRACK
             else SmartFadesMode.DISABLED
