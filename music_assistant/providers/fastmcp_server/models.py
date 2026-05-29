@@ -78,6 +78,7 @@ class PlayerBrief:
     volume_muted: bool | None = None
     group_volume: int | None = None
     group_volume_muted: bool | None = None
+    external_source: str | None = None
 
 
 @dataclass

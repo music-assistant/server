@@ -8,14 +8,16 @@ in-process helpers.
 from __future__ import annotations
 
 import contextlib
+import json
 from collections.abc import Iterator
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from fastmcp import Client, FastMCP
 
-from music_assistant.providers.fastmcp_server.tools import build_players_server
+from music_assistant.providers.fastmcp_server.tools import build_players_server, build_queue_server
 
 
 def _player(
@@ -296,3 +298,52 @@ async def test_get_player_returns_unavailable_player(
     assert result.data.player_id == "gone"
     assert result.data.available is False
     assert result.data.state == "unavailable"
+
+
+async def test_get_player_reports_external_source(mock_mass: Any, mounted_players: FastMCP) -> None:
+    """An idle player driven by a Connect source reports playing + provider."""
+    player = _player(player_id="lenco", name="Lenco LS-500", state="idle")
+    mock_mass.players.get_player.return_value = player
+    queue = SimpleNamespace(
+        state=SimpleNamespace(value="playing"),
+        current_item=SimpleNamespace(
+            name="Yandex Music Connect (Ynison)",
+            streamdetails=SimpleNamespace(
+                media_type=SimpleNamespace(value="audio_source"),
+                provider="yandex_ynison--PL8BnL7a",
+                stream_metadata=SimpleNamespace(title="Behind Your Walls"),
+            ),
+        ),
+    )
+    mock_mass.player_queues.get_active_queue.return_value = queue
+    async with Client(mounted_players) as client:
+        result = await client.call_tool("players_get_player", {"player_id": "lenco"})
+    assert result.data.state == "playing"
+    assert result.data.external_source == "yandex_ynison--PL8BnL7a"
+    assert result.data.current_item == "Behind Your Walls"
+
+
+def _ns(obj: Any) -> Any:
+    """Recursively turn dicts/lists into attribute-accessible namespaces."""
+    if isinstance(obj, dict):
+        return SimpleNamespace(**{k: _ns(v) for k, v in obj.items()})
+    if isinstance(obj, list):
+        return [_ns(v) for v in obj]
+    return obj
+
+
+async def test_queue_get_active_queue_external_item_title(mock_mass: Any) -> None:
+    """queue_get_active_queue surfaces the real title for an AUDIO_SOURCE item."""
+    raw = json.loads(
+        Path(__file__).parent.joinpath("fixtures/queue_external_audio_source.json").read_text()
+    )
+    queue = _ns(raw)
+    mock_mass.player_queues.get_active_queue.return_value = queue
+    mock_mass.player_queues.items.return_value = [queue.current_item]
+
+    mcp = FastMCP(name="test")
+    mcp.mount(build_queue_server(mock_mass), namespace="queue")
+    async with Client(mcp) as client:
+        result = await client.call_tool("queue_get_active_queue", {"player_id": "lenco"})
+    assert result.data.items[0].name == "Behind Your Walls"
+    mock_mass.player_queues.items.assert_called_with("lenco", limit=25)

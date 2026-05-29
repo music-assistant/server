@@ -19,6 +19,7 @@ from music_assistant.providers.fastmcp_server.models import (
     TrackBrief,
 )
 from music_assistant.providers.fastmcp_server.tools._common import (
+    _external_now_playing,
     page_args,
     to_brief_album,
     to_brief_artist,
@@ -720,6 +721,277 @@ def test_to_brief_queue_available_defaults_true_when_attr_missing() -> None:
         repeat_mode=None,
     )
     assert to_brief_queue(queue).available is True
+
+
+def test_player_brief_external_source_defaults_none() -> None:
+    """A self-driven player exposes ``external_source = None`` by default."""
+    player = SimpleNamespace(
+        player_id="p1",
+        name="Speaker",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        current_media=None,
+    )
+    assert to_brief_player(player).external_source is None
+
+
+def _audio_source_item(
+    *, provider: str, title: str | None, name: str = "Wrapper"
+) -> SimpleNamespace:
+    """Build a queue item stub whose stream is a plugin AUDIO_SOURCE."""
+    return SimpleNamespace(
+        name=name,
+        streamdetails=SimpleNamespace(
+            media_type=SimpleNamespace(value="audio_source"),
+            provider=provider,
+            stream_metadata=SimpleNamespace(title=title),
+        ),
+    )
+
+
+def test_external_now_playing_returns_provider_and_title() -> None:
+    """``_external_now_playing`` returns (provider, title) for an AUDIO_SOURCE item."""
+    item = _audio_source_item(provider="yandex_ynison--PL8BnL7a", title="Behind Your Walls")
+    assert _external_now_playing(item) == ("yandex_ynison--PL8BnL7a", "Behind Your Walls")
+
+
+def test_external_now_playing_none_for_normal_track() -> None:
+    """``_external_now_playing`` returns ``None`` for a normal track item."""
+    item = SimpleNamespace(
+        name="Real Track",
+        streamdetails=SimpleNamespace(
+            media_type=SimpleNamespace(value="track"),
+            provider="yandex_music--abc",
+            stream_metadata=None,
+        ),
+    )
+    assert _external_now_playing(item) is None
+
+
+def test_external_now_playing_none_when_no_streamdetails() -> None:
+    """``_external_now_playing`` returns ``None`` when there are no stream details."""
+    assert _external_now_playing(SimpleNamespace(name="x", streamdetails=None)) is None
+    assert _external_now_playing(None) is None
+
+
+def test_external_now_playing_title_may_be_none() -> None:
+    """``_external_now_playing`` returns ``(provider, None)`` when the title is absent."""
+    item = _audio_source_item(provider="airplay--1", title=None)
+    assert _external_now_playing(item) == ("airplay--1", None)
+
+
+def test_external_now_playing_accepts_legacy_plugin_source() -> None:
+    """The deprecated ``plugin_source`` media type is still treated as external."""
+    item = SimpleNamespace(
+        name="Wrapper",
+        streamdetails=SimpleNamespace(
+            media_type=SimpleNamespace(value="plugin_source"),
+            provider="spotify--1",
+            stream_metadata=SimpleNamespace(title="Some Song"),
+        ),
+    )
+    assert _external_now_playing(item) == ("spotify--1", "Some Song")
+
+
+def _queue(*, state: str, current_item: SimpleNamespace | None) -> SimpleNamespace:
+    return SimpleNamespace(state=SimpleNamespace(value=state), current_item=current_item)
+
+
+def test_to_brief_player_external_source_playing() -> None:
+    """Idle player + active queue playing an AUDIO_SOURCE reports the real state."""
+    player = SimpleNamespace(
+        player_id="lenco",
+        name="Lenco LS-500",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        current_media=None,
+    )
+    queue = _queue(
+        state="playing",
+        current_item=_audio_source_item(
+            provider="yandex_ynison--PL8BnL7a", title="Behind Your Walls"
+        ),
+    )
+    brief = to_brief_player(player, active_queue=queue)
+    assert brief.state == "playing"
+    assert brief.external_source == "yandex_ynison--PL8BnL7a"
+    assert brief.current_item == "Behind Your Walls"
+
+
+def test_to_brief_player_normal_active_queue_unchanged() -> None:
+    """A normal track in the active queue leaves external_source None."""
+    player = SimpleNamespace(
+        player_id="p",
+        name="Speaker",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=None,
+        current_media=SimpleNamespace(uri="ym://track/1", title="Song"),
+    )
+    normal_item = SimpleNamespace(
+        name="Song",
+        streamdetails=SimpleNamespace(
+            media_type=SimpleNamespace(value="track"),
+            provider="yandex_music--x",
+            stream_metadata=None,
+        ),
+    )
+    brief = to_brief_player(player, active_queue=_queue(state="playing", current_item=normal_item))
+    assert brief.external_source is None
+    assert brief.state == "playing"
+    assert brief.current_item == "Song"
+
+
+def test_to_brief_player_blocking_ladder_wins_over_queue() -> None:
+    """An unavailable player keeps state=unavailable even with a playing queue."""
+    player = SimpleNamespace(
+        player_id="p",
+        name="Offline",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        current_media=None,
+        available=False,
+    )
+    queue = _queue(
+        state="playing",
+        current_item=_audio_source_item(provider="airplay--1", title="X"),
+    )
+    assert to_brief_player(player, active_queue=queue).state == "unavailable"
+
+
+def test_to_brief_player_synced_wins_over_queue() -> None:
+    """A sync follower keeps state=synced even though its leader's queue plays."""
+    player = SimpleNamespace(
+        player_id="p",
+        name="Follower",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        current_media=None,
+        synced_to="leader",
+    )
+    queue = _queue(
+        state="playing",
+        current_item=_audio_source_item(provider="airplay--1", title="X"),
+    )
+    assert to_brief_player(player, active_queue=queue).state == "synced"
+
+
+def test_to_brief_player_disabled_wins_over_queue() -> None:
+    """An admin-disabled player keeps state=disabled even with a playing queue."""
+    player = SimpleNamespace(
+        player_id="p",
+        name="Disabled",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        current_media=None,
+        enabled=False,
+    )
+    queue = _queue(
+        state="playing",
+        current_item=_audio_source_item(provider="airplay--1", title="X"),
+    )
+    assert to_brief_player(player, active_queue=queue).state == "disabled"
+
+
+def test_to_brief_player_needs_setup_wins_over_queue() -> None:
+    """A not-yet-configured player keeps state=needs_setup even with a playing queue."""
+    player = SimpleNamespace(
+        player_id="p",
+        name="Unconfigured",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        current_media=None,
+        needs_setup=True,
+    )
+    queue = _queue(
+        state="playing",
+        current_item=_audio_source_item(provider="airplay--1", title="X"),
+    )
+    assert to_brief_player(player, active_queue=queue).state == "needs_setup"
+
+
+def test_to_brief_player_external_source_without_title_keeps_current_media() -> None:
+    """A titleless external source still sets external_source but does not blank current_item."""
+    player = SimpleNamespace(
+        player_id="p",
+        name="Speaker",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        current_media=SimpleNamespace(uri="airplay://x", title="Fallback"),
+    )
+    queue = _queue(
+        state="playing",
+        current_item=_audio_source_item(provider="airplay--1", title=None),
+    )
+    brief = to_brief_player(player, active_queue=queue)
+    assert brief.state == "playing"
+    assert brief.external_source == "airplay--1"
+    assert brief.current_item == "Fallback"
+
+
+def test_to_brief_player_no_active_queue_legacy_behaviour() -> None:
+    """With active_queue omitted, state comes from player.playback_state."""
+    player = SimpleNamespace(
+        player_id="p",
+        name="Speaker",
+        playback_state=SimpleNamespace(value="idle"),
+        volume_level=None,
+        current_media=None,
+    )
+    brief = to_brief_player(player)
+    assert brief.state == "idle"
+    assert brief.external_source is None
+
+
+def test_to_brief_queue_relabels_external_item() -> None:
+    """An AUDIO_SOURCE item shows the real track title; normal items keep theirs."""
+    external = _audio_source_item(
+        provider="yandex_ynison--PL8BnL7a",
+        title="Behind Your Walls",
+        name="Yandex Music Connect (Ynison)",
+    )
+    external.queue_item_id = "ext"
+    external.duration = None
+    external.media_item = None
+    normal = SimpleNamespace(
+        queue_item_id="n1",
+        name="Ordinary Song",
+        duration=120,
+        media_item=SimpleNamespace(artists=[SimpleNamespace(name="A")]),
+        streamdetails=None,
+    )
+    queue = SimpleNamespace(
+        queue_id="q",
+        current_index=0,
+        items=2,
+        shuffle_enabled=False,
+        repeat_mode=SimpleNamespace(value="off"),
+        available=True,
+    )
+    brief = to_brief_queue(queue, items=[external, normal])
+    names = [it.name for it in brief.items]
+    assert names == ["Behind Your Walls", "Ordinary Song"]
+
+
+def test_to_brief_queue_external_item_without_title_keeps_wrapper_name() -> None:
+    """A titleless AUDIO_SOURCE item falls back to its wrapper name, not an empty string."""
+    external = _audio_source_item(
+        provider="airplay--1",
+        title=None,
+        name="AirPlay",
+    )
+    external.queue_item_id = "ext"
+    external.duration = None
+    external.media_item = None
+    queue = SimpleNamespace(
+        queue_id="q",
+        current_index=0,
+        items=1,
+        shuffle_enabled=False,
+        repeat_mode=SimpleNamespace(value="off"),
+        available=True,
+    )
+    brief = to_brief_queue(queue, items=[external])
+    assert brief.items[0].name == "AirPlay"
 
 
 _DEBUG_CLASSES = [
