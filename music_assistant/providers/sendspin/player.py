@@ -920,6 +920,15 @@ class SendspinPlayer(SendspinBasePlayer):
         self._last_beat_queue_item_id = None
         self._last_beat_anchor_us = None
 
+    def _publish_repeat_shuffle(self, repeat: SendspinRepeatMode, *, shuffle: bool) -> None:
+        """Push repeat/shuffle to controller state for current-spec clients.
+
+        Old clients still read the copy mirrored onto metadata state.
+        """
+        if (controller_role := self._controller_role) is not None:
+            controller_role.set_repeat(repeat)
+            controller_role.set_shuffle(shuffle=shuffle)
+
     async def send_current_media_metadata(self) -> None:
         """Send the current media metadata to the sendspin group."""
         if not self.available:
@@ -1001,6 +1010,8 @@ class SendspinPlayer(SendspinBasePlayer):
         # Send metadata to the group
         if (metadata_role := self._metadata_role) is not None:
             metadata_role.set_metadata(metadata)
+
+        self._publish_repeat_shuffle(repeat, shuffle=shuffle)
 
         # Send color palette derived from the cover art (already computed by
         # the players controller with the Sendspin defined minimum contrast values).
