@@ -27,8 +27,10 @@ from .constants import (
     CONF_BRIGHTNESS,
     CONF_CLIENTKEY,
     CONF_COLOR_MODE,
+    CONF_HUE_LATENCY_MS,
     CONF_INTENSITY,
     CONF_USERNAME,
+    DEFAULT_HUE_LATENCY_MS,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -193,14 +195,41 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_COLOR_MODE,
             type=ConfigEntryType.STRING,
-            label="Color Mode",
-            description="How colors are mapped to the music.",
-            default_value="spectrum",
+            label="Mode",
+            description=(
+                "Visualization style. "
+                "'Smooth' (default): gentle spectrum-driven brightness with a "
+                "slowly drifting palette — colours read clearly, transients "
+                "feel like breathing. "
+                "'Palette': pure colour cycling, no brightness modulation. "
+                "Hue evolution is the whole show. "
+                "'Flash': strong brightness pulse on every beat (downbeats hit "
+                "harder); mild spectrum reactivity. "
+                "'Rave': maximum brightness swing on hits plus fast palette "
+                "rotation — most reactive, most intense."
+            ),
+            default_value="smooth",
             options=[
-                ConfigValueOption("Spectrum", "spectrum"),
-                ConfigValueOption("Bass Boost", "bass_boost"),
-                ConfigValueOption("Ambient", "ambient"),
+                ConfigValueOption("Smooth", "smooth"),
+                ConfigValueOption("Palette", "palette"),
+                ConfigValueOption("Flash", "flash"),
+                ConfigValueOption("Rave", "rave"),
             ],
+            immediate_apply=True,
+            category="settings",
+        ),
+        ConfigEntry(
+            key=CONF_HUE_LATENCY_MS,
+            type=ConfigEntryType.INTEGER,
+            label="Light latency (ms)",
+            description=(
+                "Milliseconds to render light updates ahead of the audio, to "
+                "offset the Hue bridge and DTLS delay. Raise if lights lag, "
+                "lower if they lead."
+            ),
+            default_value=DEFAULT_HUE_LATENCY_MS,
+            range=(0, 3000),
+            immediate_apply=True,
             category="settings",
         ),
     )

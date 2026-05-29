@@ -32,7 +32,7 @@ FREQUENCY_BANDS: Final[list[tuple[int, int]]] = [
 
 # ---- Spectrum config for Sendspin visualizer ----
 
-SPECTRUM_BINS: Final[int] = 8
+SPECTRUM_BINS: Final[int] = 17
 SPECTRUM_SCALE: Final[str] = "mel"
 SPECTRUM_F_MIN: Final[int] = 20
 SPECTRUM_F_MAX: Final[int] = 20000

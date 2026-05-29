@@ -12,5 +12,8 @@ CONF_CLIENTKEY: Final[str] = "hue_clientkey"
 CONF_BRIGHTNESS: Final[str] = "brightness"
 CONF_INTENSITY: Final[str] = "intensity"
 CONF_COLOR_MODE: Final[str] = "color_mode"
+CONF_HUE_LATENCY_MS: Final[str] = "hue_latency_ms"
+
+DEFAULT_HUE_LATENCY_MS: Final[int] = 20
 
 HUE_MDNS_TYPE: Final[str] = "_hue._tcp.local."

@@ -22,8 +22,10 @@ from .constants import (
     CONF_BRIDGE_ID,
     CONF_BRIGHTNESS,
     CONF_COLOR_MODE,
+    CONF_HUE_LATENCY_MS,
     CONF_INTENSITY,
     CONF_USERNAME,
+    DEFAULT_HUE_LATENCY_MS,
 )
 
 if TYPE_CHECKING:
@@ -169,12 +171,15 @@ class HueEntertainmentProvider(PluginProvider):
         Settings like brightness/intensity/color_mode can be updated
         without a full provider reload.
         """
-        settings_keys = {CONF_BRIGHTNESS, CONF_INTENSITY, CONF_COLOR_MODE}
+        settings_keys = {CONF_BRIGHTNESS, CONF_INTENSITY, CONF_COLOR_MODE, CONF_HUE_LATENCY_MS}
         if changed_keys & settings_keys and self._bridge_manager:
             self._bridge_manager.update_settings(
-                color_mode=str(config.get_value(CONF_COLOR_MODE) or "spectrum"),
+                color_mode=str(config.get_value(CONF_COLOR_MODE) or "smooth"),
                 brightness=int(float(str(config.get_value(CONF_BRIGHTNESS) or 100))),
                 intensity=int(float(str(config.get_value(CONF_INTENSITY) or 70))),
+                hue_latency_ms=int(
+                    float(str(config.get_value(CONF_HUE_LATENCY_MS) or DEFAULT_HUE_LATENCY_MS))
+                ),
             )
             self.config = config
             return
