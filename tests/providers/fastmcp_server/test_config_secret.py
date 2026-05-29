@@ -77,9 +77,7 @@ async def test_secret_gate_reevaluated_per_request_via_callable(
     """
     from fastmcp import Client, FastMCP  # noqa: PLC0415
 
-    from music_assistant.providers.fastmcp_server.tools.config import (
-        build_config_server,  # noqa: PLC0415
-    )
+    from music_assistant.providers.fastmcp_server.tools.config import build_config_server  # noqa: PLC0415
 
     flag: dict[str, bool] = {"on": False}
     sub = build_config_server(

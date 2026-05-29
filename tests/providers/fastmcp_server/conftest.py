@@ -4,9 +4,15 @@ Most tests run without a real Music Assistant install — they exercise pure
 logic (URI parsing, tag mapping, config entries shape) or use ``MagicMock``
 for ``mass``.
 """
-# ruff: noqa: D401, PLR0915
+# ruff: noqa: D401, PLC0415, PLR0915
 #   D401: fixture docstrings describe *what is returned* ("A stub …"), not
 #         imperative actions; rephrasing to "Build / Return …" hurts grep-ability.
+#   PLC0415: fixtures import provider modules lazily (inside the fixture body) to
+#            keep ``mass``-free tests cheap and to avoid import-time side effects.
+#            A file-level suppression is used instead of per-line suppressions so
+#            the intent survives the upstream import-path rewrite (which lengthens
+#            ``from music_assistant.providers.fastmcp_server.X`` lines and reflows them, detaching trailing
+#            per-line directives).
 #   PLR0915: ``mock_mass`` builds a tall MagicMock surface — splitting it across
 #            helpers obscures the test contract.
 
@@ -44,7 +50,7 @@ class FakeWebserver:
 
     def register_dynamic_route(self, path: str, handler: Any, method: str = "*") -> Any:
         """Mirror ``mass.webserver.register_dynamic_route``: store + return unregister."""
-        import contextlib  # noqa: PLC0415 - keep stdlib import inside method to mirror runtime
+        import contextlib
 
         self.routes.append((path, handler, method))
 
@@ -72,7 +78,7 @@ def build_aiohttp_app(fake_ws: FakeWebserver) -> Any:
     wizard-advertised MCP entry-point URL (``<base_url>/mcp/v1`` — no
     trailing slash) that real clients connect to.
     """
-    from aiohttp import web  # noqa: PLC0415 - aiohttp only needed by HTTP-level tests
+    from aiohttp import web
 
     app = web.Application()
     for path, handler, method in fake_ws.routes:
@@ -275,13 +281,11 @@ def fake_event_emitter(mock_mass: MagicMock) -> Any:
 @pytest.fixture
 def mounted_debug(mock_mass: MagicMock) -> Any:
     """Build a root FastMCP with the debug sub-server mounted, all debug tags allowed."""
-    import contextlib  # noqa: PLC0415
+    import contextlib
 
-    from fastmcp import FastMCP  # noqa: PLC0415
+    from fastmcp import FastMCP
 
-    from music_assistant.providers.fastmcp_server.tools.debug import (
-        build_debug_server,  # noqa: PLC0415
-    )
+    from music_assistant.providers.fastmcp_server.tools.debug import build_debug_server
 
     mcp = FastMCP(name="test")
     mcp.mount(build_debug_server(mock_mass, require_confirmation=False), namespace="debug")
@@ -305,17 +309,13 @@ def mounted_debug_off(mock_mass: MagicMock) -> Any:
     not FastMCP's built-in ``restrict_tag`` — the latter is scope-based
     OAuth authorisation while this provider needs config-driven visibility.
     """
-    import contextlib  # noqa: PLC0415
+    import contextlib
 
-    from fastmcp import FastMCP  # noqa: PLC0415
+    from fastmcp import FastMCP
 
-    from music_assistant.providers.fastmcp_server.middleware import (
-        TagFilterMiddleware,  # noqa: PLC0415
-    )
-    from music_assistant.providers.fastmcp_server.server import build_tag_lookup  # noqa: PLC0415
-    from music_assistant.providers.fastmcp_server.tools.debug import (
-        build_debug_server,  # noqa: PLC0415
-    )
+    from music_assistant.providers.fastmcp_server.middleware import TagFilterMiddleware
+    from music_assistant.providers.fastmcp_server.server import build_tag_lookup
+    from music_assistant.providers.fastmcp_server.tools.debug import build_debug_server
 
     mcp = FastMCP(name="test")
     mcp.mount(build_debug_server(mock_mass, require_confirmation=False), namespace="debug")
@@ -337,16 +337,12 @@ def mounted_debug_with_events(mock_mass: MagicMock, fake_event_emitter: Any) -> 
     through ``emitter.emit(...)`` and read back via either the MCP
     client or the buffer directly.
     """
-    import contextlib  # noqa: PLC0415
+    import contextlib
 
-    from fastmcp import FastMCP  # noqa: PLC0415
+    from fastmcp import FastMCP
 
-    from music_assistant.providers.fastmcp_server.debug.event_buffer import (
-        EventBuffer,  # noqa: PLC0415
-    )
-    from music_assistant.providers.fastmcp_server.tools.debug import (
-        build_debug_server,  # noqa: PLC0415
-    )
+    from music_assistant.providers.fastmcp_server.debug.event_buffer import EventBuffer
+    from music_assistant.providers.fastmcp_server.tools.debug import build_debug_server
 
     buf = EventBuffer(mock_mass, capacity=500)
     buf.start()
@@ -369,13 +365,11 @@ def mounted_debug_with_events(mock_mass: MagicMock, fake_event_emitter: Any) -> 
 @pytest.fixture
 def mounted_config(mock_mass: Any) -> Any:
     """Root FastMCP with the config sub-server mounted, all config tags visible."""
-    import contextlib  # noqa: PLC0415
+    import contextlib
 
-    from fastmcp import FastMCP  # noqa: PLC0415
+    from fastmcp import FastMCP
 
-    from music_assistant.providers.fastmcp_server.tools.config import (
-        build_config_server,  # noqa: PLC0415
-    )
+    from music_assistant.providers.fastmcp_server.tools.config import build_config_server
 
     mcp = FastMCP(name="test")
     mcp.mount(build_config_server(mock_mass, require_confirmation=False), namespace="config")
@@ -391,17 +385,13 @@ def mounted_config(mock_mass: Any) -> Any:
 @pytest.fixture
 def mounted_config_off(mock_mass: Any) -> Any:
     """Config sub-server with TagFilterMiddleware allowing zero tags."""
-    import contextlib  # noqa: PLC0415
+    import contextlib
 
-    from fastmcp import FastMCP  # noqa: PLC0415
+    from fastmcp import FastMCP
 
-    from music_assistant.providers.fastmcp_server.middleware import (
-        TagFilterMiddleware,  # noqa: PLC0415
-    )
-    from music_assistant.providers.fastmcp_server.server import build_tag_lookup  # noqa: PLC0415
-    from music_assistant.providers.fastmcp_server.tools.config import (
-        build_config_server,  # noqa: PLC0415
-    )
+    from music_assistant.providers.fastmcp_server.middleware import TagFilterMiddleware
+    from music_assistant.providers.fastmcp_server.server import build_tag_lookup
+    from music_assistant.providers.fastmcp_server.tools.config import build_config_server
 
     mcp = FastMCP(name="test")
     mcp.mount(build_config_server(mock_mass, require_confirmation=False), namespace="config")
@@ -418,13 +408,11 @@ def mounted_config_off(mock_mass: Any) -> Any:
 @pytest.fixture
 def mounted_config_no_secret(mock_mass: Any) -> Any:
     """Config sub-server built with secret writes disabled (value-gate off)."""
-    import contextlib  # noqa: PLC0415
+    import contextlib
 
-    from fastmcp import FastMCP  # noqa: PLC0415
+    from fastmcp import FastMCP
 
-    from music_assistant.providers.fastmcp_server.tools.config import (
-        build_config_server,  # noqa: PLC0415
-    )
+    from music_assistant.providers.fastmcp_server.tools.config import build_config_server
 
     mcp = FastMCP(name="test")
     mcp.mount(
@@ -448,10 +436,10 @@ def mock_config_targets(mock_mass: Any) -> Any:
     INTEGER-with-range (http_port), and a STRING (log_level). to_dict
     mirrors MA's __post_serialize__ (secret already masked).
     """
-    from unittest.mock import AsyncMock, MagicMock  # noqa: PLC0415
+    from unittest.mock import AsyncMock, MagicMock
 
-    from music_assistant_models.config_entries import ConfigEntry  # noqa: PLC0415
-    from music_assistant_models.enums import ConfigEntryType  # noqa: PLC0415
+    from music_assistant_models.config_entries import ConfigEntry
+    from music_assistant_models.enums import ConfigEntryType
 
     entries = {
         "log_level": ConfigEntry(key="log_level", type=ConfigEntryType.STRING, label="Log level"),

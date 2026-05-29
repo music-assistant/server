@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from fastmcp import Client
 
-import music_assistant.providers.fastmcp_server.debug.event_buffer as ev_buf
+import provider.debug.event_buffer as ev_buf
 from music_assistant.providers.fastmcp_server.debug.event_buffer import EventBuffer
 
 

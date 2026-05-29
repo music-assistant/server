@@ -88,7 +88,7 @@ async def test_reload_timeout_populates_last_error(
     mass.get_provider = MagicMock(return_value=not_ready)
 
     # Speed the 5s poll up so the test stays fast.
-    import music_assistant.providers.fastmcp_server.tools.debug as debug_mod  # noqa: PLC0415
+    import provider.tools.debug as debug_mod  # noqa: PLC0415
 
     monkeypatch.setattr(debug_mod, "_RELOAD_POLL_SECONDS", 0.05)
     monkeypatch.setattr(debug_mod, "_RELOAD_POLL_INTERVAL", 0.005)

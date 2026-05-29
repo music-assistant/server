@@ -8,7 +8,7 @@ from typing import Any, cast
 
 import pytest
 
-import music_assistant.providers.fastmcp_server.models
+from music_assistant.providers.fastmcp_server import models
 from music_assistant.providers.fastmcp_server.models import (
     AlbumBrief,
     ArtistBrief,
@@ -763,7 +763,7 @@ _DEBUG_CLASSES = [
 @pytest.mark.parametrize(("name", "fields"), _DEBUG_CLASSES)
 def test_debug_dataclass_shape(name: str, fields: set[str]) -> None:
     """Debug dataclasses are frozen, kw_only, and have the expected fields."""
-    cls = cast("type", getattr(provider.models, name))
+    cls = cast("type", getattr(models, name))
     assert dataclasses.is_dataclass(cls), f"{name} is not a dataclass"
     assert cls.__dataclass_params__.frozen, f"{name} must be frozen"  # type: ignore[attr-defined]
     assert cls.__dataclass_params__.kw_only, f"{name} must be kw_only"  # type: ignore[attr-defined]
@@ -822,7 +822,7 @@ _CONFIG_CLASSES = [
 @pytest.mark.parametrize(("name", "fields"), _CONFIG_CLASSES)
 def test_config_dataclass_shape(name: str, fields: set[str]) -> None:
     """Config dataclasses are frozen, kw_only, and have the expected fields."""
-    cls = cast("type", getattr(provider.models, name))
+    cls = cast("type", getattr(models, name))
     assert dataclasses.is_dataclass(cls), f"{name} is not a dataclass"
     assert cls.__dataclass_params__.frozen, f"{name} must be frozen"  # type: ignore[attr-defined]
     assert cls.__dataclass_params__.kw_only, f"{name} must be kw_only"  # type: ignore[attr-defined]
