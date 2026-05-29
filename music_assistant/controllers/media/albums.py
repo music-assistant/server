@@ -131,10 +131,12 @@ class AlbumsController(MediaControllerBase[Album]):
         :param provider: Filter by provider instance ID (single string or list).
         :param album_types: Filter by album types.
         :param genre: Filter by genre id(s).
+        :param username_or_user_id: Get items of this user instead of authenticated user. Needs sufficient permissions.
         """
         user: User | None = None
         if username_or_user_id:
-            user = await self.mass.webserver.auth.get_user_by_id_or_name(username_or_user_id)
+            # below raises if permissions are insufficient
+            user = await self.mass.music.get_requested_user_if_authorized(username_or_user_id)
 
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []

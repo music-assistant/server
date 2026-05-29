@@ -14,6 +14,7 @@ from datetime import datetime
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, Final, cast
 
+from music_assistant_models.auth import UserRole
 from music_assistant_models.background_task import BackgroundTask, TaskMetadata, TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
@@ -25,6 +26,7 @@ from music_assistant_models.enums import (
     TaskStatus,
 )
 from music_assistant_models.errors import (
+    InsufficientPermissions,
     InvalidDataError,
     InvalidProviderID,
     InvalidProviderURI,
@@ -325,11 +327,12 @@ class MusicController(CoreController):
         :param search_query: Search query.
         :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
-        :param username_or_user_id: get user from either id or name for provider filter
+        :param username_or_user_id: Get items of this user instead of authenticated user. Needs sufficient permissions.
         """
         user: User | None = None
         if username_or_user_id:
-            user = await self.mass.webserver.auth.get_user_by_id_or_name(username_or_user_id)
+            # below raises if permissions are insufficient
+            user = await self.get_requested_user_if_authorized(username_or_user_id)
         # use cache to avoid repeated searches
         plugin_search_providers = [
             p.instance_id
@@ -3506,3 +3509,33 @@ class MusicController(CoreController):
                 # simply return the first item because search is already sorted by best match
                 return _item
         return None
+
+    async def get_requested_user_if_authorized(self, username_or_user_id: str) -> User:
+        """Return requested user if authenticated user may access all music providers of this user.
+
+        Raises InsufficientPermissions otherwise.
+        """
+        requested_user = await self.mass.webserver.auth.get_user_by_id_or_name(username_or_user_id)
+        if not requested_user:
+            raise InvalidDataError(
+                f"A user with user id or name {username_or_user_id} is not available."
+            )
+
+        authenticated_user = get_current_user()
+        if not authenticated_user:
+            raise InsufficientPermissions("Only an authenticated user may request another user.")
+
+        if authenticated_user.role == UserRole.ADMIN or not authenticated_user.provider_filter:
+            # If no provider filter is set, a user is allowed to access any provider.
+            return requested_user
+
+        if not requested_user.provider_filter or not set(requested_user.provider_filter).issubset(
+            authenticated_user.provider_filter
+        ):
+            # Requested user may access any provider, but we excluded that the authenticated user can do the
+            # same already
+            raise InsufficientPermissions(
+                f"The authenticated user {authenticated_user.display_name} lacks permission to access all music providers accessible to {requested_user.display_name}."
+            )
+
+        return requested_user
