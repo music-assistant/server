@@ -3360,11 +3360,7 @@ class MusicController(CoreController):
         media_type: MediaType | None = None,
         username_or_user_id: str | None = None,
     ) -> MediaItemType | ItemMapping | None:
-        """Try to find a media item (such as a playlist) by name.
-
-        This is a copy of the HA integrations method with additional username specification.
-        The HA method shall become obsolete.
-        """
+        """Try to find a media item (such as a playlist) by name."""
         searchname = name.lower()
         library_functions = [
             x
