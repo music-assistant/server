@@ -14,6 +14,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.RECOMMENDATIONS,
 }
 
+SIGNIN_BY_API = "signin_by_api" # Custom key for ConfigEntry
 DATASERVICE_BASE = "https://dataservice.musicme.com/dataservice/v3"
 STREAM_BASE = "https://stream.hosting-media.net/musicme"
 WEB_BASE = "https://www.musicme.com"
