@@ -108,7 +108,7 @@ class _ModePreset:
     spatial_drift_per_second: float
     # Per-channel brightness multiplier range driven by the spectrum transient.
     # Setting `floor == max` disables the visible swing (constant brightness),
-    # which is what `palette` mode uses.
+    # which is what `ambient` mode uses.
     channel_floor: float
     channel_max: float
 
@@ -129,11 +129,9 @@ _MODES: dict[str, _ModePreset] = {
         channel_floor=0.60,
         channel_max=0.85,
     ),
-    "palette": _ModePreset(
-        # Pure beat-driven color cycling. No brightness modulation, no
-        # time-driven drift. Hold the prior color for 90% of the segment,
-        # then snap-crossfade across the final 10% so the new hue lands on
-        # the beat.
+    "ambient": _ModePreset(
+        # Pure beat-driven colour cycling, no brightness or time drift.
+        # Hold colour 90% of the segment, crossfade the last 10%.
         pulse_peak=1.0,
         downbeat_pulse_peak=1.0,
         beat_animation_fraction=0.1,
@@ -144,9 +142,8 @@ _MODES: dict[str, _ModePreset] = {
         channel_floor=0.80,
         channel_max=0.80,
     ),
-    "flash": _ModePreset(
-        # Strong on-beat brightness pulse; spectrum reaction stays mild so
-        # the beat dominates. Downbeats hit harder than regular beats.
+    "flashing": _ModePreset(
+        # Strong on-beat brightness pulse, mild spectrum reaction. Downbeats hit harder.
         pulse_peak=1.8,
         downbeat_pulse_peak=2.2,
         beat_animation_fraction=0.0,
@@ -157,10 +154,8 @@ _MODES: dict[str, _ModePreset] = {
         channel_floor=0.45,
         channel_max=0.80,
     ),
-    "rave": _ModePreset(
-        # Maximum swing (70%) with fast palette movement. Drum hits punch
-        # the full brightness range, palette walks a half-slot per beat for
-        # rapid hue rotation, gradient drifts faster across the room.
+    "energetic": _ModePreset(
+        # Maximum swing (70%) with fast palette movement and quick hue rotation.
         pulse_peak=1.2,
         downbeat_pulse_peak=1.2,
         beat_animation_fraction=0.2,
@@ -673,7 +668,7 @@ class HueAudioAnalyzer:
         ceiling = self._mode.channel_max
         if self._mode.channel_transient_scale <= 0.0:
             # No spectrum-driven swing: hold the floor (which == max for the
-            # `palette` mode, giving fully constant brightness).
+            # `ambient` mode, giving fully constant brightness).
             return floor
         fast = self._channel_filters[channel_index].update(energy)
         baseline = self._channel_baselines[channel_index].update(energy)

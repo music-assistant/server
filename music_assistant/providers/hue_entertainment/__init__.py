@@ -187,22 +187,18 @@ async def get_config_entries(
             label="Mode",
             description=(
                 "Visualization style. "
-                "'Smooth' (default): gentle spectrum-driven brightness with a "
-                "slowly drifting palette — colours read clearly, transients "
-                "feel like breathing. "
-                "'Palette': pure colour cycling, no brightness modulation. "
-                "Hue evolution is the whole show. "
-                "'Flash': strong brightness pulse on every beat (downbeats hit "
-                "harder); mild spectrum reactivity. "
-                "'Rave': maximum brightness swing on hits plus fast palette "
-                "rotation — most reactive, most intense."
+                "Smooth (default): spectrum-driven brightness with a slowly "
+                "drifting palette. "
+                "Ambient: colour cycling only, no brightness modulation. "
+                "Flashing: brightness pulse on every beat, stronger on downbeats. "
+                "Energetic: large brightness swings on hits plus fast palette rotation."
             ),
             default_value="smooth",
             options=[
                 ConfigValueOption("Smooth", "smooth"),
-                ConfigValueOption("Palette", "palette"),
-                ConfigValueOption("Flash", "flash"),
-                ConfigValueOption("Rave", "rave"),
+                ConfigValueOption("Ambient", "ambient"),
+                ConfigValueOption("Flashing", "flashing"),
+                ConfigValueOption("Energetic", "energetic"),
             ],
             immediate_apply=True,
             category="settings",

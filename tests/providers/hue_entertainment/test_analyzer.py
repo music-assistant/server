@@ -113,7 +113,7 @@ class TestRenderColors:
 
     def test_pulse_boosts_above_steady_level(self) -> None:
         """In a pulsed mode, output on the beat exceeds the steady (off-beat) level."""
-        analyzer = HueAudioAnalyzer(_make_channels(1), color_mode="flash")
+        analyzer = HueAudioAnalyzer(_make_channels(1), color_mode="flashing")
         analyzer.push_beats([_beat(0, downbeat=True), _beat(1_000_000), _beat(2_000_000)])
         on_beat = analyzer.render(now_us=1_000_000)[0]
         steady = analyzer.render(now_us=1_500_000)[0]
@@ -123,7 +123,7 @@ class TestRenderColors:
         """Identical timing but a downbeat flag produces a stronger pulse."""
 
         def render_at_beat(*, downbeat: bool) -> LightColorCommand:
-            analyzer = HueAudioAnalyzer(_make_channels(1), color_mode="flash")
+            analyzer = HueAudioAnalyzer(_make_channels(1), color_mode="flashing")
             analyzer.push_beats(
                 [_beat(0, downbeat=True), _beat(500_000, downbeat=downbeat), _beat(1_000_000)]
             )
@@ -242,7 +242,7 @@ class TestPeakWalkFallback:
 
     def test_peaks_advance_palette_when_no_beats(self) -> None:
         """Each consumed peak bumps _peak_palette_position by mode.palette_advance."""
-        analyzer = HueAudioAnalyzer(_make_channels(1), color_mode="palette")
+        analyzer = HueAudioAnalyzer(_make_channels(1), color_mode="ambient")
         step = analyzer._mode.palette_advance
         analyzer.apply_peak(strength=200, timestamp_us=1_000_000)
         analyzer.apply_peak(strength=200, timestamp_us=2_000_000)
@@ -251,7 +251,7 @@ class TestPeakWalkFallback:
 
     def test_pending_peak_does_not_advance_before_due(self) -> None:
         """Peaks scheduled in the future leave the walker untouched until promoted."""
-        analyzer = HueAudioAnalyzer(_make_channels(1), color_mode="palette")
+        analyzer = HueAudioAnalyzer(_make_channels(1), color_mode="ambient")
         analyzer.apply_peak(strength=200, timestamp_us=5_000_000)
         analyzer.render(now_us=1_000_000)
         assert analyzer._peak_palette_position == 0.0
@@ -264,7 +264,7 @@ class TestPeakWalkFallback:
 
     def test_clear_beats_resets_peak_walker(self) -> None:
         """clear_beats wipes the peak-driven position so the next track starts fresh."""
-        analyzer = HueAudioAnalyzer(_make_channels(1), color_mode="palette")
+        analyzer = HueAudioAnalyzer(_make_channels(1), color_mode="ambient")
         analyzer.apply_peak(strength=255, timestamp_us=500_000)
         analyzer.render(now_us=500_000)
         assert analyzer._peak_palette_position > 0.0
