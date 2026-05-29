@@ -153,9 +153,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         self.manifest.icon = "speaker-multiple"
         self._poll_task: asyncio.Task[None] | None = None
         self._player_command_locks: dict[str, asyncio.Lock] = {}
-        # Track which lock keys each async task holds, keyed on the task object via
-        # a weak ref so entries auto-clear if a task is garbage-collected before
-        # its finally block runs. Used by get_player_lock for re-entrant detection.
+        # Re-entrancy tracking for get_player_lock, keyed on the task object
+        # (weak ref auto-clears entries if a task is GC'd before its finally runs).
         self._task_held_locks: weakref.WeakKeyDictionary[asyncio.Task[Any], set[str]] = (
             weakref.WeakKeyDictionary()
         )
@@ -181,6 +180,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         task skip re-acquisition (preventing deadlocks), while deferred callbacks
         (call_later / create_task) correctly acquire a fresh lock.
 
+        If the lock can't be acquired within 30s the body runs anyway, to keep
+        the player responsive when a previous holder is stuck on a hung command.
+
         :param player_id: The player to lock.
         :param purpose: Lock category. Commands with different purposes can run
             concurrently on the same player.
@@ -193,26 +195,41 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             return
 
         lock = self._player_command_locks.setdefault(lock_key, asyncio.Lock())
-        wait_start = time.monotonic()
-        async with lock:
-            wait_elapsed = time.monotonic() - wait_start
-            if wait_elapsed > 5.0:
+        # Two-stage acquire: a slow-acquire log at 5s and a hard give-up at 30s.
+        # If the previous holder is stuck (e.g. on a dead provider socket), we
+        # proceed without the lock so this player stays responsive.
+        acquired = False
+        try:
+            async with asyncio.timeout(5):
+                await lock.acquire()
+            acquired = True
+        except TimeoutError:
+            self.logger.debug(
+                "Acquiring %s lock for player %s is slow (>5s)", purpose.value, player_id
+            )
+            try:
+                async with asyncio.timeout(25):
+                    await lock.acquire()
+                acquired = True
+            except TimeoutError:
                 self.logger.warning(
-                    "Acquiring %s lock for player %s took %.1fs — "
-                    "previous holder may be stuck on a slow/hung command",
+                    "Timed out (30s) acquiring %s lock for player %s — "
+                    "previous holder appears stuck; proceeding without lock",
                     purpose.value,
                     player_id,
-                    wait_elapsed,
                 )
-            if task is not None:
-                self._task_held_locks.setdefault(task, set()).add(lock_key)
-            try:
-                yield
-            finally:
+
+        if acquired and task is not None:
+            self._task_held_locks.setdefault(task, set()).add(lock_key)
+        try:
+            yield
+        finally:
+            if acquired:
                 if task is not None and (held := self._task_held_locks.get(task)) is not None:
                     held.discard(lock_key)
                     if not held:
                         del self._task_held_locks[task]
+                lock.release()
 
     async def get_config_entries(
         self,
@@ -997,14 +1014,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         # player is released from its group/sync first, then plays the media
         # standalone. With the preference off, behavior falls back to the
         # legacy "redirect to group leader" path below.
-        #
-        # Note: the PLAYBACK lock is acquired manually around _handle_play_media
-        # (not via the decorator) so that _release_player_for_play_media runs
-        # *outside* the lock. The release path calls cmd_set_members(group) /
-        # cmd_ungroup which acquire locks on other players (the group / sync
-        # leader). Holding our own player lock during that step would create an
-        # AB-BA cycle with concurrent cmd_set_members(group, …) calls that
-        # acquire lock(group) → lock(sync_leader) via the sync_group provider.
+        # Note: the release step runs outside the PLAYBACK lock to avoid an
+        # AB-BA cycle with cmd_set_members(group), which acquires lock(group)
+        # then lock(sync_leader) via the sync_group provider.
         target_player = self.get_player(player_id, True)
         if target_player is not None and (
             target_player.state.synced_to or target_player.state.active_group
