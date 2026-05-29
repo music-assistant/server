@@ -20,6 +20,15 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUNDLE_DIR = REPO_ROOT / "packaging" / "openclaw"
 
+# The bundle lives under ``packaging/`` in the provider repo, which is NOT part of
+# the surface synced into Music Assistant core (only ``provider/`` and ``tests/``
+# are). When these tests run inlined upstream the bundle is absent, so skip the
+# whole module there — the guard stays meaningful in the provider repo, its home.
+pytestmark = pytest.mark.skipif(
+    not BUNDLE_DIR.is_dir(),
+    reason="OpenClaw bundle (packaging/) is not synced into the upstream tree",
+)
+
 
 @pytest.fixture
 def mcp_json() -> dict:
