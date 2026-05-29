@@ -9,7 +9,7 @@ from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 
-from .constants import SUPPORTED_FEATURES
+from .constants import SUPPORTED_FEATURES, SIGNIN_BY_API
 from .provider import MusicMeProvider
 
 if TYPE_CHECKING:
@@ -42,6 +42,13 @@ async def get_config_entries(
     """
     # ruff: noqa: ARG001
     return (
+        ConfigEntry(
+            key=SIGNIN_BY_API,
+            type=ConfigEntryType.BOOLEAN,
+            label="Signin by API",
+            required=False,
+            description="If checked, the signin will be made by API call, if unchecked, login will be made by HTTP authentification.",
+        ),
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
