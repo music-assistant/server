@@ -609,17 +609,6 @@ class DeezerBrowseManager:
                     items=UniqueList(recently_played),
                 )
             )
-        # Convert all items to ItemMapping to work around a core serialization bug
-        # where RecommendationFolder.to_dict() corrupts Union-typed items (e.g. Playlist
-        # objects lose is_dynamic and gain Artist fields). ItemMapping objects are simple
-        # enough to survive the roundtrip and get resolved back to full objects on playback
-        # via playlists.get() / get_virtual_playlist().
-        for folder in result:
-            folder.items = UniqueList(
-                ItemMapping.from_item(item)
-                for item in folder.items
-                if not isinstance(item, BrowseFolder)
-            )
         return result
 
     async def _add_made_for_you(
