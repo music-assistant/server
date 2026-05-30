@@ -168,7 +168,21 @@ class SpotifyConnectProvider(PluginProvider):
             self._default_player_id,
             self.instance_id,
         )
+        # _audio_format describes the original Spotify source (Ogg Vorbis 320
+        # kbps, as requested via librespot's --bitrate flag) and is what we
+        # advertise to clients for source-format display.
         self._audio_format = AudioFormat(
+            content_type=ContentType.OGG,
+            codec_type=ContentType.VORBIS,
+            sample_rate=44100,
+            bit_depth=16,
+            channels=2,
+            bit_rate=320,
+        )
+        # _decoded_audio_format is what librespot actually pipes into MA after
+        # decoding the Ogg Vorbis stream; the streams controller hands this to
+        # ffmpeg as the input format so it can read the FIFO correctly.
+        self._decoded_audio_format = AudioFormat(
             content_type=ContentType.PCM_S16LE,
             codec_type=ContentType.PCM_S16LE,
             sample_rate=44100,
@@ -296,6 +310,7 @@ class SpotifyConnectProvider(PluginProvider):
             provider=self.instance_id,
             item_id=source_id,
             audio_format=self._audio_format,
+            decoded_audio_format=self._decoded_audio_format,
             media_type=MediaType.AUDIO_SOURCE,
             stream_type=StreamType.NAMED_PIPE,
             path=self.named_pipe,

@@ -24,6 +24,7 @@ from music_assistant.helpers.util import (
 )
 
 from .constants import MAX_ARTWORK_DIMENSION, UNKNOWN_PLAYLIST_NAME
+from .helpers.utils import is_library_id
 
 if TYPE_CHECKING:
     from .provider import AppleMusicProvider
@@ -283,10 +284,18 @@ def parse_playlist(
     playlist_obj: dict[str, Any],
     is_favourite: bool | None = None,
     can_edit_hint: bool | None = None,
+    library_id_override: str | None = None,
 ) -> Playlist:
     """Parse Apple Music playlist object to generic layout."""
     attributes = playlist_obj["attributes"]
-    playlist_id = attributes["playParams"].get("globalId") or playlist_obj["id"]
+    raw_playlist_id = playlist_obj["id"]
+    play_params = attributes.get("playParams", {})
+    # Prefer write-safe library IDs when available.
+    playlist_id = (
+        library_id_override
+        or (raw_playlist_id if is_library_id(raw_playlist_id) else play_params.get("globalId"))
+        or raw_playlist_id
+    )
     is_editable = can_edit_hint if can_edit_hint is not None else attributes.get("canEdit", False)
     playlist = Playlist(
         item_id=playlist_id,

@@ -220,6 +220,11 @@ class SmartPlaylistProvider(PluginProvider):
             return []
         rules = self._rules_store.get(prov_playlist_id)
         if rules is None:
+            # prov_playlist_id may be a library DB integer id; resolve it to the provider UUID.
+            resolved_id = await self._resolve_to_provider_id(prov_playlist_id)
+            if resolved_id is not None:
+                rules = self._rules_store.get(resolved_id)
+        if rules is None:
             return []
         if not rules.is_dynamic:
             return await self._evaluate_rules(rules)

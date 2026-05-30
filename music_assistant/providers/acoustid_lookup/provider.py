@@ -137,6 +137,9 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
                 "Skipping %s — track already has a MusicBrainz Recording Id", session_id
             )
             return False
+        if track.get_external_id(ExternalID.ISRC):
+            self.logger.debug("Skipping %s — track already has an ISRC", session_id)
+            return False
 
         fingerprinter = self._create_fingerprinter(audio_format.sample_rate, audio_format.channels)
         if fingerprinter is None:
