@@ -85,7 +85,7 @@ class MusicMeProvider(MusicProvider):
             self.logger.info("Trying to signin by API call")
             await self._signin_by_api()
         else:
-            self.logger.info("Trying to login by HTTP authentification")
+            self.logger.info("Trying to login by HTTP authentication")
             await self._login()
 
     async def unload(self, is_removed: bool = False) -> None:
