@@ -4,7 +4,7 @@ Beat-driven audio analyzer for Hue Entertainment.
 Cycles palette colors smoothly between beats. The schedule of upcoming beats
 arrives from the server in advance, so each segment between two beats can be
 rendered as a hold + cross-fade window centered on the beat boundary. Each
-beat also produces a short brightness pulse (downbeats hit harder).
+beat also produces a short brightness pulse (downbeats hit harder in some modes).
 """
 
 from __future__ import annotations
@@ -95,7 +95,7 @@ class _ModePreset:
     """Bundle of tunable knobs that define a visualization mode."""
 
     pulse_peak: float
-    # Optional separate pulse target on downbeats; None = use ``pulse_peak``.
+    # Separate pulse target on downbeats (equals pulse_peak when not differentiated).
     downbeat_pulse_peak: float
     beat_animation_fraction: float
     channel_transient_scale: float
@@ -469,13 +469,13 @@ class HueAudioAnalyzer:
         # Determine the segment (prior + next beat) we are inside. Without
         # both a prior and a next beat the beat-driven walker can't
         # interpolate, so fall back to a peak-driven palette scroll.
-        prior, nxt, segment, _prior_bib = self._current_segment(now_us)
-        if nxt is None or segment is None or segment <= 0 or prior is None:
+        prior, next_beat, segment, _prior_bib = self._current_segment(now_us)
+        if next_beat is None or segment is None or segment <= 0 or prior is None:
             colors = self._peak_walk_colors(palette, now_us)
             return self._fill_per_channel(colors, base_brightness, channel_mults)
 
-        pulse = self._compute_pulse(now_us, prior, nxt, segment)
-        colors = self._per_channel_colors(palette, prior, nxt, now_us, segment)
+        pulse = self._compute_pulse(now_us, prior, next_beat, segment)
+        colors = self._per_channel_colors(palette, prior, next_beat, now_us, segment)
         return self._fill_per_channel(colors, base_brightness * pulse, channel_mults)
 
     def _current_segment(
@@ -490,22 +490,22 @@ class HueAudioAnalyzer:
         prior = self._beats[prior_idx]
         if prior_idx + 1 >= len(self._beats):
             return prior, None, None, prior.beat_in_bar
-        nxt = self._beats[prior_idx + 1]
-        return prior, nxt, nxt.timestamp_us - prior.timestamp_us, prior.beat_in_bar
+        next_beat = self._beats[prior_idx + 1]
+        return prior, next_beat, next_beat.timestamp_us - prior.timestamp_us, prior.beat_in_bar
 
     def _per_channel_colors(
         self,
         palette: list[tuple[float, float, float]],
         prior: _ScheduledBeat,
-        nxt: _ScheduledBeat,
+        next_beat: _ScheduledBeat,
         now_us: int,
         segment: int,
     ) -> list[tuple[float, float, float]]:
         """Per-channel colors with beat-aligned changes + spatial gradient.
 
         Each segment interpolates the palette position from `prior`'s slot
-        toward `nxt`'s slot via the shortest modular path so downbeat-reset
-        bib values (e.g. 3 → 0) stay continuous regardless of palette length.
+        toward the next beat's slot via the shortest modular path so downbeat-reset
+        beat_in_bar values (e.g. 3 → 0) stay continuous regardless of palette length.
         The first ``1 - mode.beat_animation_fraction`` of the segment holds
         the prior color steady; the rest crossfades to land exactly on the
         next beat. ``mode.palette_advance`` scales the slot increment per
@@ -527,9 +527,9 @@ class HueAudioAnalyzer:
             time_blend = (t_norm - hold_until) / anim_fraction
 
         prior_slot = (prior.beat_in_bar * advance) % palette_len
-        next_slot = (nxt.beat_in_bar * advance) % palette_len
-        # Walk the shortest signed modular distance from prior to next so a
-        # downbeat (bib reset to 0) doesn't make the palette jump backwards.
+        next_slot = (next_beat.beat_in_bar * advance) % palette_len
+        # Walk the shortest signed slot distance from prior to next so a downbeat
+        # (beat_in_bar resets to 0) keeps the palette moving forward, not backward.
         delta = (next_slot - prior_slot) % palette_len
         if delta > palette_len / 2:
             delta -= palette_len
@@ -623,7 +623,7 @@ class HueAudioAnalyzer:
         return commands
 
     def _combined_channel_multipliers(self) -> list[float]:
-        """Stack spectrum-band and pitch-spotlight multipliers per channel."""
+        """Per-channel spectrum-band multipliers, floored to _PER_CHANNEL_MIN_MULT."""
         n = len(self._channels)
         if n == 0:
             return []
@@ -715,7 +715,7 @@ class HueAudioAnalyzer:
         self,
         now_us: int,
         prior: _ScheduledBeat,
-        nxt: _ScheduledBeat,
+        next_beat: _ScheduledBeat,
         segment: int,
     ) -> float:
         """Triangle-shaped brightness pulse centered on each adjacent beat.
@@ -727,7 +727,7 @@ class HueAudioAnalyzer:
         """
         half_width_us = max(1, int(segment * _PULSE_HALF_FRACTION))
         max_effect = 0.0
-        for beat in (prior, nxt):
+        for beat in (prior, next_beat):
             dist = abs(now_us - beat.timestamp_us)
             if dist >= half_width_us:
                 continue
@@ -924,8 +924,8 @@ def _order_palette(
     ordered = [remaining.pop(start)]
     while remaining:
         last = ordered[-1]
-        nxt = max(range(len(remaining)), key=lambda i: _rgb_distance(remaining[i], last))
-        ordered.append(remaining.pop(nxt))
+        farthest_idx = max(range(len(remaining)), key=lambda i: _rgb_distance(remaining[i], last))
+        ordered.append(remaining.pop(farthest_idx))
     return ordered
 
 

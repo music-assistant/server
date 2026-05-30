@@ -37,6 +37,7 @@ from music_assistant.providers.hue_entertainment.hue_sendspin_bridge.constants i
     SPECTRUM_BINS,
     SPECTRUM_F_MAX,
     SPECTRUM_F_MIN,
+    SPECTRUM_SCALE,
 )
 
 from .constants import (
@@ -140,10 +141,11 @@ class HueEntertainmentBridge:
                 # the buffer cap below.
                 buffer_capacity=2048,
                 rate_max=_VISUALIZER_RATE_HZ,
+                # Peaks requested as a fallback for when beats aren't computed yet.
                 types=["beat", "peak", "spectrum"],
                 spectrum=ClientHelloVisualizerSpectrum(
                     n_disp_bins=SPECTRUM_BINS,
-                    scale="mel",
+                    scale=SPECTRUM_SCALE,
                     f_min=SPECTRUM_F_MIN,
                     f_max=SPECTRUM_F_MAX,
                 ),
