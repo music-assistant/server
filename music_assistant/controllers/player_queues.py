@@ -78,7 +78,10 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    set_current_user,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import get_changed_keys, percentage
@@ -2294,6 +2297,11 @@ class PlayerQueuesController(CoreController):
         if dynamic_playlist is not None:
             # Dynamic playlist (e.g. a station): fetch next batch of tracks from the provider.
             # Do NOT fall back to generic radio - stations manage their own track supply.
+            # Restore the queue owner's user context so that provider filters are respected.
+            playback_user = (
+                await self.mass.webserver.auth.get_user(queue.userid) if queue.userid else None
+            )
+            set_current_user(playback_user)
             try:
                 dynamic_tracks = await self.get_playlist_tracks(dynamic_playlist, start_item=None)
                 queue_items = [
