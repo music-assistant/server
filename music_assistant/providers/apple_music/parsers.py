@@ -283,10 +283,15 @@ def parse_playlist(
     playlist_obj: dict[str, Any],
     is_favourite: bool | None = None,
     can_edit_hint: bool | None = None,
+    library_id_override: str | None = None,
 ) -> Playlist:
     """Parse Apple Music playlist object to generic layout."""
     attributes = playlist_obj["attributes"]
-    playlist_id = attributes["playParams"].get("globalId") or playlist_obj["id"]
+    # Prefer the library ID override (for write operations) if provided,
+    # otherwise fall back to globalId (catalog) or the raw object ID.
+    playlist_id = (
+        library_id_override or attributes["playParams"].get("globalId") or playlist_obj["id"]
+    )
     is_editable = can_edit_hint if can_edit_hint is not None else attributes.get("canEdit", False)
     playlist = Playlist(
         item_id=playlist_id,

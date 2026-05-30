@@ -118,10 +118,14 @@ class AppleMusicMediaManager:
         prov_playlist_id: str,
         is_favourite: bool = False,
         can_edit_hint: bool | None = None,
+        library_id_override: str | None = None,
     ) -> Playlist:
         """Get full playlist details by id."""
         return await self._get_regular_playlist(
-            prov_playlist_id, is_favourite, can_edit_hint=can_edit_hint
+            prov_playlist_id,
+            is_favourite,
+            can_edit_hint=can_edit_hint,
+            library_id_override=library_id_override,
         )
 
     @use_cache()
@@ -130,6 +134,7 @@ class AppleMusicMediaManager:
         prov_playlist_id: str,
         is_favourite: bool = False,
         can_edit_hint: bool | None = None,
+        library_id_override: str | None = None,
     ) -> Playlist:
         """Fetch and cache details for a regular (non-station) playlist."""
         if not is_catalog_id(prov_playlist_id):
@@ -142,6 +147,7 @@ class AppleMusicMediaManager:
             response["data"][0],
             is_favourite,
             can_edit_hint=can_edit_hint,
+            library_id_override=library_id_override,
         )
 
     @use_cache(allow_expired_cache=True)

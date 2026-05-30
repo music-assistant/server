@@ -157,6 +157,7 @@ async def test_library_playlists_preserve_can_edit_for_catalog_copy() -> None:
         "pl.catalog1",
         ANY,
         can_edit_hint=True,
+        library_id_override="p.library1",
     )
 
 
@@ -415,3 +416,59 @@ async def test_library_tracks_fetches_detail_for_album_name_only_mapping() -> No
     provider.api_client.get_data.assert_called_once_with(
         "me/library/songs/i.librarytrack4", include="catalog,albums,artists"
     )
+
+
+@pytest.mark.asyncio
+async def test_catalog_backed_playlist_uses_library_id_as_item_id() -> None:
+    """Catalog-backed library playlists must use the library ID as item_id.
+
+    When a playlist has hasCatalog=True, Apple only accepts write operations
+    (add tracks) against the library endpoint using the library ID (p.XXXXX),
+    not the catalog global ID (pl.u-...).
+    """
+    provider = _create_provider_mock()
+    provider.api_client = MagicMock()
+    provider.api_client.get_all_items = AsyncMock(
+        return_value=[
+            {
+                "id": "p.myLibraryPlaylist",
+                "attributes": {
+                    "hasCatalog": True,
+                    "canEdit": True,
+                    "playParams": {"globalId": "pl.u-abcd1234"},
+                    "name": "My Public Playlist",
+                    "curatorName": "me",
+                    "artwork": None,
+                },
+            }
+        ]
+    )
+    provider.api_client.get_ratings = AsyncMock(return_value={})
+    provider.api_client.get_data = AsyncMock(
+        return_value={
+            "data": [
+                {
+                    "id": "pl.u-abcd1234",
+                    "attributes": {
+                        "name": "My Public Playlist",
+                        "curatorName": "me",
+                        "playParams": {"globalId": "pl.u-abcd1234"},
+                        "canEdit": True,
+                    },
+                }
+            ]
+        }
+    )
+
+    manager = AppleMusicLibraryManager(provider)
+    # Wire up the real media manager so parse_playlist is exercised end-to-end.
+    provider.media_manager = AppleMusicMediaManager(provider)
+
+    playlists = [pl async for pl in manager.get_library_playlists()]
+
+    assert len(playlists) == 1
+    playlist = playlists[0]
+    # The item_id and ProviderMapping must use the library ID so that
+    # add_playlist_tracks POSTs to me/library/playlists/p.myLibraryPlaylist/tracks.
+    assert playlist.item_id == "p.myLibraryPlaylist"
+    assert all(pm.item_id == "p.myLibraryPlaylist" for pm in playlist.provider_mappings)
