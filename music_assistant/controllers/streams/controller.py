@@ -92,7 +92,7 @@ from music_assistant.providers.universal_group.player import UniversalGroupPlaye
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.player import PlayerMedia
-    from music_assistant_models.queue_item import QueueItem
+    from music_assistant_models.queue_items import QueueItem
     from music_assistant_models.streamdetails import StreamMetadata
 
     from music_assistant.mass import MusicAssistant
@@ -404,7 +404,8 @@ class StreamsController(CoreController):
             # gapless playback, we need to enforce flow mode
             queue_id
             and (queue_player := self.mass.players.get_player(queue_id))
-            and queue_player.config.get_value(CONF_SMART_FADES_MODE) != SmartFadesMode.DISABLED
+            and queue_player.config.get_value(CONF_SMART_FADES_MODE, SmartFadesMode.DISABLED)
+            != SmartFadesMode.DISABLED
             and protocol_player
             and not protocol_player.supports_gapless
         )
@@ -1111,7 +1112,8 @@ class StreamsController(CoreController):
                 # does not support gapless playback, we need to enforce flow mode
                 queue_id
                 and (queue_player := self.mass.players.get_player(queue_id))
-                and queue_player.config.get_value(CONF_SMART_FADES_MODE) != SmartFadesMode.DISABLED
+                and queue_player.config.get_value(CONF_SMART_FADES_MODE, SmartFadesMode.DISABLED)
+                != SmartFadesMode.DISABLED
                 and protocol_player
                 and not protocol_player.supports_gapless
             )
