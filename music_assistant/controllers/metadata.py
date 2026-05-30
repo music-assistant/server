@@ -1796,6 +1796,7 @@ class MetaDataController(CoreController):
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
         unique_keys: set[str] = set()
+        prov_images: UniqueList[MediaItemImage] | None = None
         for prov_mapping in sorted(
             audiobook.provider_mappings, key=lambda x: x.priority, reverse=True
         ):
@@ -1813,6 +1814,8 @@ class MetaDataController(CoreController):
                 prov_item = await self.mass.music.audiobooks.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
                 )
+                if prov_images is None and prov_item.metadata.images:
+                    prov_images = prov_item.metadata.images
                 audiobook.metadata.update(prov_item.metadata)
                 if audiobook.publisher is None and prov_item.publisher:
                     audiobook.publisher = prov_item.publisher
@@ -1822,6 +1825,11 @@ class MetaDataController(CoreController):
                     audiobook.narrators = prov_item.narrators
                 if not audiobook.duration and prov_item.duration:
                     audiobook.duration = prov_item.duration
+
+        # no way to select a cover for audiobooks, so replace rather than merge the
+        # images to keep it in sync with the provider; revisit if a picker is added
+        if prov_images is not None:
+            audiobook.metadata.images = prov_images
 
         # update final item in library database
         # set timestamp, used to determine when this function was last called
@@ -1842,6 +1850,7 @@ class MetaDataController(CoreController):
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
         unique_keys: set[str] = set()
+        prov_images: UniqueList[MediaItemImage] | None = None
         for prov_mapping in sorted(
             podcast.provider_mappings, key=lambda x: x.priority, reverse=True
         ):
@@ -1859,11 +1868,18 @@ class MetaDataController(CoreController):
                 prov_item = await self.mass.music.podcasts.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
                 )
+                if prov_images is None and prov_item.metadata.images:
+                    prov_images = prov_item.metadata.images
                 podcast.metadata.update(prov_item.metadata)
                 if podcast.publisher is None and prov_item.publisher:
                     podcast.publisher = prov_item.publisher
                 if not podcast.total_episodes and prov_item.total_episodes:
                     podcast.total_episodes = prov_item.total_episodes
+
+        # no way to select a cover for podcasts, so replace rather than merge the
+        # images to keep it in sync with the provider; revisit if a picker is added
+        if prov_images is not None:
+            podcast.metadata.images = prov_images
 
         # update final item in library database
         # set timestamp, used to determine when this function was last called
