@@ -7,6 +7,6 @@
   "requirements": [],
   "documentation": "https://music-assistant.io/player-support/msx-bridge",
   "multi_instance": false,
-  "stage": "stable",
+  "stage": "beta",
   "icon": "md:tv"
 }
