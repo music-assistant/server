@@ -923,7 +923,8 @@ class SendspinPlayer(SendspinBasePlayer):
     def _publish_repeat_shuffle(self, repeat: SendspinRepeatMode, *, shuffle: bool) -> None:
         """Push repeat/shuffle to controller state for current-spec clients.
 
-        Old clients still read the copy mirrored onto metadata state.
+        Clients implementing the older spec version still read the copy mirrored
+        onto metadata state, for now.
         """
         if (controller_role := self._controller_role) is not None:
             controller_role.set_repeat(repeat)
@@ -954,13 +955,15 @@ class SendspinPlayer(SendspinBasePlayer):
         if current_media is None:
             return
         queue_item: QueueItem | None = None
+        queue: PlayerQueue | None = None
         if current_media.source_id and current_media.queue_item_id:
+            queue = self.mass.player_queues.get(current_media.source_id)
             queue_item = self.mass.player_queues.get_item(
                 current_media.source_id, current_media.queue_item_id
             )
         is_playing = self.state.playback_state == PlaybackState.PLAYING
         track_progress = self._compute_track_progress_ms(current_media, is_playing=is_playing)
-        await self._send_beat_schedule(queue_item, track_progress, is_playing)
+        await self._send_beat_schedule(queue, queue_item, track_progress, is_playing)
 
     async def send_current_media_metadata(self) -> None:
         """Send the current media metadata to the sendspin group."""
@@ -1041,7 +1044,7 @@ class SendspinPlayer(SendspinBasePlayer):
         if (color_role := self._color_role) is not None:
             self._send_color_palette(color_role, current_media.palette)
 
-        await self._send_beat_schedule(queue_item, track_progress, is_playing)
+        await self._send_beat_schedule(queue, queue_item, track_progress, is_playing)
 
     def _send_color_palette(
         self, color_role: ColorGroupRole, palette: MediaItemPalette | None
@@ -1061,8 +1064,32 @@ class SendspinPlayer(SendspinBasePlayer):
             )
         )
 
+    @staticmethod
+    def _flow_track_offset_us(queue: PlayerQueue | None, queue_item: QueueItem) -> int | None:
+        """Return the current track's flow-stream start offset (minus file seek), in µs.
+
+        Sums the streamed duration of every track committed before the current
+        one in the queue-flow stream, so beats anchor to this track's start
+        rather than the first track's. Returns None when the flow log hasn't
+        recorded this track yet, so the caller falls back to the progress anchor.
+
+        A track whose intro was crossfade-trimmed loses its raw seek position
+        (only the elapsed-inflated value survives), so its anchor can be off by
+        up to the crossfade duration. Exact handling needs a raw-seek field on
+        the flow log entry.
+        """
+        if queue is None or queue_item.streamdetails is None:
+            return None
+        log = queue.flow_mode_stream_log
+        if not log or log[-1].queue_item_id != queue_item.queue_item_id:
+            return None
+        track_flow_start_s = sum(entry.seconds_streamed or 0.0 for entry in log[:-1])
+        file_seek_s = float(queue_item.streamdetails.seek_position or 0)
+        return int((track_flow_start_s - file_seek_s) * 1_000_000)
+
     async def _send_beat_schedule(
         self,
+        queue: PlayerQueue | None,
         queue_item: QueueItem | None,
         track_progress_ms: int,
         is_playing: bool,
@@ -1077,8 +1104,8 @@ class SendspinPlayer(SendspinBasePlayer):
             self._last_beat_anchor_us = None
             self._cancel_beat_retry()
             return
-        # smart_fades is the only AA provider that emits beats. Without it (single-core
-        # default precondition, or user-disabled), no beats will ever arrive for this source.
+        # smart_fades is the only AA provider that emits beats. Without it, no
+        # beats will ever arrive for this source.
         if not any(
             p.available and p.domain == "smart_fades"
             for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS)
@@ -1091,9 +1118,13 @@ class SendspinPlayer(SendspinBasePlayer):
             return
         provider = cast("SendspinProvider", self.provider)
         now_us = provider.server_api.clock.now_us()
-        # Anchor beats to the audio timeline. Falls back to the progress-derived anchor until the stream
-        # has committed its first chunk and the audio anchor is known.
-        anchor_us = self.playback_session.beat_track_anchor_us
+        # Anchor beats to the current track's spot in the flow stream's audio
+        # timeline. Falls back to the progress-derived anchor until the first
+        # chunk commits or while the flow log hasn't recorded this track yet.
+        anchor_us: int | None = None
+        offset_us = self._flow_track_offset_us(queue, queue_item)
+        if offset_us is not None:
+            anchor_us = self.playback_session.flow_track_anchor_us(offset_us)
         if anchor_us is None:
             anchor_us = now_us - track_progress_ms * 1000
         # Re-push only on track change or seek (anchor jumps beyond natural drift).
@@ -1112,9 +1143,9 @@ class SendspinPlayer(SendspinBasePlayer):
             # Analysis may still be running (offline NN takes ~5-10 s). Kick a
             # poller so beats land once available, without waiting for the
             # next player media update.
-            # NOTE: if music_assistant adds EventType.AUDIO_ANALYSIS_UPDATED
-            # upstream, swap this poller for a direct event subscription that
-            # retriggers _send_beat_schedule once for the current track.
+            # This could be solved more elegantly with an event instead of this
+            # poller, but that means changes outside the sendspin provider, which
+            # is riskier.
             self._schedule_beat_retry(queue_item.queue_item_id)
             return  # don't poison the cache; retry asynchronously
         # Analysis is in — no more retries needed.

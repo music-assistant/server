@@ -335,9 +335,6 @@ class SendspinPlaybackSession:
         self._producer_eof_sent = False
         self._timeline_start_us: int | None = None
         self._first_commit_monotonic_us: int | None = None
-        # Track position (us) of the stream's first sample. Lets beats, which
-        # are timed from the track file start, map onto the audio timeline.
-        self._session_start_position_us = 0
         self._produced_audio_us = 0
         self._history: deque[_HistoryChunk] = deque()
         self._join_catchup: dict[str, _JoinCatchupState] = {}
@@ -352,18 +349,17 @@ class SendspinPlaybackSession:
         self._pcm_format: AudioFormat = _DEFAULT_PCM_FORMAT
         self._sendspin_pcm_format: SendspinAudioFormat = _DEFAULT_SENDSPIN_PCM_FORMAT
 
-    @property
-    def beat_track_anchor_us(self) -> int | None:
-        """Server-clock time of track position 0 for the active stream.
+    def flow_track_anchor_us(self, track_start_offset_us: int) -> int | None:
+        """Server-clock time of the current flow track's file-position 0.
 
-        Beats are timed from the track file start, so they must be anchored to
-        the audio's own server timeline (the same one visualizer peak frames
-        ride), offset by the stream's start/seek position. Returns None until
-        the first chunk commits and the timeline anchor is known.
+        ``track_start_offset_us`` is the current track's start offset within the
+        flow stream (minus its file seek), so beats timed from the track file
+        map onto the shared audio timeline regardless of queue position. Returns
+        None until the first chunk commits and the timeline anchor is known.
         """
         if self._timeline_start_us is None:
             return None
-        return self._timeline_start_us - self._session_start_position_us
+        return self._timeline_start_us + track_start_offset_us
 
     # -- Helpers ---------------------------------------------------------------
 
@@ -740,7 +736,6 @@ class SendspinPlaybackSession:
             self._produced_audio_us = 0
             self._timeline_start_us = None
             self._first_commit_monotonic_us = None
-            self._session_start_position_us = max(0, int((media.elapsed_time or 0) * 1_000_000))
             self._mapping_dirty = True
         # Bounded queue between producer (stream reader) and consumer (committer).
         pending_chunks: asyncio.Queue[_PendingChunk | None] = asyncio.Queue(
