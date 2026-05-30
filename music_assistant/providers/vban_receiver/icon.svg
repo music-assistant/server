@@ -1,1 +1,63 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128"><image width="128" height="128" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACABAMAAAAxEHz4AAAAMFBMVEVd7fRo4/IxRVUA//91+/5bvc5HaHZYm6pKdoUlKztatMMAAAArO0to5vpj1+o0UmJkZ0/uAAAAEHRSTlMJ/v8BQf//////EQD+/vb/V+GKyQAAAuJJREFUeNrt1k9IFFEcwPHvrNtiw0S79w7ioVu00R40+vMK22NsIB4k6PUHhe1QgSD0B4Q6hVAHkdoQJvIQarTQQbDUB4VKKeypIAiELkWBCz0esmbbYUaScgeWPSnvnYbhzWfm936/95vnvKKxEcMCFrCABSxgAQtYwAIW2JGAc7hRoNHDdqPDdT4HH5Ks+9FqGYA4APrMcmOAt75Uf/72NphGuWMqMf73slvwKw9mFM6NAjD4CYACsbgEM0pLFrpFLC63BJonVXses2tSHUlPKoAfxRzQ1I92KsAVj/uSj8t6fMsQzCNwDG5FMYsKUv0YMKsC7zTAPihGrIFbVczn4Shk00BGwJQCt6JgKpy0ZiIWMSGoCmQfWgJORwa8EjABeH4wZ25M1gZkJzop/R94A8DP/ps+qHCZdDJ8sOjXzoJ/aNnzi+ZBue15HOhyHYkAc6vsGq8nF8YQVQcLgjcmkaYJgLERiW6RJpHmIGzEPjcSATQp2qjCOxfYMz6RoyPnu+tKXxIc25j0MgKoJJlxe5UuAFQLz6AXaMNLdrIgARxYS9cG8ndpPnACL9joiwoeg+zDefoanZNA+xBzZ2sD/i/0QDzIIoBgqog/Qfu1ITzfB5iGqxGbqRPvyy2yBkC3tl7HK5iKQnVlwlL6nReUawMmIRgss+ACsLTkChwcQeL7VzhpgFimMyqNbrPiG9zedGvG7Q22BfN5whgiQljvw0OngzXo6vqgOMX5jR4qAUwhuqEcBfYEy+UtLl4FeAupVCqJLgG4l4cigSdAe1jtKyvA+6ZBdCaTSeHdCTI1HQWYRwJmN904eW9VkL0xNjYPbSVQmIdRgFtV6GxQAgDxC7IC1f2YmKCSLnMct+efGMJf24mw1RRguBT0Rdg97W9ulHNHoAe6BcMl4OKLrYA6Rghs4x+L/L+l1Tf88NVOCoC3A3ULCzoAOrb7IavxL7CHbQtYwAIWsIAFLGABC+xQ4A8LAu3HSmUsDwAAAABJRU5ErkJggg=="/></svg>
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 128 128"
+   version="1.1"
+   id="svg1"
+   sodipodi:docname="icon.svg"
+   inkscape:version="1.3.2 (091e20e, 2023-11-25, custom)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs1">
+    <rect
+       x="21.117845"
+       y="11.492705"
+       width="102.71605"
+       height="50.567901"
+       id="rect4" />
+  </defs>
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="6.9609375"
+     inkscape:cx="63.928171"
+     inkscape:cy="64"
+     inkscape:window-width="1920"
+     inkscape:window-height="1129"
+     inkscape:window-x="-8"
+     inkscape:window-y="-8"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg1" />
+  <rect
+     style="fill:#69e6fa;fill-opacity:1"
+     id="rect2"
+     width="128.57463"
+     height="34.478115"
+     x="-0.1436588"
+     y="42.810326" />
+  <rect
+     style="fill:#000000;fill-opacity:1"
+     id="rect3"
+     width="101.42312"
+     height="33.041527"
+     x="13.072951"
+     y="43.528618" />
+  <text
+     xml:space="preserve"
+     id="text3"
+     style="white-space:pre;shape-inside:url(#rect4);fill:#000000;fill-opacity:1"
+     transform="translate(-0.14365881,35.196409)"><tspan
+       x="21.117188"
+       y="35.40099"
+       id="tspan2"><tspan
+         style="font-weight:900;font-size:26.6667px;font-family:Arial;-inkscape-font-specification:'Arial, Heavy';fill:#69e6fa"
+         id="tspan1">VBAN</tspan></tspan></text>
+</svg>
