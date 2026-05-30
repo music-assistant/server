@@ -18,12 +18,14 @@ from music_assistant.providers.hue_entertainment.hue_sendspin_bridge import HueE
 
 from .bridge import HueEntertainmentBridgeManager
 from .constants import (
+    COLOR_MODES,
     CONF_BRIDGE_HOST,
     CONF_BRIDGE_ID,
     CONF_BRIGHTNESS,
     CONF_COLOR_MODE,
     CONF_HUE_LATENCY_MS,
     CONF_USERNAME,
+    DEFAULT_COLOR_MODE,
     DEFAULT_HUE_LATENCY_MS,
 )
 
@@ -60,6 +62,12 @@ class HueEntertainmentProvider(PluginProvider):
 
     async def loaded_in_mass(self) -> None:
         """Initialize Hue bridge connection and set up entertainment area bridges."""
+        # Migrate orphaned color_mode values from older versions to the default
+        # so the settings dropdown shows a valid option.
+        stored_mode = self.config.get_value(CONF_COLOR_MODE)
+        if stored_mode is not None and str(stored_mode) not in COLOR_MODES:
+            self._update_config_value(CONF_COLOR_MODE, DEFAULT_COLOR_MODE)
+
         host = self.config.get_value(CONF_BRIDGE_HOST)
         username = self.config.get_value(CONF_USERNAME)
 

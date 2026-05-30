@@ -21,6 +21,7 @@ from music_assistant_models.errors import LoginFailed, SetupFailedError
 from music_assistant.providers.hue_entertainment.hue_sendspin_bridge import HueEntertainmentAPI
 
 from .constants import (
+    COLOR_MODES,
     CONF_ACTION_PAIR,
     CONF_BRIDGE_HOST,
     CONF_BRIDGE_ID,
@@ -29,6 +30,7 @@ from .constants import (
     CONF_COLOR_MODE,
     CONF_HUE_LATENCY_MS,
     CONF_USERNAME,
+    DEFAULT_COLOR_MODE,
     DEFAULT_HUE_LATENCY_MS,
 )
 
@@ -193,13 +195,8 @@ async def get_config_entries(
                 "Flashing: brightness pulse on every beat, stronger on downbeats. "
                 "Energetic: large brightness swings on hits plus fast palette rotation."
             ),
-            default_value="smooth",
-            options=[
-                ConfigValueOption("Smooth", "smooth"),
-                ConfigValueOption("Ambient", "ambient"),
-                ConfigValueOption("Flashing", "flashing"),
-                ConfigValueOption("Energetic", "energetic"),
-            ],
+            default_value=DEFAULT_COLOR_MODE,
+            options=[ConfigValueOption(mode.capitalize(), mode) for mode in COLOR_MODES],
             category="settings",
         ),
         ConfigEntry(
@@ -208,8 +205,8 @@ async def get_config_entries(
             label="Light latency (ms)",
             description=(
                 "Milliseconds to render light updates ahead of the audio, to "
-                "offset the Hue bridge and DTLS delay. Raise if lights lag, "
-                "lower if they lead."
+                "offset the Hue bridge and DTLS delay. Increase if the lights "
+                "lag the music, decrease if they run ahead of it."
             ),
             default_value=DEFAULT_HUE_LATENCY_MS,
             range=(0, 3000),
