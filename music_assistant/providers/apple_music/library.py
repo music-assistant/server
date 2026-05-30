@@ -170,9 +170,7 @@ class AppleMusicLibraryManager:
         )
         for item in playlist_items:
             is_favourite = rating_library_response.get(item["id"])
-            # Prefer catalog information over library information in case of public playlists.
-            # Pass the library ID as override so that write operations (add_playlist_tracks)
-            # use the library endpoint instead of the catalog global ID, which Apple rejects.
+            # Fetch catalog metadata, but keep library ID for write operations.
             if item["attributes"]["hasCatalog"]:
                 yield await self.provider.media_manager.get_playlist(
                     item["attributes"]["playParams"]["globalId"],
