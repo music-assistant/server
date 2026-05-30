@@ -157,6 +157,7 @@ async def test_library_playlists_preserve_can_edit_for_catalog_copy() -> None:
         "pl.catalog1",
         ANY,
         can_edit_hint=True,
+        library_id_override="p.library1",
     )
 
 
@@ -414,4 +415,204 @@ async def test_library_tracks_fetches_detail_for_album_name_only_mapping() -> No
     assert tracks[0].album.name == "Resolved Album"
     provider.api_client.get_data.assert_called_once_with(
         "me/library/songs/i.librarytrack4", include="catalog,albums,artists"
+    )
+
+
+@pytest.mark.asyncio
+async def test_catalog_backed_playlist_uses_library_id_as_item_id() -> None:
+    """Catalog-backed library playlists must use the library ID as item_id.
+
+    When a playlist hasCatalog=True, Apple only accepts write operations
+    (add tracks) against the library endpoint using the library ID (p.XXXXX),
+    not the catalog global ID (pl.u-...).
+    """
+    provider = _create_provider_mock()
+    provider.api_client = MagicMock()
+    provider.api_client.get_all_items = AsyncMock(
+        return_value=[
+            {
+                "id": "p.myLibraryPlaylist",
+                "attributes": {
+                    "hasCatalog": True,
+                    "canEdit": True,
+                    "playParams": {"globalId": "pl.u-abcd1234"},
+                    "name": "My Public Playlist",
+                    "curatorName": "me",
+                    "artwork": None,
+                },
+            }
+        ]
+    )
+    provider.api_client.get_ratings = AsyncMock(return_value={})
+    provider.api_client.get_data = AsyncMock(
+        return_value={
+            "data": [
+                {
+                    "id": "pl.u-abcd1234",
+                    "attributes": {
+                        "name": "My Public Playlist",
+                        "curatorName": "me",
+                        "playParams": {"globalId": "pl.u-abcd1234"},
+                        "canEdit": True,
+                    },
+                }
+            ]
+        }
+    )
+
+    manager = AppleMusicLibraryManager(provider)
+    # Exercise parse_playlist through the real media manager.
+    provider.media_manager = AppleMusicMediaManager(provider)
+
+    playlists = [pl async for pl in manager.get_library_playlists()]
+
+    assert len(playlists) == 1
+    playlist = playlists[0]
+    # Must use library ID so add_playlist_tracks targets /me/library/playlists/{id}/tracks.
+    assert playlist.item_id == "p.myLibraryPlaylist"
+    assert all(pm.item_id == "p.myLibraryPlaylist" for pm in playlist.provider_mappings)
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_by_library_id_keeps_library_item_id() -> None:
+    """Direct library playlist fetch must keep the library playlist ID."""
+    provider = _create_provider_mock()
+    provider.api_client = MagicMock()
+    provider.api_client.get_data = AsyncMock(
+        return_value={
+            "data": [
+                {
+                    "id": "p.myLibraryPlaylist",
+                    "attributes": {
+                        "name": "My Public Playlist",
+                        "curatorName": "me",
+                        "playParams": {"globalId": "pl.u-abcd1234"},
+                        "canEdit": True,
+                    },
+                }
+            ]
+        }
+    )
+
+    manager = AppleMusicMediaManager(provider)
+    playlist = await manager.get_playlist("p.myLibraryPlaylist")
+
+    provider.api_client.get_data.assert_called_once_with("me/library/playlists/p.myLibraryPlaylist")
+    assert playlist.item_id == "p.myLibraryPlaylist"
+    assert all(pm.item_id == "p.myLibraryPlaylist" for pm in playlist.provider_mappings)
+
+
+@pytest.mark.asyncio
+async def test_get_album_uses_library_endpoint_for_library_id() -> None:
+    """get_album should use me/library/albums/{id} for library IDs (l. prefix)."""
+    provider = _create_provider_mock()
+    provider.api_client = MagicMock()
+    provider.api_client.get_data = AsyncMock(
+        return_value={
+            "data": [
+                {
+                    "id": "l.PnamISl",
+                    "type": "library-albums",
+                    "attributes": {
+                        "name": "Uploaded Album",
+                        "artistName": "Uploaded Artist",
+                        "playParams": {"id": "l.PnamISl", "isLibrary": True},
+                    },
+                    "relationships": {},
+                }
+            ]
+        }
+    )
+    provider.api_client.get_ratings = AsyncMock(return_value={})
+
+    manager = AppleMusicMediaManager(provider)
+    album = await manager.get_album("l.PnamISl")
+
+    provider.api_client.get_data.assert_called_once_with(
+        "me/library/albums/l.PnamISl", include="catalog,artists"
+    )
+    assert isinstance(album, Album)
+    assert album.name == "Uploaded Album"
+
+
+@pytest.mark.asyncio
+async def test_get_album_tracks_uses_library_endpoint_for_library_id() -> None:
+    """get_album_tracks should use me/library/albums/{id}/tracks for library IDs."""
+    provider = _create_provider_mock()
+    provider.api_client = MagicMock()
+    provider.api_client.get_data = AsyncMock(
+        side_effect=[
+            # First call: get_album_tracks endpoint
+            {
+                "data": [
+                    {
+                        "id": "i.track1",
+                        "type": "library-songs",
+                        "attributes": {
+                            "name": "Track 1",
+                            "artistName": "Uploaded Artist",
+                            "durationInMillis": 180000,
+                            "playParams": {"id": "i.track1", "isLibrary": True},
+                        },
+                        "relationships": {},
+                    }
+                ]
+            },
+            # Second call: get_album (called internally)
+            {
+                "data": [
+                    {
+                        "id": "l.PnamISl",
+                        "type": "library-albums",
+                        "attributes": {
+                            "name": "Uploaded Album",
+                            "artistName": "Uploaded Artist",
+                            "playParams": {"id": "l.PnamISl", "isLibrary": True},
+                        },
+                        "relationships": {},
+                    }
+                ]
+            },
+        ]
+    )
+    provider.api_client.get_ratings = AsyncMock(return_value={})
+
+    manager = AppleMusicMediaManager(provider)
+    tracks = await manager.get_album_tracks("l.PnamISl")
+
+    first_call_args = provider.api_client.get_data.call_args_list[0]
+    assert first_call_args[0][0] == "me/library/albums/l.PnamISl/tracks"
+    assert len(tracks) == 1
+    assert tracks[0].name == "Track 1"
+
+
+@pytest.mark.asyncio
+async def test_get_album_uses_catalog_endpoint_for_catalog_id() -> None:
+    """get_album should continue using the catalog endpoint for numeric catalog IDs."""
+    provider = _create_provider_mock()
+    provider.api_client = MagicMock()
+    provider.api_client.get_data = AsyncMock(
+        return_value={
+            "data": [
+                {
+                    "id": "123456789",
+                    "type": "albums",
+                    "attributes": {
+                        "name": "Catalog Album",
+                        "artistName": "Catalog Artist",
+                        "playParams": {"id": "123456789"},
+                        "url": "https://music.apple.com/album/123456789",
+                    },
+                    "relationships": {},
+                }
+            ]
+        }
+    )
+    provider.api_client.get_ratings = AsyncMock(return_value={})
+
+    manager = AppleMusicMediaManager(provider)
+    await manager.get_album("123456789")
+
+    provider.api_client.get_data.assert_called_once_with(
+        "catalog/us/albums/123456789", include="artists"
     )
