@@ -289,11 +289,7 @@ def parse_playlist(
     attributes = playlist_obj["attributes"]
     play_params = attributes.get("playParams", {})
     # Use library ID for writes; otherwise use catalog/global ID.
-    playlist_id = (
-        library_id_override
-        or play_params.get("globalId")
-        or playlist_obj["id"]
-    )
+    playlist_id = library_id_override or play_params.get("globalId") or playlist_obj["id"]
     is_editable = can_edit_hint if can_edit_hint is not None else attributes.get("canEdit", False)
     playlist = Playlist(
         item_id=playlist_id,
