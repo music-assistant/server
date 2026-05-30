@@ -227,6 +227,9 @@ _BASS_SAT_DECAY = 0.08
 # decaying linearly over this window.
 _PEAK_BOOST_DECAY_US = 250_000
 _PEAK_BOOST_SCALE = 0.3
+# Ignore onsets below this normalized strength so low-confidence peaks don't
+# scroll the palette or lift brightness. Tunable.
+_PEAK_MIN_STRENGTH = 0.1
 
 
 @dataclass(frozen=True, slots=True)
@@ -382,9 +385,13 @@ class HueAudioAnalyzer:
         ``strength`` is the uint8 value from the visualizer `peak` binary
         (0-255). The peak is held in a pending queue keyed on its server-clock
         ``timestamp_us`` and only contributes to brightness once ``now_us``
-        catches up to it inside ``render``.
+        catches up to it inside ``render``. Onsets below ``_PEAK_MIN_STRENGTH``
+        are dropped so low-confidence peaks don't scroll the palette.
         """
-        boost = max(0.0, min(1.0, strength / 255.0)) * _PEAK_BOOST_SCALE
+        normalized = max(0.0, min(1.0, strength / 255.0))
+        if normalized < _PEAK_MIN_STRENGTH:
+            return
+        boost = normalized * _PEAK_BOOST_SCALE
         self._pending_peaks.append((timestamp_us, boost))
 
     def _consume_peaks(self, now_us: int) -> float:
