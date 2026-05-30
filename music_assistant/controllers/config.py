@@ -1594,11 +1594,6 @@ class ConfigController:
             msg = f"Unknown provider domain: {provider_domain}"
             raise KeyError(msg)
         if prov.depends_on:
-            # Accept the dependency as long as it is configured + enabled, even if
-            # its _load_provider() is still mid-flight (e.g. sonic_analysis blocking
-            # on the initial CLAP model download). mass.load_provider_config()
-            # already cascades-loads dependents once the dep becomes available, so
-            # a config saved here will activate as soon as the dep is ready.
             dep_configs = await self.get_provider_configs(provider_domain=prov.depends_on)
             if not any(dep_conf.enabled for dep_conf in dep_configs):
                 msg = f"Provider {manifest.name} depends on {prov.depends_on}"
