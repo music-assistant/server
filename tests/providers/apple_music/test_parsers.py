@@ -471,3 +471,32 @@ async def test_catalog_backed_playlist_uses_library_id_as_item_id() -> None:
     # Must use library ID so add_playlist_tracks targets /me/library/playlists/{id}/tracks.
     assert playlist.item_id == "p.myLibraryPlaylist"
     assert all(pm.item_id == "p.myLibraryPlaylist" for pm in playlist.provider_mappings)
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_by_library_id_keeps_library_item_id() -> None:
+    """Direct library playlist fetch must keep the library playlist ID."""
+    provider = _create_provider_mock()
+    provider.api_client = MagicMock()
+    provider.api_client.get_data = AsyncMock(
+        return_value={
+            "data": [
+                {
+                    "id": "p.myLibraryPlaylist",
+                    "attributes": {
+                        "name": "My Public Playlist",
+                        "curatorName": "me",
+                        "playParams": {"globalId": "pl.u-abcd1234"},
+                        "canEdit": True,
+                    },
+                }
+            ]
+        }
+    )
+
+    manager = AppleMusicMediaManager(provider)
+    playlist = await manager.get_playlist("p.myLibraryPlaylist")
+
+    provider.api_client.get_data.assert_called_once_with("me/library/playlists/p.myLibraryPlaylist")
+    assert playlist.item_id == "p.myLibraryPlaylist"
+    assert all(pm.item_id == "p.myLibraryPlaylist" for pm in playlist.provider_mappings)
