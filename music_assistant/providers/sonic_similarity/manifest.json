@@ -1,6 +1,6 @@
 {
   "type": "plugin",
-  "stage": "stable",
+  "stage": "beta",
   "domain": "sonic_similarity",
   "name": "Sonic Similarity",
   "description": "Powers library-wide Similar Tracks, radio mode, and a discover-page row using local audio signatures from sonic_analysis.",
