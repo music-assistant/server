@@ -16,7 +16,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.controllers.cache import use_cache
 
-from .helpers.utils import is_catalog_id
+from .helpers.utils import is_catalog_id, is_library_id
 from .parsers import (
     parse_album,
     parse_artist,
@@ -98,8 +98,12 @@ class AppleMusicMediaManager:
     @use_cache()
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
-        endpoint = f"catalog/{self.provider._storefront}/albums/{prov_album_id}"
-        response = await self.api.get_data(endpoint, include="artists")
+        if is_library_id(prov_album_id):
+            endpoint = f"me/library/albums/{prov_album_id}"
+            response = await self.api.get_data(endpoint, include="catalog,artists")
+        else:
+            endpoint = f"catalog/{self.provider._storefront}/albums/{prov_album_id}"
+            response = await self.api.get_data(endpoint, include="artists")
         rating_response = await self.api.get_ratings([prov_album_id], MediaType.ALBUM)
         is_favourite = rating_response.get(prov_album_id)
         return parse_album(self.provider, response["data"][0], is_favourite)
@@ -118,10 +122,14 @@ class AppleMusicMediaManager:
         prov_playlist_id: str,
         is_favourite: bool = False,
         can_edit_hint: bool | None = None,
+        library_id_override: str | None = None,
     ) -> Playlist:
         """Get full playlist details by id."""
         return await self._get_regular_playlist(
-            prov_playlist_id, is_favourite, can_edit_hint=can_edit_hint
+            prov_playlist_id,
+            is_favourite,
+            can_edit_hint=can_edit_hint,
+            library_id_override=library_id_override,
         )
 
     @use_cache()
@@ -130,6 +138,7 @@ class AppleMusicMediaManager:
         prov_playlist_id: str,
         is_favourite: bool = False,
         can_edit_hint: bool | None = None,
+        library_id_override: str | None = None,
     ) -> Playlist:
         """Fetch and cache details for a regular (non-station) playlist."""
         if not is_catalog_id(prov_playlist_id):
@@ -142,13 +151,18 @@ class AppleMusicMediaManager:
             response["data"][0],
             is_favourite,
             can_edit_hint=can_edit_hint,
+            library_id_override=library_id_override,
         )
 
     @use_cache(allow_expired_cache=True)
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
-        endpoint = f"catalog/{self.provider._storefront}/albums/{prov_album_id}/tracks"
-        response = await self.api.get_data(endpoint, include="artists")
+        if is_library_id(prov_album_id):
+            endpoint = f"me/library/albums/{prov_album_id}/tracks"
+            response = await self.api.get_data(endpoint, include="catalog,artists")
+        else:
+            endpoint = f"catalog/{self.provider._storefront}/albums/{prov_album_id}/tracks"
+            response = await self.api.get_data(endpoint, include="artists")
         album = await self.get_album(prov_album_id)
         track_ids = [track_obj["id"] for track_obj in response["data"] if "id" in track_obj]
         rating_response = await self.api.get_ratings(track_ids, MediaType.TRACK)

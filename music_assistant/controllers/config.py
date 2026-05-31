@@ -1593,9 +1593,11 @@ class ConfigController:
         else:
             msg = f"Unknown provider domain: {provider_domain}"
             raise KeyError(msg)
-        if prov.depends_on and not self.mass.get_provider(prov.depends_on):
-            msg = f"Provider {manifest.name} depends on {prov.depends_on}"
-            raise ValueError(msg)
+        if prov.depends_on:
+            dep_configs = await self.get_provider_configs(provider_domain=prov.depends_on)
+            if not any(dep_conf.enabled for dep_conf in dep_configs):
+                msg = f"Provider {manifest.name} depends on {prov.depends_on}"
+                raise ValueError(msg)
         # create new provider config with given values
         existing = {
             x.instance_id for x in await self.get_provider_configs(provider_domain=provider_domain)
