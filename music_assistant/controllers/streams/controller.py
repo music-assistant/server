@@ -305,6 +305,9 @@ class StreamsController(CoreController):
                 "background scan. Default 1 (serial). Increase only if your hardware can handle "
                 "concurrent torch/ffmpeg work.",
                 category="audio_analysis",
+                # surfaced on the dedicated Audio Analysis settings page instead of the
+                # generic core-config editor
+                hidden=True,
             ),
         )
 
