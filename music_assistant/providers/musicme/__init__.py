@@ -47,6 +47,7 @@ async def get_config_entries(
             type=ConfigEntryType.BOOLEAN,
             label="Signin by API",
             required=False,
+            default_value=False,
             description="If checked, the signin will be made by API call, if unchecked, login will be made by HTTP authentication.",
         ),
         ConfigEntry(
