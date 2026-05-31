@@ -780,12 +780,12 @@ class MusicMeProvider(MusicProvider):
         return result if (result.artists or result.albums or result.tracks) else None
 
     async def _signin_by_api(self) -> None:
-        login = self.config.get_value(CONF_USERNAME)
-        password = self.config.get_value(CONF_PASSWORD)
+        login = urllib.parse.quote_plus(self.config.get_value(CONF_USERNAME))
+        password = urllib.parse.quote_plus(self.config.get_value(CONF_PASSWORD))
 
         response = await self._api_get(
             f"/medialibrary/signin"
-            f"?channel=65777&lang=fr&format=json&client=%7B%22type%22%3A%22desktop-web%22%2C%22context%22%3A%22pro.bib.musicme.com%22%7D"
+            f"?channel=65777&lang=fr&client=%7B%22type%22%3A%22desktop-web%22%2C%22context%22%3A%22pro.bib.musicme.com%22%7D"
             f"&key=sKTBA7ybW3nvCUQ6&nocrypt=0&login={login}&password={password}"
         )
 
@@ -798,9 +798,7 @@ class MusicMeProvider(MusicProvider):
             msg = "Login failed — no user.id in MusicMe API response"
             raise LoginFailed(msg)
 
-        self.logger.info(
-            "Successfully logged in to MusicMe"
-        )
+        self.logger.info("Successfully logged in to MusicMe")
 
     async def _login(self) -> None:
         """Authenticate with MusicMe via web login and extract the userId."""
