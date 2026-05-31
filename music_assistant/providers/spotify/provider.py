@@ -19,6 +19,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import (
     AudioError,
     LoginFailed,
+    InvalidDataError,
     MediaNotFoundError,
     ProviderUnavailableError,
     ResourceTemporarilyUnavailable,
@@ -1250,7 +1251,12 @@ class SpotifyProvider(MusicProvider):
                     message,
                 )
 
-                raise MediaNotFoundError(f"{endpoint} not found")
+                if response.status == 400:
+                        raise InvalidDataError (f"Spotify API error ({response.status}): {message}")
+                elif response.status == 403:
+                        raise ProviderUnavailableError(f"Spotify API error ({response.status}): {message}")
+                else:
+                        raise MediaNotFoundError(f"{endpoint} not found")
 
             response.raise_for_status()
             result: dict[str, Any] = await response.json(loads=json_loads)
