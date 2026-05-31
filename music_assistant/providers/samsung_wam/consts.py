@@ -3,7 +3,7 @@
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import PlayerFeature
 
-from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE
+from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE_DEFAULT_3
 
 # --- Global Provider Settings ---
 
@@ -26,5 +26,5 @@ PLAYER_FEATURES_BASE = {
 # --- Configuration Entries ---
 
 CONF_ENTRY_HTTP_PROFILE_WAM = ConfigEntry.from_dict(
-    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "forced_content_length"}
+    {**CONF_ENTRY_HTTP_PROFILE_DEFAULT_3.to_dict(), "hidden": True}
 )
