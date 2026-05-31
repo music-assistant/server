@@ -404,7 +404,8 @@ class StreamsController(CoreController):
             # gapless playback, we need to enforce flow mode
             queue_id
             and (queue_player := self.mass.players.get_player(queue_id))
-            and queue_player.config.get_value(CONF_SMART_FADES_MODE) != SmartFadesMode.DISABLED
+            and queue_player.config.get_value(CONF_SMART_FADES_MODE, SmartFadesMode.DISABLED)
+            != SmartFadesMode.DISABLED
             and protocol_player
             and not protocol_player.supports_gapless
         )
@@ -1111,7 +1112,8 @@ class StreamsController(CoreController):
                 # does not support gapless playback, we need to enforce flow mode
                 queue_id
                 and (queue_player := self.mass.players.get_player(queue_id))
-                and queue_player.config.get_value(CONF_SMART_FADES_MODE) != SmartFadesMode.DISABLED
+                and queue_player.config.get_value(CONF_SMART_FADES_MODE, SmartFadesMode.DISABLED)
+                != SmartFadesMode.DISABLED
                 and protocol_player
                 and not protocol_player.supports_gapless
             )

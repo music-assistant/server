@@ -220,13 +220,22 @@ def _rg(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("provider_kwargs", "streamdetails_kwargs", "track_mbid", "track_in_library", "expected"),
+    (
+        "provider_kwargs",
+        "streamdetails_kwargs",
+        "track_mbid",
+        "track_isrc",
+        "track_in_library",
+        "expected",
+    ),
     [
-        pytest.param({}, {}, "0000-mbid", True, False, id="mbid_already_present"),
-        pytest.param({}, {}, None, False, False, id="no_library_row"),
+        pytest.param({}, {}, "0000-mbid", None, True, False, id="mbid_already_present"),
+        pytest.param({}, {}, None, "USRC17607839", True, False, id="isrc_already_present"),
+        pytest.param({}, {}, None, None, False, False, id="no_library_row"),
         pytest.param(
             {},
             {"media_type": MediaType.PODCAST_EPISODE},
+            None,
             None,
             False,
             False,
@@ -236,6 +245,7 @@ def _rg(
             {"analyse_streaming": False},
             {"stream_type": StreamType.HTTP},
             None,
+            None,
             True,
             False,
             id="streaming_toggle_off",
@@ -244,12 +254,13 @@ def _rg(
             {"analyse_streaming": True},
             {"stream_type": StreamType.HTTP},
             None,
+            None,
             True,
             True,
             id="streaming_toggle_on",
         ),
-        pytest.param({}, {}, None, True, True, id="local_file_mbid_missing"),
-        pytest.param({"api_key": None}, {}, None, False, False, id="no_api_key"),
+        pytest.param({}, {}, None, None, True, True, id="local_file_mbid_missing"),
+        pytest.param({"api_key": None}, {}, None, None, False, False, id="no_api_key"),
     ],
 )
 async def test_start_analysis_gates(
@@ -258,6 +269,7 @@ async def test_start_analysis_gates(
     provider_kwargs: dict[str, Any],
     streamdetails_kwargs: dict[str, Any],
     track_mbid: str | None,
+    track_isrc: str | None,
     track_in_library: bool,
     expected: bool,
 ) -> None:
@@ -266,6 +278,7 @@ async def test_start_analysis_gates(
     if track_in_library:
         track = MagicMock()
         track.mbid = track_mbid
+        track.get_external_id.return_value = track_isrc
         cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
             return_value=track
         )
@@ -283,8 +296,10 @@ async def test_finalize_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """A high-score match yields mbid + acoustid + candidates + release_groups."""
     provider = _make_provider()
     _install_fake_chromaprint(monkeypatch, _FakeFingerprinter())
+    track = MagicMock(mbid=None)
+    track.get_external_id.return_value = None
     cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
-        return_value=MagicMock(mbid=None)
+        return_value=track
     )
 
     session_id = "session-final"
@@ -343,8 +358,10 @@ async def test_finalize_rejects_low_score(monkeypatch: pytest.MonkeyPatch) -> No
     """A best-result score below the threshold yields no analysis."""
     provider = _make_provider(min_score=0.85)
     _install_fake_chromaprint(monkeypatch, _FakeFingerprinter())
+    track = MagicMock(mbid=None)
+    track.get_external_id.return_value = None
     cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
-        return_value=MagicMock(mbid=None)
+        return_value=track
     )
 
     session_id = "session-lowscore"

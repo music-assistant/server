@@ -703,6 +703,65 @@ async def test_get_playlist_tracks_static_uses_full_limit(tmp_path: Any) -> None
 
 
 @pytest.mark.asyncio
+async def test_get_playlist_resolves_library_id_to_provider_uuid(tmp_path: Any) -> None:
+    """get_playlist resolves a library id input to the stored provider UUID."""
+    mass = MagicMock()
+    mass.storage_path = str(tmp_path)
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    await plugin.handle_async_init()
+
+    plugin._rules_store["abc"] = SmartPlaylistRules(limit=10, is_dynamic=True)
+
+    mapping = MagicMock()
+    mapping.provider_instance = plugin.instance_id
+    mapping.item_id = "abc"
+    library_item = MagicMock()
+    library_item.provider_mappings = [mapping]
+    mass.music.playlists.get_library_item = AsyncMock(return_value=library_item)
+
+    playlist = await plugin.get_playlist("123")
+    assert playlist.item_id == "abc"
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_tracks_dynamic_uses_resolved_provider_id(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dynamic track fetch uses resolved provider UUID for the cached sample lookup."""
+    mass = MagicMock()
+    mass.storage_path = str(tmp_path)
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    await plugin.handle_async_init()
+
+    plugin._rules_store["abc"] = SmartPlaylistRules(limit=100, is_dynamic=True)
+
+    mapping = MagicMock()
+    mapping.provider_instance = plugin.instance_id
+    mapping.item_id = "abc"
+    library_item = MagicMock()
+    library_item.provider_mappings = [mapping]
+    mass.music.playlists.get_library_item = AsyncMock(return_value=library_item)
+
+    expected = [_make_mock_track("1", "library://track/1")]
+    cached_dynamic_sample_mock = AsyncMock(return_value=expected)
+    monkeypatch.setattr(plugin, "_cached_dynamic_sample", cached_dynamic_sample_mock)
+
+    result = await plugin.get_playlist_tracks("123")
+
+    assert result == expected
+    cached_dynamic_sample_mock.assert_awaited_once_with("abc")
+
+
+@pytest.mark.asyncio
 async def test_count_tracks_returns_count_and_duration(tmp_path: Any) -> None:
     """count_tracks returns a dict with count and duration_seconds."""
     mass = MagicMock()
