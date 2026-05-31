@@ -31,6 +31,12 @@ from music_assistant_models.media_items import (
 
 from music_assistant.controllers.cache import use_cache
 
+from .constants import (
+    AUDIOBOOK_CHAPTERS_PAGE_SIZE,
+    FAVORITES_PAGE_SIZE,
+    PERSONAL_ALBUM_PREFIX,
+    PERSONAL_ARTIST_PREFIX,
+)
 from .helpers import fetch_all_audiobook_chapter_edges, fetch_all_bookmarks
 from .parsers import (
     apply_web_url,
@@ -50,9 +56,6 @@ from .parsers import (
 
 if TYPE_CHECKING:
     from .provider import DeezerProvider
-
-# Page size for cursor-based pagination
-FAVORITES_PAGE_SIZE = 50
 
 
 # -- Protocols for typed pagination --
@@ -384,9 +387,9 @@ class DeezerMediaManager:
     @use_cache(3600 * 24 * 30, allow_expired_cache=True)
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
-        if prov_artist_id.startswith("personal_artist_"):
+        if prov_artist_id.startswith(PERSONAL_ARTIST_PREFIX):
             # Personal track artist — reconstruct from GW data
-            song_id = prov_artist_id.removeprefix("personal_artist_")
+            song_id = prov_artist_id.removeprefix(PERSONAL_ARTIST_PREFIX)
             personal_songs = await self._get_personal_songs()
             for song in personal_songs:
                 if str(song["SNG_ID"]) == song_id:
@@ -413,14 +416,14 @@ class DeezerMediaManager:
     @use_cache(3600 * 24 * 30, allow_expired_cache=True)
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
-        if prov_album_id.startswith("personal_album_"):
+        if prov_album_id.startswith(PERSONAL_ALBUM_PREFIX):
             # Personal track album — reconstruct from GW data
-            song_id = prov_album_id.removeprefix("personal_album_")
+            song_id = prov_album_id.removeprefix(PERSONAL_ALBUM_PREFIX)
             personal_songs = await self._get_personal_songs()
             for song in personal_songs:
                 if str(song["SNG_ID"]) == song_id:
                     art_name = song.get("ART_NAME", "")
-                    personal_art_id = f"personal_artist_{song_id}"
+                    personal_art_id = f"{PERSONAL_ARTIST_PREFIX}{song_id}"
                     artists: UniqueList[Artist | ItemMapping] = UniqueList()
                     if art_name:
                         artists.append(
@@ -525,7 +528,7 @@ class DeezerMediaManager:
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get full audiobook details by id."""
         result = await self.provider.gql_client.get_audiobook(
-            audiobook_id=prov_audiobook_id, chapters_first=200
+            audiobook_id=prov_audiobook_id, chapters_first=AUDIOBOOK_CHAPTERS_PAGE_SIZE
         )
         if result is None:
             raise MediaNotFoundError(f"Audiobook {prov_audiobook_id} not found on Deezer")
@@ -547,7 +550,7 @@ class DeezerMediaManager:
     @use_cache(3600 * 24 * 30, allow_expired_cache=True)
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all tracks in an album."""
-        if prov_album_id.startswith("personal_album_"):
+        if prov_album_id.startswith(PERSONAL_ALBUM_PREFIX):
             # Personal album has no real Deezer album page
             return []
         result = await self.provider.gql_client.get_album(album_id=prov_album_id)
@@ -658,7 +661,7 @@ class DeezerMediaManager:
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
-        if prov_artist_id.startswith("personal_artist_"):
+        if prov_artist_id.startswith(PERSONAL_ARTIST_PREFIX):
             # Personal artist has no real Deezer artist page
             return []
         result = await self.provider.gql_client.get_artist(artist_id=prov_artist_id)
@@ -680,7 +683,7 @@ class DeezerMediaManager:
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get top tracks of an artist."""
-        if prov_artist_id.startswith("personal_artist_"):
+        if prov_artist_id.startswith(PERSONAL_ARTIST_PREFIX):
             # Personal artist has no real Deezer artist page
             return []
         result = await self.provider.gql_client.get_artist(artist_id=prov_artist_id)
@@ -710,7 +713,7 @@ class DeezerMediaManager:
     @use_cache(3600 * 24, allow_expired_cache=True)
     async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
         """Retrieve a list of artists similar to the provided artist."""
-        if prov_artist_id.startswith("personal_artist_"):
+        if prov_artist_id.startswith(PERSONAL_ARTIST_PREFIX):
             return []
         result = await self.provider.gql_client.get_similar_artists(
             artist_id=prov_artist_id, first=limit

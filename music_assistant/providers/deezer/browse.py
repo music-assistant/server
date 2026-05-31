@@ -30,6 +30,7 @@ from music_assistant_models.media_items import (
 from music_assistant.controllers.cache import use_cache
 
 from .constants import (
+    BROWSE_ALL_FLOWS,
     BROWSE_AUDIOBOOKS,
     BROWSE_EXPLORE,
     BROWSE_GENRES,
@@ -40,6 +41,9 @@ from .constants import (
     BROWSE_RECOMMENDED_ARTIST_PLAYLISTS,
     BROWSE_RECOMMENDED_PLAYLISTS,
     BROWSE_SHAKER,
+    BROWSE_TOP_ALBUMS,
+    BROWSE_TOP_ARTISTS,
+    BROWSE_TOP_PLAYLISTS,
     BROWSE_YOUR_TOP_ALBUMS,
     BROWSE_YOUR_TOP_ARTISTS,
     FLOW_CONFIG_PREFIX,
@@ -383,48 +387,48 @@ class DeezerBrowseManager:
             BrowseFolder(
                 item_id="top_albums",
                 provider=self.instance_id,
-                path=f"{base}Top Albums",
-                name="Top Albums",
+                path=f"{base}{BROWSE_TOP_ALBUMS}",
+                name=BROWSE_TOP_ALBUMS,
             ),
             BrowseFolder(
                 item_id="top_artists",
                 provider=self.instance_id,
-                path=f"{base}Top Artists",
-                name="Top Artists",
+                path=f"{base}{BROWSE_TOP_ARTISTS}",
+                name=BROWSE_TOP_ARTISTS,
             ),
             BrowseFolder(
                 item_id="top_playlists",
                 provider=self.instance_id,
-                path=f"{base}Top Playlists",
-                name="Top Playlists",
+                path=f"{base}{BROWSE_TOP_PLAYLISTS}",
+                name=BROWSE_TOP_PLAYLISTS,
             ),
             BrowseFolder(
                 item_id="all_flows",
                 provider=self.instance_id,
-                path=f"{base}All Flows",
-                name="All Flows",
+                path=f"{base}{BROWSE_ALL_FLOWS}",
+                name=BROWSE_ALL_FLOWS,
             ),
         ]
 
     async def _browse_explore_category(self, category: str) -> list[MediaItemType]:
         """Fetch items for an Explore sub-category."""
-        if category == "All Flows":
+        if category == BROWSE_ALL_FLOWS:
             return list(await self._browse_all_flows())
         items: list[MediaItemType] = []
-        if category in ("Top Albums", "Top Artists", "Top Playlists"):
+        if category in (BROWSE_TOP_ALBUMS, BROWSE_TOP_ARTISTS, BROWSE_TOP_PLAYLISTS):
             charts = await self.provider.gql_client.get_charts(tracks_first=0)
             if not charts or not charts.country:
                 return []
             country = charts.country
-            if category == "Top Albums" and country.albums:
+            if category == BROWSE_TOP_ALBUMS and country.albums:
                 for album_edge in country.albums.edges:
                     if album_edge.node is not None:
                         items.append(parse_album(self.provider, album_edge.node))
-            elif category == "Top Artists" and country.artists:
+            elif category == BROWSE_TOP_ARTISTS and country.artists:
                 for artist_edge in country.artists.edges:
                     if artist_edge.node is not None:
                         items.append(parse_artist(self.provider, artist_edge.node))
-            elif category == "Top Playlists" and country.playlists:
+            elif category == BROWSE_TOP_PLAYLISTS and country.playlists:
                 for playlist_edge in country.playlists.edges:
                     if playlist_edge.node is not None:
                         items.append(parse_playlist(self.provider, playlist_edge.node))

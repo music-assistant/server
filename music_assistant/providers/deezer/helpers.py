@@ -19,6 +19,7 @@ from music_assistant_models.media_items import (
 )
 
 from .constants import (
+    AUDIOBOOK_CHAPTERS_PAGE_SIZE,
     FLOW_CONFIG_PREFIX,
     FLOW_PLAYLIST_ID,
     PERSONAL_SONGS_PLAYLIST_ID,
@@ -133,7 +134,7 @@ def create_virtual_playlist(
 async def fetch_all_audiobook_chapter_edges(
     gql_client: DeezerGQLClient,
     audiobook_id: str,
-    page_size: int = 200,
+    page_size: int = AUDIOBOOK_CHAPTERS_PAGE_SIZE,
     *,
     initial_edges: list[GetAudiobookAudiobookChaptersEdges] | None = None,
     initial_page_info: GetAudiobookAudiobookChaptersPageInfo | None = None,

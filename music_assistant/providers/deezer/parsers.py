@@ -53,6 +53,8 @@ from music_assistant.helpers.util import infer_album_type, parse_title_and_versi
 from .constants import (
     FLOW_CONFIG_PREFIX,
     FLOW_PLAYLIST_ID,
+    PERSONAL_ALBUM_PREFIX,
+    PERSONAL_ARTIST_PREFIX,
     SMART_TRACKLIST_PREFIX,
 )
 from .helpers import (
@@ -769,7 +771,7 @@ def parse_gw_track(provider: DeezerProvider, song: dict[str, Any], position: int
             # Personal tracks have ART_ID=0 which doesn't exist on Deezer.
             # Create a full Artist object so MA doesn't try to resolve it.
             # Use a prefixed ID to avoid collisions with the track's provider mapping.
-            personal_art_id = f"personal_artist_{song_id}"
+            personal_art_id = f"{PERSONAL_ARTIST_PREFIX}{song_id}"
             artists.append(
                 Artist(
                     item_id=personal_art_id,
@@ -797,7 +799,7 @@ def parse_gw_track(provider: DeezerProvider, song: dict[str, Any], position: int
             # Personal tracks have ALB_ID=0 which doesn't exist on Deezer.
             # Create a full Album object so MA doesn't try to resolve it.
             # Use a prefixed ID to avoid collisions with the track's provider mapping.
-            personal_alb_id = f"personal_album_{song_id}"
+            personal_alb_id = f"{PERSONAL_ALBUM_PREFIX}{song_id}"
             album = Album(
                 item_id=personal_alb_id,
                 provider=provider.instance_id,
