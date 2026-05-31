@@ -4,7 +4,16 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast, get_type_hints
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Concatenate,
+    ParamSpec,
+    Protocol,
+    TypeVar,
+    cast,
+    get_type_hints,
+)
 
 from music_assistant.controllers.cache.constants import (
     DEFAULT_CACHE_EXPIRATION,
@@ -14,11 +23,20 @@ from music_assistant.controllers.cache.constants import (
 from music_assistant.helpers.api import parse_value
 
 if TYPE_CHECKING:
-    from music_assistant.models.core_controller import CoreController
-    from music_assistant.models.provider import Provider
+    from music_assistant import MusicAssistant
 
 
-ProviderT = TypeVar("ProviderT", bound="Provider | CoreController")
+class _Cacheable(Protocol):
+    """Protocol for objects that can use the @use_cache decorator."""
+
+    @property
+    def domain(self) -> str: ...
+
+    @property
+    def mass(self) -> MusicAssistant: ...
+
+
+ProviderT = TypeVar("ProviderT", bound="_Cacheable")
 P = ParamSpec("P")
 R = TypeVar("R")
 

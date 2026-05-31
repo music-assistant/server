@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, ProviderType
+from music_assistant_models.errors import InsufficientPermissions
 from music_assistant_models.media_items import Album, AudioFormat, ProviderMapping, UniqueList
 
 from music_assistant.constants import CONF_ENTRY_LIBRARY_SYNC_BACK
@@ -722,6 +723,163 @@ async def test_library_items_default_filters_in_library_only() -> None:
     assert call_kwargs["in_library_only"] is True
 
 
+def test_ensure_provider_filter_keeps_plugin_provider_mappings() -> None:
+    """Test that plugin providers are kept when a user music-provider filter is active."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    ctrl.mass.providers = [
+        Mock(instance_id="spotify_1", type=ProviderType.MUSIC),
+        Mock(instance_id="smart_playlist_1", type=ProviderType.PLUGIN),
+    ]
+    ctrl._ensure_provider_filter = MediaControllerBase._ensure_provider_filter.__get__(ctrl)
+
+    with patch(
+        "music_assistant.controllers.media.base.get_current_user",
+        return_value=Mock(provider_filter=["spotify_1"]),
+    ):
+        result = ctrl._ensure_provider_filter(None)
+
+    assert result is not None
+    assert "spotify_1" in result
+    assert "smart_playlist_1" in result
+
+
+def test_ensure_provider_filter_rejects_unallowed_music_provider() -> None:
+    """Test that requesting a disallowed music provider still raises permissions error."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    ctrl.mass.providers = [
+        Mock(instance_id="spotify_1", type=ProviderType.MUSIC),
+        Mock(instance_id="smart_playlist_1", type=ProviderType.PLUGIN),
+    ]
+    ctrl._ensure_provider_filter = MediaControllerBase._ensure_provider_filter.__get__(ctrl)
+
+    with (
+        patch(
+            "music_assistant.controllers.media.base.get_current_user",
+            return_value=Mock(provider_filter=["spotify_1"]),
+        ),
+        pytest.raises(InsufficientPermissions),
+    ):
+        ctrl._ensure_provider_filter("qobuz_1")
+
+
+def test_ensure_provider_filter_allows_explicit_non_music_provider() -> None:
+    """Test that explicitly requesting a plugin provider is allowed for filtered users."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    ctrl.mass.providers = [
+        Mock(instance_id="spotify_1", type=ProviderType.MUSIC),
+        Mock(instance_id="smart_playlist_1", type=ProviderType.PLUGIN),
+    ]
+    ctrl._ensure_provider_filter = MediaControllerBase._ensure_provider_filter.__get__(ctrl)
+
+    with patch(
+        "music_assistant.controllers.media.base.get_current_user",
+        return_value=Mock(provider_filter=["spotify_1"]),
+    ):
+        result = ctrl._ensure_provider_filter("smart_playlist_1")
+
+    assert result == ["smart_playlist_1"]
+
+
+def test_ensure_provider_filter_does_not_auto_allow_other_non_music_providers() -> None:
+    """Test that only plugin providers are auto-allowed when user filter is active."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    ctrl.mass.providers = [
+        Mock(instance_id="spotify_1", type=ProviderType.MUSIC),
+        Mock(instance_id="smart_playlist_1", type=ProviderType.PLUGIN),
+        Mock(instance_id="meta_1", type=ProviderType.METADATA),
+    ]
+    ctrl._ensure_provider_filter = MediaControllerBase._ensure_provider_filter.__get__(ctrl)
+
+    with patch(
+        "music_assistant.controllers.media.base.get_current_user",
+        return_value=Mock(provider_filter=["spotify_1"]),
+    ):
+        result = ctrl._ensure_provider_filter(None)
+
+    assert result is not None
+    assert "spotify_1" in result
+    assert "smart_playlist_1" in result
+    assert "meta_1" not in result
+
+
+def test_select_provider_id_prefers_allowed_music_over_plugin() -> None:
+    """Test that allowed music mappings are preferred over plugin mappings."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    ctrl.mass.get_provider = Mock(
+        side_effect=lambda instance: {
+            "smart_playlist_1": Mock(type=ProviderType.PLUGIN),
+            "spotify_1": Mock(type=ProviderType.MUSIC),
+        }.get(instance)
+    )
+    ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
+
+    item = create_mock_album(
+        provider_mappings=[
+            create_provider_mapping(
+                provider_instance="smart_playlist_1",
+                provider_domain="smart_playlist",
+                item_id="plugin_item",
+            ),
+            create_provider_mapping(
+                provider_instance="spotify_1",
+                provider_domain="spotify",
+                item_id="music_item",
+            ),
+        ]
+    )
+
+    with patch(
+        "music_assistant.controllers.media.base.get_current_user",
+        return_value=Mock(provider_filter=["spotify_1"]),
+    ):
+        provider_instance, provider_item = ctrl._select_provider_id(item)
+
+    assert provider_instance == "spotify_1"
+    assert provider_item == "music_item"
+
+
+def test_select_provider_id_falls_back_to_plugin_when_no_allowed_music() -> None:
+    """Test that plugin mapping is selected if no allowed music mapping exists."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl.mass = Mock()
+    ctrl.mass.get_provider = Mock(
+        side_effect=lambda instance: {
+            "smart_playlist_1": Mock(type=ProviderType.PLUGIN),
+            "qobuz_1": Mock(type=ProviderType.MUSIC),
+        }.get(instance)
+    )
+    ctrl._select_provider_id = MediaControllerBase._select_provider_id.__get__(ctrl)
+
+    item = create_mock_album(
+        provider_mappings=[
+            create_provider_mapping(
+                provider_instance="smart_playlist_1",
+                provider_domain="smart_playlist",
+                item_id="plugin_item",
+            ),
+            create_provider_mapping(
+                provider_instance="qobuz_1",
+                provider_domain="qobuz",
+                item_id="music_item",
+            ),
+        ]
+    )
+
+    with patch(
+        "music_assistant.controllers.media.base.get_current_user",
+        return_value=Mock(provider_filter=["spotify_1"]),
+    ):
+        provider_instance, provider_item = ctrl._select_provider_id(item)
+
+    assert provider_instance == "smart_playlist_1"
+    assert provider_item == "plugin_item"
+
+
 async def test_get_library_item_does_not_filter_in_library() -> None:
     """Test that get_library_item always passes in_library_only=False.
 
@@ -739,3 +897,39 @@ async def test_get_library_item_does_not_filter_in_library() -> None:
 
     call_kwargs = ctrl.get_library_items_by_query.call_args[1]
     assert call_kwargs["in_library_only"] is False
+
+
+async def test_update_item_in_library_skips_non_music_providers() -> None:
+    """Test update callback dispatch skips provider mappings that are not music providers."""
+    ctrl = Mock(spec=MediaControllerBase)
+    ctrl._update_library_item = AsyncMock()
+    ctrl.get_library_item = AsyncMock(
+        return_value=Mock(
+            uri="library://album/1",
+            provider_mappings=[
+                create_provider_mapping(
+                    provider_instance="smart_playlist_1",
+                    provider_domain="smart_playlist",
+                    item_id="abc",
+                )
+            ],
+        )
+    )
+
+    mass = Mock()
+    mass.music = Mock()
+    mass.music.match_provider_instances = Mock()
+    mass.signal_event = Mock()
+    mass.get_provider = Mock(return_value=Mock(type=ProviderType.PLUGIN))
+    ctrl.mass = mass
+
+    ctrl.update_item_in_library = MediaControllerBase.update_item_in_library.__get__(ctrl)
+
+    update = create_mock_album(item_id="1")
+
+    updated = await ctrl.update_item_in_library(item_id=1, update=update, overwrite=False)
+
+    assert updated is not None
+    ctrl._update_library_item.assert_called_once()
+    mass.music.match_provider_instances.assert_called_once_with(update)
+    mass.get_provider.assert_called_once_with("smart_playlist_1")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 import shutil
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextlib import suppress
@@ -116,6 +117,10 @@ DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 DB_SCHEMA_VERSION: Final[int] = 40
+# tracks longer that this will not be included in radio mode
+RADIO_TRACK_MAX_DURATION_SECS: Final[int] = 20 * 60
+_DYNAMIC_RADIO_BASE_SAMPLE_SIZE: Final[int] = 5
+_DYNAMIC_RADIO_DYNAMIC_TARGET: Final[int] = 50
 
 CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
 DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
@@ -321,7 +326,14 @@ class MusicController(CoreController):
         :param limit: number of items to return in the search (per type).
         """
         # use cache to avoid repeated searches
-        search_providers = sorted(self.get_unique_providers())
+        plugin_search_providers = [
+            p.instance_id
+            for p in self.mass.get_providers_supporting_feature(
+                ProviderFeature.SEARCH,
+                priority=(ProviderType.PLUGIN,),
+            )
+        ]
+        search_providers = sorted(self.get_unique_providers() + plugin_search_providers)
         cache_provider_key = "library" if library_only else ",".join(search_providers)
         cache_key = f"{search_query}{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}-{library_only}-{cache_provider_key}"
         if cache := await self.mass.cache.get(
@@ -570,7 +582,7 @@ class MusicController(CoreController):
         """Browse Music providers."""
         if not path or path == "root":
             # root level; folder per provider that declares BROWSE
-            root_items: list[BrowseFolder] = []
+            root_items: list[MediaItemType | BrowseFolder] = []
             providers_with_browse = self.mass.get_providers_supporting_feature(
                 ProviderFeature.BROWSE
             )
@@ -584,34 +596,33 @@ class MusicController(CoreController):
                         name=prov.name,
                     )
                 )
-            # add a "Live Inputs" entry if any loaded plugin provider exposes AudioSources;
-            # this is the canonical browse location for audio sources (they are not
-            # favoritable / library-backed — see MusicController.add_item_to_favorites)
-            if any(self.mass.get_providers_supporting_feature(ProviderFeature.AUDIO_SOURCE)):
-                root_items.append(
-                    BrowseFolder(
-                        item_id="audio_sources",
-                        provider="library",
-                        path="library://audio_sources/",
-                        uri="library://audio_sources/",
-                        name="Live Inputs",
-                        translation_key="browse.live_inputs",
-                    )
-                )
-            return root_items
-
-        # handle the dedicated Live Inputs node: aggregate AudioSources from all
-        # loaded plugin providers that declare ProviderFeature.AUDIO_SOURCE
-        if path == "library://audio_sources/":
-            audio_sources: list[MediaItemType | BrowseFolder] = [
-                BrowseFolder(item_id="root", provider="library", path="root", name="..")
-            ]
-            for prov in self.mass.get_providers_supporting_feature(ProviderFeature.AUDIO_SOURCE):
+            # AudioSource providers surface at root like regular providers; a
+            # provider with a single user-initiable source is promoted to that
+            # source directly so it's playable in one tap.
+            audio_source_providers = self.mass.get_providers_supporting_feature(
+                ProviderFeature.AUDIO_SOURCE
+            )
+            for prov in self._apply_user_provider_filter(audio_source_providers):
                 if not isinstance(prov, PluginProvider):
                     continue
-                for source in await prov.get_audio_sources():
-                    audio_sources.append(source)
-            return audio_sources
+                initiable = [
+                    source for source in await prov.get_audio_sources() if source.can_initiate
+                ]
+                if not initiable:
+                    continue
+                if len(initiable) == 1:
+                    root_items.append(initiable[0])
+                else:
+                    root_items.append(
+                        BrowseFolder(
+                            item_id="root",
+                            provider=prov.domain,
+                            path=f"{prov.instance_id}://",
+                            uri=f"{prov.instance_id}://",
+                            name=prov.name,
+                        )
+                    )
+            return root_items
 
         # provider level
         prepend_items: list[BrowseFolder] = []
@@ -634,6 +645,15 @@ class MusicController(CoreController):
                     name="..",
                 )
             )
+        # AudioSource providers don't implement browse(); list their initiable sources directly
+        if (
+            isinstance(prov, PluginProvider)
+            and ProviderFeature.AUDIO_SOURCE in prov.supported_features
+        ):
+            initiable: list[MediaItemType | BrowseFolder] = [
+                source for source in await prov.get_audio_sources() if source.can_initiate
+            ]
+            return [*prepend_items, *initiable]
         # limit -1 to account for the prepended items
         prov_items = await prov.browse(path=path)
         return prepend_items + prov_items
@@ -861,6 +881,83 @@ class MusicController(CoreController):
         # return result from all providers while keeping index
         # so the result is sorted as each provider delivered
         return [item for sublist in zip_longest(*results_per_provider) for item in sublist if item]
+
+    async def get_dynamic_radio_tracks(
+        self,
+        seeds: list[MediaItemType],
+        *,
+        include_base_tracks: bool = False,
+        target_size: int = 25,
+        preferred_provider_instances: list[str] | None = None,
+    ) -> list[Track]:
+        """
+        Generate a dynamic radio track pool from one or more seed media items.
+
+        :param seeds: Seed media items (Track, Artist, Album, Playlist, ...) used as sources.
+        :param include_base_tracks: When True, interleave the sampled base tracks into the result
+            using the BDDBDD pattern. When False, only similar tracks are returned.
+        :param target_size: Maximum number of dynamic (similar) tracks to sample into the result.
+            When ``include_base_tracks`` is True, base tracks are added on top of this cap.
+        :param preferred_provider_instances: Provider instance IDs preferred for similar lookups.
+        :raises UnsupportedFeaturedException: When no base tracks could be derived from any seed.
+        """
+        seen: set[Track] = set()
+        available_base_tracks: list[Track] = []
+        for seed in random.sample(seeds, len(seeds)):
+            ctrl = self.get_controller(seed.media_type)
+            try:
+                base_tracks_for_seed = await ctrl.radio_mode_base_tracks(
+                    seed,  # type: ignore[arg-type]
+                    preferred_provider_instances,
+                )
+            except UnsupportedFeaturedException:
+                continue
+            for track in base_tracks_for_seed:
+                if track not in seen:
+                    seen.add(track)
+                    available_base_tracks.append(track)
+        if not available_base_tracks:
+            raise UnsupportedFeaturedException("Radio mode not available for source items")
+
+        base_tracks = random.sample(
+            available_base_tracks,
+            min(_DYNAMIC_RADIO_BASE_SAMPLE_SIZE, len(available_base_tracks)),
+        )
+        dynamic_tracks: set[Track] = set()
+        for allow_lookup in (False, True):
+            if len(dynamic_tracks) >= _DYNAMIC_RADIO_DYNAMIC_TARGET:
+                break
+            for base_track in base_tracks:
+                try:
+                    similar = await self.tracks.similar_tracks(
+                        base_track.item_id,
+                        base_track.provider,
+                        allow_lookup=allow_lookup,
+                        preferred_provider_instances=preferred_provider_instances,
+                    )
+                except MediaNotFoundError:
+                    continue
+                for track in similar:
+                    if track not in base_tracks and track.duration <= RADIO_TRACK_MAX_DURATION_SECS:
+                        dynamic_tracks.add(track)
+                if len(dynamic_tracks) >= _DYNAMIC_RADIO_DYNAMIC_TARGET:
+                    break
+
+        result: list[Track] = []
+        dynamic_tracks_list = list(dynamic_tracks)
+        if include_base_tracks:
+            result.append(base_tracks[0])
+            if len(base_tracks) > 1:
+                for base_track in base_tracks[1:]:
+                    result.append(base_track)
+                    if len(dynamic_tracks_list) > 2:
+                        result += random.sample(dynamic_tracks_list, 2)
+                    else:
+                        result += dynamic_tracks_list
+        remaining_dynamic = [t for t in dynamic_tracks_list if t not in result]
+        if remaining_dynamic:
+            result += random.sample(remaining_dynamic, min(len(remaining_dynamic), target_size))
+        return result
 
     @api_command("music/item")
     async def get_item(
@@ -1292,8 +1389,10 @@ class MusicController(CoreController):
         # also update playcount in library table (if fully played)
         if not fully_played or is_playing:
             return
-        if not (ctrl := self.get_controller(media_item.media_type)):
-            # skip non media items (e.g. plugin source)
+        try:
+            ctrl = self.get_controller(media_item.media_type)
+        except NotImplementedError:
+            # skip non-library media types (e.g. AudioSource plugin sources)
             return
         db_item = await ctrl.get_library_item_by_prov_id(media_item.item_id, media_item.provider)
         if db_item:

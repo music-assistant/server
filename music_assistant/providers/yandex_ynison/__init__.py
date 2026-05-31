@@ -299,7 +299,6 @@ async def get_config_entries(  # noqa: PLR0915 — flow naturally returns ~12 Co
             label="Device name in Yandex Music",
             description="How this device appears in the Yandex Music app.",
             default_value=DEFAULT_DISPLAY_NAME,
-            advanced=True,
         ),
         ConfigEntry(
             key=CONF_DEVICE_ID,

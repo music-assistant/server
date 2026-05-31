@@ -15,7 +15,7 @@ from music_assistant_models.config_entries import (
     ProviderConfig,
 )
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
-from music_assistant_models.enums import ConfigEntryType, EventType, ProviderFeature
+from music_assistant_models.enums import ConfigEntryType, EventType, MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, SetupFailedError
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 from music_assistant_models.provider import ProviderManifest
@@ -38,6 +38,7 @@ _DEFAULT_API_SECRET: str = app_var(13)
 # updating the PluginProvider base class
 # as well as other similar classes that also use set[ProviderFeature].
 SUPPORTED_FEATURES: Final[set[ProviderFeature]] = set()
+SUPPORTED_SCROBBLE_MEDIA_TYPES: Final[frozenset[MediaType]] = frozenset({MediaType.TRACK})
 
 # Configuration keys
 CONF_API_KEY: Final[str] = "_api_key"
@@ -175,7 +176,11 @@ class LastFMEventHandler(ScrobblerHelper):
         self, network: pylast._Network, logger: logging.Logger, config: ProviderConfig
     ) -> None:
         """Initialize."""
-        super().__init__(logger, ScrobblerConfig.create_from_config(config))
+        super().__init__(
+            logger,
+            ScrobblerConfig.create_from_config(config),
+            SUPPORTED_SCROBBLE_MEDIA_TYPES,
+        )
         self._network = network
 
     async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:

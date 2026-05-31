@@ -1,3 +1,4 @@
+# mypy: disable-error-code="attr-defined,unreachable"
 """Tests for the Ynison WebSocket client."""
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from music_assistant.providers.yandex_ynison.constants import (
 from music_assistant.providers.yandex_ynison.ynison_client import (
     YnisonClient,
     YnisonDeviceInfo,
+    YnisonSendError,
     YnisonState,
     generate_device_id,
     make_version_block,
@@ -252,8 +254,8 @@ class TestYnisonClientParseState:
         client._parse_state({"player_state": {"status": {"paused": True}}})
         assert client.state.active_device_id == "old-device"
 
-    def test_echo_flag_true_on_own_authored_queue(self, client: YnisonClient) -> None:
-        """player_queue.version.device_id == own → last_update_is_echo True."""
+    def test_echo_flag_true_only_when_both_authors_ours(self, client: YnisonClient) -> None:
+        """AND-logic (1.9.1): both queue.version AND status.version must be ours."""
         client._parse_state(
             {
                 "player_state": {
@@ -266,13 +268,91 @@ class TestYnisonClientParseState:
                             "timestamp_ms": "0",
                         },
                     },
+                    "status": {
+                        "paused": False,
+                        "progress_ms": "1000",
+                        "duration_ms": "5000",
+                        "version": {
+                            "device_id": "test-device-id",
+                            "version": "43",
+                            "timestamp_ms": "0",
+                        },
+                    },
                 },
             }
         )
         assert client.state.last_update_is_echo is True
 
+    def test_echo_flag_false_when_only_queue_is_ours(self, client: YnisonClient) -> None:
+        """Status authored by peer → NOT echo, even if queue.version is ours.
+
+        Regression for the OR-logic bug: a peer toggling pause produced
+        status.version=peer + our stale queue.version=ours, which the old
+        OR-rule wrongly classified as echo and silenced the user action.
+        """
+        client._parse_state(
+            {
+                "player_state": {
+                    "player_queue": {
+                        "playable_list": [{"playable_id": "t1"}],
+                        "current_playable_index": 0,
+                        "version": {
+                            "device_id": "test-device-id",
+                            "version": "42",
+                            "timestamp_ms": "0",
+                        },
+                    },
+                    "status": {
+                        "paused": True,
+                        "progress_ms": "1000",
+                        "duration_ms": "5000",
+                        "version": {
+                            "device_id": "peer-device",
+                            "version": "44",
+                            "timestamp_ms": "0",
+                        },
+                    },
+                },
+            }
+        )
+        assert client.state.last_update_is_echo is False
+
+    def test_echo_flag_false_when_only_status_is_ours(self, client: YnisonClient) -> None:
+        """Queue authored by peer → NOT echo, even if status.version is ours.
+
+        The mirror case: our heartbeat just stamped status.version=ours, but
+        the peer changed the queue. Under AND-logic the peer change is not
+        silenced.
+        """
+        client._parse_state(
+            {
+                "player_state": {
+                    "player_queue": {
+                        "playable_list": [{"playable_id": "new-track"}],
+                        "current_playable_index": 0,
+                        "version": {
+                            "device_id": "peer-device",
+                            "version": "100",
+                            "timestamp_ms": "0",
+                        },
+                    },
+                    "status": {
+                        "paused": False,
+                        "progress_ms": "0",
+                        "duration_ms": "5000",
+                        "version": {
+                            "device_id": "test-device-id",
+                            "version": "99",
+                            "timestamp_ms": "0",
+                        },
+                    },
+                },
+            }
+        )
+        assert client.state.last_update_is_echo is False
+
     def test_echo_flag_false_on_foreign_author(self, client: YnisonClient) -> None:
-        """player_queue.version.device_id != own → not an echo."""
+        """Both authors are peer → not an echo."""
         client._parse_state(
             {
                 "player_state": {
@@ -291,7 +371,12 @@ class TestYnisonClientParseState:
         assert client.state.last_update_is_echo is False
 
     def test_echo_flag_false_when_version_missing(self, client: YnisonClient) -> None:
-        """No version block in player_queue → not an echo (safe default)."""
+        """No version block at all → not an echo (safe default).
+
+        AND-logic treats missing version-block as "not ours" — matches the
+        previous safe default. Without a version-block we can't claim
+        ownership, so we let the update reach handlers.
+        """
         client._parse_state(
             {
                 "player_state": {
@@ -306,26 +391,6 @@ class TestYnisonClientParseState:
         client.state.last_update_is_echo = True  # sticky from a prior update
         client._parse_state({"active_device_id_optional": "some-device"})
         assert client.state.last_update_is_echo is False
-
-    def test_echo_flag_true_on_own_authored_status(self, client: YnisonClient) -> None:
-        """status.version.device_id == own → echo True even without player_queue version."""
-        client._parse_state(
-            {
-                "player_state": {
-                    "status": {
-                        "paused": False,
-                        "progress_ms": "1000",
-                        "duration_ms": "5000",
-                        "version": {
-                            "device_id": "test-device-id",
-                            "version": "42",
-                            "timestamp_ms": "0",
-                        },
-                    },
-                },
-            }
-        )
-        assert client.state.last_update_is_echo is True
 
     def test_parse_state_coerces_int_timestamps_to_strings(self, client: YnisonClient) -> None:
         """Inbound int timestamps are stringified so outbound echoes stay safe.
@@ -880,17 +945,22 @@ class TestConnectState:
         with suppress(asyncio.CancelledError):
             await client._message_task
 
-    async def test_reconnect_sends_last_known_state(self, client: YnisonClient) -> None:
-        """On reconnect, send_full_state is called with the preserved player state."""
+    async def test_reconnect_sends_fresh_state_no_stale_replay(self, client: YnisonClient) -> None:
+        """v2.0: reconnect sends a fresh initial state — no stale replay.
+
+        Replaying the last known state (which after a heartbeat could carry
+        `paused=True`) caused the server to broadcast it back and trigger
+        an unintended pause on the still-running player.
+        """
         mock_ws = AsyncMock()
         mock_session = AsyncMock()
         mock_session.ws_connect = AsyncMock(return_value=mock_ws)
         client._session = mock_session
 
-        # Simulate prior connection: set flag and populate state
+        # Simulate prior connection with stale paused state cached.
         client._has_connected_once = True
         client.state.player_state = {
-            "status": {"paused": False, "progress_ms": 120000, "duration_ms": 300000},
+            "status": {"paused": True, "progress_ms": 120000, "duration_ms": 300000},
             "player_queue": {
                 "current_playable_index": 3,
                 "playable_list": [{"playable_id": "t1"}],
@@ -900,29 +970,28 @@ class TestConnectState:
         with patch.object(client, "send_full_state", new_callable=AsyncMock) as mock_sfs:
             await client._connect_state("host.yandex.net", "ticket", 42)
 
-        mock_sfs.assert_awaited_once_with(player_state=client.state.player_state)
+        # send_full_state must be called WITHOUT player_state — it falls
+        # back to a fresh _build_initial_state() internally.
+        mock_sfs.assert_awaited_once_with()
+        # Settle window armed for ~2 s.
+        assert client.in_post_reconnect_settle is True
         # Clean up
         assert client._message_task is not None
         client._message_task.cancel()
         with suppress(asyncio.CancelledError):
             await client._message_task
 
-    async def test_reconnect_empty_state_falls_back(self, client: YnisonClient) -> None:
-        """On reconnect with empty player_state, falls back to blank initial state."""
+    async def test_cold_start_does_not_arm_settle_window(self, client: YnisonClient) -> None:
+        """First-ever connect skips the settle window — nothing stale to swallow."""
         mock_ws = AsyncMock()
         mock_session = AsyncMock()
         mock_session.ws_connect = AsyncMock(return_value=mock_ws)
         client._session = mock_session
 
-        client._has_connected_once = True
-        client.state.player_state = {}  # empty — no prior state received
-
-        with patch.object(client, "send_full_state", new_callable=AsyncMock) as mock_sfs:
+        with patch.object(client, "send_full_state", new_callable=AsyncMock):
             await client._connect_state("host.yandex.net", "ticket", 42)
 
-        # Falls back to no-arg call (blank initial state)
-        mock_sfs.assert_awaited_once_with()
-        # Clean up
+        assert client.in_post_reconnect_settle is False
         assert client._message_task is not None
         client._message_task.cancel()
         with suppress(asyncio.CancelledError):
@@ -1030,7 +1099,7 @@ class TestMessageLoop:
         )
         await self._run_loop_with_messages(client, [error_msg, valid_msg])
 
-        client._logger.warning.assert_called()  # type: ignore[attr-defined]
+        client._logger.warning.assert_called()
 
     async def test_rebalance_error_breaks_loop(
         self,
@@ -1102,7 +1171,7 @@ class TestMessageLoop:
         )
         await self._run_loop_with_messages(client, [bad_msg, valid_msg])
 
-        client._logger.warning.assert_called()  # type: ignore[attr-defined]
+        client._logger.warning.assert_called()
 
     async def test_callback_exception_continues(
         self,
@@ -1134,7 +1203,7 @@ class TestMessageLoop:
         )
         await self._run_loop_with_messages(client, [bin_msg, valid_msg])
 
-        client._logger.debug.assert_called()  # type: ignore[attr-defined]
+        client._logger.debug.assert_called()
 
     async def test_error_message_breaks_and_reconnects(self, client: YnisonClient) -> None:
         """ERROR message breaks loop and schedules reconnect."""
@@ -1221,7 +1290,7 @@ class TestMessageLoop:
 
         async def _aiter(_self: Any) -> Any:
             raise asyncio.CancelledError
-            yield  # type: ignore[unreachable]
+            yield
 
         mock_ws = MagicMock()
         mock_ws.__aiter__ = _aiter
@@ -1241,7 +1310,7 @@ class TestMessageLoop:
         msg = _make_ws_msg(aiohttp.WSMsgType.TEXT, "")
         # Empty string → json.loads will fail → warning logged
         await self._run_loop_with_messages(client, [msg])
-        client._logger.warning.assert_called()  # type: ignore[attr-defined]
+        client._logger.warning.assert_called()
 
     async def test_no_ws_raises_runtime_error(self, client: YnisonClient) -> None:
         """_message_loop raises RuntimeError when ws is None."""
@@ -1277,7 +1346,7 @@ class TestReconnect:
         ):
             await client._reconnect()
 
-        client._logger.info.assert_any_call("Ynison reconnected successfully")  # type: ignore[attr-defined]
+        client._logger.info.assert_any_call("Ynison reconnected successfully")
 
     async def test_retries_indefinitely_until_stopped(self, client: YnisonClient) -> None:
         """Reconnect keeps retrying past the old 5-attempt cap until stop_event."""
@@ -1577,9 +1646,7 @@ class TestTokenRefreshOnReconnect:
 
         on_auth_failure.assert_awaited_once()
         assert client._token == SecretStr("new-token")
-        client._logger.info.assert_any_call(  # type: ignore[attr-defined]
-            "Token refreshed, will retry with new token"
-        )
+        client._logger.info.assert_any_call("Token refreshed, will retry with new token")
 
     async def test_auth_failure_no_callback(self) -> None:
         """LoginFailed without on_auth_failure keeps retrying on the same token."""
@@ -1674,3 +1741,131 @@ class TestUpdateToken:
         assert client._token == SecretStr("old-token")
         client.update_token(SecretStr("new-token"))
         assert client._token == SecretStr("new-token")
+
+
+# ------------------------------------------------------------------
+# Strict-mode delivery signalling (spec 0003)
+# ------------------------------------------------------------------
+
+
+class TestSendStrictMode:
+    """Tests for `_send`/`update_*` strict-mode raising on transport failure."""
+
+    async def test_send_strict_raises_ynison_send_error_when_disconnected(
+        self, client: YnisonClient
+    ) -> None:
+        """`strict=True` on a disconnected client raises `YnisonSendError`."""
+        client._ws = None
+        with pytest.raises(YnisonSendError):
+            await client._send({"test": True}, strict=True)
+
+    async def test_send_strict_raises_on_client_error_and_schedules_reconnect(
+        self, client: YnisonClient
+    ) -> None:
+        """`strict=True` with a failing send_str raises AND schedules reconnect."""
+        mock_ws = AsyncMock()
+        mock_ws.closed = False
+        mock_ws.send_str = AsyncMock(side_effect=aiohttp.ClientError("connection lost"))
+        client._ws = mock_ws
+        client._connected = True
+
+        with patch.object(client, "_reconnect", new_callable=AsyncMock) as mock_rc:
+            with pytest.raises(YnisonSendError):
+                await client._send({"test": True}, strict=True)
+            await asyncio.sleep(0)
+
+        assert client._connected is False
+        mock_rc.assert_awaited_once()
+
+    async def test_send_non_strict_swallows_and_schedules_reconnect(
+        self, client: YnisonClient
+    ) -> None:
+        """Default (`strict=False`) keeps the existing swallow-and-reconnect behaviour."""
+        mock_ws = AsyncMock()
+        mock_ws.closed = False
+        mock_ws.send_str = AsyncMock(side_effect=aiohttp.ClientError("connection lost"))
+        client._ws = mock_ws
+        client._connected = True
+
+        with patch.object(client, "_reconnect", new_callable=AsyncMock) as mock_rc:
+            # Must NOT raise
+            await client._send({"test": True})
+            await asyncio.sleep(0)
+
+        assert client._connected is False
+        mock_rc.assert_awaited_once()
+
+    async def test_update_playing_status_forwards_strict_kwarg(self, client: YnisonClient) -> None:
+        """`update_playing_status(strict=True)` forwards to `_send`."""
+        with patch.object(client, "_send", new_callable=AsyncMock) as mock_send:
+            await client.update_playing_status(
+                progress_ms=10, duration_ms=100, paused=False, strict=True
+            )
+        mock_send.assert_awaited_once()
+        _args, kwargs = mock_send.call_args
+        assert kwargs.get("strict") is True
+
+    async def test_update_playing_status_default_strict_false(self, client: YnisonClient) -> None:
+        """Default call passes `strict=False` (or omits, equivalent)."""
+        with patch.object(client, "_send", new_callable=AsyncMock) as mock_send:
+            await client.update_playing_status(progress_ms=10, duration_ms=100, paused=False)
+        _args, kwargs = mock_send.call_args
+        assert kwargs.get("strict", False) is False
+
+    async def test_update_player_state_forwards_strict_kwarg(self, client: YnisonClient) -> None:
+        """`update_player_state(strict=True)` forwards to `_send`."""
+        with patch.object(client, "_send", new_callable=AsyncMock) as mock_send:
+            await client.update_player_state(
+                player_state={"player_queue": {}, "status": {}}, strict=True
+            )
+        mock_send.assert_awaited_once()
+        _args, kwargs = mock_send.call_args
+        assert kwargs.get("strict") is True
+
+
+class TestScheduleReconnect:
+    """Tests for the extracted `_schedule_reconnect` helper."""
+
+    async def test_schedule_reconnect_creates_task_when_none_alive(
+        self, client: YnisonClient
+    ) -> None:
+        """First call creates a reconnect task."""
+        assert client._reconnect_task is None
+        with patch.object(client, "_reconnect", new_callable=AsyncMock):
+            client._schedule_reconnect()
+            task = client._reconnect_task
+            assert task is not None
+            await task  # let it finish so we don't leak it
+
+    async def test_schedule_reconnect_idempotent_when_task_alive(
+        self, client: YnisonClient
+    ) -> None:
+        """Second call while a task is alive does not create another."""
+        # Use a real task that we can hold open
+        started = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def slow_reconnect() -> None:
+            started.set()
+            await finish.wait()
+
+        with patch.object(client, "_reconnect", side_effect=slow_reconnect):
+            client._schedule_reconnect()
+            first = client._reconnect_task
+            assert first is not None
+            await started.wait()
+
+            # Try again while first is running
+            client._schedule_reconnect()
+            assert client._reconnect_task is first  # same task, no replacement
+
+            finish.set()
+            await first
+
+    async def test_schedule_reconnect_noop_when_stop_event_set(self, client: YnisonClient) -> None:
+        """Once the client is being torn down, no new reconnect tasks are scheduled."""
+        client._stop_event.set()
+        with patch.object(client, "_reconnect", new_callable=AsyncMock) as mock_rc:
+            client._schedule_reconnect()
+        assert client._reconnect_task is None
+        mock_rc.assert_not_called()

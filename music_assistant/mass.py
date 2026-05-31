@@ -830,6 +830,7 @@ class MusicAssistant:
             self.player_queues,
             self.webserver,
             self.webserver.auth,
+            self.streams.audio_analysis,
         ):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):

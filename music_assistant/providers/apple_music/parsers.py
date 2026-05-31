@@ -24,6 +24,7 @@ from music_assistant.helpers.util import (
 )
 
 from .constants import MAX_ARTWORK_DIMENSION, UNKNOWN_PLAYLIST_NAME
+from .helpers.utils import is_library_id
 
 if TYPE_CHECKING:
     from .provider import AppleMusicProvider
@@ -108,13 +109,6 @@ def parse_album(
             item_id=album_id,
             name=album_id,
         )
-    is_available_in_catalog = attributes.get("url") is not None
-    if not is_available_in_catalog:
-        provider.logger.debug(
-            "Skipping album %s. Album is not available in the Apple Music catalog.",
-            attributes.get("name"),
-        )
-        return None
     name, version = parse_title_and_version(attributes["name"])
     album = Album(
         item_id=album_id,
@@ -194,6 +188,7 @@ def parse_track(
 ) -> Track:
     """Parse track object to generic layout."""
     relationships = track_obj.get("relationships", {})
+    raw_attributes = track_obj.get("attributes", {})
     if (
         track_obj.get("type") == "library-songs"
         and relationships.get("catalog", {}).get("data", []) != []
@@ -232,7 +227,9 @@ def parse_track(
     if "artists" in relationships:
         artists = relationships["artists"]
         track.artists = [parse_artist(provider, artist) for artist in artists["data"]]
-    elif artist_name := normalize_unicode(attributes.get("artistName")):
+    elif artist_name := normalize_unicode(
+        attributes.get("artistName") or raw_attributes.get("artistName")
+    ):
         track.artists = [
             ItemMapping(
                 media_type=MediaType.ARTIST,
@@ -243,7 +240,18 @@ def parse_track(
         ]
     if albums := relationships.get("albums"):
         if "data" in albums and len(albums["data"]) > 0:
-            track.album = parse_album(provider, albums["data"][0])
+            parsed_album = parse_album(provider, albums["data"][0])
+            if parsed_album:
+                track.album = parsed_album
+    elif album_name := normalize_unicode(
+        attributes.get("albumName") or raw_attributes.get("albumName")
+    ):
+        track.album = ItemMapping(
+            media_type=MediaType.ALBUM,
+            item_id=album_name,
+            provider=provider.instance_id,
+            name=album_name,
+        )
     if artwork := attributes.get("artwork"):
         url = artwork["url"]
         if artwork["width"] and artwork["height"]:
@@ -275,11 +283,20 @@ def parse_playlist(
     provider: AppleMusicProvider,
     playlist_obj: dict[str, Any],
     is_favourite: bool | None = None,
+    can_edit_hint: bool | None = None,
+    library_id_override: str | None = None,
 ) -> Playlist:
     """Parse Apple Music playlist object to generic layout."""
     attributes = playlist_obj["attributes"]
-    playlist_id = attributes["playParams"].get("globalId") or playlist_obj["id"]
-    is_editable = attributes.get("canEdit", False)
+    raw_playlist_id = playlist_obj["id"]
+    play_params = attributes.get("playParams", {})
+    # Prefer write-safe library IDs when available.
+    playlist_id = (
+        library_id_override
+        or (raw_playlist_id if is_library_id(raw_playlist_id) else play_params.get("globalId"))
+        or raw_playlist_id
+    )
+    is_editable = can_edit_hint if can_edit_hint is not None else attributes.get("canEdit", False)
     playlist = Playlist(
         item_id=playlist_id,
         provider=provider.instance_id,

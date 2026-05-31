@@ -56,6 +56,7 @@ from .constants import (
     CONF_MY_WAVE_MAX_TRACKS,
     CONF_QUALITY,
     CONF_REFRESH_TOKEN,
+    CONF_RESTRICTIVE_RATE_LIMITS,
     CONF_TOKEN,
     CONF_WAVE_PRESETS_DATA,
     CONF_X_TOKEN,
@@ -282,7 +283,10 @@ class YandexMusicProvider(MusicProvider):
         self._update_config_value(
             CONF_REFRESH_TOKEN, new_refresh_token.get_secret(), encrypted=True
         )
-        self._client = YandexMusicClient(new_music_token, base_url=base_url)
+        restrictive = bool(self.config.get_value(CONF_RESTRICTIVE_RATE_LIMITS, False))
+        self._client = YandexMusicClient(
+            new_music_token, base_url=base_url, restrictive_rate_limits=restrictive
+        )
         await self._client.connect()
         self.logger.info("Re-issued credentials silently from refresh token")
 
@@ -292,6 +296,7 @@ class YandexMusicProvider(MusicProvider):
         x_token = self.config.get_value(CONF_X_TOKEN)
         refresh_token = self.config.get_value(CONF_REFRESH_TOKEN)
         base_url = self.config.get_value(CONF_BASE_URL, DEFAULT_BASE_URL)
+        restrictive = bool(self.config.get_value(CONF_RESTRICTIVE_RATE_LIMITS, False))
 
         if not token and not x_token:
             raise LoginFailed("No Yandex Music token provided. Please authenticate.")
@@ -299,7 +304,11 @@ class YandexMusicProvider(MusicProvider):
         # Try existing music token first (fast path)
         if token:
             try:
-                self._client = YandexMusicClient(SecretStr(str(token)), base_url=str(base_url))
+                self._client = YandexMusicClient(
+                    SecretStr(str(token)),
+                    base_url=str(base_url),
+                    restrictive_rate_limits=restrictive,
+                )
                 await self._client.connect()
             except LoginFailed:
                 self.logger.warning("Music token is invalid or expired")
@@ -317,7 +326,11 @@ class YandexMusicProvider(MusicProvider):
             try:
                 new_music_token = await refresh_music_token(SecretStr(str(x_token)))
                 self._update_config_value(CONF_TOKEN, new_music_token.get_secret(), encrypted=True)
-                self._client = YandexMusicClient(new_music_token, base_url=str(base_url))
+                self._client = YandexMusicClient(
+                    new_music_token,
+                    base_url=str(base_url),
+                    restrictive_rate_limits=restrictive,
+                )
                 await self._client.connect()
                 self.logger.info("Refreshed music token from session token")
             except LoginFailed as err:
@@ -370,6 +383,9 @@ class YandexMusicProvider(MusicProvider):
             await self._client.disconnect()
         self._client = None
         self._streaming = None
+        self._wave_states.clear()
+        self._wave_bg_colors.clear()
+        self._liked_albums_cache = None
         self._audiobook_chapter_cache.clear()
         self._audiobook_play_ids.clear()
         await super().unload(is_removed)
@@ -945,30 +961,21 @@ class YandexMusicProvider(MusicProvider):
                 break
         return t
 
-    @use_cache(3600)
-    async def _validate_tag(self, tag_slug: str) -> bool:
-        """Check if a tag has playlists by calling client.get_tag_playlists().
-
-        :param tag_slug: Tag identifier (e.g. 'chill', '80s').
-        :return: True if the tag has at least one playlist.
-        """
-        try:
-            playlists = await self.client.get_tag_playlists(tag_slug)
-            return len(playlists) > 0
-        except Exception as err:
-            self.logger.debug("Tag validation failed for %s: %s", tag_slug, err)
-            return False
-
-    @use_cache(3600)
+    @use_cache(3600, allow_expired_cache=True)
     async def _get_valid_tags_for_category(self, category: str) -> list[str]:
-        """Get validated tags for a category (only those with playlists).
+        """Return tags for a category by combining hardcoded + landing-discovered.
 
-        Combines hardcoded tags from the category lists with any landing-discovered
-        tags, validates each by calling client.tags(), and returns only those with
-        playlists.
+        Trusts the hardcoded ``TAG_CATEGORY_*`` lists (evergreen Yandex
+        categories) and the landing API output (Yandex returns landing tags
+        only when they have playlists). No per-tag runtime validation: that
+        machinery was a parallel ``asyncio.gather`` over
+        ``get_tag_playlists`` for every tag and tripped Yandex's edge
+        per-endpoint concurrency limit on first browse — captcha within
+        ~460ms of the burst. If a tag turns out to be empty at click time,
+        ``_get_tag_playlists_as_browse`` already renders an empty folder.
 
         :param category: Category name ('mood', 'activity', 'era', 'genres').
-        :return: List of valid tag slugs.
+        :return: List of tag slugs (hardcoded order preserved, landing tags appended).
         """
         category_lists: dict[str, list[str]] = {
             "mood": list(TAG_CATEGORY_MOOD),
@@ -977,8 +984,6 @@ class YandexMusicProvider(MusicProvider):
             "genres": list(TAG_CATEGORY_GENRES),
         }
         tags = category_lists.get(category, [])
-
-        # Add landing-discovered tags for this category
         try:
             landing_tags = await self.client.get_landing_tags()
             for slug, _title in landing_tags:
@@ -987,38 +992,25 @@ class YandexMusicProvider(MusicProvider):
                     tags.append(slug)
         except Exception as err:
             self.logger.debug("Landing tag discovery failed: %s", err)
+        return tags
 
-        # Validate tags in parallel with bounded concurrency
-        sem = asyncio.Semaphore(8)
-
-        async def _check(tag: str) -> str | None:
-            async with sem:
-                return tag if await self._validate_tag(tag) else None
-
-        results = await asyncio.gather(*[_check(tag) for tag in tags])
-        return [tag for tag in results if tag is not None]
-
-    @use_cache(3600)
+    @use_cache(3600, allow_expired_cache=True)
     async def _get_discovered_tags(self, locale: str) -> list[tuple[str, str]]:
-        """Get all available tags by combining hardcoded tags with landing discovery.
+        """Return all browse-able tags: hardcoded (non-seasonal) + landing-discovered.
 
-        Starts with all hardcoded tags from category lists, adds landing-discovered
-        tags, validates each via client.tags(), and returns only those with playlists.
-        Results are cached for 1 hour. The locale parameter is included in the cache
-        key so that a locale change invalidates the cached result.
+        Same rationale as :meth:`_get_valid_tags_for_category` — runtime
+        validation removed to avoid the per-endpoint concurrency burst that
+        triggered Yandex captcha. The locale parameter is part of the cache
+        key so locale changes invalidate the cached result.
 
         :param locale: Current metadata locale (used as part of cache key).
-        :return: List of (slug, title) tuples for tags that have playlists.
+        :return: List of (slug, title) tuples in hardcoded-then-discovered order.
         """
         names = self._get_browse_names()
-
-        # Collect all hardcoded tags (non-seasonal)
         all_tags: dict[str, str] = {}
         for slug, cat in TAG_SLUG_CATEGORY.items():
             if cat != "seasonal":
                 all_tags[slug] = names.get(slug, slug.title())
-
-        # Add landing-discovered tags
         try:
             landing_tags = await self.client.get_landing_tags()
             for slug, title in landing_tags:
@@ -1026,19 +1018,7 @@ class YandexMusicProvider(MusicProvider):
                     all_tags[slug] = title
         except Exception as err:
             self.logger.debug("Failed to discover tags from landing API: %s", err)
-
-        # Validate tags in parallel with bounded concurrency
-        sem = asyncio.Semaphore(8)
-
-        async def _check(slug: str) -> bool:
-            async with sem:
-                return await self._validate_tag(slug)
-
-        tag_items = list(all_tags.items())
-        results = await asyncio.gather(*[_check(slug) for slug, _ in tag_items])
-        return [
-            (slug, title) for (slug, title), valid in zip(tag_items, results, strict=True) if valid
-        ]
+        return list(all_tags.items())
 
     async def _get_discovered_tag_slugs(self) -> set[str]:
         """Get set of all valid tag slugs (cached).
@@ -1327,8 +1307,12 @@ class YandexMusicProvider(MusicProvider):
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse mixes folder (seasonal collections) using hardcoded tags.
 
-        Uses TAG_MIXES directly and validates each tag via client.tags()
-        to check if it has playlists. Does not depend on landing API discovery.
+        Renders every seasonal tag from ``TAG_MIXES`` unconditionally. The
+        old per-tag validation fired a ``Semaphore(5)+gather`` of
+        ``get_tag_playlists`` calls and tripped Yandex's per-endpoint
+        concurrency limit on first browse. If a season ends up empty at
+        click time, ``_get_tag_playlists_as_browse`` already returns an
+        empty folder.
 
         :param path: Full browse path.
         :param path_parts: Split path parts after ://.
@@ -1337,30 +1321,18 @@ class YandexMusicProvider(MusicProvider):
         names = self._get_browse_names()
         base = path.rstrip("/") + "/"
 
-        # Validate seasonal tags in parallel (no landing dependency)
-        sem = asyncio.Semaphore(5)
-
-        async def _check(tag: str) -> str | None:
-            async with sem:
-                return tag if await self._validate_tag(tag) else None
-
-        results = await asyncio.gather(*[_check(t) for t in TAG_MIXES])
-        available_mixes = [t for t in results if t is not None]
-
-        # mixes/ - show seasonal folders (only valid ones)
+        # mixes/ - show seasonal folders
         if len(path_parts) == 1:
-            folders = []
-            for t in available_mixes:
-                folders.append(
-                    BrowseFolder(
-                        item_id=t,
-                        provider=self.instance_id,
-                        path=f"{base}{t}",
-                        name=names.get(t, t.title()),
-                        is_playable=False,
-                    )
+            return [
+                BrowseFolder(
+                    item_id=t,
+                    provider=self.instance_id,
+                    path=f"{base}{t}",
+                    name=names.get(t, t.title()),
+                    is_playable=False,
                 )
-            return folders
+                for t in TAG_MIXES
+            ]
 
         # mixes/tag - show playlists for the tag
         tag = path_parts[1] if len(path_parts) > 1 else None
@@ -1647,7 +1619,7 @@ class YandexMusicProvider(MusicProvider):
 
         return []
 
-    @use_cache(600)
+    @use_cache(600, allow_expired_cache=True)
     async def _get_dashboard_stations_cached(self) -> list[tuple[str, str, str | None]]:
         """Get personalized dashboard stations, cached for 10 minutes.
 
@@ -1808,7 +1780,7 @@ class YandexMusicProvider(MusicProvider):
         bg_color = item.get("colors", {}).get("average")
         return cover_uri, bg_color
 
-    @use_cache(3600)
+    @use_cache(3600, allow_expired_cache=True)
     async def _get_mixes_waves_cached(self) -> list[dict[str, Any]] | None:
         """Get AI Wave Set data from /landing-blocks/mixes-waves, cached for 1 hour.
 
@@ -1816,7 +1788,7 @@ class YandexMusicProvider(MusicProvider):
         """
         return await self.client.get_mixes_waves()
 
-    @use_cache(3600)
+    @use_cache(3600, allow_expired_cache=True)
     async def _get_waves_landing_cached(self) -> list[dict[str, Any]] | None:
         """Get Featured Waves data from /landing-blocks/waves, cached for 1 hour.
 
@@ -1955,7 +1927,7 @@ class YandexMusicProvider(MusicProvider):
             path, path_parts, mixes_data or [], MY_WAVES_SET_FOLDER_ID
         )
 
-    @use_cache(600)
+    @use_cache(600, allow_expired_cache=True)
     async def _get_tag_playlists_as_browse(
         self, tag_id: str
     ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
@@ -1978,7 +1950,7 @@ class YandexMusicProvider(MusicProvider):
 
     # Search
 
-    @use_cache(3600 * 24 * 14)
+    @use_cache(3600 * 24, allow_expired_cache=True)
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
@@ -2009,7 +1981,7 @@ class YandexMusicProvider(MusicProvider):
         # Use specific type if only one requested, otherwise search all
         search_type = requested_types[0] if len(requested_types) == 1 else "all"
 
-        search_result = await self.client.search(search_query, search_type=search_type, limit=limit)
+        search_result = await self.client.search(search_query, search_type=search_type)
         if not search_result:
             return result
 
@@ -2079,7 +2051,7 @@ class YandexMusicProvider(MusicProvider):
 
     # Get single items
 
-    @use_cache(3600 * 24 * 30)
+    @use_cache(3600 * 24 * 30, allow_expired_cache=True)
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get artist details by ID, enriched with description and listener stats.
 
@@ -2095,7 +2067,7 @@ class YandexMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
         return parse_artist(self, artist, about=about)
 
-    @use_cache(3600 * 24 * 30)
+    @use_cache(3600 * 24 * 30, allow_expired_cache=True)
     async def get_album(self, prov_album_id: str) -> Album:
         """Get album details by ID.
 
@@ -2108,7 +2080,7 @@ class YandexMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Album {prov_album_id} not found")
         return parse_album(self, album)
 
-    @use_cache(3600 * 24)
+    @use_cache(3600 * 24, allow_expired_cache=True)
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
         """Get podcast details by ID (backed by a Yandex album).
 
@@ -2156,7 +2128,7 @@ class YandexMusicProvider(MusicProvider):
         podcast = parse_podcast(self, track_obj.albums[0])
         return parse_podcast_episode(self, track_obj, podcast, position=0)
 
-    @use_cache(3600 * 24)
+    @use_cache(3600 * 24, allow_expired_cache=True)
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
         """Get audiobook details by ID, including chapters built from tracks.
 
@@ -2203,7 +2175,7 @@ class YandexMusicProvider(MusicProvider):
         track_id, _ = _parse_radio_item_id(prov_track_id)
         return await self._get_track_cached(track_id)
 
-    @use_cache(3600 * 24 * 30)
+    @use_cache(3600 * 24 * 30, allow_expired_cache=True)
     async def _get_track_cached(self, track_id: str) -> Track:
         """Get track details by normalized ID (cached).
 
@@ -2271,7 +2243,7 @@ class YandexMusicProvider(MusicProvider):
         # Real playlists - use cached method
         return await self._get_real_playlist(prov_playlist_id)
 
-    @use_cache(3600 * 24 * 30)
+    @use_cache(3600 * 24 * 30, allow_expired_cache=True)
     async def _get_real_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get real playlist details by ID (cached).
 
@@ -2506,7 +2478,7 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing prefetched wave track: %s", err)
         return tracks
 
-    @use_cache(3600 * 3)
+    @use_cache(3600 * 3, allow_expired_cache=True)
     async def _fetch_similar_tracks_for_seed(self, track_id: str, limit: int) -> list[Track]:
         """Create a one-off rotor session for ``track:{id}`` and return up to ``limit`` tracks.
 
@@ -2529,7 +2501,7 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing similar track: %s", err)
         return similar_tracks
 
-    @use_cache(3600 * 3)
+    @use_cache(3600 * 3, allow_expired_cache=True)
     async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
         """Get artists similar to the given one via Yandex artists/similar endpoint.
 
@@ -2601,7 +2573,7 @@ class YandexMusicProvider(MusicProvider):
 
         return folders
 
-    @use_cache(600)
+    @use_cache(600, allow_expired_cache=True)
     async def _get_my_wave_recommendations(self) -> RecommendationFolder | None:
         """Get My Wave recommendation folder with personalized tracks.
 
@@ -2674,7 +2646,7 @@ class YandexMusicProvider(MusicProvider):
             icon="mdi-waveform",
         )
 
-    @use_cache(1800)
+    @use_cache(1800, allow_expired_cache=True)
     async def _get_feed_recommendations(self) -> RecommendationFolder | None:
         """Get personalized feed playlists (Playlist of the Day, DejaVu, etc.).
 
@@ -2704,7 +2676,7 @@ class YandexMusicProvider(MusicProvider):
             icon="mdi-account-music",
         )
 
-    @use_cache(3600)
+    @use_cache(3600, allow_expired_cache=True)
     async def _get_chart_recommendations(self) -> RecommendationFolder | None:
         """Get chart tracks (hot tracks of the month).
 
@@ -2737,7 +2709,7 @@ class YandexMusicProvider(MusicProvider):
             icon="mdi-chart-line",
         )
 
-    @use_cache(3600)
+    @use_cache(3600, allow_expired_cache=True)
     async def _get_new_releases_recommendations(self) -> RecommendationFolder | None:
         """Get new album releases.
 
@@ -2770,7 +2742,7 @@ class YandexMusicProvider(MusicProvider):
             icon="mdi-new-box",
         )
 
-    @use_cache(3600)
+    @use_cache(3600, allow_expired_cache=True)
     async def _get_new_playlists_recommendations(self) -> RecommendationFolder | None:
         """Get new editorial playlists.
 
@@ -2807,7 +2779,7 @@ class YandexMusicProvider(MusicProvider):
             icon="mdi-playlist-star",
         )
 
-    @use_cache(3600)
+    @use_cache(3600, allow_expired_cache=True)
     async def _get_top_picks_recommendations(self) -> RecommendationFolder | None:
         """Get Top Picks recommendation folder (tag: top).
 
@@ -2844,7 +2816,7 @@ class YandexMusicProvider(MusicProvider):
             return None
         return random.choice(valid_tags)
 
-    @use_cache(1800)
+    @use_cache(1800, allow_expired_cache=True)
     async def _get_mood_mix_recommendations(self, mood_tag: str) -> RecommendationFolder | None:
         """Get Mood Mix recommendation folder for a specific tag.
 
@@ -2873,7 +2845,7 @@ class YandexMusicProvider(MusicProvider):
             icon="mdi-emoticon-outline",
         )
 
-    @use_cache(1800)
+    @use_cache(1800, allow_expired_cache=True)
     async def _get_activity_mix_recommendations(
         self, activity_tag: str
     ) -> RecommendationFolder | None:
@@ -2906,21 +2878,20 @@ class YandexMusicProvider(MusicProvider):
             icon="mdi-run",
         )
 
-    @use_cache(3600 * 6)
+    @use_cache(3600 * 6, allow_expired_cache=True)
     async def _get_seasonal_mix_recommendations(self) -> RecommendationFolder | None:
         """Get Seasonal Mix recommendation folder (based on current month).
 
         :return: RecommendationFolder with seasonal playlists, or None if unavailable.
         """
-        # Determine current season tag
+        # Determine current season tag; fall back to autumn if the seasonal
+        # endpoint returns nothing (e.g. spring/autumn handover gap).
         current_month = datetime.now(tz=UTC).month
         seasonal_tag = TAG_SEASONAL_MAP.get(current_month, "autumn")
-
-        # Validate the seasonal tag; fall back to autumn if not available
-        if not await self._validate_tag(seasonal_tag):
-            seasonal_tag = "autumn"
-
         playlists = await self.client.get_tag_playlists(seasonal_tag)
+        if not playlists and seasonal_tag != "autumn":
+            seasonal_tag = "autumn"
+            playlists = await self.client.get_tag_playlists(seasonal_tag)
         if not playlists:
             return None
         items: list[Playlist] = []
@@ -3019,15 +2990,18 @@ class YandexMusicProvider(MusicProvider):
             batch = track_ids[i : i + batch_size]
             batch_result = await self.client.get_tracks(batch)
             if not batch_result:
+                # Skip this batch but keep going — the terminal guard below
+                # raises if every batch comes back empty. Aborting on a single
+                # empty batch threw away tracks already fetched from earlier
+                # batches and forced a full retry hours later (under the
+                # @use_cache TTL above).
                 self.logger.warning(
-                    "Received empty result for playlist %s tracks batch %s-%s",
-                    prov_playlist_id,
+                    "Empty batch %s-%s for playlist %s, skipping",
                     i,
                     i + len(batch) - 1,
+                    prov_playlist_id,
                 )
-                raise ResourceTemporarilyUnavailable(
-                    "Playlist tracks not fully available; try again later"
-                )
+                continue
             full_tracks.extend(batch_result)
 
         if track_ids and not full_tracks:
