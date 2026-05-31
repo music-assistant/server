@@ -728,7 +728,10 @@ async def test_get_playlist_resolves_library_id_to_provider_uuid(tmp_path: Any) 
 
 
 @pytest.mark.asyncio
-async def test_get_playlist_tracks_dynamic_uses_resolved_provider_id(tmp_path: Any) -> None:
+async def test_get_playlist_tracks_dynamic_uses_resolved_provider_id(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Dynamic track fetch uses resolved provider UUID for the cached sample lookup."""
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
@@ -750,7 +753,7 @@ async def test_get_playlist_tracks_dynamic_uses_resolved_provider_id(tmp_path: A
 
     expected = [_make_mock_track("1", "library://track/1")]
     cached_dynamic_sample_mock = AsyncMock(return_value=expected)
-    plugin._cached_dynamic_sample = cached_dynamic_sample_mock
+    monkeypatch.setattr(plugin, "_cached_dynamic_sample", cached_dynamic_sample_mock)
 
     result = await plugin.get_playlist_tracks("123")
 
