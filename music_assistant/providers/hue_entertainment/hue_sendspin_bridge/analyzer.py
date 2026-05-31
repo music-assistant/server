@@ -114,6 +114,9 @@ class _ModePreset:
     # Scales the onset (peak) brightness boost: 0.0 disables onset flashes
     # entirely (ambient), 1.0 is the full boost.
     onset_boost: float = 1.0
+    # Scales the bass-driven saturation swing: 1.0 is the full swing, 0.0 holds
+    # saturation at its floor (no bass reactivity).
+    bass_saturation_scale: float = 1.0
 
 
 # Modes selectable from the UI. ``DEFAULT_MODE`` is used when the configured
@@ -377,9 +380,8 @@ class HueAudioAnalyzer:
         bass_energy = sum(spectrum[:bass_count]) / bass_count if bass_count else 0.0
         self._bass_baseline += (bass_energy - self._bass_baseline) * _BASS_BASELINE_SMOOTHING
         bass_transient = max(0.0, bass_energy - self._bass_baseline)
-        sat_target = _BASS_SAT_MIN + (_BASS_SAT_MAX - _BASS_SAT_MIN) * min(
-            1.0, bass_transient * _BASS_TRANSIENT_SCALE
-        )
+        swing = self._mode.bass_saturation_scale * min(1.0, bass_transient * _BASS_TRANSIENT_SCALE)
+        sat_target = _BASS_SAT_MIN + (_BASS_SAT_MAX - _BASS_SAT_MIN) * swing
         sat_alpha = _BASS_SAT_RISE if sat_target > self._bass_saturation else _BASS_SAT_DECAY
         self._bass_saturation += (sat_target - self._bass_saturation) * sat_alpha
 
