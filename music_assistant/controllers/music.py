@@ -3464,6 +3464,8 @@ class MusicController(CoreController):
         username_or_user_id: str | None = None,
     ) -> MediaItemType | ItemMapping | None:
         """Try to find a media item (such as a playlist) by name."""
+        # Future todo: enhance this method with AI capabilities to allow typos and
+        # natural language.
         searchname = name.lower()
         library_functions = [
             x
