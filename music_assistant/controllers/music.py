@@ -3530,6 +3530,55 @@ class MusicController(CoreController):
                 return _item
         return None
 
+    @api_command("music/verify_item_uri")
+    async def verify_item_uri(self, uri: str, username_or_user_id: str | None = None) -> bool:
+        """Verify, if a uri specifies a valid item.
+
+        If username_or_user_id is specified, verifies additionally, if this user may access this item. This requires the requesting (i.e. authorized user) to be able to access this item as well.
+        """
+        user: User | None = None
+        if username_or_user_id:
+            # below raises if permissions are insufficient
+            user = await self.mass.music.get_requested_user_if_authorized(username_or_user_id)
+
+        media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
+
+        # fast return for a provider uri which is not part of a user with a provider filter
+        if (
+            provider_instance_id_or_domain != "library"
+            and user
+            and user.provider_filter
+            and provider_instance_id_or_domain not in user.provider_filter
+        ):
+            return False
+
+        # verify that item itself exists
+        try:
+            item = await self.get_item(
+                media_type=media_type,
+                item_id=item_id,
+                provider_instance_id_or_domain=provider_instance_id_or_domain,
+                allow_update_metadata=False,  # no need trigger more methods
+            )
+        except MediaNotFoundError:
+            return False
+
+        # non library item handling for users with no filter, or no user at all
+        if (
+            provider_instance_id_or_domain != "library"
+            or not user
+            or (user and not user.provider_filter)
+            or isinstance(item, BrowseFolder)
+        ):
+            return True
+
+        # library item handling for users with provider filter
+        for provider_mapping in item.provider_mappings:
+            if provider_mapping.provider_instance in user.provider_filter:
+                return True
+
+        return False
+
     async def get_requested_user_if_authorized(self, username_or_user_id: str) -> User:
         """Return requested user if authenticated user may access all music providers of this user.
 
