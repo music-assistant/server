@@ -199,11 +199,11 @@ class SmartPlaylistProvider(PluginProvider):
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get playlist details by provider id."""
-        rules = self._rules_store.get(prov_playlist_id)
+        resolved_id, rules = await self._resolve_rules_for_playlist_id(prov_playlist_id)
         if rules is None:
             msg = f"Smart playlist {prov_playlist_id} not found"
             raise MediaNotFoundError(msg)
-        return self._build_playlist(prov_playlist_id, rules)
+        return self._build_playlist(resolved_id, rules)
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Evaluate rules and return tracks.
@@ -218,17 +218,12 @@ class SmartPlaylistProvider(PluginProvider):
         """
         if page > 0:
             return []
-        rules = self._rules_store.get(prov_playlist_id)
-        if rules is None:
-            # prov_playlist_id may be a library DB integer id; resolve it to the provider UUID.
-            resolved_id = await self._resolve_to_provider_id(prov_playlist_id)
-            if resolved_id is not None:
-                rules = self._rules_store.get(resolved_id)
+        resolved_id, rules = await self._resolve_rules_for_playlist_id(prov_playlist_id)
         if rules is None:
             return []
         if not rules.is_dynamic:
             return await self._evaluate_rules(rules)
-        return await self._cached_dynamic_sample(prov_playlist_id)
+        return await self._cached_dynamic_sample(resolved_id)
 
     @use_cache(
         expiration=DYNAMIC_SAMPLE_CACHE_EXPIRATION,
@@ -443,6 +438,18 @@ class SmartPlaylistProvider(PluginProvider):
         ]
 
     # --- Internal helpers ---
+
+    async def _resolve_rules_for_playlist_id(
+        self, playlist_id: str
+    ) -> tuple[str, SmartPlaylistRules | None]:
+        """Resolve playlist id and return (resolved_or_input_id, matching_rules_or_none)."""
+        if rules := self._rules_store.get(playlist_id):
+            return playlist_id, rules
+
+        resolved_id = await self._resolve_to_provider_id(playlist_id)
+        if resolved_id is None:
+            return playlist_id, None
+        return resolved_id, self._rules_store.get(resolved_id)
 
     async def _resolve_to_provider_id(self, playlist_id: str) -> str | None:
         """Resolve a library DB id or provider UUID to the provider UUID."""

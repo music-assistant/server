@@ -3,7 +3,7 @@
   "stage": "beta",
   "domain": "sonic_similarity",
   "name": "Sonic Similarity",
-  "description": "Powers library-wide Similar Tracks, radio mode, and a discover-page row using local audio signatures from sonic_analysis.",
+  "description": "Powers library-wide Similar Tracks, radio mode, and a discover-page row using local audio signatures. Requires both sonic_analysis (perceptual scalars + CLAP embedding) and smart_fades (BPM + musical key) — vector assembly skips tracks missing either signal.",
   "codeowners": ["@music-assistant"],
   "requirements": [
     "usearch==2.25.2",
