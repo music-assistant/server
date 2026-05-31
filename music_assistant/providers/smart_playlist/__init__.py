@@ -442,7 +442,7 @@ class SmartPlaylistProvider(PluginProvider):
     async def _resolve_rules_for_playlist_id(
         self, playlist_id: str
     ) -> tuple[str, SmartPlaylistRules | None]:
-        """Resolve playlist id to provider UUID and return matching rules."""
+        """Resolve playlist id and return (resolved_or_input_id, matching_rules_or_none)."""
         if rules := self._rules_store.get(playlist_id):
             return playlist_id, rules
 

@@ -750,7 +750,7 @@ async def test_get_playlist_tracks_dynamic_uses_resolved_provider_id(tmp_path: A
 
     expected = [_make_mock_track("1", "library://track/1")]
     cached_dynamic_sample_mock = AsyncMock(return_value=expected)
-    cast("Any", plugin)._cached_dynamic_sample = cached_dynamic_sample_mock
+    plugin._cached_dynamic_sample = cached_dynamic_sample_mock
 
     result = await plugin.get_playlist_tracks("123")
 
