@@ -74,6 +74,9 @@ class PlayerBrief:
     needs_setup: bool = False
     active_group: str | None = None
     synced_to: str | None = None
+    volume_muted: bool | None = None
+    group_volume: int | None = None
+    group_volume_muted: bool | None = None
 
 
 @dataclass

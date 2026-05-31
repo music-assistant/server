@@ -34,7 +34,10 @@ class TestSmartPlaylistRules:
         assert rules.artist_ids == []
         assert rules.album_ids == []
         assert rules.favorites_only is False
-        assert rules.seed_track_uri is None
+        assert rules.seed_track_uris == []
+        assert rules.seed_artist_uris == []
+        assert rules.seed_album_uris == []
+        assert rules.seed_playlist_uris == []
         assert rules.min_popularity is None
         assert rules.logic == LOGIC_AND
         assert rules.limit == 100
@@ -46,13 +49,27 @@ class TestSmartPlaylistRules:
             artist_ids=[10],
             album_ids=[],
             favorites_only=True,
-            seed_track_uri="library://track/42",
+            seed_track_uris=["library://track/42", "library://track/43"],
+            seed_artist_uris=["library://artist/7"],
+            seed_album_uris=["library://album/3"],
+            seed_playlist_uris=["library://playlist/9"],
+            seed_names={"library://track/42": "Some Track"},
             min_popularity=50,
             logic=LOGIC_OR,
             limit=25,
         )
         recovered = SmartPlaylistRules.from_dict(original.to_dict())
         assert recovered == original
+
+    def test_all_seed_uris_dedupes_across_lists(self) -> None:
+        """all_seed_uris() returns each URI once even when duplicated across lists."""
+        rules = SmartPlaylistRules(
+            seed_track_uris=["a", "b"],
+            seed_artist_uris=["b", "c"],
+            seed_album_uris=["d"],
+            seed_playlist_uris=[],
+        )
+        assert rules.all_seed_uris() == ["a", "b", "c", "d"]
 
     def test_from_dict_partial(self) -> None:
         """from_dict tolerates missing keys by using defaults."""
@@ -183,6 +200,16 @@ class TestRuleValidation:
         with pytest.raises(InvalidDataError, match="popularity"):
             plugin._validate_rules(rules)
 
+    def test_too_many_seeds_raises(self) -> None:
+        """More than MAX_SEEDS combined seeds raises InvalidDataError."""
+        plugin = self._make_plugin()
+        rules = SmartPlaylistRules(
+            seed_track_uris=[f"library://track/{i}" for i in range(6)],
+            seed_artist_uris=[f"library://artist/{i}" for i in range(6)],
+        )
+        with pytest.raises(InvalidDataError, match="Too many seeds"):
+            plugin._validate_rules(rules)
+
 
 # ---------------------------------------------------------------------------
 # Persistence tests  (using tmp_path, no real MA instance needed)
@@ -197,6 +224,7 @@ async def test_rules_persist_to_disk(tmp_path: Any) -> None:
 
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
+    mass.cache.clear = AsyncMock()
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
     config = MagicMock()
@@ -339,7 +367,6 @@ async def test_popularity_filter_applied() -> None:
     low_pop = _make_mock_track("1", uri="library://track/1", popularity=30)
     high_pop = _make_mock_track("2", uri="library://track/2", popularity=80)
     cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=[low_pop, high_pop])
-    cast("Any", plugin)._get_similar_tracks = AsyncMock(return_value=[])
 
     rules = SmartPlaylistRules(min_popularity=50, logic=LOGIC_AND, limit=10)
     result = await plugin._evaluate_rules(rules)
@@ -369,7 +396,6 @@ async def test_favorites_only_filter() -> None:
         return all_tracks
 
     cast("Any", plugin)._get_library_tracks = mock_get_library
-    cast("Any", plugin)._get_similar_tracks = AsyncMock(return_value=[])
 
     rules = SmartPlaylistRules(favorites_only=True, logic=LOGIC_AND, limit=10)
     result = await plugin._evaluate_rules(rules)
@@ -390,7 +416,6 @@ async def test_limit_is_respected() -> None:
 
     tracks = [_make_mock_track(str(i), f"library://track/{i}") for i in range(50)]
     cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=tracks)
-    cast("Any", plugin)._get_similar_tracks = AsyncMock(return_value=[])
 
     rules = SmartPlaylistRules(limit=5)
     result = await plugin._evaluate_rules(rules)
@@ -403,7 +428,7 @@ async def test_limit_is_respected() -> None:
 
 
 class TestNewValidation:
-    """Validate new mutual-exclusion and range checks."""
+    """Validate seed and range checks."""
 
     def _make_plugin(self) -> SmartPlaylistProvider:
         mass = MagicMock()
@@ -413,15 +438,16 @@ class TestNewValidation:
         config.get_value.return_value = "GLOBAL"
         return SmartPlaylistProvider(mass, manifest, config, set())
 
-    def test_seed_track_and_seed_artist_mutually_exclusive(self) -> None:
-        """Setting both seed_track_uri and seed_artist_uri raises InvalidDataError."""
+    def test_mixed_seeds_within_cap_passes(self) -> None:
+        """A mix of seed types under the cap validates."""
         plugin = self._make_plugin()
         rules = SmartPlaylistRules(
-            seed_track_uri="library://track/1",
-            seed_artist_uri="library://artist/2",
+            seed_track_uris=["library://track/1", "library://track/2"],
+            seed_artist_uris=["library://artist/3"],
+            seed_album_uris=["library://album/4"],
+            seed_playlist_uris=["library://playlist/5"],
         )
-        with pytest.raises(InvalidDataError, match="mutually exclusive"):
-            plugin._validate_rules(rules)
+        plugin._validate_rules(rules)  # should not raise
 
     def test_dedup_hours_out_of_range_raises(self) -> None:
         """dedup_hours outside 1-8760 raises InvalidDataError."""
@@ -438,8 +464,8 @@ class TestNewValidation:
 
 
 @pytest.mark.asyncio
-async def test_seed_artist_uses_similar_artists_tracks() -> None:
-    """seed_artist_uri calls _get_similar_artists_tracks instead of _get_similar_tracks."""
+async def test_seed_mode_delegates_to_dynamic_radio_helper() -> None:
+    """When any seed URI is set, evaluator collects tracks via _tracks_from_seeds."""
     mass = MagicMock()
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
@@ -448,14 +474,20 @@ async def test_seed_artist_uses_similar_artists_tracks() -> None:
     plugin = SmartPlaylistProvider(mass, manifest, config, set())
 
     similar_tracks = [_make_mock_track("10", "library://track/10")]
-    cast("Any", plugin)._get_similar_artists_tracks = AsyncMock(return_value=similar_tracks)
-    cast("Any", plugin)._get_similar_tracks = AsyncMock(return_value=[])
+    cast("Any", plugin)._tracks_from_seeds = AsyncMock(return_value=similar_tracks)
+    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=[])
 
-    rules = SmartPlaylistRules(seed_artist_uri="library://artist/5", limit=10)
+    rules = SmartPlaylistRules(
+        seed_artist_uris=["library://artist/5"],
+        seed_album_uris=["library://album/9"],
+        limit=10,
+    )
     result = await plugin._evaluate_rules(rules)
 
-    cast("Any", plugin)._get_similar_artists_tracks.assert_awaited_once()
-    cast("Any", plugin)._get_similar_tracks.assert_not_awaited()
+    cast("Any", plugin)._tracks_from_seeds.assert_awaited_once()
+    awaited_args = cast("Any", plugin)._tracks_from_seeds.await_args
+    assert awaited_args.args[0] == ["library://artist/5", "library://album/9"]
+    cast("Any", plugin)._get_library_tracks.assert_not_awaited()
     assert len(result) == 1
 
 
@@ -552,11 +584,19 @@ async def test_dedup_fallback_when_pool_exhausted() -> None:
     assert len(result) == 5
 
 
+def _swallow_task(coro: Any, **_: Any) -> None:
+    """Close coroutines passed to a mocked mass.create_task so pytest stays quiet."""
+    coro.close()
+
+
 @pytest.mark.asyncio
-async def test_get_playlist_tracks_dynamic_uses_sample_size(tmp_path: Any) -> None:
-    """get_playlist_tracks caps dynamic playlists at the sample size."""
+async def test_get_playlist_tracks_dynamic_cold_evaluates_and_caches(tmp_path: Any) -> None:
+    """On a fully-cold cache the sample is evaluated and a store task is scheduled."""
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
+    mass.cache.get = AsyncMock(return_value=None)
+    mass.cache.set = AsyncMock()
+    mass.create_task = MagicMock(side_effect=_swallow_task)
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
     config = MagicMock()
@@ -565,14 +605,78 @@ async def test_get_playlist_tracks_dynamic_uses_sample_size(tmp_path: Any) -> No
     await plugin.handle_async_init()
 
     tracks = [_make_mock_track(str(i), f"library://track/{i}") for i in range(50)]
-    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=tracks)
+    library_mock = AsyncMock(return_value=tracks)
+    cast("Any", plugin)._get_library_tracks = library_mock
 
     rules = SmartPlaylistRules(limit=100, is_dynamic=True)
     plugin._rules_store["abc"] = rules
 
     result = await plugin.get_playlist_tracks("abc")
     assert len(result) <= DYNAMIC_PLAYLIST_SAMPLE_SIZE
-    assert len(result) > 5  # proves the buffer is no longer capped at 5
+    assert len(result) > 5
+    # Observable behaviour: the wrapped evaluator ran and a store task was scheduled.
+    library_mock.assert_awaited()
+    mass.create_task.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_tracks_dynamic_returns_fresh_cache(tmp_path: Any) -> None:
+    """A fresh cache hit short-circuits evaluation and does not touch the stale path."""
+    mass = MagicMock()
+    mass.storage_path = str(tmp_path)
+    cached = [_make_mock_track(str(i), f"library://track/cached-{i}") for i in range(3)]
+    mass.cache.get = AsyncMock(return_value=cached)
+    mass.cache.set = AsyncMock()
+    mass.create_task = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    await plugin.handle_async_init()
+
+    evaluate_mock = AsyncMock(return_value=[])
+    cast("Any", plugin)._evaluate_rules = evaluate_mock
+
+    plugin._rules_store["abc"] = SmartPlaylistRules(limit=100, is_dynamic=True)
+    result = await plugin.get_playlist_tracks("abc")
+    assert result == cached
+    evaluate_mock.assert_not_awaited()
+    # Only the fresh lookup runs; no stale lookup, no scheduled refresh.
+    mass.cache.get.assert_awaited_once()
+    mass.create_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_tracks_dynamic_serves_stale_and_refreshes(tmp_path: Any) -> None:
+    """A stale-only cache hit is returned immediately and refresh is scheduled."""
+    mass = MagicMock()
+    mass.storage_path = str(tmp_path)
+    stale = [_make_mock_track(str(i), f"library://track/stale-{i}") for i in range(3)]
+    # First (fresh) lookup misses, second (stale-allowed) lookup returns the expired entry.
+    mass.cache.get = AsyncMock(side_effect=[None, stale])
+    mass.cache.set = AsyncMock()
+    mass.create_task = MagicMock(side_effect=_swallow_task)
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    await plugin.handle_async_init()
+
+    evaluate_mock = AsyncMock(return_value=[])
+    cast("Any", plugin)._evaluate_rules = evaluate_mock
+
+    plugin._rules_store["abc"] = SmartPlaylistRules(limit=100, is_dynamic=True)
+    result = await plugin.get_playlist_tracks("abc")
+    assert result == stale
+    # Synchronous evaluation is skipped — the caller gets the stale sample immediately.
+    evaluate_mock.assert_not_awaited()
+    # A background refresh is scheduled (task_id keeps it deduped across concurrent calls).
+    mass.create_task.assert_called_once()
+    task_id = mass.create_task.call_args.kwargs.get("task_id")
+    assert task_id
+    assert "abc" in task_id
 
 
 @pytest.mark.asyncio

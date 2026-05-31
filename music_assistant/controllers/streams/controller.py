@@ -404,7 +404,8 @@ class StreamsController(CoreController):
             # gapless playback, we need to enforce flow mode
             queue_id
             and (queue_player := self.mass.players.get_player(queue_id))
-            and queue_player.config.get_value(CONF_SMART_FADES_MODE) != SmartFadesMode.DISABLED
+            and queue_player.config.get_value(CONF_SMART_FADES_MODE, SmartFadesMode.DISABLED)
+            != SmartFadesMode.DISABLED
             and protocol_player
             and not protocol_player.supports_gapless
         )
@@ -669,7 +670,10 @@ class StreamsController(CoreController):
                 smart_fades_mode = SmartFadesMode.DISABLED
             else:
                 smart_fades_mode = await self.mass.config.get_player_config_value(
-                    queue.queue_id, CONF_SMART_FADES_MODE, return_type=SmartFadesMode
+                    queue.queue_id,
+                    CONF_SMART_FADES_MODE,
+                    default=SmartFadesMode.DISABLED,
+                    return_type=SmartFadesMode,
                 )
                 standard_crossfade_duration = self.mass.config.get_raw_player_config_value(
                     queue.queue_id, CONF_CROSSFADE_DURATION, 10
@@ -840,7 +844,10 @@ class StreamsController(CoreController):
         # select the PCM format for the flow stream, anchored on the first track
         smart_fades_mode = (
             await self.mass.config.get_player_config_value(
-                queue_id, CONF_SMART_FADES_MODE, return_type=SmartFadesMode
+                queue_id,
+                CONF_SMART_FADES_MODE,
+                default=SmartFadesMode.DISABLED,
+                return_type=SmartFadesMode,
             )
             if start_queue_item.media_type == MediaType.TRACK
             else SmartFadesMode.DISABLED
@@ -1105,7 +1112,8 @@ class StreamsController(CoreController):
                 # does not support gapless playback, we need to enforce flow mode
                 queue_id
                 and (queue_player := self.mass.players.get_player(queue_id))
-                and queue_player.config.get_value(CONF_SMART_FADES_MODE) != SmartFadesMode.DISABLED
+                and queue_player.config.get_value(CONF_SMART_FADES_MODE, SmartFadesMode.DISABLED)
+                != SmartFadesMode.DISABLED
                 and protocol_player
                 and not protocol_player.supports_gapless
             )

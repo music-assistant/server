@@ -182,6 +182,30 @@ def to_brief_player(player: Any) -> PlayerBrief:
         active_group_val = _str_or_none(getattr(player, "active_group", None))
         synced_to_val = _str_or_none(getattr(player, "synced_to", None))
 
+    # Volume / mute fields also live canonically on ``Player.state`` — the
+    # raw dataclass attrs are caches that lag, and ``group_volume`` is
+    # only ever populated on the state for SyncGroupPlayer (the per-player
+    # ``volume_level`` is already read above; this block adds the mute
+    # signal and the group-level pair). Reading state-first means the
+    # SyncGroupPlayer's brief reports a real ``group_volume`` instead of
+    # the bare ``None`` that the un-cached property returns.
+    if player_state is not None and hasattr(player_state, "volume_muted"):
+        volume_muted_val = (
+            bool(player_state.volume_muted) if player_state.volume_muted is not None else None
+        )
+    else:
+        raw_volume_muted = getattr(player, "volume_muted", None)
+        volume_muted_val = bool(raw_volume_muted) if raw_volume_muted is not None else None
+
+    if player_state is not None and hasattr(player_state, "group_volume"):
+        group_volume_val = _int(player_state.group_volume)
+        raw_group_muted = getattr(player_state, "group_volume_muted", None)
+        group_volume_muted_val = bool(raw_group_muted) if raw_group_muted is not None else None
+    else:
+        group_volume_val = _int(getattr(player, "group_volume", None))
+        raw_group_muted = getattr(player, "group_volume_muted", None)
+        group_volume_muted_val = bool(raw_group_muted) if raw_group_muted is not None else None
+
     # The cached ``playback_state`` of an unusable device is whatever MA last
     # saw (usually ``"idle"`` or ``"playing"`` for a sync follower), which is
     # indistinguishable from a quiet idle speaker. The ladder below surfaces
@@ -209,6 +233,9 @@ def to_brief_player(player: Any) -> PlayerBrief:
         needs_setup=needs_setup_val,
         active_group=active_group_val,
         synced_to=synced_to_val,
+        volume_muted=volume_muted_val,
+        group_volume=group_volume_val,
+        group_volume_muted=group_volume_muted_val,
     )
 
 

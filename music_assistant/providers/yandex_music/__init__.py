@@ -22,6 +22,7 @@ from .constants import (
     CONF_QUALITY,
     CONF_REFRESH_TOKEN,
     CONF_REMEMBER_SESSION,
+    CONF_RESTRICTIVE_RATE_LIMITS,
     CONF_SESSION_ID,
     CONF_TOKEN,
     CONF_WAVE_PRESET_DRAFT_DIVERSITY,
@@ -461,6 +462,24 @@ async def get_config_entries(
             "Only change if Yandex Music changes their API endpoint. "
             f"Default: {DEFAULT_BASE_URL}",
             default_value=DEFAULT_BASE_URL,
+            required=False,
+            advanced=True,
+        ),
+        # Restrictive rate limits (advanced)
+        ConfigEntry(
+            key=CONF_RESTRICTIVE_RATE_LIMITS,
+            type=ConfigEntryType.BOOLEAN,
+            label="Restrictive rate limits (datacenter / VPN safe mode)",
+            description=(
+                "Enable when Music Assistant runs on a VPS, NAS-behind-VPN, "
+                "or any datacenter IP. Caps total in-flight requests to "
+                "Yandex below the edge concurrency limit observed for those "
+                "IPs (~6 simultaneous), trading some browse / recommendations "
+                "responsiveness for fewer captcha trips. Residential users "
+                "do not need this — Yandex tolerates much higher concurrency "
+                "from regular ISPs."
+            ),
+            default_value=False,
             required=False,
             advanced=True,
         ),

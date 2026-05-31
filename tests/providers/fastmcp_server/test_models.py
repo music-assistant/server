@@ -521,6 +521,97 @@ def test_to_brief_player_falls_back_to_raw_when_state_lacks_group_fields() -> No
     assert brief.state == "synced"
 
 
+def test_to_brief_player_prefers_state_volume_muted_over_raw() -> None:
+    """``volume_muted`` flows through from the canonical state object."""
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=50,
+        volume_muted=False,
+        powered=True,
+        current_media=None,
+        state=SimpleNamespace(
+            powered=True,
+            current_media=None,
+            volume_muted=True,
+        ),
+    )
+    assert to_brief_player(player).volume_muted is True
+
+
+def test_to_brief_player_prefers_state_group_volume_over_raw() -> None:
+    """``group_volume`` is read from state — SyncGroupPlayer holds it there.
+
+    The raw ``Player.group_volume`` dataclass attr can lag; the canonical
+    property is exposed on ``Player.state`` (line 1497 of MA's
+    ``models/player.py``). A SyncGroupPlayer's brief must surface the
+    real group volume, not the cached ``None`` on the raw attribute.
+    """
+    player = SimpleNamespace(
+        player_id="syncgroup_x",
+        name="Group",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=None,
+        group_volume=None,
+        powered=True,
+        current_media=None,
+        state=SimpleNamespace(
+            powered=True,
+            current_media=None,
+            group_volume=75,
+            group_volume_muted=False,
+        ),
+    )
+    brief = to_brief_player(player)
+    assert brief.group_volume == 75
+    assert brief.group_volume_muted is False
+
+
+def test_to_brief_player_new_volume_fields_default_to_none_when_attrs_missing() -> None:
+    """Legacy stubs without volume_muted / group_volume / group_volume_muted attrs work.
+
+    Mirrors the back-compat pattern already pinned for the
+    ``active_group`` / ``synced_to`` additions.
+    """
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=50,
+        powered=True,
+        current_media=None,
+    )
+    brief = to_brief_player(player)
+    assert brief.volume_muted is None
+    assert brief.group_volume is None
+    assert brief.group_volume_muted is None
+
+
+def test_to_brief_player_volume_fields_fall_back_to_raw_when_state_lacks_them() -> None:
+    """Stubs whose ``state`` lacks the volume fields fall through to raw attrs.
+
+    Back-compat with stubs that carry ``state`` for ``powered`` /
+    ``current_media`` but predate the new volume fields.
+    """
+    player = SimpleNamespace(
+        player_id="p1",
+        name="P1",
+        playback_state=SimpleNamespace(value="playing"),
+        volume_level=50,
+        volume_muted=True,
+        group_volume=80,
+        group_volume_muted=True,
+        powered=True,
+        current_media=None,
+        state=SimpleNamespace(powered=True, current_media=None),
+    )
+    brief = to_brief_player(player)
+    assert brief.volume_muted is True
+    assert brief.group_volume == 80
+    assert brief.group_volume_muted is True
+
+
 def test_to_brief_queue_with_items() -> None:
     """``to_brief_queue`` builds a ``QueueBrief`` with item summaries."""
     queue = SimpleNamespace(
