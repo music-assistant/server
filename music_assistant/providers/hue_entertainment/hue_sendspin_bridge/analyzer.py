@@ -111,6 +111,9 @@ class _ModePreset:
     # which is what `ambient` mode uses.
     channel_floor: float
     channel_max: float
+    # Scales the onset (peak) brightness boost: 0.0 disables onset flashes
+    # entirely (ambient), 1.0 is the full boost.
+    onset_boost: float = 1.0
 
 
 # Modes selectable from the UI. ``DEFAULT_MODE`` is used when the configured
@@ -141,6 +144,7 @@ _MODES: dict[str, _ModePreset] = {
         spatial_drift_per_second=0.0,
         channel_floor=0.80,
         channel_max=0.80,
+        onset_boost=0.0,
     ),
     "flashing": _ModePreset(
         # Strong on-beat brightness pulse, mild spectrum reaction. Downbeats hit harder.
@@ -461,7 +465,10 @@ class HueAudioAnalyzer:
         if not self._channels:
             return []
         channel_mults = self._combined_channel_multipliers()
-        peak_factor = self._consume_peaks(now_us)
+        # `_consume_peaks` always runs (it advances the peak palette walker);
+        # `onset_boost` gates only the brightness flash, so ambient still cycles
+        # colour on onsets but does not flash.
+        peak_factor = self._consume_peaks(now_us) * self._mode.onset_boost
         if peak_factor > 0.0:
             channel_mults = [min(1.0, m + peak_factor) for m in channel_mults]
         base_brightness = self._brightness
