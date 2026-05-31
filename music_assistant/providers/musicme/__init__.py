@@ -9,7 +9,7 @@ from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 
-from .constants import SUPPORTED_FEATURES, SIGNIN_BY_API
+from .constants import SIGNIN_BY_API, SUPPORTED_FEATURES
 from .provider import MusicMeProvider
 
 if TYPE_CHECKING:
