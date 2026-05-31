@@ -50,11 +50,11 @@ from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_wi
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
-    SIGNIN_BY_API,
     CLIENT_JSON,
     DATASERVICE_BASE,
     LOGIN_URL,
     PARTNER_ID,
+    SIGNIN_BY_API,
     STREAM_BASE,
     VALID_ID_RE,
     WEB_BASE,
@@ -778,7 +778,7 @@ class MusicMeProvider(MusicProvider):
                     ]
 
         return result if (result.artists or result.albums or result.tracks) else None
-        
+
     async def _signin_by_api(self) -> None:
         login = self.config.get_value(CONF_USERNAME)
         password = self.config.get_value(CONF_PASSWORD)
@@ -801,7 +801,7 @@ class MusicMeProvider(MusicProvider):
         self.logger.info(
             "Successfully logged in to MusicMe"
         )
-        
+
     async def _login(self) -> None:
         """Authenticate with MusicMe via web login and extract the userId."""
         email = self.config.get_value(CONF_USERNAME)
