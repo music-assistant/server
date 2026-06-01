@@ -16,24 +16,12 @@ TARGET_UPDATE_RATE_HZ: Final[int] = 25
 UPDATE_INTERVAL_S: Final[float] = 1.0 / TARGET_UPDATE_RATE_HZ
 KEEPALIVE_INTERVAL_S: Final[float] = 5.0
 
-# ---- Audio analysis ----
-
-SMOOTHING_FACTOR: Final[float] = 0.15
-MIN_BRIGHTNESS_SCALE: Final[float] = 0.02
-
-FREQUENCY_BANDS: Final[list[tuple[int, int]]] = [
-    (20, 60),  # sub-bass
-    (60, 250),  # bass
-    (250, 500),  # low-mids
-    (500, 2000),  # mids
-    (2000, 4000),  # upper-mids
-    (4000, 20000),  # highs
-]
-
 # ---- Spectrum config for Sendspin visualizer ----
 
-SPECTRUM_BINS: Final[int] = 8
-SPECTRUM_SCALE: Final[str] = "mel"
+# 17 mel bins over 20-20kHz: enough resolution to map distinct bands to lights
+# while keeping the per-frame payload small (bin ~10 ≈ 3.5kHz is the musical
+# ceiling, see _CHANNEL_BIN_MAX).
+SPECTRUM_BINS: Final[int] = 17
+SPECTRUM_SCALE: Final = "mel"
 SPECTRUM_F_MIN: Final[int] = 20
 SPECTRUM_F_MAX: Final[int] = 20000
-SPECTRUM_RATE_MAX: Final[int] = TARGET_UPDATE_RATE_HZ

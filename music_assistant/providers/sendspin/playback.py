@@ -14,7 +14,7 @@ from aiosendspin.models.types import AudioCodec as SendspinAudioCodec
 from aiosendspin.server.audio import AudioFormat as SendspinAudioFormat
 from aiosendspin.server.push_stream import MAIN_CHANNEL, PushStream, StreamStoppedError
 from aiosendspin.server.roles.player.v1 import PlayerV1Role
-from music_assistant_models.enums import ContentType
+from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.media_items.audio_format import AudioFormat
 
 from music_assistant.constants import CONF_OUTPUT_CHANNELS
@@ -47,6 +47,20 @@ _DEFAULT_SENDSPIN_PCM_FORMAT = SendspinAudioFormat(
     channels=2,
     sample_type="float",
 )
+# Media types whose upstream feeds at realtime rate, so the Sendspin queue
+# cannot grow after playback begins. Buffered types (tracks, podcasts, etc.)
+# race ahead and fill the queue naturally, so the min_buffer startup wait is
+# pure latency.
+_LIVE_MEDIA_TYPES: frozenset[MediaType] = frozenset(
+    {
+        MediaType.RADIO,
+        MediaType.AUDIO_SOURCE,
+        MediaType.PLUGIN_SOURCE,
+        MediaType.FLOW_STREAM,
+    }
+)
+
+
 # Sample rate ceiling for lossy output codecs — anything above is wasted bandwidth.
 _LOSSY_MAX_SAMPLE_RATE = 48000
 # Max PCM slice fed to the producer per iteration.
@@ -334,6 +348,19 @@ class SendspinPlaybackSession:
         # internally for DSP headroom.
         self._pcm_format: AudioFormat = _DEFAULT_PCM_FORMAT
         self._sendspin_pcm_format: SendspinAudioFormat = _DEFAULT_SENDSPIN_PCM_FORMAT
+
+    def flow_track_anchor_us(self, track_start_offset_us: int) -> int | None:
+        """
+        Server-clock time of the current flow track's file-position 0.
+
+        ``track_start_offset_us`` is the current track's start offset within the
+        flow stream (minus its file seek), so beats timed from the track file
+        map onto the shared audio timeline regardless of queue position. Returns
+        None until the first chunk commits and the timeline anchor is known.
+        """
+        if self._timeline_start_us is None:
+            return None
+        return self._timeline_start_us + track_start_offset_us
 
     # -- Helpers ---------------------------------------------------------------
 
@@ -700,6 +727,8 @@ class SendspinPlaybackSession:
             self._pcm_format.sample_rate,
         )
         push_stream = self._create_push_stream()
+        is_live = media.media_type in _LIVE_MEDIA_TYPES
+        push_stream.set_live_source(is_live)
         async with self._state_lock:
             self._push_stream = push_stream
             self._playback_running = True
