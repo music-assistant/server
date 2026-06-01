@@ -8,11 +8,22 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
 from .constants import (
+    CONF_CONFIG_READ,
+    CONF_CONFIG_WRITE_CORE,
+    CONF_CONFIG_WRITE_PLAYER,
+    CONF_CONFIG_WRITE_PROVIDER,
+    CONF_CONFIG_WRITE_SECRET,
     CONF_CONNECT_EXTERNAL_URL,
     CONF_CONTROL_MEDIA,
     CONF_CONTROL_PLAYBACK,
     CONF_CONTROL_PLAYERS,
     CONF_CONTROL_VOLUME,
+    CONF_DEBUG_EVENT_BUFFER_CAPACITY,
+    CONF_DEBUG_EVENTS,
+    CONF_DEBUG_INSPECT,
+    CONF_DEBUG_LOGS,
+    CONF_DEBUG_PROVIDERS,
+    CONF_DEBUG_RELOAD,
     CONF_DELETE_FAVORITES,
     CONF_DELETE_LIBRARY,
     CONF_DELETE_PLAYLISTS,
@@ -319,5 +330,110 @@ def build_config_entries(
             True,
             "MCP Resources",
             "Pre-defined prompts: find_and_play, party_playlist, now_playing_summary.",
+        ),
+        # Debug namespace — all off-by-default. See specs/inprogress/0005-debug-namespace.md.
+        _bool(
+            CONF_DEBUG_INSPECT,
+            "Debug: inspect raw player/queue/provider state",
+            False,
+            "Debug",
+            "Exposes raw runtime state of players, queues, and providers via MCP. "
+            "Intended for development and troubleshooting. Disable in production.",
+        ),
+        _bool(
+            CONF_DEBUG_LOGS,
+            "Debug: tail musicassistant.log",
+            False,
+            "Debug",
+            "Allows MCP clients to read the tail of MA's log file with filters. "
+            "Common token patterns are redacted. Intended for troubleshooting. "
+            "Disable in production.",
+        ),
+        _bool(
+            CONF_DEBUG_EVENTS,
+            "Debug: read recent MA events",
+            False,
+            "Debug",
+            "Subscribes to MA's event bus at provider startup and exposes a "
+            "ring buffer over MCP. Memory cost is bounded by the buffer "
+            "capacity. Intended for troubleshooting. Disable in production.",
+        ),
+        _bool(
+            CONF_DEBUG_PROVIDERS,
+            "Debug: inspect configured providers",
+            False,
+            "Debug",
+            "Exposes provider state, masked configuration, registered "
+            "webserver routes, installed package versions, and a health "
+            "summary roll-up. Intended for troubleshooting. Disable in "
+            "production.",
+        ),
+        _bool(
+            CONF_DEBUG_RELOAD,
+            "Debug: reload a provider instance",
+            False,
+            "Debug",
+            "Allows MCP clients to unload and reload provider instances, "
+            "INTERRUPTING ANY ACTIVE STREAMS on the affected provider. "
+            "Each call requires elicitation confirmation. Intended for "
+            "provider-development iteration. Disable in production.",
+        ),
+        ConfigEntry(
+            key=CONF_DEBUG_EVENT_BUFFER_CAPACITY,
+            type=ConfigEntryType.INTEGER,
+            label="Debug: event buffer capacity",
+            default_value=500,
+            range=(50, 5000),
+            category="Debug",
+            description=(
+                "Maximum number of recent events kept in memory when "
+                "`Debug: read recent MA events` is enabled. Older events "
+                "are dropped FIFO. Has no effect when events are off."
+            ),
+            required=False,
+        ),
+        # Config namespace — all off-by-default. See specs/inprogress/0006-config-read-write.md.
+        _bool(
+            CONF_CONFIG_READ,
+            "Config: read core/provider/player settings",
+            False,
+            "Config",
+            "Exposes read access to MA core, provider, and player configuration "
+            "over MCP (secrets stay masked). Disable in production unless needed.",
+        ),
+        _bool(
+            CONF_CONFIG_WRITE_PROVIDER,
+            "Config: edit provider settings",
+            False,
+            "Config",
+            "Allows MCP clients to change provider configuration and trigger "
+            "provider config actions. Changes may reload the provider and "
+            "interrupt its streams. Disable in production.",
+        ),
+        _bool(
+            CONF_CONFIG_WRITE_CORE,
+            "Config: edit core settings",
+            False,
+            "Config",
+            "Allows MCP clients to change MA core controller configuration "
+            "(webserver, streams, cache, ...). Core changes may RESTART "
+            "subsystems and interrupt ALL playback. Disable in production.",
+        ),
+        _bool(
+            CONF_CONFIG_WRITE_PLAYER,
+            "Config: edit player settings",
+            False,
+            "Config",
+            "Allows MCP clients to change per-player configuration and DSP. Disable in production.",
+        ),
+        _bool(
+            CONF_CONFIG_WRITE_SECRET,
+            "Config: allow writing secret values",
+            False,
+            "Config",
+            "Required IN ADDITION to a category write flag before any "
+            "SECURE_STRING (password/token) value can be written. With this "
+            "off, secret writes are rejected while non-secret edits still "
+            "work. Keep off unless deliberately rotating credentials.",
         ),
     )
