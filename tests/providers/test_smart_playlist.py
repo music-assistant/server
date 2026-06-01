@@ -584,6 +584,32 @@ async def test_dedup_fallback_when_pool_exhausted() -> None:
     assert len(result) == 5
 
 
+@pytest.mark.asyncio
+async def test_evaluate_rules_removes_duplicate_track_uris() -> None:
+    """Smart playlist evaluation should not return the same track URI multiple times."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    dup_a_1 = _make_mock_track("1", "library://track/dup")
+    dup_a_2 = _make_mock_track("2", "library://track/dup")
+    dup_a_3 = _make_mock_track("3", "library://track/dup")
+    uniq_b = _make_mock_track("4", "library://track/unique")
+    cast("Any", plugin)._get_library_tracks = AsyncMock(
+        return_value=[dup_a_1, dup_a_2, dup_a_3, uniq_b]
+    )
+
+    rules = SmartPlaylistRules(limit=10)
+    result = await plugin._evaluate_rules(rules)
+
+    uris = [track.uri for track in result]
+    assert uris.count("library://track/dup") == 1
+    assert "library://track/unique" in uris
+
+
 def _swallow_task(coro: Any, **_: Any) -> None:
     """Close coroutines passed to a mocked mass.create_task so pytest stays quiet."""
     coro.close()

@@ -553,6 +553,7 @@ class SmartPlaylistProvider(PluginProvider):
         # Apply exclusions and dedup regardless of source mode
         excluded_genre_names = await self._resolve_excluded_genre_names(rules)
         tracks = self._apply_exclusions(tracks, rules, excluded_genre_names)
+        tracks = self._deduplicate_tracks(tracks)
         if rules.dedup_hours is not None:
             deduped = self._apply_dedup(tracks, rules.dedup_hours)
             if len(deduped) >= rules.limit:
@@ -669,6 +670,18 @@ class SmartPlaylistProvider(PluginProvider):
                 and any(g.lower() in excluded_genre_names for g in track.metadata.genres)
             ):
                 continue
+            result.append(track)
+        return result
+
+    def _deduplicate_tracks(self, tracks: list[Track]) -> list[Track]:
+        """Remove duplicate tracks while keeping first-seen order stable."""
+        seen: set[str] = set()
+        result: list[Track] = []
+        for track in tracks:
+            unique_key = track.uri or str(track.item_id)
+            if unique_key in seen:
+                continue
+            seen.add(unique_key)
             result.append(track)
         return result
 
