@@ -565,6 +565,11 @@ class SonicSimilarityPlugin(PluginProvider):
         engine = str(self.config.get_value(CONF_SIMILAR_TRACKS_ENGINE) or SIMILAR_ENGINE_18DIM)
         if engine == SIMILAR_ENGINE_CLAP and self._clap_index is not None:
             return await self._similar_tracks_via_clap(track, limit)
+        if engine == SIMILAR_ENGINE_CLAP:
+            self.logger.debug(
+                "Similar Tracks for %s: CLAP engine selected but index unavailable; using 18-dim",
+                track.uri,
+            )
         return await self._similar_tracks_via_18dim(track, limit)
 
     async def _similar_tracks_via_18dim(self, track: Track, limit: int) -> list[Track]:
@@ -588,6 +593,7 @@ class SonicSimilarityPlugin(PluginProvider):
                 seed_item_id = mapping.item_id
                 break
         if seed_item_id is None:
+            self.logger.debug("18-dim Similar Tracks for %s: no indexed seed mapping", track.uri)
             return []
 
         preset = str(self.config.get_value(CONF_SIMILAR_PRESET) or "balanced")
@@ -595,6 +601,14 @@ class SonicSimilarityPlugin(PluginProvider):
             diversity = float(str(self.config.get_value(CONF_SIMILAR_DIVERSITY) or 0.0))
         except (TypeError, ValueError):
             diversity = 0.0
+        self.logger.debug(
+            "18-dim Similar Tracks: seed=%s/%s preset=%s diversity=%s limit=%d",
+            seed_provider or "?",
+            seed_item_id,
+            preset,
+            diversity,
+            limit,
+        )
         response = await self._handle_similar(
             item_id=seed_item_id,
             seed_provider=seed_provider,
@@ -602,7 +616,9 @@ class SonicSimilarityPlugin(PluginProvider):
             preset=preset,
             diversity=diversity,
         )
-        return await self._resolve_similar_items(response.get("items") or [])
+        results = await self._resolve_similar_items(response.get("items") or [])
+        self.logger.debug("18-dim Similar Tracks: returning %d tracks", len(results))
+        return results
 
     async def _similar_tracks_via_clap(self, track: Track, limit: int) -> list[Track]:
         """Serve SIMILAR_TRACKS from the 1024-dim CLAP index; [] if the seed isn't indexed."""
@@ -616,9 +632,13 @@ class SonicSimilarityPlugin(PluginProvider):
                 seed_item_id = mapping.item_id
                 break
         if seed_item_id is None:
+            self.logger.debug("CLAP Similar Tracks for %s: no indexed seed mapping", track.uri)
             return []
+        self.logger.debug("CLAP Similar Tracks: seed=%s limit=%d", seed_item_id, limit)
         response = await self._handle_similar_clap(item_id=seed_item_id, limit=limit)
-        return await self._resolve_similar_items(response.get("items") or [])
+        results = await self._resolve_similar_items(response.get("items") or [])
+        self.logger.debug("CLAP Similar Tracks: returning %d tracks", len(results))
+        return results
 
     async def _resolve_similar_items(self, items: list[dict[str, Any]]) -> list[Track]:
         """Resolve [{item_id, provider}, …] response rows to Tracks, dropping lookup misses."""
