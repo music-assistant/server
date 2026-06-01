@@ -513,7 +513,7 @@ class MusicController(CoreController):
             )
         except MusicAssistantError as err:
             self.logger.warning("Search on provider %s failed: %s", prov.name, err)
-            raise MusicAssistantError(f"{prov.name} search failed") from err
+            raise MusicAssistantError(f"Search failed due to an error on {prov.name}") from err
         if skip_item_ids:
             # filter out items already in skip_item_ids
             prov_search_results.artists = [
