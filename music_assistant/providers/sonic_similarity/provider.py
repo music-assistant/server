@@ -33,6 +33,8 @@ from music_assistant.providers.sonic_similarity.constants import (
     CONF_ENABLE_CLAP_INDEX,
     CONF_ENABLE_DISCOVER_ROW,
     CONF_ENABLE_TEXT_SEARCH,
+    CONF_SIMILAR_DIVERSITY,
+    CONF_SIMILAR_PRESET,
     CONF_SIMILAR_TRACKS_ENGINE,
     EXTRA_DATA_CLAP_EMBEDDING,
     METADATA_BONUS_SCALE,
@@ -594,8 +596,17 @@ class SonicSimilarityPlugin(PluginProvider):
         if seed_item_id is None:
             return []
 
+        preset = str(self.config.get_value(CONF_SIMILAR_PRESET) or "balanced")
+        try:
+            diversity = float(str(self.config.get_value(CONF_SIMILAR_DIVERSITY) or 0.0))
+        except (TypeError, ValueError):
+            diversity = 0.0
         response = await self._handle_similar(
-            item_id=seed_item_id, seed_provider=seed_provider, limit=limit
+            item_id=seed_item_id,
+            seed_provider=seed_provider,
+            limit=limit,
+            preset=preset,
+            diversity=diversity,
         )
         return await self._resolve_similar_items(response.get("items") or [])
 

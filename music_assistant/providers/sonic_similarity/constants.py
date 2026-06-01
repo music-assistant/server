@@ -27,6 +27,11 @@ CONF_SIMILAR_TRACKS_ENGINE = "similar_tracks_engine"
 SIMILAR_ENGINE_18DIM = "18dim"
 SIMILAR_ENGINE_CLAP = "clap"
 
+# Preset + diversity tuning for the 18-dim SIMILAR_TRACKS path; only shown when
+# the 18-dim engine is selected (CLAP ranks purely by cosine, so they don't apply).
+CONF_SIMILAR_PRESET = "similar_tracks_preset"
+CONF_SIMILAR_DIVERSITY = "similar_tracks_diversity"
+
 # Keys for the read-only status rows on the plugin config page.
 CONF_LABEL_STATUS_18DIM = "status_label_18dim"
 CONF_LABEL_STATUS_CLAP = "status_label_clap"

@@ -32,6 +32,8 @@ from music_assistant.providers.sonic_similarity.constants import (
     CONF_LABEL_STATUS_18DIM,
     CONF_LABEL_STATUS_CLAP,
     CONF_LABEL_STATUS_TEXT,
+    CONF_SIMILAR_DIVERSITY,
+    CONF_SIMILAR_PRESET,
     CONF_SIMILAR_TRACKS_ENGINE,
     SIMILAR_ENGINE_18DIM,
     SIMILAR_ENGINE_CLAP,
@@ -229,6 +231,37 @@ async def get_config_entries(
             ],
             depends_on=CONF_ENABLE_CLAP_INDEX,
             depends_on_value=True,
+        ),
+        # 18-dim tuning for the Similar Tracks action — shown only while the
+        # 18-dim engine is the active choice (CLAP ranks purely by cosine).
+        ConfigEntry(
+            key=CONF_SIMILAR_PRESET,
+            type=ConfigEntryType.STRING,
+            default_value="balanced",
+            label="Similar Tracks preset",
+            description="Similarity weight preset applied to the Similar Tracks action. "
+            "'balanced' is uniform; 'vibe' weights mood + timbre; 'party' weights rhythm + "
+            "regularity; 'genre_era' stays close to the seed's genre and decade; 'discover' "
+            "favours novelty (low genre/era weighting).",
+            options=[
+                ConfigValueOption("Balanced", "balanced"),
+                ConfigValueOption("Vibe (mood + timbre)", "vibe"),
+                ConfigValueOption("Party (rhythm-heavy)", "party"),
+                ConfigValueOption("Genre + Era (stay close)", "genre_era"),
+                ConfigValueOption("Discover (novelty-leaning)", "discover"),
+            ],
+            depends_on=CONF_SIMILAR_TRACKS_ENGINE,
+            depends_on_value=SIMILAR_ENGINE_18DIM,
+        ),
+        ConfigEntry(
+            key=CONF_SIMILAR_DIVERSITY,
+            type=ConfigEntryType.FLOAT,
+            default_value=0.0,
+            label="Similar Tracks diversity",
+            description="0.0 keeps results closest to the seed; 1.0 maximises variety via MMR "
+            "(some results may be less similar but more distinct from each other).",
+            depends_on=CONF_SIMILAR_TRACKS_ENGINE,
+            depends_on_value=SIMILAR_ENGINE_18DIM,
         ),
         # --- text-search toggle + status ---
         ConfigEntry(
