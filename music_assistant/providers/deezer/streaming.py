@@ -12,12 +12,12 @@ import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from math import ceil
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 from aiohttp import ClientTimeout
 from Crypto.Cipher import Blowfish
 from music_assistant_models.enums import ContentType, MediaType, StreamType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import AudioError, MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat, MediaItemType
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -109,7 +109,7 @@ class DeezerStreamingManager:
         try:
             url_details, song_data = await self.provider.gw_client.get_deezer_track_urls(item_id)
         except DeezerGWError as err:
-            raise MediaNotFoundError(f"Track {item_id} is not available on Deezer") from err
+            _raise_stream_error(err, item_id, "Track")
         url = url_details["sources"][0]["url"]
         size_key = f"FILESIZE_{url_details['format']}"
         size = int(song_data.get(size_key) or song_data.get("FILESIZE_MP3_MISC") or 0)
@@ -157,7 +157,7 @@ class DeezerStreamingManager:
                 chapter_ids[0]
             )
         except DeezerGWError as err:
-            raise MediaNotFoundError(f"Audiobook {item_id} is not available on Deezer") from err
+            _raise_stream_error(err, item_id, "Audiobook")
         total_duration = sum(chapter_durations_ms) // 1000
 
         return StreamDetails(
@@ -381,3 +381,20 @@ class DeezerStreamingManager:
             b"\x00\x01\x02\x03\x04\x05\x06\x07",
         )
         return cipher.decrypt(chunk)  # type: ignore[no-any-return,unused-ignore]
+
+
+def _raise_stream_error(err: DeezerGWError, item_id: str, label: str) -> NoReturn:
+    """
+    Translate a DeezerGWError into the appropriate streaming error.
+
+    :param err: The GW error raised while resolving the stream URL.
+    :param item_id: The provider-specific item ID, used in the error message.
+    :param label: Human-readable item kind (e.g. "Track", "Audiobook").
+    """
+    api_errors = err.args[1] if len(err.args) > 1 else []
+    # Code 2002 means the item is genuinely unavailable (region/plan rights), so it
+    # maps to MediaNotFoundError. Any other GW failure is treated as a transient
+    # AudioError. Both are caught by the queue's skip-on-error path.
+    if isinstance(api_errors, list) and api_errors and api_errors[0].get("code") == 2002:
+        raise MediaNotFoundError(f"{label} {item_id} is not available on Deezer") from err
+    raise AudioError(str(err)) from err
