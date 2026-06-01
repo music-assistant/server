@@ -674,7 +674,7 @@ class SmartPlaylistProvider(PluginProvider):
         return result
 
     def _deduplicate_tracks(self, tracks: list[Track]) -> list[Track]:
-        """Remove duplicate tracks while keeping first-seen order stable."""
+        """Remove duplicates and skip unavailable tracks while keeping order stable."""
         seen: set[Track] = set()
         result: list[Track] = []
         for track in tracks:
