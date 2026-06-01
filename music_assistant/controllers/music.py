@@ -1165,9 +1165,28 @@ class MusicController(CoreController):
         # add (or overwrite) to library
         ctrl = self.get_controller(full_item.media_type)
         library_item = await ctrl.add_item_to_library(full_item, overwrite_existing)
+        # optionally import all album tracks into the library, mirroring the behavior
+        # of the library sync (which only triggers on a (scheduled) full sync run)
+        if full_item.media_type == MediaType.ALBUM:
+            self._import_album_tracks_if_enabled(cast("Album", library_item))
         # perform full metadata scan
         await self.mass.metadata.update_metadata(library_item, overwrite_existing)
         return library_item
+
+    def _import_album_tracks_if_enabled(self, album: Album) -> None:
+        """Import all album tracks into the library for providers that have this enabled."""
+        for prov_mapping in album.provider_mappings:
+            # only consider mappings the album was actually added on; additional
+            # mappings auto-created for other instances of the same provider
+            # (via match_provider_instances) carry in_library=None and must be skipped
+            if not prov_mapping.in_library:
+                continue
+            provider = self.mass.get_provider(prov_mapping.provider_instance)
+            if not isinstance(provider, MusicProvider):
+                continue
+            if not provider.library_sync_album_tracks_enabled():
+                continue
+            self.mass.create_task(provider.import_album_tracks(prov_mapping.item_id, album.name))
 
     async def refresh_items(self, items: list[MediaItemType]) -> None:
         """Refresh MediaItems to force retrieval of full info and matches.
