@@ -24,7 +24,12 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import (
+    AudioError,
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -52,7 +57,7 @@ from music_assistant.helpers.util import infer_album_type, parse_title_and_versi
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.music_provider import MusicProvider
 
-from .gw_client import GWClient
+from .gw_client import DeezerGWError, GWClient
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -740,7 +745,14 @@ class DeezerProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        url_details, song_data = await self.gw_client.get_deezer_track_urls(item_id)
+        try:
+            url_details, song_data = await self.gw_client.get_deezer_track_urls(item_id)
+        except DeezerGWError as err:
+            api_errors = err.args[1] if len(err.args) > 1 else []
+            if isinstance(api_errors, list) and api_errors and api_errors[0].get("code") == 2002:
+                # code 2002: track not available in the user's region or plan
+                raise MediaNotFoundError(f"Track {item_id} is not available on Deezer") from err
+            raise AudioError(str(err)) from err
         url = url_details["sources"][0]["url"]
         return StreamDetails(
             item_id=item_id,
