@@ -625,17 +625,23 @@ class SonicSimilarityPlugin(PluginProvider):
         if self._clap_index is None:
             return []
         seed_item_id: str | None = None
+        seed_provider: str | None = None
         for mapping in track.provider_mappings or ():
             if mapping.provider_domain == "library":
                 continue
             if self._clap_index.contains(mapping.provider_instance, mapping.item_id):
                 seed_item_id = mapping.item_id
+                seed_provider = mapping.provider_instance
                 break
         if seed_item_id is None:
             self.logger.debug("CLAP Similar Tracks for %s: no indexed seed mapping", track.uri)
             return []
-        self.logger.debug("CLAP Similar Tracks: seed=%s limit=%d", seed_item_id, limit)
-        response = await self._handle_similar_clap(item_id=seed_item_id, limit=limit)
+        self.logger.debug(
+            "CLAP Similar Tracks: seed=%s/%s limit=%d", seed_provider, seed_item_id, limit
+        )
+        response = await self._handle_similar_clap(
+            item_id=seed_item_id, limit=limit, seed_provider=seed_provider
+        )
         results = await self._resolve_similar_items(response.get("items") or [])
         self.logger.debug("CLAP Similar Tracks: returning %d tracks", len(results))
         return results
@@ -1237,12 +1243,15 @@ class SonicSimilarityPlugin(PluginProvider):
                 await self._clap_index.save()
                 self.logger.info("Added %d new embeddings to CLAP index", added)
 
-    async def _handle_similar_clap(self, item_id: str, limit: int = 25) -> dict[str, Any]:
+    async def _handle_similar_clap(
+        self, item_id: str, limit: int = 25, seed_provider: str | None = None
+    ) -> dict[str, Any]:
         """Return tracks whose CLAP audio embedding is closest to the seed track's.
 
-        :param item_id: Seed track identifier (provider-agnostic). The first
-            label whose reverse-map entry matches is used.
+        :param item_id: Seed track identifier.
         :param limit: Max number of neighbours to return.
+        :param seed_provider: When set, the seed embedding is fetched in O(1) via
+            its derived label; when None, the reverse map is scanned by item_id.
         """
         if self._clap_index is None:
             return {
@@ -1251,15 +1260,18 @@ class SonicSimilarityPlugin(PluginProvider):
                 "seed_track_id": item_id,
                 "items": [],
             }
-        lookup = self._clap_index.get_embedding_by_item_id(item_id)
-        if lookup is None:
+        if seed_provider is not None:
+            seed_embedding = self._clap_index.get_embedding(seed_provider, item_id)
+        else:
+            lookup = self._clap_index.get_embedding_by_item_id(item_id)
+            seed_embedding = lookup[1] if lookup is not None else None
+        if seed_embedding is None:
             return {
                 "analyzed": False,
                 "reason": "seed_not_in_index",
                 "seed_track_id": item_id,
                 "items": [],
             }
-        _seed_provider, seed_embedding = lookup
         # +1 because the seed itself is the nearest neighbour; we drop it after.
         raw_results = await self._clap_index.search(seed_embedding, limit + 1)
         items: list[dict[str, Any]] = []
