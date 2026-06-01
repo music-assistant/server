@@ -857,15 +857,20 @@ class MusicProvider(Provider):
                 self._report_sync_task_failure(MediaType.ARTIST, prov_item.uri, err)
         return cur_db_ids
 
+    def library_sync_album_tracks_enabled(self) -> bool:
+        """Return whether all tracks of an album should be imported into the library."""
+        return bool(
+            self.config.get_value(
+                CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.key,
+                CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.default_value,
+            )
+        )
+
     async def _sync_library_albums(self) -> set[int]:
         """Sync Library Albums to Music Assistant library."""
         self.logger.debug("Start sync of Albums to Music Assistant library.")
         cur_db_ids: set[int] = set()
-        conf_sync_album_tracks = self.config.get_value(
-            CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.key,
-            CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.default_value,
-        )
-        sync_album_tracks = bool(conf_sync_album_tracks)
+        sync_album_tracks = self.library_sync_album_tracks_enabled()
         item_count = 0
         async for prov_item in self.get_library_albums():
             item_count += 1
@@ -907,7 +912,7 @@ class MusicProvider(Provider):
                 await asyncio.sleep(0)  # yield to eventloop
                 # optionally add album tracks to library
                 if sync_album_tracks:
-                    await self._sync_album_tracks(prov_item)
+                    await self.import_album_tracks(prov_item.item_id, prov_item.name)
             except MusicAssistantError as err:
                 self.logger.warning(
                     "Skipping sync of album %s - error details: %s",
@@ -917,14 +922,19 @@ class MusicProvider(Provider):
                 self._report_sync_task_failure(MediaType.ALBUM, prov_item.uri, err)
         return cur_db_ids
 
-    async def _sync_album_tracks(self, provider_album: Album) -> None:
-        """Sync Album Tracks to Music Assistant library."""
+    async def import_album_tracks(self, prov_album_id: str, album_name: str | None = None) -> None:
+        """
+        Import all tracks of the given (provider) album into the Music Assistant library.
+
+        :param prov_album_id: The provider item id of the album.
+        :param album_name: Optional album name, used for logging/progress only.
+        """
         self.logger.debug(
-            "Start sync of Album Tracks to Music Assistant library for album %s.",
-            provider_album.name,
+            "Importing Album Tracks into the Music Assistant library for album %s.",
+            album_name or prov_album_id,
         )
         for item_count, prov_track in enumerate(
-            await self.get_album_tracks(provider_album.item_id), start=1
+            await self.get_album_tracks(prov_album_id), start=1
         ):
             self._update_sync_task_item_status(MediaType.TRACK, item_count, prov_track.name)
             library_track = await self.mass.music.tracks.get_library_item_by_prov_mappings(
