@@ -73,6 +73,7 @@ from music_assistant.controllers.streams.constants import (
 )
 from music_assistant.helpers.audio import (
     calculate_content_length,
+    format_icy_metadata_frame,
     get_content_length,
     get_mime_type,
     store_content_length_in_cache,
@@ -934,26 +935,24 @@ class StreamsController(CoreController):
                 continue
 
             # if icy metadata is enabled, send the icy metadata after the chunk
+            # use the current (not buffered) item so the title stays aligned with audio
+            current_item = queue.current_item
             if (
-                # use current item here and not buffered item, otherwise
-                # the icy metadata will be too much ahead
-                (current_item := queue.current_item)
+                current_item
                 and current_item.streamdetails
                 and current_item.streamdetails.stream_title
             ):
                 title = current_item.streamdetails.stream_title
-            elif queue and current_item and current_item.name:
+            elif current_item and current_item.name:
                 title = current_item.name
             else:
                 title = "Music Assistant"
-            metadata = f"StreamTitle='{title}';".encode()
-            if icy_preference == "full" and current_item and current_item.image:
-                metadata += f"StreamURL='{current_item.image.path}'".encode()
-            while len(metadata) % 16 != 0:
-                metadata += b"\x00"
-            length = len(metadata)
-            length_b = chr(int(length / 16)).encode()
-            await resp.write(length_b + metadata)
+            image_url = (
+                current_item.image.path
+                if icy_preference == "full" and current_item and current_item.image
+                else None
+            )
+            await resp.write(format_icy_metadata_frame(title, image_url))
 
         return resp
 
