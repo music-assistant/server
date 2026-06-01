@@ -24,7 +24,12 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import AudioError, InvalidDataError, LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import (
+    AudioError,
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
