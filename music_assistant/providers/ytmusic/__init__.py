@@ -13,7 +13,7 @@ from io import StringIO
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from aiohttp import ClientConnectorError
+from aiohttp import ClientError
 from duration_parser import parse as parse_str_duration
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
@@ -1113,7 +1113,7 @@ class YoutubeMusicProvider(MusicProvider):
                 response.raise_for_status()
                 self.logger.debug("PO Token server responded with %s", response.status)
                 return response.status == 200
-        except ClientConnectorError:
+        except (ClientError, TimeoutError):
             return False
 
     async def _user_has_ytm_premium(self) -> bool:
