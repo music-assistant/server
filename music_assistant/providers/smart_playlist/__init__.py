@@ -675,18 +675,14 @@ class SmartPlaylistProvider(PluginProvider):
 
     def _deduplicate_tracks(self, tracks: list[Track]) -> list[Track]:
         """Remove duplicate tracks while keeping first-seen order stable."""
-        seen: set[str] = set()
+        seen: set[Track] = set()
         result: list[Track] = []
         for track in tracks:
-            if track.uri:
-                unique_key = track.uri
-            else:
-                # Fallback key includes provider to avoid cross-provider collisions.
-                provider_id = track.provider if isinstance(track.provider, str) else ""
-                unique_key = f"{provider_id}://track/{track.item_id}"
-            if unique_key in seen:
+            if not track.available:
                 continue
-            seen.add(unique_key)
+            if track in seen:
+                continue
+            seen.add(track)
             result.append(track)
         return result
 
