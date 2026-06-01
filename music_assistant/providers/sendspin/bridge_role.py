@@ -113,7 +113,8 @@ class BridgePlayerRole(Role):
         return self._audio_requirements
 
     def set_timing(self, *, required_lead_time_ms: int, min_buffer_ms: int) -> None:
-        """Configure timing values reported to PushStream for scheduling.
+        """
+        Configure timing values reported to PushStream for scheduling.
 
         Call before or during a stream session to adjust the lead time and
         ongoing buffer floor reported to the Sendspin send-ahead calculation.

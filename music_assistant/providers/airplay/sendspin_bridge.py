@@ -203,7 +203,8 @@ class SendspinAirPlayBridge:
         self.logger.debug("Sendspin bridge stopped for %s", self.airplay_player.display_name)
 
     def _refresh_bridge_timing(self) -> None:
-        """Push the AirPlay startup latency to the bridge role.
+        """
+        Push the AirPlay startup latency to the bridge role.
 
         ``wait_start`` is the lead time the device needs before audio begins, so
         Sendspin schedules the first chunk that far ahead instead of dropping it.

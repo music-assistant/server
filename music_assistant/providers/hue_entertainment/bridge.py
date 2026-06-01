@@ -327,7 +327,8 @@ class HueEntertainmentBridge:
             await self._stop_entertainment()
 
     def _on_visualizer_frames(self, frames: list[VisualizerFrame]) -> None:
-        """Forward periodic samples, onset peaks, and beat events to the analyzer.
+        """
+        Forward periodic samples, onset peaks, and beat events to the analyzer.
 
         Frames carrying ``is_downbeat`` are beats. The rest carry spectrum and peak data.
         """

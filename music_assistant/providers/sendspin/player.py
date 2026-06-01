@@ -921,7 +921,8 @@ class SendspinPlayer(SendspinBasePlayer):
         self._last_beat_anchor_us = None
 
     def _publish_repeat_shuffle(self, repeat: SendspinRepeatMode, *, shuffle: bool) -> None:
-        """Push repeat/shuffle to controller state for current-spec clients.
+        """
+        Push repeat/shuffle to controller state for current-spec clients.
 
         Clients implementing the older spec version still read the copy mirrored
         onto metadata state, for now.
@@ -931,7 +932,8 @@ class SendspinPlayer(SendspinBasePlayer):
             controller_role.set_shuffle(shuffle=shuffle)
 
     def _compute_track_progress_ms(self, current_media: PlayerMedia, *, is_playing: bool) -> int:
-        """Resolve current track position in ms from queue/media elapsed time.
+        """
+        Resolve current track position in ms from queue/media elapsed time.
 
         Prefer queue/media elapsed as source of truth. Only interpolate while
         actively playing; for paused/idle states keep the last fixed position.
@@ -946,7 +948,8 @@ class SendspinPlayer(SendspinBasePlayer):
         return max(0, int(elapsed_time * 1000)) if elapsed_time is not None else 0
 
     async def _refresh_beat_schedule(self) -> None:
-        """Re-attempt beat hydration only, without re-pushing metadata/artwork.
+        """
+        Re-attempt beat hydration only, without re-pushing metadata/artwork.
 
         Lighter than `send_current_media_metadata`: the retry poller uses this so
         late-arriving analysis lands without re-running the full pipeline.
@@ -1066,7 +1069,8 @@ class SendspinPlayer(SendspinBasePlayer):
 
     @staticmethod
     def _flow_track_offset_us(queue: PlayerQueue | None, queue_item: QueueItem) -> int | None:
-        """Return the current track's flow-stream start offset (minus file seek), in µs.
+        """
+        Return the current track's flow-stream start offset (minus file seek), in µs.
 
         Sums the streamed duration of every track committed before the current
         one in the queue-flow stream, so beats anchor to this track's start
@@ -1172,7 +1176,8 @@ class SendspinPlayer(SendspinBasePlayer):
     _BEAT_RETRY_MAX_ATTEMPTS: ClassVar[int] = 30  # ~90 s of wait
 
     def _schedule_beat_retry(self, queue_item_id: str) -> None:
-        """Start the background poller for late-arriving beat analysis.
+        """
+        Start the background poller for late-arriving beat analysis.
 
         If a poller is already running for this queue item, no-op.
         """

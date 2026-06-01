@@ -350,7 +350,8 @@ class SendspinPlaybackSession:
         self._sendspin_pcm_format: SendspinAudioFormat = _DEFAULT_SENDSPIN_PCM_FORMAT
 
     def flow_track_anchor_us(self, track_start_offset_us: int) -> int | None:
-        """Server-clock time of the current flow track's file-position 0.
+        """
+        Server-clock time of the current flow track's file-position 0.
 
         ``track_start_offset_us`` is the current track's start offset within the
         flow stream (minus its file seek), so beats timed from the track file

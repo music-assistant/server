@@ -272,7 +272,8 @@ class HueAudioAnalyzer:
         color_mode: str = DEFAULT_MODE,
         brightness: int = 100,
     ) -> None:
-        """Initialize the analyzer.
+        """
+        Initialize the analyzer.
 
         ``color_mode`` selects a preset bundle from `_MODES` (defaults to
         `DEFAULT_MODE` when unknown); reactivity is governed by that preset.
@@ -345,7 +346,8 @@ class HueAudioAnalyzer:
         self._server_palette.update(update)
 
     def apply_spectrum(self, bins: list[int], timestamp_us: int) -> None:
-        """Queue a spectrum frame for the renderer.
+        """
+        Queue a spectrum frame for the renderer.
 
         The frame is keyed on its server-clock ``timestamp_us`` and only
         promoted to the active spectrum once ``now_us`` catches up to it inside
@@ -386,7 +388,8 @@ class HueAudioAnalyzer:
         self._bass_saturation += (sat_target - self._bass_saturation) * sat_alpha
 
     def apply_peak(self, strength: int, timestamp_us: int) -> None:
-        """Queue an onset peak for the renderer.
+        """
+        Queue an onset peak for the renderer.
 
         ``strength`` is the uint8 value from the visualizer `peak` binary
         (0-255). The peak is held in a pending queue keyed on its server-clock
@@ -401,7 +404,8 @@ class HueAudioAnalyzer:
         self._pending_peaks.append((timestamp_us, boost))
 
     def _consume_peaks(self, now_us: int) -> float:
-        """Drain due peaks and return the decayed peak-boost contribution.
+        """
+        Drain due peaks and return the decayed peak-boost contribution.
 
         Side effects: promotes pending peaks (keeping the strongest) and
         advances ``_peak_palette_position`` once per consumed onset so the
@@ -428,7 +432,8 @@ class HueAudioAnalyzer:
         return self._peak_boost * (1.0 - elapsed / _PEAK_BOOST_DECAY_US)
 
     def push_beats(self, beats: list[BeatTiming]) -> None:
-        """Append new beats to the schedule with a continuous counter.
+        """
+        Append new beats to the schedule with a continuous counter.
 
         The counter just increments per beat — no downbeat reset. With a
         fractional ``palette_advance`` (e.g. 0.25) the walker would otherwise
@@ -510,7 +515,8 @@ class HueAudioAnalyzer:
         now_us: int,
         segment: int,
     ) -> list[tuple[float, float, float]]:
-        """Per-channel colors with beat-aligned changes + spatial gradient.
+        """
+        Per-channel colors with beat-aligned changes + spatial gradient.
 
         Each segment interpolates the palette position from `prior`'s slot
         toward the next beat's slot via the shortest modular path so downbeat-reset
@@ -561,7 +567,8 @@ class HueAudioAnalyzer:
     def _peak_walk_colors(
         self, palette: list[tuple[float, float, float]], now_us: int
     ) -> list[tuple[float, float, float]]:
-        """Per-channel colors driven by the peak-onset palette walker.
+        """
+        Per-channel colors driven by the peak-onset palette walker.
 
         Used when no beat schedule is active. Each consumed peak has already
         advanced ``_peak_palette_position``; here we just sample the palette
@@ -590,7 +597,8 @@ class HueAudioAnalyzer:
         return result
 
     def _spatial_palette_offset(self, channel_index: int) -> float:
-        """Per-channel palette index offset from the lights' spatial layout.
+        """
+        Per-channel palette index offset from the lights' spatial layout.
 
         Picks whichever spatial axis has the larger spread (so e.g. lights
         stretched left↔right take the x-axis even when one of them is slightly
@@ -640,7 +648,8 @@ class HueAudioAnalyzer:
         return [max(_PER_CHANNEL_MIN_MULT, band[i]) for i in range(n)]
 
     def _channel_multipliers(self) -> list[float]:
-        """Per-channel brightness driven by per-band onset transients.
+        """
+        Per-channel brightness driven by per-band onset transients.
 
         For each light we sample a spectrum band (z-axis position when valid,
         contiguous index otherwise), maintain a fast smoothed value and a
@@ -695,7 +704,8 @@ class HueAudioAnalyzer:
     # -- Helpers --
 
     def _prune(self, now_us: int) -> None:
-        """Keep one past beat so the queue stays bounded.
+        """
+        Keep one past beat so the queue stays bounded.
 
         The most recent past beat is the start of the current segment used
         by the continuous palette walker.
@@ -727,7 +737,8 @@ class HueAudioAnalyzer:
         next_beat: _ScheduledBeat,
         segment: int,
     ) -> float:
-        """Triangle-shaped brightness pulse centered on each adjacent beat.
+        """
+        Triangle-shaped brightness pulse centered on each adjacent beat.
 
         ``mode.pulse_peak > 1.0`` brightens on the beat; ``< 1.0`` dims on the
         beat; ``== 1.0`` disables the pulse. The largest-magnitude effect from
@@ -748,7 +759,8 @@ class HueAudioAnalyzer:
         return 1.0 + max_effect
 
     def _active_palette(self) -> list[tuple[float, float, float]]:
-        """Return the cycling palette ordered for vibrancy + maximum contrast.
+        """
+        Return the cycling palette ordered for vibrancy + maximum contrast.
 
         Collects every defined color@v1 field, picks the most vibrant one for
         the downbeat slot, then orders the rest greedily so each consecutive
@@ -771,7 +783,8 @@ class HueAudioAnalyzer:
         return _enforce_neighbour_contrast(deduped, deduped)
 
     def _gather_raw_palette(self) -> tuple[list[tuple[float, float, float]], bool]:
-        """Collect server colors and synthesise a gradient where needed.
+        """
+        Collect server colors and synthesise a gradient where needed.
 
         Returns ``(colors, synthesized)``. The server derives most color@v1
         fields from a single primary, so a colored cover usually yields one hue
@@ -830,7 +843,8 @@ def _lerp(
 def _normalise_axis(
     channels: list[LightChannel], *, axis_index: int
 ) -> tuple[bool, list[float], float]:
-    """Return (valid, per-channel normalised position, min-gap) for an axis.
+    """
+    Return (valid, per-channel normalised position, min-gap) for an axis.
 
     Valid when the lights span at least ``_SPATIAL_SPREAD_THRESHOLD``. The
     returned score is the minimum gap between adjacent sorted positions — an
@@ -854,7 +868,8 @@ def _normalise_axis(
 
 
 def _scale_saturation(rgb: tuple[float, float, float], factor: float) -> tuple[float, float, float]:
-    """Lerp ``rgb`` toward its grey-axis projection by ``1 - factor``.
+    """
+    Lerp ``rgb`` toward its grey-axis projection by ``1 - factor``.
 
     factor=1.0 → original color. factor=0.0 → pure grey at the same channel
     sum. Preserves brightness; only chroma changes.
@@ -876,7 +891,8 @@ def _boost_saturation(rgb: tuple[float, float, float], factor: float) -> tuple[f
 
 
 def _distinct_hue_count(colors: list[tuple[float, float, float]]) -> int:
-    """Count how many distinct hue families ``colors`` span.
+    """
+    Count how many distinct hue families ``colors`` span.
 
     Hues within ``_HUE_DISTINCT`` of each other (with wraparound) collapse into
     one family, so several shades of one color count as a single hue.
@@ -896,7 +912,8 @@ def _distinct_hue_count(colors: list[tuple[float, float, float]]) -> int:
 def _build_shade_palette(
     seed: tuple[float, float, float],
 ) -> list[tuple[float, float, float]]:
-    """Expand a single chromatic seed into a same-family gradient.
+    """
+    Expand a single chromatic seed into a same-family gradient.
 
     Sweeps the seed's saturation and adds small analogous hue shifts so the
     cycle has gentle movement without straying off the album's hue. Value is
@@ -941,7 +958,8 @@ def _order_palette(
 def _equalize_palette(
     colors: list[tuple[float, float, float]], pulse_peak: float
 ) -> list[tuple[float, float, float]]:
-    """Scale every color so its brightest channel hits a common target.
+    """
+    Scale every color so its brightest channel hits a common target.
 
     Every lamp is pushed to the same LED peak so the room stays at constant
     output regardless of which palette slot is showing. Hue + saturation are
@@ -959,7 +977,8 @@ def _equalize_palette(
 def _drop_close_neighbours(
     colors: list[tuple[float, float, float]], threshold: float
 ) -> list[tuple[float, float, float]]:
-    """Drop entries that sit within ``threshold`` RGB distance of the previous.
+    """
+    Drop entries that sit within ``threshold`` RGB distance of the previous.
 
     Keeps the first entry. After max-channel equalize two album reds with
     different original brightness collapse to very similar values; this
@@ -979,7 +998,8 @@ def _enforce_neighbour_contrast(
     ordered_raw: list[tuple[float, float, float]],
     equalized: list[tuple[float, float, float]],
 ) -> list[tuple[float, float, float]]:
-    """Dim consecutive entries whose raw RGB is too similar to the previous one.
+    """
+    Dim consecutive entries whose raw RGB is too similar to the previous one.
 
     Brightness contrast carries the eye through the cycle when hue contrast
     alone is too weak. Dimming alternates so we never dim two in a row.
@@ -1008,7 +1028,8 @@ def _enforce_neighbour_contrast(
 def _scale_to_max_channel(
     rgb: tuple[float, float, float], target_max: float
 ) -> tuple[float, float, float]:
-    """Scale ``rgb`` so ``max(r, g, b) == target_max`` while preserving hue.
+    """
+    Scale ``rgb`` so ``max(r, g, b) == target_max`` while preserving hue.
 
     Black stays black. Tiny rounding overshoots are clipped to 1.0.
     """
