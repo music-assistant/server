@@ -61,8 +61,8 @@ hue_entertainment/
 |-----|------|---------|-------------|
 | `bridge_host` | String | — | Bridge IP (auto-discovered via mDNS) |
 | `brightness` | Integer | 100 | Overall light brightness (0-100) |
-| `intensity` | Integer | 70 | Beat reactivity / flash intensity (0-100) |
-| `color_mode` | String | spectrum | Effect mode (spectrum / bass_boost / ambient) |
+| `color_mode` | String | smooth | Visualization mode (smooth / ambient / flashing / energetic) |
+| `hue_latency_ms` | Integer | 20 | Lead time lights render ahead of the playhead (0-3000) |
 
 ## Quick Setup
 
