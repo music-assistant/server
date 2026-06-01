@@ -93,11 +93,8 @@ class SonicSimilarityPlugin(PluginProvider):
         """Initialize the Sonic Similarity plugin."""
         super().__init__(mass, manifest, config, supported_features)
         self._label_map: dict[int, tuple[str, str]] = {}
-        # _signature_cache is keyed on (item_id, provider) so a track that
-        # exists in two providers under the same item_id doesn't overwrite
-        # itself. _signatures_by_id is the fallback for the seed-lookup path,
-        # where the API caller only supplies item_id; matches the previous
-        # last-write-wins behavior for cross-provider collisions.
+        # Keyed on (item_id, provider) to avoid cross-provider collisions;
+        # _signatures_by_id is the item_id-only fallback (last-write-wins) for seed lookup.
         self._signature_cache: dict[tuple[str, str], list[float]] = {}
         self._signatures_by_id: dict[str, list[float]] = {}
         self._provider_by_item_id: dict[str, str] = {}
@@ -216,11 +213,8 @@ class SonicSimilarityPlugin(PluginProvider):
                     "sonic_similarity/text_search", self._handle_text_search
                 )
             )
-            # Warm the encoder off the event loop so the global SEARCH dispatcher
-            # (which gathers all providers with no per-provider timeout) never
-            # blocks on the ~500MB GPT2 download. search() short-circuits until
-            # _text_encoder is set; direct /text_search calls keep the lazy
-            # fallback. task_id makes the warm idempotent across reloads.
+            # Warm in background so the timeout-less global SEARCH dispatcher never blocks
+            # on the ~500MB GPT2 download; search() short-circuits until the encoder is set.
             self.mass.create_task(
                 self._get_text_encoder, task_id="sonic_similarity_text_encoder_warm"
             )
@@ -855,9 +849,8 @@ class SonicSimilarityPlugin(PluginProvider):
 
     async def _rebuild_search_index(self) -> None:
         """Rebuild the search index from all stored analysis rows."""
-        # SQLite SELECT is snapshot-isolated: rows added mid-rebuild aren't
-        # indexed. Snapshot the count BEFORE the rebuild so the next periodic
-        # tick re-rebuilds for them; bumping after would silently miss them.
+        # Snapshot the count BEFORE the rebuild: SELECT is snapshot-isolated, so rows
+        # added mid-rebuild are missed — counting after would skip the next refresh.
         try:
             pre_count = await self._count_analysis_rows()
         except Exception:
@@ -870,13 +863,8 @@ class SonicSimilarityPlugin(PluginProvider):
 
     async def _rebuild_search_index_locked(self) -> None:  # noqa: PLR0915
         """Rebuild body — assumes self._rebuild_lock is held."""
-        # Cross-AA-provider merge runs in the controller, streamed as an
-        # AsyncGenerator (iter_merged_audio_analysis_rows). Conflict resolution
-        # is timestamp-order (latest non-None write wins per field), which means
-        # a re-run of the primary analyzer can override fields a secondary
-        # analyzer populated earlier — accept that for symmetry with the rest
-        # of MA's analysis stack. Rows from currently-unavailable AA providers
-        # are skipped by the helper.
+        # Controller streams the cross-AA-provider merge (latest non-None write wins
+        # per field); rows from currently-unavailable AA providers are skipped.
 
         # Build new state in LOCALS — old self.* state continues to serve queries
         # until we atomically swap at the end.
@@ -971,10 +959,8 @@ class SonicSimilarityPlugin(PluginProvider):
 
         new_viewer = await asyncio.to_thread(_build_save_and_view)
 
-        # Atomic swap: queries that yielded before this point either resume seeing
-        # fully old state (if scheduled before this block) or fully new state
-        # (after). No `await` between writes, so other tasks cannot observe a
-        # half-rotated state.
+        # Atomic swap: no `await` between these writes, so queries see fully old or
+        # fully new state, never a half-rotated mix.
         old_search_index = self._search_index
         self._search_index = new_viewer
         self._label_map = new_label_map

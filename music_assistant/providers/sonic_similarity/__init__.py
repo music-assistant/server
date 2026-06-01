@@ -145,10 +145,7 @@ async def get_config_entries(
     )
     from music_assistant_models.enums import ConfigEntryType  # noqa: PLC0415
 
-    # Dispatch rebuild-button clicks onto the running provider instance. Each
-    # rebuild is fire-and-forget (mass.create_task) so the form returns
-    # immediately; the per-engine _rebuild_lock / _clap_rebuild_lock serialise
-    # double-clicks into a no-op tail.
+    # Fire-and-forget rebuild on button click; per-engine locks serialise double-clicks.
     if instance_id and action in (ACTION_REBUILD_18DIM, ACTION_REBUILD_CLAP):
         provider = mass.get_provider(instance_id)
         if isinstance(provider, SonicSimilarityPlugin):
@@ -214,8 +211,7 @@ async def get_config_entries(
             depends_on=CONF_ENABLE_CLAP_INDEX,
             depends_on_value=True,
         ),
-        # Engine selector for the Similar Tracks hook — only shown (and only
-        # honoured) when the CLAP index above is enabled.
+        # Engine selector for Similar Tracks; shown only when CLAP is enabled.
         ConfigEntry(
             key=CONF_SIMILAR_TRACKS_ENGINE,
             type=ConfigEntryType.STRING,
@@ -232,8 +228,7 @@ async def get_config_entries(
             depends_on=CONF_ENABLE_CLAP_INDEX,
             depends_on_value=True,
         ),
-        # 18-dim tuning for the Similar Tracks action — shown only while the
-        # 18-dim engine is the active choice (CLAP ranks purely by cosine).
+        # 18-dim tuning for Similar Tracks; shown only when the 18-dim engine is selected.
         ConfigEntry(
             key=CONF_SIMILAR_PRESET,
             type=ConfigEntryType.STRING,
