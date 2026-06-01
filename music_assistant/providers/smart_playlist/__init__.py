@@ -678,7 +678,12 @@ class SmartPlaylistProvider(PluginProvider):
         seen: set[str] = set()
         result: list[Track] = []
         for track in tracks:
-            unique_key = track.uri or str(track.item_id)
+            if track.uri:
+                unique_key = track.uri
+            else:
+                # Fallback key includes provider to avoid cross-provider collisions.
+                provider_id = track.provider if isinstance(track.provider, str) else ""
+                unique_key = f"{provider_id}://track/{track.item_id}"
             if unique_key in seen:
                 continue
             seen.add(unique_key)

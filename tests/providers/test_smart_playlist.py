@@ -602,12 +602,44 @@ async def test_evaluate_rules_removes_duplicate_track_uris() -> None:
         return_value=[dup_a_1, dup_a_2, dup_a_3, uniq_b]
     )
 
-    rules = SmartPlaylistRules(limit=10)
+    rules = SmartPlaylistRules(limit=10, logic=LOGIC_AND)
     result = await plugin._evaluate_rules(rules)
 
     uris = [track.uri for track in result]
     assert uris.count("library://track/dup") == 1
     assert "library://track/unique" in uris
+
+
+@pytest.mark.asyncio
+async def test_evaluate_rules_dedup_fallback_with_missing_uri() -> None:
+    """Fallback dedup key should deduplicate same provider/item and keep distinct providers."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    same_1 = _make_mock_track("42", "library://track/tmp-a")
+    same_1.uri = None
+    same_1.provider = "prov_a"
+    same_2 = _make_mock_track("42", "library://track/tmp-b")
+    same_2.uri = None
+    same_2.provider = "prov_a"
+    different_provider = _make_mock_track("42", "library://track/tmp-c")
+    different_provider.uri = None
+    different_provider.provider = "prov_b"
+    cast("Any", plugin)._get_library_tracks = AsyncMock(
+        return_value=[same_1, same_2, different_provider]
+    )
+
+    rules = SmartPlaylistRules(limit=10, logic=LOGIC_AND)
+    result = await plugin._evaluate_rules(rules)
+
+    # Same provider/item_id should collapse.
+    assert len([track for track in result if track.provider == "prov_a"]) == 1
+    # Different provider should remain.
+    assert len([track for track in result if track.provider == "prov_b"]) == 1
 
 
 def _swallow_task(coro: Any, **_: Any) -> None:
