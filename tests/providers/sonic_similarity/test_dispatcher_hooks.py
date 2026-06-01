@@ -60,7 +60,7 @@ class TestGetSimilarTracks:
 
         assert result == [resolved_track]
         plugin._handle_similar.assert_awaited_once_with(
-            item_id="seed_id", seed_provider="spotify", limit=10
+            item_id="seed_id", seed_provider="spotify", limit=10, preset="balanced", diversity=0.0
         )
         mock_mass.music.tracks.get.assert_awaited_once_with("result1", "spotify")
 
@@ -84,7 +84,7 @@ class TestGetSimilarTracks:
 
         assert len(result) == 1
         plugin._handle_similar.assert_awaited_once_with(
-            item_id="track_a", seed_provider=None, limit=25
+            item_id="track_a", seed_provider=None, limit=25, preset="balanced", diversity=0.0
         )
 
     @pytest.mark.asyncio
