@@ -106,7 +106,10 @@ class DeezerStreamingManager:
 
     async def _get_track_stream_details(self, item_id: str) -> StreamDetails:
         """Return stream details for a regular Deezer track."""
-        url_details, song_data = await self.provider.gw_client.get_deezer_track_urls(item_id)
+        try:
+            url_details, song_data = await self.provider.gw_client.get_deezer_track_urls(item_id)
+        except DeezerGWError as err:
+            raise MediaNotFoundError(f"Track {item_id} is not available on Deezer") from err
         url = url_details["sources"][0]["url"]
         size_key = f"FILESIZE_{url_details['format']}"
         size = int(song_data.get(size_key) or song_data.get("FILESIZE_MP3_MISC") or 0)
@@ -149,7 +152,12 @@ class DeezerStreamingManager:
             raise MediaNotFoundError(f"No chapters found for audiobook {item_id}")
 
         # Probe the first chapter to determine audio format
-        first_url_details, _ = await self.provider.gw_client.get_deezer_track_urls(chapter_ids[0])
+        try:
+            first_url_details, _ = await self.provider.gw_client.get_deezer_track_urls(
+                chapter_ids[0]
+            )
+        except DeezerGWError as err:
+            raise MediaNotFoundError(f"Audiobook {item_id} is not available on Deezer") from err
         total_duration = sum(chapter_durations_ms) // 1000
 
         return StreamDetails(
