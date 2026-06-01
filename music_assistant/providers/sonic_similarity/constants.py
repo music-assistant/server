@@ -20,6 +20,13 @@ CONF_DISCOVER_PRESET = "discover_preset"
 CONF_DISCOVER_DIVERSITY = "discover_diversity"
 EXTRA_DATA_CLAP_EMBEDDING = "clap_embedding"
 
+# Which index serves the cross-provider SIMILAR_TRACKS hook. The CLAP option is
+# only offered when the CLAP index is enabled (the selector depends_on that
+# toggle) and only acted on when the index actually loaded.
+CONF_SIMILAR_TRACKS_ENGINE = "similar_tracks_engine"
+SIMILAR_ENGINE_18DIM = "18dim"
+SIMILAR_ENGINE_CLAP = "clap"
+
 # Keys for the read-only status rows on the plugin config page.
 CONF_LABEL_STATUS_18DIM = "status_label_18dim"
 CONF_LABEL_STATUS_CLAP = "status_label_clap"

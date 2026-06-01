@@ -33,6 +33,7 @@ from music_assistant.providers.sonic_similarity.constants import (
     CONF_ENABLE_CLAP_INDEX,
     CONF_ENABLE_DISCOVER_ROW,
     CONF_ENABLE_TEXT_SEARCH,
+    CONF_SIMILAR_TRACKS_ENGINE,
     EXTRA_DATA_CLAP_EMBEDDING,
     METADATA_BONUS_SCALE,
     PERIODIC_REFRESH_INTERVAL_HOURS,
@@ -40,6 +41,8 @@ from music_assistant.providers.sonic_similarity.constants import (
     RECOMMEND_ITEM_LIMIT,
     RECOMMEND_PER_SEED_LIMIT,
     RECOMMEND_SEED_COUNT,
+    SIMILAR_ENGINE_18DIM,
+    SIMILAR_ENGINE_CLAP,
     USEARCH_INDEX_FILENAME_GLOB,
     USEARCH_INDEX_FILENAME_TPL,
 )
@@ -551,17 +554,25 @@ class SonicSimilarityPlugin(PluginProvider):
     # ------------------------------------------------------------------
 
     async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
-        """Implement ProviderFeature.SIMILAR_TRACKS via the 18-dim engine.
+        """Implement ProviderFeature.SIMILAR_TRACKS via the configured engine.
 
-        Returns [] when the corpus isn't ready, when none of the track's
-        provider mappings are indexed, or when the engine returns no
-        candidates — all three states are interchangeable to the
-        cross-provider dispatcher's truthy check.
+        Routes to the 1024-dim CLAP engine when it is selected and its index
+        loaded, otherwise the 18-dim weighted-Euclidean engine. There is no
+        cross-engine fallback: the chosen engine returns [] for a track it
+        cannot serve, which is interchangeable to the cross-provider
+        dispatcher's truthy check.
 
         :param track: Full Track object (with provider_mappings) as
             handed to us by the cross-provider dispatcher.
         :param limit: Max number of similar tracks to return.
         """
+        engine = str(self.config.get_value(CONF_SIMILAR_TRACKS_ENGINE) or SIMILAR_ENGINE_18DIM)
+        if engine == SIMILAR_ENGINE_CLAP and self._clap_index is not None:
+            return await self._similar_tracks_via_clap(track, limit)
+        return await self._similar_tracks_via_18dim(track, limit)
+
+    async def _similar_tracks_via_18dim(self, track: Track, limit: int) -> list[Track]:
+        """Serve SIMILAR_TRACKS from the 18-dim weighted-Euclidean engine."""
         if self.corpus_means is None or not self._signature_cache:
             return []
 
@@ -586,9 +597,26 @@ class SonicSimilarityPlugin(PluginProvider):
         response = await self._handle_similar(
             item_id=seed_item_id, seed_provider=seed_provider, limit=limit
         )
-        items = response.get("items") or []
-        if not items:
+        return await self._resolve_similar_items(response.get("items") or [])
+
+    async def _similar_tracks_via_clap(self, track: Track, limit: int) -> list[Track]:
+        """Serve SIMILAR_TRACKS from the 1024-dim CLAP index; [] if the seed isn't indexed."""
+        if self._clap_index is None:
             return []
+        seed_item_id: str | None = None
+        for mapping in track.provider_mappings or ():
+            if mapping.provider_domain == "library":
+                continue
+            if self._clap_index.contains(mapping.provider_instance, mapping.item_id):
+                seed_item_id = mapping.item_id
+                break
+        if seed_item_id is None:
+            return []
+        response = await self._handle_similar_clap(item_id=seed_item_id, limit=limit)
+        return await self._resolve_similar_items(response.get("items") or [])
+
+    async def _resolve_similar_items(self, items: list[dict[str, Any]]) -> list[Track]:
+        """Resolve [{item_id, provider}, …] response rows to Tracks, dropping lookup misses."""
 
         async def _resolve(entry: dict[str, Any]) -> Track | None:
             try:

@@ -32,6 +32,9 @@ from music_assistant.providers.sonic_similarity.constants import (
     CONF_LABEL_STATUS_18DIM,
     CONF_LABEL_STATUS_CLAP,
     CONF_LABEL_STATUS_TEXT,
+    CONF_SIMILAR_TRACKS_ENGINE,
+    SIMILAR_ENGINE_18DIM,
+    SIMILAR_ENGINE_CLAP,
     SUPPORTED_FEATURES,
 )
 from music_assistant.providers.sonic_similarity.provider import (
@@ -206,6 +209,24 @@ async def get_config_entries(
             action_label="Rebuild CLAP index",
             category="status",
             required=False,
+            depends_on=CONF_ENABLE_CLAP_INDEX,
+            depends_on_value=True,
+        ),
+        # Engine selector for the Similar Tracks hook — only shown (and only
+        # honoured) when the CLAP index above is enabled.
+        ConfigEntry(
+            key=CONF_SIMILAR_TRACKS_ENGINE,
+            type=ConfigEntryType.STRING,
+            default_value=SIMILAR_ENGINE_18DIM,
+            label="Similar Tracks engine",
+            description="Which index powers library-wide Similar Tracks. The 18-dim engine "
+            "ranks by perceptual scalars (BPM, energy, loudness, key …); the CLAP engine ranks "
+            "by the 1024-dim semantic-audio embedding. Returns no results for a track that has "
+            "no CLAP embedding.",
+            options=[
+                ConfigValueOption("18-dim weighted (default)", SIMILAR_ENGINE_18DIM),
+                ConfigValueOption("CLAP 1024-dim semantic", SIMILAR_ENGINE_CLAP),
+            ],
             depends_on=CONF_ENABLE_CLAP_INDEX,
             depends_on_value=True,
         ),
