@@ -240,6 +240,53 @@ async def test_add_album_does_not_import_tracks_when_disabled() -> None:
     mass.create_task.assert_not_called()
 
 
+async def test_add_album_only_imports_tracks_for_added_instance() -> None:
+    """Test that track import skips auto-added mappings for other provider instances.
+
+    match_provider_instances adds extra mappings (in_library=None) for sibling
+    instances of the same provider. Those must not trigger a track import; only the
+    mapping the album was actually added on (in_library=True) should.
+    """
+    added_mapping = create_provider_mapping(
+        provider_instance="qobuz_1", provider_domain="qobuz", item_id="album_xyz", in_library=True
+    )
+    sibling_mapping = create_provider_mapping(
+        provider_instance="qobuz_2", provider_domain="qobuz", item_id="album_xyz", in_library=None
+    )
+    input_album = create_mock_album(
+        provider="qobuz", provider_mappings=[create_provider_mapping(in_library=None)]
+    )
+    # the controller returns the merged library item with both mappings present
+    library_album = create_mock_album(
+        provider="library", provider_mappings=[added_mapping, sibling_mapping]
+    )
+
+    mass = Mock()
+    ctrl_mock = AsyncMock()
+    ctrl_mock.add_item_to_library = AsyncMock(return_value=library_album)
+
+    provider_mock = Mock(spec=MusicProvider)
+    provider_mock.type = ProviderType.MUSIC
+    provider_mock.supports_feature.return_value = False
+    provider_mock.library_sync_album_tracks_enabled.return_value = True
+    sentinel = object()
+    provider_mock.import_album_tracks = Mock(return_value=sentinel)
+
+    music_ctrl = MusicController.__new__(MusicController)
+    music_ctrl.mass = mass
+    mass.get_provider.return_value = provider_mock
+    mass.metadata = AsyncMock()
+
+    with (
+        patch.object(music_ctrl, "get_controller", return_value=ctrl_mock),
+        patch.object(music_ctrl, "get_item", new_callable=AsyncMock, return_value=input_album),
+    ):
+        await music_ctrl.add_item_to_library(input_album)
+
+    provider_mock.import_album_tracks.assert_called_once_with("album_xyz", library_album.name)
+    mass.create_task.assert_called_once_with(sentinel)
+
+
 # --- Group 2: Refresh item preserves in_library ---
 
 

@@ -1176,6 +1176,11 @@ class MusicController(CoreController):
     def _import_album_tracks_if_enabled(self, album: Album) -> None:
         """Import all album tracks into the library for providers that have this enabled."""
         for prov_mapping in album.provider_mappings:
+            # only consider mappings the album was actually added on; additional
+            # mappings auto-created for other instances of the same provider
+            # (via match_provider_instances) carry in_library=None and must be skipped
+            if not prov_mapping.in_library:
+                continue
             provider = self.mass.get_provider(prov_mapping.provider_instance)
             if not isinstance(provider, MusicProvider):
                 continue
