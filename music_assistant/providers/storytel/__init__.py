@@ -1,0 +1,691 @@
+"""Storytel provider integration.
+
+Provides the MusicProvider implementation and glue to the StorytelHelper
+lightweight client used to interact with Storytel APIs.
+"""
+
+from __future__ import annotations
+
+import functools
+from asyncio import Task, TaskGroup
+from collections.abc import AsyncGenerator, Callable
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, TypeVar, cast
+
+from aiohttp import ClientError
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    ContentType,
+    MediaType,
+    ProviderFeature,
+    StreamType,
+)
+from music_assistant_models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    SetupFailedError,
+)
+from music_assistant_models.media_items import (
+    Audiobook,
+    AudioFormat,
+    Podcast,
+    PodcastEpisode,
+    RecommendationFolder,
+    SearchResults,
+)
+from music_assistant_models.streamdetails import StreamDetails
+from yarl import URL
+
+from music_assistant.models.music_provider import MusicProvider
+
+from .constants import (
+    ALL_LANGUAGES,
+    API_HEADER_STORYTEL_MEDIA_ACCEPT,
+    API_HEADER_STORYTEL_MEDIA_FORMATS,
+    CACHE_CATEGORY_AUDIOBOOK,
+    CACHE_CATEGORY_BOOKMARK,
+    CACHE_CATEGORY_PODCAST,
+    CACHE_CATEGORY_PODCAST_EPISODE,
+    CACHE_CATEGORY_PODCAST_EPISODES,
+    CONF_LANGUAGES,
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    DEFAULT_LANGUAGES,
+    URL_CONSUMABLE_DOWNLOAD_NO_RANGE,
+)
+from .storytel_helper import StorytelHelper, parse_content_type, parse_raw_headers
+
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.media_items import MediaItemType
+    from music_assistant_models.provider import ProviderManifest
+
+    from music_assistant.mass import MusicAssistant
+    from music_assistant.models import ProviderInstanceType
+
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+# -------------------------------
+# Setup and configuration entries
+# -------------------------------
+
+
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Set up the Storytel provider.
+
+    :param mass: the MusicAssistant instance.
+    :param manifest: the provider manifest.
+    :param config: the provider config.
+    """
+    return Storytel(mass, manifest, config)
+
+
+async def get_config_entries(
+    mass: MusicAssistant,
+    instance_id: str | None = None,
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
+) -> tuple[ConfigEntry, ...]:
+    """Get the config entries for the Storytel provider.
+
+    :param mass: the MusicAssistant instance.
+    :param instance_id: the instance id.
+    :param action: the action string.
+    :param values: the predefined configuration values.
+    """
+    # ruff: noqa: ARG001
+    return (
+        ConfigEntry(
+            key="label",
+            type=ConfigEntryType.LABEL,
+            label="Sign in with your Storytel/Mofibo username and password.",
+        ),
+        ConfigEntry(
+            key=CONF_USERNAME,
+            type=ConfigEntryType.STRING,
+            label="Username or email",
+            required=True,
+            description="Storytel/Mofibo account username or email.",
+        ),
+        ConfigEntry(
+            key=CONF_PASSWORD,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Password",
+            required=True,
+            description="Storytel/Mofibo account password.",
+        ),
+        ConfigEntry(
+            key=CONF_LANGUAGES,
+            type=ConfigEntryType.STRING,
+            multi_value=True,
+            label="Content Languages",
+            description="Select which languages to include in recommendations and search results.",
+            default_value=["English"],
+            options=[ConfigValueOption(name, name) for name in sorted(ALL_LANGUAGES.keys())],
+            required=True,
+        ),
+    )
+
+
+# -------------------------------
+# Provider implementation
+# -------------------------------
+
+
+class Storytel(MusicProvider):
+    """Storytel provider (audiobooks only)."""
+
+    @staticmethod
+    def handle_login_failed(
+        method: F,
+    ) -> F:
+        """Decorate a method to retry once after a login failure.
+
+        :param method: the method to decorate.
+        """
+
+        @functools.wraps(method)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            self = cast("Storytel", args[0])
+            try:
+                return await method(*args, **kwargs)
+            except LoginFailed:
+                await self.api.revalidate_account()
+                return await method(*args, **kwargs)
+
+        return cast("F", wrapper)
+
+    @staticmethod
+    def handle_login_failed_generator(
+        method: F,
+    ) -> F:
+        """Decorate an async generator method to retry once after login failure.
+
+        :param method: the async generator method to decorate.
+        """
+
+        @functools.wraps(method)
+        async def wrapper(*args: Any, **kwargs: Any) -> AsyncGenerator[Any, None]:
+            self = cast("Storytel", args[0])
+            try:
+                async for item in method(*args, **kwargs):
+                    yield item
+            except LoginFailed:
+                await self.api.revalidate_account()
+                async for item in method(*args, **kwargs):
+                    yield item
+
+        return cast("F", wrapper)
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Initialize the Storytel provider instance.
+
+        Accepts the same args/kwargs as the base MusicProvider constructor.
+        """
+        super().__init__(*args, **kwargs)
+        self._api: StorytelHelper | None = None
+        # Whether to use Kids mode for bookmarks
+        self._kids_mode: bool = False
+        # Selected languages for discovery features (recommendations, search)
+        self._languages: dict[str, str] = DEFAULT_LANGUAGES.copy()
+
+    @property
+    def api(self) -> StorytelHelper:
+        """Return the initialized Storytel helper API instance."""
+        if self._api is None:
+            raise SetupFailedError("Storytel provider API not initialized")
+        return self._api
+
+    @property
+    def supported_features(self) -> set[ProviderFeature]:
+        """Return the supported features by this provider."""
+        return {
+            ProviderFeature.LIBRARY_AUDIOBOOKS,
+            ProviderFeature.LIBRARY_AUDIOBOOKS_EDIT,
+            ProviderFeature.LIBRARY_PODCASTS,
+            ProviderFeature.LIBRARY_PODCASTS_EDIT,
+            ProviderFeature.RECOMMENDATIONS,
+            ProviderFeature.SEARCH,
+        }
+
+    async def handle_async_init(self) -> None:
+        """Handle async initialization of the provider."""
+        username = str(self.config.get_value(CONF_USERNAME) or "")
+        password = str(self.config.get_value(CONF_PASSWORD) or "")
+        if not username or not password:
+            raise LoginFailed("Username/password required")
+
+        languages_list = self.config.get_value(CONF_LANGUAGES)
+        if isinstance(languages_list, list) and languages_list:
+            self._languages = {
+                name: ALL_LANGUAGES[name]
+                for name in languages_list
+                if isinstance(name, str) and name in ALL_LANGUAGES
+            }
+        if not self._languages:
+            self._languages = DEFAULT_LANGUAGES.copy()
+
+        self._api = StorytelHelper(
+            session=self.mass.http_session,
+            provider_instance=self,
+            provider_id=self.instance_id,
+            provider_domain=self.domain,
+            kids_mode=self._kids_mode,
+            languages=self._languages,
+        )
+        try:
+            await self._api.login(username, password)
+        except LoginFailed:
+            raise
+        except (ClientError, ConnectionError) as err:
+            raise SetupFailedError(f"Storytel login failed: {err}") from err
+        await self._api.fetch_resource_version()
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider.
+
+        :param is_removed: True if the provider was completely removed from MA.
+        """
+        # Nothing persistent to close; http_session owned by MA.
+        return
+
+    @property
+    def is_streaming_provider(self) -> bool:
+        """Return True if the provider is a streaming provider."""
+        return True
+
+    # -------------------
+    # Library: Audiobooks
+    # -------------------
+
+    @handle_login_failed_generator
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
+        """Yield audiobooks from the user's Storytel bookshelf."""
+        books, _ = await self.api.get_library()
+        for consumable_id in books:
+            try:
+                yield await self.get_audiobook(consumable_id)
+            except Exception as err:
+                if isinstance(err, (LoginFailed, ProviderUnavailableError, SetupFailedError)):
+                    raise
+                self.logger.error("Failed to map Storytel book %s: %s", consumable_id, err)
+
+    @handle_login_failed
+    async def get_audiobook(self, prov_audiobook_id: str, use_cache: bool = True) -> Audiobook:
+        """Fetch a single audiobook by our provider id.
+
+        :param prov_audiobook_id: the provider specific ID of the audiobook.
+        :param use_cache: boolean to indicate if a cache lookup is allowed.
+        """
+        if use_cache:
+            cached_book = await self.mass.cache.get(
+                key=prov_audiobook_id,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_AUDIOBOOK,
+                default=None,
+            )
+            if cached_book is not None:
+                return Audiobook.from_dict(cached_book)
+        item_data = await self.api.get_consumable_details(prov_audiobook_id)
+
+        if item_data is None:
+            raise MediaNotFoundError(f"Storytel book not found: {prov_audiobook_id}")
+
+        media_item = await self.api._parse_media_item(item_data)
+
+        await self.mass.cache.set(
+            key=prov_audiobook_id,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_AUDIOBOOK,
+            data=media_item.to_dict(),
+        )
+        return cast("Audiobook", media_item)
+
+    # -------------------
+    # Streaming
+    # -------------------
+
+    @handle_login_failed
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+        """Fetch stream details for a given item id and media type.
+
+        :param item_id: the provider item id of the media.
+        :param media_type: the media type to stream (Audiobook or PodcastEpisode).
+        """
+        if media_type not in {MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE}:
+            self.logger.error("Unsupported media type for streaming: %s", media_type)
+            raise InvalidDataError("Only audiobooks and podcasts are supported")
+        try:
+            stream_info_url = URL_CONSUMABLE_DOWNLOAD_NO_RANGE.replace("{CONSUMABLE_ID}", item_id)
+            headers = self.api._headers_api()
+            headers[API_HEADER_STORYTEL_MEDIA_ACCEPT] = API_HEADER_STORYTEL_MEDIA_FORMATS
+
+            async with await self.api._session.get(
+                stream_info_url, headers=headers
+            ) as stream_info_response:
+                await self.api._raise_for_status(stream_info_response)
+                response = await stream_info_response.json()
+                stream_url = response.get("result").get("signedUrl") or ""
+                if stream_url == "":
+                    self.logger.error("No signed URL returned for %s", item_id)
+                    raise MediaNotFoundError("No signed URL returned")
+                headers.pop("authorization", None)
+                headers["range"] = "bytes=0-1"
+                stream_url_object = URL(stream_url, encoded=True)
+                async with await self.api._session.get(
+                    stream_url_object, headers=headers, allow_redirects=True
+                ) as stream_response:
+                    await self.api._raise_for_status(stream_response)
+                    stream_headers = await parse_raw_headers(stream_response.raw_headers)
+                    content_type: str = stream_headers.get("content-type", "")
+                    content_content_range: str = stream_headers.get("content-range", "")
+                    content_full_size: int = int(content_content_range.rsplit("/", maxsplit=1)[-1])
+                    resolved_stream_url: str = str(stream_response.real_url)
+        except Exception as err:
+            if isinstance(err, LoginFailed):
+                raise
+            self.logger.error("Failed to fetch stream details for %s: %s", item_id, err)
+            raise MediaNotFoundError(f"Failed to fetch stream details: {err}") from err
+
+        mass_content_type: ContentType | None = await parse_content_type(content_type)
+        content_duration_seconds: int = int(
+            float(stream_headers.get("x-amz-meta-x-durationseconds", 0))
+        )
+        if content_duration_seconds == 0:
+            if media_type == MediaType.PODCAST_EPISODE:
+                item_details: Audiobook | PodcastEpisode = await self.get_podcast_episode(item_id)
+            else:
+                item_details = await self.get_audiobook(item_id)
+            content_duration_seconds = item_details.duration or 0
+
+        return StreamDetails(
+            provider=self.instance_id,
+            size=content_full_size,
+            item_id=item_id,
+            audio_format=AudioFormat(content_type=mass_content_type or ContentType.UNKNOWN),
+            media_type=media_type,
+            stream_type=StreamType.HTTP,
+            path=resolved_stream_url,
+            can_seek=True,
+            allow_seek=True,
+            duration=content_duration_seconds,
+        )
+
+    @handle_login_failed
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType, use_cache: bool = True
+    ) -> tuple[bool, int, datetime | None]:
+        """Get the resume position for a media item.
+
+        :param item_id: the provider item id.
+        :param media_type: the media type of the item.
+        :param use_cache: boolean to indicate if a cache lookup is allowed.
+        """
+        if media_type not in {MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE}:
+            self.logger.error("Unsupported media type for resume position: %s", media_type)
+            raise InvalidDataError("Only audiobooks and podcasts are supported for resume position")
+        if use_cache:
+            cached_bookmark = await self.mass.cache.get(
+                key=item_id,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_BOOKMARK,
+                default=None,
+            )
+            if cached_bookmark is not None:
+                try:
+                    fully_played, pos, updated_dt = cached_bookmark
+                    if isinstance(updated_dt, str):
+                        updated_dt = datetime.fromisoformat(updated_dt)
+                    if isinstance(updated_dt, datetime):
+                        updated_dt = (
+                            updated_dt.replace(tzinfo=UTC)
+                            if updated_dt.tzinfo is None
+                            else updated_dt.astimezone(UTC)
+                        )
+                    else:
+                        updated_dt = None
+                    return bool(fully_played), int(pos), updated_dt
+                except (TypeError, ValueError):
+                    # Ignore malformed cache values and refresh from provider.
+                    pass
+        bm = await self.api.get_bookmark(item_id)
+        if not bm:
+            self.logger.debug("No bookmark found for %s", item_id)
+            return False, 0, None
+        pos = int(bm.get("position") or 0)
+        updated_ts = bm.get("updatedTime")
+        bookmark_updated_dt: datetime | None = None
+        if updated_ts:
+            try:
+                bookmark_updated_dt = datetime.fromisoformat(str(updated_ts)).astimezone(UTC)
+            except Exception:
+                bookmark_updated_dt = None
+
+        await self.mass.cache.set(
+            key=item_id,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_BOOKMARK,
+            data=(False, pos, bookmark_updated_dt),
+        )
+        return False, pos, bookmark_updated_dt
+
+    @handle_login_failed
+    async def on_played(
+        self,
+        media_type: MediaType,
+        prov_item_id: str,
+        fully_played: bool,
+        position: int,
+        media_item: MediaItemType,
+        is_playing: bool = False,
+    ) -> None:
+        """Handle played event of a media item.
+
+        :param media_type: the media type of the item.
+        :param prov_item_id: the provider item id.
+        :param fully_played: True if the item was fully played.
+        :param position: the resume position in the item.
+        :param media_item: the media item object.
+        :param is_playing: True if the item is currently playing.
+        """
+        consumable_id = prov_item_id
+        # TODO: Consider whether to remove bookmark on fully_played=True or keep it at end position for potential re-listening.
+        if media_type not in {MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE}:
+            self.logger.error("Unsupported media type for bookmark update: %s", media_type)
+            return
+        try:
+            await self.api.set_bookmark(consumable_id, position, kids_mode=self._kids_mode)
+            await self.mass.cache.delete(
+                key=consumable_id,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_BOOKMARK,
+            )
+        except Exception as err:
+            if isinstance(err, (LoginFailed, ProviderUnavailableError, SetupFailedError)):
+                raise
+            self.logger.debug("Failed to update Storytel bookmark: %s", err)
+
+    # -------------------
+    # Podcasts
+    # -------------------
+
+    @handle_login_failed
+    async def get_podcast(self, prov_podcast_id: str, use_cache: bool = True) -> Podcast:
+        """Fetch a podcast by our provider id.
+
+        :param prov_podcast_id: the provider specific ID of the podcast.
+        :param use_cache: boolean to indicate if a cache lookup is allowed.
+        """
+        if use_cache:
+            cached_podcast = await self.mass.cache.get(
+                key=prov_podcast_id,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_PODCAST,
+                default=None,
+            )
+            if cached_podcast is not None:
+                return Podcast.from_dict(cached_podcast)
+        item_data = await self.api.get_podcast_details(prov_podcast_id)
+        if item_data is None:
+            raise MediaNotFoundError(f"Storytel podcast not found: {prov_podcast_id}")
+
+        podcast = await self.api._parse_podcast(item_data)
+
+        await self.mass.cache.set(
+            key=prov_podcast_id,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_PODCAST,
+            data=podcast.to_dict(),
+        )
+        return podcast
+
+    @handle_login_failed
+    async def get_podcast_episode(
+        self, prov_episode_id: str, use_cache: bool = True
+    ) -> PodcastEpisode:
+        """Fetch a podcast episode by our provider id.
+
+        :param prov_episode_id: the provider specific ID of the podcast episode.
+        :param use_cache: boolean to indicate if a cache lookup is allowed.
+        """
+        if use_cache:
+            cached_episode = await self.mass.cache.get(
+                key=prov_episode_id,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_PODCAST_EPISODE,
+                default=None,
+            )
+            if cached_episode is not None:
+                return PodcastEpisode.from_dict(cached_episode)
+        item_data = await self.api.get_consumable_details(prov_episode_id)
+
+        if item_data is None:
+            raise MediaNotFoundError(f"Storytel podcast episode not found: {prov_episode_id}")
+
+        podcast_episode = await self.api._parse_media_item(item_data)
+
+        await self.mass.cache.set(
+            key=prov_episode_id,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_PODCAST_EPISODE,
+            data=podcast_episode.to_dict(),
+        )
+        return cast("PodcastEpisode", podcast_episode)
+
+    @handle_login_failed_generator
+    async def get_podcast_episodes(
+        self, prov_podcast_id: str, use_cache: bool = True
+    ) -> AsyncGenerator[PodcastEpisode, None]:
+        """Fetch all episodes for a given podcast by our provider id.
+
+        :param prov_podcast_id: the provider specific ID of the podcast.
+        :param use_cache: boolean to indicate if a cache lookup is allowed.
+        """
+        if use_cache:
+            cached_episodes = await self.mass.cache.get(
+                key=prov_podcast_id,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_PODCAST_EPISODES,
+                default=None,
+            )
+            if cached_episodes is not None:
+                async with TaskGroup() as tg:
+                    cached_tasks: list[Task[PodcastEpisode]] = []
+                    for episode in cached_episodes:
+                        consumable_id = episode.get("id") or ""
+                        cached_tasks.append(
+                            tg.create_task(self.get_podcast_episode(consumable_id, use_cache=True))
+                        )
+                for task in cached_tasks:
+                    yield task.result()
+                return
+        podcast_episodes = await self.api.get_podcast_episodes(prov_podcast_id)
+
+        if podcast_episodes is not None:
+            if use_cache:
+                await self.mass.cache.set(
+                    key=prov_podcast_id,
+                    provider=self.instance_id,
+                    category=CACHE_CATEGORY_PODCAST_EPISODES,
+                    data=podcast_episodes,
+                )
+            async with TaskGroup() as tg:
+                live_tasks: list[Task[PodcastEpisode]] = []
+                for episode in podcast_episodes:
+                    consumable_id = episode.get("id") or ""
+                    live_tasks.append(
+                        tg.create_task(self.get_podcast_episode(consumable_id, use_cache=True))
+                    )
+            for task in live_tasks:
+                yield task.result()
+
+    @handle_login_failed_generator
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+        """Yield podcasts from the user's library."""
+        _, podcasts = await self.api.get_library()
+        for podcast_data in podcasts.values():
+            podcast_id = podcast_data.get("model", {}).get("id") or ""
+            try:
+                yield await self.get_podcast(podcast_id)
+            except Exception as err:
+                if isinstance(err, (LoginFailed, ProviderUnavailableError, SetupFailedError)):
+                    raise
+                self.logger.error("Failed to map Storytel podcast %s: %s", podcast_id, err)
+
+    @handle_login_failed
+    async def search(
+        self, search_query: str, media_types: list[MediaType], limit: int = 10
+    ) -> SearchResults:
+        """Perform a search on Storytel.
+
+        :param search_query: the search query.
+        :param media_types: the media types to search for.
+        :param limit: the maximum number of results per media type.
+        """
+        result = SearchResults()
+        task_audiobooks: Task[list[Audiobook]] | None = None
+        task_podcasts: Task[list[Podcast]] | None = None
+
+        async with TaskGroup() as tg:
+            if MediaType.AUDIOBOOK in media_types:
+                task_audiobooks = tg.create_task(
+                    self.api.search_audiobooks(search_query, limit=limit)
+                )
+            if MediaType.PODCAST in media_types:
+                task_podcasts = tg.create_task(self.api.search_podcasts(search_query, limit=limit))
+
+        if MediaType.AUDIOBOOK in media_types and task_audiobooks:
+            result.audiobooks = task_audiobooks.result()
+
+        if MediaType.PODCAST in media_types and task_podcasts:
+            result.podcasts = task_podcasts.result()
+
+        return result
+
+    """
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        ""
+        Browse implementation based on Storytel Bookshelf.
+        - Root: single folder "My Bookshelf"
+        - "bookshelf": all audiobooks from user's bookshelf
+        ""
+        raise NotImplementedError("Browse is not currently implemented for Storytel provider")
+    """
+
+    @handle_login_failed
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """Return personalized recommendations.
+
+        :return: A list of recommendation folders.
+        """
+        recommendations_folders: list[RecommendationFolder] = []
+
+        # Get list of recommendations:
+        # https://api.storytel.net/explore/frontpage/chips?categoryIds=&configVariant=voice-switcher-enabled&includeFormats=ebook%2Cabook%2Cpodcast&includeLanguages=da%2Cen&kidsMode=false&onboarding=false&version=2
+        # This recommendation is in above link
+        # https://api.storytel.net/explore/pages/frontpage-sthp-dk?categoryIds=&configVariant=voice-switcher-enabled&includeFormats=ebook%2Cabook%2Cpodcast&includeLanguages=da%2Cen&kidsMode=false&onboarding=false&version=2
+        # The above link should be modified to get different recommendation types.
+        # In the link there is an item with id "personal-recommendations_*"
+        # This contains personal recommendations for the user.
+        # It may also be empty
+        # accept = "application/vnd.storytel.explore-v21+json"
+        recommendations = await self.api.get_recommendations()
+        if recommendations:
+            recommendations_folders.append(recommendations)
+
+        return recommendations_folders
+
+    @handle_login_failed
+    async def library_add(self, item: MediaItemType) -> bool:
+        """Add an item to the provider library.
+
+        :param item: the media item to add.
+        :return: True if successful, False otherwise.
+        """
+        if item.media_type not in (MediaType.AUDIOBOOK, MediaType.PODCAST):
+            self.logger.error("Unsupported media type for library add: %s", item.media_type)
+            raise InvalidDataError(
+                "Only audiobooks and podcasts are supported for library management"
+            )
+        return await self.api.add_to_bookshelf(item.item_id, item)
+
+    @handle_login_failed
+    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
+        """Remove an item from the provider library.
+
+        :param prov_item_id: the provider item id to remove.
+        :param media_type: the media type of the item.
+        :return: True if successful, False otherwise.
+        """
+        if media_type not in (MediaType.AUDIOBOOK, MediaType.PODCAST):
+            self.logger.error("Unsupported media type for library remove: %s", media_type)
+            raise InvalidDataError(
+                "Only audiobooks and podcasts are supported for library management"
+            )
+        return await self.api.remove_from_bookshelf(prov_item_id, media_type)
