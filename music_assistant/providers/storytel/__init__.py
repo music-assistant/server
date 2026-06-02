@@ -251,14 +251,6 @@ class Storytel(MusicProvider):
             raise SetupFailedError(f"Storytel login failed: {err}") from err
         await self._api.fetch_resource_version()
 
-    async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload/close of the provider.
-
-        :param is_removed: True if the provider was completely removed from MA.
-        """
-        # Nothing persistent to close; http_session owned by MA.
-        return
-
     @property
     def is_streaming_provider(self) -> bool:
         """Return True if the provider is a streaming provider."""
@@ -639,16 +631,6 @@ class Storytel(MusicProvider):
             result.podcasts = task_podcasts.result()
 
         return result
-
-    """
-    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        ""
-        Browse implementation based on Storytel Bookshelf.
-        - Root: single folder "My Bookshelf"
-        - "bookshelf": all audiobooks from user's bookshelf
-        ""
-        raise NotImplementedError("Browse is not currently implemented for Storytel provider")
-    """
 
     @handle_login_failed
     async def recommendations(self) -> list[RecommendationFolder]:
