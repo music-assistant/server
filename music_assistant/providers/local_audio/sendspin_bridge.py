@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import uuid
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
 
@@ -23,8 +24,16 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 from music_assistant.providers.sendspin.helpers import bridge_client_id_from_uuid
 
-from .constants import DEFAULT_BUFFER_FRAMES
-from .player import LocalAudioPlayer, get_device_uuid
+from .constants import (
+    AUDIO_BACKEND_ALSA,
+    AUDIO_BACKEND_AUTO,
+    AUDIO_BACKEND_PULSEAUDIO,
+    CACHE_CATEGORY_PREV_STATE,
+    CONF_AUDIO_BACKEND,
+    DEFAULT_BUFFER_FRAMES,
+    DEFAULT_PLAYER_VOLUME,
+    DEVICE_UUID_NAMESPACE,
+)
 
 if sys.platform == "linux":
     from .pa_simple import PASimpleStream, enumerate_alsa_devices, enumerate_pa_sinks
@@ -43,13 +52,17 @@ if TYPE_CHECKING:
     from .provider import LocalAudioProvider
 
 
+def get_device_uuid(device_name: str, hostapi_index: int) -> str:
+    """Generate a stable UUID for a local audio device."""
+    return str(uuid.uuid5(DEVICE_UUID_NAMESPACE, f"{device_name}:{hostapi_index}"))
+
+
 class SendspinLocalAudioBridge:
     """Manages the Sendspin to local soundcard bridge for a single device."""
 
     def __init__(
         self,
         provider: LocalAudioProvider,
-        player: LocalAudioPlayer,
         device_info: dict[str, Any],
         sendspin_server: SendspinServer,
         backend: str = "auto",
@@ -58,7 +71,6 @@ class SendspinLocalAudioBridge:
         Initialize the bridge.
 
         :param provider: The Local Audio provider instance.
-        :param player: The LocalAudioPlayer that owns this bridge.
         :param device_info: Device info dict — on Linux PA: from enumerate_pa_sinks();
             on Linux ALSA or Darwin: from sounddevice.query_devices() with 'index' added.
         :param sendspin_server: The Sendspin server to register with.
@@ -66,22 +78,22 @@ class SendspinLocalAudioBridge:
         """
         self.provider = provider
         self.mass = provider.mass
-        self.player = player
         self.sendspin_server = sendspin_server
         self.device_info = device_info
         self.device_name: str = device_info["name"]
-        # Human-readable label for MA player name and Sendspin hello
         self.display_name: str = device_info.get("description", self.device_name)
-        # Linux PA: PA sink name; ALSA/Darwin: None
         self.pa_sink_name: str | None = device_info.get("pa_sink_name")
-        # Linux: from PA/ALSA enumeration; Darwin: fixed bridge defaults
         self.sample_rate: int = device_info.get("sample_rate", BRIDGE_SAMPLE_RATE)
         self.bit_depth: int = device_info.get("bit_depth", BRIDGE_BIT_DEPTH)
-        # sounddevice (ALSA on Linux or Darwin) device index
         self.device_index: int | None = device_info.get("index")
-        # Resolved backend used by _audio_writer dispatch
         self.backend: str = backend
         self.logger = provider.logger.getChild(f"bridge.{self.display_name}")
+
+        # Volume/mute state — owned by the bridge; persisted to MA cache
+        self._volume_level: int = DEFAULT_PLAYER_VOLUME
+        self._volume_muted: bool = False
+        # Stable UUID for this device — set in start()
+        self._device_uuid: str = ""
 
         self._sendspin_client: SendspinClient | None = None
         self._bridge_client_id: str | None = None
@@ -90,7 +102,7 @@ class SendspinLocalAudioBridge:
         self._logged_chunk_fmt: bool = False
         self._write_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._writer_task: asyncio.Task[None] | None = None
-        self._output_stream: Any | None = None  # sd.RawOutputStream on Darwin
+        self._output_stream: Any | None = None
         self._lock = asyncio.Lock()
 
     @property
@@ -101,17 +113,25 @@ class SendspinLocalAudioBridge:
     async def start(self) -> None:
         """Register the local audio device as an external Sendspin client."""
         hostapi_index: int = self.device_info.get("hostapi", 0)
-        device_uuid = get_device_uuid(self.device_name, hostapi_index)
-        self._bridge_client_id = bridge_client_id_from_uuid(device_uuid)
+        self._device_uuid = get_device_uuid(self.device_name, hostapi_index)
+        self._bridge_client_id = bridge_client_id_from_uuid(self._device_uuid)
 
         if sendspin_prov := self._get_sendspin_provider():
             sendspin_prov.register_bridge_identifiers(
                 self._bridge_client_id,
-                {IdentifierType.UUID: device_uuid},
+                {IdentifierType.UUID: self._device_uuid},
             )
 
+        # Restore cached volume/mute state from a previous session
+        if last_state := await self.mass.cache.get(
+            key=self._device_uuid,
+            provider=self.provider.instance_id,
+            category=CACHE_CATEGORY_PREV_STATE,
+        ):
+            self._volume_muted = last_state[0]
+            self._volume_level = last_state[1]
+
         # On Linux advertise the sink's native format so MA transcodes correctly.
-        # On Darwin use fixed bridge defaults.
         _depths = sorted({self.bit_depth, BRIDGE_BIT_DEPTH}, reverse=True)
         supported_formats = [
             SupportedAudioFormat(
@@ -159,16 +179,13 @@ class SendspinLocalAudioBridge:
             self.logger.error("No BridgePlayerRole found for %s", self.device_name)
             return
 
-        # Restore last volume from cache, fall back to default
-        init_volume = self.player._attr_volume_level
-
         self._bridge_role.set_callbacks(
             on_audio_chunk=self._on_audio_chunk,
             on_volume_change=self._on_volume_change,
             on_mute_change=self._on_mute_change,
             on_stream_start=self._on_bridge_stream_start,
             on_stream_end=self._on_bridge_stream_end,
-            initial_volume=int(init_volume) if init_volume is not None else 25,
+            initial_volume=self._volume_level,
         )
         self._bridge_role.setup_audio_requirements(
             sample_rate=self.sample_rate,
@@ -221,12 +238,25 @@ class SendspinLocalAudioBridge:
         self.mass.create_task(self._stop_streaming_locked())
 
     def _on_volume_change(self, volume: int) -> None:
-        """Sync volume from Sendspin side back to our player."""
-        self.mass.create_task(self.player.volume_set(volume))
+        """Sync volume from Sendspin side to bridge state and persist."""
+        self._volume_level = volume
+        self.mass.create_task(self._save_state())
 
     def _on_mute_change(self, muted: bool) -> None:
-        """Sync mute from Sendspin side back to our player."""
-        self.mass.create_task(self.player.volume_mute(muted))
+        """Sync mute from Sendspin side to bridge state and persist."""
+        self._volume_muted = muted
+        self.mass.create_task(self._save_state())
+
+    async def _save_state(self) -> None:
+        """Persist current volume/mute state to MA cache."""
+        if not self._device_uuid:
+            return
+        await self.mass.cache.set(
+            key=self._device_uuid,
+            data=[self._volume_muted, self._volume_level],
+            provider=self.provider.instance_id,
+            category=CACHE_CATEGORY_PREV_STATE,
+        )
 
     def _on_audio_chunk(self, chunk: AudioChunk) -> None:
         """Handle an incoming audio chunk."""
@@ -244,12 +274,12 @@ class SendspinLocalAudioBridge:
 
     def _apply_software_volume(self, pcm_data: bytes) -> bytes:
         """Apply software volume scaling and format conversion."""
-        if self.player.volume_muted:
+        if self._volume_muted:
             if self.bit_depth == 24:
                 # PA expects packed s24le: 3 bytes/sample, not 4
                 return b"\x00" * (len(pcm_data) * 3 // 4)
             return b"\x00" * len(pcm_data)
-        volume = self.player.volume_level
+        volume = self._volume_level
         scale = volume / 100.0 if (volume is not None and volume < 100) else None
 
         if self.bit_depth == 32:
@@ -295,8 +325,8 @@ class SendspinLocalAudioBridge:
                 BRIDGE_CHANNELS,
                 self.bit_depth,
             )
-            assert self.pa_sink_name is not None  # guarded by Linux-only call path
-            pa_sink_name = self.pa_sink_name  # capture for lambda — assert doesn't narrow closures
+            assert self.pa_sink_name is not None
+            pa_sink_name = self.pa_sink_name
             stream = await self.mass.loop.run_in_executor(
                 None,
                 lambda: PASimpleStream(
@@ -308,7 +338,7 @@ class SendspinLocalAudioBridge:
                 ),
             )
             self.logger.debug("PA stream opened for %s", self.pa_sink_name)
-            assert stream is not None  # assigned above; satisfies mypy
+            assert stream is not None
 
             while True:
                 data = await self._write_queue.get()
@@ -335,7 +365,7 @@ class SendspinLocalAudioBridge:
                 self._writer_task = None
 
     async def _audio_writer_sounddevice(self) -> None:
-        """Write queued audio to a sounddevice output stream (Darwin)."""
+        """Write queued audio to a sounddevice output stream (ALSA on Linux or Darwin)."""
         import sounddevice as _sd  # noqa: PLC0415
 
         try:
@@ -387,8 +417,7 @@ class SendspinLocalAudioBridge:
                 with suppress(asyncio.CancelledError, Exception):
                     await self._writer_task
             else:
-                # sounddevice (ALSA or Darwin): signal gracefully via None to avoid
-                # segfault on a cancelled blocking write
+                # sounddevice (ALSA or Darwin): signal gracefully via None sentinel
                 while not self._write_queue.empty():
                     self._write_queue.get_nowait()
                 self._write_queue.put_nowait(None)
@@ -409,11 +438,7 @@ class LocalAudioBridgeManager:
     """Manages Sendspin bridges for all local audio output devices."""
 
     def __init__(self, provider: LocalAudioProvider) -> None:
-        """
-        Initialize the bridge manager.
-
-        :param provider: The Local Audio provider instance.
-        """
+        """Initialize the bridge manager."""
         self.provider = provider
         self.mass = provider.mass
         self.logger = provider.logger.getChild("bridge_manager")
@@ -428,16 +453,16 @@ class LocalAudioBridgeManager:
         return None
 
     async def discover_and_register(self) -> None:
-        """Enumerate output devices, register players and Sendspin bridges."""
+        """Enumerate output devices and register Sendspin bridges."""
         sendspin_server = self.sendspin_server
         if not sendspin_server:
             self.logger.debug("Sendspin provider not available, skipping device enumeration")
             return
 
         # Read audio backend config (Linux only; ignored on Darwin)
-        from .constants import AUDIO_BACKEND_AUTO, CONF_AUDIO_BACKEND  # noqa: PLC0415
-
-        configured_backend: str = self.provider.config.get_value(CONF_AUDIO_BACKEND) or AUDIO_BACKEND_AUTO
+        configured_backend: str = (
+            self.provider.config.get_value(CONF_AUDIO_BACKEND) or AUDIO_BACKEND_AUTO
+        )
 
         try:
             resolved_backend, devices = await self.mass.loop.run_in_executor(
@@ -459,12 +484,9 @@ class LocalAudioBridgeManager:
 
         async with self._lock:
             for device in devices:
-                # Use stable PA sink name (or ALSA device name) for UUID/player-id generation
-                # Use human-readable description for MA player display name
                 device_name: str = device["name"]
                 display_name: str = device.get("description", device_name)
                 hostapi_index: int = device.get("hostapi", 0)
-                pa_sink_name: str | None = device.get("pa_sink_name")
                 device_uuid = get_device_uuid(device_name, hostapi_index)
                 client_id = bridge_client_id_from_uuid(device_uuid)
 
@@ -472,23 +494,8 @@ class LocalAudioBridgeManager:
                     self.logger.debug("Bridge already exists for %s", display_name)
                     continue
 
-                player = LocalAudioPlayer(
-                    self.provider,
-                    player_id=device_uuid,
-                    device_name=display_name,
-                    hostapi_index=hostapi_index,
-                    device_index=device.get("index", 0),
-                    pa_sink_name=pa_sink_name,
-                )
-                # Restore cached volume/mute state before registering so the
-                # correct values are included in the initial PLAYER_ADDED event
-                await player.restore_state()
-                await self.mass.players.register_or_update(player)
-                # Set PA sink hardware volume to 100% on init (no-op for ALSA/Darwin)
-                await player.apply_hardware_ceiling()
-
                 bridge = SendspinLocalAudioBridge(
-                    self.provider, player, device, sendspin_server, backend=resolved_backend
+                    self.provider, device, sendspin_server, backend=resolved_backend
                 )
                 try:
                     await bridge.start()
@@ -496,13 +503,9 @@ class LocalAudioBridgeManager:
                     self.logger.warning("Failed to start bridge for %s", device_name)
                     with suppress(Exception):
                         await bridge.stop()
-                    player._attr_available = False
-                    player.update_state()
                     continue
 
                 if not bridge.is_registered:
-                    player._attr_available = False
-                    player.update_state()
                     continue
 
                 self._bridges[client_id] = bridge
@@ -510,7 +513,7 @@ class LocalAudioBridgeManager:
                     "Bridge created for %s (backend=%s, pa_sink=%s)",
                     device_name,
                     resolved_backend,
-                    pa_sink_name or "n/a",
+                    device.get("pa_sink_name") or "n/a",
                 )
 
     @staticmethod
@@ -521,16 +524,7 @@ class LocalAudioBridgeManager:
             AUDIO_BACKEND_ALSA (from constants).  On non-Linux the backend is
             always resolved to "sounddevice".
         :returns: Tuple of (resolved_backend, device_list).
-            resolved_backend is "pulse", "alsa", or "sounddevice".
-
-        On Linux "auto": tries PA first; falls back to ALSA if pactl is not
-            found or returns no sinks.
-        On Linux "pulseaudio": PA only.
-        On Linux "alsa": ALSA via sounddevice only.
-        On Darwin / other: sounddevice regardless of config.
         """
-        from .constants import AUDIO_BACKEND_ALSA, AUDIO_BACKEND_PULSEAUDIO  # noqa: PLC0415
-
         if sys.platform != "linux":
             import sounddevice as _sd  # noqa: PLC0415
 
