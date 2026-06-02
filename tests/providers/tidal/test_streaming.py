@@ -117,21 +117,28 @@ async def test_get_stream_details_hires(
 async def test_get_stream_details_with_dash_manifest(
     streaming_manager: TidalStreamingManager, provider_mock: Mock, mock_track: Mock
 ) -> None:
-    """Test get_stream_details with DASH manifest."""
+    """Test get_stream_details with DASH manifest served via HTTP route."""
     provider_mock.get_track.return_value = mock_track
     provider_mock.api.get.return_value = {
         "manifestMimeType": "application/dash+xml",
-        "manifest": "base64encodedmanifestdata",
+        "manifest": "bWFuaWZlc3REYXRh",
         "audioQuality": "HIGH",
         "sampleRate": 44100,
         "bitDepth": 16,
     }
+    # Mock the stream server's dynamic route registration
+    provider_mock.mass.streams.register_dynamic_route = Mock(return_value=lambda: None)
+    provider_mock.mass.streams.base_url = "http://localhost:8097"
 
     stream_details = await streaming_manager.get_stream_details("123")
 
     assert isinstance(stream_details.path, str)
-    assert stream_details.path.startswith("data:application/dash+xml;base64,")
-    assert "base64encodedmanifestdata" in stream_details.path
+    assert stream_details.path.startswith("http://localhost:8097/tidal-dash/")
+    assert "base64" not in stream_details.path
+    # Verify the route was registered
+    provider_mock.mass.streams.register_dynamic_route.assert_called_once()
+    # Verify a delayed cleanup was scheduled
+    provider_mock.mass.call_later.assert_called()
 
 
 async def test_get_stream_details_with_codec(
