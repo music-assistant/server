@@ -85,7 +85,7 @@ async def setup(
     :param manifest: the provider manifest.
     :param config: the provider config.
     """
-    return Storytel(mass, manifest, config)
+    return Storytel(mass=mass, manifest=manifest, config=config)
 
 
 async def get_config_entries(
@@ -187,12 +187,18 @@ class Storytel(MusicProvider):
 
         return cast("F", wrapper)
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        """Initialize the Storytel provider instance.
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+    ) -> None:
+        """
+        Initialize the Storytel provider instance.
 
         Accepts the same args/kwargs as the base MusicProvider constructor.
         """
-        super().__init__(*args, **kwargs)
+        super().__init__(mass=mass, manifest=manifest, config=config)
         self._api: StorytelHelper | None = None
         # Whether to use Kids mode for bookmarks
         self._kids_mode: bool = False
