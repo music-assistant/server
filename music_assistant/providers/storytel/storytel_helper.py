@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import quote
 
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
@@ -132,7 +133,7 @@ class StorytelHelper:
         if not self._languages:
             return "en"
         iso_values = sorted(self._languages.values())
-        return "%2C".join(iso_values)  # %2C is URL-encoded comma
+        return ",".join(iso_values)
 
     @property
     def resource_version(self) -> str:
@@ -182,7 +183,9 @@ class StorytelHelper:
         :param password: the password.
         """
         enc = self._encrypt_password_hex(password)
-        url = URL_LOGIN.replace("{UID}", username).replace("{PASSWORD}", enc)
+        url = URL_LOGIN.replace("{UID}", quote(username, safe="")).replace(
+            "{PASSWORD}", quote(enc, safe="")
+        )
         async with self._session.get(url) as resp:
             await self._raise_for_status(resp)
             data: dict[str, Any] = await resp.json()
@@ -632,9 +635,15 @@ class StorytelHelper:
         if not self._auth:
             raise LoginFailed("Not authenticated")
         url = URL_PODCAST_DETAILS.replace("{CONSUMABLE_ID}", prov_podcast_id)
-        url += f"?configVariant=voice-switcher-enabled&includeFormats=ebook%2Cabook%2Cpodcast&includeLanguages={self.languages_query}&kidsMode={self._kids_mode}&orderBy=default"
+        url += (
+            "?configVariant=voice-switcher-enabled"
+            "&includeFormats=ebook%2Cabook%2Cpodcast"
+            f"&includeLanguages={quote(self.languages_query, safe='')}"
+            f"&kidsMode={quote(str(self._kids_mode), safe='')}"
+            "&orderBy=default"
+        )
         if page_token != "":
-            url += f"&nextPageToken={page_token}"
+            url += f"&nextPageToken={quote(page_token, safe='')}"
         headers = self._headers_api()
         headers["Accept"] = API_HEADER_CONTENT_TYPE_EXPLORE
         async with self._session.get(url, headers=headers) as resp:
@@ -791,9 +800,17 @@ class StorytelHelper:
         :param fetch_func: Async callable to fetch full item details by ID.
         """
         url = URL_SEARCH
-        url += f"?configVariant=baseline&searchFor={search_for}&includeFormats=abook&includeLanguages={self.languages_query}&kidsMode={self._kids_mode}&query={query}&v2=true"
+        url += (
+            "?configVariant=baseline"
+            f"&searchFor={quote(search_for, safe='')}"
+            "&includeFormats=abook"
+            f"&includeLanguages={quote(self.languages_query, safe='')}"
+            f"&kidsMode={quote(str(self._kids_mode), safe='')}"
+            f"&query={quote(query, safe='')}"
+            "&v2=true"
+        )
         if page_token != "":
-            url += f"&page={page_token}"
+            url += f"&page={quote(page_token, safe='')}"
         headers = self._headers_api()
         headers["Accept"] = API_HEADER_CONTENT_TYPE_SEARCH
         async with self._session.get(url, headers=headers) as resp:
@@ -989,7 +1006,12 @@ class StorytelHelper:
 
         headers = self._headers_api()
         headers["Accept"] = API_HEADER_CONTENT_TYPE_EXPLORE
-        chip_url += f"?includeFormats=abook%2Cpodcast&includeLanguages={self.languages_query}&kidsMode={self._kids_mode}&onboarding=false&version=2"
+        chip_url += (
+            "?includeFormats=abook%2Cpodcast"
+            f"&includeLanguages={quote(self.languages_query, safe='')}"
+            f"&kidsMode={quote(str(self._kids_mode), safe='')}"
+            "&onboarding=false&version=2"
+        )
 
         async with self._session.get(chip_url, headers=headers) as resp:
             await self._raise_for_status(resp)
@@ -1005,7 +1027,14 @@ class StorytelHelper:
         else:
             return None
 
-        frontpage_url += f"?categoryIds=&configVariant=voice-switcher-enabled&includeFormats=abook%2Cpodcast&includeLanguages={self.languages_query}&kidsMode={self._kids_mode}&onboarding=false&version=2"
+        frontpage_url += (
+            "?categoryIds="
+            "&configVariant=voice-switcher-enabled"
+            "&includeFormats=abook%2Cpodcast"
+            f"&includeLanguages={quote(self.languages_query, safe='')}"
+            f"&kidsMode={quote(str(self._kids_mode), safe='')}"
+            "&onboarding=false&version=2"
+        )
 
         async with self._session.get(frontpage_url, headers=headers) as resp:
             await self._raise_for_status(resp)
