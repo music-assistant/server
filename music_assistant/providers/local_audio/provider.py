@@ -7,6 +7,12 @@ import sys
 
 from music_assistant.models.player_provider import PlayerProvider
 
+from .constants import (
+    AUDIO_BACKEND_ALSA,
+    AUDIO_BACKEND_AUTO,
+    AUDIO_BACKEND_PULSEAUDIO,
+    CONF_AUDIO_BACKEND,
+)
 from .sendspin_bridge import LocalAudioBridgeManager
 
 
@@ -18,13 +24,20 @@ class LocalAudioProvider(PlayerProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         if sys.platform == "linux":
-            # Verify libpulse-simple is present before we try to do anything
-            try:
-                ctypes.CDLL("libpulse-simple.so.0")
-            except OSError as err:
-                raise RuntimeError(
-                    "libpulse-simple.so.0 not found — is PulseAudio installed?"
-                ) from err
+            configured_backend: str = self.config.get_value(CONF_AUDIO_BACKEND) or AUDIO_BACKEND_AUTO
+            needs_pulse = configured_backend in (AUDIO_BACKEND_PULSEAUDIO, AUDIO_BACKEND_AUTO)
+            if needs_pulse:
+                # Verify libpulse-simple is present before attempting PA output.
+                # On AUTO we probe but don't hard-fail — bridge manager will fall
+                # back to ALSA if pactl returns no sinks at enumeration time.
+                try:
+                    ctypes.CDLL("libpulse-simple.so.0")
+                except OSError:
+                    if configured_backend == AUDIO_BACKEND_PULSEAUDIO:
+                        raise RuntimeError(
+                            "libpulse-simple.so.0 not found — is PulseAudio installed?"
+                        ) from None
+                    # AUTO: libpulse absent, bridge manager will use ALSA
 
         self._bridge_manager = LocalAudioBridgeManager(self)
 
