@@ -63,7 +63,7 @@ class LocalAudioPlayer(Player):
         :param is_remap: True if this is a PA remap/filter sink (Linux PA backend only).
         """
         super().__init__(provider, player_id)
-        self._attr_type = PlayerType.PLAYER
+        self._attr_type = PlayerType.PROTOCOL
         self._attr_name = device_name
         self._attr_available = True
         self._attr_supported_features = {
