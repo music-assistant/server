@@ -20,10 +20,12 @@ if TYPE_CHECKING:
 
     from .provider import TidalProvider
 
-# Time (seconds) after which an unused DASH manifest route is cleaned up.
-# Must be longer than any single track's playback to avoid premature expiry
-# while ffmpeg is still streaming. 10 minutes safely covers even long tracks.
-_DASH_ROUTE_TTL: int = 600
+# Seconds of inactivity after which a DASH manifest route is cleaned up.
+# The cleanup timer resets each time ffmpeg fetches the manifest, so this
+# is only an idle timeout — tracks of any length keep the route alive
+# naturally. 60s is generous enough to survive playback gaps (seeking,
+# buffering stalls) without leaking routes for minutes after the track ends.
+_DASH_ROUTE_IDLE_TTL: int = 60
 
 
 class TidalStreamingManager:
@@ -72,25 +74,33 @@ class TidalStreamingManager:
             manifest_bytes = base64.b64decode(stream_data["manifest"])
             manifest_hash = hashlib.md5(manifest_bytes).hexdigest()
             route_path = f"/tidal-dash/{manifest_hash}"
+            cleanup_id = f"tidal-dash-cleanup-{manifest_hash}"
+
+            def _schedule_cleanup() -> None:
+                """Schedule (or reschedule) idle cleanup for this manifest route."""
+                self.mass.call_later(
+                    _DASH_ROUTE_IDLE_TTL,
+                    self._remove_dash_route,
+                    route_path,
+                    task_id=cleanup_id,
+                )
 
             async def _serve_manifest(request: web.Request) -> web.Response:
+                # Extend the idle timeout — ffmpeg is still consuming this route.
+                _schedule_cleanup()
                 return web.Response(
                     body=manifest_bytes,
                     content_type="application/dash+xml",
                 )
 
             try:
-                remove_route = self.mass.streams.register_dynamic_route(
+                self.mass.streams.register_dynamic_route(
                     route_path, _serve_manifest, method="GET"
                 )
-                # Clean up after the TTL expires. The route is reused for
-                # repeated plays of the same track via the content hash,
-                # so a generous timeout prevents spurious 404s without
-                # leaking routes.
-                self.mass.call_later(_DASH_ROUTE_TTL, remove_route)
+                # Schedule initial cleanup. Subsequent fetches from ffmpeg
+                # will push the deadline forward via the handler above.
+                _schedule_cleanup()
             except RuntimeError:
-                # Route already registered (same hash = same manifest),
-                # keep the existing one — its TTL was set when first created.
                 pass
 
             url = f"{self.mass.streams.base_url}{route_path}"
@@ -229,3 +239,10 @@ class TidalStreamingManager:
         )
 
         return await self.provider.get_track(track_id)
+
+    def _remove_dash_route(self, route_path: str) -> None:
+        """Remove a DASH manifest route from the stream server."""
+        try:
+            self.mass.streams.unregister_dynamic_route(route_path, method="GET")
+        except RuntimeError:
+            pass
