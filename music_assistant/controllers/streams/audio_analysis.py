@@ -73,7 +73,7 @@ def _parse_row(row: Mapping[str, Any]) -> AudioAnalysisData | None:
         LOGGER.warning(
             "Skipping unparsable audio_analysis row (id=%s, aa_provider_domain=%s): %s",
             row.get("id"),
-            row["aa_provider_domain"],
+            row.get("aa_provider_domain"),
             err,
         )
         return None
@@ -109,10 +109,9 @@ def _merged_from_rows(
             found = True
         return merged if found else None
 
-    # priority given: keep only the requested+available domains, then apply in reverse
-    # priority order so the first-listed domain wins each non-None field.
+    # priority given: merge only these domains, first-listed wins each field.
     wanted = tuple(d for d in priority if d in available_aa_domains)
-    wanted_set = set(wanted)  # O(1) per-row membership test
+    wanted_set = set(wanted)
     by_domain: dict[str, AudioAnalysisData] = {}
     for row in rows:
         domain = row["aa_provider_domain"]

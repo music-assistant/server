@@ -1488,9 +1488,7 @@ class StreamsAudio:
                 streamdetails.item_id,
                 streamdetails.provider,
                 media_type=streamdetails.media_type,
-                # loudness for volume normalization must be the authoritative EBU R128
-                # value; other AA providers write loudness_integrated with different
-                # semantics (e.g. sonic_analysis stores an RMS proxy).
+                # use the authoritative EBU R128 value, not another provider's loudness proxy
                 priority=(LOUDNESS_ANALYSIS_DOMAIN,),
             ):
                 if analysis.loudness_integrated is not None:
