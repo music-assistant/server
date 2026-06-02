@@ -23,10 +23,11 @@ if TYPE_CHECKING:
 
 # Seconds of inactivity after which a DASH manifest route is cleaned up.
 # The cleanup timer resets each time ffmpeg fetches the manifest, so this
-# is only an idle timeout — tracks of any length keep the route alive
-# naturally. 60s is generous enough to survive playback gaps (seeking,
-# buffering stalls) without leaking routes for minutes after the track ends.
-_DASH_ROUTE_IDLE_TTL: int = 60
+# is only an idle timeout applied AFTER active playback (or seeks) stop.
+# Set to track duration + 120s so that seeks during playback always land
+# on a live route, even when the old ffmpeg process has been dead for
+# tens of seconds before the new one starts fetching.
+_MINIMAL_DASH_ROUTE_TTL: int = 120
 
 
 class TidalStreamingManager:
@@ -77,10 +78,16 @@ class TidalStreamingManager:
             route_path = f"/tidal-dash/{manifest_hash}"
             cleanup_id = f"tidal-dash-cleanup-{manifest_hash}"
 
+            # Use track duration + buffer so the route lives through seeks.
+            # ffmpeg's periodic manifest fetches extend the deadline further
+            # via _serve_manifest, but seek kills the old ffmpeg — the new
+            # one may not fetch for many seconds.
+            cleanup_ttl: float = _MINIMAL_DASH_ROUTE_TTL + (track.duration or _MINIMAL_DASH_ROUTE_TTL)
+
             def _schedule_cleanup() -> None:
                 """Schedule (or reschedule) idle cleanup for this manifest route."""
                 self.mass.call_later(
-                    _DASH_ROUTE_IDLE_TTL,
+                    cleanup_ttl,
                     self._remove_dash_route,
                     route_path,
                     task_id=cleanup_id,

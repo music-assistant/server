@@ -144,8 +144,10 @@ async def test_get_stream_details_with_dash_manifest(
     assert "base64" not in stream_details.path
     # Verify the route was registered
     provider_mock.mass.streams.register_dynamic_route.assert_called_once()
-    # Verify a delayed cleanup was scheduled
-    provider_mock.mass.call_later.assert_called()
+    # Verify cleanup was scheduled with duration-based TTL (180s track + 120s buffer = 300s)
+    provider_mock.mass.call_later.assert_called_with(
+        300, streaming_manager._remove_dash_route, "/tidal-dash/a3aca34e43c1737c7738507842972fa9", task_id="tidal-dash-cleanup-a3aca34e43c1737c7738507842972fa9"
+    )
 
 
 async def test_get_stream_details_with_dash_manifest_handler(
