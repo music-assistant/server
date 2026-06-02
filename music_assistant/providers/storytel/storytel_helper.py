@@ -225,7 +225,7 @@ class StorytelHelper:
         self._auth = StorytelAuth(jwt=jwt, single_sign_token=sst)
         return self._auth
 
-    async def _abook_is_released(self, formats_data: list[dict[str, Any]]) -> bool:
+    def _abook_is_released(self, formats_data: list[dict[str, Any]]) -> bool:
         for format_data in formats_data:
             if format_data.get("type") != "abook":
                 continue
@@ -233,7 +233,7 @@ class StorytelHelper:
             return is_released
         return False
 
-    async def _is_audiobook(self, model_data: dict[str, Any]) -> bool:
+    def _is_audiobook(self, model_data: dict[str, Any]) -> bool:
         result_type: str = model_data.get("resultType") or ""
         return result_type == "book"
 
@@ -258,8 +258,8 @@ class StorytelHelper:
         library_items = {
             k: v
             for k, v in library_items.items()
-            if await self._is_audiobook(v.get("model", {}))
-            and await self._abook_is_released(v.get("model", {}).get("formats", [{}]))
+            if self._is_audiobook(v.get("model", {}))
+            and self._abook_is_released(v.get("model", {}).get("formats", [{}]))
         }
 
         return library_items, following_items
