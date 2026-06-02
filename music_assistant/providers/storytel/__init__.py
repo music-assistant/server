@@ -330,7 +330,7 @@ class Storytel(MusicProvider):
             headers = self.api._headers_api()
             headers[API_HEADER_STORYTEL_MEDIA_ACCEPT] = API_HEADER_STORYTEL_MEDIA_FORMATS
 
-            async with await self.api._session.get(
+            async with self.api._session.get(
                 stream_info_url, headers=headers
             ) as stream_info_response:
                 await self.api._raise_for_status(stream_info_response)
@@ -342,7 +342,7 @@ class Storytel(MusicProvider):
                 headers.pop("authorization", None)
                 headers["range"] = "bytes=0-1"
                 stream_url_object = URL(stream_url, encoded=True)
-                async with await self.api._session.get(
+                async with self.api._session.get(
                     stream_url_object, headers=headers, allow_redirects=True
                 ) as stream_response:
                     await self.api._raise_for_status(stream_response)
