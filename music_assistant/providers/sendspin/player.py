@@ -59,6 +59,7 @@ from music_assistant_models.media_items import Album, Artist, is_track
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
+from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player, PlayerMedia
 
@@ -1140,7 +1141,10 @@ class SendspinPlayer(SendspinBasePlayer):
             return
         sd = queue_item.streamdetails
         analysis = await self.mass.streams.audio_analysis.get_audio_analysis(
-            sd.item_id, sd.provider, media_type=sd.media_type
+            sd.item_id,
+            sd.provider,
+            media_type=sd.media_type,
+            priority=(SMART_FADES_ANALYSIS_DOMAIN,),
         )
         if analysis is None or analysis.beats is None or len(analysis.beats) == 0:
             visualizer_role.clear_beat_schedule()
