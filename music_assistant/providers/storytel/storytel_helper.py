@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote
 
+from aiohttp.client_exceptions import ContentTypeError
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 from music_assistant_models.enums import (
@@ -167,14 +168,16 @@ class StorytelHelper:
         if 200 <= resp.status < 300:
             return
         try:
-            text = await resp.text()
-        except Exception:
-            text = "<no response>"
+            resp_json = await resp.json()
+            resp_message = resp_json.get("message") or ""
+        except ContentTypeError:
+            resp_message = await resp.text() or "<no response>"
         if resp.status in (401, 403):
-            self.logger.warning("Failed Storytel API request with status %s: %s", resp.status, text)
-            raise LoginFailed(f"Unauthorized ({resp.status}): {text}")
-        self.logger.warning("Failed Storytel API request with status %s: %s", resp.status, text)
-        raise ProviderUnavailableError(f"Storytel HTTP {resp.status}: {text}")
+            raise LoginFailed(f"Unauthorized ({resp.status}): {resp_message}")
+        self.logger.warning(
+            "Failed Storytel API request with status %s: %s", resp.status, resp_message
+        )
+        raise ProviderUnavailableError(f"Storytel HTTP {resp.status}: {resp_message}")
 
     async def login(self, username: str, password: str) -> StorytelAuth:
         """Authenticate with the Storytel API.
@@ -203,11 +206,16 @@ class StorytelHelper:
         """Revalidate the Storytel account using the single sign token."""
         if not self._auth or not self._auth.single_sign_token:
             raise LoginFailed("No single sign token")
-        async with self._session.post(
-            URL_REVALIDATE, json={"token": self._auth.single_sign_token}
-        ) as resp:
-            await self._raise_for_status(resp)
-            data: dict[str, Any] = await resp.json()
+        try:
+            async with self._session.post(
+                URL_REVALIDATE, json={"token": self._auth.single_sign_token}
+            ) as resp:
+                await self._raise_for_status(resp)
+                data: dict[str, Any] = await resp.json()
+        except LoginFailed:
+            raise ProviderUnavailableError(
+                "Storytel account revalidation failed, token may be expired. Please login again."
+            )
         acc = data.get("accountInfo") or {}
         jwt = acc.get("jwt")
         sst = acc.get("singleSignToken")
@@ -234,8 +242,6 @@ class StorytelHelper:
 
         Returns a tuple of (library_items, following_items) where each is a dict keyed by consumableId.
         """
-        if not self._auth:
-            raise LoginFailed("Not authenticated")
         url = URL_LIBRARY_MANAGEMENT
         headers = self._headers_api()
         headers["Accept"] = API_HEADER_CONTENT_TYPE_LIBRARY_DELTA
@@ -272,8 +278,6 @@ class StorytelHelper:
 
         :param consumable_id: the consumable id.
         """
-        if not self._auth:
-            raise LoginFailed("Not authenticated")
         url = URL_CONSUMABLE_DETAILS.replace("{CONSUMABLE_ID}", consumable_id)
         headers = self._headers_api()
         headers["Accept"] = API_HEADER_CONTENT_TYPE_BOOK_DETAILS
@@ -286,8 +290,6 @@ class StorytelHelper:
 
         :param consumable_id: the consumable id.
         """
-        if not self._auth:
-            raise LoginFailed("Not authenticated")
         url = URL_BOOKMARK_GET.replace("{CONSUMABLE_ID}", consumable_id)
         async with self._session.get(url, headers=self._headers_api()) as resp:
             await self._raise_for_status(resp)
@@ -308,8 +310,6 @@ class StorytelHelper:
         :param position: the position in seconds.
         :param kids_mode: True if kids mode is enabled.
         """
-        if not self._auth:
-            raise LoginFailed("Not authenticated")
         payload = {
             "consumableId": consumable_id,
             "kidsMode": bool(kids_mode),
@@ -337,8 +337,6 @@ class StorytelHelper:
 
     async def _fetch_chapters(self, consumable_id: str) -> list[dict[str, Any]]:
         """Fetch chapters for a given consumable_id."""
-        if not self._auth:
-            raise LoginFailed("Not authenticated")
         url = URL_CHAPTERS.replace("{CONSUMABLE_ID}", consumable_id)
         try:
             headers = self._headers_api()
@@ -421,8 +419,6 @@ class StorytelHelper:
 
     async def fetch_resource_version(self) -> None:
         """Fetch and cache the resource version for the Storytel API."""
-        if not self._auth:
-            raise LoginFailed("Not authenticated")
         url = URL_LIBRARY_MANAGEMENT
         headers = self._headers_api()
         headers["Accept"] = "application/vnd.storytel.library-delta+json;v=1.4"
@@ -451,8 +447,6 @@ class StorytelHelper:
         :param consumable_id: the consumable id.
         :param item: the media item to add.
         """
-        if not self._auth:
-            raise LoginFailed("Not authenticated")
         url = URL_LIBRARY_MANAGEMENT
         headers = self._headers_api()
         headers["Accept"] = "application/vnd.storytel.library-delta+json;v=1.4"
@@ -518,8 +512,6 @@ class StorytelHelper:
         :param consumable_id: the consumable id.
         :param media_type: the media type.
         """
-        if not self._auth:
-            raise LoginFailed("Not authenticated")
         url = URL_LIBRARY_MANAGEMENT
         headers = self._headers_api()
         headers["Accept"] = "application/vnd.storytel.library-delta+json;v=1.4"
@@ -632,8 +624,6 @@ class StorytelHelper:
         :param page_token: the page token for pagination.
         :param results_count: the current count of results.
         """
-        if not self._auth:
-            raise LoginFailed("Not authenticated")
         url = URL_PODCAST_DETAILS.replace("{CONSUMABLE_ID}", prov_podcast_id)
         url += (
             "?configVariant=voice-switcher-enabled"
@@ -850,8 +840,6 @@ class StorytelHelper:
         :param page_token: the page token for pagination.
         :param results_count: the current count of results.
         """
-        if not self._auth:
-            raise LoginFailed("Not authenticated")
 
         def filter_podcasts(results: list[dict[str, Any]]) -> list[str]:
             """Filter results to extract podcast IDs."""
@@ -923,8 +911,6 @@ class StorytelHelper:
         :param page_token: the page token for pagination.
         :param results_count: the current count of results.
         """
-        if not self._auth:
-            raise LoginFailed("Not authenticated")
 
         def filter_audiobooks(results: list[dict[str, Any]]) -> list[str]:
             """Filter results to extract audiobook IDs."""
@@ -992,9 +978,6 @@ class StorytelHelper:
 
     async def get_recommendations(self) -> RecommendationFolder | None:
         """Get audiobook recommendations for the user."""
-        if not self._auth:
-            raise LoginFailed("Not authenticated")
-
         folder = RecommendationFolder(
             item_id=f"{self.provider_id}_recommendations",
             provider=self.provider_id,

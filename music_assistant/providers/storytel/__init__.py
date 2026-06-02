@@ -242,7 +242,7 @@ class Storytel(MusicProvider):
         try:
             await self._api.login(username, password)
         except LoginFailed:
-            raise
+            raise SetupFailedError("Invalid Storytel username or password")
         except (ClientError, ConnectionError) as err:
             raise SetupFailedError(f"Storytel login failed: {err}") from err
         await self._api.fetch_resource_version()
