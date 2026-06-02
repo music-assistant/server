@@ -184,6 +184,80 @@ class PASimpleStream:
         self.close()
 
 
+def enumerate_alsa_devices() -> list[dict[str, Any]]:
+    """Enumerate stereo-capable ALSA output devices via sounddevice/PortAudio.
+
+    Returns list of dicts compatible with the PA sink dict shape so that
+    LocalAudioBridgeManager can use the same registration path for both
+    backends.  Keys returned:
+      - name: stable device name (used for UUID / player-id generation)
+      - description: human-readable label (MA player display name)
+      - pa_sink_name: None (not a PA device)
+      - max_output_channels: number of channels
+      - sample_rate: device default sample rate
+      - bit_depth: fixed 16 (PortAudio ALSA path; bridge uses int16 dtype)
+      - is_remap: False
+      - index: sounddevice device index
+      - hostapi: host API index
+    """
+    import sounddevice as _sd  # noqa: PLC0415
+
+    # Find the ALSA host API index
+    alsa_hostapi_index: int | None = None
+    for i, api in enumerate(_sd.query_hostapis()):
+        if "alsa" in api.get("name", "").lower():
+            alsa_hostapi_index = i
+            break
+
+    devices: list[dict[str, Any]] = []
+    for idx, dev in enumerate(_sd.query_devices()):
+        if dev.get("max_output_channels", 0) < 2:
+            continue
+        if alsa_hostapi_index is not None and dev.get("hostapi") != alsa_hostapi_index:
+            continue
+        try:
+            test = _sd.RawOutputStream(
+                device=idx,
+                samplerate=int(dev.get("default_samplerate", 48000)),
+                channels=2,
+                dtype="int16",
+            )
+            test.close()
+        except _sd.PortAudioError:
+            continue
+        name: str = dev.get("name", f"alsa-device-{idx}")
+
+        # Skip virtual ALSA PCM plugins — only keep real hardware nodes.
+        # PortAudio enumerates both hw: entries and virtual plugins
+        # (sysdefault, front, surround*, dmix, lavrate, upmix, …).
+        # Hardware entries always contain "(hw:" in their name.
+        if "(hw:" not in name:
+            continue
+
+        sample_rate = int(dev.get("default_samplerate", 48000))
+
+        # Build a clean display name: strip the " (hw:C,D)" suffix so the
+        # MA player name reads "HDA Intel: ALC889A Analog" not
+        # "HDA Intel: ALC889A Analog (hw:1,0)".
+        import re as _re  # noqa: PLC0415
+        description = _re.sub(r"\s*\(hw:\d+,\d+\)$", "", name).strip()
+
+        devices.append(
+            {
+                "name": name,          # stable key — includes (hw:C,D) for uniqueness
+                "description": description,  # human-readable MA player label
+                "pa_sink_name": None,
+                "max_output_channels": dev.get("max_output_channels", 2),
+                "sample_rate": sample_rate,
+                "bit_depth": 16,
+                "is_remap": False,
+                "index": idx,
+                "hostapi": dev.get("hostapi", 0),
+            }
+        )
+    return devices
+
+
 def enumerate_pa_sinks() -> list[dict[str, Any]]:
     """Enumerate stereo-capable PulseAudio sinks via pactl JSON output.
 
