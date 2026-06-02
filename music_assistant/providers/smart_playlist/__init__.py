@@ -551,13 +551,13 @@ class SmartPlaylistProvider(PluginProvider):
                 ]
 
             if rules.album_types:
-                allowed_types = {AlbumType(at) for at in rules.album_types}
+                allowed_types = set(rules.album_types)
                 tracks = [
                     t
                     for t in tracks
                     if t.album is None
                     or getattr(t.album, "album_type", AlbumType.UNKNOWN) == AlbumType.UNKNOWN
-                    or getattr(t.album, "album_type", AlbumType.UNKNOWN) in allowed_types
+                    or getattr(t.album, "album_type", AlbumType.UNKNOWN).value in allowed_types
                 ]
 
         # Apply exclusions and dedup regardless of source mode
@@ -635,13 +635,13 @@ class SmartPlaylistProvider(PluginProvider):
                 )
             ]
         if rules.album_types:
-            allowed_types = {AlbumType(at) for at in rules.album_types}
+            allowed_types = set(rules.album_types)
             tracks = [
                 t
                 for t in tracks
                 if t.album is None
                 or getattr(t.album, "album_type", AlbumType.UNKNOWN) == AlbumType.UNKNOWN
-                or getattr(t.album, "album_type", AlbumType.UNKNOWN) in allowed_types
+                or getattr(t.album, "album_type", AlbumType.UNKNOWN).value in allowed_types
             ]
         return tracks
 
@@ -663,7 +663,7 @@ class SmartPlaylistProvider(PluginProvider):
         excl_artists = set(rules.excluded_artist_ids)
         excl_albums = set(rules.excluded_album_ids)
         excl_uris = set(rules.excluded_track_uris)
-        excl_album_types = {AlbumType(at) for at in rules.excluded_album_types}
+        excl_album_types = set(rules.excluded_album_types)
         result = []
         for track in tracks:
             if track.uri and track.uri in excl_uris:
@@ -694,7 +694,7 @@ class SmartPlaylistProvider(PluginProvider):
             if (
                 excl_album_types
                 and track.album is not None
-                and getattr(track.album, "album_type", AlbumType.UNKNOWN) in excl_album_types
+                and getattr(track.album, "album_type", AlbumType.UNKNOWN).value in excl_album_types
             ):
                 continue
             result.append(track)
