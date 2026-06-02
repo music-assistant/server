@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote
 
-from aiohttp.client_exceptions import ContentTypeError
+from aiohttp.client_exceptions import ClientError, ContentTypeError
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 from music_assistant_models.enums import (
@@ -331,6 +331,8 @@ class StorytelHelper:
 
     async def _fetch_chapters(self, consumable_id: str) -> list[dict[str, Any]]:
         """Fetch chapters for a given consumable_id."""
+        chapters: list[dict[str, Any]] = []
+
         url = URL_CHAPTERS.replace("{CONSUMABLE_ID}", consumable_id)
         try:
             headers = self._headers_api()
@@ -338,46 +340,45 @@ class StorytelHelper:
                 await self._raise_for_status(resp)
                 data: dict[str, Any] = await resp.json()
             formats = data.get("formats") or []
-            if formats:
-                audiobook_format = next((f for f in formats if f.get("type") == "abook"), None)
-                chapters = audiobook_format.get("chapters") or [] if audiobook_format else []
-            else:
-                chapters = []
-            if len(chapters) == 0:
-                self.logger.debug(
-                    "No chapters found for %s with playback-metadata endpoint", consumable_id
-                )
-                raise ValueError("No chapters found with playback-metadata endpoint")
+            audiobook_format = next((f for f in formats if f.get("type") == "abook"), None)
+            chapters = audiobook_format.get("chapters") or [] if audiobook_format else []
+        except (ClientError, KeyError, TypeError, ValueError) as err:
+            self.logger.debug(
+                "Failed to fetch chapters for %s with playback-metadata endpoint: %s",
+                consumable_id,
+                err,
+            )
+
+        if chapters:
             return list(chapters)
-        except ValueError as _:
-            try:  # Try fallback to playback book details endpoint
-                url = URL_PLAYBACK_BOOK_DETAILS.replace("{CONSUMABLE_ID}", consumable_id)
-                headers = self._headers_api()
-                headers["Accept"] = "*/*"
-                async with self._session.get(url, headers=headers) as resp:
-                    await self._raise_for_status(resp)
-                    fallback_data: dict[str, Any] = await resp.json()
-                audiobook_data = next(
-                    f for f in fallback_data.get("formats", []) if f.get("type") == "abook"
-                )
-                chapters = audiobook_data.get("chapters") or []
-                if len(chapters) == 0:
-                    raise Exception("No chapters found in fallback endpoint")
+
+        self.logger.debug(
+            "No chapters found for %s with playback-metadata endpoint, trying fallback",
+            consumable_id,
+        )
+
+        try:
+            url = URL_PLAYBACK_BOOK_DETAILS.replace("{CONSUMABLE_ID}", consumable_id)
+            headers = self._headers_api()
+            headers["Accept"] = "*/*"
+            async with self._session.get(url, headers=headers) as resp:
+                await self._raise_for_status(resp)
+                fallback_data: dict[str, Any] = await resp.json()
+            audiobook_data = next(
+                (f for f in fallback_data.get("formats", []) if f.get("type") == "abook"),
+                None,
+            )
+            chapters = audiobook_data.get("chapters") or [] if audiobook_data else []
+            if chapters:
                 return list(chapters)
-            except Exception as err:
-                if isinstance(err, ProviderUnavailableError):
-                    raise
-                if isinstance(err, LoginFailed):
-                    raise
-                self.logger.debug("Failed to fetch chapters for %s: %s", consumable_id, err)
-                return []
-        except Exception as err:
-            if isinstance(err, ProviderUnavailableError):
-                raise
-            if isinstance(err, LoginFailed):
-                raise
-            self.logger.debug("Failed to fetch chapters for %s: %s", consumable_id, err)
-            return []
+        except (ClientError, KeyError, TypeError, ValueError, StopIteration) as err:
+            self.logger.debug(
+                "Failed to fetch chapters for %s with fallback endpoint: %s",
+                consumable_id,
+                err,
+            )
+
+        return []
 
     async def _parse_chapters(self, chapters_data: list[dict[str, Any]]) -> list[MediaItemChapter]:
         """Parse raw chapter data into MediaChapter objects."""
