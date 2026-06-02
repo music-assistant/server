@@ -24,6 +24,7 @@ from music_assistant_models.media_items import Album, RecommendationFolder, Sear
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import DB_TABLE_AUDIO_ANALYSIS
+from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.sonic_similarity.clap_index import ClapIndex
 from music_assistant.providers.sonic_similarity.constants import (
@@ -858,7 +859,13 @@ class SonicSimilarityPlugin(PluginProvider):
             item_id,
             provider,
             data,
-        ) in self.mass.streams.audio_analysis.iter_merged_audio_analysis_rows(AA_PROVIDER_DOMAIN):
+        ) in self.mass.streams.audio_analysis.iter_merged_audio_analysis_rows(
+            AA_PROVIDER_DOMAIN,
+            # similarity vectors need sonic's own RMS loudness feature (not the EBU R128
+            # value from loudness_analysis) plus smart_fades' bpm/key/mode; sonic wins
+            # the shared loudness_integrated/loudness_range fields.
+            priority=(AA_PROVIDER_DOMAIN, SMART_FADES_ANALYSIS_DOMAIN),
+        ):
             total_merged_rows += 1
             if len(sampled_for_diag) < 3:
                 sampled_for_diag.append((item_id, provider, data))
