@@ -24,10 +24,10 @@ if TYPE_CHECKING:
 # Seconds of inactivity after which a DASH manifest route is cleaned up.
 # The cleanup timer resets each time ffmpeg fetches the manifest, so this
 # is only an idle timeout applied AFTER active playback (or seeks) stop.
-# Set to track duration + 120s so that seeks during playback always land
-# on a live route, even when the old ffmpeg process has been dead for
-# tens of seconds before the new one starts fetching.
-_MINIMAL_DASH_ROUTE_TTL: int = 120
+# Set to track duration + 300s so that seeks and queue transitions always
+# land on a live route, even when the old ffmpeg process has been dead for
+# minutes before the new one starts fetching.
+_MINIMAL_DASH_ROUTE_TTL: int = 300
 
 
 class TidalStreamingManager:
