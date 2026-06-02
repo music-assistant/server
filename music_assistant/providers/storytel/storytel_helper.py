@@ -571,11 +571,19 @@ class StorytelHelper:
         title = podcast_data.get("title") or "Unknown"
         episode_count = podcast_data.get("totalCount") or 0
         hosts = await parse_podcast_hosts(list_metadata)
-        first_episode_id = podcast_data.get("items", [{}])[0].get("id") or ""
-        mass_first_episode = await self.get_consumable_details(first_episode_id)
-        publisher = (
-            mass_first_episode.get("formats", [{}])[0].get("publisher", {}).get("name") or ""
-        )
+        items = podcast_data.get("items") or []
+        first_episode_id = items[0].get("id") if items else ""
+        publisher = ""
+        if not first_episode_id:
+            self.logger.debug(
+                "Podcast %s has no episodes, cannot determine publisher. Skipping.",
+                consumable_id,
+            )
+        else:
+            mass_first_episode = await self.get_consumable_details(first_episode_id)
+            publisher = (
+                mass_first_episode.get("formats", [{}])[0].get("publisher", {}).get("name") or ""
+            )
 
         podcast = Podcast(
             item_id=consumable_id,
