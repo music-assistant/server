@@ -27,7 +27,7 @@ from .constants import DEFAULT_BUFFER_FRAMES
 from .player import LocalAudioPlayer, get_device_uuid
 
 if sys.platform == "linux":
-    from .pa_simple import PASimpleStream, enumerate_pa_sinks
+    from .pa_simple import PASimpleStream, enumerate_alsa_devices, enumerate_pa_sinks
 
 if TYPE_CHECKING:
     import sounddevice as sd  # noqa: F401
@@ -52,15 +52,17 @@ class SendspinLocalAudioBridge:
         player: LocalAudioPlayer,
         device_info: dict[str, Any],
         sendspin_server: SendspinServer,
+        backend: str = "auto",
     ) -> None:
         """
         Initialize the bridge.
 
         :param provider: The Local Audio provider instance.
         :param player: The LocalAudioPlayer that owns this bridge.
-        :param device_info: Device info dict — on Linux: from enumerate_pa_sinks();
-            on Darwin: from sounddevice.query_devices() with 'index' added.
+        :param device_info: Device info dict — on Linux PA: from enumerate_pa_sinks();
+            on Linux ALSA or Darwin: from sounddevice.query_devices() with 'index' added.
         :param sendspin_server: The Sendspin server to register with.
+        :param backend: Resolved audio backend: "pulse", "alsa", or "sounddevice".
         """
         self.provider = provider
         self.mass = provider.mass
@@ -70,13 +72,15 @@ class SendspinLocalAudioBridge:
         self.device_name: str = device_info["name"]
         # Human-readable label for MA player name and Sendspin hello
         self.display_name: str = device_info.get("description", self.device_name)
-        # Linux: PA sink name; Darwin: not used for streaming
+        # Linux PA: PA sink name; ALSA/Darwin: None
         self.pa_sink_name: str | None = device_info.get("pa_sink_name")
-        # Linux: from PA sample_spec; Darwin: fixed bridge defaults
+        # Linux: from PA/ALSA enumeration; Darwin: fixed bridge defaults
         self.sample_rate: int = device_info.get("sample_rate", BRIDGE_SAMPLE_RATE)
         self.bit_depth: int = device_info.get("bit_depth", BRIDGE_BIT_DEPTH)
-        # Darwin only
+        # sounddevice (ALSA on Linux or Darwin) device index
         self.device_index: int | None = device_info.get("index")
+        # Resolved backend used by _audio_writer dispatch
+        self.backend: str = backend
         self.logger = provider.logger.getChild(f"bridge.{self.display_name}")
 
         self._sendspin_client: SendspinClient | None = None
@@ -274,7 +278,7 @@ class SendspinLocalAudioBridge:
 
     async def _audio_writer(self) -> None:
         """Write queued audio to the output device."""
-        if sys.platform == "linux":
+        if self.backend == "pulse":
             await self._audio_writer_pulse()
         else:
             await self._audio_writer_sounddevice()
@@ -377,14 +381,14 @@ class SendspinLocalAudioBridge:
         """Stop streaming (internal, called with lock held)."""
         self._is_streaming = False
         if self._writer_task and not self._writer_task.done():
-            if sys.platform == "linux":
+            if self.backend == "pulse":
                 # PA writer handles CancelledError cleanly
                 self._writer_task.cancel()
                 with suppress(asyncio.CancelledError, Exception):
                     await self._writer_task
             else:
-                # sounddevice: signal gracefully via None to avoid segfault
-                # on a cancelled blocking write
+                # sounddevice (ALSA or Darwin): signal gracefully via None to avoid
+                # segfault on a cancelled blocking write
                 while not self._write_queue.empty():
                     self._write_queue.get_nowait()
                 self._write_queue.put_nowait(None)
@@ -430,23 +434,32 @@ class LocalAudioBridgeManager:
             self.logger.debug("Sendspin provider not available, skipping device enumeration")
             return
 
+        # Read audio backend config (Linux only; ignored on Darwin)
+        from .constants import AUDIO_BACKEND_AUTO, CONF_AUDIO_BACKEND  # noqa: PLC0415
+
+        configured_backend: str = self.provider.config.get_value(CONF_AUDIO_BACKEND) or AUDIO_BACKEND_AUTO
+
         try:
-            devices: list[dict[str, Any]] = await self.mass.loop.run_in_executor(
-                None, self._enumerate_output_devices
+            resolved_backend, devices = await self.mass.loop.run_in_executor(
+                None, self._enumerate_output_devices, configured_backend
             )
         except Exception as err:
             self.logger.warning("Failed to enumerate audio devices: %s", err)
             return
 
+        self.logger.info(
+            "Found %d local audio output device(s) via %s backend",
+            len(devices),
+            resolved_backend,
+        )
+
         if not devices:
             self.logger.info("No local audio output devices found")
             return
 
-        self.logger.info("Found %d local audio output device(s)", len(devices))
-
         async with self._lock:
             for device in devices:
-                # Use stable PA sink name for UUID/player-id generation
+                # Use stable PA sink name (or ALSA device name) for UUID/player-id generation
                 # Use human-readable description for MA player display name
                 device_name: str = device["name"]
                 display_name: str = device.get("description", device_name)
@@ -471,10 +484,12 @@ class LocalAudioBridgeManager:
                 # correct values are included in the initial PLAYER_ADDED event
                 await player.restore_state()
                 await self.mass.players.register_or_update(player)
-                # Set PA sink hardware volume to 100% on init
+                # Set PA sink hardware volume to 100% on init (no-op for ALSA/Darwin)
                 await player.apply_hardware_ceiling()
 
-                bridge = SendspinLocalAudioBridge(self.provider, player, device, sendspin_server)
+                bridge = SendspinLocalAudioBridge(
+                    self.provider, player, device, sendspin_server, backend=resolved_backend
+                )
                 try:
                     await bridge.start()
                 except Exception:
@@ -492,22 +507,31 @@ class LocalAudioBridgeManager:
 
                 self._bridges[client_id] = bridge
                 self.logger.info(
-                    "Bridge created for %s (pa_sink=%s)",
+                    "Bridge created for %s (backend=%s, pa_sink=%s)",
                     device_name,
+                    resolved_backend,
                     pa_sink_name or "n/a",
                 )
 
     @staticmethod
-    def _enumerate_output_devices() -> list[dict[str, Any]]:
-        """Enumerate available audio output devices.
+    def _enumerate_output_devices(backend: str) -> tuple[str, list[dict[str, Any]]]:
+        """Enumerate available audio output devices for the given backend.
 
-        On Linux: uses enumerate_pa_sinks() from pa_simple — returns PA sinks
-            directly with native sample_rate and bit_depth populated.
-        On Darwin: uses sounddevice, testing each device can be opened, with
-            fixed bridge sample rate/bit depth defaults.
+        :param backend: One of AUDIO_BACKEND_AUTO / AUDIO_BACKEND_PULSEAUDIO /
+            AUDIO_BACKEND_ALSA (from constants).  On non-Linux the backend is
+            always resolved to "sounddevice".
+        :returns: Tuple of (resolved_backend, device_list).
+            resolved_backend is "pulse", "alsa", or "sounddevice".
+
+        On Linux "auto": tries PA first; falls back to ALSA if pactl is not
+            found or returns no sinks.
+        On Linux "pulseaudio": PA only.
+        On Linux "alsa": ALSA via sounddevice only.
+        On Darwin / other: sounddevice regardless of config.
         """
+        from .constants import AUDIO_BACKEND_ALSA, AUDIO_BACKEND_PULSEAUDIO  # noqa: PLC0415
+
         if sys.platform != "linux":
-            # Darwin / other: sounddevice path
             import sounddevice as _sd  # noqa: PLC0415
 
             devices: list[dict[str, Any]] = []
@@ -527,8 +551,23 @@ class LocalAudioBridgeManager:
                 dev_with_index = dict(dev)
                 dev_with_index["index"] = idx
                 devices.append(dev_with_index)
-            return devices
-        return enumerate_pa_sinks()
+            return "sounddevice", devices
+
+        # Linux — dispatch by configured backend
+        if backend == AUDIO_BACKEND_ALSA:
+            return "alsa", enumerate_alsa_devices()
+
+        if backend == AUDIO_BACKEND_PULSEAUDIO:
+            return "pulse", enumerate_pa_sinks()
+
+        # AUTO: try PA, fall back to ALSA
+        try:
+            sinks = enumerate_pa_sinks()
+            if sinks:
+                return "pulse", sinks
+        except (FileNotFoundError, RuntimeError):
+            pass
+        return "alsa", enumerate_alsa_devices()
 
     async def stop_all(self) -> None:
         """Stop all Sendspin bridges."""
