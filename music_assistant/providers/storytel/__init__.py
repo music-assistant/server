@@ -107,21 +107,21 @@ async def get_config_entries(
         ConfigEntry(
             key="label",
             type=ConfigEntryType.LABEL,
-            label="Sign in with your Storytel/Mofibo username and password.",
+            label="Sign in with your Storytel username and password.",
         ),
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
             label="Username or email",
             required=True,
-            description="Storytel/Mofibo account username or email.",
+            description="Storytel account username or email.",
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
             label="Password",
             required=True,
-            description="Storytel/Mofibo account password.",
+            description="Storytel account password.",
         ),
         ConfigEntry(
             key=CONF_LANGUAGES,

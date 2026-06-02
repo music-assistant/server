@@ -2,8 +2,8 @@
   "type": "music",
   "domain": "storytel",
   "stage": "beta",
-  "name": "Storytel (Mofibo)",
-  "description": "Storytel provider. Storytel is also known as Mofibo in some regions.",
+  "name": "Storytel",
+  "description": "Storytel, a audiobook and podcast streaming service. Storytel is also known as Mofibo in some regions.",
   "codeowners": ["@jonasbp2011"],
   "requirements": [],
   "documentation": "https://music-assistant.io/music-providers/storytel/"
