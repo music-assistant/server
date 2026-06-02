@@ -22,6 +22,7 @@ from bandcamp_async_api.models import (
     CollectionSummary,
     CollectionType,
     FanItem,
+    FeedResponse,
     FollowingItem,
 )
 from mashumaro.exceptions import UnserializableDataError
@@ -46,8 +47,10 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemImage,
     MediaItemType,
+    RecommendationFolder,
     SearchResults,
     Track,
+    UniqueList,
 )
 from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.streamdetails import StreamDetails
@@ -486,6 +489,65 @@ class BandcampProvider(MusicProvider):
                 break
 
         return tracks[: self.top_tracks_limit]
+
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """Surface Bandcamp's personalised feed and wishlist as recommendations."""
+        if not self._client.identity:
+            return []
+        folders: list[RecommendationFolder] = []
+        if feed_tracks := await self._get_feed_tracks():
+            folders.append(
+                RecommendationFolder(
+                    item_id="feed",
+                    provider=self.instance_id,
+                    name="Bandcamp Feed",
+                    icon="mdi-rss",
+                    items=UniqueList(feed_tracks),
+                )
+            )
+        if wishlist := await self._browse_person_content(None, CollectionType.WISHLIST):
+            folders.append(
+                RecommendationFolder(
+                    item_id="wishlist",
+                    provider=self.instance_id,
+                    name="Wishlist",
+                    icon="mdi-heart",
+                    items=UniqueList(wishlist),
+                )
+            )
+        return folders
+
+    @throttle_with_retries
+    async def _fetch_feed(self) -> FeedResponse:
+        """Fetch the authenticated user's feed with throttling and retry."""
+        try:
+            return await self._client.get_feed()
+        except BandcampRateLimitError as error:
+            raise ResourceTemporarilyUnavailable(
+                "Bandcamp rate limit reached", backoff_time=error.retry_after
+            ) from error
+
+    async def _get_feed_tracks(self) -> list[Track]:
+        """Fetch and convert the streamable tracks from the user's feed."""
+        cache_key = "_feed_tracks"
+        cached = await self.mass.cache.get(cache_key, provider=self.instance_id, base_class=Track)
+        if cached is not None:
+            return cached  # type: ignore[no-any-return]
+        tracks: list[Track] = []
+        async with self._map_api_errors("Failed to get Bandcamp feed"):
+            feed = await self._fetch_feed()
+            tracks = [
+                self._converters.track_from_feed(track)
+                for track in feed.track_list
+                if track.streaming_url
+            ]
+        await self.mass.cache.set(
+            cache_key,
+            [t.to_dict() for t in tracks],
+            expiration=CACHE_USER_LISTS if tracks else CACHE_EMPTY_RESULTS,
+            provider=self.instance_id,
+        )
+        return tracks
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's items.
