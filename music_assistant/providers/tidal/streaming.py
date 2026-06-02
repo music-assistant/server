@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 from sqlite3 import OperationalError
 from typing import TYPE_CHECKING
 
+from aiohttp import web
 from music_assistant_models.enums import ContentType, ExternalID, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
@@ -16,6 +19,11 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import Track
 
     from .provider import TidalProvider
+
+# Time (seconds) after which an unused DASH manifest route is cleaned up.
+# Must be longer than any single track's playback to avoid premature expiry
+# while ffmpeg is still streaming. 10 minutes safely covers even long tracks.
+_DASH_ROUTE_TTL: int = 600
 
 
 class TidalStreamingManager:
@@ -57,7 +65,35 @@ class TidalStreamingManager:
         # 4. Parse stream URL
         manifest_type = stream_data.get("manifestMimeType", "")
         if "dash+xml" in manifest_type and "manifest" in stream_data:
-            url = f"data:application/dash+xml;base64,{stream_data['manifest']}"
+            # Tidal returns a dynamic DASH manifest (MPD) that ffmpeg needs
+            # to re-fetch during playback to get the next segment window.
+            # A data: URI can't be re-fetched, so we serve the decoded
+            # manifest from a real HTTP endpoint on the stream server.
+            manifest_bytes = base64.b64decode(stream_data["manifest"])
+            manifest_hash = hashlib.md5(manifest_bytes).hexdigest()
+            route_path = f"/tidal-dash/{manifest_hash}"
+
+            async def _serve_manifest(request: web.Request) -> web.Response:
+                return web.Response(
+                    body=manifest_bytes,
+                    content_type="application/dash+xml",
+                )
+
+            try:
+                remove_route = self.mass.streams.register_dynamic_route(
+                    route_path, _serve_manifest, method="GET"
+                )
+                # Clean up after the TTL expires. The route is reused for
+                # repeated plays of the same track via the content hash,
+                # so a generous timeout prevents spurious 404s without
+                # leaking routes.
+                self.mass.call_later(_DASH_ROUTE_TTL, remove_route)
+            except RuntimeError:
+                # Route already registered (same hash = same manifest),
+                # keep the existing one — its TTL was set when first created.
+                pass
+
+            url = f"{self.mass.streams.base_url}{route_path}"
         else:
             urls = stream_data.get("urls", [])
             if not urls:
