@@ -1112,6 +1112,8 @@ async def parse_podcast_hosts(podcast_metadata: dict[str, Any]) -> list[str]:
     """
     hosts_list = []
     hosts_metadata = podcast_metadata.get("hosts") or []
-    for i, host in enumerate(hosts_metadata):
-        hosts_list.append(host.get("name") or "")
+    for host in hosts_metadata:
+        if host.get("name"):
+            hosts_list.append(host.get("name"))
+
     return hosts_list
