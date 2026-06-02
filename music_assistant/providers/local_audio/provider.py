@@ -49,7 +49,3 @@ class LocalAudioProvider(PlayerProvider):
         """Handle unload/removal of the provider."""
         if bridge_manager := getattr(self, "_bridge_manager", None):
             await bridge_manager.stop_all()
-
-    async def discover_players(self) -> None:
-        """Discover players (re-enumerate soundcards)."""
-        await self._bridge_manager.discover_and_register()
