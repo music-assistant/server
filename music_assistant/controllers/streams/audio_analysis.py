@@ -34,6 +34,8 @@ from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.models.music_provider import MusicProvider
 
 LOUDNESS_ANALYSIS_DOMAIN = "loudness_analysis"
+SMART_FADES_ANALYSIS_DOMAIN = "smart_fades"
+SONIC_ANALYSIS_DOMAIN = "sonic_analysis"
 BACKGROUND_SCAN_TASK_ID = "audio_analysis_background_scan"
 BACKGROUND_PER_TRACK_TIMEOUT_SECONDS = 300
 BACKGROUND_PER_TRACK_TIMEOUT_DURATION_MULTIPLIER = 1.5
@@ -63,38 +65,65 @@ if TYPE_CHECKING:
     from music_assistant.controllers.streams.controller import StreamsController
 
 
+def _parse_row(row: Mapping[str, Any]) -> AudioAnalysisData | None:
+    """Parse a single audio_analysis row's analysis_data, logging and skipping on error."""
+    try:
+        return AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
+    except (ValueError, TypeError, KeyError) as err:
+        LOGGER.warning(
+            "Skipping unparsable audio_analysis row (id=%s, aa_provider_domain=%s): %s",
+            row.get("id"),
+            row.get("aa_provider_domain"),
+            err,
+        )
+        return None
+
+
 def _merged_from_rows(
     rows: Iterable[Mapping[str, Any]],
     available_aa_domains: set[str],
+    priority: tuple[str, ...] | None = None,
 ) -> AudioAnalysisData | None:
     """
-    Fold audio_analysis rows into one merged result (latest-write-wins).
+    Fold audio_analysis rows into one merged result.
 
-    Rows from AA providers not in available_aa_domains, and rows whose
-    analysis_data is unparsable, are skipped. Returns None when no usable
-    row remains.
+    Rows from AA providers not in available_aa_domains, and rows whose analysis_data
+    is unparsable, are always skipped. Returns None when no usable row remains.
 
     :param rows: audio_analysis rows ordered oldest-first; each must carry
         aa_provider_domain and analysis_data.
     :param available_aa_domains: AA provider domains currently available.
+    :param priority: When None, merge all available providers' rows with latest-write-wins
+        (non-None fields). When a tuple of AA provider domains is given, only those domains
+        are considered and the first-listed domain wins each per-field conflict.
     """
     merged = AudioAnalysisData()
     found = False
+    if priority is None:
+        for row in rows:
+            if row["aa_provider_domain"] not in available_aa_domains:
+                continue
+            if (row_data := _parse_row(row)) is None:
+                continue
+            merged.update(row_data)
+            found = True
+        return merged if found else None
+
+    # priority given: merge only these domains, first-listed wins each field.
+    wanted = tuple(d for d in priority if d in available_aa_domains)
+    wanted_set = set(wanted)
+    by_domain: dict[str, AudioAnalysisData] = {}
     for row in rows:
-        if row["aa_provider_domain"] not in available_aa_domains:
+        domain = row["aa_provider_domain"]
+        if domain not in wanted_set or domain in by_domain:
             continue
-        try:
-            row_data = AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
-        except (ValueError, TypeError, KeyError) as err:
-            LOGGER.warning(
-                "Skipping unparsable audio_analysis row (id=%s, aa_provider_domain=%s): %s",
-                row.get("id"),
-                row["aa_provider_domain"],
-                err,
-            )
+        if (row_data := _parse_row(row)) is None:
             continue
-        merged.update(row_data)
-        found = True
+        by_domain[domain] = row_data
+    for domain in reversed(wanted):
+        if (row_data := by_domain.get(domain)) is not None:
+            merged.update(row_data)
+            found = True
     return merged if found else None
 
 
@@ -277,16 +306,22 @@ class AudioAnalysisController:
         item_id: str,
         provider_instance_id_or_domain: str,
         media_type: MediaType = MediaType.TRACK,
+        priority: tuple[str, ...] | None = None,
     ) -> AudioAnalysisData | None:
         """
-        Get merged audio analysis data from all enabled AA providers for a track.
+        Get merged audio analysis data for a track.
 
         Only rows from currently available AA providers are included.
-        Multiple providers' results are merged using latest-write-wins.
 
         :param item_id: Provider-native item ID from streamdetails.item_id.
         :param provider_instance_id_or_domain: Music provider instance ID or domain.
         :param media_type: The media type of the item.
+        :param priority: AA provider domains the values must come from. When None, all
+            available providers are merged latest-write-wins. With a single domain, only
+            that provider's values are used. With multiple domains, only those are merged
+            and the first-listed domain wins each per-field conflict. Use this when a field
+            (e.g. loudness_integrated) is written by several providers with different
+            semantics, so the authoritative source is selected.
         """
         provider = self.mass.get_provider(provider_instance_id_or_domain)
         if not isinstance(provider, MusicProvider):
@@ -307,7 +342,7 @@ class AudioAnalysisController:
         available_aa_domains = {
             p.domain for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS) if p.available
         }
-        return _merged_from_rows(rows, available_aa_domains)
+        return _merged_from_rows(rows, available_aa_domains, priority)
 
     async def set_track_loudness(
         self,
@@ -475,6 +510,7 @@ class AudioAnalysisController:
         self,
         primary_aa_domain: str,
         media_type: MediaType = MediaType.TRACK,
+        priority: tuple[str, ...] | None = None,
     ) -> AsyncGenerator[tuple[str, str, AudioAnalysisData]]:
         """
         Yield one merged AudioAnalysisData per track present in primary_aa_domain.
@@ -495,6 +531,9 @@ class AudioAnalysisController:
             tracks to yield. Only (item_id, provider) pairs with at least one
             row in this domain are emitted.
         :param media_type: The media type to filter on.
+        :param priority: AA provider domains the merged values must come from, first-listed
+            wins per-field conflicts (see get_audio_analysis). When None, all available
+            providers are merged latest-write-wins.
         """
         available_aa_domains = {
             p.domain for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS) if p.available
@@ -530,14 +569,14 @@ class AudioAnalysisController:
         ):
             key = (row["item_id"], row["provider"])
             if current_key is not None and key != current_key:
-                merged = _merged_from_rows(current_group, available_aa_domains)
+                merged = _merged_from_rows(current_group, available_aa_domains, priority)
                 if merged is not None:
                     yield (*current_key, merged)
                 current_group = []
             current_key = key
             current_group.append(row)
         if current_key is not None:
-            merged = _merged_from_rows(current_group, available_aa_domains)
+            merged = _merged_from_rows(current_group, available_aa_domains, priority)
             if merged is not None:
                 yield (*current_key, merged)
 
