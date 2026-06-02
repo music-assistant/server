@@ -21,7 +21,7 @@ from dataclasses import replace as dc_replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import EventType, ImageType, MediaType, ProviderFeature
+from music_assistant_models.enums import AlbumType, EventType, ImageType, MediaType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     BrowseFolder,
@@ -550,6 +550,16 @@ class SmartPlaylistProvider(PluginProvider):
                     )
                 ]
 
+            if rules.album_types:
+                allowed_types = {AlbumType(at) for at in rules.album_types}
+                tracks = [
+                    t
+                    for t in tracks
+                    if t.album is None
+                    or getattr(t.album, "album_type", AlbumType.UNKNOWN) == AlbumType.UNKNOWN
+                    or getattr(t.album, "album_type", AlbumType.UNKNOWN) in allowed_types
+                ]
+
         # Apply exclusions and dedup regardless of source mode
         excluded_genre_names = await self._resolve_excluded_genre_names(rules)
         tracks = self._apply_exclusions(tracks, rules, excluded_genre_names)
@@ -624,6 +634,15 @@ class SmartPlaylistProvider(PluginProvider):
                     and (rules.year_to is None or t.album.year <= rules.year_to)
                 )
             ]
+        if rules.album_types:
+            allowed_types = {AlbumType(at) for at in rules.album_types}
+            tracks = [
+                t
+                for t in tracks
+                if t.album is None
+                or getattr(t.album, "album_type", AlbumType.UNKNOWN) == AlbumType.UNKNOWN
+                or getattr(t.album, "album_type", AlbumType.UNKNOWN) in allowed_types
+            ]
         return tracks
 
     def _apply_exclusions(
@@ -632,17 +651,19 @@ class SmartPlaylistProvider(PluginProvider):
         rules: SmartPlaylistRules,
         excluded_genre_names: set[str] | None = None,
     ) -> list[Track]:
-        """Filter out tracks whose artist, album, URI, or genre is in the exclusion lists."""
+        """Filter out tracks whose artist, album, URI, genre or album type is in the exclusion lists."""
         if (
             not rules.excluded_artist_ids
             and not rules.excluded_album_ids
             and not rules.excluded_track_uris
             and not excluded_genre_names
+            and not rules.excluded_album_types
         ):
             return tracks
         excl_artists = set(rules.excluded_artist_ids)
         excl_albums = set(rules.excluded_album_ids)
         excl_uris = set(rules.excluded_track_uris)
+        excl_album_types = {AlbumType(at) for at in rules.excluded_album_types}
         result = []
         for track in tracks:
             if track.uri and track.uri in excl_uris:
@@ -668,6 +689,12 @@ class SmartPlaylistProvider(PluginProvider):
                 and track.metadata
                 and track.metadata.genres
                 and any(g.lower() in excluded_genre_names for g in track.metadata.genres)
+            ):
+                continue
+            if (
+                excl_album_types
+                and track.album is not None
+                and getattr(track.album, "album_type", AlbumType.UNKNOWN) in excl_album_types
             ):
                 continue
             result.append(track)
