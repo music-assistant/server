@@ -1,4 +1,5 @@
-"""Storytel provider integration.
+"""
+Storytel provider integration.
 
 Provides the MusicProvider implementation and glue to the StorytelHelper
 lightweight client used to interact with Storytel APIs.
@@ -77,7 +78,8 @@ F = TypeVar("F", bound=Callable[..., Any])
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
-    """Set up the Storytel provider.
+    """
+    Set up the Storytel provider.
 
     :param mass: the MusicAssistant instance.
     :param manifest: the provider manifest.
@@ -92,7 +94,8 @@ async def get_config_entries(
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Get the config entries for the Storytel provider.
+    """
+    Get the config entries for the Storytel provider.
 
     :param mass: the MusicAssistant instance.
     :param instance_id: the instance id.
@@ -165,7 +168,8 @@ class Storytel(MusicProvider):
     def handle_login_failed_generator(
         method: F,
     ) -> F:
-        """Decorate an async generator method to retry once after login failure.
+        """
+        Decorate an async generator method to retry once after login failure.
 
         :param method: the async generator method to decorate.
         """
@@ -278,7 +282,8 @@ class Storytel(MusicProvider):
 
     @handle_login_failed
     async def get_audiobook(self, prov_audiobook_id: str, use_cache: bool = True) -> Audiobook:
-        """Fetch a single audiobook by our provider id.
+        """
+        Fetch a single audiobook by our provider id.
 
         :param prov_audiobook_id: the provider specific ID of the audiobook.
         :param use_cache: boolean to indicate if a cache lookup is allowed.
@@ -313,7 +318,8 @@ class Storytel(MusicProvider):
 
     @handle_login_failed
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Fetch stream details for a given item id and media type.
+        """
+        Fetch stream details for a given item id and media type.
 
         :param item_id: the provider item id of the media.
         :param media_type: the media type to stream (Audiobook or PodcastEpisode).
@@ -381,7 +387,8 @@ class Storytel(MusicProvider):
     async def get_resume_position(
         self, item_id: str, media_type: MediaType, use_cache: bool = True
     ) -> tuple[bool, int, datetime | None]:
-        """Get the resume position for a media item.
+        """
+        Get the resume position for a media item.
 
         :param item_id: the provider item id.
         :param media_type: the media type of the item.
@@ -445,7 +452,8 @@ class Storytel(MusicProvider):
         media_item: MediaItemType,
         is_playing: bool = False,
     ) -> None:
-        """Handle played event of a media item.
+        """
+        Handle played event of a media item.
 
         :param media_type: the media type of the item.
         :param prov_item_id: the provider item id.
@@ -477,7 +485,8 @@ class Storytel(MusicProvider):
 
     @handle_login_failed
     async def get_podcast(self, prov_podcast_id: str, use_cache: bool = True) -> Podcast:
-        """Fetch a podcast by our provider id.
+        """
+        Fetch a podcast by our provider id.
 
         :param prov_podcast_id: the provider specific ID of the podcast.
         :param use_cache: boolean to indicate if a cache lookup is allowed.
@@ -509,7 +518,8 @@ class Storytel(MusicProvider):
     async def get_podcast_episode(
         self, prov_episode_id: str, use_cache: bool = True
     ) -> PodcastEpisode:
-        """Fetch a podcast episode by our provider id.
+        """
+        Fetch a podcast episode by our provider id.
 
         :param prov_episode_id: the provider specific ID of the podcast episode.
         :param use_cache: boolean to indicate if a cache lookup is allowed.
@@ -542,7 +552,8 @@ class Storytel(MusicProvider):
     async def get_podcast_episodes(
         self, prov_podcast_id: str, use_cache: bool = True
     ) -> AsyncGenerator[PodcastEpisode, None]:
-        """Fetch all episodes for a given podcast by our provider id.
+        """
+        Fetch all episodes for a given podcast by our provider id.
 
         :param prov_podcast_id: the provider specific ID of the podcast.
         :param use_cache: boolean to indicate if a cache lookup is allowed.
@@ -602,7 +613,8 @@ class Storytel(MusicProvider):
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
     ) -> SearchResults:
-        """Perform a search on Storytel.
+        """
+        Perform a search on Storytel.
 
         :param search_query: the search query.
         :param media_types: the media types to search for.
@@ -640,7 +652,8 @@ class Storytel(MusicProvider):
 
     @handle_login_failed
     async def recommendations(self) -> list[RecommendationFolder]:
-        """Return personalized recommendations.
+        """
+        Return personalized recommendations.
 
         :return: A list of recommendation folders.
         """
@@ -663,7 +676,8 @@ class Storytel(MusicProvider):
 
     @handle_login_failed
     async def library_add(self, item: MediaItemType) -> bool:
-        """Add an item to the provider library.
+        """
+        Add an item to the provider library.
 
         :param item: the media item to add.
         :return: True if successful, False otherwise.
@@ -677,7 +691,8 @@ class Storytel(MusicProvider):
 
     @handle_login_failed
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
-        """Remove an item from the provider library.
+        """
+        Remove an item from the provider library.
 
         :param prov_item_id: the provider item id to remove.
         :param media_type: the media type of the item.

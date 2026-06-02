@@ -1,4 +1,5 @@
-"""Storytel provider helper utilities.
+"""
+Storytel provider helper utilities.
 
 Lightweight async client helpers used by the Storytel provider for
 interacting with Storytel API endpoints.
@@ -74,7 +75,8 @@ if TYPE_CHECKING:
 
 @dataclass
 class StorytelAuth:
-    """Authentication tokens container for Storytel API.
+    """
+    Authentication tokens container for Storytel API.
 
     Holds the JWT and the single-sign token used for Storytel requests.
     """
@@ -84,11 +86,7 @@ class StorytelAuth:
 
 
 class StorytelHelper:
-    """
-    Minimal async client for Storytel Audiobook endpoints needed by the provider.
-
-    Mirrors the TypeScript library you provided.
-    """
+    """Async client for the Storytel API, for endpoints needed by the provider."""
 
     _KEY = API_ENCRYPTION_KEY
     _IV = API_ENCRYPTION_IV
@@ -103,7 +101,8 @@ class StorytelHelper:
         languages: dict[str, str] | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
-        """Initialize the StorytelHelper.
+        """
+        Initialize the StorytelHelper.
 
         :param session: aiohttp ClientSession used for requests.
         :param provider_instance: parent provider instance.
@@ -159,7 +158,7 @@ class StorytelHelper:
     def _encrypt_password_hex(self, password: str) -> str:
         """Encrypt password for Storytel API."""
         # AES-128-CBC encrypt password, hex encoded (PKCS#7 padding).
-        # Matches TS encryptPassword.ts. TODO: Add reference to source.
+        # Source for key and IV: https://github.com/MauritsWilke/storytel-api/blob/v1_archive/src/utils/encryptPassword.ts
         cipher = AES.new(self._KEY, AES.MODE_CBC, self._IV)
         enc = cipher.encrypt(pad(password.encode("utf-8"), AES.block_size))
         return enc.hex()
@@ -180,7 +179,8 @@ class StorytelHelper:
         raise ProviderUnavailableError(f"Storytel HTTP {resp.status}: {resp_message}")
 
     async def login(self, username: str, password: str) -> StorytelAuth:
-        """Authenticate with the Storytel API.
+        """
+        Authenticate with the Storytel API.
 
         :param username: the username.
         :param password: the password.
@@ -238,7 +238,8 @@ class StorytelHelper:
         return result_type == "book"
 
     async def get_library(self) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Fetch the user's library, including both bookshelf items and followed items (e.g. podcasts).
+        """
+        Fetch the user's library, including both bookshelf items and followed items (e.g. podcasts).
 
         Returns a tuple of (library_items, following_items) where each is a dict keyed by consumableId.
         """
@@ -263,18 +264,9 @@ class StorytelHelper:
 
         return library_items, following_items
 
-    """
-    async def get_account_info(self) -> dict[str, Any]:
-        if not self._auth:
-            raise LoginFailed("Not authenticated")
-        url = self.URL_ACCOUNT_INFO.replace("{TOKEN}", self._auth.single_sign_token)
-        async with self._session.get(url) as resp:
-            await self._raise_for_status(resp)
-            return await resp.json()
-    """
-
     async def get_consumable_details(self, consumable_id: str) -> dict[str, Any]:
-        """Fetch consumable details from the Storytel API.
+        """
+        Fetch consumable details from the Storytel API.
 
         :param consumable_id: the consumable id.
         """
@@ -286,7 +278,8 @@ class StorytelHelper:
             return cast("dict[str, Any]", await resp.json())
 
     async def get_bookmark(self, consumable_id: str) -> dict[str, Any] | None:
-        """Fetch the bookmark for a consumable from the Storytel API.
+        """
+        Fetch the bookmark for a consumable from the Storytel API.
 
         :param consumable_id: the consumable id.
         """
@@ -304,7 +297,8 @@ class StorytelHelper:
     async def set_bookmark(
         self, consumable_id: str, position: int, kids_mode: bool = False
     ) -> dict[str, Any]:
-        """Set the bookmark for a consumable.
+        """
+        Set the bookmark for a consumable.
 
         :param consumable_id: the consumable id.
         :param position: the position in seconds.
@@ -442,7 +436,8 @@ class StorytelHelper:
             self.resource_version = API_DEFAULT_RESOURCE_VERSION
 
     async def add_to_bookshelf(self, consumable_id: str, item: MediaItemType) -> bool:
-        """Add an audiobook or podcast to the user's bookshelf.
+        """
+        Add an audiobook or podcast to the user's bookshelf.
 
         :param consumable_id: the consumable id.
         :param item: the media item to add.
@@ -507,7 +502,8 @@ class StorytelHelper:
         return success
 
     async def remove_from_bookshelf(self, consumable_id: str, media_type: MediaType) -> bool:
-        """Remove an audiobook or podcast from the user's bookshelf.
+        """
+        Remove an audiobook or podcast from the user's bookshelf.
 
         :param consumable_id: the consumable id.
         :param media_type: the media type.
@@ -561,7 +557,7 @@ class StorytelHelper:
         return success
 
     async def _parse_podcast(self, podcast_data: dict[str, Any]) -> Podcast:
-        """Parse Stroytel podcast data to Music Assistant Podcast."""
+        """Parse Storytel podcast data to Music Assistant Podcast."""
         list_metadata = podcast_data.get("listMetadata") or {}
         media_type = list_metadata.get("type") or ""
         if media_type != "podcast":
@@ -618,7 +614,8 @@ class StorytelHelper:
     async def get_podcast_episodes(
         self, prov_podcast_id: str, page_token: str = "", results_count: int = 0
     ) -> list[dict[str, Any]]:
-        """Get all podcast episodes for a specific podcast.
+        """
+        Get all podcast episodes for a specific podcast.
 
         :param prov_podcast_id: the provider podcast id.
         :param page_token: the page token for pagination.
@@ -762,7 +759,8 @@ class StorytelHelper:
         return await self._apply_media_item_metadata(media_item, item_data, bookmark)
 
     async def get_podcast_details(self, consumable_id: str) -> dict[str, Any]:
-        """Get details of a podcast from the Storytel API.
+        """
+        Get details of a podcast from the Storytel API.
 
         :param consumable_id: the consumable id.
         """
@@ -781,7 +779,8 @@ class StorytelHelper:
         filter_func: Callable[[list[dict[str, Any]]], list[str]],
         fetch_func: Callable[[str], Any],
     ) -> tuple[list[Any], int, int]:
-        """Fetch a single search page and prepare items for the given search type.
+        """
+        Fetch a single search page and prepare items for the given search type.
 
         :param query: The search query string.
         :param search_for: The search type (e.g., "podcast_shows" or "books").
@@ -833,7 +832,8 @@ class StorytelHelper:
     async def search_podcasts(
         self, query: str, limit: int = 10, page_token: str = "", results_count: int = 0
     ) -> list[Podcast]:
-        """Search for podcasts matching the query.
+        """
+        Search for podcasts matching the query.
 
         :param query: the search query.
         :param limit: the maximum number of results.
@@ -904,7 +904,8 @@ class StorytelHelper:
     async def search_audiobooks(
         self, query: str, limit: int = 10, page_token: str = "", results_count: int = 0
     ) -> list[Audiobook]:
-        """Search for audiobooks matching the query.
+        """
+        Search for audiobooks matching the query.
 
         :param query: the search query.
         :param limit: the maximum number of results.
@@ -1069,7 +1070,8 @@ class StorytelHelper:
 
 
 async def parse_raw_headers(raw_headers: tuple[tuple[bytes, bytes], ...]) -> dict[str, str]:
-    """Parse raw bytes headers into a dictionary of string key-pairs.
+    """
+    Parse raw bytes headers into a dictionary of string key-pairs.
 
     :param raw_headers: the raw headers to parse.
     """
@@ -1082,7 +1084,8 @@ async def parse_raw_headers(raw_headers: tuple[tuple[bytes, bytes], ...]) -> dic
 
 
 async def parse_content_type(content_type: str) -> ContentType | None:
-    """Parse the content type string to a MA ContentType.
+    """
+    Parse the content type string to a MA ContentType.
 
     :param content_type: the content type string.
     """
@@ -1102,7 +1105,8 @@ async def parse_content_type(content_type: str) -> ContentType | None:
 
 
 async def parse_podcast_hosts(podcast_metadata: dict[str, Any]) -> list[str]:
-    """Parse podcast hosts from metadata.
+    """
+    Parse podcast hosts from metadata.
 
     :param podcast_metadata: the podcast metadata dictionary.
     """
