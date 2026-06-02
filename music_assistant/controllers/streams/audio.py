@@ -1625,13 +1625,13 @@ class StreamsAudio:
                     self.mass.player_queues._prepare_next_audio_buffer(queue_item.queue_id)
                 yield chunk
                 del chunk
-                # DASH streams from providers like Tidal serve a dynamic MPD
-                # that never ends — ffmpeg keeps generating segments
-                # indefinitely. Stop after we've streamed at least the track's
-                # known duration + a short buffer so the flow stream controller
-                # can advance to the next track. Bounded streams finish
-                # naturally before this point, so the break is a no-op for
-                # regular HTTP/FLAC sources.
+                # Guard against sources whose upstream stream never terminates
+                # (e.g. dynamic DASH MPDs from Tidal, or future infinite-buffer
+                # providers). After streaming at least the track's known
+                # duration + a short buffer, stop yielding so the flow stream
+                # loop can advance to the next queue item. Bounded sources
+                # (FLAC, MP3, local files) finish naturally well before this
+                # point, making the break a no-op for them.
                 if (
                     streamdetails.duration
                     and (bytes_received / pcm_format.pcm_sample_size + seek_position)
