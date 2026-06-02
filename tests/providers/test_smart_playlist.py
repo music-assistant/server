@@ -880,7 +880,7 @@ def _make_mock_track_with_album_type(
     uri: str,
     album_type: str = "unknown",
 ) -> MagicMock:
-    """Build a minimal mock Track with a specific album.album_type string value."""
+    """Build a minimal mock Track with a specific album.album_type (AlbumType enum)."""
     track = _make_mock_track(item_id, uri)
     track.album = MagicMock()
     track.album.item_id = "200"

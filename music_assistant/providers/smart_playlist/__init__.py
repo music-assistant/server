@@ -551,14 +551,7 @@ class SmartPlaylistProvider(PluginProvider):
                 ]
 
             if rules.album_types:
-                allowed_types = set(rules.album_types)
-                tracks = [
-                    t
-                    for t in tracks
-                    if t.album is None
-                    or getattr(t.album, "album_type", AlbumType.UNKNOWN) == AlbumType.UNKNOWN
-                    or getattr(t.album, "album_type", AlbumType.UNKNOWN).value in allowed_types
-                ]
+                tracks = self._filter_by_album_types(tracks, rules.album_types)
 
         # Apply exclusions and dedup regardless of source mode
         excluded_genre_names = await self._resolve_excluded_genre_names(rules)
@@ -635,14 +628,7 @@ class SmartPlaylistProvider(PluginProvider):
                 )
             ]
         if rules.album_types:
-            allowed_types = set(rules.album_types)
-            tracks = [
-                t
-                for t in tracks
-                if t.album is None
-                or getattr(t.album, "album_type", AlbumType.UNKNOWN) == AlbumType.UNKNOWN
-                or getattr(t.album, "album_type", AlbumType.UNKNOWN).value in allowed_types
-            ]
+            tracks = self._filter_by_album_types(tracks, rules.album_types)
         return tracks
 
     def _apply_exclusions(
@@ -699,6 +685,17 @@ class SmartPlaylistProvider(PluginProvider):
                 continue
             result.append(track)
         return result
+
+    def _filter_by_album_types(self, tracks: list[Track], album_types: list[str]) -> list[Track]:
+        """Keep only tracks whose album type is in the allowed set (or is unknown/missing)."""
+        allowed = set(album_types)
+        return [
+            t
+            for t in tracks
+            if t.album is None
+            or getattr(t.album, "album_type", AlbumType.UNKNOWN) == AlbumType.UNKNOWN
+            or getattr(t.album, "album_type", AlbumType.UNKNOWN).value in allowed
+        ]
 
     def _deduplicate_tracks(self, tracks: list[Track]) -> list[Track]:
         """Remove duplicates and skip unavailable tracks while keeping order stable."""
