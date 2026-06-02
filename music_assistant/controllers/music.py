@@ -505,11 +505,15 @@ class MusicController(CoreController):
 
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")
-        prov_search_results = await prov.search(
-            search_query,
-            media_types,
-            limit,
-        )
+        try:
+            prov_search_results = await prov.search(
+                search_query,
+                media_types,
+                limit,
+            )
+        except MusicAssistantError as err:
+            self.logger.warning("Search on provider %s failed: %s", prov.name, err)
+            raise MusicAssistantError(f"Search failed due to an error on {prov.name}") from err
         if skip_item_ids:
             # filter out items already in skip_item_ids
             prov_search_results.artists = [
