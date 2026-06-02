@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from contextlib import suppress
 from sqlite3 import OperationalError
 from typing import TYPE_CHECKING
 
@@ -85,23 +86,27 @@ class TidalStreamingManager:
                     task_id=cleanup_id,
                 )
 
-            async def _serve_manifest(request: web.Request) -> web.Response:
+            async def _serve_manifest(_request: web.Request) -> web.Response:
                 # Extend the idle timeout — ffmpeg is still consuming this route.
                 _schedule_cleanup()
                 return web.Response(
                     body=manifest_bytes,
                     content_type="application/dash+xml",
+                    headers={"Cache-Control": "no-cache"},
                 )
 
-            try:
+            # Register the ephemeral route. If the same manifest was already
+            # registered (another track with identical content), this raises
+            # RuntimeError — we reuse the existing route.
+            with suppress(RuntimeError):
                 self.mass.streams.register_dynamic_route(
                     route_path, _serve_manifest, method="GET"
                 )
-                # Schedule initial cleanup. Subsequent fetches from ffmpeg
-                # will push the deadline forward via the handler above.
-                _schedule_cleanup()
-            except RuntimeError:
-                pass
+
+            # Schedule initial cleanup (or extend the existing deadline).
+            # This MUST be outside the except block so the timer is always
+            # set, even when reusing a pre-registered route.
+            _schedule_cleanup()
 
             url = f"{self.mass.streams.base_url}{route_path}"
         else:
@@ -242,7 +247,5 @@ class TidalStreamingManager:
 
     def _remove_dash_route(self, route_path: str) -> None:
         """Remove a DASH manifest route from the stream server."""
-        try:
+        with suppress(RuntimeError):
             self.mass.streams.unregister_dynamic_route(route_path, method="GET")
-        except RuntimeError:
-            pass
