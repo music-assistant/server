@@ -313,7 +313,7 @@ async def get_config_entries(
             depends_on=CONF_ENABLE_TEXT_SEARCH,
             depends_on_value=True,
         ),
-        # === Advanced: index rebuilds (collapsible) ===
+        # === Status (advanced): index rebuilds behind the advanced toggle ===
         ConfigEntry(
             key=ACTION_REBUILD_18DIM,
             type=ConfigEntryType.ACTION,
@@ -322,7 +322,8 @@ async def get_config_entries(
             "search index. Runs in the background; refresh the page to see updated counts.",
             action=ACTION_REBUILD_18DIM,
             action_label="Rebuild 18-dim index",
-            category="advanced",
+            category="Status",
+            advanced=True,
             required=False,
         ),
         ConfigEntry(
@@ -334,7 +335,8 @@ async def get_config_entries(
             "see updated counts.",
             action=ACTION_REBUILD_CLAP,
             action_label="Rebuild CLAP index",
-            category="advanced",
+            category="Status",
+            advanced=True,
             required=False,
             depends_on=CONF_ENABLE_CLAP_INDEX,
             depends_on_value=True,
