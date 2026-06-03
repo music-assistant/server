@@ -7,6 +7,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.enums import AlbumType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import ProviderMapping, Track
 
@@ -877,7 +878,7 @@ async def test_count_tracks_returns_count_and_duration(tmp_path: Any) -> None:
 def _make_mock_track_with_album_type(
     item_id: str,
     uri: str,
-    album_type: str = "unknown",  # noqa: ARG001
+    album_type: str = "unknown",
 ) -> MagicMock:
     """Build a minimal mock Track with a unique album.item_id per item_id."""
     track = _make_mock_track(item_id, uri)
@@ -885,6 +886,7 @@ def _make_mock_track_with_album_type(
     # Unique album ID per track (item_id "1" → album "1000") so library_items mocks are precise.
     track.album.item_id = str(int(item_id) * 1000)
     track.album.year = None
+    track.album.album_type = AlbumType(album_type)
     return track
 
 
@@ -949,20 +951,20 @@ class TestAlbumTypeValidation:
         """Unknown album_type value raises InvalidDataError."""
         plugin = self._make_plugin()
         rules = SmartPlaylistRules(album_types=["not_a_real_type"])
-        with pytest.raises(InvalidDataError, match="album_type"):
+        with pytest.raises(InvalidDataError, match="album_types"):
             plugin._validate_rules(rules)
 
     def test_invalid_excluded_album_type_raises(self) -> None:
         """Unknown excluded_album_type value raises InvalidDataError."""
         plugin = self._make_plugin()
         rules = SmartPlaylistRules(excluded_album_types=["bogus"])
-        with pytest.raises(InvalidDataError, match="excluded_album_type"):
+        with pytest.raises(InvalidDataError, match="excluded_album_types"):
             plugin._validate_rules(rules)
 
 
 @pytest.mark.asyncio
 async def test_evaluate_rules_album_types_filter() -> None:
-    """album_types filter keeps only tracks whose album.album_type matches."""
+    """album_types filter keeps only tracks whose album ID is in the allowed set."""
     mass = MagicMock()
     manifest = MagicMock()
     manifest.domain = "smart_playlist"

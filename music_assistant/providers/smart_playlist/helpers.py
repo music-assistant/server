@@ -302,11 +302,11 @@ def validate_rules(rules: SmartPlaylistRules) -> None:
     valid_album_types = {t.value for t in AlbumType}
     for at in rules.album_types:
         if at not in valid_album_types:
-            msg = f"Invalid album_type: {at!r}. Must be one of {sorted(valid_album_types)}"
+            msg = f"Invalid album_types value: {at!r}. Must be one of {sorted(valid_album_types)}"
             raise InvalidDataError(msg)
     for at in rules.excluded_album_types:
         if at not in valid_album_types:
-            msg = f"Invalid excluded_album_type: {at!r}. Must be one of {sorted(valid_album_types)}"
+            msg = f"Invalid excluded_album_types value: {at!r}. Must be one of {sorted(valid_album_types)}"
             raise InvalidDataError(msg)
 
 
