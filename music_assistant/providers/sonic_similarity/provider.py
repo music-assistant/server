@@ -29,6 +29,7 @@ from music_assistant.providers.sonic_similarity.clap_index import ClapIndex
 from music_assistant.providers.sonic_similarity.constants import (
     AA_PROVIDER_DOMAIN,
     CONF_DISCOVER_DIVERSITY,
+    CONF_DISCOVER_ENGINE,
     CONF_DISCOVER_PRESET,
     CONF_ENABLE_CLAP_INDEX,
     CONF_ENABLE_DISCOVER_ROW,
@@ -662,7 +663,29 @@ class SonicSimilarityPlugin(PluginProvider):
     # Cross-provider RECOMMENDATIONS hook (home/discover page)
     # ------------------------------------------------------------------
 
-    async def recommendations(self) -> list[RecommendationFolder]:  # noqa: PLR0915
+    def _find_discover_seed(self, track: Track, use_clap: bool) -> tuple[str | None, str | None]:
+        """Return (seed_id, seed_provider) for the first mapping the chosen engine indexes.
+
+        :param track: Recently-played track to walk into an indexed seed.
+        :param use_clap: Test CLAP-index membership when True, else the 18-dim
+            signature caches. The 18-dim by-id fallback returns provider None.
+        """
+        for pm in track.provider_mappings or ():
+            if pm.provider_domain == "library":
+                continue
+            if use_clap:
+                if self._clap_index is not None and self._clap_index.contains(
+                    pm.provider_instance, pm.item_id
+                ):
+                    return pm.item_id, pm.provider_instance
+            else:
+                if (pm.item_id, pm.provider_instance) in self._signature_cache:
+                    return pm.item_id, pm.provider_instance
+                if pm.item_id in self._signatures_by_id:
+                    return pm.item_id, None
+        return None, None
+
+    async def recommendations(self) -> list[RecommendationFolder]:
         """Yield an 'Inspired by recently played' folder for the discover page.
 
         Returns [] when the engine isn't ready or when no recent tracks
@@ -671,7 +694,10 @@ class SonicSimilarityPlugin(PluginProvider):
         """
         if not bool(self.config.get_value(CONF_ENABLE_DISCOVER_ROW)):
             return []
-        if self.corpus_means is None or not self._signature_cache:
+
+        discover_engine = str(self.config.get_value(CONF_DISCOVER_ENGINE) or SIMILAR_ENGINE_18DIM)
+        use_clap = discover_engine == SIMILAR_ENGINE_CLAP and self._clap_index is not None
+        if not use_clap and (self.corpus_means is None or not self._signature_cache):
             return []
 
         try:
@@ -700,18 +726,7 @@ class SonicSimilarityPlugin(PluginProvider):
                 )
             except MusicAssistantError:
                 continue
-            seed_id: str | None = None
-            seed_provider: str | None = None
-            for pm in track.provider_mappings or ():
-                if pm.provider_domain == "library":
-                    continue
-                if (pm.item_id, pm.provider_instance) in self._signature_cache:
-                    seed_id = pm.item_id
-                    seed_provider = pm.provider_instance
-                    break
-                if pm.item_id in self._signatures_by_id:
-                    seed_id = pm.item_id
-                    break
+            seed_id, seed_provider = self._find_discover_seed(track, use_clap)
             if seed_id and seed_id not in seen_seeds:
                 seeds.append((seed_id, seed_provider))
                 seen_seeds.add(seed_id)
@@ -724,19 +739,31 @@ class SonicSimilarityPlugin(PluginProvider):
             diversity = float(str(self.config.get_value(CONF_DISCOVER_DIVERSITY) or 0.0))
         except (TypeError, ValueError):
             diversity = 0.0
+        self.logger.debug(
+            "Discover row: engine=%s seeds=%d preset=%s diversity=%s",
+            "clap" if use_clap else "18dim",
+            len(seeds),
+            preset,
+            diversity,
+        )
 
         # Fan out per seed; union results, first-occurrence wins (we already
         # ordered seeds by recency above, so earlier seeds get priority).
         candidate_order: list[tuple[str, str]] = []
         candidate_seen: set[tuple[str, str]] = set()
         for sid, sprov in seeds:
-            response = await self._handle_similar(
-                item_id=sid,
-                seed_provider=sprov,
-                limit=RECOMMEND_PER_SEED_LIMIT,
-                preset=preset,
-                diversity=diversity,
-            )
+            if use_clap:
+                response = await self._handle_similar_clap(
+                    item_id=sid, limit=RECOMMEND_PER_SEED_LIMIT, seed_provider=sprov
+                )
+            else:
+                response = await self._handle_similar(
+                    item_id=sid,
+                    seed_provider=sprov,
+                    limit=RECOMMEND_PER_SEED_LIMIT,
+                    preset=preset,
+                    diversity=diversity,
+                )
             for entry in response.get("items") or []:
                 key = (entry["provider"], entry["item_id"])
                 if key in candidate_seen:

@@ -25,6 +25,7 @@ from music_assistant.providers.sonic_similarity.constants import (
     ACTION_REBUILD_18DIM,
     ACTION_REBUILD_CLAP,
     CONF_DISCOVER_DIVERSITY,
+    CONF_DISCOVER_ENGINE,
     CONF_DISCOVER_PRESET,
     CONF_ENABLE_CLAP_INDEX,
     CONF_ENABLE_DISCOVER_ROW,
@@ -159,25 +160,7 @@ async def get_config_entries(
     status_18, status_clap, status_text = await _collect_status_text(mass, instance_id)
 
     return (
-        # --- 18-dim engine: status + rebuild ---
-        ConfigEntry(
-            key=CONF_LABEL_STATUS_18DIM,
-            type=ConfigEntryType.LABEL,
-            label=status_18,
-            category="Status",
-        ),
-        ConfigEntry(
-            key=ACTION_REBUILD_18DIM,
-            type=ConfigEntryType.ACTION,
-            label="Rebuild 18-dim index",
-            description="Re-scan all stored signatures and rebuild the weighted-Euclidean "
-            "search index. Runs in the background; refresh the page to see updated counts.",
-            action=ACTION_REBUILD_18DIM,
-            action_label="Rebuild 18-dim index",
-            category="Status",
-            required=False,
-        ),
-        # --- CLAP engine toggle ---
+        # === Generic: the two opt-in engine toggles ===
         ConfigEntry(
             key=CONF_ENABLE_CLAP_INDEX,
             type=ConfigEntryType.BOOLEAN,
@@ -188,77 +171,6 @@ async def get_config_entries(
             "similarity via the sonic_similarity/similar_clap API. Requires no extra "
             "downloads — uses embeddings already on disk.",
         ),
-        # CLAP status + rebuild (auto-hidden when the toggle above is off).
-        ConfigEntry(
-            key=CONF_LABEL_STATUS_CLAP,
-            type=ConfigEntryType.LABEL,
-            label=status_clap,
-            category="Status",
-            depends_on=CONF_ENABLE_CLAP_INDEX,
-            depends_on_value=True,
-        ),
-        ConfigEntry(
-            key=ACTION_REBUILD_CLAP,
-            type=ConfigEntryType.ACTION,
-            label="Rebuild CLAP index",
-            description="Incrementally re-scan audio_analysis rows and add any missing CLAP "
-            "embeddings to the 1024-dim index. Runs in the background; refresh the page to "
-            "see updated counts.",
-            action=ACTION_REBUILD_CLAP,
-            action_label="Rebuild CLAP index",
-            category="Status",
-            required=False,
-            depends_on=CONF_ENABLE_CLAP_INDEX,
-            depends_on_value=True,
-        ),
-        # Engine selector for Similar Tracks; shown only when CLAP is enabled.
-        ConfigEntry(
-            key=CONF_SIMILAR_TRACKS_ENGINE,
-            type=ConfigEntryType.STRING,
-            default_value=SIMILAR_ENGINE_18DIM,
-            label="Similar Tracks engine",
-            description="Which index powers library-wide Similar Tracks. The 18-dim engine "
-            "ranks by perceptual scalars (BPM, energy, loudness, key …); the CLAP engine ranks "
-            "by the 1024-dim semantic-audio embedding. Returns no results for a track that has "
-            "no CLAP embedding.",
-            options=[
-                ConfigValueOption("18-dim weighted (default)", SIMILAR_ENGINE_18DIM),
-                ConfigValueOption("CLAP 1024-dim semantic", SIMILAR_ENGINE_CLAP),
-            ],
-            depends_on=CONF_ENABLE_CLAP_INDEX,
-            depends_on_value=True,
-        ),
-        # 18-dim tuning for Similar Tracks; shown only when the 18-dim engine is selected.
-        ConfigEntry(
-            key=CONF_SIMILAR_PRESET,
-            type=ConfigEntryType.STRING,
-            default_value="balanced",
-            label="Similar Tracks preset",
-            description="Similarity weight preset applied to the Similar Tracks action. "
-            "'balanced' is uniform; 'vibe' weights mood + timbre; 'party' weights rhythm + "
-            "regularity; 'genre_era' stays close to the seed's genre and decade; 'discover' "
-            "favours novelty (low genre/era weighting).",
-            options=[
-                ConfigValueOption("Balanced", "balanced"),
-                ConfigValueOption("Vibe (mood + timbre)", "vibe"),
-                ConfigValueOption("Party (rhythm-heavy)", "party"),
-                ConfigValueOption("Genre + Era (stay close)", "genre_era"),
-                ConfigValueOption("Discover (novelty-leaning)", "discover"),
-            ],
-            depends_on=CONF_SIMILAR_TRACKS_ENGINE,
-            depends_on_value=SIMILAR_ENGINE_18DIM,
-        ),
-        ConfigEntry(
-            key=CONF_SIMILAR_DIVERSITY,
-            type=ConfigEntryType.FLOAT,
-            default_value=0.0,
-            label="Similar Tracks diversity",
-            description="0.0 keeps results closest to the seed; 1.0 maximises variety via MMR "
-            "(some results may be less similar but more distinct from each other).",
-            depends_on=CONF_SIMILAR_TRACKS_ENGINE,
-            depends_on_value=SIMILAR_ENGINE_18DIM,
-        ),
-        # --- text-search toggle + status ---
         ConfigEntry(
             key=CONF_ENABLE_TEXT_SEARCH,
             type=ConfigEntryType.BOOLEAN,
@@ -271,15 +183,56 @@ async def get_config_entries(
             "start. Implicitly enables the CLAP embedding index above (text and audio "
             "share the same 1024-dim joint embedding space).",
         ),
+        # === Similarity search: engine choice + 18-dim tuning ===
         ConfigEntry(
-            key=CONF_LABEL_STATUS_TEXT,
-            type=ConfigEntryType.LABEL,
-            label=status_text,
-            category="Status",
-            depends_on=CONF_ENABLE_TEXT_SEARCH,
+            key=CONF_SIMILAR_TRACKS_ENGINE,
+            type=ConfigEntryType.STRING,
+            default_value=SIMILAR_ENGINE_18DIM,
+            label="Similar Tracks engine",
+            description="Which index powers library-wide Similar Tracks. 18-dim matches on "
+            "measured sound traits (tempo, energy, loudness, key); CLAP matches on overall "
+            "character — how a listener would describe the sound.",
+            options=[
+                ConfigValueOption("18-dim weighted (default)", SIMILAR_ENGINE_18DIM),
+                ConfigValueOption("CLAP 1024-dim semantic", SIMILAR_ENGINE_CLAP),
+            ],
+            category="Similarity search",
+            depends_on=CONF_ENABLE_CLAP_INDEX,
             depends_on_value=True,
         ),
-        # --- discover-row controls ---
+        ConfigEntry(
+            key=CONF_SIMILAR_PRESET,
+            type=ConfigEntryType.STRING,
+            default_value="balanced",
+            label="Similar Tracks preset",
+            description="Similarity weight preset applied to the Similar Tracks action "
+            "(18-dim engine only). 'balanced' is uniform; 'vibe' weights mood + timbre; "
+            "'party' weights rhythm + regularity; 'genre_era' stays close to the seed's "
+            "genre and decade; 'discover' favours novelty (low genre/era weighting).",
+            options=[
+                ConfigValueOption("Balanced", "balanced"),
+                ConfigValueOption("Vibe (mood + timbre)", "vibe"),
+                ConfigValueOption("Party (rhythm-heavy)", "party"),
+                ConfigValueOption("Genre + Era (stay close)", "genre_era"),
+                ConfigValueOption("Discover (novelty-leaning)", "discover"),
+            ],
+            category="Similarity search",
+            depends_on=CONF_SIMILAR_TRACKS_ENGINE,
+            depends_on_value=SIMILAR_ENGINE_18DIM,
+        ),
+        ConfigEntry(
+            key=CONF_SIMILAR_DIVERSITY,
+            type=ConfigEntryType.FLOAT,
+            default_value=0.0,
+            label="Similar Tracks diversity",
+            description="0.0 keeps results closest to the seed; 1.0 maximises variety via MMR "
+            "(some results may be less similar but more distinct from each other). "
+            "18-dim engine only.",
+            category="Similarity search",
+            depends_on=CONF_SIMILAR_TRACKS_ENGINE,
+            depends_on_value=SIMILAR_ENGINE_18DIM,
+        ),
+        # === Discover row ===
         ConfigEntry(
             key=CONF_ENABLE_DISCOVER_ROW,
             type=ConfigEntryType.BOOLEAN,
@@ -290,14 +243,30 @@ async def get_config_entries(
             category="Discover",
         ),
         ConfigEntry(
+            key=CONF_DISCOVER_ENGINE,
+            type=ConfigEntryType.STRING,
+            default_value=SIMILAR_ENGINE_18DIM,
+            label="Discover row engine",
+            description="Which index seeds the discover row. 18-dim matches on measured sound "
+            "traits; CLAP matches on overall character. CLAP requires the CLAP index (Generic "
+            "section) to be enabled — the row falls back to 18-dim otherwise.",
+            options=[
+                ConfigValueOption("18-dim weighted (default)", SIMILAR_ENGINE_18DIM),
+                ConfigValueOption("CLAP 1024-dim semantic", SIMILAR_ENGINE_CLAP),
+            ],
+            category="Discover",
+            depends_on=CONF_ENABLE_DISCOVER_ROW,
+            depends_on_value=True,
+        ),
+        ConfigEntry(
             key=CONF_DISCOVER_PRESET,
             type=ConfigEntryType.STRING,
             default_value="discover",
             label="Discover row preset",
-            description="Similarity weight preset used to rank candidates for the row. "
-            "'discover' favours novelty (low genre/era weighting); 'balanced' is uniform; "
-            "'vibe' weights mood + timbre; 'party' weights rhythm + regularity; 'genre_era' "
-            "stays close to the seed's genre and decade.",
+            description="Similarity weight preset used to rank candidates for the row "
+            "(18-dim engine only). 'discover' favours novelty (low genre/era weighting); "
+            "'balanced' is uniform; 'vibe' weights mood + timbre; 'party' weights rhythm + "
+            "regularity; 'genre_era' stays close to the seed's genre and decade.",
             options=[
                 ConfigValueOption("Discover (novelty-leaning)", "discover"),
                 ConfigValueOption("Balanced", "balanced"),
@@ -315,9 +284,59 @@ async def get_config_entries(
             default_value=0.2,
             label="Discover row diversity",
             description="0.0 keeps results closest to the seeds; 1.0 maximises variety via "
-            "MMR (some results may be less similar but more distinct from each other).",
+            "MMR (some results may be less similar but more distinct from each other). "
+            "18-dim engine only.",
             category="Discover",
             depends_on=CONF_ENABLE_DISCOVER_ROW,
+            depends_on_value=True,
+        ),
+        # === Status: read-only diagnostics ===
+        ConfigEntry(
+            key=CONF_LABEL_STATUS_18DIM,
+            type=ConfigEntryType.LABEL,
+            label=status_18,
+            category="Status",
+        ),
+        ConfigEntry(
+            key=CONF_LABEL_STATUS_CLAP,
+            type=ConfigEntryType.LABEL,
+            label=status_clap,
+            category="Status",
+            depends_on=CONF_ENABLE_CLAP_INDEX,
+            depends_on_value=True,
+        ),
+        ConfigEntry(
+            key=CONF_LABEL_STATUS_TEXT,
+            type=ConfigEntryType.LABEL,
+            label=status_text,
+            category="Status",
+            depends_on=CONF_ENABLE_TEXT_SEARCH,
+            depends_on_value=True,
+        ),
+        # === Advanced: index rebuilds (collapsible) ===
+        ConfigEntry(
+            key=ACTION_REBUILD_18DIM,
+            type=ConfigEntryType.ACTION,
+            label="Rebuild 18-dim index",
+            description="Re-scan all stored signatures and rebuild the weighted-Euclidean "
+            "search index. Runs in the background; refresh the page to see updated counts.",
+            action=ACTION_REBUILD_18DIM,
+            action_label="Rebuild 18-dim index",
+            category="advanced",
+            required=False,
+        ),
+        ConfigEntry(
+            key=ACTION_REBUILD_CLAP,
+            type=ConfigEntryType.ACTION,
+            label="Rebuild CLAP index",
+            description="Incrementally re-scan audio_analysis rows and add any missing CLAP "
+            "embeddings to the 1024-dim index. Runs in the background; refresh the page to "
+            "see updated counts.",
+            action=ACTION_REBUILD_CLAP,
+            action_label="Rebuild CLAP index",
+            category="advanced",
+            required=False,
+            depends_on=CONF_ENABLE_CLAP_INDEX,
             depends_on_value=True,
         ),
     )

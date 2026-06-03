@@ -26,6 +26,9 @@ SIMILAR_ENGINE_CLAP = "clap"
 CONF_SIMILAR_PRESET = "similar_tracks_preset"
 CONF_SIMILAR_DIVERSITY = "similar_tracks_diversity"
 
+# Engine for the discover-row recommendations; mirrors the SIMILAR_TRACKS selector.
+CONF_DISCOVER_ENGINE = "discover_engine"
+
 CONF_LABEL_STATUS_18DIM = "status_label_18dim"
 CONF_LABEL_STATUS_CLAP = "status_label_clap"
 CONF_LABEL_STATUS_TEXT = "status_label_text"
