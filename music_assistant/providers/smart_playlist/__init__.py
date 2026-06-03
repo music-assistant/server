@@ -38,6 +38,7 @@ from music_assistant_models.media_items.metadata import MediaItemMetadata
 
 from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
 from music_assistant.controllers.cache import use_cache
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.plugin import PluginProvider
@@ -223,7 +224,12 @@ class SmartPlaylistProvider(PluginProvider):
             return []
         if not rules.is_dynamic:
             return await self._evaluate_rules(rules)
-        return await self._cached_dynamic_sample(resolved_id)
+        user = get_current_user()
+        # Tuple ensures a stable cache key and carries the filter into background SWR refreshes.
+        user_provider_filter = (
+            tuple(sorted(user.provider_filter)) if user and user.provider_filter else ()
+        )
+        return await self._cached_dynamic_sample(resolved_id, user_provider_filter)
 
     @use_cache(
         expiration=DYNAMIC_SAMPLE_CACHE_EXPIRATION,
@@ -231,13 +237,19 @@ class SmartPlaylistProvider(PluginProvider):
         base_class=Track,
         allow_expired_cache=True,
     )
-    async def _cached_dynamic_sample(self, prov_playlist_id: str) -> list[Track]:
+    async def _cached_dynamic_sample(
+        self,
+        prov_playlist_id: str,
+        user_provider_filter: tuple[str, ...] = (),
+    ) -> list[Track]:
         """Evaluate a fresh sample for a dynamic playlist (wrapped in SWR cache)."""
         rules = self._rules_store.get(prov_playlist_id)
         if rules is None:
             return []
         sample_rules = dc_replace(rules, limit=DYNAMIC_PLAYLIST_SAMPLE_SIZE)
-        return await self._evaluate_rules(sample_rules)
+        return await self._evaluate_rules(
+            sample_rules, list(user_provider_filter) if user_provider_filter else None
+        )
 
     async def _on_media_item_deleted(self, event: MassEvent) -> None:
         """Remove the rules for a deleted smart playlist."""
@@ -513,7 +525,11 @@ class SmartPlaylistProvider(PluginProvider):
         """Delegate to module-level validate_rules helper."""
         validate_rules(rules)
 
-    async def _evaluate_rules(self, rules: SmartPlaylistRules) -> list[Track]:
+    async def _evaluate_rules(
+        self,
+        rules: SmartPlaylistRules,
+        user_provider_filter: list[str] | None = None,
+    ) -> list[Track]:
         """Evaluate the rules and return a list of matching Track objects."""
         has_genre_filter = bool(rules.genre_ids)
 
@@ -525,9 +541,9 @@ class SmartPlaylistProvider(PluginProvider):
             tracks = await self._apply_seed_post_filters(tracks, rules, has_genre_filter)
         else:
             if rules.logic == LOGIC_AND:
-                tracks = await self._evaluate_and(rules)
+                tracks = await self._evaluate_and(rules, user_provider_filter)
             else:
-                tracks = await self._evaluate_or(rules)
+                tracks = await self._evaluate_or(rules, user_provider_filter)
 
             if rules.min_popularity is not None:
                 tracks = [
@@ -704,7 +720,11 @@ class SmartPlaylistProvider(PluginProvider):
         # last_played is a Unix timestamp (int); 0 means never played.
         return [t for t in tracks if t.last_played == 0 or t.last_played < cutoff_ts]
 
-    async def _evaluate_and(self, rules: SmartPlaylistRules) -> list[Track]:
+    async def _evaluate_and(
+        self,
+        rules: SmartPlaylistRules,
+        user_provider_filter: list[str] | None = None,
+    ) -> list[Track]:
         """Evaluate rules with AND logic: track must match ALL active filters."""
         has_genre = bool(rules.genre_ids)
         has_artist = bool(rules.artist_ids)
@@ -714,13 +734,19 @@ class SmartPlaylistProvider(PluginProvider):
 
         if no_structural_filter and not rules.favorites_only:
             return await self._get_library_tracks(
-                favorite=None, genre_ids=None, limit=min(rules.limit * 3, 2000)
+                favorite=None,
+                genre_ids=None,
+                limit=min(rules.limit * 3, 2000),
+                user_provider_filter=user_provider_filter,
             )
 
         favorite = True if rules.favorites_only else None
         genre_ids = rules.genre_ids if has_genre else None
         base_tracks = await self._get_library_tracks(
-            favorite=favorite, genre_ids=genre_ids, limit=min(rules.limit * 5, 2000)
+            favorite=favorite,
+            genre_ids=genre_ids,
+            limit=min(rules.limit * 5, 2000),
+            user_provider_filter=user_provider_filter,
         )
 
         if not has_artist and not has_album:
@@ -746,25 +772,35 @@ class SmartPlaylistProvider(PluginProvider):
             ]
         return base_tracks
 
-    async def _evaluate_or(self, rules: SmartPlaylistRules) -> list[Track]:
+    async def _evaluate_or(
+        self,
+        rules: SmartPlaylistRules,
+        user_provider_filter: list[str] | None = None,
+    ) -> list[Track]:
         """Evaluate rules with OR logic: track must match ANY active filter."""
         track_sets: dict[str, Track] = {}
         fetch_limit = min(rules.limit * 5, FETCH_LIMIT)
 
         if rules.favorites_only:
-            for track in await self._get_library_tracks(favorite=True, limit=fetch_limit):
+            for track in await self._get_library_tracks(
+                favorite=True, limit=fetch_limit, user_provider_filter=user_provider_filter
+            ):
                 if track.uri:
                     track_sets[track.uri] = track
 
         if rules.genre_ids:
             for track in await self._get_library_tracks(
-                genre_ids=rules.genre_ids, limit=fetch_limit
+                genre_ids=rules.genre_ids,
+                limit=fetch_limit,
+                user_provider_filter=user_provider_filter,
             ):
                 if track.uri:
                     track_sets[track.uri] = track
 
         if rules.artist_ids or rules.album_ids:
-            all_tracks = await self._get_library_tracks(limit=min(fetch_limit * 2, FETCH_LIMIT))
+            all_tracks = await self._get_library_tracks(
+                limit=min(fetch_limit * 2, FETCH_LIMIT), user_provider_filter=user_provider_filter
+            )
             if rules.artist_ids:
                 artist_id_set = set(rules.artist_ids)
                 for track in all_tracks:
@@ -793,7 +829,9 @@ class SmartPlaylistProvider(PluginProvider):
             and not rules.album_ids
         )
         if no_filters:
-            for track in await self._get_library_tracks(limit=fetch_limit):
+            for track in await self._get_library_tracks(
+                limit=fetch_limit, user_provider_filter=user_provider_filter
+            ):
                 if track.uri:
                     track_sets[track.uri] = track
 
@@ -804,6 +842,7 @@ class SmartPlaylistProvider(PluginProvider):
         favorite: bool | None = None,
         genre_ids: list[int] | None = None,
         limit: int = 500,
+        user_provider_filter: list[str] | None = None,
     ) -> list[Track]:
         """Fetch library tracks with optional filters."""
         return await self.mass.music.tracks.library_items(
@@ -811,6 +850,7 @@ class SmartPlaylistProvider(PluginProvider):
             genre=genre_ids,
             limit=limit,
             order_by="random",
+            provider=user_provider_filter,
         )
 
     async def _tracks_from_seeds(self, seed_uris: list[str], target_size: int) -> list[Track]:
