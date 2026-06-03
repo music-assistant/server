@@ -74,8 +74,8 @@ async def _collect_status_text(
     :param instance_id: Provider instance id to inspect, or None before the
         provider is loaded.
     """
-    eighteen = "18-dim engine: not yet loaded"
-    clap = "CLAP engine: disabled"
+    eighteen = "Traits engine: not yet loaded"
+    clap = "Character engine: disabled"
     text = "Text encoder: disabled"
     if not instance_id:
         return eighteen, clap, text
@@ -103,8 +103,8 @@ async def _collect_status_text(
     ]
     if coverage_pct is not None:
         parts.append(f"{coverage_pct}% coverage")
-    eighteen = "18-dim engine: " + " · ".join(parts)
-    if (err_18dim := provider._last_rebuild_error.get("18-dim")) is not None:
+    eighteen = "Traits engine: " + " · ".join(parts)
+    if (err_18dim := provider._last_rebuild_error.get("Traits")) is not None:
         eighteen += f" — last rebuild failed: {err_18dim}"
 
     # CLAP line (only meaningful when the index is built).
@@ -113,8 +113,8 @@ async def _collect_status_text(
         clap_parts = [f"{clap_size:,} embeddings indexed"]
         if coverage_pct is not None:
             clap_parts.append(f"{coverage_pct}% coverage")
-        clap = "CLAP engine: " + " · ".join(clap_parts)
-        if (err_clap := provider._last_rebuild_error.get("CLAP")) is not None:
+        clap = "Character engine: " + " · ".join(clap_parts)
+        if (err_clap := provider._last_rebuild_error.get("Character")) is not None:
             clap += f" — last rebuild failed: {err_clap}"
 
     # Text-encoder line — encoder state is independent of the index.
@@ -151,10 +151,10 @@ async def get_config_entries(
         provider = mass.get_provider(instance_id)
         if isinstance(provider, SonicSimilarityPlugin):
             if action == ACTION_REBUILD_18DIM:
-                mass.create_task(provider._safe_rebuild("18-dim", provider._rebuild_search_index))
+                mass.create_task(provider._safe_rebuild("Traits", provider._rebuild_search_index))
             elif action == ACTION_REBUILD_CLAP and provider._clap_index is not None:
                 mass.create_task(
-                    provider._safe_rebuild("CLAP", provider._rebuild_clap_index_from_database)
+                    provider._safe_rebuild("Character", provider._rebuild_clap_index_from_database)
                 )
 
     status_18, status_clap, status_text = await _collect_status_text(mass, instance_id)
@@ -165,7 +165,7 @@ async def get_config_entries(
             key=CONF_ENABLE_CLAP_INDEX,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
-            label="Enable CLAP embedding index",
+            label="Enable Character index",
             description="Also build a second usearch index over the 1024-dim CLAP audio "
             "embeddings already stored by sonic_analysis. Enables track-to-track semantic "
             "similarity via the sonic_similarity/similar_clap API. Requires no extra "
@@ -180,7 +180,7 @@ async def get_config_entries(
             "the CLAP GPT2 text encoder, exposed as sonic_similarity/text_search. "
             "First-time use lazily downloads ~500MB of GPT2 weights to the local "
             "HuggingFace cache — the model is loaded on the first query, not at plugin "
-            "start. Implicitly enables the CLAP embedding index above (text and audio "
+            "start. Implicitly enables the Character index above (text and audio "
             "share the same 1024-dim joint embedding space).",
         ),
         # === Similarity search: engine choice + 18-dim tuning ===
@@ -189,12 +189,12 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             default_value=SIMILAR_ENGINE_18DIM,
             label="Similar Tracks engine",
-            description="Which index powers library-wide Similar Tracks. 18-dim matches on "
-            "measured sound traits (tempo, energy, loudness, key); CLAP matches on overall "
-            "character — how a listener would describe the sound.",
+            description="Which index powers library-wide Similar Tracks. Traits matches on "
+            "measured sound traits (tempo, energy, loudness, key); Character matches on overall "
+            "feel — how a listener would describe the sound.",
             options=[
-                ConfigValueOption("18-dim weighted (default)", SIMILAR_ENGINE_18DIM),
-                ConfigValueOption("CLAP 1024-dim semantic", SIMILAR_ENGINE_CLAP),
+                ConfigValueOption("Traits (default)", SIMILAR_ENGINE_18DIM),
+                ConfigValueOption("Character", SIMILAR_ENGINE_CLAP),
             ],
             category="Similarity search",
             depends_on=CONF_ENABLE_CLAP_INDEX,
@@ -206,7 +206,7 @@ async def get_config_entries(
             default_value="balanced",
             label="Similar Tracks preset",
             description="Similarity weight preset applied to the Similar Tracks action "
-            "(18-dim engine only). 'balanced' is uniform; 'vibe' weights mood + timbre; "
+            "(Traits engine only). 'balanced' is uniform; 'vibe' weights mood + timbre; "
             "'party' weights rhythm + regularity; 'genre_era' stays close to the seed's "
             "genre and decade; 'discover' favours novelty (low genre/era weighting).",
             options=[
@@ -227,7 +227,7 @@ async def get_config_entries(
             label="Similar Tracks diversity",
             description="0.0 keeps results closest to the seed; 1.0 maximises variety via MMR "
             "(some results may be less similar but more distinct from each other). "
-            "18-dim engine only.",
+            "Traits engine only.",
             category="Similarity search",
             depends_on=CONF_SIMILAR_TRACKS_ENGINE,
             depends_on_value=SIMILAR_ENGINE_18DIM,
@@ -247,12 +247,12 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             default_value=SIMILAR_ENGINE_18DIM,
             label="Discover row engine",
-            description="Which index seeds the discover row. 18-dim matches on measured sound "
-            "traits; CLAP matches on overall character. CLAP requires the CLAP index (Generic "
-            "section) to be enabled — the row falls back to 18-dim otherwise.",
+            description="Which index seeds the discover row. Traits matches on measured sound "
+            "traits; Character matches on overall feel. Character requires the Character index "
+            "(Generic section) to be enabled — the row falls back to Traits otherwise.",
             options=[
-                ConfigValueOption("18-dim weighted (default)", SIMILAR_ENGINE_18DIM),
-                ConfigValueOption("CLAP 1024-dim semantic", SIMILAR_ENGINE_CLAP),
+                ConfigValueOption("Traits (default)", SIMILAR_ENGINE_18DIM),
+                ConfigValueOption("Character", SIMILAR_ENGINE_CLAP),
             ],
             category="Discover",
             depends_on=CONF_ENABLE_DISCOVER_ROW,
@@ -264,7 +264,7 @@ async def get_config_entries(
             default_value="discover",
             label="Discover row preset",
             description="Similarity weight preset used to rank candidates for the row "
-            "(18-dim engine only). 'discover' favours novelty (low genre/era weighting); "
+            "(Traits engine only). 'discover' favours novelty (low genre/era weighting); "
             "'balanced' is uniform; 'vibe' weights mood + timbre; 'party' weights rhythm + "
             "regularity; 'genre_era' stays close to the seed's genre and decade.",
             options=[
@@ -285,7 +285,7 @@ async def get_config_entries(
             label="Discover row diversity",
             description="0.0 keeps results closest to the seeds; 1.0 maximises variety via "
             "MMR (some results may be less similar but more distinct from each other). "
-            "18-dim engine only.",
+            "Traits engine only.",
             category="Discover",
             depends_on=CONF_DISCOVER_ENGINE,
             depends_on_value=SIMILAR_ENGINE_18DIM,
@@ -300,11 +300,11 @@ async def get_config_entries(
         ConfigEntry(
             key=ACTION_REBUILD_18DIM,
             type=ConfigEntryType.ACTION,
-            label="Rebuild 18-dim index",
+            label="Rebuild Traits index",
             description="Re-scan all stored signatures and rebuild the weighted-Euclidean "
             "search index. Runs in the background; refresh the page to see updated counts.",
             action=ACTION_REBUILD_18DIM,
-            action_label="Rebuild 18-dim index",
+            action_label="Rebuild Traits index",
             category="Status",
             advanced=True,
             required=False,
@@ -320,12 +320,12 @@ async def get_config_entries(
         ConfigEntry(
             key=ACTION_REBUILD_CLAP,
             type=ConfigEntryType.ACTION,
-            label="Rebuild CLAP index",
+            label="Rebuild Character index",
             description="Incrementally re-scan audio_analysis rows and add any missing CLAP "
             "embeddings to the 1024-dim index. Runs in the background; refresh the page to "
             "see updated counts.",
             action=ACTION_REBUILD_CLAP,
-            action_label="Rebuild CLAP index",
+            action_label="Rebuild Character index",
             category="Status",
             advanced=True,
             required=False,

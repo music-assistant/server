@@ -118,7 +118,7 @@ class SonicSimilarityPlugin(PluginProvider):
     async def _safe_rebuild(self, label: str, rebuild_fn: Callable[[], Awaitable[None]]) -> None:
         """Run a rebuild fn from a background task, swallowing failures into status state.
 
-        :param label: Engine label used as the status-row error key (e.g. "18-dim", "CLAP").
+        :param label: Engine label used as the status-row error key (e.g. "Traits", "Character").
         :param rebuild_fn: Zero-arg coroutine-returning callable to execute.
         """
         try:
@@ -150,9 +150,9 @@ class SonicSimilarityPlugin(PluginProvider):
             self._last_seen_row_count,
             current,
         )
-        await self._safe_rebuild("18-dim", self._rebuild_search_index)
+        await self._safe_rebuild("Traits", self._rebuild_search_index)
         if self._clap_index is not None:
-            await self._safe_rebuild("CLAP", self._rebuild_clap_index_from_database)
+            await self._safe_rebuild("Character", self._rebuild_clap_index_from_database)
 
     async def handle_async_init(self) -> None:
         """Build the 18-dim search index before the provider is registered.
@@ -568,7 +568,8 @@ class SonicSimilarityPlugin(PluginProvider):
             return await self._similar_tracks_via_clap(track, limit)
         if engine == SIMILAR_ENGINE_CLAP:
             self.logger.debug(
-                "Similar Tracks for %s: CLAP engine selected but index unavailable; using 18-dim",
+                "Similar Tracks for %s: Character engine selected but index unavailable; "
+                "using Traits",
                 track.uri,
             )
         return await self._similar_tracks_via_18dim(track, limit)
@@ -594,7 +595,7 @@ class SonicSimilarityPlugin(PluginProvider):
                 seed_item_id = mapping.item_id
                 break
         if seed_item_id is None:
-            self.logger.debug("18-dim Similar Tracks for %s: no indexed seed mapping", track.uri)
+            self.logger.debug("Traits Similar Tracks for %s: no indexed seed mapping", track.uri)
             return []
 
         preset = str(self.config.get_value(CONF_SIMILAR_PRESET) or "balanced")
@@ -603,7 +604,7 @@ class SonicSimilarityPlugin(PluginProvider):
         except (TypeError, ValueError):
             diversity = 0.0
         self.logger.debug(
-            "18-dim Similar Tracks: seed=%s/%s preset=%s diversity=%s limit=%d",
+            "Traits Similar Tracks: seed=%s/%s preset=%s diversity=%s limit=%d",
             seed_provider or "?",
             seed_item_id,
             preset,
@@ -618,7 +619,7 @@ class SonicSimilarityPlugin(PluginProvider):
             diversity=diversity,
         )
         results = await self._resolve_similar_items(response.get("items") or [])
-        self.logger.debug("18-dim Similar Tracks: returning %d tracks", len(results))
+        self.logger.debug("Traits Similar Tracks: returning %d tracks", len(results))
         return results
 
     async def _similar_tracks_via_clap(self, track: Track, limit: int) -> list[Track]:
@@ -635,16 +636,16 @@ class SonicSimilarityPlugin(PluginProvider):
                 seed_provider = mapping.provider_instance
                 break
         if seed_item_id is None:
-            self.logger.debug("CLAP Similar Tracks for %s: no indexed seed mapping", track.uri)
+            self.logger.debug("Character Similar Tracks for %s: no indexed seed mapping", track.uri)
             return []
         self.logger.debug(
-            "CLAP Similar Tracks: seed=%s/%s limit=%d", seed_provider, seed_item_id, limit
+            "Character Similar Tracks: seed=%s/%s limit=%d", seed_provider, seed_item_id, limit
         )
         response = await self._handle_similar_clap(
             item_id=seed_item_id, limit=limit, seed_provider=seed_provider
         )
         results = await self._resolve_similar_items(response.get("items") or [])
-        self.logger.debug("CLAP Similar Tracks: returning %d tracks", len(results))
+        self.logger.debug("Character Similar Tracks: returning %d tracks", len(results))
         return results
 
     async def _resolve_similar_items(self, items: list[dict[str, Any]]) -> list[Track]:
@@ -741,7 +742,7 @@ class SonicSimilarityPlugin(PluginProvider):
             diversity = 0.0
         self.logger.debug(
             "Discover row: engine=%s seeds=%d preset=%s diversity=%s",
-            "clap" if use_clap else "18dim",
+            "Character" if use_clap else "Traits",
             len(seeds),
             preset,
             diversity,
