@@ -157,7 +157,7 @@ class AppleMusicStreamingManager:
         """Return headers required for decryption requests."""
         return {
             "authorization": f"Bearer {self.provider._music_app_token}",
-            "media-user-token": self.provider._music_user_token or "",
+            "media-user-token": cast("str", self.provider._music_user_token),
             "connection": "keep-alive",
             "accept": "application/json",
             "origin": "https://music.apple.com",

@@ -53,7 +53,7 @@ def parse_artist(provider: AppleMusicProvider, artist_obj: dict[str, Any]) -> Ar
         )
     artist = Artist(
         item_id=artist_id,
-        name=normalize_unicode(attributes.get("name")) or "",
+        name=cast("str", normalize_unicode(attributes.get("name"))),
         provider=provider.domain,
         provider_mappings={
             ProviderMapping(
