@@ -253,9 +253,11 @@ class BluesoundPlayer(Player):
 
     async def ungroup(self) -> None:
         """Handle UNGROUP command for BluOS player."""
-        leader = self.client.leader
-        leader_player_id = self.client.provider.player_map((leader.ip, leader.port))
-        await self.mass.players.get_player(leader_player_id).set_members(None, [self.player_id])
+        if not (leader := self.sync_status.leader):
+            return
+        leader_player_id = self.provider.player_map.get((leader.ip, leader.port))
+        if leader_player_id and (leader_player := self.mass.players.get_player(leader_player_id)):
+            await leader_player.set_members(None, [self.player_id])
 
     async def poll(self) -> None:
         """Poll player for state updates."""
