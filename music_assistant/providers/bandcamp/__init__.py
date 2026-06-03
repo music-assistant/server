@@ -37,7 +37,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
-    ResourceTemporarilyUnavailable,
+    RateLimited,
 )
 from music_assistant_models.media_items import (
     Album,
@@ -143,7 +143,7 @@ class BandcampProvider(MusicProvider):
         rate_limit=50,  # requests per period seconds
         period=10,
         initial_backoff=3,  # Bandcamp responds with Retry-After 3
-        retry_attempts=10,
+        retry_attempts=5,
     )
     top_tracks_limit: int
 
@@ -193,7 +193,7 @@ class BandcampProvider(MusicProvider):
         except BandcampNotFoundError as error:
             raise MediaNotFoundError("No results for Bandcamp search") from error
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampAPIError as error:
@@ -233,7 +233,7 @@ class BandcampProvider(MusicProvider):
                 fan_id=fan_id,
             )
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
 
@@ -298,7 +298,7 @@ class BandcampProvider(MusicProvider):
         except BandcampNotFoundError as error:
             raise MediaNotFoundError("Bandcamp library artists returned no results") from error
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampAPIError as error:
@@ -321,7 +321,7 @@ class BandcampProvider(MusicProvider):
         except BandcampNotFoundError as error:
             raise MediaNotFoundError("Bandcamp library albums returned no results") from error
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampAPIError as error:
@@ -348,7 +348,7 @@ class BandcampProvider(MusicProvider):
         except BandcampNotFoundError as error:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found on Bandcamp") from error
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampAPIError as error:
@@ -365,7 +365,7 @@ class BandcampProvider(MusicProvider):
         except BandcampNotFoundError as error:
             raise MediaNotFoundError(f"Album {prov_album_id} not found on Bandcamp") from error
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampAPIError as error:
@@ -397,7 +397,7 @@ class BandcampProvider(MusicProvider):
         except BandcampNotFoundError as error:
             raise MediaNotFoundError(f"Track {item_id} not found on Bandcamp") from error
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampAPIError as error:
@@ -447,7 +447,7 @@ class BandcampProvider(MusicProvider):
                 f"Album tracks for {prov_album_id} not found on Bandcamp"
             ) from error
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampAPIError as error:
@@ -469,7 +469,7 @@ class BandcampProvider(MusicProvider):
                 f"Artist {prov_artist_id} albums not found on Bandcamp"
             ) from error
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampAPIError as error:
@@ -523,7 +523,7 @@ class BandcampProvider(MusicProvider):
         try:
             return await self._client.get_feed()
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
 
@@ -733,7 +733,7 @@ class BandcampProvider(MusicProvider):
         except BandcampMustBeLoggedInError as error:
             raise LoginFailed("Wrong Bandcamp identity token.") from error
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampAPIError as error:
