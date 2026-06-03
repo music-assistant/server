@@ -214,7 +214,7 @@ class TimelineMixin:
         timeline_xml = await self._build_timeline_xml()
 
         try:
-            await self.provider.mass.http_session.post(
+            async with self.provider.mass.http_session.post(
                 f"{subscription['url']}/:/timeline",
                 data=timeline_xml,
                 headers={
@@ -222,8 +222,9 @@ class TimelineMixin:
                     "Content-Type": "text/xml",
                 },
                 timeout=ClientTimeout(total=5),
-            )
-            subscription["last_update"] = time.time()
+            ) as resp:
+                if resp.status < 400:
+                    subscription["last_update"] = time.time()
         except Exception as e:
             LOGGER.debug(f"Failed to send timeline to {client_id}: {e}")
 
