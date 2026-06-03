@@ -219,7 +219,7 @@ class TestHandleAsyncInit:
         plugin = _build_plugin_for_init(mock_mass)
         plugin._rebuild_search_index = AsyncMock(side_effect=RuntimeError("boom"))
 
-        with pytest.raises(SetupFailedError, match="18-dim search index"):
+        with pytest.raises(SetupFailedError, match="Traits search index"):
             await plugin.handle_async_init()
 
     @pytest.mark.asyncio

@@ -165,7 +165,7 @@ class SonicSimilarityPlugin(PluginProvider):
         try:
             await self._rebuild_search_index()
         except Exception as err:
-            msg = f"Failed to build 18-dim search index: {err}"
+            msg = f"Failed to build Traits search index: {err}"
             raise SetupFailedError(msg) from err
         self.logger.info(
             "Search index ready: %d signatures cached, corpus_stats=%s",
@@ -202,10 +202,12 @@ class SonicSimilarityPlugin(PluginProvider):
                     )
                 )
                 await self._rebuild_clap_index_from_database()
-                self.logger.info("CLAP index ready: %d embeddings", len(self._clap_index))
+                self.logger.info("Character index ready: %d embeddings", len(self._clap_index))
             except Exception:
                 # CLAP is optional — failure must not block the 18-dim engine.
-                self.logger.exception("CLAP index setup failed; CLAP engine will be unavailable")
+                self.logger.exception(
+                    "Character index setup failed; Character engine will be unavailable"
+                )
                 self._clap_index = None
 
         if text_search_enabled:
@@ -242,7 +244,7 @@ class SonicSimilarityPlugin(PluginProvider):
             try:
                 await self._clap_index.close()
             except Exception as err:
-                self.logger.debug("CLAP index close failed: %s", err)
+                self.logger.debug("Character index close failed: %s", err)
             self._clap_index = None
         # Drop encoder ref so its (large) tensors can be GC'd.
         self._text_encoder = None
@@ -1262,14 +1264,14 @@ class SonicSimilarityPlugin(PluginProvider):
                     added += 1
                 except Exception as err:
                     self.logger.debug(
-                        "Add to CLAP index failed for %s/%s: %s",
+                        "Add to Character index failed for %s/%s: %s",
                         row["provider"],
                         row["item_id"],
                         err,
                     )
             if added > 0:
                 await self._clap_index.save()
-                self.logger.info("Added %d new embeddings to CLAP index", added)
+                self.logger.info("Added %d new embeddings to Character index", added)
 
     async def _handle_similar_clap(
         self, item_id: str, limit: int = 25, seed_provider: str | None = None
