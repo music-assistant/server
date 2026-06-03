@@ -172,7 +172,8 @@ async def get_phish_artist(provider: MusicProvider) -> Artist:
 
 
 def _extract_version_from_title(full_title: str) -> tuple[str, str]:
-    """Extract song title and version from full title with performance indicators.
+    """
+    Extract song title and version from full title with performance indicators.
 
     Returns:
         Tuple of (clean_song_title, version_string)
@@ -226,7 +227,8 @@ def _build_track_details(
 
 
 def _flat_track_show(track_data: dict[str, Any]) -> dict[str, Any]:
-    """Build a show_data dict from a track's flat fields.
+    """
+    Build a show_data dict from a track's flat fields.
 
     Some endpoints (search results, playlist entries) return track objects
     without a nested ``show`` object, exposing the show details as flat fields.
