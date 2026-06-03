@@ -462,7 +462,7 @@ class LocalAudioBridgeManager:
             return
 
         # Read audio backend config (Linux only; ignored on Darwin)
-        configured_backend: str = (
+        configured_backend: str = str(
             self.provider.config.get_value(CONF_AUDIO_BACKEND) or AUDIO_BACKEND_AUTO
         )
 
