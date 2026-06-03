@@ -237,8 +237,8 @@ def enumerate_alsa_devices() -> list[dict[str, Any]]:
         sample_rate = int(dev.get("default_samplerate", 48000))
 
         # Build a clean display name: strip the " (hw:C,D)" suffix so the
-        # MA player name reads "HDA Intel: ALC889A Analog" not
-        # "HDA Intel: ALC889A Analog (hw:1,0)".
+        # MA player name reads e.g. "Intel Audio: ALC889A Analog" not
+        # "Intel Audio: ALC889A Analog (hw:1,0)".
         import re as _re  # noqa: PLC0415
         description = _re.sub(r"\s*\(hw:\d+,\d+\)$", "", name).strip()
 
