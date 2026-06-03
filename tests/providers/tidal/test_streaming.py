@@ -139,7 +139,10 @@ async def test_get_stream_details_with_dash_manifest(
     provider_mock.mass.streams.register_dynamic_route.assert_called_once()
     # Verify cleanup was scheduled with duration-based TTL (180s track + 300s buffer = 480s)
     provider_mock.mass.call_later.assert_called_with(
-        480, streaming_manager._remove_dash_route, "/tidal-dash/a3aca34e43c1737c7738507842972fa9", task_id="tidal-dash-cleanup-a3aca34e43c1737c7738507842972fa9"
+        480,
+        streaming_manager._remove_dash_route,
+        "/tidal-dash/a3aca34e43c1737c7738507842972fa9",
+        task_id="tidal-dash-cleanup-a3aca34e43c1737c7738507842972fa9",
     )
 
 

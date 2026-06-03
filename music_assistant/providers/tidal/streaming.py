@@ -82,7 +82,9 @@ class TidalStreamingManager:
             # ffmpeg's periodic manifest fetches extend the deadline further
             # via _serve_manifest, but seek kills the old ffmpeg — the new
             # one may not fetch for many seconds.
-            cleanup_ttl: float = _MINIMAL_DASH_ROUTE_TTL + (track.duration or _MINIMAL_DASH_ROUTE_TTL)
+            cleanup_ttl: float = _MINIMAL_DASH_ROUTE_TTL + (
+                track.duration or _MINIMAL_DASH_ROUTE_TTL
+            )
 
             def _schedule_cleanup() -> None:
                 """Schedule (or reschedule) idle cleanup for this manifest route."""
@@ -106,9 +108,7 @@ class TidalStreamingManager:
             # registered (another track with identical content), this raises
             # RuntimeError — we reuse the existing route.
             with suppress(RuntimeError):
-                self.mass.streams.register_dynamic_route(
-                    route_path, _serve_manifest, method="GET"
-                )
+                self.mass.streams.register_dynamic_route(route_path, _serve_manifest, method="GET")
 
             # Schedule initial cleanup (or extend the existing deadline).
             # This MUST be outside the except block so the timer is always
