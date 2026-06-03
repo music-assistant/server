@@ -551,11 +551,15 @@ class SmartPlaylistProvider(PluginProvider):
                 ]
 
             if rules.album_types:
-                tracks = self._filter_by_album_types(tracks, rules.album_types)
+                allowed_album_ids = await self._get_album_ids_for_types(rules.album_types)
+                tracks = self._filter_by_album_ids(tracks, allowed_album_ids)
 
         # Apply exclusions and dedup regardless of source mode
         excluded_genre_names = await self._resolve_excluded_genre_names(rules)
-        tracks = self._apply_exclusions(tracks, rules, excluded_genre_names)
+        excl_album_type_ids: set[int] | None = None
+        if rules.excluded_album_types:
+            excl_album_type_ids = await self._get_album_ids_for_types(rules.excluded_album_types)
+        tracks = self._apply_exclusions(tracks, rules, excluded_genre_names, excl_album_type_ids)
         tracks = self._deduplicate_tracks(tracks)
         if rules.dedup_hours is not None:
             deduped = self._apply_dedup(tracks, rules.dedup_hours)
@@ -628,7 +632,8 @@ class SmartPlaylistProvider(PluginProvider):
                 )
             ]
         if rules.album_types:
-            tracks = self._filter_by_album_types(tracks, rules.album_types)
+            allowed_album_ids = await self._get_album_ids_for_types(rules.album_types)
+            tracks = self._filter_by_album_ids(tracks, allowed_album_ids)
         return tracks
 
     def _apply_exclusions(
@@ -636,6 +641,7 @@ class SmartPlaylistProvider(PluginProvider):
         tracks: list[Track],
         rules: SmartPlaylistRules,
         excluded_genre_names: set[str] | None = None,
+        excl_album_type_ids: set[int] | None = None,
     ) -> list[Track]:
         """Filter out tracks whose artist, album, URI, genre or album type is in the exclusion lists."""
         if (
@@ -643,13 +649,12 @@ class SmartPlaylistProvider(PluginProvider):
             and not rules.excluded_album_ids
             and not rules.excluded_track_uris
             and not excluded_genre_names
-            and not rules.excluded_album_types
+            and not excl_album_type_ids
         ):
             return tracks
         excl_artists = set(rules.excluded_artist_ids)
         excl_albums = set(rules.excluded_album_ids)
         excl_uris = set(rules.excluded_track_uris)
-        excl_album_types = set(rules.excluded_album_types)
         result = []
         for track in tracks:
             if track.uri and track.uri in excl_uris:
@@ -678,24 +683,33 @@ class SmartPlaylistProvider(PluginProvider):
             ):
                 continue
             if (
-                excl_album_types
+                excl_album_type_ids
                 and track.album is not None
-                and getattr(track.album, "album_type", AlbumType.UNKNOWN).value in excl_album_types
+                and track.album.item_id
+                and str(track.album.item_id).isdigit()
+                and int(track.album.item_id) in excl_album_type_ids
             ):
                 continue
             result.append(track)
         return result
 
-    def _filter_by_album_types(self, tracks: list[Track], album_types: list[str]) -> list[Track]:
-        """Keep only tracks whose album type is in the allowed set (or is unknown/missing)."""
-        allowed = set(album_types)
+    def _filter_by_album_ids(self, tracks: list[Track], allowed_album_ids: set[int]) -> list[Track]:
+        """Keep only tracks whose album ID is in the allowed set (or has no album)."""
         return [
             t
             for t in tracks
             if t.album is None
-            or getattr(t.album, "album_type", AlbumType.UNKNOWN) == AlbumType.UNKNOWN
-            or getattr(t.album, "album_type", AlbumType.UNKNOWN).value in allowed
+            or not (t.album.item_id and str(t.album.item_id).isdigit())
+            or int(t.album.item_id) in allowed_album_ids
         ]
+
+    async def _get_album_ids_for_types(self, album_types: list[str]) -> set[int]:
+        """Return library album IDs matching the given album type values."""
+        albums = await self.mass.music.albums.library_items(
+            album_types=[AlbumType(t) for t in album_types],
+            limit=10000,
+        )
+        return {int(a.item_id) for a in albums if a.item_id and str(a.item_id).isdigit()}
 
     def _deduplicate_tracks(self, tracks: list[Track]) -> list[Track]:
         """Remove duplicates and skip unavailable tracks while keeping order stable."""

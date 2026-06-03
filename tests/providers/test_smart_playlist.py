@@ -7,7 +7,6 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import AlbumType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import ProviderMapping, Track
 
@@ -878,15 +877,14 @@ async def test_count_tracks_returns_count_and_duration(tmp_path: Any) -> None:
 def _make_mock_track_with_album_type(
     item_id: str,
     uri: str,
-    album_type: str = "unknown",
+    album_type: str = "unknown",  # noqa: ARG001
 ) -> MagicMock:
-    """Build a minimal mock Track with a specific album.album_type (AlbumType enum)."""
+    """Build a minimal mock Track with a unique album.item_id per item_id."""
     track = _make_mock_track(item_id, uri)
     track.album = MagicMock()
-    track.album.item_id = "200"
+    # Unique album ID per track (item_id "1" → album "1000") so library_items mocks are precise.
+    track.album.item_id = str(int(item_id) * 1000)
     track.album.year = None
-    album_type_enum = AlbumType(album_type)
-    track.album.album_type = album_type_enum
     return track
 
 
@@ -985,13 +983,17 @@ async def test_evaluate_rules_album_types_filter() -> None:
     cast("Any", plugin)._get_library_tracks = AsyncMock(
         return_value=[album_track, single_track, unknown_track]
     )
+    # albums.library_items returns only the "album" type album (album_track.album.item_id = "1000")
+    mock_album = MagicMock()
+    mock_album.item_id = "1000"
+    mass.music.albums.library_items = AsyncMock(return_value=[mock_album])
 
     rules = SmartPlaylistRules(album_types=["album"], limit=10)
     result = await plugin._evaluate_rules(rules)
     uris = [t.uri for t in result]
     assert "library://track/1" in uris  # album → included
     assert "library://track/2" not in uris  # single → excluded
-    assert "library://track/3" in uris  # unknown → kept (lenient)
+    assert "library://track/3" not in uris  # unknown album type → excluded
 
 
 @pytest.mark.asyncio
@@ -1014,6 +1016,10 @@ async def test_evaluate_rules_excluded_album_types_filter() -> None:
         t.metadata.genres = None
 
     cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=[album_track, single_track])
+    # albums.library_items returns only the "single" type album (single_track.album.item_id = "2000")
+    mock_album = MagicMock()
+    mock_album.item_id = "2000"
+    mass.music.albums.library_items = AsyncMock(return_value=[mock_album])
 
     rules = SmartPlaylistRules(excluded_album_types=["single"], limit=10)
     result = await plugin._evaluate_rules(rules)
@@ -1047,6 +1053,10 @@ async def test_seed_mode_album_types_filter_is_applied() -> None:
     # Seed mode is triggered when seed_track_uris is non-empty.
     # Mock _tracks_from_seeds to return mixed album types.
     cast("Any", plugin)._tracks_from_seeds = AsyncMock(return_value=[album_track, single_track])
+    # albums.library_items returns only the "album" type album (album_track.album.item_id = "1000")
+    mock_album = MagicMock()
+    mock_album.item_id = "1000"
+    mass.music.albums.library_items = AsyncMock(return_value=[mock_album])
 
     rules = SmartPlaylistRules(
         seed_track_uris=["library://track/99"],
