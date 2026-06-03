@@ -1,12 +1,5 @@
 """Test Tidal Streaming Manager."""
 
-# Must patch os.process_cpu_count before any music_assistant import —
-# constants.py calls it at module level.
-import os as _os
-
-if not hasattr(_os, "process_cpu_count"):
-    _os.process_cpu_count = _os.cpu_count  # type: ignore[attr-defined]
-
 from collections.abc import Coroutine
 from sqlite3 import OperationalError
 from typing import Any
