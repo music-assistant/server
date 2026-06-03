@@ -1,6 +1,6 @@
 """Podcastfeed -> Mass."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from io import BytesIO
 from typing import Any
 
@@ -193,7 +193,7 @@ def parse_podcast_episode(
         },
     )
     if episode_published is not None:
-        mass_episode.metadata.release_date = datetime.fromtimestamp(episode_published)
+        mass_episode.metadata.release_date = datetime.fromtimestamp(episode_published, tz=UTC)
 
     # chapter
     if chapters := episode.get("chapters"):

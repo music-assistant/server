@@ -11,6 +11,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.BROWSE,
+    ProviderFeature.RECOMMENDATIONS,
 }
 
 # Config keys

@@ -230,6 +230,10 @@ def test_split_artists_featuring() -> None:
     result = split_artists("Artist A ft. Artist B", expected_count=None)
     assert result == ("Artist A", "Artist B")
 
+    # " presents " should split without disturbing an ampersand inside an artist name
+    result = split_artists("Above & Beyond presents OceanLab", expected_count=None)
+    assert result == ("Above & Beyond", "OceanLab")
+
 
 def test_split_artists_no_oversplit() -> None:
     """Test that split_artists stops at expected_count and doesn't over-split."""

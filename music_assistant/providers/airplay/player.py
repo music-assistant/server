@@ -16,7 +16,7 @@ from music_assistant_models.enums import (
     PlayerType,
 )
 
-from music_assistant.constants import CONF_ENTRY_SYNC_ADJUST, create_sample_rates_config_entry
+from music_assistant.constants import CONF_ENTRY_SYNC_ADJUST
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
@@ -25,6 +25,7 @@ from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_FLOW_PCM_FORMAT,
     AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS,
+    AIRPLAY_PCM_FORMAT,
     AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_DEFAULT_MS,
     AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MAX_MS,
     AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MIN_MS,
@@ -112,6 +113,9 @@ class AirPlayPlayer(Player):
         self._attr_volume_level = initial_volume
         self._attr_can_group_with = {provider.instance_id}
         self._attr_enabled_by_default = not is_broken_airplay_model(manufacturer, model)
+        self._attr_supported_sample_rates = [
+            (AIRPLAY_PCM_FORMAT.sample_rate, AIRPLAY_PCM_FORMAT.bit_depth)
+        ]
 
         # Set player type based on manufacturer/model:
         # - Apple devices (HomePod, Apple TV) have native AirPlay support -> PLAYER
@@ -289,10 +293,6 @@ class AirPlayPlayer(Player):
                 hidden=not is_raop,
                 category="protocol_generic",
                 advanced=True,
-            ),
-            # airplay has fixed sample rate/bit depth so make this config entry static and hidden
-            create_sample_rates_config_entry(
-                supported_sample_rates=[44100], supported_bit_depths=[16], hidden=True
             ),
             ConfigEntry(
                 key=CONF_SESSION_ESTABLISHMENT_LATENCY,

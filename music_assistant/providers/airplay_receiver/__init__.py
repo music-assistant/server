@@ -12,6 +12,7 @@ can be configured with different names.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import time
 from collections.abc import Callable
@@ -23,18 +24,29 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
     ImageType,
+    MediaType,
     PlaybackState,
     ProviderFeature,
+    SourceControl,
     StreamType,
 )
-from music_assistant_models.errors import UnsupportedFeaturedException
-from music_assistant_models.media_items import AudioFormat, MediaItemImage
-from music_assistant_models.streamdetails import StreamMetadata
+from music_assistant_models.errors import (
+    AudioError,
+    MediaNotFoundError,
+    UnsupportedFeaturedException,
+)
+from music_assistant_models.media_items import (
+    AudioFormat,
+    AudioSource,
+    MediaItemImage,
+    ProviderMapping,
+)
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess, check_output
-from music_assistant.models.plugin import PluginProvider, PluginSource
+from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.airplay_receiver.helpers import get_shairport_sync_binary
 from music_assistant.providers.airplay_receiver.metadata import MetadataReader
 
@@ -47,12 +59,15 @@ if TYPE_CHECKING:
 
 CONF_MASS_PLAYER_ID = "mass_player_id"
 CONF_AIRPLAY_NAME = "airplay_name"
-CONF_ALLOW_PLAYER_SWITCH = "allow_player_switch"
 
 # Special value for auto player selection
 PLAYER_ID_AUTO = "__auto__"
 
 SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
+
+# stable id for the single AudioSource this provider exposes;
+# combined with the provider instance_id this forms the persistent uri
+AUDIO_SOURCE_ID = "main"
 
 
 async def setup(
@@ -100,15 +115,6 @@ async def get_config_entries(
             required=True,
         ),
         ConfigEntry(
-            key=CONF_ALLOW_PLAYER_SWITCH,
-            type=ConfigEntryType.BOOLEAN,
-            label="Allow manual player switching",
-            description="When enabled, you can select this plugin as a source on any player "
-            "to switch playback to that player. When disabled, playback is fixed to the "
-            "configured default player.",
-            default_value=True,
-        ),
-        ConfigEntry(
             key=CONF_AIRPLAY_NAME,
             type=ConfigEntryType.STRING,
             label="AirPlay Device Name",
@@ -130,11 +136,6 @@ class AirPlayReceiverProvider(PluginProvider):
         self._default_player_id: str = (
             cast("str", self.config.get_value(CONF_MASS_PLAYER_ID)) or PLAYER_ID_AUTO
         )
-        # Whether manual player switching is allowed (default to True for upgrades)
-        allow_switch_value = self.config.get_value(CONF_ALLOW_PLAYER_SWITCH)
-        self._allow_player_switch: bool = (
-            cast("bool", allow_switch_value) if allow_switch_value is not None else True
-        )
         # Currently active player (the one currently playing or selected)
         self._active_player_id: str | None = None
         self._shairport_bin: str | None = None
@@ -152,30 +153,57 @@ class AirPlayReceiverProvider(PluginProvider):
         # Each instance gets a unique port: 7000, 7001, 7002, etc.
         self.airplay_port = 7000 + (hash(self.instance_id) % 1000)
         airplay_name = cast("str", self.config.get_value(CONF_AIRPLAY_NAME)) or self.name
-        self._source_details = PluginSource(
-            id=self.instance_id,
+        # _audio_format describes the original AirPlay source (ALAC at 44.1/16,
+        # the protocol-native format AirPlay senders use) and is what we
+        # advertise to clients for source-format display.
+        self._audio_format = AudioFormat(
+            content_type=ContentType.ALAC,
+            codec_type=ContentType.ALAC,
+            sample_rate=44100,
+            bit_depth=16,
+            channels=2,
+        )
+        # _decoded_audio_format is what shairport-sync actually pipes into MA
+        # after decoding the ALAC stream; the streams controller hands this to
+        # ffmpeg as the input format so it can read the FIFO correctly.
+        self._decoded_audio_format = AudioFormat(
+            content_type=ContentType.PCM_S16LE,
+            codec_type=ContentType.PCM_S16LE,
+            sample_rate=44100,
+            bit_depth=16,
+            channels=2,
+        )
+        self._stream_metadata = StreamMetadata(title=f"AirPlay | {airplay_name}")
+        self._audio_source = AudioSource(
+            item_id=AUDIO_SOURCE_ID,
+            provider=self.instance_id,
             name=self.name,
-            # passive=False allows this source to be selected on any player
-            # Only show in source list if player switching is allowed
-            passive=not self._allow_player_switch,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=AUDIO_SOURCE_ID,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=self._audio_format,
+                )
+            },
             can_play_pause=False,
             can_seek=False,
             can_next_previous=False,
-            audio_format=AudioFormat(
-                content_type=ContentType.PCM_S16LE,
-                codec_type=ContentType.PCM_S16LE,
-                sample_rate=44100,
-                bit_depth=16,
-                channels=2,
-            ),
-            metadata=StreamMetadata(
-                title=f"AirPlay | {airplay_name}",
-            ),
-            stream_type=StreamType.NAMED_PIPE,
-            path=self.audio_pipe.path,
+            exclusive=True,
+            allow_external_trigger=True,
+            # passive: only flows when an external AirPlay client is connected
+            can_initiate=False,
         )
-        # Set the on_select callback for when the source is selected on a player
-        self._source_details.on_select = self._on_source_selected
+        # _in_use_by_queue: the queue currently streaming us. Claimed in
+        # on_source_selected (NOT in get_stream_details — that path also runs
+        # from queue preload, where claiming would block a later cross-queue
+        # handoff). Released in on_source_unselected when the session id
+        # matches, or in _clear_active_player on external session disconnect.
+        self._in_use_by_queue: str | None = None
+        # _active_session_id is the controller-provided token for the current
+        # stream request — used to reject stale on_source_unselected callbacks
+        # after a same-queue reconnect supersedes the previous request.
+        self._active_session_id: str | None = None
         self._on_unload_callbacks: list[Callable[..., None]] = []
         self._runner_error_count = 0
         self._metadata_reader: MetadataReader | None = None
@@ -219,9 +247,51 @@ class AirPlayReceiverProvider(PluginProvider):
         for callback in self._on_unload_callbacks:
             callback()
 
-    def get_source(self) -> PluginSource:
-        """Get (audio)source details for this plugin."""
-        return self._source_details
+    async def get_audio_sources(self) -> list[AudioSource]:
+        """Return the AudioSources this plugin currently exposes."""
+        return [self._audio_source]
+
+    async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
+        """Return StreamDetails for streaming the AirPlay audio to a queue.
+
+        Side-effect-free: ownership is claimed in on_source_selected (which the
+        streams controller fires before this method on the actual stream
+        request). Keeping this idempotent means preload paths like
+        player_queues._load_item can fetch streamdetails without claiming the
+        source and blocking a subsequent cross-queue handoff.
+
+        Raises AudioError when no AirPlay client is currently connected.
+        """
+        if source_id != AUDIO_SOURCE_ID:
+            raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
+        if not self._active_player_id:
+            raise AudioError(
+                "AirPlay receiver has no active client — start playback from your "
+                "AirPlay-capable device first"
+            )
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=source_id,
+            audio_format=self._audio_format,
+            decoded_audio_format=self._decoded_audio_format,
+            media_type=MediaType.AUDIO_SOURCE,
+            stream_type=StreamType.NAMED_PIPE,
+            path=self.audio_pipe.path,
+            stream_metadata=self._stream_metadata,
+        )
+
+    async def on_source_control(
+        self,
+        source_id: str,
+        action: SourceControl,
+        value: int | None = None,
+    ) -> None:
+        """Handle source control commands (no-op: AirPlay receiver is passive).
+
+        The AudioSource advertises no control capabilities, so MA will not invoke
+        any actions here. Override exists only to satisfy the contract.
+        """
+        del source_id, action
 
     @property
     def active_player_id(self) -> str | None:
@@ -273,54 +343,72 @@ class AirPlayReceiverProvider(PluginProvider):
         )
         return None
 
-    async def _on_source_selected(self) -> None:
-        """
-        Handle callback when this source is selected on a player.
-
-        This is called by the player controller when a user selects this
-        plugin as a source on a specific player.
-        """
-        # The player that selected us is stored in in_use_by by the player controller
-        new_player_id = self._source_details.in_use_by
-        if not new_player_id:
+    async def on_source_selected(
+        self,
+        source_id: str,
+        player_id: str,
+        queue_id: str,
+        stream_session_id: str,
+    ) -> None:
+        """Handle callback when this AudioSource is selected/started on a player."""
+        if source_id != AUDIO_SOURCE_ID or not player_id:
             return
 
-        # Check if manual player switching is allowed
-        if not self._allow_player_switch:
-            # Player switching disabled - only allow if it matches the current target
-            current_target = self._get_target_player_id()
-            if new_player_id != current_target:
-                self.logger.debug(
-                    "Manual player switching disabled, ignoring selection on %s",
-                    new_player_id,
-                )
-                # Revert in_use_by to reflect the rejection
-                self._source_details.in_use_by = current_target
-                self.mass.players.trigger_player_update(new_player_id)
-                return
+        # Cache the queue_id (user-facing MA player) rather than the protocol-
+        # level player_id; protocol bridges (e.g. Sendspin's spb_…) can tear
+        # down between streams and their ID is then invalid for play_media.
+        active_player_id = queue_id
 
-        # If there's already an active player and it's different, kick it out
-        if self._active_player_id and self._active_player_id != new_player_id:
+        # If there's already an active player and it's different, kick it out.
+        # The lock claim a few lines below replaces the previous queue's claim;
+        # the prior stream's on_source_unselected may fire later, but its
+        # session-id guard keeps it from clobbering the new claim.
+        if self._active_player_id and self._active_player_id != active_player_id:
+            prev_player_id = self._active_player_id
             self.logger.info(
                 "Source selected on player %s, stopping playback on %s",
-                new_player_id,
-                self._active_player_id,
+                active_player_id,
+                prev_player_id,
             )
-            # Stop the current player
             try:
-                await self.mass.players.cmd_stop(self._active_player_id)
+                await self.mass.players.cmd_stop(prev_player_id)
             except Exception as err:
-                self.logger.debug(
-                    "Failed to stop previous player %s: %s", self._active_player_id, err
-                )
+                self.logger.debug("Failed to stop previous player %s: %s", prev_player_id, err)
+
+        # Claim ownership for this queue. The lock lives here (not in
+        # get_stream_details) so preload paths can fetch streamdetails without
+        # accidentally blocking a subsequent cross-queue handoff at the actual
+        # stream request.
+        self._in_use_by_queue = queue_id
+        # Record this request's session id so a later on_source_unselected can
+        # tell whether it is the live teardown or a stale callback from a
+        # superseded same-queue request.
+        self._active_session_id = stream_session_id
 
         # Update the active player
-        self._active_player_id = new_player_id
-        self.logger.debug("Active player set to: %s", new_player_id)
+        self._active_player_id = active_player_id
+        self.logger.debug("Active player set to: %s", active_player_id)
 
         # Only persist the selected player as the new default if not in auto mode
         if self._default_player_id != PLAYER_ID_AUTO:
-            self._save_last_player_id(new_player_id)
+            self._save_last_player_id(active_player_id)
+
+    async def on_source_unselected(
+        self, source_id: str, queue_id: str, stream_session_id: str
+    ) -> None:
+        """Release the queue-scoped exclusive claim when MA tears down the stream."""
+        if source_id != AUDIO_SOURCE_ID:
+            return
+        # Reject stale callbacks: only release if this is still the active
+        # session. A queue_id check alone is not sufficient — same-queue
+        # reconnects (player drops + reopens the same stream URL before the
+        # original request's finally fires) would otherwise let the old
+        # request's late callback clear the live claim of the new stream.
+        if self._active_session_id != stream_session_id:
+            return
+        self._active_session_id = None
+        if self._in_use_by_queue == queue_id:
+            self._in_use_by_queue = None
 
     def _clear_active_player(self) -> None:
         """
@@ -330,7 +418,8 @@ class AirPlayReceiverProvider(PluginProvider):
         """
         prev_player_id = self._active_player_id
         self._active_player_id = None
-        self._source_details.in_use_by = None
+        self._in_use_by_queue = None
+        self._active_session_id = None
 
         if prev_player_id:
             self.logger.debug("Playback ended on player %s, clearing active player", prev_player_id)
@@ -410,8 +499,9 @@ class AirPlayReceiverProvider(PluginProvider):
         """Write silence to the audio pipe to unblock ffmpeg.
 
         When shairport-sync stops writing but ffmpeg is still reading,
-        writing silence will cause ffmpeg to output a chunk, which will
-        then check in_use_by and break out of the loop.
+        writing silence will cause ffmpeg to output a chunk, which lets the
+        outer consumer make forward progress so the queue's cmd_stop can
+        close the stream cleanly.
 
         We write enough silence to ensure ffmpeg outputs at least one chunk.
         PCM_S16LE format: 2 bytes per sample, 2 channels, 44100 Hz
@@ -523,7 +613,7 @@ class AirPlayReceiverProvider(PluginProvider):
             return
 
         # Handle volume changes from AirPlay client
-        if "volume" in metadata and self._source_details.in_use_by:
+        if "volume" in metadata and self._in_use_by_queue:
             self._handle_volume_change(metadata["volume"])
 
         # Update source metadata fields
@@ -532,9 +622,14 @@ class AirPlayReceiverProvider(PluginProvider):
         # Handle cover art updates
         self._update_cover_art(metadata)
 
-        # Signal update to connected player
-        if self._source_details.in_use_by:
-            self.mass.players.trigger_player_update(self._source_details.in_use_by)
+        # Push the metadata update through to the active queue item's streamdetails
+        if self._in_use_by_queue:
+            self.mass.streams.update_stream_metadata(
+                self._in_use_by_queue,
+                AUDIO_SOURCE_ID,
+                self.instance_id,
+                self._stream_metadata,
+            )
 
     def _handle_play_state_change(self, play_state: str) -> None:
         """Handle play state changes from sessioncontrol hooks.
@@ -544,36 +639,36 @@ class AirPlayReceiverProvider(PluginProvider):
         if play_state == "playing":
             # Reset volume event flag for new playback session
             self._first_volume_event_received = False
-            # Initiate playback by selecting this source on the target player
-            if not self._source_details.in_use_by:
+            # Initiate playback via the standard play_media flow on the target player
+            if not self._in_use_by_queue:
                 target_player_id = self._get_target_player_id()
                 if target_player_id:
                     self.logger.info("Starting AirPlay playback on player %s", target_player_id)
                     self._active_player_id = target_player_id
                     self.mass.create_task(
-                        self.mass.players.select_source(target_player_id, self.instance_id)
+                        self.mass.player_queues.play_media(
+                            target_player_id, str(self._audio_source.uri)
+                        )
                     )
-                    self._source_details.in_use_by = target_player_id
                 else:
                     self.logger.warning(
                         "AirPlay playback started but no player available. "
-                        "Select this source on a player to start playback."
+                        "Start it from the Live Inputs browse view to pick a player."
                     )
         elif play_state == "stopped":
             self.logger.info("AirPlay playback stopped")
             # Reset volume event flag for next session
             self._first_volume_event_received = False
             # Get the current player before clearing
-            current_player_id = self._source_details.in_use_by
-            # Clear active player state
+            current_player_id = self._in_use_by_queue
+            # Clear active player state (also clears _in_use_by_queue)
             self._clear_active_player()
-            # Write silence to the pipe to unblock ffmpeg
-            # This will cause ffmpeg to output a chunk, which will then check in_use_by
-            # and break out of the loop when it sees it's None
+            # Write silence to the pipe so ffmpeg can produce a chunk and notice the
+            # stream has stopped; the stop command below closes the generator path.
             self.mass.create_task(self._write_silence_to_unblock_stream())
             # Stop the player that was using this source
             if current_player_id:
-                self.mass.create_task(self.mass.players.deselect_source(current_player_id))
+                self.mass.create_task(self.mass.players.cmd_stop(current_player_id))
 
     def _handle_volume_change(self, volume: int) -> None:
         """Handle volume changes from AirPlay client (iOS/macOS device).
@@ -593,8 +688,8 @@ class AirPlayReceiverProvider(PluginProvider):
             )
             return
 
-        # Type check: ensure we have a valid player ID
-        player_id = self._source_details.in_use_by
+        # Type check: ensure we have a valid player ID; queue_id == player_id by convention
+        player_id = self._in_use_by_queue
         if not player_id:
             return
 
@@ -613,76 +708,73 @@ class AirPlayReceiverProvider(PluginProvider):
 
         :param metadata: Dictionary containing metadata updates.
         """
-        # Initialize metadata if needed
-        if self._source_details.metadata is None:
-            airplay_name = cast("str", self.config.get_value(CONF_AIRPLAY_NAME)) or self.name
-            self._source_details.metadata = StreamMetadata(title=f"AirPlay | {airplay_name}")
-
         # Update individual metadata fields
         if "title" in metadata:
-            self._source_details.metadata.title = metadata["title"]
+            self._stream_metadata.title = metadata["title"]
 
         if "artist" in metadata:
-            self._source_details.metadata.artist = metadata["artist"]
+            self._stream_metadata.artist = metadata["artist"]
 
         if "album" in metadata:
-            self._source_details.metadata.album = metadata["album"]
+            self._stream_metadata.album = metadata["album"]
 
         if "duration" in metadata:
-            self._source_details.metadata.duration = metadata["duration"]
+            self._stream_metadata.duration = metadata["duration"]
 
         if "elapsed_time" in metadata:
-            self._source_details.metadata.elapsed_time = metadata["elapsed_time"]
+            self._stream_metadata.elapsed_time = metadata["elapsed_time"]
             # Always set elapsed_time_last_updated to current time when we receive elapsed_time
-            self._source_details.metadata.elapsed_time_last_updated = time.time()
+            self._stream_metadata.elapsed_time_last_updated = time.time()
 
     def _update_cover_art(self, metadata: dict[str, Any]) -> None:
         """Update cover art image URL from AirPlay metadata.
 
         :param metadata: Dictionary containing metadata updates.
         """
-        # Ensure metadata is initialized
-        if self._source_details.metadata is None:
-            return
-
-        if "cover_art_timestamp" in metadata:
-            # Use timestamp as query parameter to create a unique URL for each cover art update
-            # This prevents browser caching issues when switching between tracks
-            timestamp = metadata["cover_art_timestamp"]
-            # Build image proxy URL for the cover art
-            # The actual image bytes are stored in the metadata reader
+        if (
+            "cover_art_timestamp" in metadata
+            and self._metadata_reader
+            and self._metadata_reader.cover_art_bytes
+        ):
+            # Use a content hash in the path so each unique image gets its own
+            # thumbnail cache entry (the thumbnail cache is keyed on provider+path).
+            img_hash = hashlib.md5(
+                self._metadata_reader.cover_art_bytes, usedforsecurity=False
+            ).hexdigest()[:8]
             image = MediaItemImage(
                 type=ImageType.THUMB,
-                path="cover_art",
+                path=f"cover_art_{img_hash}",
                 provider=self.instance_id,
                 remotely_accessible=False,
             )
-            base_url = self.mass.metadata.get_image_url(image)
-            # Append timestamp as query parameter for cache-busting
-            self._source_details.metadata.image_url = f"{base_url}&t={timestamp}"
+            self._stream_metadata.image_url = self.mass.metadata.get_image_url(image)
         elif self._metadata_reader and self._metadata_reader.cover_art_bytes:
-            # Maintain image URL if we have cover art but didn't receive it in this update
-            # This ensures the image URL persists across metadata updates
-            if not self._source_details.metadata.image_url:
-                # Generate timestamp for cache-busting even in fallback case
-                timestamp = str(int(time.time() * 1000))
+            if not self._stream_metadata.image_url:
+                img_hash = hashlib.md5(
+                    self._metadata_reader.cover_art_bytes, usedforsecurity=False
+                ).hexdigest()[:8]
                 image = MediaItemImage(
                     type=ImageType.THUMB,
-                    path="cover_art",
+                    path=f"cover_art_{img_hash}",
                     provider=self.instance_id,
                     remotely_accessible=False,
                 )
-                base_url = self.mass.metadata.get_image_url(image)
-                self._source_details.metadata.image_url = f"{base_url}&t={timestamp}"
+                self._stream_metadata.image_url = self.mass.metadata.get_image_url(image)
 
     async def resolve_image(self, path: str) -> bytes:
         """Resolve an image from an image path.
 
         This returns raw bytes of the cover art image received from AirPlay metadata.
 
-        :param path: The image path (should be "cover_art" for AirPlay cover art).
+        :param path: The image path including the current cover art content hash suffix.
         """
-        if path == "cover_art" and self._metadata_reader and self._metadata_reader.cover_art_bytes:
+        if not (self._metadata_reader and self._metadata_reader.cover_art_bytes):
+            return b""
+        current_hash = hashlib.md5(
+            self._metadata_reader.cover_art_bytes, usedforsecurity=False
+        ).hexdigest()[:8]
+        # Only serve when the suffix matches the current artwork's hash, so a
+        # stale request can't cache new bytes under an old hash key.
+        if path == f"cover_art_{current_hash}":
             return self._metadata_reader.cover_art_bytes
-        # Return empty bytes if no cover art is available
         return b""

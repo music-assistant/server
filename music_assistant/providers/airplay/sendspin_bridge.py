@@ -183,6 +183,7 @@ class SendspinAirPlayBridge:
                 initial_volume=self.airplay_player.volume_level or 25,
             )
             self._bridge_role.setup_audio_requirements()
+            self._refresh_bridge_timing()
 
         self.logger.info(
             "Sendspin bridge registered for %s (client_id=%s)",
@@ -200,6 +201,21 @@ class SendspinAirPlayBridge:
                 self._bridge_role = None
 
         self.logger.debug("Sendspin bridge stopped for %s", self.airplay_player.display_name)
+
+    def _refresh_bridge_timing(self) -> None:
+        """
+        Push the AirPlay startup latency to the bridge role.
+
+        ``wait_start`` is the lead time the device needs before audio begins, so
+        Sendspin schedules the first chunk that far ahead instead of dropping it.
+        ``min_buffer_ms`` is 0 — the device carries its own jitter buffer.
+        """
+        if self._bridge_role is None:
+            return
+        self._bridge_role.set_timing(
+            required_lead_time_ms=int(self.airplay_player.wait_start),
+            min_buffer_ms=0,
+        )
 
     def _on_stream_start(self, request: ExternalStreamStartRequest) -> None:
         """Handle stream start request from Sendspin server.
@@ -219,6 +235,8 @@ class SendspinAirPlayBridge:
                 self.airplay_player.display_name,
             )
             return
+        # Bridge outlives config changes, so re-read wait_start for the current protocol.
+        self._refresh_bridge_timing()
         # Capture and detach old stream resources before scheduling their cleanup.
         # This prevents the async cleanup from accidentally destroying the new
         # stream's resources, which reuse the same instance variables.

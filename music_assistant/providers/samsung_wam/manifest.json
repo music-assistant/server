@@ -1,13 +1,13 @@
 {
   "type": "player",
   "domain": "samsung_wam",
-  "name": "Samsung Wireless Audio (WAM)",
+  "name": "Samsung WAM",
   "description": "Support for Samsung's Wireless Audio Multiroom (WAM) speakers.",
   "codeowners": ["@oliver-stevens"],
   "requirements": [
     "pywam==0.2.0"
   ],
-  "documentation": "https://music-assistant.io/player-support/samsung_wam/",
+  "documentation": "https://music-assistant.io/player-support/samsung-wam/",
   "multi_instance": false,
   "upnp_discovery": ["urn:samsung.com:device:RemoteControlReceiver:1"]
 }

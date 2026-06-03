@@ -11,7 +11,7 @@ from music_assistant.constants import MASS_LOGGER_NAME
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.cache")
 CONF_CLEAR_CACHE = "clear_cache"
 DEFAULT_CACHE_EXPIRATION = 86400 * 30  # 30 days
-DB_SCHEMA_VERSION = 7
+DB_SCHEMA_VERSION = 8
 MAX_CACHE_DB_SIZE_MB = 2048
 CACHE_DATABASE_CLEANUP_TASK_ID = "cache_database_cleanup"
 

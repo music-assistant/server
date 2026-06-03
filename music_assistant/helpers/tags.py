@@ -18,7 +18,10 @@ from music_assistant_models.enums import AlbumType
 from music_assistant_models.errors import InvalidDataError
 from mutagen._vorbis import VCommentDict
 from mutagen.apev2 import APEv2
-from mutagen.id3 import ID3, TXXX  # type: ignore[attr-defined]
+
+# TXXX and UFID are ID3 frame classes pulled into mutagen.id3 via a dynamic
+# frames-table import that mypy's stubs do not follow, hence the attr-defined ignore.
+from mutagen.id3 import ID3, TSRC, TXXX, UFID  # type: ignore[attr-defined]
 from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags
 
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
@@ -91,6 +94,7 @@ FEATURING_SPLITTERS = [
     " feat. ",
     " feat ",
     " duet with ",
+    " presents ",
     " ft. ",
     " vs. ",
     " vs ",
@@ -312,14 +316,6 @@ class AudioTags:
             else:
                 # Split on semicolons
                 artists = split_items(tag)
-            # Warn if ARTISTS tag count doesn't match MB Artist ID count
-            if mb_id_count and mb_id_count != len(artists):
-                LOGGER.warning(
-                    "ARTISTS tag count (%d) doesn't match MusicBrainz Artist ID count (%d): %s",
-                    len(artists),
-                    mb_id_count,
-                    tag,
-                )
             return artists
         # Fallback to single artist string, splitting if necessary
         # All formats: parser returns artist (singular)
@@ -371,14 +367,6 @@ class AudioTags:
             else:
                 # Split on semicolons
                 artists = split_items(tag)
-            # Warn if ALBUMARTISTS tag count doesn't match MB Album Artist ID count
-            if mb_id_count and mb_id_count != len(artists):
-                LOGGER.warning(
-                    "ALBUMARTISTS tag count (%d) doesn't match MB Album Artist ID count (%d): %s",
-                    len(artists),
-                    mb_id_count,
-                    tag,
-                )
             return artists
         # Fallback to single album artist string, splitting if necessary
         # All formats: parser returns albumartist (singular)
@@ -555,8 +543,8 @@ class AudioTags:
                 chapters.append(
                     AudioTagsChapter(
                         chapter_id=chapter_data["id"],
-                        position_start=chapter_data["start_time"],
-                        position_end=chapter_data["end_time"],
+                        position_start=float(chapter_data["start_time"]),
+                        position_end=float(chapter_data["end_time"]),
                         title=chapter_data.get("tags", {}).get("title"),
                     )
                 )
@@ -1466,4 +1454,200 @@ def _write_replaygain_track_gain_sync(path: str, track_gain_db: float) -> bool:
         return False
     except Exception as err:
         LOGGER.warning("unexpected failure writing replaygain tag to %s: %s", path, err)
+        return False
+
+
+async def write_identifier_tags(
+    path: str,
+    *,
+    mbid: str | None = None,
+    acoustid: str | None = None,
+    isrcs: list[str] | None = None,
+    artist_mbids: list[str] | None = None,
+) -> bool:
+    """
+    Write any combination of identifier tags to an audio file in a single open/save cycle.
+
+    Supported identifiers: MusicBrainz Recording Id, AcoustID, ISRCs, MusicBrainz Artist Ids.
+    Only identifiers passed as non-empty arguments are written; the rest are left untouched.
+
+    Returns True when at least one tag was applied and the file was saved, False otherwise.
+
+    :param path: Absolute path to the audio file.
+    :param mbid: MusicBrainz Recording UUID to persist.
+    :param acoustid: AcoustID UUID to persist.
+    :param isrcs: ISRC codes to persist.
+    :param artist_mbids: MusicBrainz Artist UUIDs to persist.
+    """
+    return await asyncio.to_thread(
+        _write_identifier_tags_sync,
+        path,
+        mbid=mbid,
+        acoustid=acoustid,
+        isrcs=isrcs,
+        artist_mbids=artist_mbids,
+    )
+
+
+def _open_mutagen_for_write(path: str) -> Any | None:
+    """Open a file for tag writing, returning the mutagen object or None on failure."""
+    try:
+        audio = mutagen.File(path)  # type: ignore[attr-defined]
+    # Broad: mutagen.File can raise format-specific parse errors, struct errors,
+    # and IOError variants whose hierarchy is not stable across mutagen versions.
+    except Exception as err:
+        LOGGER.debug("mutagen could not open %s: %s", path, err)
+        return None
+    if audio is None:
+        return None
+    if audio.tags is None:
+        try:
+            audio.add_tags()
+        # Broad: add_tags() can raise per-format exceptions that don't share a base class.
+        except Exception as err:
+            LOGGER.debug("could not initialise tags on %s: %s", path, err)
+            return None
+    return audio
+
+
+def _write_identifier_tags_sync(
+    path: str,
+    *,
+    mbid: str | None,
+    acoustid: str | None,
+    isrcs: list[str] | None,
+    artist_mbids: list[str] | None,
+) -> bool:
+    audio = _open_mutagen_for_write(path)
+    if audio is None:
+        return False
+    tags = audio.tags
+
+    applied = False
+    if mbid:
+        applied = _apply_mbid_tag(tags, mbid) or applied
+    if acoustid:
+        applied = _apply_acoustid_tag(tags, acoustid) or applied
+    if isrcs:
+        applied = _apply_isrc_tag(tags, isrcs) or applied
+    if artist_mbids:
+        applied = _apply_artist_mbid_tag(tags, artist_mbids) or applied
+
+    if not applied:
+        return False
+
+    try:
+        audio.save()
+        return True
+    except (OSError, PermissionError) as err:
+        LOGGER.debug("could not save identifier tags to %s: %s", path, err)
+        return False
+    # Broad boundary: mutagen's save() can raise per-format exceptions; logged as
+    # warning so unexpected surprises are visible but never crash the scan.
+    except Exception as err:
+        LOGGER.warning("unexpected failure saving identifier tags to %s: %s", path, err)
+        return False
+
+
+def _apply_mbid_tag(tags: Any, mbid: str) -> bool:
+    try:
+        if isinstance(tags, ID3):
+            # MusicBrainz Recording Id lives in a UFID frame (Picard convention).
+            tags.delall("UFID:http://musicbrainz.org")  # type: ignore[no-untyped-call]
+            tags.add(  # type: ignore[no-untyped-call]
+                UFID(  # type: ignore[no-untyped-call]
+                    owner="http://musicbrainz.org", data=mbid.encode("ascii")
+                )
+            )
+        elif isinstance(tags, MP4Tags):
+            tags["----:com.apple.iTunes:MusicBrainz Track Id"] = [
+                MP4FreeForm(  # type: ignore[no-untyped-call]
+                    mbid.encode("utf-8"), dataformat=AtomDataType.UTF8
+                )
+            ]
+        elif isinstance(tags, (VCommentDict, APEv2)):
+            # historic naming: this key holds the MusicBrainz Recording UUID, not the
+            # track-in-release ID despite being spelled MUSICBRAINZ_TRACKID.
+            tags["MUSICBRAINZ_TRACKID"] = mbid
+        else:
+            return False
+        return True
+    # Broad: mutagen's tag APIs are untyped and per-format exceptions don't share a base.
+    except Exception as err:
+        LOGGER.warning("unexpected failure applying MusicBrainz Recording Id: %s", err)
+        return False
+
+
+def _apply_acoustid_tag(tags: Any, acoustid: str) -> bool:
+    try:
+        if isinstance(tags, ID3):
+            tags.delall("TXXX:Acoustid Id")  # type: ignore[no-untyped-call]
+            tags.add(  # type: ignore[no-untyped-call]
+                TXXX(  # type: ignore[no-untyped-call]
+                    encoding=3, desc="Acoustid Id", text=acoustid
+                )
+            )
+        elif isinstance(tags, MP4Tags):
+            tags["----:com.apple.iTunes:Acoustid Id"] = [
+                MP4FreeForm(  # type: ignore[no-untyped-call]
+                    acoustid.encode("utf-8"), dataformat=AtomDataType.UTF8
+                )
+            ]
+        elif isinstance(tags, (VCommentDict, APEv2)):
+            # Picard tag map: ACOUSTID_ID for both Vorbis Comments and APEv2.
+            tags["ACOUSTID_ID"] = acoustid
+        else:
+            return False
+        return True
+    except Exception as err:
+        LOGGER.warning("unexpected failure applying Acoustid Id: %s", err)
+        return False
+
+
+def _apply_isrc_tag(tags: Any, isrcs: list[str]) -> bool:
+    try:
+        if isinstance(tags, ID3):
+            # TSRC is ID3's dedicated ISRC frame; ID3v2.4 supports multiple values.
+            tags.delall("TSRC")  # type: ignore[no-untyped-call]
+            tags.add(TSRC(encoding=3, text=list(isrcs)))  # type: ignore[no-untyped-call]
+        elif isinstance(tags, MP4Tags):
+            tags["----:com.apple.iTunes:ISRC"] = [
+                MP4FreeForm(  # type: ignore[no-untyped-call]
+                    isrc.encode("utf-8"), dataformat=AtomDataType.UTF8
+                )
+                for isrc in isrcs
+            ]
+        elif isinstance(tags, (VCommentDict, APEv2)):
+            tags["ISRC"] = list(isrcs)
+        else:
+            return False
+        return True
+    except Exception as err:
+        LOGGER.warning("unexpected failure applying ISRC: %s", err)
+        return False
+
+
+def _apply_artist_mbid_tag(tags: Any, artist_mbids: list[str]) -> bool:
+    try:
+        if isinstance(tags, ID3):
+            tags.delall("TXXX:MusicBrainz Artist Id")  # type: ignore[no-untyped-call]
+            tags.add(  # type: ignore[no-untyped-call]
+                TXXX(  # type: ignore[no-untyped-call]
+                    encoding=3, desc="MusicBrainz Artist Id", text=list(artist_mbids)
+                )
+            )
+        elif isinstance(tags, MP4Tags):
+            tags["----:com.apple.iTunes:MusicBrainz Artist Id"] = [
+                MP4FreeForm(  # type: ignore[no-untyped-call]
+                    artist_id.encode("utf-8"), dataformat=AtomDataType.UTF8
+                )
+                for artist_id in artist_mbids
+            ]
+        elif isinstance(tags, (VCommentDict, APEv2)):
+            tags["MUSICBRAINZ_ARTISTID"] = list(artist_mbids)
+        else:
+            return False
+        return True
+    except Exception as err:
+        LOGGER.warning("unexpected failure applying MusicBrainz Artist Id: %s", err)
         return False

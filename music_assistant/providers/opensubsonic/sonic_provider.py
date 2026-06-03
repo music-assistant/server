@@ -154,7 +154,7 @@ class OpenSonicProvider(MusicProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Unload the provider."""
         await super().unload(is_removed)
-        await self.conn.close()
+        await self.conn.cleanup()
 
     @property
     def is_streaming_provider(self) -> bool:
