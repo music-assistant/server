@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 from music_assistant_models.enums import (
     ContentType,
@@ -72,7 +73,8 @@ class PhishInProvider(MusicProvider):
             return SearchResults()
 
         try:
-            endpoint = ENDPOINTS["search"].format(term=search_query)
+            # encode the term so values with "/" etc. don't break the URL path
+            endpoint = ENDPOINTS["search"].format(term=quote(search_query, safe=""))
             search_data = await api_request(
                 self, endpoint, params={"audio_status": "complete_or_partial"}
             )
