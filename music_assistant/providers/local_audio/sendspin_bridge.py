@@ -13,8 +13,10 @@ from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.types import AudioCodec, PlayerCommand
-from music_assistant_models.enums import IdentifierType
+from music_assistant_models.enums import IdentifierType, PlayerType
+from music_assistant_models.player import DeviceInfo
 
+from music_assistant.models.player import Player
 from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BIT_DEPTH,
     BRIDGE_CHANNELS,
@@ -494,6 +496,21 @@ class LocalAudioBridgeManager:
                     self.logger.debug("Bridge already exists for %s", display_name)
                     continue
 
+                # Register a minimal local_audio-owned PROTOCOL player so that
+                # Universal Player attributes the wrapped up... player to the
+                # Local Audio Out provider filter in the MA UI.
+                # This mirrors the pattern used by AirPlay — the bare UUID player_id
+                # is what gives Universal Player a local_audio domain link.
+                protocol_player = Player(self.provider, device_uuid)
+                protocol_player._attr_type = PlayerType.PROTOCOL
+                protocol_player._attr_name = display_name
+                protocol_player._attr_available = True
+                protocol_player._attr_device_info = DeviceInfo(
+                    model=display_name,
+                    manufacturer="Local Audio",
+                )
+                await self.mass.players.register_or_update(protocol_player)
+
                 bridge = SendspinLocalAudioBridge(
                     self.provider, device, sendspin_server, backend=resolved_backend
                 )
@@ -503,9 +520,13 @@ class LocalAudioBridgeManager:
                     self.logger.warning("Failed to start bridge for %s", device_name)
                     with suppress(Exception):
                         await bridge.stop()
+                    protocol_player._attr_available = False
+                    protocol_player.update_state()
                     continue
 
                 if not bridge.is_registered:
+                    protocol_player._attr_available = False
+                    protocol_player.update_state()
                     continue
 
                 self._bridges[client_id] = bridge
