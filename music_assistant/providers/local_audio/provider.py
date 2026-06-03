@@ -8,7 +8,6 @@ import sys
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
-    AUDIO_BACKEND_ALSA,
     AUDIO_BACKEND_AUTO,
     AUDIO_BACKEND_PULSEAUDIO,
     CONF_AUDIO_BACKEND,
