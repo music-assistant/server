@@ -99,7 +99,8 @@ if TYPE_CHECKING:
 
 def _detect_image_format(path: str) -> str:
     """Detect image format from file path extension, defaulting to jpg."""
-    match pathlib.PurePath(path).suffix.lower():
+    # strip any query suffix (e.g. a cache-busting ?cs=) before extension detection
+    match pathlib.PurePath(path.split("?", 1)[0]).suffix.lower():
         case ".svg":
             return "svg"
         case ".png":
