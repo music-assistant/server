@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import AlbumType, ContentType, ExternalID, ImageType, MediaType
 from music_assistant_models.media_items import (
@@ -53,7 +53,7 @@ def parse_artist(provider: AppleMusicProvider, artist_obj: dict[str, Any]) -> Ar
         )
     artist = Artist(
         item_id=artist_id,
-        name=normalize_unicode(attributes.get("name")),
+        name=cast("str", normalize_unicode(attributes.get("name"))),
         provider=provider.domain,
         provider_mappings={
             ProviderMapping(
@@ -113,7 +113,7 @@ def parse_album(
     album = Album(
         item_id=album_id,
         provider=provider.domain,
-        name=normalize_unicode(name),
+        name=cast("str", normalize_unicode(name)),
         version=version,
         provider_mappings={
             ProviderMapping(
@@ -205,7 +205,7 @@ def parse_track(
     track = Track(
         item_id=track_id,
         provider=provider.domain,
-        name=normalize_unicode(name),
+        name=cast("str", normalize_unicode(name)),
         version=version,
         duration=attributes.get("durationInMillis", 0) / 1000,
         provider_mappings={
@@ -226,18 +226,20 @@ def parse_track(
     # Prefer catalog information over library information for artists.
     if "artists" in relationships:
         artists = relationships["artists"]
-        track.artists = [parse_artist(provider, artist) for artist in artists["data"]]
+        track.artists = UniqueList([parse_artist(provider, artist) for artist in artists["data"]])
     elif artist_name := normalize_unicode(
         attributes.get("artistName") or raw_attributes.get("artistName")
     ):
-        track.artists = [
-            ItemMapping(
-                media_type=MediaType.ARTIST,
-                item_id=artist_name,
-                provider=provider.instance_id,
-                name=artist_name,
-            )
-        ]
+        track.artists = UniqueList(
+            [
+                ItemMapping(
+                    media_type=MediaType.ARTIST,
+                    item_id=artist_name,
+                    provider=provider.instance_id,
+                    name=artist_name,
+                )
+            ]
+        )
     if albums := relationships.get("albums"):
         if "data" in albums and len(albums["data"]) > 0:
             parsed_album = parse_album(provider, albums["data"][0])
