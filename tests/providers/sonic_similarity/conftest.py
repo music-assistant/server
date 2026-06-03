@@ -112,7 +112,7 @@ def make_plugin(
     :param discover_row_enabled: Config value for CONF_ENABLE_DISCOVER_ROW
         (default True, matching the production default).
     :param discover_preset: Config value for CONF_DISCOVER_PRESET.
-    :param discover_diversity: Config value for CONF_DISCOVER_DIVERSITY (0–10 integer scale).
+    :param discover_diversity: Config value for CONF_DISCOVER_DIVERSITY (0-10 integer scale).
     :param discover_engine: Config value for CONF_DISCOVER_ENGINE ("18dim"/"clap";
         None defaults to 18-dim via the provider's fallback).
     :param signatures: Optional dict of {(provider, item_id): vector}
