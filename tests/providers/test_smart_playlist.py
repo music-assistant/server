@@ -1020,3 +1020,40 @@ async def test_evaluate_rules_excluded_album_types_filter() -> None:
     uris = [t.uri for t in result]
     assert "library://track/1" in uris  # album → kept
     assert "library://track/2" not in uris  # single → excluded
+
+
+@pytest.mark.asyncio
+async def test_seed_mode_album_types_filter_is_applied() -> None:
+    """album_types filter is enforced in seed mode via _apply_seed_post_filters."""
+    mass = MagicMock()
+    mass.music.genres.get_library_item = AsyncMock(side_effect=Exception("not called"))
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    album_track = _make_mock_track_with_album_type("1", "library://track/1", "album")
+    single_track = _make_mock_track_with_album_type("2", "library://track/2", "single")
+
+    for t in (album_track, single_track):
+        t.available = True
+        t.last_played = 0
+        t.metadata = MagicMock()
+        t.metadata.popularity = None
+        t.metadata.genres = None
+        t.favorite = False
+
+    # Seed mode is triggered when seed_track_uris is non-empty.
+    # Mock _tracks_from_seeds to return mixed album types.
+    cast("Any", plugin)._tracks_from_seeds = AsyncMock(return_value=[album_track, single_track])
+
+    rules = SmartPlaylistRules(
+        seed_track_uris=["library://track/99"],
+        album_types=["album"],
+        limit=10,
+    )
+    result = await plugin._evaluate_rules(rules)
+    uris = [t.uri for t in result]
+    assert "library://track/1" in uris  # album → kept
+    assert "library://track/2" not in uris  # single → filtered out by _apply_seed_post_filters
