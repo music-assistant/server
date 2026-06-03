@@ -14,7 +14,11 @@ from email.utils import parsedate_to_datetime
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Concatenate
 
-from music_assistant_models.errors import ResourceTemporarilyUnavailable, RetriesExhausted
+from music_assistant_models.errors import (
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+)
 
 from music_assistant.constants import MASS_LOGGER_NAME
 
@@ -27,6 +31,9 @@ BYPASS_THROTTLER: ContextVar[bool] = ContextVar("BYPASS_THROTTLER", default=Fals
 
 # Cap exponential backoff to prevent absurd wait times
 MAX_BACKOFF = 120
+
+# Cap a server-provided Retry-After, in case it is absurd or hostile
+MAX_RETRY_AFTER = 3600
 
 
 def parse_retry_after(value: str | None) -> int:
@@ -157,9 +164,16 @@ def throttle_with_retries[ProviderT: "Provider", **P, R](
                         f"Attempt {attempt + 1}/{throttler.retry_attempts} failed: {e}"
                     )
                     if attempt < throttler.retry_attempts - 1:
-                        if e.backoff_time > 0:
-                            # Server told us exactly how long to wait — respect it
-                            sleep_time = float(e.backoff_time)
+                        server_wait = min(max(float(e.backoff_time), 0.0), MAX_RETRY_AFTER)
+                        if isinstance(e, RateLimited):
+                            # Retry-After is a floor, not a target: escalate above it,
+                            # jittering up only so we never retry sooner than asked
+                            base = max(server_wait, min(exp_backoff, MAX_BACKOFF))
+                            sleep_time = base * random.uniform(1.0, 1.1)
+                            exp_backoff = min(exp_backoff * 2, MAX_BACKOFF)
+                        elif server_wait:
+                            # Server named a recovery time — respect it, with citizen jitter
+                            sleep_time = server_wait * random.uniform(1.0, 1.1)
                         else:
                             # No server guidance — exponential backoff with jitter
                             sleep_time = min(exp_backoff * random.uniform(0.75, 1.25), MAX_BACKOFF)

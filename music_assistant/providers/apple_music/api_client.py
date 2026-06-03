@@ -8,6 +8,7 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
 )
 
@@ -65,7 +66,7 @@ class AppleMusicAPIClient:
                 self.provider.logger.debug(
                     "Apple Music Rate Limiter. Headers: %s", response.headers
                 )
-                raise ResourceTemporarilyUnavailable("Apple Music Rate Limiter")
+                raise RateLimited("Apple Music Rate Limiter")
             if response.status == 500:
                 raise MusicAssistantError("Unexpected server error when calling Apple Music")
             response.raise_for_status()
@@ -86,7 +87,7 @@ class AppleMusicAPIClient:
                 self.provider.logger.debug(
                     "Apple Music Rate Limiter. Headers: %s", response.headers
                 )
-                raise ResourceTemporarilyUnavailable("Apple Music Rate Limiter")
+                raise RateLimited("Apple Music Rate Limiter")
             response.raise_for_status()
 
     @throttle_with_retries
@@ -104,7 +105,7 @@ class AppleMusicAPIClient:
                 self.provider.logger.debug(
                     "Apple Music Rate Limiter. Headers: %s", response.headers
                 )
-                raise ResourceTemporarilyUnavailable("Apple Music Rate Limiter")
+                raise RateLimited("Apple Music Rate Limiter")
             response.raise_for_status()
             if response.content_length:
                 return await response.json(loads=json_loads)
@@ -125,7 +126,7 @@ class AppleMusicAPIClient:
                 self.provider.logger.debug(
                     "Apple Music Rate Limiter. Headers: %s", response.headers
                 )
-                raise ResourceTemporarilyUnavailable("Apple Music Rate Limiter")
+                raise RateLimited("Apple Music Rate Limiter")
             response.raise_for_status()
             return await response.json(loads=json_loads)
 

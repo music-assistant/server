@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, TypeVar, cast
 from music_assistant_models.errors import (
     LoginFailed,
     ProviderUnavailableError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
 )
 from yandex_music import Album as YandexAlbum
@@ -366,7 +367,7 @@ class YandexMusicClient:
             )
         if classified == "rate_limit":
             LOGGER.debug("Yandex Music plain 429 on kind=%s", kind)
-            return ResourceTemporarilyUnavailable(
+            return RateLimited(
                 "Yandex Music rate limit",
                 backoff_time=int(RATE_LIMIT_COOLDOWN_S),
             )

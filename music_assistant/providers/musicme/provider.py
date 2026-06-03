@@ -22,6 +22,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
     SetupFailedError,
 )
@@ -844,7 +845,7 @@ class MusicMeProvider(MusicProvider):
                         backoff = min(int(response.headers.get("Retry-After", 10)), 300)
                     except (ValueError, TypeError):
                         backoff = 10
-                    raise ResourceTemporarilyUnavailable("Rate limited", backoff_time=backoff)
+                    raise RateLimited("Rate limited", backoff_time=backoff)
                 if response.status in (502, 503):
                     raise ResourceTemporarilyUnavailable(
                         "Server temporarily unavailable", backoff_time=30
