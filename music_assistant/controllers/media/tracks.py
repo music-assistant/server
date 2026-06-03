@@ -89,7 +89,6 @@ class TracksController(MediaControllerBase[Track]):
                     'sort_name', albums.sort_name,
                     'media_type', 'album',
                     'year', albums.year,
-                    'album_type', albums.album_type,
                     'disc_number', album_tracks.disc_number,
                     'track_number', album_tracks.track_number,
                     'images', json_extract(albums.metadata, '$.images')
