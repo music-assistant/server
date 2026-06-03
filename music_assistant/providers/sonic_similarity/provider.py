@@ -30,10 +30,14 @@ from music_assistant.providers.sonic_similarity.clap_index import ClapIndex
 from music_assistant.providers.sonic_similarity.constants import (
     AA_PROVIDER_DOMAIN,
     CONF_DISCOVER_DIVERSITY,
+    CONF_DISCOVER_ENGINE,
     CONF_DISCOVER_PRESET,
     CONF_ENABLE_CLAP_INDEX,
     CONF_ENABLE_DISCOVER_ROW,
     CONF_ENABLE_TEXT_SEARCH,
+    CONF_SIMILAR_DIVERSITY,
+    CONF_SIMILAR_PRESET,
+    CONF_SIMILAR_TRACKS_ENGINE,
     EXTRA_DATA_CLAP_EMBEDDING,
     METADATA_BONUS_SCALE,
     PERIODIC_REFRESH_INTERVAL_HOURS,
@@ -41,6 +45,8 @@ from music_assistant.providers.sonic_similarity.constants import (
     RECOMMEND_ITEM_LIMIT,
     RECOMMEND_PER_SEED_LIMIT,
     RECOMMEND_SEED_COUNT,
+    SIMILAR_ENGINE_18DIM,
+    SIMILAR_ENGINE_CLAP,
     USEARCH_INDEX_FILENAME_GLOB,
     USEARCH_INDEX_FILENAME_TPL,
 )
@@ -89,11 +95,8 @@ class SonicSimilarityPlugin(PluginProvider):
         """Initialize the Sonic Similarity plugin."""
         super().__init__(mass, manifest, config, supported_features)
         self._label_map: dict[int, tuple[str, str]] = {}
-        # _signature_cache is keyed on (item_id, provider) so a track that
-        # exists in two providers under the same item_id doesn't overwrite
-        # itself. _signatures_by_id is the fallback for the seed-lookup path,
-        # where the API caller only supplies item_id; matches the previous
-        # last-write-wins behavior for cross-provider collisions.
+        # Keyed on (item_id, provider) to avoid cross-provider collisions;
+        # _signatures_by_id is the item_id-only fallback (last-write-wins) for seed lookup.
         self._signature_cache: dict[tuple[str, str], list[float]] = {}
         self._signatures_by_id: dict[str, list[float]] = {}
         self._provider_by_item_id: dict[str, str] = {}
@@ -116,7 +119,7 @@ class SonicSimilarityPlugin(PluginProvider):
     async def _safe_rebuild(self, label: str, rebuild_fn: Callable[[], Awaitable[None]]) -> None:
         """Run a rebuild fn from a background task, swallowing failures into status state.
 
-        :param label: Engine label used as the status-row error key (e.g. "18-dim", "CLAP").
+        :param label: Engine label used as the status-row error key (e.g. "Traits", "Character").
         :param rebuild_fn: Zero-arg coroutine-returning callable to execute.
         """
         try:
@@ -148,9 +151,9 @@ class SonicSimilarityPlugin(PluginProvider):
             self._last_seen_row_count,
             current,
         )
-        await self._safe_rebuild("18-dim", self._rebuild_search_index)
+        await self._safe_rebuild("Traits", self._rebuild_search_index)
         if self._clap_index is not None:
-            await self._safe_rebuild("CLAP", self._rebuild_clap_index_from_database)
+            await self._safe_rebuild("Character", self._rebuild_clap_index_from_database)
 
     async def handle_async_init(self) -> None:
         """Build the 18-dim search index before the provider is registered.
@@ -163,7 +166,7 @@ class SonicSimilarityPlugin(PluginProvider):
         try:
             await self._rebuild_search_index()
         except Exception as err:
-            msg = f"Failed to build 18-dim search index: {err}"
+            msg = f"Failed to build Traits search index: {err}"
             raise SetupFailedError(msg) from err
         self.logger.info(
             "Search index ready: %d signatures cached, corpus_stats=%s",
@@ -200,10 +203,12 @@ class SonicSimilarityPlugin(PluginProvider):
                     )
                 )
                 await self._rebuild_clap_index_from_database()
-                self.logger.info("CLAP index ready: %d embeddings", len(self._clap_index))
+                self.logger.info("Character index ready: %d embeddings", len(self._clap_index))
             except Exception:
                 # CLAP is optional — failure must not block the 18-dim engine.
-                self.logger.exception("CLAP index setup failed; CLAP engine will be unavailable")
+                self.logger.exception(
+                    "Character index setup failed; Character engine will be unavailable"
+                )
                 self._clap_index = None
 
         if text_search_enabled:
@@ -212,11 +217,8 @@ class SonicSimilarityPlugin(PluginProvider):
                     "sonic_similarity/text_search", self._handle_text_search
                 )
             )
-            # Warm the encoder off the event loop so the global SEARCH dispatcher
-            # (which gathers all providers with no per-provider timeout) never
-            # blocks on the ~500MB GPT2 download. search() short-circuits until
-            # _text_encoder is set; direct /text_search calls keep the lazy
-            # fallback. task_id makes the warm idempotent across reloads.
+            # Warm in background so the timeout-less global SEARCH dispatcher never blocks
+            # on the ~500MB GPT2 download; search() short-circuits until the encoder is set.
             self.mass.create_task(
                 self._get_text_encoder, task_id="sonic_similarity_text_encoder_warm"
             )
@@ -243,7 +245,7 @@ class SonicSimilarityPlugin(PluginProvider):
             try:
                 await self._clap_index.close()
             except Exception as err:
-                self.logger.debug("CLAP index close failed: %s", err)
+                self.logger.debug("Character index close failed: %s", err)
             self._clap_index = None
         # Drop encoder ref so its (large) tensors can be GC'd.
         self._text_encoder = None
@@ -552,17 +554,31 @@ class SonicSimilarityPlugin(PluginProvider):
     # ------------------------------------------------------------------
 
     async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
-        """Implement ProviderFeature.SIMILAR_TRACKS via the 18-dim engine.
+        """Implement ProviderFeature.SIMILAR_TRACKS via the configured engine.
 
-        Returns [] when the corpus isn't ready, when none of the track's
-        provider mappings are indexed, or when the engine returns no
-        candidates — all three states are interchangeable to the
-        cross-provider dispatcher's truthy check.
+        Routes to the 1024-dim CLAP engine when it is selected and its index
+        loaded, otherwise the 18-dim weighted-Euclidean engine. There is no
+        cross-engine fallback: the chosen engine returns [] for a track it
+        cannot serve, which is interchangeable to the cross-provider
+        dispatcher's truthy check.
 
         :param track: Full Track object (with provider_mappings) as
             handed to us by the cross-provider dispatcher.
         :param limit: Max number of similar tracks to return.
         """
+        engine = str(self.config.get_value(CONF_SIMILAR_TRACKS_ENGINE) or SIMILAR_ENGINE_18DIM)
+        if engine == SIMILAR_ENGINE_CLAP and self._clap_index is not None:
+            return await self._similar_tracks_via_clap(track, limit)
+        if engine == SIMILAR_ENGINE_CLAP:
+            self.logger.debug(
+                "Similar Tracks for %s: Character engine selected but index unavailable; "
+                "using Traits",
+                track.uri,
+            )
+        return await self._similar_tracks_via_18dim(track, limit)
+
+    async def _similar_tracks_via_18dim(self, track: Track, limit: int) -> list[Track]:
+        """Serve SIMILAR_TRACKS from the 18-dim weighted-Euclidean engine."""
         if self.corpus_means is None or not self._signature_cache:
             return []
 
@@ -582,14 +598,62 @@ class SonicSimilarityPlugin(PluginProvider):
                 seed_item_id = mapping.item_id
                 break
         if seed_item_id is None:
+            self.logger.debug("Traits Similar Tracks for %s: no indexed seed mapping", track.uri)
             return []
 
-        response = await self._handle_similar(
-            item_id=seed_item_id, seed_provider=seed_provider, limit=limit
+        preset = str(self.config.get_value(CONF_SIMILAR_PRESET) or "balanced")
+        # The slider is a 0-10 integer; the engine wants a 0.0-1.0 weight.
+        try:
+            diversity = int(str(self.config.get_value(CONF_SIMILAR_DIVERSITY) or 0)) / 10.0
+        except (TypeError, ValueError):
+            diversity = 0.0
+        self.logger.debug(
+            "Traits Similar Tracks: seed=%s/%s preset=%s diversity=%s limit=%d",
+            seed_provider or "?",
+            seed_item_id,
+            preset,
+            diversity,
+            limit,
         )
-        items = response.get("items") or []
-        if not items:
+        response = await self._handle_similar(
+            item_id=seed_item_id,
+            seed_provider=seed_provider,
+            limit=limit,
+            preset=preset,
+            diversity=diversity,
+        )
+        results = await self._resolve_similar_items(response.get("items") or [])
+        self.logger.debug("Traits Similar Tracks: returning %d tracks", len(results))
+        return results
+
+    async def _similar_tracks_via_clap(self, track: Track, limit: int) -> list[Track]:
+        """Serve SIMILAR_TRACKS from the 1024-dim CLAP index; [] if the seed isn't indexed."""
+        if self._clap_index is None:
             return []
+        seed_item_id: str | None = None
+        seed_provider: str | None = None
+        for mapping in track.provider_mappings or ():
+            if mapping.provider_domain == "library":
+                continue
+            if self._clap_index.contains(mapping.provider_instance, mapping.item_id):
+                seed_item_id = mapping.item_id
+                seed_provider = mapping.provider_instance
+                break
+        if seed_item_id is None:
+            self.logger.debug("Character Similar Tracks for %s: no indexed seed mapping", track.uri)
+            return []
+        self.logger.debug(
+            "Character Similar Tracks: seed=%s/%s limit=%d", seed_provider, seed_item_id, limit
+        )
+        response = await self._handle_similar_clap(
+            item_id=seed_item_id, limit=limit, seed_provider=seed_provider
+        )
+        results = await self._resolve_similar_items(response.get("items") or [])
+        self.logger.debug("Character Similar Tracks: returning %d tracks", len(results))
+        return results
+
+    async def _resolve_similar_items(self, items: list[dict[str, Any]]) -> list[Track]:
+        """Resolve [{item_id, provider}, …] response rows to Tracks, dropping lookup misses."""
 
         async def _resolve(entry: dict[str, Any]) -> Track | None:
             try:
@@ -604,7 +668,29 @@ class SonicSimilarityPlugin(PluginProvider):
     # Cross-provider RECOMMENDATIONS hook (home/discover page)
     # ------------------------------------------------------------------
 
-    async def recommendations(self) -> list[RecommendationFolder]:  # noqa: PLR0915
+    def _find_discover_seed(self, track: Track, use_clap: bool) -> tuple[str | None, str | None]:
+        """Return (seed_id, seed_provider) for the first mapping the chosen engine indexes.
+
+        :param track: Recently-played track to walk into an indexed seed.
+        :param use_clap: Test CLAP-index membership when True, else the 18-dim
+            signature caches. The 18-dim by-id fallback returns provider None.
+        """
+        for pm in track.provider_mappings or ():
+            if pm.provider_domain == "library":
+                continue
+            if use_clap:
+                if self._clap_index is not None and self._clap_index.contains(
+                    pm.provider_instance, pm.item_id
+                ):
+                    return pm.item_id, pm.provider_instance
+            else:
+                if (pm.item_id, pm.provider_instance) in self._signature_cache:
+                    return pm.item_id, pm.provider_instance
+                if pm.item_id in self._signatures_by_id:
+                    return pm.item_id, None
+        return None, None
+
+    async def recommendations(self) -> list[RecommendationFolder]:
         """Yield an 'Inspired by recently played' folder for the discover page.
 
         Returns [] when the engine isn't ready or when no recent tracks
@@ -613,7 +699,10 @@ class SonicSimilarityPlugin(PluginProvider):
         """
         if not bool(self.config.get_value(CONF_ENABLE_DISCOVER_ROW)):
             return []
-        if self.corpus_means is None or not self._signature_cache:
+
+        discover_engine = str(self.config.get_value(CONF_DISCOVER_ENGINE) or SIMILAR_ENGINE_18DIM)
+        use_clap = discover_engine == SIMILAR_ENGINE_CLAP and self._clap_index is not None
+        if not use_clap and (self.corpus_means is None or not self._signature_cache):
             return []
 
         try:
@@ -642,18 +731,7 @@ class SonicSimilarityPlugin(PluginProvider):
                 )
             except MusicAssistantError:
                 continue
-            seed_id: str | None = None
-            seed_provider: str | None = None
-            for pm in track.provider_mappings or ():
-                if pm.provider_domain == "library":
-                    continue
-                if (pm.item_id, pm.provider_instance) in self._signature_cache:
-                    seed_id = pm.item_id
-                    seed_provider = pm.provider_instance
-                    break
-                if pm.item_id in self._signatures_by_id:
-                    seed_id = pm.item_id
-                    break
+            seed_id, seed_provider = self._find_discover_seed(track, use_clap)
             if seed_id and seed_id not in seen_seeds:
                 seeds.append((seed_id, seed_provider))
                 seen_seeds.add(seed_id)
@@ -662,23 +740,36 @@ class SonicSimilarityPlugin(PluginProvider):
             return []
 
         preset = str(self.config.get_value(CONF_DISCOVER_PRESET) or "discover")
+        # The slider is a 0-10 integer; the engine wants a 0.0-1.0 weight.
         try:
-            diversity = float(str(self.config.get_value(CONF_DISCOVER_DIVERSITY) or 0.0))
+            diversity = int(str(self.config.get_value(CONF_DISCOVER_DIVERSITY) or 0)) / 10.0
         except (TypeError, ValueError):
             diversity = 0.0
+        self.logger.debug(
+            "Discover row: engine=%s seeds=%d preset=%s diversity=%s",
+            "Character" if use_clap else "Traits",
+            len(seeds),
+            preset,
+            diversity,
+        )
 
         # Fan out per seed; union results, first-occurrence wins (we already
         # ordered seeds by recency above, so earlier seeds get priority).
         candidate_order: list[tuple[str, str]] = []
         candidate_seen: set[tuple[str, str]] = set()
         for sid, sprov in seeds:
-            response = await self._handle_similar(
-                item_id=sid,
-                seed_provider=sprov,
-                limit=RECOMMEND_PER_SEED_LIMIT,
-                preset=preset,
-                diversity=diversity,
-            )
+            if use_clap:
+                response = await self._handle_similar_clap(
+                    item_id=sid, limit=RECOMMEND_PER_SEED_LIMIT, seed_provider=sprov
+                )
+            else:
+                response = await self._handle_similar(
+                    item_id=sid,
+                    seed_provider=sprov,
+                    limit=RECOMMEND_PER_SEED_LIMIT,
+                    preset=preset,
+                    diversity=diversity,
+                )
             for entry in response.get("items") or []:
                 key = (entry["provider"], entry["item_id"])
                 if key in candidate_seen:
@@ -817,9 +908,8 @@ class SonicSimilarityPlugin(PluginProvider):
 
     async def _rebuild_search_index(self) -> None:
         """Rebuild the search index from all stored analysis rows."""
-        # SQLite SELECT is snapshot-isolated: rows added mid-rebuild aren't
-        # indexed. Snapshot the count BEFORE the rebuild so the next periodic
-        # tick re-rebuilds for them; bumping after would silently miss them.
+        # Snapshot the count BEFORE the rebuild: SELECT is snapshot-isolated, so rows
+        # added mid-rebuild are missed — counting after would skip the next refresh.
         try:
             pre_count = await self._count_analysis_rows()
         except Exception:
@@ -832,13 +922,8 @@ class SonicSimilarityPlugin(PluginProvider):
 
     async def _rebuild_search_index_locked(self) -> None:  # noqa: PLR0915
         """Rebuild body — assumes self._rebuild_lock is held."""
-        # Cross-AA-provider merge runs in the controller, streamed as an
-        # AsyncGenerator (iter_merged_audio_analysis_rows). Conflict resolution
-        # is timestamp-order (latest non-None write wins per field), which means
-        # a re-run of the primary analyzer can override fields a secondary
-        # analyzer populated earlier — accept that for symmetry with the rest
-        # of MA's analysis stack. Rows from currently-unavailable AA providers
-        # are skipped by the helper.
+        # Controller streams the cross-AA-provider merge (latest non-None write wins
+        # per field); rows from currently-unavailable AA providers are skipped.
 
         # Build new state in LOCALS — old self.* state continues to serve queries
         # until we atomically swap at the end.
@@ -939,10 +1024,8 @@ class SonicSimilarityPlugin(PluginProvider):
 
         new_viewer = await asyncio.to_thread(_build_save_and_view)
 
-        # Atomic swap: queries that yielded before this point either resume seeing
-        # fully old state (if scheduled before this block) or fully new state
-        # (after). No `await` between writes, so other tasks cannot observe a
-        # half-rotated state.
+        # Atomic swap: no `await` between these writes, so queries see fully old or
+        # fully new state, never a half-rotated mix.
         old_search_index = self._search_index
         self._search_index = new_viewer
         self._label_map = new_label_map
@@ -1190,21 +1273,24 @@ class SonicSimilarityPlugin(PluginProvider):
                     added += 1
                 except Exception as err:
                     self.logger.debug(
-                        "Add to CLAP index failed for %s/%s: %s",
+                        "Add to Character index failed for %s/%s: %s",
                         row["provider"],
                         row["item_id"],
                         err,
                     )
             if added > 0:
                 await self._clap_index.save()
-                self.logger.info("Added %d new embeddings to CLAP index", added)
+                self.logger.info("Added %d new embeddings to Character index", added)
 
-    async def _handle_similar_clap(self, item_id: str, limit: int = 25) -> dict[str, Any]:
+    async def _handle_similar_clap(
+        self, item_id: str, limit: int = 25, seed_provider: str | None = None
+    ) -> dict[str, Any]:
         """Return tracks whose CLAP audio embedding is closest to the seed track's.
 
-        :param item_id: Seed track identifier (provider-agnostic). The first
-            label whose reverse-map entry matches is used.
+        :param item_id: Seed track identifier.
         :param limit: Max number of neighbours to return.
+        :param seed_provider: When set, the seed embedding is fetched in O(1) via
+            its derived label; when None, the reverse map is scanned by item_id.
         """
         if self._clap_index is None:
             return {
@@ -1213,15 +1299,18 @@ class SonicSimilarityPlugin(PluginProvider):
                 "seed_track_id": item_id,
                 "items": [],
             }
-        lookup = self._clap_index.get_embedding_by_item_id(item_id)
-        if lookup is None:
+        if seed_provider is not None:
+            seed_embedding = self._clap_index.get_embedding(seed_provider, item_id)
+        else:
+            lookup = self._clap_index.get_embedding_by_item_id(item_id)
+            seed_embedding = lookup[1] if lookup is not None else None
+        if seed_embedding is None:
             return {
                 "analyzed": False,
                 "reason": "seed_not_in_index",
                 "seed_track_id": item_id,
                 "items": [],
             }
-        _seed_provider, seed_embedding = lookup
         # +1 because the seed itself is the nearest neighbour; we drop it after.
         raw_results = await self._clap_index.search(seed_embedding, limit + 1)
         items: list[dict[str, Any]] = []

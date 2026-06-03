@@ -112,7 +112,9 @@ def make_plugin(
     :param discover_row_enabled: Config value for CONF_ENABLE_DISCOVER_ROW
         (default True, matching the production default).
     :param discover_preset: Config value for CONF_DISCOVER_PRESET.
-    :param discover_diversity: Config value for CONF_DISCOVER_DIVERSITY.
+    :param discover_diversity: Config value for CONF_DISCOVER_DIVERSITY (0-10 integer scale).
+    :param discover_engine: Config value for CONF_DISCOVER_ENGINE ("18dim"/"clap";
+        None defaults to 18-dim via the provider's fallback).
     :param signatures: Optional dict of {(provider, item_id): vector}
         used to populate ``_signature_cache`` / ``_signatures_by_id`` /
         ``_provider_by_item_id`` and to set non-None corpus_means/stds.
@@ -130,7 +132,8 @@ def make_plugin(
         text_search_enabled: bool = False,
         discover_row_enabled: bool = True,
         discover_preset: str = "discover",
-        discover_diversity: float = 0.2,
+        discover_diversity: int = 2,
+        discover_engine: str | None = None,
         signatures: dict[tuple[str, str], list[float]] | None = None,
     ) -> SonicSimilarityPlugin:
         manifest = MagicMock()
@@ -144,6 +147,7 @@ def make_plugin(
             "enable_discover_row": discover_row_enabled,
             "discover_preset": discover_preset,
             "discover_diversity": discover_diversity,
+            "discover_engine": discover_engine,
         }
         config.get_value = lambda key: config_values.get(key)
         plugin = SonicSimilarityPlugin(mock_mass, manifest, config, SUPPORTED_FEATURES)
