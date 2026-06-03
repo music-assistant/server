@@ -151,7 +151,7 @@ exclude = [
   '^music_assistant/controllers/music.py$',
   '^music_assistant/helpers/app_vars.py',
   '^music_assistant/providers/apple_music/.*$',
-  '^music_assistant/providers/bluesound/.*$',
+  '^music_assistant/providers/bluesound/player.py',
   '^music_assistant/providers/plex/.*$',
   '^music_assistant/providers/plex_connect/.*$',
   '^music_assistant/providers/sonic_analysis/vendored_clap/.*$',
