@@ -222,13 +222,7 @@ class PhishInProvider(MusicProvider):
                     break
 
                 for track_data in tracks_on_page:
-                    show_data = {
-                        "date": track_data.get("show_date"),
-                        "album_cover_url": track_data.get("show_album_cover_url"),
-                        "venue": {"name": track_data.get("venue_name")},
-                    }
-                    track = track_to_ma_track(self, track_data, show_data)
-                    all_tracks.append(track)
+                    all_tracks.append(track_to_ma_track(self, track_data))
 
                 # a short page means we've reached the end
                 if len(tracks_on_page) < per_page:

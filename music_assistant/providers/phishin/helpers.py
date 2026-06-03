@@ -62,8 +62,17 @@ async def api_request(
         raise ProviderUnavailableError(f"Phish.in API unavailable: {err}") from err
 
 
-def show_to_album(provider: MusicProvider, show_data: dict[str, Any]) -> Album:
-    """Convert a Phish.in show to a Music Assistant Album."""
+def show_to_album(
+    provider: MusicProvider,
+    show_data: dict[str, Any],
+    *,
+    available: bool | None = None,
+) -> Album:
+    """
+    Convert a Phish.in show to a Music Assistant Album.
+
+    :param available: Override album availability; defaults to the show's audio_status.
+    """
     show_date = show_data.get("date", "")
     venue_data = show_data.get("venue", {})
     venue_name = venue_data.get("name", "Unknown Venue")
@@ -103,6 +112,7 @@ def show_to_album(provider: MusicProvider, show_data: dict[str, Any]) -> Album:
 
     audio_status = show_data.get("audio_status", "missing")
     details_parts.append(f"audio_status:{audio_status}")
+    is_available = available if available is not None else audio_status in ["complete", "partial"]
 
     if show_data.get("tour_name"):
         details_parts.append(f"tour:{show_data.get('tour_name')}")
@@ -129,7 +139,7 @@ def show_to_album(provider: MusicProvider, show_data: dict[str, Any]) -> Album:
                 item_id=show_date,
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
-                available=audio_status in ["complete", "partial"],
+                available=is_available,
                 audio_format=AudioFormat(content_type=ContentType.MP3),
                 details="|".join(details_parts),
             )
@@ -188,69 +198,6 @@ def _extract_version_from_title(full_title: str) -> tuple[str, str]:
             song_title = base_title
 
     return song_title, version or ""
-
-
-def _create_track_album(
-    provider: MusicProvider,
-    show_date: str,
-    show_data: dict[str, Any] | None,
-) -> Album | None:
-    """Create the parent Album for a track.
-
-    A full Album (rather than an ItemMapping) is required so the track's show
-    surfaces in the UI's "Appears On" section, which only accepts Album instances.
-    """
-    if not show_date:
-        return None
-
-    venue_name = show_data.get("venue", {}).get("name", "") if show_data else ""
-    album_name = f"{show_date} - {venue_name}" if venue_name else show_date
-
-    image_url = (show_data.get("album_cover_url") if show_data else None) or FALLBACK_ALBUM_IMAGE
-    metadata = MediaItemMetadata(
-        images=UniqueList(
-            [
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=image_url,
-                    provider=provider.instance_id,
-                    remotely_accessible=True,
-                )
-            ]
-        )
-    )
-
-    year = None
-    if "-" in show_date:
-        with contextlib.suppress(ValueError, IndexError):
-            year = int(show_date.split("-", maxsplit=1)[0])
-
-    phish_artist = ItemMapping(
-        item_id=PHISH_ARTIST_ID,
-        provider=provider.instance_id,
-        name=PHISH_ARTIST_NAME,
-        media_type=MediaType.ARTIST,
-        available=True,
-    )
-
-    return Album(
-        item_id=show_date,
-        provider=provider.instance_id,
-        name=album_name,
-        artists=UniqueList([phish_artist]),
-        year=year,
-        album_type=AlbumType.LIVE,
-        metadata=metadata,
-        provider_mappings={
-            ProviderMapping(
-                item_id=show_date,
-                provider_domain=provider.domain,
-                provider_instance=provider.instance_id,
-                available=True,
-                audio_format=AudioFormat(content_type=ContentType.MP3),
-            )
-        },
-    )
 
 
 def _build_track_details(
@@ -330,8 +277,9 @@ def track_to_ma_track(
         available=True,
     )
 
-    # Create the parent album (full Album so the track shows under "Appears On")
-    track_album = _create_track_album(provider, show_date, show_data)
+    # Build the parent album (full Album so the track shows under "Appears On").
+    # Tracks we surface always have audio, so force the album available.
+    track_album = show_to_album(provider, show_data, available=True) if show_date else None
 
     # Build details string
     details = _build_track_details(track_data, song_data, show_date, set_name, venue_name)
@@ -566,13 +514,7 @@ def _parse_tracks(
         clean_title = strip_performance_indicators(full_title)
 
         if contains_search_term(clean_title):
-            # Extract show data from track data for image
-            show_data = {
-                "date": track_data.get("show_date"),
-                "album_cover_url": track_data.get("show_album_cover_url"),
-                "venue": {"name": track_data.get("venue_name")},
-            }
-            tracks.append(track_to_ma_track(provider, track_data, show_data))
+            tracks.append(track_to_ma_track(provider, track_data))
 
     # Deduplicate by album - only return one track per show
     seen_albums = set()
