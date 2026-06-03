@@ -2,11 +2,11 @@
 
 Two similarity engines in one plugin, both backed by usearch HNSW:
 
-* **18-dim weighted-Euclidean** (always on): per-track signature
+* **Traits (18-dim weighted-Euclidean)** (always on): per-track signature
   assembled from sonic_analysis scalars (BPM, energy, loudness, …) and
   ranked with a configurable weight preset. Atomic mmap-view rebuild.
 
-* **1024-dim CLAP cosine** (opt-in via the ``enable_clap_index`` config
+* **Character (1024-dim CLAP cosine)** (opt-in via the ``enable_clap_index`` config
   entry): builds a second usearch index over the CLAP audio embeddings
   already stored by sonic_analysis under
   ``audio_analysis.extra_data["clap_embedding"]``. Track-to-track
