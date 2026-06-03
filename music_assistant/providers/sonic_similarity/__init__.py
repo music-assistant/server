@@ -224,6 +224,7 @@ async def get_config_entries(
             key=CONF_SIMILAR_DIVERSITY,
             type=ConfigEntryType.FLOAT,
             default_value=0.0,
+            range=(0, 1),
             label="Similar Tracks diversity",
             description="0.0 keeps results closest to the seed; 1.0 maximises variety via MMR "
             "(some results may be less similar but more distinct from each other). "
@@ -282,6 +283,7 @@ async def get_config_entries(
             key=CONF_DISCOVER_DIVERSITY,
             type=ConfigEntryType.FLOAT,
             default_value=0.2,
+            range=(0, 1),
             label="Discover row diversity",
             description="0.0 keeps results closest to the seeds; 1.0 maximises variety via "
             "MMR (some results may be less similar but more distinct from each other). "
