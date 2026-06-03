@@ -202,15 +202,16 @@ class PhishInProvider(MusicProvider):
         try:
             all_tracks: list[Track] = []
             page = 1
+            per_page = 500
             max_pages = 5  # 2500 tracks max for UI performance
 
-            while len(all_tracks) < (max_pages * 500) and page <= max_pages:
+            while page <= max_pages:
                 tracks_data = await api_request(
                     self,
                     ENDPOINTS["tracks"],
                     params={
                         "page": page,
-                        "per_page": 500,
+                        "per_page": per_page,
                         "sort": "likes_count:desc",
                         "audio_status": "complete_or_partial",
                     },
@@ -229,7 +230,8 @@ class PhishInProvider(MusicProvider):
                     track = track_to_ma_track(self, track_data, show_data)
                     all_tracks.append(track)
 
-                if len(tracks_on_page) < 50:
+                # a short page means we've reached the end
+                if len(tracks_on_page) < per_page:
                     break
 
                 page += 1
