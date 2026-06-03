@@ -222,11 +222,11 @@ async def get_config_entries(
         ),
         ConfigEntry(
             key=CONF_SIMILAR_DIVERSITY,
-            type=ConfigEntryType.FLOAT,
-            default_value=0.0,
-            range=(0, 1),
+            type=ConfigEntryType.INTEGER,
+            default_value=0,
+            range=(0, 10),
             label="Similar Tracks diversity",
-            description="0.0 keeps results closest to the seed; 1.0 maximises variety via MMR "
+            description="0 keeps results closest to the seed; 10 maximises variety via MMR "
             "(some results may be less similar but more distinct from each other). "
             "Traits engine only.",
             category="Similarity search",
@@ -281,11 +281,11 @@ async def get_config_entries(
         ),
         ConfigEntry(
             key=CONF_DISCOVER_DIVERSITY,
-            type=ConfigEntryType.FLOAT,
-            default_value=0.2,
-            range=(0, 1),
+            type=ConfigEntryType.INTEGER,
+            default_value=2,
+            range=(0, 10),
             label="Discover row diversity",
-            description="0.0 keeps results closest to the seeds; 1.0 maximises variety via "
+            description="0 keeps results closest to the seeds; 10 maximises variety via "
             "MMR (some results may be less similar but more distinct from each other). "
             "Traits engine only.",
             category="Discover",

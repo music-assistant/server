@@ -171,7 +171,7 @@ class TestRecommendations:
         plugin = make_plugin(
             signatures={("spotify", "seed1"): [0.1] * 18},
             discover_preset="vibe",
-            discover_diversity=0.7,
+            discover_diversity=7,
         )
         mock_mass.music.recently_played = AsyncMock(return_value=[make_item_mapping("recent1")])
         recent_track = make_track("seed1", provider="spotify")

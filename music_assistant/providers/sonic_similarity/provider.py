@@ -601,8 +601,9 @@ class SonicSimilarityPlugin(PluginProvider):
             return []
 
         preset = str(self.config.get_value(CONF_SIMILAR_PRESET) or "balanced")
+        # The slider is a 0–10 integer; the engine wants a 0.0–1.0 weight.
         try:
-            diversity = float(str(self.config.get_value(CONF_SIMILAR_DIVERSITY) or 0.0))
+            diversity = int(str(self.config.get_value(CONF_SIMILAR_DIVERSITY) or 0)) / 10.0
         except (TypeError, ValueError):
             diversity = 0.0
         self.logger.debug(
@@ -738,8 +739,9 @@ class SonicSimilarityPlugin(PluginProvider):
             return []
 
         preset = str(self.config.get_value(CONF_DISCOVER_PRESET) or "discover")
+        # The slider is a 0–10 integer; the engine wants a 0.0–1.0 weight.
         try:
-            diversity = float(str(self.config.get_value(CONF_DISCOVER_DIVERSITY) or 0.0))
+            diversity = int(str(self.config.get_value(CONF_DISCOVER_DIVERSITY) or 0)) / 10.0
         except (TypeError, ValueError):
             diversity = 0.0
         self.logger.debug(
