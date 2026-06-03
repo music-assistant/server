@@ -840,7 +840,48 @@ async def test_get_playlist_tracks_dynamic_uses_resolved_provider_id(
     result = await plugin.get_playlist_tracks("123")
 
     assert result == expected
-    cached_dynamic_sample_mock.assert_awaited_once_with("abc")
+    cached_dynamic_sample_mock.assert_awaited_once_with("abc", ())
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_tracks_dynamic_cache_key_differs_by_provider_filter(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Different provider filters produce different cache keys for dynamic playlists."""
+    mass = MagicMock()
+    mass.storage_path = str(tmp_path)
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    await plugin.handle_async_init()
+
+    plugin._rules_store["abc"] = SmartPlaylistRules(limit=100, is_dynamic=True)
+
+    cached_dynamic_sample_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(plugin, "_cached_dynamic_sample", cached_dynamic_sample_mock)
+
+    # Call once with no user (no provider filter)
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.get_current_user", lambda: None)
+    await plugin.get_playlist_tracks("abc")
+
+    # Call again with a user that has a provider filter
+    user_with_filter = MagicMock()
+    user_with_filter.provider_filter = ["spotify_instance_id", "tidal_instance_id"]
+    monkeypatch.setattr(
+        "music_assistant.providers.smart_playlist.get_current_user",
+        lambda: user_with_filter,
+    )
+    await plugin.get_playlist_tracks("abc")
+
+    calls = cached_dynamic_sample_mock.await_args_list
+    assert len(calls) == 2
+    # The second argument (user_provider_filter) must differ between the two calls.
+    assert calls[0].args[1] != calls[1].args[1]
+    assert calls[0].args[1] == ()
+    assert calls[1].args[1] == ("spotify_instance_id", "tidal_instance_id")
 
 
 @pytest.mark.asyncio
