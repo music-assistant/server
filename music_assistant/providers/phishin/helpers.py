@@ -190,35 +190,66 @@ def _extract_version_from_title(full_title: str) -> tuple[str, str]:
     return song_title, version or ""
 
 
-def _create_album_mapping(
+def _create_track_album(
     provider: MusicProvider,
     show_date: str,
     show_data: dict[str, Any] | None,
-) -> ItemMapping | None:
-    """Create album ItemMapping with image for a track."""
+) -> Album | None:
+    """Create the parent Album for a track.
+
+    A full Album (rather than an ItemMapping) is required so the track's show
+    surfaces in the UI's "Appears On" section, which only accepts Album instances.
+    """
     if not show_date:
         return None
 
     venue_name = show_data.get("venue", {}).get("name", "") if show_data else ""
+    album_name = f"{show_date} - {venue_name}" if venue_name else show_date
 
-    # Create the image for the album mapping
-    album_image = None
-    if show_data:
-        image_url = show_data.get("album_cover_url") or FALLBACK_ALBUM_IMAGE
-        album_image = MediaItemImage(
-            type=ImageType.THUMB,
-            path=image_url,
-            provider=provider.instance_id,
-            remotely_accessible=True,
+    image_url = (show_data.get("album_cover_url") if show_data else None) or FALLBACK_ALBUM_IMAGE
+    metadata = MediaItemMetadata(
+        images=UniqueList(
+            [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=image_url,
+                    provider=provider.instance_id,
+                    remotely_accessible=True,
+                )
+            ]
         )
+    )
 
-    return ItemMapping(
+    year = None
+    if "-" in show_date:
+        with contextlib.suppress(ValueError, IndexError):
+            year = int(show_date.split("-", maxsplit=1)[0])
+
+    phish_artist = ItemMapping(
+        item_id=PHISH_ARTIST_ID,
+        provider=provider.instance_id,
+        name=PHISH_ARTIST_NAME,
+        media_type=MediaType.ARTIST,
+        available=True,
+    )
+
+    return Album(
         item_id=show_date,
         provider=provider.instance_id,
-        name=f"{show_date} - {venue_name}" if venue_name else show_date,
-        media_type=MediaType.ALBUM,
-        available=True,
-        image=album_image,
+        name=album_name,
+        artists=UniqueList([phish_artist]),
+        year=year,
+        album_type=AlbumType.LIVE,
+        metadata=metadata,
+        provider_mappings={
+            ProviderMapping(
+                item_id=show_date,
+                provider_domain=provider.domain,
+                provider_instance=provider.instance_id,
+                available=True,
+                audio_format=AudioFormat(content_type=ContentType.MP3),
+            )
+        },
     )
 
 
@@ -283,8 +314,8 @@ def track_to_ma_track(
         available=True,
     )
 
-    # Create album mapping with image
-    album_mapping = _create_album_mapping(provider, show_date, show_data)
+    # Create the parent album (full Album so the track shows under "Appears On")
+    track_album = _create_track_album(provider, show_date, show_data)
 
     # Build details string
     details = _build_track_details(track_data, song_data, show_date, set_name, venue_name)
@@ -313,7 +344,7 @@ def track_to_ma_track(
         name=song_title,
         version=version,
         artists=UniqueList([phish_artist]),
-        album=album_mapping,
+        album=track_album,
         duration=duration,
         track_number=track_number,
         metadata=metadata,
