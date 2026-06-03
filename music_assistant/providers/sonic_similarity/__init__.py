@@ -275,8 +275,8 @@ async def get_config_entries(
                 ConfigValueOption("Genre + Era (stay close)", "genre_era"),
             ],
             category="Discover",
-            depends_on=CONF_ENABLE_DISCOVER_ROW,
-            depends_on_value=True,
+            depends_on=CONF_DISCOVER_ENGINE,
+            depends_on_value=SIMILAR_ENGINE_18DIM,
         ),
         ConfigEntry(
             key=CONF_DISCOVER_DIVERSITY,
@@ -287,33 +287,16 @@ async def get_config_entries(
             "MMR (some results may be less similar but more distinct from each other). "
             "18-dim engine only.",
             category="Discover",
-            depends_on=CONF_ENABLE_DISCOVER_ROW,
-            depends_on_value=True,
+            depends_on=CONF_DISCOVER_ENGINE,
+            depends_on_value=SIMILAR_ENGINE_18DIM,
         ),
-        # === Status: read-only diagnostics ===
+        # === Status: each rebuild (advanced) sits directly under its own status row ===
         ConfigEntry(
             key=CONF_LABEL_STATUS_18DIM,
             type=ConfigEntryType.LABEL,
             label=status_18,
             category="Status",
         ),
-        ConfigEntry(
-            key=CONF_LABEL_STATUS_CLAP,
-            type=ConfigEntryType.LABEL,
-            label=status_clap,
-            category="Status",
-            depends_on=CONF_ENABLE_CLAP_INDEX,
-            depends_on_value=True,
-        ),
-        ConfigEntry(
-            key=CONF_LABEL_STATUS_TEXT,
-            type=ConfigEntryType.LABEL,
-            label=status_text,
-            category="Status",
-            depends_on=CONF_ENABLE_TEXT_SEARCH,
-            depends_on_value=True,
-        ),
-        # === Status (advanced): index rebuilds behind the advanced toggle ===
         ConfigEntry(
             key=ACTION_REBUILD_18DIM,
             type=ConfigEntryType.ACTION,
@@ -325,6 +308,14 @@ async def get_config_entries(
             category="Status",
             advanced=True,
             required=False,
+        ),
+        ConfigEntry(
+            key=CONF_LABEL_STATUS_CLAP,
+            type=ConfigEntryType.LABEL,
+            label=status_clap,
+            category="Status",
+            depends_on=CONF_ENABLE_CLAP_INDEX,
+            depends_on_value=True,
         ),
         ConfigEntry(
             key=ACTION_REBUILD_CLAP,
@@ -339,6 +330,14 @@ async def get_config_entries(
             advanced=True,
             required=False,
             depends_on=CONF_ENABLE_CLAP_INDEX,
+            depends_on_value=True,
+        ),
+        ConfigEntry(
+            key=CONF_LABEL_STATUS_TEXT,
+            type=ConfigEntryType.LABEL,
+            label=status_text,
+            category="Status",
+            depends_on=CONF_ENABLE_TEXT_SEARCH,
             depends_on_value=True,
         ),
     )
