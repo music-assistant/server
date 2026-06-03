@@ -538,7 +538,8 @@ for more details.
                         token=self._client.token,
                         base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                         media_progress=progress,
-                        add_cover=bool(item.library_item.media.cover_path or False),
+                        cover_path=item.library_item.media.cover_path,
+                        cover_version=item.library_item.updated_at,
                     )
                 )
         for cnt, item in enumerate(playlist_items):
@@ -727,7 +728,8 @@ for more details.
                 token=self._client.token,
                 base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                 media_progress=progress,
-                add_cover=bool(abs_podcast.media.cover_path or False),
+                cover_path=abs_podcast.media.cover_path,
+                cover_version=abs_podcast.updated_at,
             )
             yield mass_episode
             episode_cnt += 1
@@ -756,7 +758,8 @@ for more details.
                     token=self._client.token,
                     base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                     media_progress=progress,
-                    add_cover=bool(abs_podcast.media.cover_path or False),
+                    cover_path=abs_podcast.media.cover_path,
+                    cover_version=abs_podcast.updated_at,
                 )
 
             episode_cnt += 1
@@ -1129,9 +1132,11 @@ for more details.
                             podcast_id = entity.id_
                             if entity.recent_episode is None:
                                 continue
-                            _add_cover = False
+                            _cover_path = None
+                            _cover_version = None
                             if isinstance(entity, ShelfLibraryItemMinifiedPodcast):
-                                _add_cover = bool(entity.media.cover_path or False)
+                                _cover_path = entity.media.cover_path
+                                _cover_version = entity.updated_at
                             # we only have a PodcastEpisode here, with limited information
                             item = parse_podcast_episode(
                                 episode=entity.recent_episode,
@@ -1140,7 +1145,8 @@ for more details.
                                 domain=self.domain,
                                 token=self._client.token,
                                 base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
-                                add_cover=_add_cover,
+                                cover_path=_cover_path,
+                                cover_version=_cover_version,
                             )
                         if item is not None:
                             items.append(item)
