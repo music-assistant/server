@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import (
     ContentType,
-    ImageType,
     MediaType,
     StreamType,
 )
@@ -18,15 +17,11 @@ from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
     ItemMapping,
-    MediaItemImage,
-    MediaItemMetadata,
     Playlist,
-    ProviderMapping,
     SearchResults,
     Track,
 )
 from music_assistant_models.streamdetails import StreamDetails
-from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import now
@@ -34,7 +29,6 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     ENDPOINTS,
-    FALLBACK_ALBUM_IMAGE,
     MAX_SEARCH_RESULTS,
     PHISH_ARTIST_ID,
 )
@@ -42,6 +36,7 @@ from .helpers import (
     api_request,
     get_phish_artist,
     parse_search_results,
+    playlist_to_ma_playlist,
     show_to_album,
     track_to_ma_track,
 )
@@ -363,43 +358,9 @@ class PhishInProvider(MusicProvider):
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve library playlists from the provider."""
         try:
-            playlists_data = await api_request(
-                self, ENDPOINTS["playlists"], params={"per_page": 100, "sort": "likes_count:desc"}
-            )
-
-            for playlist_data in playlists_data.get("playlists", []):
-                track_count = playlist_data.get("tracks_count", 0)
-                if track_count > 0:
-                    playlist_id = str(playlist_data.get("id"))
-
-                    metadata = MediaItemMetadata(
-                        images=UniqueList(
-                            [
-                                MediaItemImage(
-                                    type=ImageType.THUMB,
-                                    path=FALLBACK_ALBUM_IMAGE,
-                                    provider=self.instance_id,
-                                    remotely_accessible=True,
-                                )
-                            ]
-                        )
-                    )
-                    yield Playlist(
-                        item_id=playlist_id,
-                        provider=self.instance_id,
-                        name=playlist_data.get("name", ""),
-                        owner=playlist_data.get("username", ""),
-                        is_editable=False,
-                        metadata=metadata,
-                        provider_mappings={
-                            ProviderMapping(
-                                item_id=playlist_id,
-                                provider_domain=self.domain,
-                                provider_instance=self.instance_id,
-                                available=True,
-                            )
-                        },
-                    )
+            for playlist_data in await self._get_playlists():
+                if playlist_data.get("tracks_count", 0) > 0:
+                    yield playlist_to_ma_playlist(self, playlist_data)
         except (MediaNotFoundError, ProviderUnavailableError):
             raise
         except Exception as err:
@@ -410,35 +371,10 @@ class PhishInProvider(MusicProvider):
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         try:
-            playlists_data = await api_request(self, ENDPOINTS["playlists"])
-            playlist_slug = None
-            playlist_info = None
-
-            for playlist in playlists_data.get("playlists", []):
-                if str(playlist.get("id")) == prov_playlist_id:
-                    playlist_slug = playlist.get("slug")
-                    playlist_info = playlist
-                    break
-
-            if not playlist_slug or not playlist_info:
+            playlist_info = await self._resolve_playlist(prov_playlist_id)
+            if not playlist_info:
                 raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
-
-            return Playlist(
-                item_id=prov_playlist_id,
-                provider=self.instance_id,
-                name=playlist_info.get("name", ""),
-                owner=playlist_info.get("username", ""),
-                is_editable=False,
-                provider_mappings={
-                    ProviderMapping(
-                        item_id=prov_playlist_id,
-                        provider_domain=self.domain,
-                        provider_instance=self.instance_id,
-                        available=True,
-                    )
-                },
-            )
-
+            return playlist_to_ma_playlist(self, playlist_info)
         except MediaNotFoundError:
             raise
         except Exception as err:
@@ -450,29 +386,21 @@ class PhishInProvider(MusicProvider):
         if page > 0:
             return []
         try:
-            playlists_data = await api_request(self, ENDPOINTS["playlists"])
-            playlist_slug = None
-
-            for playlist in playlists_data.get("playlists", []):
-                if str(playlist.get("id")) == prov_playlist_id:
-                    playlist_slug = playlist.get("slug")
-                    break
-
-            if not playlist_slug:
+            playlist_info = await self._resolve_playlist(prov_playlist_id)
+            if not playlist_info:
                 return []
 
             playlist_data = await api_request(
-                self, ENDPOINTS["playlist_by_slug"].format(slug=playlist_slug)
+                self, ENDPOINTS["playlist_by_slug"].format(slug=playlist_info["slug"])
             )
 
-            all_tracks = []
+            tracks = []
             for entry in playlist_data.get("entries", []):
                 track_data = entry.get("track")
                 if track_data and track_data.get("mp3_url"):
-                    track = track_to_ma_track(self, track_data)
-                    all_tracks.append(track)
+                    tracks.append(track_to_ma_track(self, track_data))
 
-            return all_tracks
+            return tracks
 
         except (MediaNotFoundError, ProviderUnavailableError):
             raise
@@ -957,3 +885,20 @@ class PhishInProvider(MusicProvider):
         except Exception as err:
             self.logger.error("Failed to get shows for tag %s: %s", tag_slug, err)
             raise ProviderUnavailableError(f"Tag shows error: {err}") from err
+
+    @use_cache(expiration=86400)  # 24 hours - the playlist list changes rarely
+    async def _get_playlists(self) -> list[dict[str, Any]]:
+        """Fetch the full list of Phish.in playlists (single cached request)."""
+        # cached and shared by all playlist methods to avoid repeated list fetches
+        playlists_data = await api_request(
+            self, ENDPOINTS["playlists"], params={"per_page": 100, "sort": "likes_count:desc"}
+        )
+        playlists: list[dict[str, Any]] = playlists_data.get("playlists", [])
+        return playlists
+
+    async def _resolve_playlist(self, prov_playlist_id: str) -> dict[str, Any] | None:
+        """Return the raw playlist data for the given id from the cached list."""
+        for playlist in await self._get_playlists():
+            if str(playlist.get("id")) == prov_playlist_id:
+                return playlist
+        return None

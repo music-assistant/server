@@ -278,6 +278,22 @@ def _build_track_details(
     return "|".join(details_parts)
 
 
+def _flat_track_show(track_data: dict[str, Any]) -> dict[str, Any]:
+    """Build a show_data dict from a track's flat fields.
+
+    Some endpoints (search results, playlist entries) return track objects
+    without a nested ``show`` object, exposing the show details as flat fields.
+    """
+    return {
+        "date": track_data.get("show_date"),
+        "album_cover_url": track_data.get("show_album_cover_url"),
+        "venue": {
+            "name": track_data.get("venue_name"),
+            "location": track_data.get("venue_location"),
+        },
+    }
+
+
 def track_to_ma_track(
     provider: MusicProvider,
     track_data: dict[str, Any],
@@ -299,9 +315,9 @@ def track_to_ma_track(
     track_number = int(position) if position is not None else 0
     set_name = track_data.get("set_name", "")
 
-    # Get show information
+    # Get show information; fall back to the nested show or flat track fields
     if show_data is None:
-        show_data = track_data.get("show", {})
+        show_data = track_data.get("show") or _flat_track_show(track_data)
     show_date = show_data.get("date", "")
     venue_name = show_data.get("venue", {}).get("name", "")
 
