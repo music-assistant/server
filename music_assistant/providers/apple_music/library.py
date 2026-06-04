@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MusicAssistantError
@@ -34,7 +34,7 @@ class AppleMusicLibraryManager:
             endpoint, include="catalog", extend="editorialNotes"
         ):
             if item and item["id"]:
-                yield parse_artist(self.provider, item)
+                yield cast("Artist", parse_artist(self.provider, item))
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from the provider."""
@@ -65,13 +65,13 @@ class AppleMusicLibraryManager:
                 )
                 album = parse_album(self.provider, item, is_favourite)
                 if album:
-                    yield album
+                    yield cast("Album", album)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from the provider."""
         endpoint = "me/library/songs"
         song_catalog_ids = []
-        library_items_by_catalog_id: dict[str, dict] = {}
+        library_items_by_catalog_id: dict[str, dict[str, Any]] = {}
         library_only_tracks = []
         for item in await self.api.get_all_items(endpoint, include="catalog,albums,artists"):
             catalog_id = item.get("attributes", {}).get("playParams", {}).get("catalogId")
@@ -128,7 +128,7 @@ class AppleMusicLibraryManager:
         )
 
     async def _parse_library_track_with_detail_fallback(
-        self, item: dict, is_favourite: bool | None
+        self, item: dict[str, Any], is_favourite: bool | None
     ) -> Track:
         """Parse library track and fetch detail when album mapping is weak."""
         parsed_track = parse_track(self.provider, item, is_favourite)
@@ -169,7 +169,7 @@ class AppleMusicLibraryManager:
             playlist_library_item_ids, MediaType.PLAYLIST
         )
         for item in playlist_items:
-            is_favourite = rating_library_response.get(item["id"])
+            is_favourite = rating_library_response.get(item["id"], False)
             # Fetch catalog metadata, but keep library ID for write operations.
             if item["attributes"]["hasCatalog"]:
                 yield await self.provider.media_manager.get_playlist(
