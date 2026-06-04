@@ -621,44 +621,56 @@ class StorytelHelper:
         return podcast
 
     async def get_podcast_episodes(
-        self, prov_podcast_id: str, page_token: str = "", results_count: int = 0
+        self, prov_podcast_id: str, total_episodes: int | None = None
     ) -> list[dict[str, Any]]:
         """
         Get all podcast episodes for a specific podcast.
 
         :param prov_podcast_id: the provider podcast id.
-        :param page_token: the page token for pagination.
-        :param results_count: the current count of results.
+        :param total_episodes: the total number of episodes for the podcast.
         """
-        url = URL_PODCAST_DETAILS.replace("{CONSUMABLE_ID}", prov_podcast_id)
-        url += (
-            "?configVariant=voice-switcher-enabled"
-            "&includeFormats=ebook%2Cabook%2Cpodcast"
-            f"&includeLanguages={quote(self.languages_query, safe='')}"
-            f"&kidsMode={quote(str(self._kids_mode), safe='')}"
-            "&orderBy=default"
-        )
-        if page_token != "":
-            url += f"&nextPageToken={quote(page_token, safe='')}"
-        headers = self._headers_api()
-        headers["Accept"] = API_HEADER_CONTENT_TYPE_EXPLORE
-        async with self._session.get(url, headers=headers) as resp:
-            await self._raise_for_status(resp)
-            data: dict[str, Any] = await resp.json()
-        results = data.get("items") or []
-        results_count = results_count + len(results)
-        total_results = data.get("totalCount", 0)
-        next_page_token = data.get("nextPageToken", "")
-        if (
-            results_count < total_results
-            and next_page_token
-            and next_page_token != ""
-            and int(next_page_token) < total_results
-        ):
-            results.extend(
-                await self.get_podcast_episodes(prov_podcast_id, next_page_token, results_count)
+
+        async def fetch_page(token: str = "") -> dict[str, Any]:
+            url = URL_PODCAST_DETAILS.replace("{CONSUMABLE_ID}", prov_podcast_id)
+            url += (
+                "?configVariant=voice-switcher-enabled"
+                "&includeFormats=ebook%2Cabook%2Cpodcast"
+                f"&includeLanguages={quote(self.languages_query, safe='')}"
+                f"&kidsMode={quote(str(self._kids_mode), safe='')}"
+                "&orderBy=default"
             )
-        return results
+            if token != "":
+                url += f"&nextPageToken={quote(token, safe='')}"
+            headers = self._headers_api()
+            headers["Accept"] = API_HEADER_CONTENT_TYPE_EXPLORE
+            async with self._session.get(url, headers=headers) as resp:
+                await self._raise_for_status(resp)
+                return cast("dict[str, Any]", await resp.json())
+
+        async def fetch_items(token: str) -> list[dict[str, Any]]:
+            page_data = await fetch_page(token)
+            return page_data.get("items") or []
+
+        async def fetch_pages(page_tokens: list[str]) -> list[dict[str, Any]]:
+            page_results: list[Task[list[dict[str, Any]]]] = []
+
+            async with TaskGroup() as tg:
+                for token in page_tokens:
+                    page_results.append(tg.create_task(fetch_items(token)))
+
+            results: list[dict[str, Any]] = []
+            for task in page_results:
+                results.extend(task.result())
+            return results
+
+        if not total_episodes or total_episodes <= 0:
+            return []
+
+        page_size = 10
+        page_tokens = [str(page_offset) for page_offset in range(0, total_episodes, page_size)]
+        if not page_tokens:
+            return []
+        return await fetch_pages(page_tokens)
 
     async def _parse_podcast_episode_item(self, item_data: dict[str, Any]) -> PodcastEpisode:
         consumable_id = item_data.get("consumableId") or ""

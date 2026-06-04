@@ -574,7 +574,10 @@ class Storytel(MusicProvider):
                 for task in cached_tasks:
                     yield task.result()
                 return
-        podcast_episodes = await self.api.get_podcast_episodes(prov_podcast_id)
+        podcast = await self.get_podcast(prov_podcast_id, use_cache=use_cache)
+        podcast_episodes = await self.api.get_podcast_episodes(
+            prov_podcast_id, total_episodes=podcast.total_episodes or 0
+        )
 
         if podcast_episodes is not None:
             if use_cache:
