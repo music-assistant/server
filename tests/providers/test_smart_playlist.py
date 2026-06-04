@@ -624,6 +624,41 @@ async def test_dedup_fallback_when_pool_exhausted() -> None:
 
 
 @pytest.mark.asyncio
+async def test_dedup_partial_fill_prefers_old_library_over_streaming() -> None:
+    """Partial-exhaustion fill must not rank streaming tracks (last_played=0) as oldest."""
+    mass = MagicMock()
+    mass.music.recently_played = AsyncMock(
+        return_value=[
+            _make_played_mapping("library", "lo"),
+            _make_played_mapping("spotify--abc", "sn"),
+        ]
+    )
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    never = _make_mock_track("n", "library://track/n")  # not in playlog -> survives dedup
+    lib_old = _make_mock_track("lo", "library://track/lo")
+    lib_old.last_played = 100  # genuinely old play
+    stream_new = _make_mock_track("sn", "spotify://track/sn", provider_instance="spotify--abc")
+    stream_new.last_played = 0  # streaming track: no library timestamp
+
+    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=[never, lib_old, stream_new])
+
+    # limit=2: `never` fills one slot, the remaining slot is filled from the
+    # recently-played remainder; the old library track should win over the
+    # just-played streaming track.
+    rules = SmartPlaylistRules(dedup_hours=1, limit=2)
+    result = await plugin._evaluate_rules(rules)
+    uris = {t.uri for t in result}
+    assert "library://track/n" in uris
+    assert "library://track/lo" in uris
+    assert "spotify://track/sn" not in uris
+
+
+@pytest.mark.asyncio
 async def test_evaluate_rules_removes_duplicate_track_uris() -> None:
     """Smart playlist evaluation should not return the same track URI multiple times."""
     mass = MagicMock()

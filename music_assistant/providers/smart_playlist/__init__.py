@@ -580,7 +580,9 @@ class SmartPlaylistProvider(PluginProvider):
                 deduped_uris = {t.uri for t in deduped}
                 played_remainder = sorted(
                     (t for t in tracks if t.uri not in deduped_uris),
-                    key=lambda t: t.last_played,
+                    # last_played is 0 for non-library (streaming) tracks; treat 0 as
+                    # "most recent" so just-played streaming tracks aren't filled first.
+                    key=lambda t: t.last_played or float("inf"),
                 )
                 tracks = deduped + played_remainder[: rules.limit - len(deduped)]
             else:
