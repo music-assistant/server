@@ -91,12 +91,14 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         if username_or_user_id:
             # below raises if permissions are insufficient
             user = await self.mass.music.get_requested_user_if_authorized(username_or_user_id)
+        elif session_user := get_current_user():
+            user = session_user
 
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
         extra_join_parts: list[str] = []
-        if session_user := get_current_user():
-            extra_join_parts = [f"AND playlog.userid = '{session_user.user_id}'"]
+        if user:
+            extra_join_parts = [f"AND playlog.userid = '{user.user_id}'"]
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
