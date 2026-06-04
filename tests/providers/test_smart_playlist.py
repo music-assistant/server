@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time as _time
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -262,6 +261,7 @@ def _make_mock_track(
     album_id: str | None = None,
     favorite: bool = False,
     popularity: int | None = None,
+    provider_instance: str = "library",
 ) -> MagicMock:
     """Build a minimal mock Track object."""
     track = MagicMock()
@@ -269,6 +269,11 @@ def _make_mock_track(
     track.uri = uri
     track.name = f"Track {item_id}"
     track.favorite = favorite
+
+    mapping = MagicMock()
+    mapping.provider_instance = provider_instance
+    mapping.item_id = item_id
+    track.provider_mappings = [mapping]
 
     artist = MagicMock()
     artist.item_id = (artist_ids or ["100"])[0]
@@ -451,7 +456,7 @@ class TestNewValidation:
         plugin._validate_rules(rules)  # should not raise
 
     def test_dedup_hours_out_of_range_raises(self) -> None:
-        """dedup_hours outside 1-8760 raises InvalidDataError."""
+        """dedup_hours outside 1-2160 raises InvalidDataError."""
         plugin = self._make_plugin()
         with pytest.raises(InvalidDataError, match="dedup_hours"):
             plugin._validate_rules(SmartPlaylistRules(dedup_hours=0))
@@ -459,9 +464,16 @@ class TestNewValidation:
             plugin._validate_rules(SmartPlaylistRules(dedup_hours=9000))
 
     def test_dedup_hours_valid_passes(self) -> None:
-        """dedup_hours within 1-8760 does not raise."""
+        """dedup_hours within 1-2160 does not raise."""
         plugin = self._make_plugin()
         plugin._validate_rules(SmartPlaylistRules(dedup_hours=24))  # should not raise
+
+    def test_dedup_hours_above_retention_raises(self) -> None:
+        """dedup_hours beyond the 90-day (2160h) playlog retention raises."""
+        plugin = self._make_plugin()
+        with pytest.raises(InvalidDataError, match="dedup_hours"):
+            plugin._validate_rules(SmartPlaylistRules(dedup_hours=2161))
+        plugin._validate_rules(SmartPlaylistRules(dedup_hours=2160))  # boundary, should not raise
 
 
 @pytest.mark.asyncio
@@ -532,10 +544,19 @@ async def test_exclusion_filters_out_excluded_uri() -> None:
     assert all(t.uri != "library://track/2" for t in result)
 
 
+def _make_played_mapping(provider: str, item_id: str) -> MagicMock:
+    """Build a minimal mock ItemMapping as returned by recently_played."""
+    mapping = MagicMock()
+    mapping.provider = provider
+    mapping.item_id = item_id
+    return mapping
+
+
 @pytest.mark.asyncio
 async def test_dedup_removes_recently_played() -> None:
-    """Tracks played within dedup_hours are excluded; others are kept."""
+    """Tracks present in the playlog within dedup_hours are excluded; others are kept."""
     mass = MagicMock()
+    mass.music.recently_played = AsyncMock(return_value=[_make_played_mapping("library", "1")])
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
     config = MagicMock()
@@ -543,13 +564,8 @@ async def test_dedup_removes_recently_played() -> None:
     plugin = SmartPlaylistProvider(mass, manifest, config, set())
 
     recent = _make_mock_track("1", "library://track/1")
-    recent.last_played = int(_time.time() - 60)  # 1 minute ago
-
     old = _make_mock_track("2", "library://track/2")
-    old.last_played = int(_time.time() - 7200)  # 2 hours ago
-
     never = _make_mock_track("3", "library://track/3")
-    never.last_played = 0  # never played
 
     cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=[recent, old, never])
 
@@ -562,20 +578,42 @@ async def test_dedup_removes_recently_played() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dedup_fallback_when_pool_exhausted() -> None:
-    """When all tracks were recently played, dedup is ignored and the full pool is returned."""
+async def test_dedup_removes_recently_played_streaming_track() -> None:
+    """A non-library (streaming) track in the playlog is excluded via its provider mapping."""
     mass = MagicMock()
+    mass.music.recently_played = AsyncMock(
+        return_value=[_make_played_mapping("spotify--abc", "s1")]
+    )
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
     config = MagicMock()
     config.get_value.return_value = "GLOBAL"
     plugin = SmartPlaylistProvider(mass, manifest, config, set())
 
-    tracks = []
-    for i in range(5):
-        t = _make_mock_track(str(i), f"library://track/{i}")
-        t.last_played = int(_time.time() - 30)  # 30 sec ago
-        tracks.append(t)
+    played = _make_mock_track("s1", "spotify://track/s1", provider_instance="spotify--abc")
+    fresh = _make_mock_track("s2", "spotify://track/s2", provider_instance="spotify--abc")
+    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=[played, fresh])
+
+    rules = SmartPlaylistRules(dedup_hours=1, limit=1)
+    result = await plugin._evaluate_rules(rules)
+    uris = {t.uri for t in result}
+    assert "spotify://track/s1" not in uris
+    assert "spotify://track/s2" in uris
+
+
+@pytest.mark.asyncio
+async def test_dedup_fallback_when_pool_exhausted() -> None:
+    """When all tracks were recently played, dedup is ignored and the full pool is returned."""
+    mass = MagicMock()
+    tracks = [_make_mock_track(str(i), f"library://track/{i}") for i in range(5)]
+    mass.music.recently_played = AsyncMock(
+        return_value=[_make_played_mapping("library", str(i)) for i in range(5)]
+    )
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
 
     cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=tracks)
 
@@ -583,6 +621,41 @@ async def test_dedup_fallback_when_pool_exhausted() -> None:
     result = await plugin._evaluate_rules(rules)
     # Pool exhausted → fallback to full pool
     assert len(result) == 5
+
+
+@pytest.mark.asyncio
+async def test_dedup_partial_fill_prefers_old_library_over_streaming() -> None:
+    """Partial-exhaustion fill must not rank streaming tracks (last_played=0) as oldest."""
+    mass = MagicMock()
+    mass.music.recently_played = AsyncMock(
+        return_value=[
+            _make_played_mapping("library", "lo"),
+            _make_played_mapping("spotify--abc", "sn"),
+        ]
+    )
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    never = _make_mock_track("n", "library://track/n")  # not in playlog -> survives dedup
+    lib_old = _make_mock_track("lo", "library://track/lo")
+    lib_old.last_played = 100  # genuinely old play
+    stream_new = _make_mock_track("sn", "spotify://track/sn", provider_instance="spotify--abc")
+    stream_new.last_played = 0  # streaming track: no library timestamp
+
+    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=[never, lib_old, stream_new])
+
+    # limit=2: `never` fills one slot, the remaining slot is filled from the
+    # recently-played remainder; the old library track should win over the
+    # just-played streaming track.
+    rules = SmartPlaylistRules(dedup_hours=1, limit=2)
+    result = await plugin._evaluate_rules(rules)
+    uris = {t.uri for t in result}
+    assert "library://track/n" in uris
+    assert "library://track/lo" in uris
+    assert "spotify://track/sn" not in uris
 
 
 @pytest.mark.asyncio
