@@ -998,8 +998,9 @@ class BuiltinProvider(MusicProvider):
             return VARIOUS_ARTISTS_FANART
         if path.startswith(f"{GENRE_ICONS_DIR_NAME}/"):
             icon_name = path[len(GENRE_ICONS_DIR_NAME) + 1 :]
-            if is_safe_name(icon_name):
-                return str(RESOURCES_DIR.joinpath(GENRE_ICONS_DIR_NAME, icon_name))
+            if not is_safe_name(icon_name):
+                raise FileNotFoundError(f"Invalid genre icon reference: {path}")
+            return str(RESOURCES_DIR.joinpath(GENRE_ICONS_DIR_NAME, icon_name))
         return path
 
     async def _resolve_url(self, url: str) -> str:
