@@ -207,7 +207,7 @@ class YoutubeMusicProvider(MusicProvider):
         """Set up the YTMusic provider."""
         logging.getLogger("yt_dlp").setLevel(self.logger.level + 10)
         await self._install_packages()
-        self._cookie = self.config.get_value(CONF_COOKIE)
+        self._cookie = str(self.config.get_value(CONF_COOKIE))
         self._po_token_server_url = (
             self.config.get_value(CONF_PO_TOKEN_SERVER_URL) or DEFAULT_PO_TOKEN_SERVER_URL
         )
@@ -217,7 +217,7 @@ class YoutubeMusicProvider(MusicProvider):
                 "Make sure you have installed the YT Music PO Token Generator "
                 "and that it is running."
             )
-        yt_username = self.config.get_value(CONF_USERNAME)
+        yt_username = str(self.config.get_value(CONF_USERNAME))
         self._yt_user = yt_username if is_brand_account(yt_username) else None
         # yt-dlp needs a netscape formatted cookie
         self._netscape_cookie = convert_to_netscape(self._cookie, YTM_COOKIE_DOMAIN)
@@ -766,8 +766,8 @@ class YoutubeMusicProvider(MusicProvider):
         ) as response:
             return await response.text()
 
-    def _initialize_headers(self) -> dict[str, str]:
-        """Return headers to include in the requests."""
+    def _initialize_headers(self) -> None:
+        """Initialize the headers to include in the requests."""
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:72.0) Gecko/20100101 Firefox/72.0",
             "Accept": "*/*",
@@ -788,8 +788,8 @@ class YoutubeMusicProvider(MusicProvider):
         headers["Authorization"] = get_authorization(sapisid + " " + YTM_DOMAIN)
         self._headers = headers
 
-    def _initialize_context(self) -> dict[str, str]:
-        """Return a dict to use as a context in requests."""
+    def _initialize_context(self) -> None:
+        """Initialize the context to use in requests."""
         self._context = {
             "context": {
                 "client": {"clientName": "WEB_REMIX", "clientVersion": "0.1"},
