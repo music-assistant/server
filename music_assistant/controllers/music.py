@@ -200,8 +200,9 @@ class MusicController(CoreController):
         # setup library database
         await self._setup_database()
         # make sure to finish any removal jobs
-        for removed_provider in self.mass.config.get_raw_core_config_value(
-            self.domain, CONF_DELETED_PROVIDERS, []
+        for removed_provider in cast(
+            "list[str]",
+            self.mass.config.get_raw_core_config_value(self.domain, CONF_DELETED_PROVIDERS, []),
         ):
             await self.cleanup_provider(removed_provider)
 
@@ -278,7 +279,7 @@ class MusicController(CoreController):
                     continue
                 # handle mediatype specific sync config
                 conf_key = f"library_sync_{media_type}s"
-                sync_conf = await self.mass.config.get_provider_config_value(
+                sync_conf: ConfigValueType = await self.mass.config.get_provider_config_value(
                     provider.instance_id, conf_key
                 )
                 if not sync_conf:
@@ -343,7 +344,7 @@ class MusicController(CoreController):
             category=CACHE_CATEGORY_SEARCH_RESULTS,
             base_class=SearchResults,
         ):
-            return cache
+            return cast("SearchResults", cache)
         if not media_types:
             media_types = MediaType.ALL
         # Check if the search query is a streaming provider public shareable URL
@@ -2217,7 +2218,9 @@ class MusicController(CoreController):
         """Schedule Library sync for given provider and media type."""
         # handle mediatype specific sync config
         conf_key = f"library_sync_{media_type}s"
-        sync_conf = await self.mass.config.get_provider_config_value(provider.instance_id, conf_key)
+        sync_conf: ConfigValueType = await self.mass.config.get_provider_config_value(
+            provider.instance_id, conf_key
+        )
         if not sync_conf:
             self.mass.tasks.unregister_scheduled_task(self._get_sync_task_id(provider, media_type))
             return
@@ -2588,12 +2591,12 @@ class MusicController(CoreController):
                 )
                 if row_id and row_id[0]:
                     genre_cache[search_name] = row_id[0]
-                    return row_id[0]
+                    return cast("int", row_id[0])
                 async with db.execute(genre_select_sql, (search_name,)) as cursor:
                     row = await cursor.fetchone()
                     if row:
                         genre_cache[search_name] = row[0]
-                        return row[0]
+                        return cast("int", row[0])
                 return 0
 
             # Phase 1: Seed DEFAULT_GENRE_MAPPING — create genres with aliases.
