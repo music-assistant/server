@@ -100,9 +100,11 @@ def _segment_to_stream_metadata(
     """Map a ``/public-status`` segment snapshot onto a ``StreamMetadata``.
 
     Total by construction: every input — an unknown segment ``type``, an empty
-    ``now``, missing metadata fields — yields a ``StreamMetadata`` with a
-    non-empty ``title`` (``StreamMetadata.title`` is a mandatory ``str``). The
-    terminal title clamp below is the load-bearing guarantee.
+    ``now``, missing or wrong-typed metadata fields — yields a ``StreamMetadata``
+    with a non-empty ``title`` (``StreamMetadata.title`` is a mandatory ``str``).
+    Untrusted ``/public-status`` values are coerced via ``_clean_str`` / isinstance
+    guards before use, and the terminal title clamp below is the load-bearing
+    guarantee.
 
     ``description`` combines the typed "Up next" line and the Home Assistant
     "A casa" mood line rather than alternating them, so a single glance at the
@@ -112,29 +114,32 @@ def _segment_to_stream_metadata(
     """
     station_name = _clean_str(brand.get("station_name")) or RADIO_NAME
     seg_type = now.get("type")
-    label = now.get("label") or ""
-    meta = now.get("metadata") or {}
+    label = _clean_str(now.get("label")) or ""
+    meta = now.get("metadata")
+    meta = meta if isinstance(meta, dict) else {}
 
     title: str | None = None
     artist: str | None = None
     image_url: str | None = None
 
     if seg_type == "music":
-        raw_title = meta.get("title_only") or meta.get("title") or ""
-        if str(raw_title).strip().lower() in _PLACEHOLDER_TITLES:
+        raw_title = _clean_str(meta.get("title_only")) or _clean_str(meta.get("title")) or ""
+        if raw_title.lower() in _PLACEHOLDER_TITLES:
             raw_title = ""
         title = raw_title
         artist = meta.get("artist")
         image_url = meta.get("album_art")
     elif seg_type == "banter":
         title = label or "Host banter"
-        artist = ", ".join(brand.get("hosts") or []) or station_name
+        hosts = brand.get("hosts")
+        host_names = [h for h in hosts if isinstance(h, str)] if isinstance(hosts, list) else []
+        artist = ", ".join(host_names) or station_name
     elif seg_type == "ad":
         title = label or "Ad break"
         artist = "Pubblicità"
     elif seg_type == "news_flash":
         title = label or "News flash"
-        artist = meta.get("host") or station_name
+        artist = _clean_str(meta.get("host")) or station_name
     elif seg_type in _STATION_ELEMENT_TYPES:
         title = label or station_name
         artist = station_name
@@ -150,10 +155,11 @@ def _segment_to_stream_metadata(
     if seg_type is not None and seg_type not in _IDLE_TYPES:
         parts: list[str] = []
         if show_upcoming and upcoming:
-            up_label = (upcoming[0] or {}).get("label")
+            first = upcoming[0]
+            up_label = _clean_str(first.get("label")) if isinstance(first, dict) else None
             if up_label:
                 parts.append(f"Up next: {up_label}")
-        casa = ha.get("mood") or ha.get("weather")
+        casa = _clean_str(ha.get("mood")) or _clean_str(ha.get("weather"))
         if casa:
             parts.append(f"A casa: {casa}")
         description = " · ".join(parts) or None
@@ -341,10 +347,17 @@ class MammamiradioProvider(MusicProvider):
             stream_details.data = {}
         data = stream_details.data
 
-        now = payload.get("now_streaming") or {}
-        upcoming = payload.get("upcoming") or []
-        ha = payload.get("ha_moments") or {}
-        brand = payload.get("brand") or {}
+        # Type-guard each field, not just absence: ``/public-status`` is untrusted
+        # JSON, and a truthy non-dict ``now_streaming`` would reach the ``seg_key``
+        # computation below (outside the try/except) and raise into MA's task.
+        now = payload.get("now_streaming")
+        now = now if isinstance(now, dict) else {}
+        upcoming = payload.get("upcoming")
+        upcoming = upcoming if isinstance(upcoming, list) else []
+        ha = payload.get("ha_moments")
+        ha = ha if isinstance(ha, dict) else {}
+        brand = payload.get("brand")
+        brand = brand if isinstance(brand, dict) else {}
 
         # Stable per-segment identity. ``epoch``/``started`` alone may be absent
         # or unstable for non-music segments, so key change-detection on a

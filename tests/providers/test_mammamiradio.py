@@ -583,6 +583,47 @@ def test_segment_non_string_metadata_values_are_dropped() -> None:
     assert sm.image_url is None
 
 
+def test_segment_non_string_title_does_not_leak_repr() -> None:
+    """A non-string title_only is coerced away, not rendered as its repr."""
+    now = {"type": "music", "label": "Brano", "metadata": {"title_only": ["a", "b"]}}
+    sm = _segment_to_stream_metadata(now, [], {}, _BRAND, show_upcoming=False)
+    assert sm.title == "Brano"  # clamps to the label, never "['a', 'b']"
+
+
+def test_segment_non_string_label_does_not_raise() -> None:
+    """A non-string label is coerced so the terminal clamp never calls int.strip()."""
+    now = {"type": "music", "label": 42, "metadata": {}}
+    sm = _segment_to_stream_metadata(now, [], {}, _BRAND, show_upcoming=False)
+    assert sm.title == "mammamiradio"  # no usable label or title -> station name
+
+
+def test_segment_banter_string_hosts_falls_back_to_station() -> None:
+    """A bare-string hosts value must not be iterated character-by-character."""
+    sm = _segment_to_stream_metadata(
+        {"type": "banter", "label": "Chiacchiere"},
+        [],
+        {},
+        {"station_name": "mammamiradio", "hosts": "Gianni"},
+        show_upcoming=False,
+    )
+    assert sm.artist == "mammamiradio"
+
+
+def test_segment_non_string_casa_is_dropped() -> None:
+    """A non-string ha mood/weather is dropped, not rendered as its repr."""
+    now = {"type": "music", "label": "X", "metadata": {"title": "X"}}
+    sm = _segment_to_stream_metadata(now, [], {"mood": 22}, _BRAND, show_upcoming=False)
+    assert sm.description is None
+
+
+def test_segment_non_dict_upcoming_entry_does_not_raise() -> None:
+    """A non-dict first upcoming entry must not raise; the 'Up next' line is skipped."""
+    now = {"type": "music", "label": "X", "metadata": {"title": "X"}}
+    sm = _segment_to_stream_metadata(now, ["just-a-string"], {}, _BRAND, show_upcoming=True)
+    assert sm.title == "X"
+    assert sm.description is None
+
+
 # ---------------------------------------------------------------------------
 # Live typed-segment metadata — `_update_stream_metadata` callback (stateful)
 # ---------------------------------------------------------------------------
@@ -776,22 +817,67 @@ async def test_callback_ignores_non_dict_payload(
     assert details.stream_metadata is prior
 
 
-async def test_callback_swallows_malformed_segment(
+async def test_callback_tolerates_malformed_segment_metadata(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
-    """A structurally valid payload whose segment metadata is the wrong type is swallowed.
+    """A segment whose ``metadata`` is the wrong type is coerced, not dropped.
 
-    ``metadata`` arriving as a list (not an object) makes the mapper raise; the
-    callback must catch it so the metadata-update task never crashes playback.
+    ``metadata`` arriving as a list (not an object) is treated as empty metadata;
+    the mapper is total, so it yields a valid frame (title clamps to the label)
+    instead of raising and being swallowed.
     """
     details = await _details_for(provider)
-    prior = await _seed_prior_metadata(provider, mass_mock, details)
+    await _seed_prior_metadata(provider, mass_mock, details)
     bad = {
         "now_streaming": {"type": "music", "label": "B", "started": 2, "metadata": ["wrong"]},
         "upcoming": [],
         "brand": _BRAND,
     }
     mass_mock.http_session.get = MagicMock(return_value=_make_json_ctx(bad))
+    await provider._update_stream_metadata(details, 0)  # must not raise
+    assert details.stream_metadata.title == "B"
+
+
+async def test_callback_tolerates_non_dict_now_streaming(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A non-dict now_streaming must not raise out of the callback (no-raise contract).
+
+    Regression: ``seg_key`` is computed from ``now.get(...)`` OUTSIDE the mapper's
+    try/except, so a truthy non-dict ``now_streaming`` previously escaped into MA's
+    metadata-update task. The field is now type-guarded before that line.
+    """
+    details = await _details_for(provider)
+    payload = {"now_streaming": ["unexpected", "list"], "upcoming": [], "brand": _BRAND}
+    mass_mock.http_session.get = MagicMock(return_value=_make_json_ctx(payload))
+    await provider._update_stream_metadata(details, 0)  # must not raise
+    # Falls through to the idle branch with the station name.
+    assert details.stream_metadata.title == "mammamiradio"
+
+
+async def test_callback_swallows_mapper_exception(
+    provider: MammamiradioProvider,
+    mass_mock: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The callback try/except is a backstop: if the mapper raises, prior frame is kept.
+
+    The mapper is total by construction, so this monkeypatches it to raise and
+    asserts the documented no-raise contract still holds for any future regression.
+    """
+    details = await _details_for(provider)
+    prior = await _seed_prior_metadata(provider, mass_mock, details)
+
+    def _boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("mapper blew up")
+
+    monkeypatch.setattr("music_assistant.providers.mammamiradio._segment_to_stream_metadata", _boom)
+    good_again = {
+        "now_streaming": {"type": "music", "label": "C", "started": 3, "metadata": {"title": "C"}},
+        "upcoming": [],
+        "brand": _BRAND,
+    }
+    mass_mock.http_session.get = MagicMock(return_value=_make_json_ctx(good_again))
     await provider._update_stream_metadata(details, 0)  # must not raise
     assert details.stream_metadata is prior
 
