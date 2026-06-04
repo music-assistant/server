@@ -534,6 +534,55 @@ def test_segment_idle_suppresses_description() -> None:
         assert sm.description is None, seg_type
 
 
+def test_segment_description_weather_fallback_when_no_mood() -> None:
+    """The 'A casa' line falls back to ha_moments.weather when no mood is present."""
+    now = {"type": "music", "label": "X", "metadata": {"title": "X"}}
+    sm = _segment_to_stream_metadata(
+        now, [], {"weather": "soleggiato"}, _BRAND, show_upcoming=False
+    )
+    assert sm.description == "A casa: soleggiato"
+
+
+def test_segment_banter_without_hosts_falls_back_to_station() -> None:
+    """A banter segment with an empty hosts list uses the station name as artist."""
+    sm = _segment_to_stream_metadata(
+        {"type": "banter", "label": "Chiacchiere"},
+        [],
+        {},
+        {"station_name": "mammamiradio", "hosts": []},
+        show_upcoming=False,
+    )
+    assert sm.artist == "mammamiradio"
+
+
+def test_segment_news_flash_without_host_falls_back_to_station() -> None:
+    """A news_flash segment with no host metadata uses the station name as artist."""
+    now = {"type": "news_flash", "label": "Notizie", "metadata": {}}
+    sm = _segment_to_stream_metadata(now, [], {}, _BRAND, show_upcoming=False)
+    assert sm.artist == "mammamiradio"
+
+
+@pytest.mark.parametrize("placeholder", ["untitled", "unknown title", "UNTITLED", "  unknown  "])
+def test_segment_music_all_placeholder_titles_clamp(placeholder: str) -> None:
+    """Every placeholder title (case/space-insensitive) is treated as no title."""
+    now = {"type": "music", "label": "Brano", "metadata": {"title": placeholder}}
+    sm = _segment_to_stream_metadata(now, [], {}, _BRAND, show_upcoming=False)
+    assert sm.title == "Brano"
+
+
+def test_segment_non_string_metadata_values_are_dropped() -> None:
+    """Non-string artist / album_art from untrusted JSON coerce to None, not garbage."""
+    now = {
+        "type": "music",
+        "label": "X",
+        "metadata": {"title": "X", "artist": 42, "album_art": ["not", "a", "url"]},
+    }
+    sm = _segment_to_stream_metadata(now, [], {}, _BRAND, show_upcoming=False)
+    assert sm.title == "X"
+    assert sm.artist is None
+    assert sm.image_url is None
+
+
 # ---------------------------------------------------------------------------
 # Live typed-segment metadata — `_update_stream_metadata` callback (stateful)
 # ---------------------------------------------------------------------------
@@ -651,6 +700,100 @@ async def test_callback_handles_null_now_streaming(
     )
     await provider._update_stream_metadata(details, 0)
     assert details.stream_metadata.title == "mammamiradio"
+
+
+# ---------------------------------------------------------------------------
+# Live typed-segment metadata — error-swallowing / hardening
+#
+# The contract under test: neither the init probe nor the metadata callback may
+# ever let a malformed addon response crash MA. handle_async_init RAISES a clean
+# ProviderUnavailableError; the mid-stream callback SWALLOWS and keeps the prior
+# frame so playback is never disturbed.
+# ---------------------------------------------------------------------------
+
+
+async def test_handle_async_init_raises_on_timeout(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A timeout probing /healthz surfaces as ProviderUnavailableError."""
+    mass_mock.http_session.get = MagicMock(return_value=_make_failing_ctx(TimeoutError("slow")))
+    with pytest.raises(ProviderUnavailableError):
+        await provider.handle_async_init()
+
+
+async def _seed_prior_metadata(
+    provider: MammamiradioProvider, mass_mock: MagicMock, details: Any
+) -> Any:
+    """Drive one good callback so a prior stream_metadata frame exists, and return it."""
+    good = {
+        "now_streaming": {"type": "music", "label": "A", "started": 1, "metadata": {"title": "A"}},
+        "upcoming": [],
+        "brand": _BRAND,
+    }
+    mass_mock.http_session.get = MagicMock(return_value=_make_json_ctx(good))
+    await provider._update_stream_metadata(details, 0)
+    assert details.stream_metadata is not None
+    return details.stream_metadata
+
+
+async def test_callback_swallows_timeout_and_keeps_prior(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A /public-status timeout mid-stream must not raise and must keep prior metadata."""
+    details = await _details_for(provider)
+    prior = await _seed_prior_metadata(provider, mass_mock, details)
+    mass_mock.http_session.get = MagicMock(return_value=_make_failing_ctx(TimeoutError("slow")))
+    await provider._update_stream_metadata(details, 0)  # must not raise
+    assert details.stream_metadata is prior
+
+
+async def test_callback_swallows_bad_json_and_keeps_prior(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A /public-status body that is not valid JSON must be swallowed, prior kept."""
+    details = await _details_for(provider)
+    prior = await _seed_prior_metadata(provider, mass_mock, details)
+
+    response = MagicMock()
+    response.status = 200
+    response.json = AsyncMock(side_effect=ValueError("not json"))
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=response)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    mass_mock.http_session.get = MagicMock(return_value=ctx)
+    await provider._update_stream_metadata(details, 0)  # must not raise
+    assert details.stream_metadata is prior
+
+
+async def test_callback_ignores_non_dict_payload(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A JSON array (not an object) from /public-status is ignored, prior kept."""
+    details = await _details_for(provider)
+    prior = await _seed_prior_metadata(provider, mass_mock, details)
+    mass_mock.http_session.get = MagicMock(return_value=_make_json_ctx(["unexpected", "array"]))
+    await provider._update_stream_metadata(details, 0)  # must not raise
+    assert details.stream_metadata is prior
+
+
+async def test_callback_swallows_malformed_segment(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A structurally valid payload whose segment metadata is the wrong type is swallowed.
+
+    ``metadata`` arriving as a list (not an object) makes the mapper raise; the
+    callback must catch it so the metadata-update task never crashes playback.
+    """
+    details = await _details_for(provider)
+    prior = await _seed_prior_metadata(provider, mass_mock, details)
+    bad = {
+        "now_streaming": {"type": "music", "label": "B", "started": 2, "metadata": ["wrong"]},
+        "upcoming": [],
+        "brand": _BRAND,
+    }
+    mass_mock.http_session.get = MagicMock(return_value=_make_json_ctx(bad))
+    await provider._update_stream_metadata(details, 0)  # must not raise
+    assert details.stream_metadata is prior
 
 
 # ---------------------------------------------------------------------------

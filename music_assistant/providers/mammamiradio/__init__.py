@@ -77,6 +77,18 @@ _STATION_ELEMENT_TYPES = {"station_id", "time_check", "sweeper"}
 _IDLE_TYPES = {"skipping", "stopped"}
 
 
+def _clean_str(value: Any) -> str | None:
+    """Coerce an untrusted ``/public-status`` value to a stripped non-empty str, else None.
+
+    Fields expected to be text may arrive from JSON as a number, list, or null; this
+    keeps ``StreamMetadata``'s mandatory ``str | None`` typing honest rather than
+    letting a raw JSON value leak onto MA media surfaces.
+    """
+    if isinstance(value, str):
+        return value.strip() or None
+    return None
+
+
 def _segment_to_stream_metadata(
     now: dict[str, Any],
     upcoming: list[Any],
@@ -98,7 +110,7 @@ def _segment_to_stream_metadata(
     so mammamiradio's stopped/skipping state never reaches MA lock screens or
     speaker displays.
     """
-    station_name = brand.get("station_name") or RADIO_NAME
+    station_name = _clean_str(brand.get("station_name")) or RADIO_NAME
     seg_type = now.get("type")
     label = now.get("label") or ""
     meta = now.get("metadata") or {}
@@ -148,9 +160,9 @@ def _segment_to_stream_metadata(
 
     return StreamMetadata(
         title=title,
-        artist=artist or None,
+        artist=_clean_str(artist),
         album=station_name,
-        image_url=image_url or None,
+        image_url=_clean_str(image_url),
         description=description,
     )
 
@@ -345,9 +357,15 @@ class MammamiradioProvider(MusicProvider):
         # Read the display mode BEFORE mutating, so the first frame of every
         # segment renders the "Now" view (mutate-then-read would flip this).
         show_upcoming = data.get("show_upcoming", False)
-        stream_details.stream_metadata = _segment_to_stream_metadata(
-            now, upcoming, ha, brand, show_upcoming=show_upcoming
-        )
+        try:
+            stream_details.stream_metadata = _segment_to_stream_metadata(
+                now, upcoming, ha, brand, show_upcoming=show_upcoming
+            )
+        except Exception as err:
+            # No-raise contract: a malformed /public-status payload must never escape
+            # into MA's metadata-callback task. Keep the prior frame; retry next tick.
+            self.logger.debug("mammamiradio metadata mapping failed: %s", err)
+            return
         data["show_upcoming"] = not show_upcoming
 
     async def _fetch_public_status(self) -> dict[str, Any] | None:
@@ -361,7 +379,13 @@ class MammamiradioProvider(MusicProvider):
                         "mammamiradio /public-status returned HTTP %s", response.status
                     )
                     return None
-                payload: dict[str, Any] = await response.json()
+                payload = await response.json()
+                if not isinstance(payload, dict):
+                    self.logger.debug(
+                        "mammamiradio /public-status returned non-object JSON (%s)",
+                        type(payload).__name__,
+                    )
+                    return None
                 return payload or None
         except (aiohttp.ClientError, TimeoutError) as err:
             self.logger.debug("mammamiradio /public-status request failed: %s", err)
