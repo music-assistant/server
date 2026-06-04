@@ -237,7 +237,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     @use_cache(3600 * 24 * 7)  # Cache for 7 days
     async def search(
-        self, search_query: str, media_types=list[MediaType], limit: int = 5
+        self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
         """Perform search on musicprovider.
 
