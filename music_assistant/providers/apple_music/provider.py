@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.media_items import (
     Album,
@@ -66,10 +66,12 @@ class AppleMusicProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self._music_user_token = self.config.get_value(
-            CONF_MUSIC_USER_MANUAL_TOKEN
-        ) or self.config.get_value(CONF_MUSIC_USER_TOKEN)
-        self._music_app_token = self.config.get_value(CONF_MUSIC_APP_TOKEN)
+        self._music_user_token = cast(
+            "str | None",
+            self.config.get_value(CONF_MUSIC_USER_MANUAL_TOKEN)
+            or self.config.get_value(CONF_MUSIC_USER_TOKEN),
+        )
+        self._music_app_token = cast("str | None", self.config.get_value(CONF_MUSIC_APP_TOKEN))
         self._storefront = await self.api_client.get_user_storefront()
         await self.streaming_manager.initialize()
 
@@ -185,13 +187,15 @@ class AppleMusicProvider(MusicProvider):
     # Library mutations
     # ------------------------------------------------------------------
 
-    async def library_add(self, item: MediaItemType) -> None:
+    async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
         await self.library_manager.library_add(item)
+        return True
 
-    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> None:
+    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove item from library."""
         await self.library_manager.library_remove(prov_item_id, media_type)
+        return True
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
