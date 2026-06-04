@@ -74,7 +74,7 @@ class TidalStreamingManager:
             # A data: URI can't be re-fetched, so we serve the decoded
             # manifest from a real HTTP endpoint on the stream server.
             manifest_bytes = base64.b64decode(stream_data["manifest"])
-            manifest_hash = hashlib.md5(manifest_bytes).hexdigest()
+            manifest_hash = hashlib.md5(manifest_bytes, usedforsecurity=False).hexdigest()
             route_path = f"/tidal-dash/{manifest_hash}"
             cleanup_id = f"tidal-dash-cleanup-{manifest_hash}"
 
