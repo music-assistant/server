@@ -320,7 +320,7 @@ class StorytelHelper:
             await self._raise_for_status(resp)
             return cast("dict[str, Any]", await resp.json())
 
-    async def _parse_duration(self, duration_data: dict[str, int]) -> int:
+    def _parse_duration(self, duration_data: dict[str, int]) -> int:
         """Parse duration data to seconds."""
         if not duration_data:
             return 0
@@ -570,7 +570,7 @@ class StorytelHelper:
         consumable_id = podcast_data.get("id") or ""
         title = podcast_data.get("title") or "Unknown"
         episode_count = podcast_data.get("totalCount") or 0
-        hosts = await parse_podcast_hosts(list_metadata)
+        hosts = parse_podcast_hosts(list_metadata)
         items = podcast_data.get("items") or []
         first_episode_id = items[0].get("id") if items else ""
         publisher = ""
@@ -675,10 +675,10 @@ class StorytelHelper:
     async def _parse_podcast_episode_item(self, item_data: dict[str, Any]) -> PodcastEpisode:
         consumable_id = item_data.get("consumableId") or ""
         title = item_data.get("title") or "Unknown"
-        duration_seconds = await self._parse_duration(item_data.get("duration") or {})
+        duration_seconds = self._parse_duration(item_data.get("duration") or {})
         podcast_info = item_data.get("seriesInfo") or {}
         mass_podcast = await self.provider_instance.get_podcast(podcast_info.get("id") or "")
-        hosts = await parse_podcast_hosts(item_data)
+        hosts = parse_podcast_hosts(item_data)
         episode_number = item_data.get("seriesInfo", {}).get("orderInSeries") or 0
         media_item = PodcastEpisode(
             item_id=consumable_id,
@@ -704,7 +704,7 @@ class StorytelHelper:
     async def _parse_audiobook_item(self, item_data: dict[str, Any]) -> Audiobook:
         consumable_id = item_data.get("consumableId") or ""
         title = item_data.get("title") or "Unknown"
-        duration_seconds = await self._parse_duration(item_data.get("duration") or {})
+        duration_seconds = self._parse_duration(item_data.get("duration") or {})
         authors = [a.get("name") for a in item_data.get("authors", []) if a.get("name")]
         narrators = [n.get("name") for n in item_data.get("narrators", []) if n.get("name")]
         publisher = item_data.get("formats", [{}])[0].get("publisher", {}).get("name") or ""
@@ -1090,7 +1090,7 @@ class StorytelHelper:
         return folder
 
 
-async def parse_raw_headers(raw_headers: tuple[tuple[bytes, bytes], ...]) -> dict[str, str]:
+def parse_raw_headers(raw_headers: tuple[tuple[bytes, bytes], ...]) -> dict[str, str]:
     """
     Parse raw bytes headers into a dictionary of string key-pairs.
 
@@ -1104,7 +1104,7 @@ async def parse_raw_headers(raw_headers: tuple[tuple[bytes, bytes], ...]) -> dic
     return headers
 
 
-async def parse_content_type(content_type: str) -> ContentType | None:
+def parse_content_type(content_type: str) -> ContentType | None:
     """
     Parse the content type string to a MA ContentType.
 
@@ -1125,7 +1125,7 @@ async def parse_content_type(content_type: str) -> ContentType | None:
     return None
 
 
-async def parse_podcast_hosts(podcast_metadata: dict[str, Any]) -> list[str]:
+def parse_podcast_hosts(podcast_metadata: dict[str, Any]) -> list[str]:
     """
     Parse podcast hosts from metadata.
 

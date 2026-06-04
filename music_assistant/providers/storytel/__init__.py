@@ -362,7 +362,7 @@ class Storytel(MusicProvider):
                             continue
 
                         await self.api._raise_for_status(stream_response)
-                        stream_headers = await parse_raw_headers(stream_response.raw_headers)
+                        stream_headers = parse_raw_headers(stream_response.raw_headers)
                         content_type = stream_headers.get("content-type", "")
                         content_content_range = stream_headers.get("content-range", "")
                         content_full_size = int(content_content_range.rsplit("/", maxsplit=1)[-1])
@@ -376,7 +376,7 @@ class Storytel(MusicProvider):
             self.logger.error("Failed to fetch stream details for %s: %s", item_id, err)
             raise MediaNotFoundError(f"Failed to fetch stream details: {err}") from err
 
-        mass_content_type: ContentType | None = await parse_content_type(content_type)
+        mass_content_type: ContentType | None = parse_content_type(content_type)
         content_duration_seconds: int = int(
             float(stream_headers.get("x-amz-meta-x-durationseconds", 0))
         )
