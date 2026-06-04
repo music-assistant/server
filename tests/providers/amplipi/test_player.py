@@ -215,6 +215,8 @@ class TestPlayMedia:
         multi = mock_provider.api.set_zones.await_args.args[0]
         assert multi.zones == [0]
         assert multi.update.source_id == 0
+        # the zone must be unmuted, otherwise AmpliPi plays silently
+        assert multi.update.mute is False
 
         mock_provider.api.play_media.assert_awaited_once()
         play = mock_provider.api.play_media.await_args.args[0]

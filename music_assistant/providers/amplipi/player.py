@@ -75,8 +75,13 @@ class AmpliPiZonePlayer(Player):
     async def power(self, powered: bool) -> None:
         """Handle POWER command on the player."""
         if powered:
-            await self._prov.api.set_zone(self._zone_id, ZoneUpdate(source_id=SOURCE_DISCONNECTED))
+            # AmpliPi mutes a zone while it is disconnected (source -1); unmute it so
+            # that MA's mute state stays consistent and playback is audible.
+            await self._prov.api.set_zone(
+                self._zone_id, ZoneUpdate(source_id=SOURCE_DISCONNECTED, mute=False)
+            )
             self._attr_powered = True
+            self._attr_volume_muted = False
         else:
             # turn off this zone and any zones grouped to it
             await self._prov.api.set_zones(
@@ -120,14 +125,25 @@ class AmpliPiZonePlayer(Player):
         if source is None or source.id is None:
             raise PlayerCommandFailed("All AmpliPi sources are currently in use.")
         self._source_id = source.id
-        # connect this zone (and any grouped members) to the acquired source
+        zone_ids = self._member_zone_ids()
+        self.logger.debug(
+            "play_media: connecting zones %s to source %s and playing %s",
+            zone_ids,
+            source.id,
+            url,
+        )
+        # connect this zone (and any grouped members) to the acquired source,
+        # unmuting them (AmpliPi mutes zones while disconnected, which would
+        # otherwise leave playback silent)
         await self._prov.api.set_zones(
-            MultiZoneUpdate(zones=self._member_zone_ids(), update=ZoneUpdate(source_id=source.id))
+            MultiZoneUpdate(zones=zone_ids, update=ZoneUpdate(source_id=source.id, mute=False))
         )
         await self._prov.api.play_media(PlayMedia(source_id=source.id, media=url))
+        self.logger.debug("play_media: AmpliPi accepted media on source %s", source.id)
         self._attr_active_source = self.player_id
         self._attr_current_media = media
         self._attr_powered = True
+        self._attr_volume_muted = False
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
 
