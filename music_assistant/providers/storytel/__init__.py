@@ -341,16 +341,35 @@ class Storytel(MusicProvider):
                     raise MediaNotFoundError("No signed URL returned")
                 headers.pop("authorization", None)
                 headers["range"] = "bytes=0-1"
-                stream_url_object = URL(stream_url, encoded=True)
-                async with self.api._session.get(
-                    stream_url_object, headers=headers, allow_redirects=True
-                ) as stream_response:
-                    await self.api._raise_for_status(stream_response)
-                    stream_headers = await parse_raw_headers(stream_response.raw_headers)
-                    content_type: str = stream_headers.get("content-type", "")
-                    content_content_range: str = stream_headers.get("content-range", "")
-                    content_full_size: int = int(content_content_range.rsplit("/", maxsplit=1)[-1])
-                    resolved_stream_url: str = str(stream_response.real_url)
+                current_stream_url = URL(stream_url, encoded=True)
+                resolved_stream_url = stream_url
+                stream_headers: dict[str, str] = {}
+                for _redirect_count in range(5):
+                    async with self.api._session.get(
+                        current_stream_url, headers=headers, allow_redirects=False
+                    ) as stream_response:
+                        if 300 <= stream_response.status < 400:
+                            location = stream_response.headers.get("Location") or ""
+                            if location == "":
+                                await self.api._raise_for_status(stream_response)
+                            location_url = URL(location, encoded=True)
+                            current_stream_url = (
+                                location_url
+                                if location.startswith("http")
+                                else current_stream_url.join(location_url)
+                            )
+                            resolved_stream_url = str(current_stream_url)
+                            continue
+
+                        await self.api._raise_for_status(stream_response)
+                        stream_headers = await parse_raw_headers(stream_response.raw_headers)
+                        content_type = stream_headers.get("content-type", "")
+                        content_content_range = stream_headers.get("content-range", "")
+                        content_full_size = int(content_content_range.rsplit("/", maxsplit=1)[-1])
+                        resolved_stream_url = str(current_stream_url)
+                        break
+                else:
+                    raise MediaNotFoundError("Too many redirects while resolving Storytel stream")
         except Exception as err:
             if isinstance(err, LoginFailed):
                 raise
