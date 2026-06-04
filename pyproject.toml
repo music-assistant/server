@@ -150,8 +150,6 @@ enable_error_code = [
 exclude = [
   '^music_assistant/controllers/music.py$',
   '^music_assistant/helpers/app_vars.py',
-  '^music_assistant/providers/apple_music/api_client.py$',
-  '^music_assistant/providers/apple_music/media.py$',
   '^music_assistant/providers/plex/.*$',
   '^music_assistant/providers/plex_connect/.*$',
   '^music_assistant/providers/sonic_analysis/vendored_clap/.*$',
