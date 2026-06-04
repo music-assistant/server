@@ -168,7 +168,7 @@ class MusicController(CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        entries = (
+        entries: tuple[ConfigEntry, ...] = (
             ConfigEntry(
                 key=CONF_RESET_DB,
                 type=ConfigEntryType.ACTION,
@@ -656,10 +656,10 @@ class MusicController(CoreController):
             isinstance(prov, PluginProvider)
             and ProviderFeature.AUDIO_SOURCE in prov.supported_features
         ):
-            initiable: list[MediaItemType | BrowseFolder] = [
+            initiable_items: list[MediaItemType | BrowseFolder] = [
                 source for source in await prov.get_audio_sources() if source.can_initiate
             ]
-            return [*prepend_items, *initiable]
+            return [*prepend_items, *initiable_items]
         # limit -1 to account for the prepended items
         prov_items = await prov.browse(path=path)
         return prepend_items + prov_items
@@ -2184,9 +2184,9 @@ class MusicController(CoreController):
         # on top of the list.
         safe_title_str = create_safe_string(search_query)
         if " - " in search_query:
-            artist, title_alt = search_query.split(" - ", 1)
+            artist_name, title_alt = search_query.split(" - ", 1)
             safe_title_alt = create_safe_string(title_alt)
-            safe_artist_str = create_safe_string(artist)
+            safe_artist_str = create_safe_string(artist_name)
         else:
             safe_artist_str = None
             safe_title_alt = None
