@@ -3564,7 +3564,10 @@ class MusicController(CoreController):
             # below raises if permissions are insufficient
             user = await self.mass.music.get_requested_user_if_authorized(username_or_user_id)
 
-        media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
+        try:
+            media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
+        except (InvalidProviderURI, InvalidProviderID):
+            return False
 
         # fast return for a provider uri which is not part of a user with a provider filter
         if (
