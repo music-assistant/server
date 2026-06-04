@@ -240,11 +240,12 @@ def enumerate_alsa_devices() -> list[dict[str, Any]]:
         # MA player name reads e.g. "Intel Audio: ALC889A Analog" not
         # "Intel Audio: ALC889A Analog (hw:1,0)".
         import re as _re  # noqa: PLC0415
+
         description = _re.sub(r"\s*\(hw:\d+,\d+\)$", "", name).strip()
 
         devices.append(
             {
-                "name": name,          # stable key — includes (hw:C,D) for uniqueness
+                "name": name,  # stable key — includes (hw:C,D) for uniqueness
                 "description": description,  # human-readable MA player label
                 "pa_sink_name": None,
                 "max_output_channels": dev.get("max_output_channels", 2),
