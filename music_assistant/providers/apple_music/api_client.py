@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
+from aiohttp import ClientTimeout
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import (
     MediaNotFoundError,
@@ -38,7 +39,7 @@ class AppleMusicAPIClient:
         """Return standard auth headers."""
         return {
             "Authorization": f"Bearer {self.provider._music_app_token}",
-            "Music-User-Token": self.provider._music_user_token,
+            "Music-User-Token": cast("str", self.provider._music_user_token),
         }
 
     @throttle_with_retries
@@ -47,7 +48,11 @@ class AppleMusicAPIClient:
         url = f"{_APPLE_API_BASE}/{endpoint}"
         async with (
             self.provider.mass.http_session.get(
-                url, headers=self._headers, params=kwargs, ssl=True, timeout=120
+                url,
+                headers=self._headers,
+                params=kwargs,
+                ssl=True,
+                timeout=ClientTimeout(total=120),
             ) as response,
         ):
             if response.status == 404 and "limit" in kwargs and "offset" in kwargs:
@@ -70,7 +75,7 @@ class AppleMusicAPIClient:
             if response.status == 500:
                 raise MusicAssistantError("Unexpected server error when calling Apple Music")
             response.raise_for_status()
-            return await response.json(loads=json_loads)
+            return cast("dict[str, Any]", await response.json(loads=json_loads))
 
     @throttle_with_retries
     async def delete_data(self, endpoint: str, data: Any = None, **kwargs: Any) -> None:
@@ -78,7 +83,12 @@ class AppleMusicAPIClient:
         url = f"{_APPLE_API_BASE}/{endpoint}"
         async with (
             self.provider.mass.http_session.delete(
-                url, headers=self._headers, params=kwargs, json=data, ssl=True, timeout=120
+                url,
+                headers=self._headers,
+                params=kwargs,
+                json=data,
+                ssl=True,
+                timeout=ClientTimeout(total=120),
             ) as response,
         ):
             if response.status == 404:
@@ -96,7 +106,12 @@ class AppleMusicAPIClient:
         url = f"{_APPLE_API_BASE}/{endpoint}"
         async with (
             self.provider.mass.http_session.put(
-                url, headers=self._headers, params=kwargs, json=data, ssl=True, timeout=120
+                url,
+                headers=self._headers,
+                params=kwargs,
+                json=data,
+                ssl=True,
+                timeout=ClientTimeout(total=120),
             ) as response,
         ):
             if response.status == 404:
@@ -108,7 +123,7 @@ class AppleMusicAPIClient:
                 raise RateLimited("Apple Music Rate Limiter")
             response.raise_for_status()
             if response.content_length:
-                return await response.json(loads=json_loads)
+                return cast("dict[str, Any]", await response.json(loads=json_loads))
             return {}
 
     @throttle_with_retries
@@ -117,7 +132,12 @@ class AppleMusicAPIClient:
         url = f"{_APPLE_API_BASE}/{endpoint}"
         async with (
             self.provider.mass.http_session.post(
-                url, headers=self._headers, params=kwargs, json=data, ssl=True, timeout=120
+                url,
+                headers=self._headers,
+                params=kwargs,
+                json=data,
+                ssl=True,
+                timeout=ClientTimeout(total=120),
             ) as response,
         ):
             if response.status == 404:
@@ -128,13 +148,15 @@ class AppleMusicAPIClient:
                 )
                 raise RateLimited("Apple Music Rate Limiter")
             response.raise_for_status()
-            return await response.json(loads=json_loads)
+            return cast("dict[str, Any]", await response.json(loads=json_loads))
 
-    async def get_all_items(self, endpoint: str, key: str = "data", **kwargs: Any) -> list[dict]:
+    async def get_all_items(
+        self, endpoint: str, key: str = "data", **kwargs: Any
+    ) -> list[dict[str, Any]]:
         """Get all items from a paged list."""
         limit = 50
         offset = 0
-        all_items: list[dict] = []
+        all_items: list[dict[str, Any]] = []
         while True:
             kwargs["limit"] = limit
             kwargs["offset"] = offset
@@ -152,7 +174,7 @@ class AppleMusicAPIClient:
         locale = self.provider.mass.metadata.locale.replace("_", "-")
         language = locale.split("-")[0]
         result = await self.get_data("me/storefront", l=language)
-        return result["data"][0]["id"]
+        return cast("str", result["data"][0]["id"])
 
     async def get_ratings(self, item_ids: list[str], media_type: MediaType) -> dict[str, bool]:
         """Return a mapping of item_id → is_favourite for a list of IDs."""
