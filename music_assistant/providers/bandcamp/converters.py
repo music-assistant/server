@@ -8,6 +8,7 @@ from bandcamp_async_api.models import BCAlbum as APIAlbum
 from bandcamp_async_api.models import BCArtist as APIArtist
 from bandcamp_async_api.models import BCTrack as APITrack
 from bandcamp_async_api.models import (
+    FeedTrack,
     SearchResultAlbum,
     SearchResultArtist,
     SearchResultTrack,
@@ -239,6 +240,56 @@ class BandcampConverters:
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=album_image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            )
+        return output
+
+    def track_from_feed(self, track: FeedTrack) -> MATrack:
+        """Convert a feed track_list entry to MA Track format."""
+        album_id = track.album_id or 0
+        item_id = f"{track.band_id}-{album_id}-{track.track_id}"
+        _, bitrate, content_type = self.streaming_url_from_api(track.streaming_url or {})
+        output = MATrack(
+            item_id=item_id,
+            provider=self.instance_id,
+            name=track.title,
+            duration=int(track.duration) if track.duration else 0,
+            artists=UniqueList(
+                [
+                    ItemMapping(
+                        media_type=MediaType.ARTIST,
+                        item_id=str(track.band_id),
+                        provider=self.instance_id,
+                        name=track.band_name,
+                    )
+                ]
+            ),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=item_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=track.track_url,
+                    audio_format=AudioFormat(content_type=content_type, bit_rate=bitrate),
+                )
+            },
+        )
+        if track.track_num is not None:
+            output.track_number = track.track_num
+        if album_id:
+            output.album = ItemMapping(
+                media_type=MediaType.ALBUM,
+                item_id=f"{track.band_id}-{album_id}",
+                provider=self.instance_id,
+                name=track.album_title or "",
+            )
+        if track.art_id:
+            output.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=f"https://f4.bcbits.com/img/a{track.art_id}_0.jpg",
                     provider=self.instance_id,
                     remotely_accessible=True,
                 )

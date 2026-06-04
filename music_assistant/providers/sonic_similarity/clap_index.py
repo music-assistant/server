@@ -186,8 +186,39 @@ class ClapIndex:
             self._index.remove(label)
         self._index.add(label, vec)
 
+    def _embedding_for_label(self, label: int) -> np.ndarray | None:
+        """Fetch and validate the stored 1024-dim vector for a label, or None."""
+        try:
+            vec = self._index.get(label)
+        except Exception:
+            return None
+        if vec is None:
+            return None
+        arr = np.asarray(vec, dtype=np.float32).reshape(-1)
+        if arr.shape != (CLAP_EMBEDDING_DIM,):
+            return None
+        return arr
+
+    def get_embedding(self, provider: str, item_id: str) -> np.ndarray | None:
+        """Return the stored embedding for a (provider, item_id), or None if absent.
+
+        O(1) via the derived label; prefer this on hot paths where the provider
+        is known. Use get_embedding_by_item_id only when it isn't.
+
+        :param provider: Music provider domain.
+        :param item_id: Provider-specific track identifier.
+        """
+        if self._index is None:
+            return None
+        label = derive_label(provider, item_id)
+        if label not in self._reverse:
+            return None
+        return self._embedding_for_label(label)
+
     def get_embedding_by_item_id(self, item_id: str) -> tuple[str, np.ndarray] | None:
         """Return (provider, embedding) for a stored track, or None if absent.
+
+        O(n) scan over the reverse map; used when only the item_id is known.
 
         :param item_id: Provider-specific track identifier to look up. The
             first label whose reverse-map entry matches is returned (an
@@ -198,16 +229,8 @@ class ClapIndex:
         for label, (prov, iid) in self._reverse.items():
             if iid != item_id:
                 continue
-            try:
-                vec = self._index.get(label)
-            except Exception:
-                return None
-            if vec is None:
-                return None
-            arr = np.asarray(vec, dtype=np.float32).reshape(-1)
-            if arr.shape != (CLAP_EMBEDDING_DIM,):
-                return None
-            return prov, arr
+            arr = self._embedding_for_label(label)
+            return (prov, arr) if arr is not None else None
         return None
 
     async def search(self, embedding: np.ndarray, k: int) -> list[ScoredCandidate]:

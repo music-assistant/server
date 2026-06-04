@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
 )
 
@@ -137,9 +138,7 @@ class TidalAPIClient:
             raise MediaNotFoundError(f"Item not found: {response.url}")
         if response.status == 429:
             retry_after = int(response.headers.get("Retry-After", 30))
-            raise ResourceTemporarilyUnavailable(
-                "Tidal Rate limit reached", backoff_time=retry_after
-            )
+            raise RateLimited("Tidal Rate limit reached", backoff_time=retry_after)
         if response.status >= 400:
             text = await response.text()
             self.logger.error("API error: %s - %s", response.status, text)

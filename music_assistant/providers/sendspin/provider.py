@@ -107,6 +107,10 @@ class SendspinProvider(PlayerProvider):
         self.server_api = SendspinServer(
             self.mass.loop, mass.server_id, "Music Assistant", self.mass.http_session
         )
+        # Pitch (YINFFT) is the heaviest visualizer DSP and result quality is
+        # still very mixed, needs more testing. Disable it globally for now to
+        # spare low-power hosts.
+        self.server_api.set_visualizer_pitch_enabled(enabled=False)
         self._pending_unregisters = {}
         self._bridge_identifiers = {}
         self._bridge_static_delay_defaults = {}

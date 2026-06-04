@@ -60,7 +60,7 @@ class TestGetSimilarTracks:
 
         assert result == [resolved_track]
         plugin._handle_similar.assert_awaited_once_with(
-            item_id="seed_id", seed_provider="spotify", limit=10
+            item_id="seed_id", seed_provider="spotify", limit=10, preset="balanced", diversity=0.0
         )
         mock_mass.music.tracks.get.assert_awaited_once_with("result1", "spotify")
 
@@ -84,7 +84,7 @@ class TestGetSimilarTracks:
 
         assert len(result) == 1
         plugin._handle_similar.assert_awaited_once_with(
-            item_id="track_a", seed_provider=None, limit=25
+            item_id="track_a", seed_provider=None, limit=25, preset="balanced", diversity=0.0
         )
 
     @pytest.mark.asyncio
@@ -171,7 +171,7 @@ class TestRecommendations:
         plugin = make_plugin(
             signatures={("spotify", "seed1"): [0.1] * 18},
             discover_preset="vibe",
-            discover_diversity=0.7,
+            discover_diversity=7,
         )
         mock_mass.music.recently_played = AsyncMock(return_value=[make_item_mapping("recent1")])
         recent_track = make_track("seed1", provider="spotify")
@@ -328,3 +328,37 @@ class TestRecommendations:
         item_ids = [item.item_id for item in folder.items]
         # Each unique candidate appears exactly once.
         assert sorted(item_ids) == ["cand_a", "cand_b"]
+
+    @pytest.mark.asyncio
+    async def test_clap_engine_routes_discover_through_clap(
+        self, make_plugin: Callable[..., Any], mock_mass: MagicMock
+    ) -> None:
+        """discover_engine=clap fans out via _handle_similar_clap, not the 18-dim path."""
+        plugin = make_plugin(
+            clap_enabled=True,
+            discover_engine="clap",
+            signatures={("spotify", "seed1"): [0.1] * 18},
+        )
+        # CLAP index reports the recent track's mapping as present.
+        plugin._clap_index.contains = MagicMock(return_value=True)
+        mock_mass.music.recently_played = AsyncMock(return_value=[make_item_mapping("recent1")])
+        recent_track = make_track("seed1", provider="spotify")
+        resolved = make_track("r1")
+
+        async def _fake_get(item_id: str, _provider: str, **_kwargs: Any) -> MagicMock:
+            return recent_track if item_id == "recent1" else resolved
+
+        mock_mass.music.tracks.get = AsyncMock(side_effect=_fake_get)
+        plugin._handle_similar_clap = AsyncMock(
+            return_value={"items": [{"item_id": "r1", "provider": "spotify", "distance": 0.3}]}
+        )
+        plugin._handle_similar = AsyncMock(return_value={"items": []})
+
+        result = await plugin.recommendations()
+
+        assert len(result) == 1
+        plugin._handle_similar.assert_not_called()
+        call = plugin._handle_similar_clap.await_args
+        assert call.kwargs["item_id"] == "seed1"
+        # The provider is forwarded so the seed embedding is fetched in O(1).
+        assert call.kwargs["seed_provider"] == "spotify"

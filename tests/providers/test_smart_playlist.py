@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.media_items import ProviderMapping, Track
 
 from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
 from music_assistant.providers.smart_playlist import (
@@ -584,6 +585,87 @@ async def test_dedup_fallback_when_pool_exhausted() -> None:
     assert len(result) == 5
 
 
+@pytest.mark.asyncio
+async def test_evaluate_rules_removes_duplicate_track_uris() -> None:
+    """Smart playlist evaluation should not return the same track URI multiple times."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    provider_mapping = ProviderMapping(
+        item_id="1",
+        provider_domain="library",
+        provider_instance="library",
+        available=True,
+    )
+    dup_a_1 = Track(
+        item_id="1",
+        provider="library",
+        name="Track 1",
+        uri="library://track/dup",
+        provider_mappings={provider_mapping},
+    )
+    dup_a_2 = Track(
+        item_id="2",
+        provider="library",
+        name="Track 2",
+        uri="library://track/dup",
+        provider_mappings={provider_mapping},
+    )
+    dup_a_3 = Track(
+        item_id="3",
+        provider="library",
+        name="Track 3",
+        uri="library://track/dup",
+        provider_mappings={provider_mapping},
+    )
+    uniq_b = Track(
+        item_id="4",
+        provider="library",
+        name="Track 4",
+        uri="library://track/unique",
+        provider_mappings={provider_mapping},
+    )
+    cast("Any", plugin)._get_library_tracks = AsyncMock(
+        return_value=[dup_a_1, dup_a_2, dup_a_3, uniq_b]
+    )
+
+    rules = SmartPlaylistRules(limit=10, logic=LOGIC_AND)
+    result = await plugin._evaluate_rules(rules)
+
+    uris = [track.uri for track in result]
+    assert uris.count("library://track/dup") == 1
+    assert "library://track/unique" in uris
+
+
+@pytest.mark.asyncio
+async def test_evaluate_rules_dedup_skips_unavailable_tracks() -> None:
+    """Dedup should skip unavailable tracks before adding to the result set."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    available_track = _make_mock_track("1", "library://track/available")
+    available_track.available = True
+    unavailable_track = _make_mock_track("2", "library://track/unavailable")
+    unavailable_track.available = False
+    cast("Any", plugin)._get_library_tracks = AsyncMock(
+        return_value=[available_track, unavailable_track]
+    )
+
+    rules = SmartPlaylistRules(limit=10, logic=LOGIC_AND)
+    result = await plugin._evaluate_rules(rules)
+
+    assert len(result) == 1
+    assert result[0].uri == "library://track/available"
+
+
 def _swallow_task(coro: Any, **_: Any) -> None:
     """Close coroutines passed to a mocked mass.create_task so pytest stays quiet."""
     coro.close()
@@ -758,7 +840,48 @@ async def test_get_playlist_tracks_dynamic_uses_resolved_provider_id(
     result = await plugin.get_playlist_tracks("123")
 
     assert result == expected
-    cached_dynamic_sample_mock.assert_awaited_once_with("abc")
+    cached_dynamic_sample_mock.assert_awaited_once_with("abc", ())
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_tracks_dynamic_cache_key_differs_by_provider_filter(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Different provider filters produce different cache keys for dynamic playlists."""
+    mass = MagicMock()
+    mass.storage_path = str(tmp_path)
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+    await plugin.handle_async_init()
+
+    plugin._rules_store["abc"] = SmartPlaylistRules(limit=100, is_dynamic=True)
+
+    cached_dynamic_sample_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(plugin, "_cached_dynamic_sample", cached_dynamic_sample_mock)
+
+    # Call once with no user (no provider filter)
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.get_current_user", lambda: None)
+    await plugin.get_playlist_tracks("abc")
+
+    # Call again with a user that has a provider filter
+    user_with_filter = MagicMock()
+    user_with_filter.provider_filter = ["spotify_instance_id", "tidal_instance_id"]
+    monkeypatch.setattr(
+        "music_assistant.providers.smart_playlist.get_current_user",
+        lambda: user_with_filter,
+    )
+    await plugin.get_playlist_tracks("abc")
+
+    calls = cached_dynamic_sample_mock.await_args_list
+    assert len(calls) == 2
+    # The second argument (user_provider_filter) must differ between the two calls.
+    assert calls[0].args[1] != calls[1].args[1]
+    assert calls[0].args[1] == ()
+    assert calls[1].args[1] == ("spotify_instance_id", "tidal_instance_id")
 
 
 @pytest.mark.asyncio

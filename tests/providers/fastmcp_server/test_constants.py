@@ -10,8 +10,8 @@ from music_assistant.providers.fastmcp_server.constants import (
 
 
 def test_permission_keys_count() -> None:
-    """16 permission keys: 4 verbs x 4 categories."""
-    assert len(PERMISSION_KEYS) == 16
+    """26 permission keys: 4 verbs x 4 categories + 5 debug tags + 5 config tags."""
+    assert len(PERMISSION_KEYS) == 26
 
 
 def test_resource_keys_count() -> None:

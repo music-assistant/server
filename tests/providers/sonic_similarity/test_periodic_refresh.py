@@ -113,7 +113,7 @@ class TestPeriodicRefresh:
         await plugin._periodic_refresh()
 
         assert plugin._last_seen_row_count == 10
-        assert plugin._last_rebuild_error.get("18-dim") == "disk full"
+        assert plugin._last_rebuild_error.get("Traits") == "disk full"
 
     @pytest.mark.asyncio
     async def test_count_query_failure_skips_tick(

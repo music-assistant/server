@@ -62,8 +62,17 @@ async def api_request(
         raise ProviderUnavailableError(f"Phish.in API unavailable: {err}") from err
 
 
-def show_to_album(provider: MusicProvider, show_data: dict[str, Any]) -> Album:
-    """Convert a Phish.in show to a Music Assistant Album."""
+def show_to_album(
+    provider: MusicProvider,
+    show_data: dict[str, Any],
+    *,
+    available: bool | None = None,
+) -> Album:
+    """
+    Convert a Phish.in show to a Music Assistant Album.
+
+    :param available: Override album availability; defaults to the show's audio_status.
+    """
     show_date = show_data.get("date", "")
     venue_data = show_data.get("venue", {})
     venue_name = venue_data.get("name", "Unknown Venue")
@@ -103,6 +112,7 @@ def show_to_album(provider: MusicProvider, show_data: dict[str, Any]) -> Album:
 
     audio_status = show_data.get("audio_status", "missing")
     details_parts.append(f"audio_status:{audio_status}")
+    is_available = available if available is not None else audio_status in ["complete", "partial"]
 
     if show_data.get("tour_name"):
         details_parts.append(f"tour:{show_data.get('tour_name')}")
@@ -129,7 +139,7 @@ def show_to_album(provider: MusicProvider, show_data: dict[str, Any]) -> Album:
                 item_id=show_date,
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
-                available=audio_status in ["complete", "partial"],
+                available=is_available,
                 audio_format=AudioFormat(content_type=ContentType.MP3),
                 details="|".join(details_parts),
             )
@@ -162,7 +172,8 @@ async def get_phish_artist(provider: MusicProvider) -> Artist:
 
 
 def _extract_version_from_title(full_title: str) -> tuple[str, str]:
-    """Extract song title and version from full title with performance indicators.
+    """
+    Extract song title and version from full title with performance indicators.
 
     Returns:
         Tuple of (clean_song_title, version_string)
@@ -190,38 +201,6 @@ def _extract_version_from_title(full_title: str) -> tuple[str, str]:
     return song_title, version or ""
 
 
-def _create_album_mapping(
-    provider: MusicProvider,
-    show_date: str,
-    show_data: dict[str, Any] | None,
-) -> ItemMapping | None:
-    """Create album ItemMapping with image for a track."""
-    if not show_date:
-        return None
-
-    venue_name = show_data.get("venue", {}).get("name", "") if show_data else ""
-
-    # Create the image for the album mapping
-    album_image = None
-    if show_data:
-        image_url = show_data.get("album_cover_url") or FALLBACK_ALBUM_IMAGE
-        album_image = MediaItemImage(
-            type=ImageType.THUMB,
-            path=image_url,
-            provider=provider.instance_id,
-            remotely_accessible=True,
-        )
-
-    return ItemMapping(
-        item_id=show_date,
-        provider=provider.instance_id,
-        name=f"{show_date} - {venue_name}" if venue_name else show_date,
-        media_type=MediaType.ALBUM,
-        available=True,
-        image=album_image,
-    )
-
-
 def _build_track_details(
     track_data: dict[str, Any],
     song_data: dict[str, Any],
@@ -247,6 +226,23 @@ def _build_track_details(
     return "|".join(details_parts)
 
 
+def _flat_track_show(track_data: dict[str, Any]) -> dict[str, Any]:
+    """
+    Build a show_data dict from a track's flat fields.
+
+    Some endpoints (search results, playlist entries) return track objects
+    without a nested ``show`` object, exposing the show details as flat fields.
+    """
+    return {
+        "date": track_data.get("show_date"),
+        "album_cover_url": track_data.get("show_album_cover_url"),
+        "venue": {
+            "name": track_data.get("venue_name"),
+            "location": track_data.get("venue_location"),
+        },
+    }
+
+
 def track_to_ma_track(
     provider: MusicProvider,
     track_data: dict[str, Any],
@@ -268,9 +264,9 @@ def track_to_ma_track(
     track_number = int(position) if position is not None else 0
     set_name = track_data.get("set_name", "")
 
-    # Get show information
+    # Get show information; fall back to the nested show or flat track fields
     if show_data is None:
-        show_data = track_data.get("show", {})
+        show_data = track_data.get("show") or _flat_track_show(track_data)
     show_date = show_data.get("date", "")
     venue_name = show_data.get("venue", {}).get("name", "")
 
@@ -283,8 +279,9 @@ def track_to_ma_track(
         available=True,
     )
 
-    # Create album mapping with image
-    album_mapping = _create_album_mapping(provider, show_date, show_data)
+    # Build the parent album (full Album so the track shows under "Appears On").
+    # Tracks we surface always have audio, so force the album available.
+    track_album = show_to_album(provider, show_data, available=True) if show_date else None
 
     # Build details string
     details = _build_track_details(track_data, song_data, show_date, set_name, venue_name)
@@ -313,7 +310,7 @@ def track_to_ma_track(
         name=song_title,
         version=version,
         artists=UniqueList([phish_artist]),
-        album=album_mapping,
+        album=track_album,
         duration=duration,
         track_number=track_number,
         metadata=metadata,
@@ -519,13 +516,7 @@ def _parse_tracks(
         clean_title = strip_performance_indicators(full_title)
 
         if contains_search_term(clean_title):
-            # Extract show data from track data for image
-            show_data = {
-                "date": track_data.get("show_date"),
-                "album_cover_url": track_data.get("show_album_cover_url"),
-                "venue": {"name": track_data.get("venue_name")},
-            }
-            tracks.append(track_to_ma_track(provider, track_data, show_data))
+            tracks.append(track_to_ma_track(provider, track_data))
 
     # Deduplicate by album - only return one track per show
     seen_albums = set()

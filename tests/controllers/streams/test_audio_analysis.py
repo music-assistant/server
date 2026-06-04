@@ -16,8 +16,17 @@ from music_assistant_models.media_items import AudioFormat
 
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
 from music_assistant.constants import DEFAULT_BACKGROUND_SCAN_CONCURRENCY
-from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
+from music_assistant.controllers.streams.audio_analysis import (
+    LOUDNESS_ANALYSIS_DOMAIN,
+    SMART_FADES_ANALYSIS_DOMAIN,
+    SONIC_ANALYSIS_DOMAIN,
+    AudioAnalysisController,
+    _merged_from_rows,
+)
+from music_assistant.helpers.json import json_dumps
+from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
+from music_assistant.models.music_provider import MusicProvider
 
 
 @pytest.mark.asyncio
@@ -546,6 +555,120 @@ def _stub_controller(
     c.mass.music.database = db
     c.mass.get_providers = MagicMock(return_value=[])
     return c, db
+
+
+# --- provider-scoped merge (loudness regression fix) ---
+
+_ALL_AA_DOMAINS = {LOUDNESS_ANALYSIS_DOMAIN, SMART_FADES_ANALYSIS_DOMAIN, SONIC_ANALYSIS_DOMAIN}
+
+
+def _aa_row(domain: str, row_id: int, **fields: Any) -> dict[str, Any]:
+    """Build one audio_analysis db row (rows are passed oldest-first / ascending row_id)."""
+    return {
+        "id": row_id,
+        "item_id": "track-1",
+        "provider": "test-provider",
+        "media_type": MediaType.TRACK.value,
+        "aa_provider_domain": domain,
+        "analysis_data": json_dumps(AudioAnalysisData(**fields).to_dict()),
+    }
+
+
+def test_merged_from_rows_priority_none_is_last_write_wins() -> None:
+    """Without priority, the newest (last) row wins each non-None field (legacy behaviour)."""
+    rows = [
+        _aa_row(LOUDNESS_ANALYSIS_DOMAIN, 1, loudness_integrated=-7.5),
+        _aa_row(SONIC_ANALYSIS_DOMAIN, 2, loudness_integrated=-12.0),
+    ]
+    merged = _merged_from_rows(rows, _ALL_AA_DOMAINS)
+    assert merged is not None
+    assert merged.loudness_integrated == -12.0
+
+
+def test_merged_from_rows_single_priority_uses_only_that_provider() -> None:
+    """A single-domain priority returns only that provider's values; others are ignored."""
+    rows = [
+        _aa_row(LOUDNESS_ANALYSIS_DOMAIN, 1, loudness_integrated=-7.5),
+        _aa_row(SONIC_ANALYSIS_DOMAIN, 2, loudness_integrated=-12.0, bpm=120),
+    ]
+    merged = _merged_from_rows(rows, _ALL_AA_DOMAINS, priority=(LOUDNESS_ANALYSIS_DOMAIN,))
+    assert merged is not None
+    assert merged.loudness_integrated == -7.5
+    assert merged.bpm is None  # sonic_analysis excluded entirely
+
+
+def test_merged_from_rows_multi_priority_first_listed_wins_and_merges() -> None:
+    """Multi-domain priority merges all listed domains; the first-listed wins conflicts."""
+    rows = [
+        # sonic newer than loudness, but loudness is listed first -> wins loudness_integrated
+        _aa_row(SONIC_ANALYSIS_DOMAIN, 1, loudness_integrated=-12.0, energy=0.5),
+        _aa_row(LOUDNESS_ANALYSIS_DOMAIN, 2, loudness_integrated=-7.5),
+        _aa_row(SMART_FADES_ANALYSIS_DOMAIN, 3, bpm=120),
+    ]
+    merged = _merged_from_rows(
+        rows,
+        _ALL_AA_DOMAINS,
+        priority=(LOUDNESS_ANALYSIS_DOMAIN, SONIC_ANALYSIS_DOMAIN, SMART_FADES_ANALYSIS_DOMAIN),
+    )
+    assert merged is not None
+    assert merged.loudness_integrated == -7.5  # first-listed wins the conflict
+    assert merged.energy == 0.5  # non-conflicting field from sonic still merged in
+    assert merged.bpm == 120  # and from smart_fades
+
+
+def test_merged_from_rows_priority_domain_not_available_is_excluded() -> None:
+    """A priority domain that is not currently available is dropped (can yield None)."""
+    rows = [_aa_row(LOUDNESS_ANALYSIS_DOMAIN, 1, loudness_integrated=-7.5)]
+    merged = _merged_from_rows(rows, {SONIC_ANALYSIS_DOMAIN}, priority=(LOUDNESS_ANALYSIS_DOMAIN,))
+    assert merged is None
+
+
+def test_merged_from_rows_regression_sonic_does_not_clobber_loudness() -> None:
+    """Regression: sonic_analysis' RMS loudness must not overwrite the EBU R128 value.
+
+    Reproduces the volume-jump bug: a newer sonic_analysis row carries an RMS-proxy
+    loudness_integrated that wins under last-write-wins, but scoping to loudness_analysis
+    returns the authoritative value.
+    """
+    rows = [
+        _aa_row(LOUDNESS_ANALYSIS_DOMAIN, 1, loudness_integrated=-7.5),
+        _aa_row(SONIC_ANALYSIS_DOMAIN, 2, loudness_integrated=-12.0),
+    ]
+    legacy = _merged_from_rows(rows, _ALL_AA_DOMAINS)
+    assert legacy is not None
+    assert legacy.loudness_integrated == -12.0  # old/buggy: sonic clobbers
+    scoped = _merged_from_rows(rows, _ALL_AA_DOMAINS, priority=(LOUDNESS_ANALYSIS_DOMAIN,))
+    assert scoped is not None
+    assert scoped.loudness_integrated == -7.5  # fixed
+
+
+@pytest.mark.asyncio
+async def test_get_audio_analysis_priority_threads_through_to_merge() -> None:
+    """get_audio_analysis forwards priority so the loudness call gets the EBU R128 value."""
+    c, db = _stub_controller()
+    db.get_rows = AsyncMock(
+        return_value=[
+            _aa_row(LOUDNESS_ANALYSIS_DOMAIN, 1, loudness_integrated=-7.5),
+            _aa_row(SONIC_ANALYSIS_DOMAIN, 2, loudness_integrated=-12.0),
+        ]
+    )
+    music_prov = MagicMock(spec=MusicProvider)
+    music_prov.is_streaming_provider = True
+    music_prov.domain = "test-provider"
+    c.mass.get_provider = MagicMock(return_value=music_prov)  # type: ignore[method-assign]
+    aa_loud = MagicMock()
+    aa_loud.domain = LOUDNESS_ANALYSIS_DOMAIN
+    aa_loud.available = True
+    aa_sonic = MagicMock()
+    aa_sonic.domain = SONIC_ANALYSIS_DOMAIN
+    aa_sonic.available = True
+    c.mass.get_providers = MagicMock(return_value=[aa_loud, aa_sonic])  # type: ignore[method-assign]
+
+    result = await c.get_audio_analysis(
+        "track-1", "test-provider", priority=(LOUDNESS_ANALYSIS_DOMAIN,)
+    )
+    assert result is not None
+    assert result.loudness_integrated == -7.5
 
 
 @pytest.mark.asyncio
