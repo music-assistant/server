@@ -283,8 +283,9 @@ def validate_rules(rules: SmartPlaylistRules) -> None:
     if total_seeds > MAX_SEEDS:
         msg = f"Too many seeds: {total_seeds} > {MAX_SEEDS}"
         raise InvalidDataError(msg)
-    if rules.dedup_hours is not None and not (1 <= rules.dedup_hours <= 8760):
-        msg = f"dedup_hours must be between 1 and 8760, got {rules.dedup_hours}"
+    if rules.dedup_hours is not None and not (1 <= rules.dedup_hours <= 2160):
+        # 2160h == 90 days, matching the playlog retention window the dedup relies on.
+        msg = f"dedup_hours must be between 1 and 2160, got {rules.dedup_hours}"
         raise InvalidDataError(msg)
 
 

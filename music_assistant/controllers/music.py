@@ -671,6 +671,7 @@ class MusicController(CoreController):
         queue_id: str | None = None,
         fully_played_only: bool = True,
         user_initiated_only: bool = False,
+        played_after_timestamp: int | None = None,
     ) -> list[ItemMapping]:
         """Return a list of the last played items.
 
@@ -680,6 +681,8 @@ class MusicController(CoreController):
         :param queue_id: Filter by specific queue ID.
         :param fully_played_only: If True, only return fully played items.
         :param user_initiated_only: If True, only return items initiated by the user.
+        :param played_after_timestamp: If set, only return items played at or after this
+            epoch-seconds timestamp.
         """
         if media_types is None:
             media_types = MediaType.ALL
@@ -705,6 +708,9 @@ class MusicController(CoreController):
         if queue_id:
             query += "AND queue_id = :queue_id "
             params["queue_id"] = queue_id
+        if played_after_timestamp is not None:
+            query += "AND timestamp >= :played_after_timestamp "
+            params["played_after_timestamp"] = played_after_timestamp
         query += "ORDER BY timestamp DESC"
         db_rows = await self.mass.music.database.get_rows_from_query(
             query, params=params or None, limit=limit

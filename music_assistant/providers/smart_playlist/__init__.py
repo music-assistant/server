@@ -571,7 +571,7 @@ class SmartPlaylistProvider(PluginProvider):
         tracks = self._apply_exclusions(tracks, rules, excluded_genre_names)
         tracks = self._deduplicate_tracks(tracks)
         if rules.dedup_hours is not None:
-            deduped = self._apply_dedup(tracks, rules.dedup_hours)
+            deduped = await self._apply_dedup(tracks, rules.dedup_hours)
             if len(deduped) >= rules.limit:
                 tracks = deduped
             elif deduped:
@@ -580,7 +580,9 @@ class SmartPlaylistProvider(PluginProvider):
                 deduped_uris = {t.uri for t in deduped}
                 played_remainder = sorted(
                     (t for t in tracks if t.uri not in deduped_uris),
-                    key=lambda t: t.last_played,
+                    # last_played is 0 for non-library (streaming) tracks; treat 0 as
+                    # "most recent" so just-played streaming tracks aren't filled first.
+                    key=lambda t: t.last_played or float("inf"),
                 )
                 tracks = deduped + played_remainder[: rules.limit - len(deduped)]
             else:
@@ -714,11 +716,36 @@ class SmartPlaylistProvider(PluginProvider):
                     genre_id_to_name[genre_id] = genre.name
         return {v.lower() for v in genre_id_to_name.values() if v}
 
-    def _apply_dedup(self, tracks: list[Track], dedup_hours: int) -> list[Track]:
-        """Filter out tracks last played within dedup_hours hours."""
-        cutoff_ts = time.time() - dedup_hours * 3600
-        # last_played is a Unix timestamp (int); 0 means never played.
-        return [t for t in tracks if t.last_played == 0 or t.last_played < cutoff_ts]
+    async def _recently_played_keys(self, dedup_hours: int) -> set[tuple[str, str]]:
+        """
+        Return ``(provider, item_id)`` keys of tracks fully played within dedup_hours.
+
+        Scoped to the current user. ``recently_played`` resolves the user from the active
+        context; during queue refills the player queue restores the queue owner's user
+        context before evaluating, so the dedup window is per user without resolving here.
+        """
+        cutoff = int(time.time()) - dedup_hours * 3600
+        played = await self.mass.music.recently_played(
+            limit=0,
+            media_types=[MediaType.TRACK],
+            fully_played_only=True,
+            played_after_timestamp=cutoff,
+        )
+        return {(item.provider, item.item_id) for item in played}
+
+    async def _apply_dedup(self, tracks: list[Track], dedup_hours: int) -> list[Track]:
+        """Filter out tracks fully played within dedup_hours (scoped to the current user)."""
+        played_keys = await self._recently_played_keys(dedup_hours)
+        if not played_keys:
+            return list(tracks)
+        return [
+            t
+            for t in tracks
+            if not any(
+                (pm.provider_instance, pm.item_id) in played_keys
+                for pm in (t.provider_mappings or ())
+            )
+        ]
 
     async def _evaluate_and(
         self,
