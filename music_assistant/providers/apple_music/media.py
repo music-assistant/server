@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
@@ -70,21 +70,36 @@ class AppleMusicMediaManager:
             endpoint, term=search_query, types=searchtype, limit=limit
         )
         if "artists" in response["results"]:
-            searchresult.artists += [
-                parse_artist(self.provider, item) for item in response["results"]["artists"]["data"]
+            searchresult.artists = [
+                *searchresult.artists,
+                *(
+                    parse_artist(self.provider, item)
+                    for item in response["results"]["artists"]["data"]
+                ),
             ]
         if "albums" in response["results"]:
-            searchresult.albums += [
-                parse_album(self.provider, item) for item in response["results"]["albums"]["data"]
+            searchresult.albums = [
+                *searchresult.albums,
+                *(
+                    cast("Album", parse_album(self.provider, item))
+                    for item in response["results"]["albums"]["data"]
+                ),
             ]
         if "songs" in response["results"]:
-            searchresult.tracks += [
-                parse_track(self.provider, item) for item in response["results"]["songs"]["data"]
+            searchresult.tracks = [
+                *searchresult.tracks,
+                *(
+                    parse_track(self.provider, item)
+                    for item in response["results"]["songs"]["data"]
+                ),
             ]
         if "playlists" in response["results"]:
-            searchresult.playlists += [
-                parse_playlist(self.provider, item)
-                for item in response["results"]["playlists"]["data"]
+            searchresult.playlists = [
+                *searchresult.playlists,
+                *(
+                    parse_playlist(self.provider, item)
+                    for item in response["results"]["playlists"]["data"]
+                ),
             ]
         return searchresult
 
@@ -93,7 +108,7 @@ class AppleMusicMediaManager:
         """Get full artist details by id."""
         endpoint = f"catalog/{self.provider._storefront}/artists/{prov_artist_id}"
         response = await self.api.get_data(endpoint, extend="editorialNotes")
-        return parse_artist(self.provider, response["data"][0])
+        return cast("Artist", parse_artist(self.provider, response["data"][0]))
 
     @use_cache()
     async def get_album(self, prov_album_id: str) -> Album:
@@ -106,7 +121,7 @@ class AppleMusicMediaManager:
             response = await self.api.get_data(endpoint, include="artists")
         rating_response = await self.api.get_ratings([prov_album_id], MediaType.ALBUM)
         is_favourite = rating_response.get(prov_album_id)
-        return parse_album(self.provider, response["data"][0], is_favourite)
+        return cast("Album", parse_album(self.provider, response["data"][0], is_favourite))
 
     @use_cache()
     async def get_track(self, prov_track_id: str) -> Track:
@@ -192,7 +207,7 @@ class AppleMusicMediaManager:
             endpoint = f"catalog/{self.provider._storefront}/playlists/{prov_playlist_id}/tracks"
         else:
             endpoint = f"me/library/playlists/{prov_playlist_id}/tracks"
-        result = []
+        result: list[Track] = []
         page_size = 100
         offset = page * page_size
         response = await self.api.get_data(
@@ -263,7 +278,7 @@ class AppleMusicMediaManager:
                 continue
             parsed = parse_album(self.provider, album, rating_response.get(album["id"]))
             if parsed:
-                albums.append(parsed)
+                albums.append(cast("Album", parsed))
         return albums
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)
