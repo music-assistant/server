@@ -253,13 +253,13 @@ class SmartPlaylistProvider(PluginProvider):
     async def _reconcile_library(self) -> None:
         """Re-add smart playlists that are missing from the library (e.g. after a DB reset)."""
         for playlist_id, rules in list(self._rules_store.items()):
-            existing = await self.mass.music.playlists.get_library_item_by_prov_id(
-                playlist_id, self.instance_id
-            )
-            if existing is not None:
-                continue
-            self.logger.info("Re-adding missing smart playlist '%s' to library", playlist_id)
             try:
+                existing = await self.mass.music.playlists.get_library_item_by_prov_id(
+                    playlist_id, self.instance_id
+                )
+                if existing is not None:
+                    continue
+                self.logger.info("Re-adding missing smart playlist '%s' to library", playlist_id)
                 playlist = self._build_playlist(playlist_id, rules)
                 await self.mass.music.playlists.add_item_to_library(playlist)
             except Exception as exc:
