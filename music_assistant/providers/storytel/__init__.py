@@ -142,7 +142,7 @@ async def get_config_entries(
 
 
 class Storytel(MusicProvider):
-    """Storytel provider (audiobooks only)."""
+    """Storytel provider."""
 
     @staticmethod
     def handle_login_failed(
