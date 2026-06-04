@@ -1625,19 +1625,6 @@ class StreamsAudio:
                     self.mass.player_queues._prepare_next_audio_buffer(queue_item.queue_id)
                 yield chunk
                 del chunk
-                # Guard against sources whose upstream stream never terminates
-                # (e.g. dynamic DASH MPDs from Tidal, or future infinite-buffer
-                # providers). After streaming at least the track's known
-                # duration + a short buffer, stop yielding so the flow stream
-                # loop can advance to the next queue item. Bounded sources
-                # (FLAC, MP3, local files) finish naturally well before this
-                # point, making the break a no-op for them.
-                if (
-                    streamdetails.duration
-                    and (bytes_received / pcm_format.pcm_sample_size + seek_position)
-                    >= streamdetails.duration + 5
-                ):
-                    break
             # if we received no audio and the buffer has a producer error,
             # the error was swallowed by the FFmpeg stdin feeder - re-raise it
             if bytes_received == 0 and audio_buffer.has_error:
