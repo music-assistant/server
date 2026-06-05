@@ -322,15 +322,15 @@ class AppleMusicLibraryManager:
                 if not any(a.name.lower() == artist_name_lower for a in track.artists):
                     continue
 
-                # If we have album info, verify album match too
-                if album_name_lower and track.album:
-                    if track.album.name.lower() != album_name_lower:
-                        # Album mismatch - might be a different version/remaster
+                # If we have album info, require album match
+                if album_name_lower:
+                    if not track.album or track.album.name.lower() != album_name_lower:
+                        # Album mismatch or missing - might be a different version/remaster
                         continue
 
                 # Found a match! Update favorite status and return
                 track.favorite = is_favourite or False
-                self.logger.info(
+                self.logger.debug(
                     "Found replacement catalog track %s for deprecated library track %s",
                     track.item_id,
                     library_item.get("id"),
@@ -345,6 +345,7 @@ class AppleMusicLibraryManager:
                 track_name,
                 artist_name,
                 err,
+                exc_info=True,
             )
             return None
 
