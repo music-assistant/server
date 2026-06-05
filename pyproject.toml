@@ -150,8 +150,6 @@ enable_error_code = [
 exclude = [
   '^music_assistant/controllers/music.py$',
   '^music_assistant/helpers/app_vars.py',
-  '^music_assistant/providers/plex/.*$',
-  '^music_assistant/providers/plex_connect/.*$',
   '^music_assistant/providers/sonic_analysis/vendored_clap/.*$',
   '^music_assistant/providers/ytmusic/.*$',
 ]
@@ -173,6 +171,13 @@ warn_return_any = true
 warn_unreachable = true
 warn_unused_configs = true
 warn_unused_ignores = true
+
+# plexapi ships a py.typed marker but its annotations are incomplete (unannotated
+# methods, attributes declared as None and only set dynamically). Treat it as an
+# untyped dependency rather than trusting its type info.
+[[tool.mypy.overrides]]
+module = ["plexapi", "plexapi.*"]
+follow_imports = "skip"
 
 [tool.ruff.format]
 # Force Linux/macOS line endings
