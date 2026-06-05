@@ -1230,13 +1230,13 @@ class TaskManager:
         self._tasks: list[asyncio.Task[None]] = []
         self._semaphore = asyncio.Semaphore(limit) if limit else None
 
-    def create_task(self, coro: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
+    def create_task(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[None]:
         """Create a new task and add it to the manager."""
         task = self.mass.create_task(coro)
         self._tasks.append(task)
         return task
 
-    async def create_task_with_limit(self, coro: Coroutine[Any, Any, None]) -> None:
+    async def create_task_with_limit(self, coro: Coroutine[Any, Any, Any]) -> None:
         """Create a new task with semaphore limit."""
         assert self._semaphore is not None
 
