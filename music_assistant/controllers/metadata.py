@@ -634,10 +634,8 @@ class MetaDataController(CoreController):
         prefer_stream_server: bool = False,
     ) -> str:
         """Get (proxied) URL for MediaItemImage."""
-        detected_format = _detect_image_format(image.path)
-        if image_format is None or detected_format == "svg":
-            # Always use the detected format for SVGs — they cannot be converted to JPEG/PNG
-            image_format = detected_format
+        if image_format is None:
+            image_format = _detect_image_format(image.path)
         if image_format == "svg":
             # SVGs don't need resizing
             size = 0
