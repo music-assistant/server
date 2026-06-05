@@ -111,6 +111,7 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.models.provider import Provider
+    from music_assistant.providers.builtin import BuiltinProvider
 
 
 CONF_RESET_DB = "reset_db"
@@ -296,7 +297,7 @@ class MusicController(CoreController):
                             handler=self._create_provider_sync_handler(provider, media_type),
                             translation_key=self._get_sync_task_translation_key(media_type),
                             translation_args=[provider.name],
-                            user_id=get_current_user().user_id if get_current_user() else None,
+                            user_id=(user.user_id if (user := get_current_user()) else None),
                             metadata=self._get_sync_task_metadata(provider, media_type),
                             allow_retry=True,
                             priority=True,
@@ -499,7 +500,7 @@ class MusicController(CoreController):
         :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
         """
-        prov = self.mass.get_provider(provider_instance_id_or_domain)
+        prov = self.mass.get_provider(provider_instance_id_or_domain, provider_type=MusicProvider)
         if not prov:
             return SearchResults()
         if ProviderFeature.SEARCH not in prov.supported_features:
@@ -661,7 +662,7 @@ class MusicController(CoreController):
             ]
             return [*prepend_items, *initiable_items]
         # limit -1 to account for the prepended items
-        prov_items = await prov.browse(path=path)
+        prov_items = await cast("MusicProvider", prov).browse(path=path)
         return prepend_items + prov_items
 
     @api_command("music/recently_played_items")
@@ -985,7 +986,8 @@ class MusicController(CoreController):
             provider_instance_id_or_domain = "library"
         if provider_instance_id_or_domain == "builtin":
             # handle special case of 'builtin' MusicProvider which allows us to play regular url's
-            return await self.mass.get_provider("builtin").parse_item(item_id)
+            builtin_prov = cast("BuiltinProvider", self.mass.get_provider("builtin"))
+            return await builtin_prov.parse_item(item_id)
         if media_type == MediaType.PODCAST_EPISODE:
             # special case for podcast episodes
             return await self.podcasts.episode(item_id, provider_instance_id_or_domain)
@@ -1068,7 +1070,9 @@ class MusicController(CoreController):
         )
         # forward to provider(s) if needed
         for prov_mapping in full_item.provider_mappings:
-            provider = self.mass.get_provider(prov_mapping.provider_instance)
+            provider = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
             if not provider or not self.library_favorites_edit_supported(
                 provider, full_item.media_type
             ):
@@ -1090,7 +1094,9 @@ class MusicController(CoreController):
         # forward to provider(s) if needed
         full_item = await ctrl.get_library_item(library_item_id)
         for prov_mapping in full_item.provider_mappings:
-            provider = self.mass.get_provider(prov_mapping.provider_instance)
+            provider = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
             if not provider or not self.library_favorites_edit_supported(
                 provider, full_item.media_type
             ):
@@ -1112,7 +1118,9 @@ class MusicController(CoreController):
         for prov_mapping in full_item.provider_mappings:
             if not prov_mapping.in_library:
                 continue
-            provider = self.mass.get_provider(prov_mapping.provider_instance)
+            provider = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
             if not provider or not self.library_edit_supported(provider, full_item.media_type):
                 continue
             if not self.library_sync_back_enabled(provider, full_item.media_type):
@@ -1165,7 +1173,9 @@ class MusicController(CoreController):
             # from disappearing when the provider doesn't support library edit
             # or 2-way sync is disabled.
             prov_mapping.in_library = True
-            provider = self.mass.get_provider(prov_mapping.provider_instance)
+            provider = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
             if not provider or not self.library_edit_supported(provider, full_item.media_type):
                 continue
             if not self.library_sync_back_enabled(provider, full_item.media_type):
@@ -1861,7 +1871,9 @@ class MusicController(CoreController):
         with suppress(InvalidDataError):
             task = self.mass.tasks.get_task(task_id)
             return task.schedule
-        if not (provider := self.mass.get_provider(provider_instance_id)):
+        if not (
+            provider := self.mass.get_provider(provider_instance_id, provider_type=MusicProvider)
+        ):
             return None
         if not self.library_supported(provider, media_type):
             return None
@@ -2920,7 +2932,7 @@ class MusicController(CoreController):
             # form; the builtin provider resolves that against RESOURCES_DIR at serve
             # time.
             genre_dir_marker = f"/resources/{GENRE_ICONS_DIR_NAME}/"
-            async for db_row in self._database.iter_items(DB_TABLE_GENRES):
+            async for db_row in self.database.iter_items(DB_TABLE_GENRES):
                 raw_metadata = db_row["metadata"]
                 if not raw_metadata:
                     continue
@@ -2938,7 +2950,7 @@ class MusicController(CoreController):
                         image["path"] = f"{GENRE_ICONS_DIR_NAME}/{norm.rsplit('/', 1)[-1]}"
                         changed = True
                 if changed:
-                    await self._database.update(
+                    await self.database.update(
                         DB_TABLE_GENRES,
                         {"item_id": db_row["item_id"]},
                         {"metadata": serialize_to_json(metadata)},
