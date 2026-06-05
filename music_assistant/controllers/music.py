@@ -1537,14 +1537,15 @@ class MusicController(CoreController):
                         # no artist match found: abort
                         continue
                 # check optional album
-                if (
-                    album_name
-                    and is_track
-                    and not compare_strings(album_name, search_track.album.name, False)
-                ):
-                    # no album match found: abort
-                    continue
-                    # if we reach this, we found a match
+                if album_name and is_track:
+                    track_album = search_track.album
+                    # a track without album info can never match a requested album
+                    if track_album is None or not compare_strings(
+                        album_name, track_album.name, False
+                    ):
+                        # no album match found: abort
+                        continue
+                # if we reach this, we found a match
                 if not isinstance(search_track, Track):
                     # ensure we return an actual Track object
                     return await self.mass.music.tracks.get(
@@ -1656,7 +1657,8 @@ class MusicController(CoreController):
             params["userid"] = user.user_id
         if db_entry := await self.database.get_row(DB_TABLE_PLAYLOG, params):
             ma_position_ms = db_entry["seconds_played"] * 1000 if db_entry["seconds_played"] else 0
-            ma_fully_played = parse_optional_bool(db_entry["fully_played"])
+            # fully_played is a nullable column; treat an unknown (NULL) value as not played
+            ma_fully_played = parse_optional_bool(db_entry["fully_played"]) or False
             ma_timestamp = from_utc_timestamp(db_entry["timestamp"])
 
         if provider_timestamp is not None and provider_timestamp > ma_timestamp:
