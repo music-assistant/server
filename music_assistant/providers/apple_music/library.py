@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.media_items import Track
 
 from .helpers.utils import is_catalog_id, is_library_id, translate_media_type_to_apple_type
 from .parsers import parse_album, parse_artist, parse_playlist, parse_track
@@ -13,7 +14,7 @@ from .parsers import parse_album, parse_artist, parse_playlist, parse_track
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from music_assistant_models.media_items import Album, Artist, MediaItemType, Playlist, Track
+    from music_assistant_models.media_items import Album, Artist, MediaItemType, Playlist
 
     from .provider import AppleMusicProvider
 
@@ -251,10 +252,101 @@ class AppleMusicLibraryManager:
                     parsed_track.album = parsed_library_track.album
             yield parsed_track
         # Some library items may not resolve on the catalog endpoint anymore.
+        # Try intelligent fallback: search -> unavailable
         for missing_catalog_id in set(catalog_ids) - returned_catalog_ids:
             if library_item := library_items_by_catalog_id.get(missing_catalog_id):
                 is_favourite = rating_response.get(missing_catalog_id)
-                yield parse_track(self.provider, library_item, is_favourite)
+
+                # Try to find current catalog version via search
+                replacement_track = await self._try_search_replacement_for_deprecated_track(
+                    library_item, is_favourite
+                )
+
+                if replacement_track:
+                    yield replacement_track
+                else:
+                    # No replacement found - yield library-only track but mark unavailable
+                    # (these often have corrupt streams from Apple's deprecated catalog versions)
+                    parsed_track = parse_track(self.provider, library_item, is_favourite)
+                    for mapping in parsed_track.provider_mappings:
+                        if mapping.provider_instance == self.provider.instance_id:
+                            mapping.available = False
+                    self.logger.debug(
+                        "Library track %s references deprecated catalog ID %s - marked unavailable",
+                        library_item.get("id"),
+                        missing_catalog_id,
+                    )
+                    yield parsed_track
+
+    async def _try_search_replacement_for_deprecated_track(
+        self, library_item: dict[str, Any], is_favourite: bool | None
+    ) -> Track | None:
+        """
+        Try to find a current catalog version for a deprecated library track via search.
+
+        Returns the replacement track if found, None otherwise.
+        """
+        attributes = library_item.get("attributes", {})
+        track_name = attributes.get("name")
+        artist_name = attributes.get("artistName")
+        album_name = attributes.get("albumName")
+
+        if not track_name or not artist_name:
+            return None
+
+        # Search for track: "Artist Track"
+        search_query = f"{artist_name} {track_name}"
+        try:
+            search_results = await self.provider.media_manager.search(
+                search_query, [MediaType.TRACK], limit=10
+            )
+
+            if not search_results.tracks:
+                return None
+
+            # Try to find exact match (case-insensitive)
+            track_name_lower = track_name.lower()
+            artist_name_lower = artist_name.lower()
+            album_name_lower = album_name.lower() if album_name else None
+
+            for track in search_results.tracks:
+                # Skip ItemMapping entries (only interested in full Track objects)
+                if not isinstance(track, Track):
+                    continue
+
+                # Check track name match
+                if track.name.lower() != track_name_lower:
+                    continue
+
+                # Check artist match
+                if not any(a.name.lower() == artist_name_lower for a in track.artists):
+                    continue
+
+                # If we have album info, verify album match too
+                if album_name_lower and track.album:
+                    if track.album.name.lower() != album_name_lower:
+                        # Album mismatch - might be a different version/remaster
+                        continue
+
+                # Found a match! Update favorite status and return
+                track.favorite = is_favourite or False
+                self.logger.info(
+                    "Found replacement catalog track %s for deprecated library track %s",
+                    track.item_id,
+                    library_item.get("id"),
+                )
+                return track
+
+            return None
+
+        except Exception as err:
+            self.logger.debug(
+                "Search fallback failed for track '%s' by '%s': %s",
+                track_name,
+                artist_name,
+                err,
+            )
+            return None
 
     async def _flush_library_only_tracks(
         self, library_only_items: list[dict[str, Any]]

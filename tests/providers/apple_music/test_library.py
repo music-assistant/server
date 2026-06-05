@@ -4,6 +4,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.enums import MediaType
+from music_assistant_models.media_items import Track
 
 from music_assistant.providers.apple_music.library import (
     _TRACK_SYNC_WINDOW,
@@ -86,3 +88,238 @@ async def test_enriches_before_listing_completes() -> None:
     manager, _, state = _make_manager(items)
     [track async for track in manager.get_library_tracks()]
     assert state["first_enrich_at"] == _TRACK_SYNC_WINDOW
+
+
+@pytest.mark.asyncio
+async def test_search_replacement_finds_exact_match() -> None:
+    """Search replacement finds exact match when deprecated catalog ID no longer exists."""
+    provider = MagicMock()
+    provider.domain = "apple_music"
+    provider.instance_id = "apple_music--test"
+
+    # Mock library item with track metadata
+    library_item = {
+        "id": "i.123",
+        "attributes": {
+            "name": "Test Track",
+            "artistName": "Test Artist",
+            "albumName": "Test Album",
+        },
+    }
+
+    # Mock search result with matching track
+    mock_artist = MagicMock()
+    mock_artist.name = "Test Artist"
+
+    mock_album = MagicMock()
+    mock_album.name = "Test Album"
+
+    mock_track = MagicMock(spec=Track)
+    mock_track.name = "Test Track"
+    mock_track.item_id = "999"
+    mock_track.artists = [mock_artist]
+    mock_track.album = mock_album
+    mock_track.favorite = False
+
+    search_results = MagicMock()
+    search_results.tracks = [mock_track]
+
+    provider.media_manager.search = AsyncMock(return_value=search_results)
+
+    manager = AppleMusicLibraryManager(provider)
+
+    # Test search replacement
+    result = await manager._try_search_replacement_for_deprecated_track(library_item, True)
+
+    assert result is not None
+    assert result.name == "Test Track"
+    assert result.favorite is True
+    provider.media_manager.search.assert_called_once_with(
+        "Test Artist Test Track", [MediaType.TRACK], limit=10
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_replacement_no_match_wrong_track_name() -> None:
+    """Search replacement returns None when track name doesn't match."""
+    provider = MagicMock()
+    provider.domain = "apple_music"
+    provider.instance_id = "apple_music--test"
+
+    library_item = {
+        "id": "i.123",
+        "attributes": {
+            "name": "Test Track",
+            "artistName": "Test Artist",
+        },
+    }
+
+    mock_artist = MagicMock()
+    mock_artist.name = "Test Artist"
+
+    mock_track = MagicMock(spec=Track)
+    mock_track.name = "Different Song"  # Wrong name
+    mock_track.artists = [mock_artist]
+
+    search_results = MagicMock()
+    search_results.tracks = [mock_track]
+
+    provider.media_manager.search = AsyncMock(return_value=search_results)
+
+    manager = AppleMusicLibraryManager(provider)
+    result = await manager._try_search_replacement_for_deprecated_track(library_item, False)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_search_replacement_no_match_wrong_artist() -> None:
+    """Search replacement returns None when artist name doesn't match."""
+    provider = MagicMock()
+    provider.domain = "apple_music"
+    provider.instance_id = "apple_music--test"
+
+    library_item = {
+        "id": "i.123",
+        "attributes": {
+            "name": "Test Track",
+            "artistName": "Test Artist",
+        },
+    }
+
+    mock_artist = MagicMock()
+    mock_artist.name = "Different Artist"
+
+    mock_track = MagicMock(spec=Track)
+    mock_track.name = "Test Track"
+    mock_track.artists = [mock_artist]
+
+    search_results = MagicMock()
+    search_results.tracks = [mock_track]
+
+    provider.media_manager.search = AsyncMock(return_value=search_results)
+
+    manager = AppleMusicLibraryManager(provider)
+    result = await manager._try_search_replacement_for_deprecated_track(library_item, False)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_search_replacement_album_mismatch_skipped() -> None:
+    """Search replacement skips tracks with mismatched album when album info available."""
+    provider = MagicMock()
+    provider.domain = "apple_music"
+    provider.instance_id = "apple_music--test"
+
+    library_item = {
+        "id": "i.123",
+        "attributes": {
+            "name": "Test Track",
+            "artistName": "Test Artist",
+            "albumName": "Test Artist",
+        },
+    }
+
+    mock_artist = MagicMock()
+    mock_artist.name = "Test Artist"
+
+    mock_album = MagicMock()
+    mock_album.name = "Different Album"  # Wrong album
+
+    mock_track = MagicMock(spec=Track)
+    mock_track.name = "Test Track"
+    mock_track.artists = [mock_artist]
+    mock_track.album = mock_album
+
+    search_results = MagicMock()
+    search_results.tracks = [mock_track]
+
+    provider.media_manager.search = AsyncMock(return_value=search_results)
+
+    manager = AppleMusicLibraryManager(provider)
+    result = await manager._try_search_replacement_for_deprecated_track(library_item, False)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_search_replacement_no_results() -> None:
+    """Search replacement returns None when search yields no results."""
+    provider = MagicMock()
+    provider.domain = "apple_music"
+    provider.instance_id = "apple_music--test"
+
+    library_item = {
+        "id": "i.123",
+        "attributes": {
+            "name": "Test Track",
+            "artistName": "Test Artist",
+        },
+    }
+
+    search_results = MagicMock()
+    search_results.tracks = []  # Empty results
+
+    provider.media_manager.search = AsyncMock(return_value=search_results)
+
+    manager = AppleMusicLibraryManager(provider)
+    result = await manager._try_search_replacement_for_deprecated_track(library_item, False)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_search_replacement_handles_exceptions() -> None:
+    """Search replacement returns None and logs when search raises exception."""
+    provider = MagicMock()
+    provider.domain = "apple_music"
+    provider.instance_id = "apple_music--test"
+
+    library_item = {
+        "id": "i.123",
+        "attributes": {
+            "name": "Test Track",
+            "artistName": "Test Artist",
+        },
+    }
+
+    provider.media_manager.search = AsyncMock(side_effect=Exception("Network error"))
+
+    manager = AppleMusicLibraryManager(provider)
+    result = await manager._try_search_replacement_for_deprecated_track(library_item, False)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_search_replacement_missing_metadata() -> None:
+    """Search replacement returns None when library item lacks required metadata."""
+    provider = MagicMock()
+    provider.domain = "apple_music"
+    provider.instance_id = "apple_music--test"
+
+    # Missing track name
+    library_item = {
+        "id": "i.123",
+        "attributes": {
+            "artistName": "Test Artist",
+        },
+    }
+
+    manager = AppleMusicLibraryManager(provider)
+    result = await manager._try_search_replacement_for_deprecated_track(library_item, False)
+
+    assert result is None
+
+    # Missing artist name
+    library_item = {
+        "id": "i.123",
+        "attributes": {
+            "name": "Test Track",
+        },
+    }
+
+    result = await manager._try_search_replacement_for_deprecated_track(library_item, False)
+
+    assert result is None
