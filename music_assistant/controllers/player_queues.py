@@ -1929,7 +1929,7 @@ class PlayerQueuesController(CoreController):
                 # we prefer the imageproxy on the streamserver here because this request is sent
                 # to the player itself which may not be able to reach the regular webserver
                 media.image_url = self.mass.metadata.get_image_url(
-                    queue_item.image, size=512, prefer_stream_server=True
+                    queue_item.image, size=512, image_format="jpeg", prefer_stream_server=True
                 )
         return media
 
