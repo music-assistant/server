@@ -1113,7 +1113,8 @@ class YoutubeMusicProvider(MusicProvider):
                 response.raise_for_status()
                 self.logger.debug("PO Token server responded with %s", response.status)
                 return response.status == 200
-        except (ClientError, TimeoutError):
+        except (ClientError, TimeoutError) as err:
+            self.logger.debug("PO Token server ping failed: %s", err)
             return False
 
     async def _user_has_ytm_premium(self) -> bool:
