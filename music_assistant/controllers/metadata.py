@@ -76,9 +76,9 @@ from music_assistant.helpers.images import (
     cleanup_thumb_cache,
     create_collage,
     create_thumb_hash,
+    detect_image_content_format,
     get_image_data,
     get_image_thumb,
-    is_svg_data,
 )
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import split_artists
@@ -656,6 +656,7 @@ class MetaDataController(CoreController):
         size: int | None = None,
         base64: bool = False,
         image_format: str | None = None,
+        flatten_transparency: bool = False,
     ) -> bytes | str:
         """Get/create thumbnail image for path (image url or local path)."""
         if not self.mass.get_provider(provider) and not path.startswith("http"):
@@ -675,11 +676,19 @@ class MetaDataController(CoreController):
                 return f"data:image/svg+xml;base64,{enc_image}"
             return svg_bytes
         thumbnail_bytes = await get_image_thumb(
-            self.mass, path, size=size, provider=provider, image_format=image_format
+            self.mass,
+            path,
+            size=size,
+            provider=provider,
+            image_format=image_format,
+            flatten_transparency=flatten_transparency,
         )
         if base64:
             enc_image = b64encode(thumbnail_bytes).decode()
-            return f"data:image/{image_format};base64,{enc_image}"
+            # output format may differ from the request (e.g. PNG kept for
+            # transparency), so derive the mime from the bytes
+            sniffed = detect_image_content_format(thumbnail_bytes) or image_format
+            return f"data:{_IMAGEPROXY_CONTENT_TYPES.get(sniffed, f'image/{sniffed}')};base64,{enc_image}"
         return thumbnail_bytes
 
     async def handle_imageproxy(self, request: web.Request) -> web.Response:
@@ -760,9 +769,18 @@ class MetaDataController(CoreController):
         self, path: str, provider: str, size: int, image_format: str
     ) -> web.Response:
         """Fetch (or render+cache) the thumbnail and produce an HTTP response."""
+        # `fmt=jpeg` is the explicit player-media request: players are sent a
+        # JPEG for maximum compatibility, and since JPEG has no alpha channel we
+        # composite transparency onto white. The auto-detected `fmt=jpg`/`png`
+        # default (app/UI) instead keeps transparency as PNG.
+        flatten_transparency = image_format == "jpeg"
         try:
             image_data = await self.get_thumbnail(
-                path, size=size, provider=provider, image_format=image_format
+                path,
+                size=size,
+                provider=provider,
+                image_format=image_format,
+                flatten_transparency=flatten_transparency,
             )
         except Exception as err:
             # broadly catch all exceptions here to ensure we dont crash the request handler
@@ -777,11 +795,11 @@ class MetaDataController(CoreController):
                 )
             return web.Response(status=404)
         content_type = _IMAGEPROXY_CONTENT_TYPES[image_format]
-        if isinstance(image_data, (bytes, bytearray)) and is_svg_data(image_data):
-            # Some sources (e.g. radio station favicons) serve SVG from URLs
-            # without a `.svg` suffix, so the requested fmt may be jpg/png even
-            # though the bytes are SVG. Report the correct content type instead.
-            content_type = _IMAGEPROXY_CONTENT_TYPES["svg"]
+        if isinstance(image_data, (bytes, bytearray)):
+            # output may differ from the requested fmt (passed-through SVG, or
+            # PNG kept for transparency), so set the type from the actual bytes
+            if sniffed := detect_image_content_format(image_data):
+                content_type = _IMAGEPROXY_CONTENT_TYPES[sniffed]
         return web.Response(
             body=image_data,
             headers={"Cache-Control": "max-age=31536000", "Access-Control-Allow-Origin": "*"},

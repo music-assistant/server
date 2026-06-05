@@ -895,10 +895,7 @@ class SendspinPlayer(SendspinBasePlayer):
 
     async def _decode_artwork(self, image_data: bytes) -> Image.Image | None:
         """
-        Decode raw artwork bytes into a Pillow image, or None if unsupported.
-
-        Sendspin clients need a raster image; vector (SVG) or otherwise
-        undecodable artwork is skipped rather than crashing the metadata push.
+        Decode artwork bytes into a Pillow image, returning None if undecodable.
 
         :param image_data: Raw image bytes to decode.
         """

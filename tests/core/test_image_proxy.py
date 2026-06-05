@@ -5,6 +5,7 @@ import hashlib
 from unittest.mock import MagicMock
 
 import pytest
+from PIL import Image
 
 from music_assistant.controllers.metadata import (
     _IMAGEPROXY_CONTENT_TYPES,
@@ -15,7 +16,10 @@ from music_assistant.controllers.metadata import (
 )
 from music_assistant.helpers.images import (
     _extract_imageproxy_id,
+    _has_alpha,
+    _thumb_cache_filename,
     create_thumb_hash,
+    detect_image_content_format,
     is_svg_data,
 )
 from music_assistant.mass import MusicAssistant
@@ -266,3 +270,42 @@ def test_is_svg_data() -> None:
     assert not is_svg_data(b"<html><body>not svg</body></html>")
     # an XML document that never declares an <svg> element is not SVG
     assert not is_svg_data(b'<?xml version="1.0"?><rss></rss>')
+
+
+def test_detect_image_content_format() -> None:
+    """Image format is sniffed from leading magic bytes (png/jpg/svg)."""
+    assert detect_image_content_format(b"\x89PNG\r\n\x1a\n....") == "png"
+    assert detect_image_content_format(b"\xff\xd8\xff\xe0JFIF") == "jpg"
+    assert detect_image_content_format(b'<svg xmlns="http://www.w3.org/2000/svg"></svg>') == "svg"
+    assert detect_image_content_format(b"") is None
+    assert detect_image_content_format(b"GIF89a") is None
+    # every sniffed value must map to a known content type
+    for fmt in ("png", "jpg", "svg"):
+        assert fmt in _IMAGEPROXY_CONTENT_TYPES
+
+
+def test_thumb_cache_filename_separates_flatten_variants() -> None:
+    """Flattened (player-compat) and transparency-preserving variants differ."""
+    thumb_hash = "a" * 64
+    plain = _thumb_cache_filename(thumb_hash, 512, "jpeg", flatten_transparency=False)
+    flat = _thumb_cache_filename(thumb_hash, 512, "jpeg", flatten_transparency=True)
+    assert plain == f"{thumb_hash}_512.jpg"
+    assert flat == f"{thumb_hash}_512_flat.jpg"
+    assert plain != flat
+    # png requests keep their own extension/bucket
+    assert _thumb_cache_filename(thumb_hash, 0, "png") == f"{thumb_hash}_0.png"
+
+
+def test_has_alpha() -> None:
+    """Only images that actually use transparency are detected."""
+    assert _has_alpha(Image.new("RGBA", (4, 4), (0, 0, 0, 0)))
+    assert _has_alpha(Image.new("LA", (4, 4)))
+    palette_img = Image.new("P", (4, 4))
+    palette_img.info["transparency"] = 0
+    assert _has_alpha(palette_img)
+    # a fully-opaque alpha channel does not count as transparent
+    assert not _has_alpha(Image.new("RGBA", (4, 4), (1, 2, 3, 255)))
+    # opaque modes have no alpha
+    assert not _has_alpha(Image.new("RGB", (4, 4), (10, 20, 30)))
+    assert not _has_alpha(Image.new("L", (4, 4)))
+    assert not _has_alpha(Image.new("P", (4, 4)))
