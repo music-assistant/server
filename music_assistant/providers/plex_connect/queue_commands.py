@@ -99,13 +99,19 @@ class QueueCommandsMixin:
 
         playqueue = await asyncio.to_thread(fetch_initial)
 
-        if not playqueue or not playqueue.items:
+        # Avoid truthiness checks on the PlayQueue object: plexapi's __len__ returns
+        # playQueueTotalCount, which is None for track-radio (and other on-the-fly)
+        # queues, so `not playqueue` would raise a TypeError.
+        if playqueue is None or not playqueue.items:
             return playqueue
 
         all_items = list(playqueue.items)
         seen_ids = {item.playQueueItemID for item in all_items}
 
-        target_count = min(playqueue.playQueueTotalCount, MAX_QUEUE_ITEMS)
+        # playQueueTotalCount is absent for track-radio queues; fall back to the
+        # number of items we already have so pagination simply stops.
+        total_count = playqueue.playQueueTotalCount or len(all_items)
+        target_count = min(total_count, MAX_QUEUE_ITEMS)
         while len(all_items) < target_count:
             last_id = all_items[-1].playQueueItemID
 
@@ -122,7 +128,7 @@ class QueueCommandsMixin:
                 )
 
             next_page = await asyncio.to_thread(fetch_next)
-            if not next_page or not next_page.items:
+            if next_page is None or not next_page.items:
                 break
 
             new_items = [i for i in next_page.items if i.playQueueItemID not in seen_ids]
@@ -268,8 +274,9 @@ class QueueCommandsMixin:
 
             playqueue = await self._fetch_full_play_queue(queue_id)
 
-            if playqueue and playqueue.items:
-                selected_offset = getattr(playqueue, "playQueueSelectedItemOffset", 0)
+            if playqueue is not None and playqueue.items:
+                # playQueueSelectedItemOffset may be None on track-radio queues.
+                selected_offset = getattr(playqueue, "playQueueSelectedItemOffset", 0) or 0
                 LOGGER.info(f"PlayQueue selected item offset: {selected_offset}")
 
                 # When Plex reports a shuffled queue, load the original source into MA
@@ -450,7 +457,7 @@ class QueueCommandsMixin:
 
             playqueue = await asyncio.to_thread(create_queue)
 
-            if playqueue and playqueue.items:
+            if playqueue is not None and playqueue.items:
                 self.play_queue_id = str(playqueue.playQueueID)
                 self.play_queue_version = 1
 
@@ -543,7 +550,7 @@ class QueueCommandsMixin:
 
             playqueue = await self._fetch_full_play_queue(play_queue_id)
 
-            if not playqueue or not playqueue.items:
+            if playqueue is None or not playqueue.items:
                 LOGGER.error("Failed to refresh play queue - queue is empty or not found")
                 return web.Response(status=404, text="Play queue not found")
 
