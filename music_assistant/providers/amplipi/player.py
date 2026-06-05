@@ -131,8 +131,9 @@ class AmpliPiZonePlayer(Player):
             raise PlayerCommandFailed("All AmpliPi sources are currently in use.")
         self._source_id = source.id
         # Use AmpliPi's internetradio stream type (not the announcement fileplayer):
-        # it is built for continuous HTTP streams and supports real play/pause/stop
-        # with reliable state, where the fileplayer does not.
+        # it is built for continuous HTTP streams and supports reliable play/stop,
+        # where the fileplayer does not. (MA does not expose pause for AmpliPi - see
+        # the PLAYER_FEATURES note above.)
         stream_id = await self._prov.ensure_stream(source.id, url)
         zone_ids = self._member_zone_ids()
         self.logger.debug(

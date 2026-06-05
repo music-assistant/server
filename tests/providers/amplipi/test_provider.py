@@ -33,6 +33,7 @@ def _provider() -> AmpliPiPlayerProvider:
     prov._players = {}
     prov._ma_streams = {}
     prov._streams = []
+    prov._stream_lock = asyncio.Lock()
     return prov
 
 
@@ -76,6 +77,24 @@ class TestHandleAsyncInit:
         )
         await prov.handle_async_init()
         assert created["endpoint"] == "http://1.2.3.4/api"
+
+    async def test_schemed_host_without_path_gets_api(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A schemed host with no path (incl. https) keeps its scheme and gains /api."""
+        prov = AmpliPiPlayerProvider.__new__(AmpliPiPlayerProvider)
+        prov.config = MagicMock()
+        prov.config.get_value.return_value = "https://amplipi.local/"
+        prov.mass = MagicMock()
+        fake_api = MagicMock()
+        fake_api.get_status = AsyncMock(return_value="STATUS")
+        created: dict[str, object] = {}
+        monkeypatch.setattr(
+            "music_assistant.providers.amplipi.provider.AmpliPi",
+            lambda **kwargs: (created.update(kwargs), fake_api)[1],
+        )
+        await prov.handle_async_init()
+        assert created["endpoint"] == "https://amplipi.local/api"
 
     async def test_connection_failure_raises_setup_failed(
         self, monkeypatch: pytest.MonkeyPatch
@@ -139,6 +158,26 @@ class TestLifecycle:
         prov.mass.players.unregister.assert_awaited_once_with("amplipi_test_zone_0")
         assert prov._players == {}
         prov.api.delete_stream.assert_not_awaited()
+        prov.api.close.assert_awaited_once()
+
+    async def test_unload_survives_unregister_error(self) -> None:
+        """A failing unregister for one player must not abort the rest of unload."""
+        prov = _provider()
+        prov._poll_task = None
+        bad = MagicMock()
+        bad.player_id = "amplipi_test_zone_0"
+        good = MagicMock()
+        good.player_id = "amplipi_test_zone_1"
+        prov._players = {0: bad, 1: good}
+        prov.mass.players.unregister = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[RuntimeError("boom"), None]
+        )
+        prov.api.close = AsyncMock()
+
+        await prov.unload()
+
+        assert prov.mass.players.unregister.await_count == 2
+        assert prov._players == {}
         prov.api.close.assert_awaited_once()
 
     async def test_unload_removed_deletes_streams(self) -> None:

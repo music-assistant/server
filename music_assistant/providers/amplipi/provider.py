@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
+from urllib.parse import urlparse
 
 from music_assistant_models.errors import PlayerCommandFailed, SetupFailedError
 from pyamplipi.amplipi import AmpliPi
@@ -37,6 +38,8 @@ class AmpliPiPlayerProvider(PlayerProvider):
     _ma_streams: dict[int, int]
     # last-polled AmpliPi streams (native streams + RCA inputs), used to build source lists
     _streams: list[AmpliPiStream]
+    # serializes ensure_stream so concurrent callers cannot create duplicate streams
+    _stream_lock: asyncio.Lock
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -44,7 +47,15 @@ class AmpliPiPlayerProvider(PlayerProvider):
         self._ma_streams = {}
         self._streams = []
         host = cast("str", self.config.get_value(CONF_HOST))
-        endpoint = host if host.startswith("http") else f"http://{host}/api"
+        if host.startswith("http"):
+            # a full URL is used as-is, but a schemed host with no path (e.g.
+            # "https://amplipi.local") still needs the AmpliPi "/api" base appended
+            endpoint = host.rstrip("/")
+            if urlparse(endpoint).path in ("", "/"):
+                endpoint = f"{endpoint}/api"
+        else:
+            endpoint = f"http://{host}/api"
+        self._stream_lock = asyncio.Lock()
         self.api = AmpliPi(
             endpoint=endpoint,
             timeout=10,
@@ -70,7 +81,9 @@ class AmpliPiPlayerProvider(PlayerProvider):
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
         for player in list(getattr(self, "_players", {}).values()):
-            await self.mass.players.unregister(player.player_id)
+            # keep unregistering the rest (and finish cleanup) even if one player fails
+            with suppress(Exception):
+                await self.mass.players.unregister(player.player_id)
         if hasattr(self, "_players"):
             self._players.clear()
         # only delete our streams when the provider is being removed; on a plain reload
@@ -91,20 +104,23 @@ class AmpliPiPlayerProvider(PlayerProvider):
         :param source_id: The AmpliPi source id the stream is bound to.
         :param url: The Music Assistant stream URL the AmpliPi stream should play.
         """
-        if (stream_id := self._ma_streams.get(source_id)) is not None:
-            await self.api.set_stream(stream_id, StreamUpdate(url=url))
-            return stream_id
-        name = f"{MA_STREAM_NAME} {source_id}"
-        await self.api.create_stream(Stream(name=name, type=MA_STREAM_TYPE, url=url))
-        # create_stream's response is not a reliable carrier of the new id, so look it up
-        streams = await self.api.get_streams()
-        new_stream_id: int | None = next(
-            (s.id for s in streams if s.name == name and s.id is not None), None
-        )
-        if new_stream_id is None:
-            raise PlayerCommandFailed(f"Failed to create AmpliPi stream for source {source_id}")
-        self._ma_streams[source_id] = new_stream_id
-        return new_stream_id
+        # serialize so two concurrent callers for the same source cannot each miss the
+        # cache and create duplicate streams
+        async with self._stream_lock:
+            if (stream_id := self._ma_streams.get(source_id)) is not None:
+                await self.api.set_stream(stream_id, StreamUpdate(url=url))
+                return stream_id
+            name = f"{MA_STREAM_NAME} {source_id}"
+            await self.api.create_stream(Stream(name=name, type=MA_STREAM_TYPE, url=url))
+            # create_stream's response is not a reliable carrier of the new id, so look it up
+            streams = await self.api.get_streams()
+            new_stream_id: int | None = next(
+                (s.id for s in streams if s.name == name and s.id is not None), None
+            )
+            if new_stream_id is None:
+                raise PlayerCommandFailed(f"Failed to create AmpliPi stream for source {source_id}")
+            self._ma_streams[source_id] = new_stream_id
+            return new_stream_id
 
     async def discover_players(self) -> None:
         """Discover (register) the zones of the AmpliPi controller as players."""
