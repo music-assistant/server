@@ -886,7 +886,8 @@ class StreamsController(CoreController):
             # metadata injection is actually enabled. Some players (e.g. AmpliPi/VLC)
             # react to any icy-* header by opening a second "probe" connection, which
             # breaks the single-use flow session and aborts playback.
-            headers = {**headers, **ICY_HEADERS, "icy-metaint": str(icy_meta_interval)}
+            headers.update(ICY_HEADERS)
+            headers["icy-metaint"] = str(icy_meta_interval)
 
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
         http_profile = await self.mass.config.get_player_config_value(
