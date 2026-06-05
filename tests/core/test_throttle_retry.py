@@ -42,7 +42,7 @@ class FakeProvider:
         self._side_effects = list(effects)
         self.call_count = 0
 
-    @throttle_with_retries  # type: ignore[type-var]
+    @throttle_with_retries
     async def api_call(self, value: str) -> str:
         """Simulate an API call."""
         self.call_count += 1

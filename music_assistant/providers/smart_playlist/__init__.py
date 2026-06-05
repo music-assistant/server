@@ -21,7 +21,7 @@ from dataclasses import replace as dc_replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import EventType, ImageType, MediaType, ProviderFeature
+from music_assistant_models.enums import AlbumType, EventType, ImageType, MediaType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     BrowseFolder,
@@ -145,6 +145,8 @@ class SmartPlaylistProvider(PluginProvider):
         self.logger.info(
             "Smart Playlist provider loaded with %d stored playlists", len(self._rules_store)
         )
+        # Re-add playlists missing from the library (e.g. after a DB reset).
+        self.mass.create_task(self._reconcile_library())
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
@@ -152,10 +154,7 @@ class SmartPlaylistProvider(PluginProvider):
             unregister()
         self._unregister_handles.clear()
         if is_removed:
-            # Smart playlists only exist as long as this provider is installed.
-            # When the provider is removed, the playlists must be explicitly removed
-            # from the MA library — otherwise orphaned entries remain, because MA
-            # has no other mechanism to clean up provider-owned playlists on removal.
+            # Remove all library entries — MA has no other mechanism to clean them up on removal.
             for playlist_id in list(self._rules_store):
                 try:
                     library_item = await self.mass.music.playlists.get_library_item_by_prov_id(
@@ -250,6 +249,21 @@ class SmartPlaylistProvider(PluginProvider):
         return await self._evaluate_rules(
             sample_rules, list(user_provider_filter) if user_provider_filter else None
         )
+
+    async def _reconcile_library(self) -> None:
+        """Re-add smart playlists that are missing from the library (e.g. after a DB reset)."""
+        for playlist_id, rules in list(self._rules_store.items()):
+            try:
+                existing = await self.mass.music.playlists.get_library_item_by_prov_id(
+                    playlist_id, self.instance_id
+                )
+                if existing is not None:
+                    continue
+                self.logger.info("Re-adding missing smart playlist '%s' to library", playlist_id)
+                playlist = self._build_playlist(playlist_id, rules)
+                await self.mass.music.playlists.add_item_to_library(playlist)
+            except Exception as exc:
+                self.logger.warning("Could not re-add smart playlist %s: %s", playlist_id, exc)
 
     async def _on_media_item_deleted(self, event: MassEvent) -> None:
         """Remove the rules for a deleted smart playlist."""
@@ -566,12 +580,23 @@ class SmartPlaylistProvider(PluginProvider):
                     )
                 ]
 
+            if rules.album_types:
+                allowed_album_ids = await self._get_album_ids_for_types(rules.album_types)
+                tracks = self._filter_by_album_ids(tracks, allowed_album_ids)
+
         # Apply exclusions and dedup regardless of source mode
-        excluded_genre_names = await self._resolve_excluded_genre_names(rules)
-        tracks = self._apply_exclusions(tracks, rules, excluded_genre_names)
+        excluded_genre_names, excl_album_type_ids = await asyncio.gather(
+            self._resolve_excluded_genre_names(rules),
+            self._get_album_ids_for_types(rules.excluded_album_types)
+            if rules.excluded_album_types
+            else asyncio.sleep(0),
+        )
+        tracks = self._apply_exclusions(
+            tracks, rules, excluded_genre_names, excl_album_type_ids or None
+        )
         tracks = self._deduplicate_tracks(tracks)
         if rules.dedup_hours is not None:
-            deduped = self._apply_dedup(tracks, rules.dedup_hours)
+            deduped = await self._apply_dedup(tracks, rules.dedup_hours)
             if len(deduped) >= rules.limit:
                 tracks = deduped
             elif deduped:
@@ -580,7 +605,9 @@ class SmartPlaylistProvider(PluginProvider):
                 deduped_uris = {t.uri for t in deduped}
                 played_remainder = sorted(
                     (t for t in tracks if t.uri not in deduped_uris),
-                    key=lambda t: t.last_played,
+                    # last_played is 0 for non-library (streaming) tracks; treat 0 as
+                    # "most recent" so just-played streaming tracks aren't filled first.
+                    key=lambda t: t.last_played or float("inf"),
                 )
                 tracks = deduped + played_remainder[: rules.limit - len(deduped)]
             else:
@@ -640,6 +667,9 @@ class SmartPlaylistProvider(PluginProvider):
                     and (rules.year_to is None or t.album.year <= rules.year_to)
                 )
             ]
+        if rules.album_types:
+            allowed_album_ids = await self._get_album_ids_for_types(rules.album_types)
+            tracks = self._filter_by_album_ids(tracks, allowed_album_ids)
         return tracks
 
     def _apply_exclusions(
@@ -647,13 +677,15 @@ class SmartPlaylistProvider(PluginProvider):
         tracks: list[Track],
         rules: SmartPlaylistRules,
         excluded_genre_names: set[str] | None = None,
+        excl_album_type_ids: set[int] | None = None,
     ) -> list[Track]:
-        """Filter out tracks whose artist, album, URI, or genre is in the exclusion lists."""
+        """Filter out tracks whose artist, album, URI, genre or album type is in the exclusion lists."""
         if (
             not rules.excluded_artist_ids
             and not rules.excluded_album_ids
             and not rules.excluded_track_uris
             and not excluded_genre_names
+            and not excl_album_type_ids
         ):
             return tracks
         excl_artists = set(rules.excluded_artist_ids)
@@ -686,8 +718,46 @@ class SmartPlaylistProvider(PluginProvider):
                 and any(g.lower() in excluded_genre_names for g in track.metadata.genres)
             ):
                 continue
+            if (
+                excl_album_type_ids
+                and track.album is not None
+                and track.album.item_id
+                and str(track.album.item_id).isdigit()
+                and int(track.album.item_id) in excl_album_type_ids
+            ):
+                continue
             result.append(track)
         return result
+
+    def _filter_by_album_ids(self, tracks: list[Track], allowed_album_ids: set[int]) -> list[Track]:
+        """Keep only tracks whose album ID is in the allowed set; pass through tracks with no resolvable album ID."""
+        return [
+            t
+            for t in tracks
+            if t.album is None
+            or not (t.album.item_id and str(t.album.item_id).isdigit())
+            or int(t.album.item_id) in allowed_album_ids
+        ]
+
+    async def _get_album_ids_for_types(self, album_types: list[str]) -> set[int]:
+        """Return library album IDs matching the given album type values."""
+        album_type_enums = [AlbumType(t) for t in album_types]
+        album_ids: set[int] = set()
+        offset = 0
+        chunk = 500
+        while True:
+            page = await self.mass.music.albums.library_items(
+                album_types=album_type_enums,
+                limit=chunk,
+                offset=offset,
+            )
+            for a in page:
+                if a.item_id and str(a.item_id).isdigit():
+                    album_ids.add(int(a.item_id))
+            if len(page) < chunk:
+                break
+            offset += chunk
+        return album_ids
 
     def _deduplicate_tracks(self, tracks: list[Track]) -> list[Track]:
         """Remove duplicates and skip unavailable tracks while keeping order stable."""
@@ -714,11 +784,36 @@ class SmartPlaylistProvider(PluginProvider):
                     genre_id_to_name[genre_id] = genre.name
         return {v.lower() for v in genre_id_to_name.values() if v}
 
-    def _apply_dedup(self, tracks: list[Track], dedup_hours: int) -> list[Track]:
-        """Filter out tracks last played within dedup_hours hours."""
-        cutoff_ts = time.time() - dedup_hours * 3600
-        # last_played is a Unix timestamp (int); 0 means never played.
-        return [t for t in tracks if t.last_played == 0 or t.last_played < cutoff_ts]
+    async def _recently_played_keys(self, dedup_hours: int) -> set[tuple[str, str]]:
+        """
+        Return ``(provider, item_id)`` keys of tracks fully played within dedup_hours.
+
+        Scoped to the current user. ``recently_played`` resolves the user from the active
+        context; during queue refills the player queue restores the queue owner's user
+        context before evaluating, so the dedup window is per user without resolving here.
+        """
+        cutoff = int(time.time()) - dedup_hours * 3600
+        played = await self.mass.music.recently_played(
+            limit=0,
+            media_types=[MediaType.TRACK],
+            fully_played_only=True,
+            played_after_timestamp=cutoff,
+        )
+        return {(item.provider, item.item_id) for item in played}
+
+    async def _apply_dedup(self, tracks: list[Track], dedup_hours: int) -> list[Track]:
+        """Filter out tracks fully played within dedup_hours (scoped to the current user)."""
+        played_keys = await self._recently_played_keys(dedup_hours)
+        if not played_keys:
+            return list(tracks)
+        return [
+            t
+            for t in tracks
+            if not any(
+                (pm.provider_instance, pm.item_id) in played_keys
+                for pm in (t.provider_mappings or ())
+            )
+        ]
 
     async def _evaluate_and(
         self,
