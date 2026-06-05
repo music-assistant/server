@@ -110,6 +110,9 @@ def parse_album(
             name=album_id,
         )
     name, version = parse_title_and_version(attributes["name"])
+    # Check availability: library albums owned by user OR catalog items with playParams
+    is_library_album = is_library_id(album_id) and album_obj.get("type") == "library-albums"
+    has_play_params = attributes.get("playParams", {}).get("id") is not None
     album = Album(
         item_id=album_id,
         provider=provider.domain,
@@ -121,8 +124,7 @@ def parse_album(
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
                 url=attributes.get("url"),
-                available=(is_library_id(album_id) and response_type == "library-albums")
-                or attributes.get("playParams", {}).get("id") is not None,
+                available=is_library_album or has_play_params,
             )
         },
     )
@@ -203,6 +205,9 @@ def parse_track(
         track_id = track_obj["id"]
         attributes = {}
     name, version = parse_title_and_version(attributes.get("name", ""))
+    # Check availability: library tracks owned by user OR catalog items with playParams
+    is_library_track = is_library_id(track_id) and track_obj.get("type") == "library-songs"
+    has_play_params = attributes.get("playParams", {}).get("id") is not None
     track = Track(
         item_id=track_id,
         provider=provider.domain,
@@ -216,8 +221,7 @@ def parse_track(
                 provider_instance=provider.instance_id,
                 audio_format=AudioFormat(content_type=ContentType.AAC),
                 url=attributes.get("url"),
-                available=(is_library_id(track_id) and track_obj.get("type") == "library-songs")
-                or attributes.get("playParams", {}).get("id") is not None,
+                available=is_library_track or has_play_params,
             )
         },
     )
