@@ -121,7 +121,8 @@ def parse_album(
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
                 url=attributes.get("url"),
-                available=attributes.get("playParams", {}).get("id") is not None,
+                available=(is_library_id(album_id) and response_type == "library-albums")
+                or attributes.get("playParams", {}).get("id") is not None,
             )
         },
     )
@@ -215,7 +216,8 @@ def parse_track(
                 provider_instance=provider.instance_id,
                 audio_format=AudioFormat(content_type=ContentType.AAC),
                 url=attributes.get("url"),
-                available=attributes.get("playParams", {}).get("id") is not None,
+                available=(is_library_id(track_id) and track_obj.get("type") == "library-songs")
+                or attributes.get("playParams", {}).get("id") is not None,
             )
         },
     )
