@@ -96,6 +96,24 @@ class TestHandleAsyncInit:
         await prov.handle_async_init()
         assert created["endpoint"] == "https://amplipi.local/api"
 
+    async def test_http_prefixed_bare_host_gets_scheme(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bare host that merely starts with 'http' must still get a scheme and /api."""
+        prov = AmpliPiPlayerProvider.__new__(AmpliPiPlayerProvider)
+        prov.config = MagicMock()
+        prov.config.get_value.return_value = "http-livingroom.local"
+        prov.mass = MagicMock()
+        fake_api = MagicMock()
+        fake_api.get_status = AsyncMock(return_value="STATUS")
+        created: dict[str, object] = {}
+        monkeypatch.setattr(
+            "music_assistant.providers.amplipi.provider.AmpliPi",
+            lambda **kwargs: (created.update(kwargs), fake_api)[1],
+        )
+        await prov.handle_async_init()
+        assert created["endpoint"] == "http://http-livingroom.local/api"
+
     async def test_connection_failure_raises_setup_failed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -47,7 +47,7 @@ class AmpliPiPlayerProvider(PlayerProvider):
         self._ma_streams = {}
         self._streams = []
         host = cast("str", self.config.get_value(CONF_HOST))
-        if host.startswith("http"):
+        if host.startswith(("http://", "https://")):
             # a full URL is used as-is, but a schemed host with no path (e.g.
             # "https://amplipi.local") still needs the AmpliPi "/api" base appended
             endpoint = host.rstrip("/")
