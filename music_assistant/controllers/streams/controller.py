@@ -878,12 +878,15 @@ class StreamsController(CoreController):
         # prepare request, add some DLNA/UPNP compatible headers
         headers = {
             **DEFAULT_STREAM_HEADERS,
-            **ICY_HEADERS,
             "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_REALTIME,
             "Content-Type": get_mime_type(output_format.output_format_str),
         }
         if enable_icy:
-            headers["icy-metaint"] = str(icy_meta_interval)
+            # Only advertise the stream as ICY/shoutcast (icy-name and friends) when
+            # metadata injection is actually enabled. Some players (e.g. AmpliPi/VLC)
+            # react to any icy-* header by opening a second "probe" connection, which
+            # breaks the single-use flow session and aborts playback.
+            headers = {**headers, **ICY_HEADERS, "icy-metaint": str(icy_meta_interval)}
 
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
         http_profile = await self.mass.config.get_player_config_value(
