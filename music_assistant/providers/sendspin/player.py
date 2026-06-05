@@ -57,7 +57,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import Album, Artist, is_track
 from music_assistant_models.player import DeviceInfo
-from PIL import Image, UnidentifiedImageError
+from PIL import Image
 
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.helpers.util import is_valid_mac_address
@@ -899,10 +899,16 @@ class SendspinPlayer(SendspinBasePlayer):
 
         :param image_data: Raw image bytes to decode.
         """
+
+        def _open() -> Image.Image:
+            img = Image.open(BytesIO(image_data))
+            img.load()
+            return img
+
         try:
-            return await asyncio.to_thread(Image.open, BytesIO(image_data))
-        except UnidentifiedImageError:
-            self.logger.debug("Skipping unsupported artwork format")
+            return await asyncio.to_thread(_open)
+        except OSError as err:
+            self.logger.debug("Skipping undecodable artwork: %s", err)
             return None
 
     def _on_player_media_updated(self) -> None:
