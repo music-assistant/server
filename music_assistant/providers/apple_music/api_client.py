@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+import functools
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Concatenate, cast
 
-from aiohttp import ClientTimeout
+from aiohttp import ClientConnectionError, ClientPayloadError, ClientTimeout
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import (
     MediaNotFoundError,
-    MusicAssistantError,
     RateLimited,
     ResourceTemporarilyUnavailable,
 )
@@ -23,11 +24,40 @@ if TYPE_CHECKING:
 
 _APPLE_API_BASE = "https://api.music.apple.com/v1"
 
+_LIBRARY_PAGE_SIZE = 50
+
+_PAGE_TRUNCATION_RETRIES = 3
+
+
+def _retry_transient_transport_errors[ClientT, **P, R](
+    func: Callable[Concatenate[ClientT, P], Awaitable[R]],
+) -> Callable[Concatenate[ClientT, P], Awaitable[R]]:
+    """
+    Convert transient aiohttp transport errors into the retryable error type.
+
+    A dropped connection or truncated body raises an ``aiohttp.ClientError`` (or
+    ``TimeoutError``) rather than an HTTP status, so it would otherwise bypass the
+    status-based retry handling. ``ClientResponseError`` (raised by
+    ``raise_for_status`` for genuine 4xx/5xx) is deliberately not caught here.
+    """
+
+    @functools.wraps(func)
+    async def wrapper(self: ClientT, *args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            return await func(self, *args, **kwargs)
+        except (ClientConnectionError, ClientPayloadError, TimeoutError) as err:
+            raise ResourceTemporarilyUnavailable(
+                f"Transient transport error calling Apple Music: {type(err).__name__}: {err}"
+            ) from err
+
+    return wrapper
+
 
 class AppleMusicAPIClient:
     """Handles all HTTP communication with the Apple Music API."""
 
-    throttler = ThrottlerManager(rate_limit=1, period=2, initial_backoff=15)
+    # period=0.25 -> 4 req/s. Raise it if Apple starts returning 429s.
+    throttler = ThrottlerManager(rate_limit=1, period=0.25, initial_backoff=15)
 
     def __init__(self, provider: AppleMusicProvider) -> None:
         """Initialize the API client."""
@@ -43,6 +73,7 @@ class AppleMusicAPIClient:
         }
 
     @throttle_with_retries
+    @_retry_transient_transport_errors
     async def get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
         """GET data from the Apple Music API."""
         url = f"{_APPLE_API_BASE}/{endpoint}"
@@ -73,7 +104,10 @@ class AppleMusicAPIClient:
                 )
                 raise RateLimited("Apple Music Rate Limiter")
             if response.status == 500:
-                raise MusicAssistantError("Unexpected server error when calling Apple Music")
+                # Apple 500s are typically transient; retry rather than abort the whole sync.
+                raise ResourceTemporarilyUnavailable(
+                    "Unexpected server error when calling Apple Music"
+                )
             response.raise_for_status()
             return cast("dict[str, Any]", await response.json(loads=json_loads))
 
@@ -150,24 +184,34 @@ class AppleMusicAPIClient:
             response.raise_for_status()
             return cast("dict[str, Any]", await response.json(loads=json_loads))
 
+    async def iter_all_items(
+        self, endpoint: str, key: str = "data", page_size: int = _LIBRARY_PAGE_SIZE, **kwargs: Any
+    ) -> AsyncGenerator[dict[str, Any], None]:
+        """
+        Yield items from a paged list one page at a time.
+
+        Unlike :meth:`get_all_items`, this never holds the full result set in memory, so it is
+        safe for very large listings (e.g. a 100k-track Apple Music library).
+        """
+        offset = 0
+        while True:
+            kwargs["limit"] = page_size
+            kwargs["offset"] = offset
+            result = await self._get_page(endpoint, key, offset, kwargs)
+            if key not in result:
+                # offset 0 only: empty collection or 404. _get_page raises on mid-list truncation.
+                break
+            for item in result[key]:
+                yield item
+            if not result.get("next"):
+                break
+            offset += page_size
+
     async def get_all_items(
         self, endpoint: str, key: str = "data", **kwargs: Any
     ) -> list[dict[str, Any]]:
         """Get all items from a paged list."""
-        limit = 50
-        offset = 0
-        all_items: list[dict[str, Any]] = []
-        while True:
-            kwargs["limit"] = limit
-            kwargs["offset"] = offset
-            result = await self.get_data(endpoint, **kwargs)
-            if key not in result:
-                break
-            all_items += result[key]
-            if not result.get("next"):
-                break
-            offset += limit
-        return all_items
+        return [item async for item in self.iter_all_items(endpoint, key, **kwargs)]
 
     async def get_user_storefront(self) -> str:
         """Return the user's storefront identifier."""
@@ -201,3 +245,27 @@ class AppleMusicAPIClient:
                 }
             )
         return results
+
+    async def _get_page(
+        self, endpoint: str, key: str, offset: int, kwargs: dict[str, Any]
+    ) -> dict[str, Any]:
+        """
+        Fetch a single page of a paged listing, recovering from transient truncation.
+
+        Apple returns ``{}`` (HTTP 404) for a paged request that yields no payload. On the
+        first page (offset 0) that legitimately means an empty collection. Mid-pagination
+        (offset > 0, reached only after a prior page promised more via ``next``) it means a
+        transient truncation; accepting it would drop still-present items and trigger
+        spurious deletions, so re-fetch the same page a bounded number of times before
+        surfacing the failure.
+        """
+        result = await self.get_data(endpoint, **kwargs)
+        if key in result or offset == 0:
+            return result
+        for _ in range(_PAGE_TRUNCATION_RETRIES):
+            result = await self.get_data(endpoint, **kwargs)
+            if key in result:
+                return result
+        raise ResourceTemporarilyUnavailable(
+            f"Incomplete paged listing for {endpoint} at offset {offset}"
+        )
