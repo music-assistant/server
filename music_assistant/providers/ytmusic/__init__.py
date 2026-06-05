@@ -685,42 +685,50 @@ class YoutubeMusicProvider(MusicProvider):
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get available recommendations."""
         recommendations = await get_home(self._headers, self.language, user=self._yt_user)
-        folders = []
-        for section in recommendations:
-            folder = RecommendationFolder(
-                name=section["title"],
-                item_id=f"{self.instance_id}_{section['title']}",
-                provider=self.instance_id,
-                icon=determine_recommendation_icon(section["title"]),
-            )
-            for recommended_item in section.get("contents", []):
-                if not recommended_item:
-                    continue  # yeah this seems to happen sometimes ?!
-                if recommended_item.get("videoId"):
-                    # Probably a track
-                    try:
-                        track = self._parse_track(recommended_item)
-                        folder.items.append(track)
-                    except InvalidDataError:
-                        self.logger.debug("Invalid track in recommendations: %s", recommended_item)
+
+        def _parse_sections() -> list[RecommendationFolder]:
+            # building model objects from the raw payload is CPU-bound; run off the event loop
+            folders: list[RecommendationFolder] = []
+            for section in recommendations:
+                folder = RecommendationFolder(
+                    name=section["title"],
+                    item_id=f"{self.instance_id}_{section['title']}",
+                    provider=self.instance_id,
+                    icon=determine_recommendation_icon(section["title"]),
+                )
+                for recommended_item in section.get("contents", []):
+                    if not recommended_item:
+                        continue  # yeah this seems to happen sometimes ?!
+                    if recommended_item.get("videoId"):
+                        # Probably a track
+                        try:
+                            track = self._parse_track(recommended_item)
+                            folder.items.append(track)
+                        except InvalidDataError:
+                            self.logger.debug(
+                                "Invalid track in recommendations: %s", recommended_item
+                            )
+                            continue
+                    elif recommended_item.get("playlistId"):
+                        # Probably a playlist
+                        recommended_item["id"] = recommended_item["playlistId"]
+                        del recommended_item["playlistId"]
+                        folder.items.append(self._parse_playlist(recommended_item))
+                    elif recommended_item.get("browseId"):
+                        # Probably an album
+                        folder.items.append(self._parse_album(recommended_item))
+                    elif recommended_item.get("subscribers"):
+                        # Probably artist
+                        folder.items.append(self._parse_album(recommended_item))
+                    else:
+                        self.logger.warning(
+                            "Unknown item type in recommendation folder: %s", recommended_item
+                        )
                         continue
-                elif recommended_item.get("playlistId"):
-                    # Probably a playlist
-                    recommended_item["id"] = recommended_item["playlistId"]
-                    del recommended_item["playlistId"]
-                    folder.items.append(self._parse_playlist(recommended_item))
-                elif recommended_item.get("browseId"):
-                    # Probably an album
-                    folder.items.append(self._parse_album(recommended_item))
-                elif recommended_item.get("subscribers"):
-                    # Probably artist
-                    folder.items.append(self._parse_album(recommended_item))
-                else:
-                    self.logger.warning(
-                        "Unknown item type in recommendation folder: %s", recommended_item
-                    )
-                    continue
-            folders.append(folder)
+                folders.append(folder)
+            return folders
+
+        folders = await asyncio.to_thread(_parse_sections)
         # Also add personalized mixes if available
         mixed_for_you_folder = RecommendationFolder(
             name="Mixed for you",
