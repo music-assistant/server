@@ -121,7 +121,8 @@ def _has_alpha(img: ImageClass) -> bool:
     if img.mode in ("RGBA", "LA", "PA"):
         # an alpha channel may still be fully opaque; only treat it as
         # transparent when some pixel is not fully opaque
-        return img.getchannel("A").getextrema()[0] < 255
+        # single-band getextrema() returns a (min, max) numeric tuple
+        return cast("tuple[float, float]", img.getchannel("A").getextrema())[0] < 255
     return False
 
 
@@ -375,7 +376,7 @@ async def _generate_and_cache_thumb(
         def _create_image() -> bytes:
             data = BytesIO()
             try:
-                img = Image.open(BytesIO(img_data))
+                img: ImageClass = Image.open(BytesIO(img_data))
             except UnidentifiedImageError:
                 raise FileNotFoundError(f"Invalid image: {path_or_url}")
             if size:
