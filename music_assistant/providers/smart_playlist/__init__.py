@@ -145,6 +145,8 @@ class SmartPlaylistProvider(PluginProvider):
         self.logger.info(
             "Smart Playlist provider loaded with %d stored playlists", len(self._rules_store)
         )
+        # Re-add playlists missing from the library (e.g. after a DB reset).
+        self.mass.create_task(self._reconcile_library())
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
@@ -152,10 +154,7 @@ class SmartPlaylistProvider(PluginProvider):
             unregister()
         self._unregister_handles.clear()
         if is_removed:
-            # Smart playlists only exist as long as this provider is installed.
-            # When the provider is removed, the playlists must be explicitly removed
-            # from the MA library — otherwise orphaned entries remain, because MA
-            # has no other mechanism to clean up provider-owned playlists on removal.
+            # Remove all library entries — MA has no other mechanism to clean them up on removal.
             for playlist_id in list(self._rules_store):
                 try:
                     library_item = await self.mass.music.playlists.get_library_item_by_prov_id(
@@ -250,6 +249,21 @@ class SmartPlaylistProvider(PluginProvider):
         return await self._evaluate_rules(
             sample_rules, list(user_provider_filter) if user_provider_filter else None
         )
+
+    async def _reconcile_library(self) -> None:
+        """Re-add smart playlists that are missing from the library (e.g. after a DB reset)."""
+        for playlist_id, rules in list(self._rules_store.items()):
+            try:
+                existing = await self.mass.music.playlists.get_library_item_by_prov_id(
+                    playlist_id, self.instance_id
+                )
+                if existing is not None:
+                    continue
+                self.logger.info("Re-adding missing smart playlist '%s' to library", playlist_id)
+                playlist = self._build_playlist(playlist_id, rules)
+                await self.mass.music.playlists.add_item_to_library(playlist)
+            except Exception as exc:
+                self.logger.warning("Could not re-add smart playlist %s: %s", playlist_id, exc)
 
     async def _on_media_item_deleted(self, event: MassEvent) -> None:
         """Remove the rules for a deleted smart playlist."""
