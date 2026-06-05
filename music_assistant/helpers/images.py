@@ -48,6 +48,27 @@ _thumb_memory_cache: OrderedDict[str, bytes] = OrderedDict()
 _MAX_IMAGEPROXY_RECURSION_DEPTH = 5
 
 
+def is_svg_data(data: bytes) -> bool:
+    """
+    Return True when the given bytes appear to be an SVG image.
+
+    Detection is content based (not extension based) so SVG artwork served
+    from URLs without a `.svg` suffix is still recognised. SVG is a vector
+    (XML/text) format that Pillow cannot decode, so callers use this to avoid
+    feeding it to PIL and to serve it with the correct content type.
+
+    :param data: Raw image bytes to inspect.
+    """
+    if not data:
+        return False
+    # An SVG document may open with an XML declaration, a doctype or a comment
+    # before the root <svg> element, so look for the element within the head.
+    sample = data[:1024].lstrip()
+    if not sample[:64].lower().startswith((b"<?xml", b"<svg", b"<!--", b"<!doctype")):
+        return False
+    return b"<svg" in sample.lower()
+
+
 def create_thumb_hash(provider: str, path_or_url: str) -> str:
     """Create a safe filesystem hash from provider and image path."""
     raw = f"{provider}/{path_or_url}"
@@ -311,7 +332,12 @@ async def _generate_and_cache_thumb(
     if not img_data or not isinstance(img_data, bytes):
         raise FileNotFoundError(f"Image not found: {path_or_url}")
 
-    if not size and image_format.encode() in img_data:
+    if is_svg_data(img_data):
+        # SVG is a vector format Pillow can't rasterize; serve it untouched
+        # (it scales without resizing). The imageproxy sniffs the bytes to
+        # report image/svg+xml regardless of the requested fmt.
+        thumb_data = img_data
+    elif not size and image_format.encode() in img_data:
         thumb_data = img_data
     else:
 

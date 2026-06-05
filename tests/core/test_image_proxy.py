@@ -13,7 +13,11 @@ from music_assistant.controllers.metadata import (
     _is_safe_imageproxy_request_path,
     _normalize_imageproxy_format,
 )
-from music_assistant.helpers.images import _extract_imageproxy_id, create_thumb_hash
+from music_assistant.helpers.images import (
+    _extract_imageproxy_id,
+    create_thumb_hash,
+    is_svg_data,
+)
 from music_assistant.mass import MusicAssistant
 
 
@@ -243,3 +247,22 @@ async def test_handle_imageproxy_rejects_extra_path_segments(
     # double slash after the prefix must not be accepted either
     bad = await metadata_controller.handle_imageproxy(_fake_request(f"/imageproxy//{image_id}"))
     assert bad.status == 400
+
+
+def test_is_svg_data() -> None:
+    """SVG bytes are detected by content, regardless of file extension."""
+    # plain root element
+    assert is_svg_data(b'<svg xmlns="http://www.w3.org/2000/svg"></svg>')
+    # XML declaration before the root element
+    assert is_svg_data(b'<?xml version="1.0"?>\n<svg viewBox="0 0 10 10"></svg>')
+    # leading whitespace and a comment before the root element
+    assert is_svg_data(b"  \n<!-- a logo -->\n<svg></svg>")
+    # doctype before the root element
+    assert is_svg_data(b'<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN">\n<svg></svg>')
+    # raster formats and arbitrary data are not SVG
+    assert not is_svg_data(b"\xff\xd8\xff\xe0JFIF")  # jpeg magic
+    assert not is_svg_data(b"\x89PNG\r\n\x1a\n")  # png magic
+    assert not is_svg_data(b"")
+    assert not is_svg_data(b"<html><body>not svg</body></html>")
+    # an XML document that never declares an <svg> element is not SVG
+    assert not is_svg_data(b'<?xml version="1.0"?><rss></rss>')

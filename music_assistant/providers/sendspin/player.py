@@ -57,7 +57,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import Album, Artist, is_track
 from music_assistant_models.player import DeviceInfo
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.helpers.util import is_valid_mac_address
@@ -848,8 +848,8 @@ class SendspinPlayer(SendspinBasePlayer):
                     current_item.media_item
                 )
                 if image_data is not None:
-                    image = await asyncio.to_thread(Image.open, BytesIO(image_data))
-                    if (artwork_role := self._artwork_role) is not None:
+                    image = await self._decode_artwork(image_data)
+                    if image is not None and (artwork_role := self._artwork_role) is not None:
                         await artwork_role.set_album_artwork(image)
             # Clear artwork if none available
             elif (artwork_role := self._artwork_role) is not None:
@@ -884,11 +884,29 @@ class SendspinPlayer(SendspinBasePlayer):
                     artist_artwork_url, provider="builtin"
                 )
                 if isinstance(artist_image_data, bytes):
-                    artist_image = await asyncio.to_thread(Image.open, BytesIO(artist_image_data))
-                    if (artwork_role := self._artwork_role) is not None:
+                    artist_image = await self._decode_artwork(artist_image_data)
+                    if (
+                        artist_image is not None
+                        and (artwork_role := self._artwork_role) is not None
+                    ):
                         await artwork_role.set_artist_artwork(artist_image)
             elif (artwork_role := self._artwork_role) is not None:
                 await artwork_role.set_artist_artwork(None)
+
+    async def _decode_artwork(self, image_data: bytes) -> Image.Image | None:
+        """
+        Decode raw artwork bytes into a Pillow image, or None if unsupported.
+
+        Sendspin clients need a raster image; vector (SVG) or otherwise
+        undecodable artwork is skipped rather than crashing the metadata push.
+
+        :param image_data: Raw image bytes to decode.
+        """
+        try:
+            return await asyncio.to_thread(Image.open, BytesIO(image_data))
+        except UnidentifiedImageError:
+            self.logger.debug("Skipping unsupported artwork format")
+            return None
 
     def _on_player_media_updated(self) -> None:
         """Handle callback when the current media of the player is updated."""

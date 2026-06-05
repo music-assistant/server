@@ -78,6 +78,7 @@ from music_assistant.helpers.images import (
     create_thumb_hash,
     get_image_data,
     get_image_thumb,
+    is_svg_data,
 )
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import split_artists
@@ -775,10 +776,16 @@ class MetaDataController(CoreController):
                     exc_info=err if self.logger.isEnabledFor(10) else None,
                 )
             return web.Response(status=404)
+        content_type = _IMAGEPROXY_CONTENT_TYPES[image_format]
+        if isinstance(image_data, (bytes, bytearray)) and is_svg_data(image_data):
+            # Some sources (e.g. radio station favicons) serve SVG from URLs
+            # without a `.svg` suffix, so the requested fmt may be jpg/png even
+            # though the bytes are SVG. Report the correct content type instead.
+            content_type = _IMAGEPROXY_CONTENT_TYPES["svg"]
         return web.Response(
             body=image_data,
             headers={"Cache-Control": "max-age=31536000", "Access-Control-Allow-Origin": "*"},
-            content_type=_IMAGEPROXY_CONTENT_TYPES[image_format],
+            content_type=content_type,
         )
 
     def _maybe_log_legacy_imageproxy(self, request: web.Request) -> None:
