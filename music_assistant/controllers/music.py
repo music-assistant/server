@@ -1047,7 +1047,8 @@ class MusicController(CoreController):
                 uri_media_type = None
             if uri_media_type == MediaType.AUDIO_SOURCE:
                 raise UnsupportedFeaturedException("AudioSource items can not be favorites")
-            item = await self.get_item_by_uri(item)
+            # a favorite URI always resolves to a media item, never a BrowseFolder
+            item = cast("MediaItemType", await self.get_item_by_uri(item))
         if item.media_type == MediaType.AUDIO_SOURCE:
             # AudioSources are dynamic plugin surfaces (existence depends on a
             # running plugin and its current device state) and have no stable
@@ -1227,7 +1228,8 @@ class MusicController(CoreController):
         """Try to refresh a mediaitem by requesting it's full object or search for substitutes."""
         if isinstance(media_item, str):
             # media item uri given
-            media_item = await self.get_item_by_uri(media_item)
+            # a refresh URI always resolves to a media item, never a BrowseFolder
+            media_item = cast("MediaItemType", await self.get_item_by_uri(media_item))
 
         media_type = media_item.media_type
         ctrl = self.get_controller(media_type)
