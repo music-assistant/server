@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 import aiofiles
+from music_assistant_models.enums import AlbumType
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.helpers.json import json_dumps, json_loads
@@ -111,6 +112,8 @@ class SmartPlaylistRules:
     excluded_genre_ids: list[int] = field(default_factory=list)
     excluded_genre_names: dict[int, str] = field(default_factory=dict)
     dedup_hours: int | None = None
+    album_types: list[str] = field(default_factory=list)
+    excluded_album_types: list[str] = field(default_factory=list)
 
     def all_seed_uris(self) -> list[str]:
         """Return every seed URI across the four seed lists, deduplicated, original order."""
@@ -156,6 +159,8 @@ class SmartPlaylistRules:
             "excluded_genre_ids": self.excluded_genre_ids,
             "excluded_genre_names": {str(k): v for k, v in self.excluded_genre_names.items()},
             "dedup_hours": self.dedup_hours,
+            "album_types": self.album_types,
+            "excluded_album_types": self.excluded_album_types,
         }
 
     @classmethod
@@ -204,6 +209,10 @@ class SmartPlaylistRules:
                 data.get("excluded_genre_names"), "excluded_genre_names"
             ),
             dedup_hours=_coerce_optional_int(data.get("dedup_hours"), "dedup_hours"),
+            album_types=_coerce_str_list(data.get("album_types"), "album_types"),
+            excluded_album_types=_coerce_str_list(
+                data.get("excluded_album_types"), "excluded_album_types"
+            ),
         )
 
     def human_readable(self) -> str:
@@ -243,6 +252,10 @@ class SmartPlaylistRules:
             parts.append(f"Excl. {len(self.excluded_track_uris)} track(s)")
         if self.dedup_hours is not None:
             parts.append(f"No repeat within {self.dedup_hours}h")
+        if self.album_types:
+            parts.append(f"Album types: {', '.join(self.album_types)}")
+        if self.excluded_album_types:
+            parts.append(f"Excl. album types: {', '.join(self.excluded_album_types)}")
         if self.min_popularity is not None:
             parts.append(f"Min. popularity: {self.min_popularity}")
         if self.year_from is not None or self.year_to is not None:
@@ -287,6 +300,15 @@ def validate_rules(rules: SmartPlaylistRules) -> None:
         # 2160h == 90 days, matching the playlog retention window the dedup relies on.
         msg = f"dedup_hours must be between 1 and 2160, got {rules.dedup_hours}"
         raise InvalidDataError(msg)
+    valid_album_types = {t.value for t in AlbumType}
+    for at in rules.album_types:
+        if at not in valid_album_types:
+            msg = f"Invalid album_types value: {at!r}. Must be one of {sorted(valid_album_types)}"
+            raise InvalidDataError(msg)
+    for at in rules.excluded_album_types:
+        if at not in valid_album_types:
+            msg = f"Invalid excluded_album_types value: {at!r}. Must be one of {sorted(valid_album_types)}"
+            raise InvalidDataError(msg)
 
 
 async def read_json(path: str) -> dict[str, Any]:

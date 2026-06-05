@@ -6,6 +6,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.enums import AlbumType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import ProviderMapping, Track
 
@@ -981,3 +982,204 @@ async def test_count_tracks_returns_count_and_duration(tmp_path: Any) -> None:
     result = await plugin.count_tracks(SmartPlaylistRules(limit=10).to_dict())
     assert result["count"] == 3
     assert result["duration_seconds"] == 600
+
+
+# ---------------------------------------------------------------------------
+# album_type filter tests
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_track_with_album_type(
+    item_id: str,
+    uri: str,
+    album_type: str = "unknown",
+) -> MagicMock:
+    """Build a minimal mock Track with a unique album.item_id per item_id."""
+    track = _make_mock_track(item_id, uri)
+    track.album = MagicMock()
+    # Unique album ID per track (item_id "1" → album "1000") so library_items mocks are precise.
+    track.album.item_id = str(int(item_id) * 1000)
+    track.album.year = None
+    track.album.album_type = AlbumType(album_type)
+    return track
+
+
+class TestSmartPlaylistRulesAlbumType:
+    """Tests for album_types / excluded_album_types fields on SmartPlaylistRules."""
+
+    def test_album_types_defaults_to_empty(self) -> None:
+        """album_types and excluded_album_types default to empty lists."""
+        rules = SmartPlaylistRules()
+        assert rules.album_types == []
+        assert rules.excluded_album_types == []
+
+    def test_album_types_round_trip(self) -> None:
+        """album_types / excluded_album_types survive a to_dict / from_dict round-trip."""
+        rules = SmartPlaylistRules(
+            album_types=["album", "ep"],
+            excluded_album_types=["single", "compilation"],
+        )
+        recovered = SmartPlaylistRules.from_dict(rules.to_dict())
+        assert recovered.album_types == ["album", "ep"]
+        assert recovered.excluded_album_types == ["single", "compilation"]
+
+    def test_old_json_without_album_types_loads_cleanly(self) -> None:
+        """Rules JSON without album_types fields deserializes with empty defaults."""
+        rules = SmartPlaylistRules.from_dict({"limit": 50, "favorites_only": True})
+        assert rules.album_types == []
+        assert rules.excluded_album_types == []
+
+    def test_human_readable_includes_album_types(self) -> None:
+        """human_readable mentions album_types when set."""
+        rules = SmartPlaylistRules(album_types=["album", "ep"])
+        summary = rules.human_readable()
+        assert "album" in summary
+        assert "ep" in summary
+
+    def test_human_readable_includes_excluded_album_types(self) -> None:
+        """human_readable mentions excluded_album_types when set."""
+        rules = SmartPlaylistRules(excluded_album_types=["single"])
+        assert "single" in rules.human_readable()
+
+
+class TestAlbumTypeValidation:
+    """Tests for album_type validation in validate_rules."""
+
+    def _make_plugin(self) -> SmartPlaylistProvider:
+        mass = MagicMock()
+        manifest = MagicMock()
+        manifest.domain = "smart_playlist"
+        config = MagicMock()
+        config.get_value.return_value = "GLOBAL"
+        return SmartPlaylistProvider(mass, manifest, config, set())
+
+    def test_valid_album_types_pass(self) -> None:
+        """All AlbumType values are valid."""
+        plugin = self._make_plugin()
+        rules = SmartPlaylistRules(
+            album_types=["album", "single", "ep", "live", "soundtrack", "compilation"]
+        )
+        plugin._validate_rules(rules)  # must not raise
+
+    def test_invalid_album_type_raises(self) -> None:
+        """Unknown album_type value raises InvalidDataError."""
+        plugin = self._make_plugin()
+        rules = SmartPlaylistRules(album_types=["not_a_real_type"])
+        with pytest.raises(InvalidDataError, match="album_types"):
+            plugin._validate_rules(rules)
+
+    def test_invalid_excluded_album_type_raises(self) -> None:
+        """Unknown excluded_album_type value raises InvalidDataError."""
+        plugin = self._make_plugin()
+        rules = SmartPlaylistRules(excluded_album_types=["bogus"])
+        with pytest.raises(InvalidDataError, match="excluded_album_types"):
+            plugin._validate_rules(rules)
+
+
+@pytest.mark.asyncio
+async def test_evaluate_rules_album_types_filter() -> None:
+    """album_types filter keeps only tracks whose album ID is in the allowed set."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    album_track = _make_mock_track_with_album_type("1", "library://track/1", "album")
+    single_track = _make_mock_track_with_album_type("2", "library://track/2", "single")
+    unknown_track = _make_mock_track_with_album_type("3", "library://track/3", "unknown")
+
+    for t in (album_track, single_track, unknown_track):
+        t.available = True
+        t.last_played = 0
+        t.metadata = MagicMock()
+        t.metadata.genres = None
+
+    cast("Any", plugin)._get_library_tracks = AsyncMock(
+        return_value=[album_track, single_track, unknown_track]
+    )
+    # albums.library_items returns only the "album" type album (album_track.album.item_id = "1000")
+    mock_album = MagicMock()
+    mock_album.item_id = "1000"
+    mass.music.albums.library_items = AsyncMock(return_value=[mock_album])
+
+    rules = SmartPlaylistRules(album_types=["album"], limit=10)
+    result = await plugin._evaluate_rules(rules)
+    uris = [t.uri for t in result]
+    assert "library://track/1" in uris  # album → included
+    assert "library://track/2" not in uris  # single → excluded
+    assert "library://track/3" not in uris  # unknown album type → excluded
+
+
+@pytest.mark.asyncio
+async def test_evaluate_rules_excluded_album_types_filter() -> None:
+    """excluded_album_types removes tracks whose album.album_type is in the exclusion list."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    album_track = _make_mock_track_with_album_type("1", "library://track/1", "album")
+    single_track = _make_mock_track_with_album_type("2", "library://track/2", "single")
+
+    for t in (album_track, single_track):
+        t.available = True
+        t.last_played = 0
+        t.metadata = MagicMock()
+        t.metadata.genres = None
+
+    cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=[album_track, single_track])
+    # albums.library_items returns only the "single" type album (single_track.album.item_id = "2000")
+    mock_album = MagicMock()
+    mock_album.item_id = "2000"
+    mass.music.albums.library_items = AsyncMock(return_value=[mock_album])
+
+    rules = SmartPlaylistRules(excluded_album_types=["single"], limit=10)
+    result = await plugin._evaluate_rules(rules)
+    uris = [t.uri for t in result]
+    assert "library://track/1" in uris  # album → kept
+    assert "library://track/2" not in uris  # single → excluded
+
+
+@pytest.mark.asyncio
+async def test_seed_mode_album_types_filter_is_applied() -> None:
+    """album_types filter is enforced in seed mode via _apply_seed_post_filters."""
+    mass = MagicMock()
+    mass.music.genres.get_library_item = AsyncMock(side_effect=Exception("not called"))
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    album_track = _make_mock_track_with_album_type("1", "library://track/1", "album")
+    single_track = _make_mock_track_with_album_type("2", "library://track/2", "single")
+
+    for t in (album_track, single_track):
+        t.available = True
+        t.last_played = 0
+        t.metadata = MagicMock()
+        t.metadata.popularity = None
+        t.metadata.genres = None
+        t.favorite = False
+
+    # Seed mode is triggered when seed_track_uris is non-empty.
+    # Mock _tracks_from_seeds to return mixed album types.
+    cast("Any", plugin)._tracks_from_seeds = AsyncMock(return_value=[album_track, single_track])
+    # albums.library_items returns only the "album" type album (album_track.album.item_id = "1000")
+    mock_album = MagicMock()
+    mock_album.item_id = "1000"
+    mass.music.albums.library_items = AsyncMock(return_value=[mock_album])
+
+    rules = SmartPlaylistRules(
+        seed_track_uris=["library://track/99"],
+        album_types=["album"],
+        limit=10,
+    )
+    result = await plugin._evaluate_rules(rules)
+    uris = [t.uri for t in result]
+    assert "library://track/1" in uris  # album → kept
+    assert "library://track/2" not in uris  # single → filtered out by _apply_seed_post_filters
