@@ -148,10 +148,10 @@ class DiscoveryController(CoreController):
     async def async_find_mdns_service(
         self, service_type: str, name_filter: str, timeout: float = 3.0
     ) -> AsyncServiceInfo | None:
-        """Find an mDNS service by partial name match, checking cache first then waiting.
+        """Find an mDNS service by exact device name match, checking cache first then waiting.
 
         :param service_type: The mDNS service type (e.g., "_raop._tcp.local.").
-        :param name_filter: Substring that must appear in the service name.
+        :param name_filter: Device name that must exactly match the service name portion.
         :param timeout: Maximum time to wait in seconds.
         """
         deadline = asyncio.get_event_loop().time() + timeout
@@ -166,14 +166,20 @@ class DiscoveryController(CoreController):
                 event.clear()
                 # Check cache for a matching entry
                 for mdns_name in set(self.aiozc.zeroconf.cache.cache):
-                    if (
-                        service_type_lower in mdns_name
-                        and name_filter_lower in mdns_name
-                        and mdns_name != service_type_lower
-                    ):
-                        info = AsyncServiceInfo(service_type, mdns_name)
-                        if await info.async_request(self.aiozc.zeroconf, 3000):
-                            return info
+                    if service_type_lower not in mdns_name or mdns_name == service_type_lower:
+                        continue
+                    # Use exact matching on the device name portion to prevent a device named
+                    # "Foo" from cross-matching another device named "ATV Foo".
+                    # mDNS names are either "MAC@DeviceName.service.local." or "DeviceName.service.local."
+                    device_part = mdns_name.split(".")[0]
+                    device_name = (
+                        device_part.split("@", 1)[1] if "@" in device_part else device_part
+                    )
+                    if device_name != name_filter_lower:
+                        continue
+                    info = AsyncServiceInfo(service_type, mdns_name)
+                    if await info.async_request(self.aiozc.zeroconf, 3000):
+                        return info
                 remaining = deadline - asyncio.get_event_loop().time()
                 if remaining <= 0:
                     return None
