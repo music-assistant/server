@@ -596,6 +596,22 @@ class TestGrouping:
         with pytest.raises(PlayerCommandFailed):
             await leader.set_members(player_ids_to_add=["amplipi_test_zone_2"])
 
+    async def test_add_unmapped_member_skips_api(self, mock_provider: MagicMock) -> None:
+        """Adding only unknown/unmapped player ids must not issue an empty set_zones call."""
+        leader = _make_player(mock_provider, 0)
+        leader._source_id = 1
+        await leader.set_members(player_ids_to_add=["nonexistent"])
+        mock_provider.api.set_zones.assert_not_awaited()
+
+    async def test_remove_unmapped_member_skips_api(self, mock_provider: MagicMock) -> None:
+        """Removing only unknown/unmapped player ids must not issue an empty set_zones call."""
+        leader = _make_player(mock_provider, 0)
+        leader._source_id = 1
+        leader._attr_group_members = [leader.player_id, "nonexistent"]
+        await leader.set_members(player_ids_to_remove=["nonexistent"])
+        mock_provider.api.set_zones.assert_not_awaited()
+        assert leader.group_members == []
+
     def test_poll_prunes_disconnected_members(self, mock_provider: MagicMock) -> None:
         """A polled member no longer on the leader's source is pruned from the group."""
         mock_provider.status = _status(

@@ -57,9 +57,11 @@ class AmpliPiPlayerProvider(PlayerProvider):
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
-        await self._remove_ma_streams()
         with suppress(Exception):
             self._streams = await self.api.get_streams()
+        # adopt (reuse) any Music Assistant streams left by a previous run instead of
+        # recreating them, so a reload does not interrupt active playback
+        self._adopt_ma_streams(self._streams)
         await self.discover_players()
         self._poll_task = self.mass.create_task(self._poll_loop())
 
@@ -71,8 +73,11 @@ class AmpliPiPlayerProvider(PlayerProvider):
             await self.mass.players.unregister(player.player_id)
         if hasattr(self, "_players"):
             self._players.clear()
-        with suppress(Exception):
-            await self._remove_ma_streams()
+        # only delete our streams when the provider is being removed; on a plain reload
+        # they are kept (and re-adopted) so playback survives and they can be reused
+        if is_removed:
+            with suppress(Exception):
+                await self._remove_ma_streams()
         with suppress(Exception):
             await self.api.close()
 
@@ -158,6 +163,23 @@ class AmpliPiPlayerProvider(PlayerProvider):
             await self.discover_players()
             for player in self._players.values():
                 player.update_from_status(self._status)
+
+    def _adopt_ma_streams(self, streams: list[AmpliPiStream]) -> None:
+        """
+        Rebuild the source -> stream id map from the controller's existing MA streams.
+
+        Music Assistant names its per-source streams "<MA_STREAM_NAME> <source_id>", so the
+        owning source id can be recovered from the name and the stream reused across reloads.
+
+        :param streams: The streams currently present on the AmpliPi controller.
+        """
+        self._ma_streams = {}
+        for stream in streams:
+            if stream.id is None or not (stream.name or "").startswith(MA_STREAM_NAME):
+                continue
+            suffix = stream.name[len(MA_STREAM_NAME) :].strip()
+            with suppress(ValueError):
+                self._ma_streams[int(suffix)] = stream.id
 
     async def _remove_ma_streams(self) -> None:
         """Delete every Music Assistant stream from the AmpliPi controller."""

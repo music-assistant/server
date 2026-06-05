@@ -206,12 +206,13 @@ class AmpliPiZonePlayer(Player):
             # connect and UNMUTE the added zones: AmpliPi keeps disconnected zones muted,
             # so without mute=False a newly grouped zone would join silently
             add_zone_ids = self._zone_ids_for(player_ids_to_add)
-            await self._prov.api.set_zones(
-                MultiZoneUpdate(
-                    zones=add_zone_ids,
-                    update=ZoneUpdate(source_id=self._source_id, mute=False),
+            if add_zone_ids:
+                await self._prov.api.set_zones(
+                    MultiZoneUpdate(
+                        zones=add_zone_ids,
+                        update=ZoneUpdate(source_id=self._source_id, mute=False),
+                    )
                 )
-            )
             members = self._attr_group_members or [self.player_id]
             for player_id in player_ids_to_add:
                 if player_id not in members:
@@ -220,11 +221,12 @@ class AmpliPiZonePlayer(Player):
             self._attr_group_members = members
         if player_ids_to_remove:
             remove_zone_ids = self._zone_ids_for(player_ids_to_remove)
-            await self._prov.api.set_zones(
-                MultiZoneUpdate(
-                    zones=remove_zone_ids, update=ZoneUpdate(source_id=SOURCE_DISCONNECTED)
+            if remove_zone_ids:
+                await self._prov.api.set_zones(
+                    MultiZoneUpdate(
+                        zones=remove_zone_ids, update=ZoneUpdate(source_id=SOURCE_DISCONNECTED)
+                    )
                 )
-            )
             members = [m for m in self._attr_group_members if m not in player_ids_to_remove]
             self._attr_group_members = [] if members == [self.player_id] else members
             affected.update(player_ids_to_remove)
@@ -264,10 +266,9 @@ class AmpliPiZonePlayer(Player):
             # selectable list, so MA playback keeps active_source == player_id.
             self._reflect_external_active_source(status)
         # NOTE: while the zone is connected to a source we deliberately keep the
-        # playback_state set by our play/pause/stop commands and do NOT derive it
-        # from the AmpliPi source state. AmpliPi's fileplayer (the "External Media"
-        # stream used by play_media) is meant for announcements: it reports an
-        # unreliable state (e.g. "stopped" while audio is actually playing), which
+        # playback_state set by our play/stop commands and do NOT derive it from the
+        # AmpliPi source state. The internetradio stream play_media uses reports an
+        # unreliable info.state (e.g. "stopped" while audio is actually playing), which
         # would otherwise continuously desync the player state in the UI.
         if self._attr_group_members:
             self._prune_group_members(status)
@@ -377,9 +378,9 @@ class AmpliPiZonePlayer(Player):
             return None
         with suppress(Exception):
             source = await self._prov.api.get_source(self._source_id)
-            if source.input and source.input.startswith("stream="):
+            if source.input and source.input.startswith(SOURCE_ID_STREAM_PREFIX):
                 with suppress(ValueError):
-                    return int(source.input.split("=", 1)[1])
+                    return int(source.input.removeprefix(SOURCE_ID_STREAM_PREFIX))
         return None
 
     def _build_source_list(self) -> None:

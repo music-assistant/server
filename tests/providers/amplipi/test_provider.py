@@ -97,11 +97,18 @@ class TestHandleAsyncInit:
 class TestLifecycle:
     """Test loaded_in_mass / unload."""
 
-    async def test_loaded_in_mass(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """loaded_in_mass should clean streams, fetch streams, discover and start polling."""
+    async def test_loaded_in_mass_adopts_streams(self) -> None:
+        """loaded_in_mass should fetch streams, re-adopt MA streams, discover and poll."""
         prov = _provider()
-        prov.api.get_streams = AsyncMock(return_value=[])
-        prov.api.delete_stream = AsyncMock()
+        prov.api.get_streams = AsyncMock(
+            return_value=[
+                SimpleNamespace(id=7, name=f"{MA_STREAM_NAME} 0"),
+                SimpleNamespace(id=8, name=f"{MA_STREAM_NAME} 2"),
+                SimpleNamespace(id=9, name="Groove Salad"),
+                SimpleNamespace(id=None, name=f"{MA_STREAM_NAME} 3"),
+                SimpleNamespace(id=10, name=f"{MA_STREAM_NAME} x"),
+            ]
+        )
         prov.discover_players = AsyncMock()  # type: ignore[method-assign]
         task_obj = object()
         prov.mass.create_task = MagicMock(return_value=task_obj)  # type: ignore[method-assign]
@@ -110,10 +117,11 @@ class TestLifecycle:
 
         prov.discover_players.assert_awaited_once()
         assert prov._poll_task is task_obj
-        assert prov._streams == []
+        # only well-formed MA streams with an id are adopted, keyed by their source id
+        assert prov._ma_streams == {0: 7, 2: 8}
 
-    async def test_unload(self) -> None:
-        """Unload should cancel polling, unregister players, drop streams and close the api."""
+    async def test_unload_reload_keeps_streams(self) -> None:
+        """A plain reload cancels polling and unregisters players but keeps MA streams."""
         prov = _provider()
         task = MagicMock()
         task.done.return_value = False
@@ -122,7 +130,7 @@ class TestLifecycle:
         player.player_id = "amplipi_test_zone_0"
         prov._players = {0: player}
         prov.mass.players.unregister = AsyncMock()  # type: ignore[method-assign]
-        prov.api.get_streams = AsyncMock(return_value=[])
+        prov.api.delete_stream = AsyncMock()
         prov.api.close = AsyncMock()
 
         await prov.unload()
@@ -130,6 +138,23 @@ class TestLifecycle:
         task.cancel.assert_called_once()
         prov.mass.players.unregister.assert_awaited_once_with("amplipi_test_zone_0")
         assert prov._players == {}
+        prov.api.delete_stream.assert_not_awaited()
+        prov.api.close.assert_awaited_once()
+
+    async def test_unload_removed_deletes_streams(self) -> None:
+        """When the provider is removed, its MA streams are deleted from the controller."""
+        prov = _provider()
+        prov._poll_task = None
+        prov._players = {}
+        prov.api.get_streams = AsyncMock(
+            return_value=[SimpleNamespace(id=7, name=f"{MA_STREAM_NAME} 0")]
+        )
+        prov.api.delete_stream = AsyncMock()
+        prov.api.close = AsyncMock()
+
+        await prov.unload(is_removed=True)
+
+        prov.api.delete_stream.assert_awaited_once_with(7)
         prov.api.close.assert_awaited_once()
 
 
