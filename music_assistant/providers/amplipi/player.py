@@ -7,32 +7,38 @@ from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerCommandFailed
-from music_assistant_models.player import DeviceInfo, PlayerMedia
-from pyamplipi.models import MultiZoneUpdate, PlayMedia, ZoneUpdate
+from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
+from pyamplipi.models import MultiZoneUpdate, SourceUpdate, ZoneUpdate
 
 from music_assistant.models.player import Player
 
-from .constants import FREE_SOURCE_INPUTS, SOURCE_DISCONNECTED, ZONE_OFF
+from .constants import (
+    FREE_SOURCE_INPUTS,
+    INPUT_STREAM_TYPES,
+    SOURCE_DISCONNECTED,
+    SOURCE_ID_STREAM_PREFIX,
+    STREAM_TYPE_LABELS,
+    VOLUME_DB_FLOOR,
+    ZONE_OFF,
+)
 
 if TYPE_CHECKING:
-    from pyamplipi.models import Source, Status
+    from pyamplipi.models import Source, Status, Zone
+    from pyamplipi.models import Stream as AmpliPiStream
 
     from .provider import AmpliPiPlayerProvider
 
 
+# NOTE: PlayerFeature.PAUSE is intentionally NOT advertised. AmpliPi streams cannot be
+# truly paused (the stream keeps running), so exposing pause would give a dead button;
+# Music Assistant shows a play/stop transport instead, which AmpliPi honors reliably.
 PLAYER_FEATURES = {
     PlayerFeature.PLAY_MEDIA,
-    PlayerFeature.PAUSE,
     PlayerFeature.VOLUME_SET,
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.POWER,
     PlayerFeature.SET_MEMBERS,
-}
-
-STATE_MAP = {
-    "playing": PlaybackState.PLAYING,
-    "paused": PlaybackState.PAUSED,
-    "stopped": PlaybackState.IDLE,
+    PlayerFeature.SELECT_SOURCE,
 }
 
 
@@ -44,6 +50,10 @@ class AmpliPiZonePlayer(Player):
         super().__init__(provider, f"{provider.instance_id}_zone_{zone_id}")
         self._zone_id = zone_id
         self._source_id: int | None = None
+        # default the player name to the zone's AmpliPi name (e.g. "Living Room"); this is
+        # only a default - a name set on the player in Music Assistant always takes priority
+        zone = next((z for z in provider.status.zones if z.id == zone_id), None)
+        self._attr_name = self._zone_display_name(zone, zone_id)
         self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = PLAYER_FEATURES
         # all zones on the same AmpliPi controller can be grouped with each other
@@ -62,7 +72,9 @@ class AmpliPiZonePlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Handle VOLUME_SET command on the player."""
-        await self._prov.api.set_zone(self._zone_id, ZoneUpdate(vol_f=volume_level / 100))
+        await self._prov.api.set_zone(
+            self._zone_id, ZoneUpdate(vol=self._volume_to_db(volume_level))
+        )
         self._attr_volume_level = volume_level
         self.update_state()
 
@@ -103,13 +115,6 @@ class AmpliPiZonePlayer(Player):
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
 
-    async def pause(self) -> None:
-        """Handle PAUSE command on the player."""
-        if (stream_id := await self._active_stream_id()) is not None:
-            await self._prov.api.pause_stream(stream_id)
-        self._attr_playback_state = PlaybackState.PAUSED
-        self.update_state()
-
     async def stop(self) -> None:
         """Handle STOP command on the player."""
         self.mark_stop_called()
@@ -125,23 +130,57 @@ class AmpliPiZonePlayer(Player):
         if source is None or source.id is None:
             raise PlayerCommandFailed("All AmpliPi sources are currently in use.")
         self._source_id = source.id
+        # Use AmpliPi's internetradio stream type (not the announcement fileplayer):
+        # it is built for continuous HTTP streams and supports real play/pause/stop
+        # with reliable state, where the fileplayer does not.
+        stream_id = await self._prov.ensure_stream(source.id, url)
         zone_ids = self._member_zone_ids()
         self.logger.debug(
-            "play_media: connecting zones %s to source %s and playing %s",
-            zone_ids,
+            "play_media: stream %s on source %s -> zones %s (%s)",
+            stream_id,
             source.id,
+            zone_ids,
             url,
         )
-        # connect this zone (and any grouped members) to the acquired source,
-        # unmuting them (AmpliPi mutes zones while disconnected, which would
-        # otherwise leave playback silent)
-        await self._prov.api.set_zones(
-            MultiZoneUpdate(zones=zone_ids, update=ZoneUpdate(source_id=source.id, mute=False))
-        )
-        await self._prov.api.play_media(PlayMedia(source_id=source.id, media=url))
-        self.logger.debug("play_media: AmpliPi accepted media on source %s", source.id)
+        # point the source at our stream, then make its zones EXACTLY this group
+        # (attach our members unmuted; detach any stray zones left on the source),
+        # so playback follows the Music Assistant group and nothing else
+        await self._prov.api.set_source(source.id, SourceUpdate(input=f"stream={stream_id}"))
+        await self._attach_only_zones(source.id, zone_ids)
+        await self._prov.api.play_stream(stream_id)
         self._attr_active_source = self.player_id
         self._attr_current_media = media
+        self._attr_powered = True
+        self._attr_volume_muted = False
+        self._attr_playback_state = PlaybackState.PLAYING
+        self.update_state()
+
+    async def select_source(self, source: str) -> None:
+        """
+        Handle SELECT_SOURCE command on the player.
+
+        Routes an AmpliPi-side source (a native stream such as its own Spotify Connect /
+        AirPlay, or a physical RCA/line input) to this zone and any grouped members. The
+        source id encodes the AmpliPi stream id as "stream=<id>", which doubles as the value
+        written to the AmpliPi source input.
+
+        :param source: The source id to select, as defined in source_list.
+        """
+        # Setting source.input="stream=<id>" both selects and starts the source: native
+        # streams (e.g. internetradio) auto-play on connect, and RCA/line inputs are
+        # passthrough, so no explicit play_stream is needed.
+        if not source.startswith(SOURCE_ID_STREAM_PREFIX):
+            raise PlayerCommandFailed(f"Unknown source '{source}' for {self.display_name}")
+        amplipi_source = await self._acquire_source()
+        if amplipi_source is None or amplipi_source.id is None:
+            raise PlayerCommandFailed("All AmpliPi sources are currently in use.")
+        self._source_id = amplipi_source.id
+        zone_ids = self._member_zone_ids()
+        # the source id ("stream=<id>") is exactly the AmpliPi source.input value
+        await self._prov.api.set_source(amplipi_source.id, SourceUpdate(input=source))
+        await self._attach_only_zones(amplipi_source.id, zone_ids)
+        self._attr_active_source = source
+        self._attr_current_media = None
         self._attr_powered = True
         self._attr_volume_muted = False
         self._attr_playback_state = PlaybackState.PLAYING
@@ -161,10 +200,17 @@ class AmpliPiZonePlayer(Player):
                 if source is None or source.id is None:
                     raise PlayerCommandFailed("All AmpliPi sources are currently in use.")
                 self._source_id = source.id
-                await self._prov.api.set_zone(self._zone_id, ZoneUpdate(source_id=self._source_id))
+                await self._prov.api.set_zone(
+                    self._zone_id, ZoneUpdate(source_id=self._source_id, mute=False)
+                )
+            # connect and UNMUTE the added zones: AmpliPi keeps disconnected zones muted,
+            # so without mute=False a newly grouped zone would join silently
             add_zone_ids = self._zone_ids_for(player_ids_to_add)
             await self._prov.api.set_zones(
-                MultiZoneUpdate(zones=add_zone_ids, update=ZoneUpdate(source_id=self._source_id))
+                MultiZoneUpdate(
+                    zones=add_zone_ids,
+                    update=ZoneUpdate(source_id=self._source_id, mute=False),
+                )
             )
             members = self._attr_group_members or [self.player_id]
             for player_id in player_ids_to_add:
@@ -201,16 +247,28 @@ class AmpliPiZonePlayer(Player):
             self.set_unavailable()
             return
         self._attr_available = True
-        self._attr_volume_level = round((zone.vol_f or 0) * 100)
+        # keep the default name in sync with the zone's (possibly renamed) AmpliPi name
+        self._attr_name = self._zone_display_name(zone, self._zone_id)
+        self._build_source_list()
+        self._attr_volume_level = self._db_to_volume(zone.vol)
         self._attr_volume_muted = zone.mute
         self._attr_powered = zone.source_id != ZONE_OFF
         self._source_id = zone.source_id if zone.source_id >= 0 else None
         if self._source_id is None:
+            # zone is disconnected or powered off: nothing is playing on it
             self._attr_playback_state = PlaybackState.IDLE
             self._attr_active_source = None
         else:
-            source = next((s for s in status.sources if s.id == self._source_id), None)
-            self._attr_playback_state = self._map_state(source)
+            # if a user-selectable AmpliPi source (native stream / RCA input) is connected,
+            # reflect it as the active source. Our own MA streams are excluded from the
+            # selectable list, so MA playback keeps active_source == player_id.
+            self._reflect_external_active_source(status)
+        # NOTE: while the zone is connected to a source we deliberately keep the
+        # playback_state set by our play/pause/stop commands and do NOT derive it
+        # from the AmpliPi source state. AmpliPi's fileplayer (the "External Media"
+        # stream used by play_media) is meant for announcements: it reports an
+        # unreliable state (e.g. "stopped" while audio is actually playing), which
+        # would otherwise continuously desync the player state in the UI.
         if self._attr_group_members:
             self._prune_group_members(status)
         self.update_state()
@@ -239,6 +297,34 @@ class AmpliPiZonePlayer(Player):
             if (zone_id := self._prov.zone_id_for(player_id)) is not None:
                 zone_ids.append(zone_id)
         return zone_ids
+
+    async def _attach_only_zones(self, source_id: int, zone_ids: list[int]) -> None:
+        """
+        Attach exactly the given zones to the source, detaching any others.
+
+        Connects the requested zones to the source (unmuted) and disconnects any stray
+        zones still bound to it (e.g. left over from a previous group), so the source's
+        zones match the Music Assistant group exactly.
+
+        :param source_id: The AmpliPi source id to attach the zones to.
+        :param zone_ids: The zone ids that should be playing on the source.
+        """
+        wanted = set(zone_ids)
+        strays = [
+            z.id
+            for z in self._prov.status.zones
+            if z.id is not None
+            and not z.disabled
+            and z.source_id == source_id
+            and z.id not in wanted
+        ]
+        if strays:
+            await self._prov.api.set_zones(
+                MultiZoneUpdate(zones=strays, update=ZoneUpdate(source_id=SOURCE_DISCONNECTED))
+            )
+        await self._prov.api.set_zones(
+            MultiZoneUpdate(zones=zone_ids, update=ZoneUpdate(source_id=source_id, mute=False))
+        )
 
     def _dissolve_group(self) -> None:
         """Clear this player's group and refresh any former members."""
@@ -296,9 +382,66 @@ class AmpliPiZonePlayer(Player):
                     return int(source.input.split("=", 1)[1])
         return None
 
+    def _build_source_list(self) -> None:
+        """
+        Rebuild the selectable source list from the AmpliPi streams.
+
+        Exposes the AmpliPi-side sources the user can route to this zone: physical line
+        inputs (RCA/aux) and native streams (its own Spotify Connect, AirPlay, internet
+        radio, ...). These are routing-only in Music Assistant - the wired input or the
+        owning app drives the audio - so no transport capabilities are advertised.
+        """
+        self._attr_source_list = [
+            PlayerSource(
+                id=f"{SOURCE_ID_STREAM_PREFIX}{stream.id}",
+                name=self._source_label(stream),
+                passive=False,
+            )
+            for stream in self._prov.selectable_streams()
+        ]
+
+    def _reflect_external_active_source(self, status: Status) -> None:
+        """Set active_source to a user-selectable AmpliPi source if one is connected."""
+        source = next((s for s in status.sources if s.id == self._source_id), None)
+        if source is None or not (source.input or "").startswith(SOURCE_ID_STREAM_PREFIX):
+            return
+        if any(source.input == src.id for src in self._attr_source_list):
+            self._attr_active_source = source.input
+
     @staticmethod
-    def _map_state(source: Source | None) -> PlaybackState:
-        """Map an AmpliPi source's playback state to a Music Assistant PlaybackState."""
-        if source is None or source.info is None or source.info.state is None:
-            return PlaybackState.IDLE
-        return STATE_MAP.get(source.info.state, PlaybackState.IDLE)
+    def _zone_display_name(zone: Zone | None, zone_id: int) -> str:
+        """
+        Return a sensible default player name for a zone.
+
+        Prefers the zone's configured AmpliPi name; when that is unset (a common case,
+        as users often leave zones unnamed) it falls back to a generic, 1-based label.
+        This is only the default - a name set on the player in Music Assistant wins.
+
+        :param zone: The AmpliPi zone, or None if it is not present in the status.
+        :param zone_id: The AmpliPi zone id, used for the fallback label.
+        """
+        name = (getattr(zone, "name", None) or "").strip()
+        return name or f"AmpliPi Zone {zone_id + 1}"
+
+    @staticmethod
+    def _source_label(stream: AmpliPiStream) -> str:
+        """
+        Return a friendly, disambiguated label for a selectable AmpliPi stream.
+
+        Physical inputs keep their configured name ("Input 1", "Aux"); native streams get a
+        type suffix so same-named endpoints (e.g. Spotify vs AirPlay "AmpliPro 1") are distinct.
+        """
+        if stream.type in INPUT_STREAM_TYPES:
+            return str(stream.name)
+        return f"{stream.name} ({STREAM_TYPE_LABELS.get(stream.type, stream.type)})"
+
+    @staticmethod
+    def _volume_to_db(volume_level: int) -> int:
+        """Map a Music Assistant volume (0-100) to an AmpliPi volume in dB."""
+        return round(VOLUME_DB_FLOOR * (1 - volume_level / 100))
+
+    @staticmethod
+    def _db_to_volume(vol_db: int) -> int:
+        """Map an AmpliPi volume in dB back to a Music Assistant volume (0-100)."""
+        volume = round(100 * (1 - vol_db / VOLUME_DB_FLOOR))
+        return max(0, min(100, volume))

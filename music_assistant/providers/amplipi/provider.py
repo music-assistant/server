@@ -6,16 +6,24 @@ import asyncio
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.errors import PlayerCommandFailed, SetupFailedError
 from pyamplipi.amplipi import AmpliPi
+from pyamplipi.models import Stream, StreamUpdate
 
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import CONF_HOST, POLL_INTERVAL
+from .constants import (
+    CONF_HOST,
+    EXCLUDED_SELECTABLE_STREAM_TYPES,
+    MA_STREAM_NAME,
+    MA_STREAM_TYPE,
+    POLL_INTERVAL,
+)
 from .player import AmpliPiZonePlayer
 
 if TYPE_CHECKING:
     from pyamplipi.models import Status
+    from pyamplipi.models import Stream as AmpliPiStream
 
 
 class AmpliPiPlayerProvider(PlayerProvider):
@@ -25,10 +33,16 @@ class AmpliPiPlayerProvider(PlayerProvider):
     _poll_task: asyncio.Task[None] | None = None
     _status: Status
     _players: dict[int, AmpliPiZonePlayer]
+    # AmpliPi source id -> id of the Music Assistant internetradio stream bound to it
+    _ma_streams: dict[int, int]
+    # last-polled AmpliPi streams (native streams + RCA inputs), used to build source lists
+    _streams: list[AmpliPiStream]
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._players = {}
+        self._ma_streams = {}
+        self._streams = []
         host = cast("str", self.config.get_value(CONF_HOST))
         endpoint = host if host.startswith("http") else f"http://{host}/api"
         self.api = AmpliPi(
@@ -43,6 +57,9 @@ class AmpliPiPlayerProvider(PlayerProvider):
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
+        await self._remove_ma_streams()
+        with suppress(Exception):
+            self._streams = await self.api.get_streams()
         await self.discover_players()
         self._poll_task = self.mass.create_task(self._poll_loop())
 
@@ -55,7 +72,34 @@ class AmpliPiPlayerProvider(PlayerProvider):
         if hasattr(self, "_players"):
             self._players.clear()
         with suppress(Exception):
+            await self._remove_ma_streams()
+        with suppress(Exception):
             await self.api.close()
+
+    async def ensure_stream(self, source_id: int, url: str) -> int:
+        """
+        Ensure a Music Assistant internetradio stream exists for the given AmpliPi source.
+
+        Creates the stream on first use (one per source) and (re)points it at the supplied
+        Music Assistant stream URL on every call. Returns the AmpliPi stream id.
+
+        :param source_id: The AmpliPi source id the stream is bound to.
+        :param url: The Music Assistant stream URL the AmpliPi stream should play.
+        """
+        if (stream_id := self._ma_streams.get(source_id)) is not None:
+            await self.api.set_stream(stream_id, StreamUpdate(url=url))
+            return stream_id
+        name = f"{MA_STREAM_NAME} {source_id}"
+        await self.api.create_stream(Stream(name=name, type=MA_STREAM_TYPE, url=url))
+        # create_stream's response is not a reliable carrier of the new id, so look it up
+        streams = await self.api.get_streams()
+        new_stream_id: int | None = next(
+            (s.id for s in streams if s.name == name and s.id is not None), None
+        )
+        if new_stream_id is None:
+            raise PlayerCommandFailed(f"Failed to create AmpliPi stream for source {source_id}")
+        self._ma_streams[source_id] = new_stream_id
+        return new_stream_id
 
     async def discover_players(self) -> None:
         """Discover (register) the zones of the AmpliPi controller as players."""
@@ -71,6 +115,21 @@ class AmpliPiPlayerProvider(PlayerProvider):
     def status(self) -> Status:
         """Return the last polled AmpliPi status."""
         return self._status
+
+    def selectable_streams(self) -> list[AmpliPiStream]:
+        """
+        Return the AmpliPi streams a user can select as a source (native streams + RCA inputs).
+
+        Excludes the internetradio streams Music Assistant creates for its own playback and
+        the built-in announcement player (fileplayer).
+        """
+        return [
+            stream
+            for stream in self._streams
+            if stream.id is not None
+            and not (stream.name or "").startswith(MA_STREAM_NAME)
+            and stream.type not in EXCLUDED_SELECTABLE_STREAM_TYPES
+        ]
 
     def zone_id_for(self, player_id: str) -> int | None:
         """Return the AmpliPi zone id for the given Music Assistant player_id."""
@@ -92,7 +151,19 @@ class AmpliPiPlayerProvider(PlayerProvider):
                 for player in self._players.values():
                     player.set_unavailable()
                 continue
+            # refresh the selectable stream list (native streams + RCA inputs); best-effort
+            with suppress(Exception):
+                self._streams = await self.api.get_streams()
             # register any newly enabled zones that appeared
             await self.discover_players()
             for player in self._players.values():
                 player.update_from_status(self._status)
+
+    async def _remove_ma_streams(self) -> None:
+        """Delete every Music Assistant stream from the AmpliPi controller."""
+        with suppress(Exception):
+            for stream in await self.api.get_streams():
+                if stream.id is not None and (stream.name or "").startswith(MA_STREAM_NAME):
+                    with suppress(Exception):
+                        await self.api.delete_stream(stream.id)
+        self._ma_streams = {}
