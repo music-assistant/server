@@ -278,7 +278,7 @@ class CacheController(CoreController):
         self.logger.debug("Automatic cleanup finished (cleaned up %s records)", cleaned_records)
 
     @asynccontextmanager
-    async def handle_refresh(self, bypass: bool) -> AsyncGenerator[None, None]:
+    async def handle_refresh(self, bypass: bool) -> AsyncGenerator[None]:
         """Handle the cache bypass."""
         try:
             token = BYPASS_CACHE.set(bypass)

@@ -23,7 +23,7 @@ def provider_mock() -> Mock:
     provider.api.paginate = MagicMock()
 
     # Configure async iterator for paginate
-    async def async_iter(*_args: Any, **_kwargs: Any) -> AsyncGenerator[Any, None]:
+    async def async_iter(*_args: Any, **_kwargs: Any) -> AsyncGenerator[Any]:
         for item in provider.api.paginate.return_value:
             yield item
 
@@ -127,9 +127,7 @@ async def test_get_playlists(
     ]
 
     # Configure paginate side effect
-    async def paginate_side_effect(
-        endpoint: str, **_kwargs: Any
-    ) -> AsyncGenerator[dict[str, Any], None]:
+    async def paginate_side_effect(endpoint: str, **_kwargs: Any) -> AsyncGenerator[dict[str, Any]]:
         if "mixes" in endpoint:
             for item in mixes_response:
                 yield item

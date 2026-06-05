@@ -24,7 +24,7 @@ class YandexMusicProviderLike(Protocol):
         """Resolve stream details for a track."""
         ...
 
-    def get_audio_stream(self, stream_details: StreamDetails) -> AsyncGenerator[bytes, None]:
+    def get_audio_stream(self, stream_details: StreamDetails) -> AsyncGenerator[bytes]:
         """Return async generator of raw audio bytes."""
         ...
 

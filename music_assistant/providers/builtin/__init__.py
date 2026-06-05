@@ -313,7 +313,7 @@ class BuiltinProvider(MusicProvider):
             metadata=metadata,
         )
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from the provider."""
         stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_TRACKS, [])
         for item in stored_items:
@@ -322,7 +322,7 @@ class BuiltinProvider(MusicProvider):
             except MediaNotFoundError as err:
                 self.logger.warning("Track %s not found: %s", item, err)
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library/subscribed playlists from the provider."""
         # return user stored playlists from M3U files on disk
         for filename in await asyncio.to_thread(os.listdir, self._playlists_dir):
@@ -339,7 +339,7 @@ class BuiltinProvider(MusicProvider):
                 continue
             yield await self.get_playlist(item_id)
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
         stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_RADIOS, [])
         for item in stored_items:

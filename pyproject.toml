@@ -222,7 +222,6 @@ ignore = [
   "PLW0108", # Just annoying, not really useful
   "FURB110", # Just annoying, not really useful
   # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
-  "UP043", # AsyncGenerator[X, None] → AsyncGenerator[X]; to enable later before 2.9 release
   "BLE001",
   "FBT001",
   "FBT002",

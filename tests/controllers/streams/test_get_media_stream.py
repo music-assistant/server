@@ -44,7 +44,7 @@ class _FakeFFMpeg:
         # self.input_format.codec_type once it reads the input header.
         self.input_format.codec_type = self._probed_codec_type
 
-    async def iter_chunked(self, _chunk_size: int) -> AsyncGenerator[bytes, None]:
+    async def iter_chunked(self, _chunk_size: int) -> AsyncGenerator[bytes]:
         yield b"\x00\x01" * 256
 
     async def wait_with_timeout(self, _timeout: float) -> None:
@@ -96,7 +96,7 @@ def _make_streamdetails(
     )
 
 
-async def _drain(gen: AsyncGenerator[bytes, None]) -> None:
+async def _drain(gen: AsyncGenerator[bytes]) -> None:
     async for _ in gen:
         pass
 

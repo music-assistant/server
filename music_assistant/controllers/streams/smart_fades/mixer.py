@@ -69,10 +69,10 @@ class SmartFadesMixer:
     async def mix(
         self,
         smart_fade: SmartFade,
-        fade_in_part: bytes | AsyncGenerator[bytes, None],
+        fade_in_part: bytes | AsyncGenerator[bytes],
         fade_out_part: bytes,
         pcm_format: AudioFormat,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Run the already-built SmartFade and yield mixed PCM audio chunks."""
         async for chunk in smart_fade.apply(fade_out_part, fade_in_part, pcm_format):
             yield chunk

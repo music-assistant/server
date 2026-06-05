@@ -12,7 +12,7 @@ from tests.common import wait_for_sync_completion
 
 
 @pytest.fixture
-async def bandcamp_provider(mass: MusicAssistant) -> AsyncGenerator[ProviderConfig, None]:
+async def bandcamp_provider(mass: MusicAssistant) -> AsyncGenerator[ProviderConfig]:
     """Configure a Bandcamp test fixture, and add a provider to mass that uses it."""
     # Mock the BandcampAPIClient to avoid real API calls
     with mock.patch("music_assistant.providers.bandcamp.BandcampAPIClient") as mock_client_class:

@@ -118,7 +118,7 @@ def _make_stream_mock(chunks: list[bytes]) -> object:
 
     async def _stream(
         _streamdetails: object, _pcm_format: object, **_kwargs: object
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         for chunk in chunks:
             yield chunk
 
@@ -212,7 +212,7 @@ async def test_background_streaming_ffmpeg_startup_failure() -> None:
     p.start_analysis = AsyncMock(return_value=True)
     controller.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
-    def _failing_stream(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes, None]:
+    def _failing_stream(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
         raise RuntimeError("ffmpeg startup failed")
 
     controller.mass.streams.audio.get_media_stream = _failing_stream  # type: ignore[method-assign]

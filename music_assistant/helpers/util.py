@@ -901,7 +901,7 @@ def get_zeroconf_args(
     return {"ip_version": ip_version, "interfaces": InterfaceChoice.All}
 
 
-async def close_async_generator(agen: AsyncGenerator[Any, None]) -> None:
+async def close_async_generator(agen: AsyncGenerator[Any]) -> None:
     """Force close an async generator."""
     task = asyncio.create_task(agen.__anext__())
     task.cancel()

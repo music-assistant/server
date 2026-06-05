@@ -91,42 +91,42 @@ class MusicProvider(Provider):
             raise NotImplementedError
         return SearchResults()
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library/subscribed playlists from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Retrieve library/subscribed audiobooks from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library/subscribed podcasts from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_genres(self) -> AsyncGenerator[str, None]:
+    async def get_library_genres(self) -> AsyncGenerator[str]:
         """Retrieve library genres from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
@@ -226,7 +226,7 @@ class MusicProvider(Provider):
     async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    ) -> AsyncGenerator[PodcastEpisode]:
         """Get all PodcastEpisodes for given podcast id.
 
         Only called if provider supports ProviderFeature.LIBRARY_PODCASTS.
@@ -429,7 +429,7 @@ class MusicProvider(Provider):
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Return the (custom) audio stream for the provider item.
 
@@ -1329,7 +1329,7 @@ class MusicProvider(Provider):
     async def iter_playlist_tracks(
         self,
         prov_playlist_id: str,
-    ) -> AsyncGenerator[PlaylistPlayableItem, None]:
+    ) -> AsyncGenerator[PlaylistPlayableItem]:
         """Iterate playlist tracks for the given provider playlist id."""
         page = 0
         while True:
@@ -1343,7 +1343,7 @@ class MusicProvider(Provider):
                 yield track
             page += 1
 
-    def _get_library_gen(self, media_type: MediaType) -> AsyncGenerator[MediaItemType, None]:
+    def _get_library_gen(self, media_type: MediaType) -> AsyncGenerator[MediaItemType]:
         """Return library generator for given media_type."""
         if media_type == MediaType.ARTIST:
             return self.get_library_artists()

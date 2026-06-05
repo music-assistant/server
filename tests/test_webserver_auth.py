@@ -26,7 +26,7 @@ from music_assistant.mass import MusicAssistant
 
 
 @pytest.fixture
-async def mass_minimal(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant, None]:
+async def mass_minimal(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
     """Create a minimal Music Assistant instance for auth testing without starting the webserver.
 
     :param tmp_path: Temporary directory for test data.

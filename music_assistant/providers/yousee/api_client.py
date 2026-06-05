@@ -81,7 +81,7 @@ class YouSeeAPIClient:
         page_path: list[str],
         variables_first_key: str = "first",
         variables_after_key: str = "after",
-    ) -> AsyncGenerator[JsonLike, None]:
+    ) -> AsyncGenerator[JsonLike]:
         """Paginate GraphQL results."""
         after = None
         has_more = True
