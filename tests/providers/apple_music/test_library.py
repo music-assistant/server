@@ -1,11 +1,18 @@
 """Unit tests for Apple Music library track streaming and windowed enrichment."""
 
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track, UniqueList
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    ItemMapping,
+    ProviderMapping,
+    Track,
+    UniqueList,
+)
 
 from music_assistant.providers.apple_music.library import (
     _TRACK_SYNC_WINDOW,
@@ -32,6 +39,72 @@ def _catalog_song(catalog_id: str) -> dict[str, Any]:
         "type": "songs",
         "attributes": {"name": f"Catalog {catalog_id}", "playParams": {"id": catalog_id}},
     }
+
+
+def _make_test_track(
+    track_id: str,
+    track_name: str,
+    artist_id: str,
+    artist_name: str,
+    album_id: str | None = None,
+    album_name: str | None = None,
+    instance_id: str = "apple_music--test",
+) -> Track:
+    """Build a real Track instance with Artist and optional Album for testing."""
+    artists = UniqueList(
+        [
+            Artist(
+                provider="apple_music",
+                item_id=artist_id,
+                name=artist_name,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=artist_id,
+                        provider_domain="apple_music",
+                        provider_instance=instance_id,
+                    )
+                },
+            )
+        ]
+    )
+
+    album = None
+    if album_id and album_name:
+        album = Album(
+            provider="apple_music",
+            item_id=album_id,
+            name=album_name,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=album_id,
+                    provider_domain="apple_music",
+                    provider_instance=instance_id,
+                )
+            },
+        )
+
+    return Track(
+        provider="apple_music",
+        item_id=track_id,
+        name=track_name,
+        artists=cast("UniqueList[Artist | ItemMapping]", artists),
+        album=album,
+        provider_mappings={
+            ProviderMapping(
+                item_id=track_id,
+                provider_domain="apple_music",
+                provider_instance=instance_id,
+            )
+        },
+    )
+
+
+def _make_test_provider() -> MagicMock:
+    """Build a mock provider for search replacement tests."""
+    provider = MagicMock()
+    provider.domain = "apple_music"
+    provider.instance_id = "apple_music--test"
+    return provider
 
 
 def _make_manager(
@@ -93,9 +166,7 @@ async def test_enriches_before_listing_completes() -> None:
 @pytest.mark.asyncio
 async def test_search_replacement_finds_exact_match() -> None:
     """Search replacement finds exact match when deprecated catalog ID no longer exists."""
-    provider = MagicMock()
-    provider.domain = "apple_music"
-    provider.instance_id = "apple_music--test"
+    provider = _make_test_provider()
 
     # Mock library item with track metadata
     library_item = {
@@ -108,45 +179,13 @@ async def test_search_replacement_finds_exact_match() -> None:
     }
 
     # Create real Track instance for proper isinstance() check
-    mock_track = Track(
-        provider="apple_music",
-        item_id="999",
-        name="Test Track",
-        artists=UniqueList(
-            [
-                Artist(
-                    provider="apple_music",
-                    item_id="456",
-                    name="Test Artist",
-                    provider_mappings={
-                        ProviderMapping(
-                            item_id="456",
-                            provider_domain="apple_music",
-                            provider_instance="apple_music--test",
-                        )
-                    },
-                )
-            ]
-        ),
-        album=Album(
-            provider="apple_music",
-            item_id="789",
-            name="Test Album",
-            provider_mappings={
-                ProviderMapping(
-                    item_id="789",
-                    provider_domain="apple_music",
-                    provider_instance="apple_music--test",
-                )
-            },
-        ),
-        provider_mappings={
-            ProviderMapping(
-                item_id="999",
-                provider_domain="apple_music",
-                provider_instance="apple_music--test",
-            )
-        },
+    mock_track = _make_test_track(
+        track_id="999",
+        track_name="Test Track",
+        artist_id="456",
+        artist_name="Test Artist",
+        album_id="789",
+        album_name="Test Album",
     )
 
     search_results = MagicMock()
@@ -170,9 +209,7 @@ async def test_search_replacement_finds_exact_match() -> None:
 @pytest.mark.asyncio
 async def test_search_replacement_no_match_wrong_track_name() -> None:
     """Search replacement returns None when track name doesn't match."""
-    provider = MagicMock()
-    provider.domain = "apple_music"
-    provider.instance_id = "apple_music--test"
+    provider = _make_test_provider()
 
     library_item = {
         "id": "i.123",
@@ -182,33 +219,11 @@ async def test_search_replacement_no_match_wrong_track_name() -> None:
         },
     }
 
-    mock_track = Track(
-        provider="apple_music",
-        item_id="999",
-        name="Different Song",  # Wrong name
-        artists=UniqueList(
-            [
-                Artist(
-                    provider="apple_music",
-                    item_id="456",
-                    name="Test Artist",
-                    provider_mappings={
-                        ProviderMapping(
-                            item_id="456",
-                            provider_domain="apple_music",
-                            provider_instance="apple_music--test",
-                        )
-                    },
-                )
-            ]
-        ),
-        provider_mappings={
-            ProviderMapping(
-                item_id="999",
-                provider_domain="apple_music",
-                provider_instance="apple_music--test",
-            )
-        },
+    mock_track = _make_test_track(
+        track_id="999",
+        track_name="Different Song",  # Wrong name
+        artist_id="456",
+        artist_name="Test Artist",
     )
 
     search_results = MagicMock()
@@ -225,9 +240,7 @@ async def test_search_replacement_no_match_wrong_track_name() -> None:
 @pytest.mark.asyncio
 async def test_search_replacement_no_match_wrong_artist() -> None:
     """Search replacement returns None when artist name doesn't match."""
-    provider = MagicMock()
-    provider.domain = "apple_music"
-    provider.instance_id = "apple_music--test"
+    provider = _make_test_provider()
 
     library_item = {
         "id": "i.123",
@@ -237,33 +250,11 @@ async def test_search_replacement_no_match_wrong_artist() -> None:
         },
     }
 
-    mock_track = Track(
-        provider="apple_music",
-        item_id="999",
-        name="Test Track",
-        artists=UniqueList(
-            [
-                Artist(
-                    provider="apple_music",
-                    item_id="456",
-                    name="Different Artist",
-                    provider_mappings={
-                        ProviderMapping(
-                            item_id="456",
-                            provider_domain="apple_music",
-                            provider_instance="apple_music--test",
-                        )
-                    },
-                )
-            ]
-        ),
-        provider_mappings={
-            ProviderMapping(
-                item_id="999",
-                provider_domain="apple_music",
-                provider_instance="apple_music--test",
-            )
-        },
+    mock_track = _make_test_track(
+        track_id="999",
+        track_name="Test Track",
+        artist_id="456",
+        artist_name="Different Artist",  # Wrong artist
     )
 
     search_results = MagicMock()
@@ -280,9 +271,7 @@ async def test_search_replacement_no_match_wrong_artist() -> None:
 @pytest.mark.asyncio
 async def test_search_replacement_album_mismatch_skipped() -> None:
     """Search replacement skips tracks with mismatched album when album info available."""
-    provider = MagicMock()
-    provider.domain = "apple_music"
-    provider.instance_id = "apple_music--test"
+    provider = _make_test_provider()
 
     library_item = {
         "id": "i.123",
@@ -293,45 +282,13 @@ async def test_search_replacement_album_mismatch_skipped() -> None:
         },
     }
 
-    mock_track = Track(
-        provider="apple_music",
-        item_id="999",
-        name="Test Track",
-        artists=UniqueList(
-            [
-                Artist(
-                    provider="apple_music",
-                    item_id="456",
-                    name="Test Artist",
-                    provider_mappings={
-                        ProviderMapping(
-                            item_id="456",
-                            provider_domain="apple_music",
-                            provider_instance="apple_music--test",
-                        )
-                    },
-                )
-            ]
-        ),
-        album=Album(
-            provider="apple_music",
-            item_id="789",
-            name="Different Album",  # Wrong album
-            provider_mappings={
-                ProviderMapping(
-                    item_id="789",
-                    provider_domain="apple_music",
-                    provider_instance="apple_music--test",
-                )
-            },
-        ),
-        provider_mappings={
-            ProviderMapping(
-                item_id="999",
-                provider_domain="apple_music",
-                provider_instance="apple_music--test",
-            )
-        },
+    mock_track = _make_test_track(
+        track_id="999",
+        track_name="Test Track",
+        artist_id="456",
+        artist_name="Test Artist",
+        album_id="789",
+        album_name="Different Album",  # Wrong album
     )
 
     search_results = MagicMock()
@@ -348,9 +305,7 @@ async def test_search_replacement_album_mismatch_skipped() -> None:
 @pytest.mark.asyncio
 async def test_search_replacement_no_results() -> None:
     """Search replacement returns None when search yields no results."""
-    provider = MagicMock()
-    provider.domain = "apple_music"
-    provider.instance_id = "apple_music--test"
+    provider = _make_test_provider()
 
     library_item = {
         "id": "i.123",
@@ -374,9 +329,7 @@ async def test_search_replacement_no_results() -> None:
 @pytest.mark.asyncio
 async def test_search_replacement_handles_exceptions() -> None:
     """Search replacement returns None and logs when search raises exception."""
-    provider = MagicMock()
-    provider.domain = "apple_music"
-    provider.instance_id = "apple_music--test"
+    provider = _make_test_provider()
 
     library_item = {
         "id": "i.123",
@@ -397,9 +350,7 @@ async def test_search_replacement_handles_exceptions() -> None:
 @pytest.mark.asyncio
 async def test_search_replacement_missing_metadata() -> None:
     """Search replacement returns None when library item lacks required metadata."""
-    provider = MagicMock()
-    provider.domain = "apple_music"
-    provider.instance_id = "apple_music--test"
+    provider = _make_test_provider()
 
     # Missing track name
     library_item = {
