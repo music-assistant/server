@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
@@ -16,7 +16,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.controllers.cache import use_cache
 
-from .helpers.utils import is_catalog_id
+from .helpers.utils import is_catalog_id, is_library_id
 from .parsers import (
     parse_album,
     parse_artist,
@@ -70,21 +70,36 @@ class AppleMusicMediaManager:
             endpoint, term=search_query, types=searchtype, limit=limit
         )
         if "artists" in response["results"]:
-            searchresult.artists += [
-                parse_artist(self.provider, item) for item in response["results"]["artists"]["data"]
+            searchresult.artists = [
+                *searchresult.artists,
+                *(
+                    parse_artist(self.provider, item)
+                    for item in response["results"]["artists"]["data"]
+                ),
             ]
         if "albums" in response["results"]:
-            searchresult.albums += [
-                parse_album(self.provider, item) for item in response["results"]["albums"]["data"]
+            searchresult.albums = [
+                *searchresult.albums,
+                *(
+                    cast("Album", parse_album(self.provider, item))
+                    for item in response["results"]["albums"]["data"]
+                ),
             ]
         if "songs" in response["results"]:
-            searchresult.tracks += [
-                parse_track(self.provider, item) for item in response["results"]["songs"]["data"]
+            searchresult.tracks = [
+                *searchresult.tracks,
+                *(
+                    parse_track(self.provider, item)
+                    for item in response["results"]["songs"]["data"]
+                ),
             ]
         if "playlists" in response["results"]:
-            searchresult.playlists += [
-                parse_playlist(self.provider, item)
-                for item in response["results"]["playlists"]["data"]
+            searchresult.playlists = [
+                *searchresult.playlists,
+                *(
+                    parse_playlist(self.provider, item)
+                    for item in response["results"]["playlists"]["data"]
+                ),
             ]
         return searchresult
 
@@ -93,16 +108,20 @@ class AppleMusicMediaManager:
         """Get full artist details by id."""
         endpoint = f"catalog/{self.provider._storefront}/artists/{prov_artist_id}"
         response = await self.api.get_data(endpoint, extend="editorialNotes")
-        return parse_artist(self.provider, response["data"][0])
+        return cast("Artist", parse_artist(self.provider, response["data"][0]))
 
     @use_cache()
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
-        endpoint = f"catalog/{self.provider._storefront}/albums/{prov_album_id}"
-        response = await self.api.get_data(endpoint, include="artists")
+        if is_library_id(prov_album_id):
+            endpoint = f"me/library/albums/{prov_album_id}"
+            response = await self.api.get_data(endpoint, include="catalog,artists")
+        else:
+            endpoint = f"catalog/{self.provider._storefront}/albums/{prov_album_id}"
+            response = await self.api.get_data(endpoint, include="artists")
         rating_response = await self.api.get_ratings([prov_album_id], MediaType.ALBUM)
         is_favourite = rating_response.get(prov_album_id)
-        return parse_album(self.provider, response["data"][0], is_favourite)
+        return cast("Album", parse_album(self.provider, response["data"][0], is_favourite))
 
     @use_cache()
     async def get_track(self, prov_track_id: str) -> Track:
@@ -113,13 +132,28 @@ class AppleMusicMediaManager:
         is_favourite = rating_response.get(prov_track_id)
         return parse_track(self.provider, response["data"][0], is_favourite)
 
-    async def get_playlist(self, prov_playlist_id: str, is_favourite: bool = False) -> Playlist:
+    async def get_playlist(
+        self,
+        prov_playlist_id: str,
+        is_favourite: bool = False,
+        can_edit_hint: bool | None = None,
+        library_id_override: str | None = None,
+    ) -> Playlist:
         """Get full playlist details by id."""
-        return await self._get_regular_playlist(prov_playlist_id, is_favourite)
+        return await self._get_regular_playlist(
+            prov_playlist_id,
+            is_favourite,
+            can_edit_hint=can_edit_hint,
+            library_id_override=library_id_override,
+        )
 
     @use_cache()
     async def _get_regular_playlist(
-        self, prov_playlist_id: str, is_favourite: bool = False
+        self,
+        prov_playlist_id: str,
+        is_favourite: bool = False,
+        can_edit_hint: bool | None = None,
+        library_id_override: str | None = None,
     ) -> Playlist:
         """Fetch and cache details for a regular (non-station) playlist."""
         if not is_catalog_id(prov_playlist_id):
@@ -127,13 +161,23 @@ class AppleMusicMediaManager:
         else:
             endpoint = f"catalog/{self.provider._storefront}/playlists/{prov_playlist_id}"
         response = await self.api.get_data(endpoint)
-        return parse_playlist(self.provider, response["data"][0], is_favourite)
+        return parse_playlist(
+            self.provider,
+            response["data"][0],
+            is_favourite,
+            can_edit_hint=can_edit_hint,
+            library_id_override=library_id_override,
+        )
 
     @use_cache(allow_expired_cache=True)
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
-        endpoint = f"catalog/{self.provider._storefront}/albums/{prov_album_id}/tracks"
-        response = await self.api.get_data(endpoint, include="artists")
+        if is_library_id(prov_album_id):
+            endpoint = f"me/library/albums/{prov_album_id}/tracks"
+            response = await self.api.get_data(endpoint, include="catalog,artists")
+        else:
+            endpoint = f"catalog/{self.provider._storefront}/albums/{prov_album_id}/tracks"
+            response = await self.api.get_data(endpoint, include="artists")
         album = await self.get_album(prov_album_id)
         track_ids = [track_obj["id"] for track_obj in response["data"] if "id" in track_obj]
         rating_response = await self.api.get_ratings(track_ids, MediaType.TRACK)
@@ -163,7 +207,7 @@ class AppleMusicMediaManager:
             endpoint = f"catalog/{self.provider._storefront}/playlists/{prov_playlist_id}/tracks"
         else:
             endpoint = f"me/library/playlists/{prov_playlist_id}/tracks"
-        result = []
+        result: list[Track] = []
         page_size = 100
         offset = page * page_size
         response = await self.api.get_data(
@@ -234,7 +278,7 @@ class AppleMusicMediaManager:
                 continue
             parsed = parse_album(self.provider, album, rating_response.get(album["id"]))
             if parsed:
-                albums.append(parsed)
+                albums.append(cast("Album", parsed))
         return albums
 
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)

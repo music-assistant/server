@@ -1,4 +1,4 @@
-"""Samsung Wireless Audio (WAM) Player provider for Music Assistant."""
+"""Samsung WAM player provider for Music Assistant."""
 
 from __future__ import annotations
 

@@ -2,7 +2,7 @@
 
 from music_assistant_models.enums import ProviderFeature
 
-from music_assistant.helpers.app_vars import app_var
+from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,

@@ -8,11 +8,12 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
+from typing import Final
 
 from liblistenbrainz import Listen, ListenBrainz
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
-from music_assistant_models.enums import ConfigEntryType, EventType, ProviderFeature
+from music_assistant_models.enums import ConfigEntryType, EventType, MediaType, ProviderFeature
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 from music_assistant_models.provider import ProviderManifest
@@ -29,6 +30,7 @@ LISTENBRAINZ_API_URL = "https://api.listenbrainz.org"
 SUPPORTED_FEATURES: set[ProviderFeature] = (
     set()
 )  # we don't have any special supported features (yet)
+SUPPORTED_SCROBBLE_MEDIA_TYPES: Final[frozenset[MediaType]] = frozenset({MediaType.TRACK})
 
 
 async def setup(
@@ -92,7 +94,11 @@ class ListenBrainzEventHandler(ScrobblerHelper):
         self, client: ListenBrainz, logger: logging.Logger, config: ProviderConfig
     ) -> None:
         """Initialize."""
-        super().__init__(logger, ScrobblerConfig.create_from_config(config))
+        super().__init__(
+            logger,
+            ScrobblerConfig.create_from_config(config),
+            SUPPORTED_SCROBBLE_MEDIA_TYPES,
+        )
         self._client = client
 
     def _get_artist_name(self, report: MediaItemPlaybackProgressReport) -> str:

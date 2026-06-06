@@ -23,7 +23,7 @@ from music_assistant_models.enums import (
     SourceControl,
     StreamType,
 )
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import AudioError, MediaNotFoundError
 from music_assistant_models.media_items import (
     AudioFormat,
     AudioSource,
@@ -46,7 +46,6 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 CONF_MASS_PLAYER_ID = "mass_player_id"
-CONF_ALLOW_PLAYER_SWITCH = "allow_player_switch"
 
 
 PLAYER_ID_AUTO = "__auto__"
@@ -90,12 +89,6 @@ async def get_config_entries(
             ],
             required=True,
         ),
-        ConfigEntry(
-            key=CONF_ALLOW_PLAYER_SWITCH,
-            type=ConfigEntryType.BOOLEAN,
-            label="Allow manual player switching",
-            default_value=True,
-        ),
     )
 
 
@@ -108,7 +101,6 @@ class AriaCastBridge(PluginProvider):
         """Initialize AriaCast Receiver."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         self._default_player_id = str(config.get_value(CONF_MASS_PLAYER_ID))
-        self._allow_player_switch = bool(config.get_value(CONF_ALLOW_PLAYER_SWITCH))
 
         # Process
         self._binary_process: AsyncProcess | None = None
@@ -170,6 +162,8 @@ class AriaCastBridge(PluginProvider):
             can_next_previous=True,
             exclusive=True,
             allow_external_trigger=True,
+            # passive: only flows when an external Cast client is connected
+            can_initiate=False,
         )
 
     async def handle_async_init(self) -> None:
@@ -224,6 +218,11 @@ class AriaCastBridge(PluginProvider):
         """
         if source_id != AUDIO_SOURCE_ID:
             raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
+        if not self._binary_is_playing:
+            raise AudioError(
+                "AriaCast has no active Cast client — start playback from your "
+                "Cast-capable device first"
+            )
         return StreamDetails(
             provider=self.instance_id,
             item_id=source_id,
@@ -327,25 +326,6 @@ class AriaCastBridge(PluginProvider):
         """Handle manual selection from the MA UI."""
         if source_id != AUDIO_SOURCE_ID:
             return
-        # Check if manual player switching is allowed
-        if not self._allow_player_switch:
-            current_target = self._get_target_player_id()
-            if player_id != current_target and current_target:
-                self.logger.debug(
-                    "Manual player switching disabled, redirecting selection from %s to %s",
-                    player_id,
-                    current_target,
-                )
-                await self.mass.player_queues.play_media(
-                    current_target, str(self._audio_source.uri)
-                )
-                # Raising aborts the original request so it cannot continue
-                # into get_stream_details and stream to the disallowed player.
-                # The redirect above starts the stream on the configured target
-                # via a separate request.
-                raise RuntimeError(
-                    f"Player switching disabled; source must remain on {current_target}"
-                )
         # Claim ownership for this queue. The lock lives here (not in
         # get_stream_details) so preload paths can fetch streamdetails without
         # accidentally blocking a subsequent cross-queue handoff at the actual
@@ -357,7 +337,9 @@ class AriaCastBridge(PluginProvider):
         # tell whether it is the live teardown or a stale callback from a
         # superseded same-queue request.
         self._active_session_id = stream_session_id
-        self._active_player_id = player_id
+        # cache the queue_id (== MA player), not the protocol-level player_id —
+        # protocol bridges (e.g. Sendspin spb_…) can tear down between streams
+        self._active_player_id = queue_id
 
     async def on_source_unselected(
         self, source_id: str, queue_id: str, stream_session_id: str

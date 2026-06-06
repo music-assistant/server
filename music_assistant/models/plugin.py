@@ -5,13 +5,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.media_items import SearchResults
 
 from .provider import Provider
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Sequence
 
-    from music_assistant_models.enums import SourceControl
+    from music_assistant_models.enums import MediaType, SourceControl
     from music_assistant_models.media_items import (
         AudioSource,
         BrowseFolder,
@@ -237,6 +238,25 @@ class PluginProvider(Provider):
         :return: The AI response as a string.
         """
         raise NotImplementedError
+
+    async def search(
+        self,
+        search_query: str,
+        media_types: list[MediaType],
+        limit: int = 5,
+    ) -> SearchResults:
+        """
+        Perform a search on this plugin.
+
+        Will only be called if ProviderFeature.SEARCH is declared.
+
+        :param search_query: Search query.
+        :param media_types: A list of media_types to include.
+        :param limit: Number of items to return in the search (per type).
+        """
+        if ProviderFeature.SEARCH in self.supported_features:
+            raise NotImplementedError
+        return SearchResults()
 
     async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
         """

@@ -3,7 +3,7 @@
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import PlayerFeature
 
-from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE, create_sample_rates_config_entry
+from music_assistant.constants import CONF_ENTRY_HTTP_PROFILE_DEFAULT_3
 
 # --- Global Provider Settings ---
 
@@ -25,13 +25,6 @@ PLAYER_FEATURES_BASE = {
 
 # --- Configuration Entries ---
 
-CONF_ENTRY_SAMPLE_RATES_WAM = create_sample_rates_config_entry(
-    supported_sample_rates=[44100, 48000, 88200, 96000, 176400, 192000],
-    supported_bit_depths=[16, 24],
-    safe_max_sample_rate=192000,
-    safe_max_bit_depth=24,
-)
-
 CONF_ENTRY_HTTP_PROFILE_WAM = ConfigEntry.from_dict(
-    {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "default_value": "forced_content_length"}
+    {**CONF_ENTRY_HTTP_PROFILE_DEFAULT_3.to_dict(), "hidden": True}
 )

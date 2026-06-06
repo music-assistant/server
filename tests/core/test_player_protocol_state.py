@@ -13,7 +13,6 @@ import pytest
 from music_assistant_models.enums import PlaybackState, PlayerType
 
 from music_assistant.controllers.players import PlayerController
-from music_assistant.helpers.throttle_retry import Throttler
 from tests.common import MockPlayer, MockProvider
 
 
@@ -68,10 +67,6 @@ class TestFinalPlaybackStateWithActiveProtocol:
         player.set_active_output_protocol("ap_1")
 
         controller._players = {"player_1": player, "ap_1": protocol_player}
-        controller._player_throttlers = {
-            "player_1": Throttler(1, 0.05),
-            "ap_1": Throttler(1, 0.05),
-        }
 
         protocol_player.update_state(signal_event=False)
         player.update_state(signal_event=False)
@@ -103,10 +98,6 @@ class TestFinalPlaybackStateWithActiveProtocol:
         player.set_active_output_protocol("ap_1")
 
         controller._players = {"player_1": player, "ap_1": protocol_player}
-        controller._player_throttlers = {
-            "player_1": Throttler(1, 0.05),
-            "ap_1": Throttler(1, 0.05),
-        }
 
         protocol_player.update_state(signal_event=False)
         player.update_state(signal_event=False)
@@ -125,7 +116,6 @@ class TestFinalPlaybackStateWithActiveProtocol:
         player._attr_elapsed_time_last_updated = time.time()
 
         controller._players = {"player_1": player}
-        controller._player_throttlers = {"player_1": Throttler(1, 0.05)}
 
         player.update_state(signal_event=False)
 

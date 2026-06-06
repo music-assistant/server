@@ -9,6 +9,7 @@ from typing import Any, ParamSpec, TypeVar, cast
 from music_assistant_models.errors import (
     LoginFailed,
     ProviderUnavailableError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
 )
 from zvuk_music import Artist as ZvukArtist
@@ -62,9 +63,7 @@ def handle_zvuk_errors(
             except NetworkError as err:
                 msg = str(err).lower()
                 if "429" in msg or "too many requests" in msg or "rate limit" in msg:
-                    raise ResourceTemporarilyUnavailable(
-                        "Zvuk Music rate limit", backoff_time=60
-                    ) from err
+                    raise RateLimited("Zvuk Music rate limit", backoff_time=60) from err
                 LOGGER.error("Zvuk API error: %s", err)
                 raise ResourceTemporarilyUnavailable("Zvuk Music request failed") from err
             except TimedOutError as err:

@@ -13,7 +13,11 @@ from typing import TYPE_CHECKING, Any, cast
 from mashumaro import DataClassDictMixin
 from mashumaro.exceptions import MissingField
 from music_assistant_models.enums import ExternalID, LinkType, ProviderFeature
-from music_assistant_models.errors import InvalidDataError, ResourceTemporarilyUnavailable
+from music_assistant_models.errors import (
+    InvalidDataError,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import MediaItemLink, MediaItemMetadata
 
 from music_assistant.controllers.cache import use_cache
@@ -357,6 +361,31 @@ class MusicbrainzProvider(MetadataProvider):
         msg = "Invalid MusicBrainz Artist ID provided"
         raise InvalidDataError(msg)
 
+    async def resolve_artists_from_mbids(
+        self, mbids: tuple[str, ...]
+    ) -> list[tuple[str, str, str] | None]:
+        """
+        Look up canonical artist names for a sequence of MusicBrainz artist IDs.
+
+        Transient failures (MusicBrainz unreachable, retries exhausted) are left
+        to propagate so the caller can retry later rather than persist degraded
+        data; only a genuinely unresolvable MBID yields ``None``.
+
+        :param mbids: MusicBrainz artist IDs to look up.
+        :return: One entry per input MBID, in the same order, as a
+            ``(name, mbid, sort_name)`` tuple. ``None`` at a position means
+            that MBID could not be resolved.
+        """
+        results: list[tuple[str, str, str] | None] = []
+        for mbid in mbids:
+            try:
+                artist = await self.get_artist_details(mbid)
+                results.append((artist.name, mbid, artist.sort_name))
+            except InvalidDataError as err:
+                self.logger.warning("Failed to lookup MusicBrainz artist %s: %s", mbid, err)
+                results.append(None)
+        return results
+
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Surface MusicBrainz URL relations (Wikipedia, official site, socials, ...)."""
         if not artist.mbid:
@@ -664,7 +693,7 @@ class MusicbrainzProvider(MetadataProvider):
             # handle rate limiter
             if response.status == 429:
                 backoff_time = int(response.headers.get("Retry-After", 0))
-                raise ResourceTemporarilyUnavailable("Rate Limiter", backoff_time=backoff_time)
+                raise RateLimited("Rate Limiter", backoff_time=backoff_time)
             # handle temporary server error
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)

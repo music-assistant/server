@@ -24,6 +24,7 @@
             dict({
               'path': 'https://resources.tidal.com/images/1234/5678/90ab/cdef/750x750.jpg',
               'provider': 'tidal_instance',
+              'proxy_id': None,
               'remotely_accessible': True,
               'type': 'thumb',
             }),
@@ -95,6 +96,7 @@
         dict({
           'path': 'https://resources.tidal.com/images/abcd/ef01/2345/6789/750x750.jpg',
           'provider': 'tidal_instance',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -166,6 +168,7 @@
         dict({
           'path': 'https://resources.tidal.com/images/1234/5678/90ab/cdef/750x750.jpg',
           'provider': 'tidal_instance',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -237,6 +240,7 @@
         dict({
           'path': 'http://example.com/mix-medium.jpg',
           'provider': 'tidal_instance',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -312,6 +316,7 @@
         dict({
           'path': 'https://resources.tidal.com/images/playlist/square/image/id/750x750.jpg',
           'provider': 'tidal_instance',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -404,6 +409,7 @@
             dict({
               'path': 'https://resources.tidal.com/images/1234/5678/90ab/cdef/750x750.jpg',
               'provider': 'tidal_instance',
+              'proxy_id': None,
               'remotely_accessible': True,
               'type': 'thumb',
             }),
@@ -478,6 +484,7 @@
         dict({
           'path': 'https://resources.tidal.com/images/abcd/ef01/2345/6789/750x750.jpg',
           'provider': 'tidal_instance',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),

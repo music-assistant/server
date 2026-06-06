@@ -7,15 +7,6 @@ from typing import TYPE_CHECKING
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
-from music_assistant.constants import (
-    CONF_IP_ADDRESS,
-    CONF_PASSWORD,
-    CONF_PORT,
-    CONF_SSL_FINGERPRINT,
-    CONF_USE_SSL,
-    CONF_VERIFY_SSL,
-)
-
 from .provider import FullyKioskProvider
 
 if TYPE_CHECKING:
@@ -25,9 +16,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
-SUPPORTED_FEATURES: set[ProviderFeature] = (
-    set()
-)  # we don't have any special supported features (yet)
+SUPPORTED_FEATURES: set[ProviderFeature] = {ProviderFeature.REMOVE_PLAYER}
 
 
 async def setup(
@@ -53,49 +42,18 @@ async def get_config_entries(
     # ruff: noqa: ARG001
     return (
         ConfigEntry(
-            key=CONF_IP_ADDRESS,
+            key="manual_discovery_ip_addresses",
             type=ConfigEntryType.STRING,
-            label="IP-Address (or hostname) of the device running Fully Kiosk/app.",
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            label="Password to use to connect to the Fully Kiosk API.",
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PORT,
-            type=ConfigEntryType.STRING,
-            default_value="2323",
-            label="Port to use to connect to the Fully Kiosk API (default is 2323).",
-            required=True,
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_USE_SSL,
-            type=ConfigEntryType.BOOLEAN,
-            label="Use HTTPS when connecting to the Fully Kiosk API.",
-            default_value=False,
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_VERIFY_SSL,
-            type=ConfigEntryType.BOOLEAN,
-            label="Verify HTTPS certificates (recommended).",
-            default_value=True,
-            description="Disabling verification trusts any certificate (no validation).",
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_SSL_FINGERPRINT,
-            type=ConfigEntryType.STRING,
-            label="TLS certificate fingerprint",
+            label="Fully Kiosk devices",
             description=(
-                "Optional SHA-256 hex fingerprint. When provided it must "
-                "match the device certificate and overrides the verify setting."
+                "List of Fully Kiosk devices to connect to. "
+                "Enter one device per line as host or host:port. "
+                "Port defaults to 2323 if not specified. "
+                "After saving, configure the password (and optional SSL options) "
+                "for each device on the individual player's settings page."
             ),
-            required=False,
-            advanced=True,
+            default_value=[],
+            required=True,
+            multi_value=True,
         ),
     )
