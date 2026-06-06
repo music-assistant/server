@@ -38,7 +38,8 @@ from music_assistant.constants import (
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
     DEFAULT_GENRE_MAPPING,
-    GENRE_ICONS_DIR,
+    GENRE_ICONS_DIR_NAME,
+    RESOURCES_DIR,
 )
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
 from music_assistant.helpers.compare import create_safe_string
@@ -196,12 +197,12 @@ class GenreController(MediaControllerBase[Genre]):
         """
         if not translation_key:
             return None
-        icon_path = GENRE_ICONS_DIR / f"{translation_key}.svg"
+        icon_path = RESOURCES_DIR.joinpath(GENRE_ICONS_DIR_NAME, f"{translation_key}.svg")
         if not icon_path.is_file():
             return None
         image = MediaItemImage(
             type=ImageType.THUMB,
-            path=str(icon_path),
+            path=f"{GENRE_ICONS_DIR_NAME}/{translation_key}.svg",
             provider="builtin",
         )
         return MediaItemMetadata(images=UniqueList([image]))

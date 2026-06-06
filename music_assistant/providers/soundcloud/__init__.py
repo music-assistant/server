@@ -499,8 +499,9 @@ class SoundcloudMusicProvider(MusicProvider):
         )
         if artist_obj.get("description"):
             artist.metadata.description = artist_obj["description"]
-        if artist_obj.get("avatar_url"):
-            img_url = self._transform_artwork_url(artist_obj["avatar_url"])
+        # skip default_avatar placeholder; it has no high-res variant and 404s after transform
+        if (avatar_url := artist_obj.get("avatar_url")) and "default_avatar" not in avatar_url:
+            img_url = self._transform_artwork_url(avatar_url)
             artist.metadata.images = UniqueList(
                 [
                     MediaItemImage(

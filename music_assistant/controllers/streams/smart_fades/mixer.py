@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
+from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.controllers.streams.smart_fades.fades import (
     SmartCrossFade,
     SmartFade,
@@ -90,12 +91,14 @@ class SmartFadesMixer:
         ) = await self.streams.audio_analysis.get_audio_analysis(
             fade_out_streamdetails.item_id,
             fade_out_streamdetails.provider,
+            priority=(SMART_FADES_ANALYSIS_DOMAIN,),
         )
         fade_in_analysis: (
             AudioAnalysisData | None
         ) = await self.streams.audio_analysis.get_audio_analysis(
             fade_in_streamdetails.item_id,
             fade_in_streamdetails.provider,
+            priority=(SMART_FADES_ANALYSIS_DOMAIN,),
         )
         if not (
             fade_out_analysis

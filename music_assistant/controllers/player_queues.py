@@ -3076,6 +3076,15 @@ class PlayerQueuesController(CoreController):
                 )
             if dynamic_playlist is not None:
                 try:
+                    # Restore the queue owner's user context so provider filters and
+                    # per-user logic (e.g. smart playlist dedup) are respected during
+                    # this background refill, mirroring _fill_radio_tracks.
+                    playback_user = (
+                        await self.mass.webserver.auth.get_user(queue.userid)
+                        if queue.userid
+                        else None
+                    )
+                    set_current_user(playback_user)
                     dynamic_tracks = await self.get_playlist_tracks(
                         dynamic_playlist, start_item=None
                     )

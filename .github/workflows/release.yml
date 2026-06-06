@@ -34,13 +34,11 @@ on:
         required: false
         type: string
     secrets:
-      PYPI_TOKEN:
-        required: true
       PRIVILEGED_GITHUB_TOKEN:
         required: true
 
 env:
-  BASE_IMAGE_VERSION_STABLE: "1.4.13"
+  BASE_IMAGE_VERSION_STABLE: "1.5.3"
   BASE_IMAGE_VERSION_BETA: "1.5.3"
   BASE_IMAGE_VERSION_NIGHTLY: "1.5.3"
 
@@ -319,23 +317,6 @@ jobs:
         run: |
           echo "✅ Created release ${{ inputs.version }}"
           echo "Release URL: ${{ steps.create_release.outputs.url }}"
-
-  pypi-publish:
-    name: Publish release to PyPI (stable releases only)
-    runs-on: ubuntu-latest
-    needs: create-release
-    if: inputs.channel == 'stable'
-    permissions:
-      id-token: write
-    steps:
-      - name: Download distributions
-        uses: actions/download-artifact@v8
-        with:
-          name: release-dists
-          path: dist/
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
 
   build-and-push-container-image:
     name: Build and push Music Assistant Server container to ghcr.io

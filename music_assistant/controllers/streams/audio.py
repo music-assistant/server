@@ -67,6 +67,7 @@ from music_assistant.constants import (
     MASS_LOGGER_NAME,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.streams.audio_analysis import LOUDNESS_ANALYSIS_DOMAIN
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.constants import (
     CACHE_CATEGORY_RESOLVED_RADIO_URL,
@@ -1487,6 +1488,8 @@ class StreamsAudio:
                 streamdetails.item_id,
                 streamdetails.provider,
                 media_type=streamdetails.media_type,
+                # use the authoritative EBU R128 value, not another provider's loudness proxy
+                priority=(LOUDNESS_ANALYSIS_DOMAIN,),
             ):
                 if analysis.loudness_integrated is not None:
                     streamdetails.loudness = round(analysis.loudness_integrated, 2)

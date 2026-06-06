@@ -8,8 +8,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
+from mcp.shared.exceptions import McpError
+from mcp.types import INTERNAL_ERROR, INVALID_REQUEST, ErrorData
 
 from music_assistant.providers.fastmcp_server.tools import build_media_server, build_queue_server
+from music_assistant.providers.fastmcp_server.tools._common import confirm_or_raise
 
 
 def _server(mass: MagicMock, *, require_confirmation: bool) -> FastMCP:
@@ -183,3 +186,23 @@ async def test_remove_from_library_raises_when_not_in_library(
                 "media_remove_from_library", {"uri": "yandex_music://track/prov-abc"}
             )
     mock_mass.music.remove_item_from_library.assert_not_awaited()
+
+
+async def test_confirm_passes_through_when_elicitation_unsupported() -> None:
+    """McpError(INVALID_REQUEST) = no capability → pass through (no raise)."""
+    ctx = MagicMock()
+    ctx.elicit = AsyncMock(
+        side_effect=McpError(ErrorData(code=INVALID_REQUEST, message="Elicitation not supported"))
+    )
+    # Must NOT raise — pass-through to permission flag.
+    await confirm_or_raise(ctx, "confirm?", enabled=True)
+
+
+async def test_confirm_fails_closed_on_unexpected_mcp_error() -> None:
+    """A non-capability McpError must re-raise (fail closed), not bypass confirmation."""
+    ctx = MagicMock()
+    ctx.elicit = AsyncMock(
+        side_effect=McpError(ErrorData(code=INTERNAL_ERROR, message="handler blew up"))
+    )
+    with pytest.raises(McpError):
+        await confirm_or_raise(ctx, "confirm?", enabled=True)

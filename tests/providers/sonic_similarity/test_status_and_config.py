@@ -32,8 +32,8 @@ class TestCollectStatusText:
     """Tests for the _collect_status_text helper used by the plugin's status rows."""
 
     NOT_LOADED = (
-        "18-dim engine: not yet loaded",
-        "CLAP engine: disabled",
+        "Traits engine: not yet loaded",
+        "Character engine: disabled",
         "Text encoder: disabled",
     )
 
@@ -80,7 +80,7 @@ class TestCollectStatusText:
 
         _eighteen, clap, _text = await _collect_status_text(mock_mass, "iid")
 
-        assert clap == "CLAP engine: disabled"
+        assert clap == "Character engine: disabled"
 
     @pytest.mark.asyncio
     async def test_clap_engine_status_reports_size_when_enabled(
@@ -219,7 +219,7 @@ class TestHandleAsyncInit:
         plugin = _build_plugin_for_init(mock_mass)
         plugin._rebuild_search_index = AsyncMock(side_effect=RuntimeError("boom"))
 
-        with pytest.raises(SetupFailedError, match="18-dim search index"):
+        with pytest.raises(SetupFailedError, match="Traits search index"):
             await plugin.handle_async_init()
 
     @pytest.mark.asyncio
@@ -279,37 +279,37 @@ class TestSafeRebuild:
         async def _boom() -> None:
             raise RuntimeError("disk full")
 
-        await plugin._safe_rebuild("18-dim", _boom)
+        await plugin._safe_rebuild("Traits", _boom)
 
-        assert plugin._last_rebuild_error == {"18-dim": "disk full"}
+        assert plugin._last_rebuild_error == {"Traits": "disk full"}
 
     @pytest.mark.asyncio
     async def test_success_clears_prior_error(self, mock_mass: MagicMock) -> None:
         """A subsequent successful rebuild removes the stale error entry."""
         plugin = _build_plugin_for_init(mock_mass)
-        plugin._last_rebuild_error["18-dim"] = "earlier failure"
+        plugin._last_rebuild_error["Traits"] = "earlier failure"
 
         async def _ok() -> None:
             return None
 
-        await plugin._safe_rebuild("18-dim", _ok)
+        await plugin._safe_rebuild("Traits", _ok)
 
-        assert "18-dim" not in plugin._last_rebuild_error
+        assert "Traits" not in plugin._last_rebuild_error
 
     @pytest.mark.asyncio
     async def test_errors_are_per_label(self, mock_mass: MagicMock) -> None:
         """A CLAP failure does not clobber an unrelated 18-dim error entry."""
         plugin = _build_plugin_for_init(mock_mass)
-        plugin._last_rebuild_error["18-dim"] = "existing 18-dim error"
+        plugin._last_rebuild_error["Traits"] = "existing 18-dim error"
 
         async def _boom() -> None:
             raise RuntimeError("clap broke")
 
-        await plugin._safe_rebuild("CLAP", _boom)
+        await plugin._safe_rebuild("Character", _boom)
 
         assert plugin._last_rebuild_error == {
-            "18-dim": "existing 18-dim error",
-            "CLAP": "clap broke",
+            "Traits": "existing 18-dim error",
+            "Character": "clap broke",
         }
 
 
@@ -320,7 +320,7 @@ class TestStatusTextRebuildErrors:
     async def test_18dim_error_appears_on_18dim_line(self, mock_mass: MagicMock) -> None:
         """A 18-dim rebuild error is appended to the 18-dim status line."""
         plugin = _build_plugin_for_init(mock_mass)
-        plugin._last_rebuild_error["18-dim"] = "disk full"
+        plugin._last_rebuild_error["Traits"] = "disk full"
         mock_mass.get_provider.return_value = plugin
 
         eighteen, _clap, _text = await _collect_status_text(mock_mass, "iid")
@@ -333,7 +333,7 @@ class TestStatusTextRebuildErrors:
         plugin = _build_plugin_for_init(mock_mass)
         plugin._clap_index = MagicMock()
         plugin._clap_index.__len__ = MagicMock(return_value=42)
-        plugin._last_rebuild_error["CLAP"] = "usearch native crash"
+        plugin._last_rebuild_error["Character"] = "usearch native crash"
         mock_mass.get_provider.return_value = plugin
 
         _eighteen, clap, _text = await _collect_status_text(mock_mass, "iid")
