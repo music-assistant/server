@@ -148,10 +148,11 @@ class DiscoveryController(CoreController):
     async def async_find_mdns_service(
         self, service_type: str, name_filter: str, timeout: float = 3.0
     ) -> AsyncServiceInfo | None:
-        """Find an mDNS service by partial name match, checking cache first then waiting.
+        """Find an mDNS service by name, checking cache first then waiting.
 
         :param service_type: The mDNS service type (e.g., "_raop._tcp.local.").
-        :param name_filter: Substring that must appear in the service name.
+        :param name_filter: The device display name to match; must equal the first DNS label
+            or the part after '@' in RAOP-style names (e.g. ``MAC@Name``).
         :param timeout: Maximum time to wait in seconds.
         """
         deadline = asyncio.get_event_loop().time() + timeout
@@ -166,9 +167,14 @@ class DiscoveryController(CoreController):
                 event.clear()
                 # Check cache for a matching entry
                 for mdns_name in set(self.aiozc.zeroconf.cache.cache):
+                    # Use exact label matching to avoid false positives when one device name
+                    # is a substring of another (e.g. "Kelder" matching "ATV Kelder")
                     if (
                         service_type_lower in mdns_name
-                        and name_filter_lower in mdns_name
+                        and (
+                            mdns_name.startswith(name_filter_lower + ".")
+                            or ("@" + name_filter_lower + ".") in mdns_name
+                        )
                         and mdns_name != service_type_lower
                     ):
                         info = AsyncServiceInfo(service_type, mdns_name)
