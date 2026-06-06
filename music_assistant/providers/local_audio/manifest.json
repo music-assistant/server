@@ -5,7 +5,7 @@
   "description": "Play audio through locally attached soundcards (USB DACs, built-in speakers, etc.).",
   "codeowners": ["@music-assistant", "@iVolt1"],
   "depends_on": "sendspin",
-  "requirements": ["sounddevice==0.5.5", "pulsectl; sys_platform == 'linux'"],
+  "requirements": ["sounddevice==0.5.5"],
   "documentation": "https://music-assistant.io/player-support/local-audio/",
   "builtin": true,
   "allow_disable": true,
