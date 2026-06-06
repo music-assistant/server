@@ -541,7 +541,7 @@ class YandexMusicStreamingManager:
         key_bytes: bytes,
         block_size: int,
         bytes_delivered: int,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Decrypt one HTTP response and yield plaintext chunks.
 
         Aligns the AES-CTR counter to the correct block for resumption.
@@ -640,7 +640,7 @@ class YandexMusicStreamingManager:
         response: Any,
         bytes_delivered: int,
         block_start: int,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Yield raw (unencrypted) chunks from one HTTP response.
 
         If the server ignored the Range header (200 instead of 206), skips the
@@ -738,7 +738,7 @@ class YandexMusicStreamingManager:
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Return the audio stream via windowed Range requests.
 
         Handles both raw (direct) and encraw (AES-CTR encrypted) transports.

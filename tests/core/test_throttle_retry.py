@@ -60,7 +60,7 @@ def provider() -> FakeProvider:
 
 
 @pytest.fixture
-def mock_sleep() -> Generator[AsyncMock, None, None]:
+def mock_sleep() -> Generator[AsyncMock]:
     """Patch asyncio.sleep to capture sleep times without actually sleeping."""
     with patch(
         "music_assistant.helpers.throttle_retry.asyncio.sleep", new_callable=AsyncMock

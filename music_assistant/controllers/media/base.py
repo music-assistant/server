@@ -321,7 +321,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         library_items_only: bool = True,
-    ) -> AsyncGenerator[ItemCls, None]:
+    ) -> AsyncGenerator[ItemCls]:
         """Iterate all in-database items."""
         limit: int = 500
         offset: int = 0
@@ -548,7 +548,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self,
         provider_instance_id_or_domain: str,
         provider_item_id: str | None = None,
-    ) -> AsyncGenerator[ItemCls, None]:
+    ) -> AsyncGenerator[ItemCls]:
         """Iterate all records from database for given provider."""
         limit: int = 500
         offset: int = 0

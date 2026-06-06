@@ -34,7 +34,7 @@ class AppleMusicLibraryManager:
         self.api = provider.api_client
         self.logger = provider.logger
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
         endpoint = "me/library/artists"
         for item in await self.api.get_all_items(
@@ -43,7 +43,7 @@ class AppleMusicLibraryManager:
             if item and item["id"]:
                 yield cast("Artist", parse_artist(self.provider, item))
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from the provider."""
         endpoint = "me/library/albums"
         album_items = await self.api.get_all_items(
@@ -74,7 +74,7 @@ class AppleMusicLibraryManager:
                 if album:
                     yield cast("Album", album)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from the provider."""
         # Enrich and yield in bounded windows so the full library is never held in memory at once.
         catalog_items: dict[str, dict[str, Any]] = {}
@@ -140,7 +140,7 @@ class AppleMusicLibraryManager:
             return parsed_track
         return detailed_track
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve playlists from the provider."""
         endpoint = "me/library/playlists"
         playlist_items = await self.api.get_all_items(endpoint)
@@ -226,7 +226,7 @@ class AppleMusicLibraryManager:
 
     async def _flush_catalog_tracks(
         self, library_items_by_catalog_id: dict[str, dict[str, Any]]
-    ) -> AsyncGenerator[Track, None]:
+    ) -> AsyncGenerator[Track]:
         """Enrich one window of catalog-backed library tracks with catalog detail and yield them."""
         if not library_items_by_catalog_id:
             return
@@ -258,7 +258,7 @@ class AppleMusicLibraryManager:
 
     async def _flush_library_only_tracks(
         self, library_only_items: list[dict[str, Any]]
-    ) -> AsyncGenerator[Track, None]:
+    ) -> AsyncGenerator[Track]:
         """Enrich one window of library-only tracks (no catalog id) and yield them."""
         if not library_only_items:
             return

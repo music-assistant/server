@@ -120,7 +120,7 @@ class ThrottlerManager:
         self.throttler = Throttler(rate_limit, period)
 
     @asynccontextmanager
-    async def acquire(self) -> AsyncGenerator[float, None]:
+    async def acquire(self) -> AsyncGenerator[float]:
         """Acquire a free slot from the Throttler, returns the throttled time."""
         if BYPASS_THROTTLER.get():
             yield 0
@@ -128,7 +128,7 @@ class ThrottlerManager:
             yield await self.throttler.acquire()
 
     @asynccontextmanager
-    async def bypass(self) -> AsyncGenerator[None, None]:
+    async def bypass(self) -> AsyncGenerator[None]:
         """Bypass the throttler."""
         try:
             token = BYPASS_THROTTLER.set(True)
