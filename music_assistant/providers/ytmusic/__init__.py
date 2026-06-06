@@ -290,7 +290,7 @@ class YoutubeMusicProvider(MusicProvider):
         parsed_results.tracks = tracks
         return parsed_results
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Youtube Music."""
         artists_obj = await get_library_artists(
             headers=self._headers, language=self.language, user=self._yt_user
@@ -298,7 +298,7 @@ class YoutubeMusicProvider(MusicProvider):
         for artist in artists_obj:
             yield self._parse_artist(artist)
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve all library albums from Youtube Music."""
         albums_obj = await get_library_albums(
             headers=self._headers, language=self.language, user=self._yt_user
@@ -306,7 +306,7 @@ class YoutubeMusicProvider(MusicProvider):
         for album in albums_obj:
             yield self._parse_album(album, album["browseId"])
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from the provider."""
         playlists_obj = await get_library_playlists(
             headers=self._headers, language=self.language, user=self._yt_user
@@ -317,7 +317,7 @@ class YoutubeMusicProvider(MusicProvider):
                 continue
             yield self._parse_playlist(playlist)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Youtube Music."""
         tracks_obj = await get_library_tracks(
             headers=self._headers, language=self.language, user=self._yt_user
@@ -331,7 +331,7 @@ class YoutubeMusicProvider(MusicProvider):
                 full_track = await self.get_track(track["videoId"])
                 yield full_track
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve the library podcasts from Youtube Music."""
         podcasts_obj = await get_library_podcasts(
             headers=self._headers, language=self.language, user=self._yt_user
@@ -502,9 +502,7 @@ class YoutubeMusicProvider(MusicProvider):
         podcast_obj = await get_podcast(prov_podcast_id, headers=self._headers)
         return self._parse_podcast(podcast_obj)
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get all episodes from a podcast."""
         podcast_obj = await get_podcast(prov_podcast_id, headers=self._headers)
         podcast_obj["podcastId"] = prov_podcast_id

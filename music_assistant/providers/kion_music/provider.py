@@ -2317,7 +2317,7 @@ class KionMusicProvider(MusicProvider):
 
     # Library methods
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from KION Music."""
         artists = await self.client.get_liked_artists()
         for artist in artists:
@@ -2326,7 +2326,7 @@ class KionMusicProvider(MusicProvider):
             except InvalidDataError as err:
                 self.logger.debug("Error parsing library artist: %s", err)
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from KION Music."""
         batch_size = TRACK_BATCH_SIZE
         albums = await self.client.get_liked_albums(batch_size=batch_size)
@@ -2336,7 +2336,7 @@ class KionMusicProvider(MusicProvider):
             except InvalidDataError as err:
                 self.logger.debug("Error parsing library album: %s", err)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from KION Music."""
         track_shorts = await self.client.get_liked_tracks()
         if not track_shorts:
@@ -2354,7 +2354,7 @@ class KionMusicProvider(MusicProvider):
                 except InvalidDataError as err:
                     self.logger.debug("Error parsing library track: %s", err)
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library playlists from KION Music.
 
         Includes virtual playlists (My Mix and Liked Tracks if enabled), user-created playlists,
@@ -2441,7 +2441,7 @@ class KionMusicProvider(MusicProvider):
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Return the audio stream for the provider item.
 
         Uses windowed Range-request streaming to prevent Kion CDN drops.

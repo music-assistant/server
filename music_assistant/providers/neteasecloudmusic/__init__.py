@@ -1574,7 +1574,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
 
         return await self._get_playlist_tracks_cached(prov_playlist_id, page)
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve favorite artists from NCM."""
         limit = 200
         offset = 0
@@ -1598,7 +1598,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             if not has_more and len(artists) < limit:
                 break
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve favorite albums from NCM."""
         limit = 200
         offset = 0
@@ -1622,7 +1622,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             if not has_more and len(albums) < limit:
                 break
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve liked tracks from NCM."""
         payload = await self._client.get(
             "/likelist",
@@ -1642,7 +1642,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 with suppress(InvalidDataError):
                     yield self._parse_track(song_obj)
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve user playlists from NCM."""
         payload = await self._client.get(
             "/user/playlist",

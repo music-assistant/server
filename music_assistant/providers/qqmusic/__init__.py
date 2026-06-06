@@ -1174,7 +1174,7 @@ class QQMusicProvider(MusicProvider):
             self.logger.debug("Failed to load QQ Music lyrics for %s: %s", prov_track_id, err)
         return track
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve followed artists from QQ Music."""
         euin = await self._ensure_user_euin()
         page = 1
@@ -1211,7 +1211,7 @@ class QQMusicProvider(MusicProvider):
             page += 1
         self.logger.info("QQ library artists sync yielded %s artist(s)", total_yielded)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from QQ Music."""
         euin = await self._ensure_user_euin()
         page = 1
@@ -1237,7 +1237,7 @@ class QQMusicProvider(MusicProvider):
                 break
             page += 1
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from QQ Music."""
         euin = await self._ensure_user_euin()
         page = 1
@@ -1272,7 +1272,7 @@ class QQMusicProvider(MusicProvider):
             page += 1
         self.logger.info("QQ library albums sync yielded %s album(s)", total_yielded)
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve user playlists from QQ Music."""
         euin = await self._ensure_user_euin()
         created = await self._run_with_session(

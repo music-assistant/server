@@ -212,7 +212,7 @@ class MyDemoMusicprovider(MusicProvider):
         # in general you should return a list of MediaItems for each media type.
         # For radio, a simple search of the available channel names is acceptable
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
         # OPTIONAL
         # Will only be called if you reported the LIBRARY_ARTISTS feature
@@ -252,7 +252,7 @@ class MyDemoMusicprovider(MusicProvider):
             },
         )
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from the provider."""
         # OPTIONAL
         # Will only be called if you reported the LIBRARY_ALBUMS feature
@@ -268,7 +268,7 @@ class MyDemoMusicprovider(MusicProvider):
         # the 'sync_library' method.
         yield  # type: ignore[misc]
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from the provider."""
         # OPTIONAL
         # Will only be called if you reported the LIBRARY_TRACKS feature
@@ -284,7 +284,7 @@ class MyDemoMusicprovider(MusicProvider):
         # the 'sync_library' method.
         yield  # type: ignore[misc]
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library/subscribed playlists from the provider."""
         # OPTIONAL
         # Will only be called if you reported the LIBRARY_PLAYLISTS feature
@@ -300,7 +300,7 @@ class MyDemoMusicprovider(MusicProvider):
         # the 'sync_library' method.
         yield  # type: ignore[misc]
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
         # OPTIONAL
         # Will only be called if you reported the LIBRARY_RADIOS feature
@@ -520,7 +520,7 @@ class MyDemoMusicprovider(MusicProvider):
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Return the (custom) audio stream for the provider item.
 

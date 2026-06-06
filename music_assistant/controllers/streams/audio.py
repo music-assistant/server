@@ -426,7 +426,7 @@ class StreamsAudio:
         seek_position: int = 0,
         filter_params: list[str] | None = None,
         chunk_seconds: float = 1.0,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Get audio stream for given media details as raw PCM.
 
@@ -446,7 +446,7 @@ class StreamsAudio:
         extra_input_args = streamdetails.extra_input_args or []
 
         # work out audio source for these streamdetails
-        audio_source: str | AsyncGenerator[bytes, None]
+        audio_source: str | AsyncGenerator[bytes]
         stream_type = streamdetails.stream_type
         if stream_type == StreamType.CUSTOM:
             # MusicProvider and PluginProvider both expose get_audio_stream with the same shape
@@ -779,7 +779,7 @@ class StreamsAudio:
 
     async def get_icy_radio_stream(
         self, url: str, streamdetails: StreamDetails
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Stream radio audio with ICY metadata support.
 
@@ -810,7 +810,7 @@ class StreamsAudio:
                 except asyncio.exceptions.IncompleteReadError:
                     break
 
-    async def get_reconnecting_radio_stream(self, url: str) -> AsyncGenerator[bytes, None]:
+    async def get_reconnecting_radio_stream(self, url: str) -> AsyncGenerator[bytes]:
         """
         Yield continuous radio stream data, automatically reconnecting on disconnect.
 
@@ -914,7 +914,7 @@ class StreamsAudio:
         streamdetails: StreamDetails,
         seek_position: int = 0,
         verify_ssl: bool = True,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Get audio stream from HTTP."""
         mass = self.mass
         self.logger.debug(
@@ -982,7 +982,7 @@ class StreamsAudio:
         filename: str,
         streamdetails: StreamDetails,
         seek_position: int = 0,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Get audio stream from local accessible file."""
         if seek_position:
             assert streamdetails.duration, "Duration required for seek requests"
@@ -1020,7 +1020,7 @@ class StreamsAudio:
         self,
         streamdetails: StreamDetails,
         seek_position: int = 0,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Return audio stream for a concatenation of multiple files.
 
@@ -1355,7 +1355,7 @@ class StreamsAudio:
         queue_item: QueueItem,
         pcm_format: AudioFormat,
         raise_on_error: bool = True,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Get the realtime PCM stream for an AudioSource queue item.
 
@@ -1413,7 +1413,7 @@ class StreamsAudio:
         self,
         streamdetails: StreamDetails,
         pcm_format: AudioFormat,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Yield PCM for an AudioSource, bypassing ffmpeg when formats match."""
         if _pcm_formats_match(streamdetails.audio_format, pcm_format):
             source_gen = self._open_audio_source_generator(streamdetails)
@@ -1429,9 +1429,7 @@ class StreamsAudio:
         ):
             yield chunk
 
-    def _open_audio_source_generator(
-        self, streamdetails: StreamDetails
-    ) -> AsyncGenerator[bytes, None]:
+    def _open_audio_source_generator(self, streamdetails: StreamDetails) -> AsyncGenerator[bytes]:
         """Open the raw PCM generator for an AudioSource (CUSTOM or NAMED_PIPE)."""
         if streamdetails.stream_type == StreamType.CUSTOM:
             provider = self.mass.get_provider(streamdetails.provider)
@@ -1453,7 +1451,7 @@ class StreamsAudio:
         seek_position: int = 0,
         playback_speed: float = 1.0,
         raise_on_error: bool = True,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Get the (PCM) audio stream for a single queue item.
 
@@ -1668,7 +1666,7 @@ class StreamsAudio:
         pcm_format: AudioFormat,
         smart_fades_mode: SmartFadesMode = SmartFadesMode.SMART_CROSSFADE,
         standard_crossfade_duration: int = 10,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Get the audio stream for a single queue item with (smart) crossfade to the next item."""
         queue = self.mass.player_queues.get(queue_item.queue_id)
         if not queue:
@@ -1866,7 +1864,7 @@ class StreamsAudio:
 
                 _next_item = next_queue_item
 
-                async def _limited_fade_in() -> AsyncGenerator[bytes, None]:
+                async def _limited_fade_in() -> AsyncGenerator[bytes]:
                     nonlocal fade_in_bytes_consumed
                     async for chunk in self.get_queue_item_stream(
                         _next_item,
@@ -1982,7 +1980,7 @@ class StreamsAudio:
 
     async def get_queue_flow_stream(
         self, queue: PlayerQueue, start_queue_item: QueueItem, pcm_format: AudioFormat
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Get a flow stream of all tracks in the queue as raw PCM audio.
 
@@ -2473,7 +2471,7 @@ class StreamsAudio:
 
     async def get_shoutcast_stream(
         self, url: str, streamdetails: StreamDetails
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Yield audio from a legacy Shoutcast server, with ICY metadata parsed inline.
 
@@ -2838,7 +2836,7 @@ class StreamsAudio:
         return needs_restart
 
     @asynccontextmanager
-    async def _connect_radio_stream(self, url: str, **kwargs: Any) -> AsyncGenerator[Any, None]:
+    async def _connect_radio_stream(self, url: str, **kwargs: Any) -> AsyncGenerator[Any]:
         """
         Connect to a radio stream URL with fallback for legacy SSL/TLS configurations.
 

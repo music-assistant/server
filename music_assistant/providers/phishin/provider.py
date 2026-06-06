@@ -140,7 +140,7 @@ class PhishInProvider(MusicProvider):
             self.logger.error("Search failed for query '%s': %s", search_query, err)
             raise ProviderUnavailableError(f"Search error: {err}") from err
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
         yield await get_phish_artist(self)
 
@@ -353,7 +353,7 @@ class PhishInProvider(MusicProvider):
             params={"per_page": 20, "sort": "date:desc", "audio_status": "complete_or_partial"},
         )
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library playlists from the provider."""
         try:
             for playlist_data in await self._get_playlists():

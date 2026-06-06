@@ -157,7 +157,7 @@ class SoundcloudMusicProvider(MusicProvider):
 
         return result
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Soundcloud."""
         time_start = time.time()
 
@@ -173,7 +173,7 @@ class SoundcloudMusicProvider(MusicProvider):
                 self.logger.debug("Parse artist failed: %s", artist, exc_info=error)
                 continue
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from Soundcloud."""
         time_start = time.time()
         async for item in self._soundcloud.get_account_playlists():
@@ -205,7 +205,7 @@ class SoundcloudMusicProvider(MusicProvider):
             round(time.time() - time_start, 2),
         )
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Soundcloud."""
         time_start = time.time()
         async for track in self._soundcloud.get_track_details_liked(self._user_id):

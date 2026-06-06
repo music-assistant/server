@@ -43,7 +43,7 @@ def _create_mock_zeroconf() -> MagicMock:
 
 
 @pytest.fixture
-async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant, None]:
+async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
     """Start a Music Assistant in test mode.
 
     :param tmp_path: Temporary directory for test data.
@@ -85,7 +85,7 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant, None]:
 
 
 @pytest.fixture
-async def mass_minimal(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant, None]:
+async def mass_minimal(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
     """Create a minimal Music Assistant instance without starting the full server.
 
     Only initializes the event loop and config controller.

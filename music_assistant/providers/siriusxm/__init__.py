@@ -202,7 +202,7 @@ class SiriusXMProvider(MusicProvider):
         """
         return True
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
         for channel in self._channels_by_id.values():
             if channel.is_favorite:

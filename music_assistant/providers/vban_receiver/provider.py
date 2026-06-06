@@ -195,7 +195,7 @@ class VBANReceiverProvider(PluginProvider):
 
     async def get_audio_stream(  # noqa: PLR0915
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Yield raw PCM chunks from the VBANIncomingStream queue."""
         assert self._vban_stream  # for type checking
         assert self._udp_socket_fut  # for type checking
