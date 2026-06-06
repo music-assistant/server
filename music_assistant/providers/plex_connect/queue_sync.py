@@ -303,7 +303,9 @@ class QueueSyncMixin:
         try:
             playqueue = await asyncio.to_thread(create_queue)
 
-            if playqueue:
+            # `if playqueue:` would route through plexapi's __len__ (playQueueTotalCount),
+            # which can be None for continuous/radio queues, so test identity instead.
+            if playqueue is not None:
                 self.play_queue_id = str(playqueue.playQueueID)
                 self.play_queue_version = playqueue.playQueueVersion
 
