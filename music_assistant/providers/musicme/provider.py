@@ -780,8 +780,8 @@ class MusicMeProvider(MusicProvider):
         return result if (result.artists or result.albums or result.tracks) else None
 
     async def _signin_by_api(self) -> None:
-        login = urllib.parse.quote_plus(self.config.get_value(CONF_USERNAME))
-        password = urllib.parse.quote_plus(self.config.get_value(CONF_PASSWORD))
+        login = urllib.parse.quote_plus(str(self.config.get_value(CONF_USERNAME)))
+        password = urllib.parse.quote_plus(str(self.config.get_value(CONF_PASSWORD)))
 
         response = await self._api_get(
             f"/medialibrary/signin"
@@ -792,7 +792,7 @@ class MusicMeProvider(MusicProvider):
         if response and "results" in response:
             results = response.get("results", {})
             if results and "user" in results:
-               self._user_id = results.get("user").get("id")
+                self._user_id = results.get("user").get("id")
 
         if not self._user_id:
             msg = "Login failed — no user.id in MusicMe API response"
