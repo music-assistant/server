@@ -25,6 +25,9 @@ _TRACK_PAGE_SIZE = 30
 # bounds the in-flight window, keeping a ~100k library from being materialized at once.
 _TRACK_SYNC_WINDOW = 150
 
+# Limit search fallback attempts per window to avoid rate limits/latency when many IDs are deprecated.
+_MAX_SEARCH_FALLBACK_PER_WINDOW = 10
+
 
 class AppleMusicLibraryManager:
     """Manages Apple Music library operations."""
@@ -251,11 +254,29 @@ class AppleMusicLibraryManager:
                 ):
                     parsed_track.album = parsed_library_track.album
             yield parsed_track
-        # Some library items may not resolve on the catalog endpoint anymore.
-        # Try intelligent fallback: search -> unavailable
+        # Handle deprecated catalog IDs: search replacement with per-window limit
+        search_attempts = 0
         for missing_catalog_id in set(catalog_ids) - returned_catalog_ids:
             if library_item := library_items_by_catalog_id.get(missing_catalog_id):
+                library_item_id = library_item.get("id")
                 is_favourite = rating_response.get(missing_catalog_id)
+
+                # Limit search attempts per window to avoid API rate limits
+                if search_attempts >= _MAX_SEARCH_FALLBACK_PER_WINDOW:
+                    # Mark remaining as unavailable without attempting search
+                    parsed_track = parse_track(self.provider, library_item, is_favourite)
+                    for mapping in parsed_track.provider_mappings:
+                        if mapping.provider_instance == self.provider.instance_id:
+                            mapping.available = False
+                    self.logger.debug(
+                        "Skipping search fallback for %s (reached window limit of %d searches)",
+                        library_item_id,
+                        _MAX_SEARCH_FALLBACK_PER_WINDOW,
+                    )
+                    yield parsed_track
+                    continue
+
+                search_attempts += 1
 
                 # Try to find current catalog version via search
                 replacement_track = await self._try_search_replacement_for_deprecated_track(
@@ -273,7 +294,7 @@ class AppleMusicLibraryManager:
                             mapping.available = False
                     self.logger.debug(
                         "Library track %s references deprecated catalog ID %s - marked unavailable",
-                        library_item.get("id"),
+                        library_item_id,
                         missing_catalog_id,
                     )
                     yield parsed_track

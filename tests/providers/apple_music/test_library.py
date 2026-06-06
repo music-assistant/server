@@ -278,7 +278,7 @@ async def test_search_replacement_album_mismatch_skipped() -> None:
         "attributes": {
             "name": "Test Track",
             "artistName": "Test Artist",
-            "albumName": "Test Artist",
+            "albumName": "Test Album",
         },
     }
 
@@ -375,4 +375,38 @@ async def test_search_replacement_missing_metadata() -> None:
 
     result = await manager._try_search_replacement_for_deprecated_track(library_item, False)
 
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_search_replacement_skips_item_mappings() -> None:
+    """Search replacement skips ItemMapping entries and only processes Track objects."""
+    provider = _make_test_provider()
+
+    library_item = {
+        "id": "i.123",
+        "attributes": {
+            "name": "Test Track",
+            "artistName": "Test Artist",
+            "albumName": "Test Album",
+        },
+    }
+
+    # Create an ItemMapping instead of a Track
+    item_mapping = ItemMapping(
+        media_type=MediaType.TRACK,
+        item_id="999",
+        provider="apple_music",
+        name="Test Track",
+    )
+
+    search_results = MagicMock()
+    search_results.tracks = [item_mapping]  # Only ItemMapping, no Track objects
+
+    provider.media_manager.search = AsyncMock(return_value=search_results)
+
+    manager = AppleMusicLibraryManager(provider)
+    result = await manager._try_search_replacement_for_deprecated_track(library_item, False)
+
+    # Should return None since ItemMapping should be skipped
     assert result is None
