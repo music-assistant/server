@@ -972,6 +972,7 @@ DEFAULT_STREAM_HEADERS = {
     "Pragma": "no-cache",
     "Accept-Ranges": "none",
     "Connection": "close",
+    "icy-name": APPLICATION_NAME,
 }
 
 # DLNA contentFeatures header values for different stream types.
