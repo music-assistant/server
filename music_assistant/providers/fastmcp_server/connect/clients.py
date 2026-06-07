@@ -17,7 +17,7 @@ class ClientSpec:
 
     :param id: Stable identifier used in API calls and as the per-client token name suffix.
     :param label: Human-readable name shown in the wizard tab and in token names.
-    :param kind: Snippet syntax — ``json`` / ``shell`` / ``toml``.
+    :param kind: Snippet syntax — ``json`` / ``shell`` / ``toml`` / ``yaml``.
     :param template: Snippet body with ``{{URL}}`` and ``{{TOKEN}}`` placeholders.
     :param config_path_hint: Where the user should paste the snippet (for the UI hint line).
     :param notes: Optional extra advice (transport quirks, OS gotchas).
@@ -33,6 +33,12 @@ class ClientSpec:
     filename: str = ""
 
 
+# Templates substitute ``{{TOKEN}}`` / ``{{URL}}`` by plain string replacement
+# (page.py), with no shell/JSON/YAML escaping. That is safe only because the
+# token is an MA-minted JWT (alphabet ``[A-Za-z0-9_-.]``) and the URL is the
+# server's own base URL — neither can contain a quote, backslash, ``$`` or
+# whitespace. If MA ever issues opaque tokens from a wider alphabet, the
+# shell (OpenClaw) and YAML (Hermes) templates would need escaping.
 CLIENTS: tuple[ClientSpec, ...] = (
     ClientSpec(
         id="claude-code",
@@ -203,6 +209,41 @@ CLIENTS: tuple[ClientSpec, ...] = (
         config_path_hint="~/.config/zed/settings.json",
         notes="Requires a recent Zed build with native remote-MCP support.",
         filename="settings.json",
+    ),
+    ClientSpec(
+        id="openclaw",
+        label="OpenClaw",
+        kind="shell",
+        template=(
+            "openclaw mcp set ma "
+            '\'{"url":"{{URL}}","transport":"streamable-http",'
+            '"headers":{"Authorization":"Bearer {{TOKEN}}"}}\''
+        ),
+        config_path_hint="Run this in any terminal (OpenClaw CLI).",
+        notes=(
+            "Needs an OpenClaw build whose bundle-mcp forwards custom headers "
+            "over streamable-http (the fix for issue #65590, Apr 2026)."
+        ),
+        filename="add-ma.sh",
+    ),
+    ClientSpec(
+        id="hermes",
+        label="Hermes",
+        kind="yaml",
+        template=(
+            "mcp_servers:\n"
+            "  ma:\n"
+            '    url: "{{URL}}"\n'
+            "    headers:\n"
+            '      Authorization: "Bearer {{TOKEN}}"'
+        ),
+        config_path_hint="~/.hermes/config.yaml",
+        notes=(
+            "Hermes also supports per-server tool include/exclude under a "
+            "`tools:` key and OAuth via `auth: oauth` (uses the server's "
+            "RFC 9728 metadata)."
+        ),
+        filename="config.yaml",
     ),
 )
 

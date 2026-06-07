@@ -19,7 +19,10 @@ from typing import TYPE_CHECKING
 from aiosendspin.client import SendspinClient
 from aiosendspin.models import Roles
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
+from aiosendspin.models.core import ServerStatePayload
+from aiosendspin.models.types import UndefinedField
 from aiosendspin.models.visualizer import (
+    BeatTiming,
     ClientHelloVisualizerSpectrum,
     ClientHelloVisualizerSupport,
     VisualizerFrame,
@@ -34,13 +37,14 @@ from music_assistant.providers.hue_entertainment.hue_sendspin_bridge.constants i
     SPECTRUM_BINS,
     SPECTRUM_F_MAX,
     SPECTRUM_F_MIN,
-    SPECTRUM_RATE_MAX,
+    SPECTRUM_SCALE,
 )
 
 from .constants import (
     CONF_BRIGHTNESS,
     CONF_COLOR_MODE,
-    CONF_INTENSITY,
+    CONF_HUE_LATENCY_MS,
+    DEFAULT_HUE_LATENCY_MS,
 )
 
 if TYPE_CHECKING:
@@ -54,6 +58,14 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 SENDSPIN_PORT = 8927
+
+# Hue Entertainment streams comfortably accept ~30 Hz updates over DTLS.
+_RENDER_RATE_HZ = 30
+_RENDER_PERIOD_S = 1.0 / _RENDER_RATE_HZ
+# Visualizer frame rate requested from the Sendspin server. Bridge filters
+# (channel rise/decay, bass baseline) are tuned for ~20 Hz spectrum input; the
+# DTLS render loop runs faster and interpolates.
+_VISUALIZER_RATE_HZ = 20
 
 
 class HueEntertainmentBridge:
@@ -82,16 +94,28 @@ class HueEntertainmentBridge:
         self._client_task: asyncio.Task[None] | None = None
         self._is_streaming = False
         self._unsubscribe_viz: Callable[[], None] | None = None
+        self._unsubscribe_color: Callable[[], None] | None = None
         self._stop_debounce_task: asyncio.Task[None] | None = None
+        self._render_handle: asyncio.TimerHandle | None = None
         self._entertainment_starting: bool = False
+        self._hue_latency_us: int = (
+            int(
+                float(
+                    str(
+                        self.provider.config.get_value(CONF_HUE_LATENCY_MS)
+                        or DEFAULT_HUE_LATENCY_MS
+                    )
+                )
+            )
+            * 1000
+        )
 
     async def start(self) -> None:
         """Start the bridge — connect as a Sendspin visualizer client."""
         self._analyzer = HueAudioAnalyzer(
             channels=self.area.channels,
-            color_mode=str(self.provider.config.get_value(CONF_COLOR_MODE) or "spectrum"),
+            color_mode=str(self.provider.config.get_value(CONF_COLOR_MODE) or "smooth"),
             brightness=int(float(str(self.provider.config.get_value(CONF_BRIGHTNESS) or 100))),
-            intensity=int(float(str(self.provider.config.get_value(CONF_INTENSITY) or 70))),
         )
 
         # Create Sendspin client with visualizer role
@@ -106,31 +130,32 @@ class HueEntertainmentBridge:
         self._sendspin_client = SendspinClient(
             client_id=client_id,
             client_name=f"Hue: {self.area.name}",
-            roles=[Roles.VISUALIZER],
+            roles=[Roles.VISUALIZER, Roles.COLOR],
             device_info=SendspinDeviceInfo(
                 manufacturer="Signify",
                 product_name="Hue Entertainment Area",
             ),
             visualizer_support=ClientHelloVisualizerSupport(
-                # Small buffer — we want frames at playback time, not seconds ahead.
-                # Each viz frame is ~50 bytes, so 100 bytes ≈ 2 frames ≈ 200ms lead.
-                buffer_capacity=100,
-                types=["loudness", "f_peak", "spectrum"],
-                batch_max=1,
+                # Beat + small bundle of periodic features. Each periodic frame
+                # is ~20-30 bytes; one second's worth fits comfortably under
+                # the buffer cap below.
+                buffer_capacity=2048,
+                rate_max=_VISUALIZER_RATE_HZ,
+                # Peaks requested as a fallback for when beats aren't computed yet.
+                types=["beat", "peak", "spectrum"],
                 spectrum=ClientHelloVisualizerSpectrum(
                     n_disp_bins=SPECTRUM_BINS,
-                    scale="mel",
+                    scale=SPECTRUM_SCALE,
                     f_min=SPECTRUM_F_MIN,
                     f_max=SPECTRUM_F_MAX,
-                    rate_max=SPECTRUM_RATE_MAX,
                 ),
             ),
         )
 
-        # Register callbacks
         self._unsubscribe_viz = self._sendspin_client.add_visualizer_listener(
             self._on_visualizer_frames
         )
+        self._unsubscribe_color = self._sendspin_client.add_color_listener(self._on_color)
         self._sendspin_client.add_stream_start_listener(self._on_stream_start)
         self._sendspin_client.add_stream_end_listener(self._on_stream_end)
 
@@ -142,12 +167,24 @@ class HueEntertainmentBridge:
             self.area.name,
             len(self.area.channels),
         )
+        self.logger.debug(
+            "Hue bridge channels for area '%s': %s",
+            self.area.name,
+            [
+                f"id={c.channel_id} svc={c.service_id} name={c.name} pos={c.position}"
+                for c in self.area.channels
+            ],
+        )
 
     async def stop(self) -> None:
         """Stop the bridge."""
+        self._cancel_render_loop()
         if self._unsubscribe_viz:
             self._unsubscribe_viz()
             self._unsubscribe_viz = None
+        if self._unsubscribe_color:
+            self._unsubscribe_color()
+            self._unsubscribe_color = None
 
         if self._client_task and not self._client_task.done():
             self._client_task.cancel()
@@ -166,15 +203,16 @@ class HueEntertainmentBridge:
         self,
         color_mode: str | None = None,
         brightness: int | None = None,
-        intensity: int | None = None,
+        hue_latency_ms: int | None = None,
     ) -> None:
-        """Update analyzer settings without restarting the bridge."""
+        """Update analyzer/bridge settings without restarting the bridge."""
         if self._analyzer:
             self._analyzer.update_settings(
                 color_mode=color_mode,
                 brightness=brightness,
-                intensity=intensity,
             )
+        if hue_latency_ms is not None:
+            self._hue_latency_us = hue_latency_ms * 1000
 
     async def _run_client(self) -> None:
         """Connect to the Sendspin server and stay connected."""
@@ -227,6 +265,7 @@ class HueEntertainmentBridge:
                         self.area.id,
                     )
                     self._is_streaming = True
+                    self._start_render_loop()
                     self.logger.info("Entertainment streaming active for area '%s'", self.area.name)
                     return
                 except Exception as err:
@@ -251,6 +290,9 @@ class HueEntertainmentBridge:
         """Stop DTLS and entertainment mode."""
         self._is_streaming = False
         self._entertainment_starting = False
+        self._cancel_render_loop()
+        if self._analyzer is not None:
+            self._analyzer.clear_beats()
         with suppress(Exception):
             self._dtls_streamer.disconnect()
         hue_api = self.provider.hue_api
@@ -284,44 +326,89 @@ class HueEntertainmentBridge:
             self.logger.info("Visualizer stream ended for area '%s'", self.area.name)
             await self._stop_entertainment()
 
-    # Latency correction in microseconds. Negative = send later (lights are early).
-    _HUE_LATENCY_US = -20_000
-
     def _on_visualizer_frames(self, frames: list[VisualizerFrame]) -> None:
-        """Handle visualization frames from the Sendspin server.
-
-        Frames arrive ~100-200ms before their playback time. We schedule
-        each send at (play_time - hue_latency) so lights change at the
-        exact moment the audio is heard.
         """
-        if not self._is_streaming or not self._analyzer or not self._dtls_streamer.is_connected:
+        Forward periodic samples, onset peaks, and beat events to the analyzer.
+
+        Frames carrying ``is_downbeat`` are beats. The rest carry spectrum and peak data.
+        """
+        if not self._is_streaming or self._analyzer is None:
             return
-
-        assert self._sendspin_client is not None
-        loop = self.mass.loop
-
+        beats: list[BeatTiming] = []
         for frame in frames:
-            commands = self._analyzer.process_frame(frame)
-
-            # Schedule send at the correct playback moment
-            play_us = self._sendspin_client.compute_play_time(frame.timestamp_us)
-            send_at_us = play_us - self._HUE_LATENCY_US
-            now_us = int(loop.time() * 1_000_000)
-            delay_us = send_at_us - now_us
-
-            if delay_us < -50_000:
-                # More than 50ms late — skip
-                continue
-            if delay_us <= 0:
-                # Due now — send immediately
-                self._dtls_streamer.send_colors(commands)
-            else:
-                # Schedule for the precise moment
-                loop.call_later(
-                    delay_us / 1_000_000,
-                    self._dtls_streamer.send_colors,
-                    commands,
+            if frame.is_downbeat is not None:
+                beats.append(
+                    BeatTiming(timestamp_us=frame.timestamp_us, is_downbeat=frame.is_downbeat)
                 )
+                continue
+            if frame.spectrum is not None:
+                self._analyzer.apply_spectrum(frame.spectrum, frame.timestamp_us)
+            if frame.peak_strength is not None:
+                self._analyzer.apply_peak(frame.peak_strength, frame.timestamp_us)
+        if beats:
+            self._analyzer.push_beats(beats)
+
+    def _on_color(self, payload: ServerStatePayload) -> None:
+        """Forward color palette updates from the Sendspin server to the analyzer."""
+        if self._analyzer is None or payload.color is None:
+            return
+        update: dict[str, tuple[int, int, int] | None] = {}
+        for name in (
+            "background_dark",
+            "background_light",
+            "primary",
+            "accent",
+            "on_dark",
+            "on_light",
+        ):
+            value = getattr(payload.color, name)
+            if isinstance(value, UndefinedField):
+                continue
+            update[name] = value
+        if update:
+            self._analyzer.apply_color_palette(update)
+
+    # -- Render loop --
+
+    def _start_render_loop(self) -> None:
+        """Begin the fixed-rate render+send loop."""
+        if self._render_handle is not None:
+            return
+        self._render_handle = self.mass.loop.call_later(_RENDER_PERIOD_S, self._render_tick)
+
+    def _cancel_render_loop(self) -> None:
+        """Cancel the fixed-rate render+send loop."""
+        if self._render_handle is not None:
+            self._render_handle.cancel()
+            self._render_handle = None
+
+    def _render_tick(self) -> None:
+        """One render+send iteration, then reschedule while streaming."""
+        self._render_handle = None
+        if not self._is_streaming:
+            return
+        try:
+            # Skip this tick when not ready (client/DTLS down) but keep the loop
+            # alive so it recovers once the connection is back.
+            if (
+                self._analyzer is not None
+                and self._sendspin_client is not None
+                and self._dtls_streamer.is_connected
+            ):
+                client_now = int(self.mass.loop.time() * 1_000_000)
+                # Render slightly ahead of the playhead to compensate for Hue+DTLS lag.
+                server_now = self._sendspin_client.compute_server_time(
+                    client_now + self._hue_latency_us
+                )
+                commands = self._analyzer.render(server_now)
+                if commands:
+                    self._dtls_streamer.send_colors(commands)
+        except Exception:
+            # One bad tick must not kill the loop: log and reschedule below.
+            self.logger.exception("Hue render tick failed for area '%s'", self.area.name)
+        finally:
+            if self._is_streaming:
+                self._render_handle = self.mass.loop.call_later(_RENDER_PERIOD_S, self._render_tick)
 
 
 class HueEntertainmentBridgeManager:
@@ -366,14 +453,14 @@ class HueEntertainmentBridgeManager:
         self,
         color_mode: str | None = None,
         brightness: int | None = None,
-        intensity: int | None = None,
+        hue_latency_ms: int | None = None,
     ) -> None:
         """Update settings on all bridges."""
         for bridge in self._bridges.values():
             bridge.update_settings(
                 color_mode=color_mode,
                 brightness=brightness,
-                intensity=intensity,
+                hue_latency_ms=hue_latency_ms,
             )
 
     async def stop_all(self) -> None:

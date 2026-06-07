@@ -24,7 +24,12 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import (
+    AudioError,
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+)
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -52,7 +57,7 @@ from music_assistant.helpers.util import infer_album_type, parse_title_and_versi
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.music_provider import MusicProvider
 
-from .gw_client import GWClient
+from .gw_client import DeezerGWError, GWClient
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -316,7 +321,7 @@ class DeezerProvider(MusicProvider):
 
         return results
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Deezer."""
         async for artist in await self.client.get_user_artists():
             item = self.parse_artist(artist=artist)
@@ -324,7 +329,7 @@ class DeezerProvider(MusicProvider):
                 item.date_added = datetime.fromtimestamp(int(time_add), tz=UTC)
             yield item
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve all library albums from Deezer."""
         async for album in await self.client.get_user_albums():
             item = self.parse_album(album=album)
@@ -332,7 +337,7 @@ class DeezerProvider(MusicProvider):
                 item.date_added = datetime.fromtimestamp(int(time_add), tz=UTC)
             yield item
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from Deezer."""
         async for playlist in await self.user.get_playlists():
             item = self.parse_playlist(playlist=playlist)
@@ -340,7 +345,7 @@ class DeezerProvider(MusicProvider):
                 item.date_added = datetime.fromtimestamp(int(time_add), tz=UTC)
             yield item
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve all library tracks from Deezer."""
         async for track in await self.client.get_user_tracks():
             yield self.parse_track(track=track, user_country=self.gw_client.user_country)
@@ -740,7 +745,14 @@ class DeezerProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        url_details, song_data = await self.gw_client.get_deezer_track_urls(item_id)
+        try:
+            url_details, song_data = await self.gw_client.get_deezer_track_urls(item_id)
+        except DeezerGWError as err:
+            api_errors = err.args[1] if len(err.args) > 1 else []
+            if isinstance(api_errors, list) and api_errors and api_errors[0].get("code") == 2002:
+                # code 2002: track not available in the user's region or plan
+                raise MediaNotFoundError(f"Track {item_id} is not available on Deezer") from err
+            raise AudioError(str(err)) from err
         url = url_details["sources"][0]["url"]
         return StreamDetails(
             item_id=item_id,
@@ -761,7 +773,7 @@ class DeezerProvider(MusicProvider):
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Return the audio stream for the provider item."""
         blowfish_key = self.get_blowfish_key(streamdetails.data["track_id"])
         chunk_index = 0

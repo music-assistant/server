@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
@@ -98,13 +98,13 @@ async def _fetch_playlist_folder_children(
             playlist_entries.append(child)
             if is_library_id(child_id):
                 library_playlist_ids.append(child_id)
-    ratings: dict[str, Any] = {}
+    ratings: dict[str, bool] = {}
     if library_playlist_ids:
         ratings = await provider.api_client.get_ratings(library_playlist_ids, MediaType.PLAYLIST)
     playlists: list[Playlist] = []
     for playlist_entry in playlist_entries:
-        playlist_id = playlist_entry.get("id")
-        is_favourite = ratings.get(playlist_id)
+        playlist_id = cast("str", playlist_entry.get("id"))
+        is_favourite = ratings.get(playlist_id, False)
         attributes = playlist_entry.get("attributes") or {}
         play_params = attributes.get("playParams") or {}
         global_id = play_params.get("globalId")

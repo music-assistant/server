@@ -8,7 +8,7 @@ calls the wizard fires for each user-facing operation.
 # ruff: noqa: D401
 #   D401: pytest fixture/test docstrings describe *what is returned*.
 #   S101: ``assert`` is the pytest convention.
-#   PLR2004: small magic numbers (10 client specs, 5 routes) are obvious in context.
+#   PLR2004: small magic numbers (12 client specs, 5 routes) are obvious in context.
 # mypy: disable-error-code="type-arg"
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import yaml
 from aiohttp.test_utils import TestClient, TestServer
 
 from music_assistant.providers.fastmcp_server._init_helpers import (
@@ -1127,6 +1128,42 @@ def test_claude_code_template_uses_positional_url() -> None:
     assert '--header "Authorization: Bearer TOK-123"' in rendered
 
 
+def test_openclaw_template_round_trips() -> None:
+    """The OpenClaw preset renders a valid ``openclaw mcp set`` command.
+
+    The embedded JSON must pin the streamable-HTTP transport and carry the
+    minted token as an ``Authorization: Bearer`` header — OpenClaw's bundle-mcp
+    client speaks streamable-HTTP and reads custom headers from this object.
+    """
+    spec = lookup_client("openclaw")
+    assert spec is not None
+    rendered = spec.template.replace("{{URL}}", "http://localhost:8095/mcp/v1").replace(
+        "{{TOKEN}}", "TOK-123"
+    )
+    assert rendered.startswith("openclaw mcp set ma ")
+    # The JSON payload is the single-quoted argument to `openclaw mcp set`.
+    start = rendered.index("'")
+    end = rendered.rindex("'")
+    payload = json.loads(rendered[start + 1 : end])
+    assert payload["url"] == "http://localhost:8095/mcp/v1"
+    assert payload["transport"] == "streamable-http"
+    assert payload["headers"]["Authorization"] == "Bearer TOK-123"
+
+
+def test_hermes_template_round_trips() -> None:
+    """The Hermes preset renders valid YAML with url + Authorization Bearer header."""
+    spec = lookup_client("hermes")
+    assert spec is not None
+    assert spec.kind == "yaml"
+    rendered = spec.template.replace("{{URL}}", "http://localhost:8095/mcp/v1").replace(
+        "{{TOKEN}}", "TOK-123"
+    )
+    parsed = yaml.safe_load(rendered)
+    server = parsed["mcp_servers"]["ma"]
+    assert server["url"] == "http://localhost:8095/mcp/v1"
+    assert server["headers"]["Authorization"] == "Bearer TOK-123"
+
+
 def test_all_clients_have_required_fields() -> None:
     """Every client spec has the fields the JS UI relies on."""
     seen_ids: set[str] = set()
@@ -1135,7 +1172,7 @@ def test_all_clients_have_required_fields() -> None:
         assert spec.id not in seen_ids
         seen_ids.add(spec.id)
         assert spec.label
-        assert spec.kind in {"json", "shell", "toml"}
+        assert spec.kind in {"json", "shell", "toml", "yaml"}
         assert "{{URL}}" in spec.template
         assert "{{TOKEN}}" in spec.template
         assert spec.config_path_hint  # non-empty doc hint

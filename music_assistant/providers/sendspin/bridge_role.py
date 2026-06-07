@@ -55,6 +55,10 @@ class BridgePlayerRole(Role):
         self._audio_requirements: AudioRequirements | None = None
         self._volume: int = 100
         self._muted: bool = False
+        # Bridge-specific timing reported to PushStream so server scheduling
+        # accounts for the downstream player's startup and jitter requirements.
+        self._required_lead_time_ms: int = 0
+        self._min_buffer_ms: int = 0
 
     def set_callbacks(
         self,
@@ -107,6 +111,27 @@ class BridgePlayerRole(Role):
     def get_audio_requirements(self) -> AudioRequirements | None:
         """Return audio requirements for PushStream."""
         return self._audio_requirements
+
+    def set_timing(self, *, required_lead_time_ms: int, min_buffer_ms: int) -> None:
+        """
+        Configure timing values reported to PushStream for scheduling.
+
+        Call before or during a stream session to adjust the lead time and
+        ongoing buffer floor reported to the Sendspin send-ahead calculation.
+        Bridge implementations should reflect their downstream player's real
+        startup latency (CLI spawn, protocol handshake, device buffer fill)
+        and jitter requirements.
+        """
+        self._required_lead_time_ms = max(0, required_lead_time_ms)
+        self._min_buffer_ms = max(0, min_buffer_ms)
+
+    def get_required_lead_time_us(self) -> int:
+        """Return bridge startup lead time in microseconds."""
+        return self._required_lead_time_ms * 1_000
+
+    def get_min_buffer_us(self) -> int:
+        """Return bridge minimum ongoing buffer duration in microseconds."""
+        return self._min_buffer_ms * 1_000
 
     def get_player_volume(self) -> int | None:
         """Return current volume level."""

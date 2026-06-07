@@ -753,7 +753,7 @@ class BBCSoundsProvider(MusicProvider):
     async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    ) -> AsyncGenerator[PodcastEpisode]:
         """Get all PodcastEpisodes for given podcast id."""
         podcast_episodes = await self.client.streaming.get_podcast_episodes(prov_podcast_id)
 

@@ -425,7 +425,7 @@ class ARDAudiothek(MusicProvider):
             prov_radio_id,
         )
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library/subscribed podcasts from the provider.
 
         Minified podcast information is enough.
@@ -479,9 +479,7 @@ class ARDAudiothek(MusicProvider):
             prov_podcast_id,
         )
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get podcast episodes."""
         await self._update_progress()
         depublished_filter = {"isPublished": {"equalTo": True}}

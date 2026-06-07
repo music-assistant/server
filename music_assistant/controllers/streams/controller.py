@@ -124,8 +124,8 @@ def _streaming_wav_header(output_format: AudioFormat) -> bytes:
 
 
 async def _wav_passthrough_stream(
-    audio_input: AsyncGenerator[bytes, None], output_format: AudioFormat
-) -> AsyncGenerator[bytes, None]:
+    audio_input: AsyncGenerator[bytes], output_format: AudioFormat
+) -> AsyncGenerator[bytes]:
     """Yield a WAV header followed by raw PCM bytes from ``audio_input``."""
     yield _streaming_wav_header(output_format)
     async for chunk in audio_input:
@@ -725,7 +725,7 @@ class StreamsController(CoreController):
             # skip the encode ffmpeg entirely and just stream a WAV header
             # followed by the raw PCM bytes — saves an ffmpeg process and the
             # latency of its internal buffer on every realtime stream.
-            audio_bytes: AsyncGenerator[bytes, None]
+            audio_bytes: AsyncGenerator[bytes]
             if (
                 queue_item.media_type == MediaType.AUDIO_SOURCE
                 and output_format.content_type == ContentType.WAV
@@ -1060,7 +1060,7 @@ class StreamsController(CoreController):
         player_id: str | None = None,
         force_flow_mode: bool = False,
         use_flow_stream_buffering: bool = False,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Get a stream of the given media as raw PCM audio.
 
@@ -1175,7 +1175,7 @@ class StreamsController(CoreController):
         provider_instance_id_or_domain: str,
         item_id: str,
         media_type: MediaType = MediaType.TRACK,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Create a 30 seconds preview audioclip for the given media item."""
         if not (music_prov := self.mass.get_provider(provider_instance_id_or_domain)):
             raise ProviderUnavailableError
@@ -1218,7 +1218,7 @@ class StreamsController(CoreController):
         output_format: AudioFormat,
         pre_announce: bool | str = False,
         pre_announce_url: str = ANNOUNCE_ALERT_FILE,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Get the special announcement stream."""
         announcement_data: asyncio.Queue[bytes | None] = asyncio.Queue(10)
         # we are doing announcement in PCM first to avoid multiple encodings
@@ -1257,7 +1257,7 @@ class StreamsController(CoreController):
 
         self.mass.create_task(fetch_announcement())
 
-        async def _announcement_stream() -> AsyncGenerator[bytes, None]:
+        async def _announcement_stream() -> AsyncGenerator[bytes]:
             """Generate the PCM audio stream for the announcement + optional pre-announce."""
             if pre_announce:
                 async for chunk in get_ffmpeg_stream(
@@ -1294,10 +1294,10 @@ class StreamsController(CoreController):
 
     async def _wrap_with_audio_source_lifecycle(
         self,
-        inner: AsyncGenerator[bytes, None],
+        inner: AsyncGenerator[bytes],
         queue_item: QueueItem,
         player_id: str,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Wrap an AudioSource queue item stream with on_source_selected/unselected hooks.
 
