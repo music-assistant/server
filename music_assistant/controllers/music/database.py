@@ -25,6 +25,7 @@ from music_assistant.constants import (
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIO_ANALYSIS,
+    DB_TABLE_AUDIO_ANALYSIS_FAILURES,
     DB_TABLE_AUDIOBOOK_ARTISTS,
     DB_TABLE_AUDIOBOOKS,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
@@ -501,6 +502,20 @@ class MusicDatabaseSetupMixin:
                     [aa_provider_domain] TEXT NOT NULL,
                     [analysis_data] json NOT NULL,
                     [analysis_version] INTEGER DEFAULT 1,
+                    [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+                    UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
+        )
+
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIO_ANALYSIS_FAILURES}(
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [media_type] TEXT NOT NULL,
+                    [item_id] TEXT NOT NULL,
+                    [provider] TEXT NOT NULL,
+                    [aa_provider_domain] TEXT NOT NULL,
+                    [reason] TEXT NOT NULL,
+                    [analysis_version] INTEGER NOT NULL DEFAULT 1,
+                    [next_retry] INTEGER,
                     [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
                     UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
         )
