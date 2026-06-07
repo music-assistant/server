@@ -1221,6 +1221,8 @@ async def test_count_candidates_missing_analysis_queries_with_available_filesyst
     assert params["aa_domain"] == "sonic_analysis"
     assert params["current_version"] == 2
     assert "now" in params
+    assert "aa.analysis_version IS NOT NULL" in sql
+    assert "aa.analysis_version >= :current_version" in sql
 
 
 def test_controller_has_no_provider_specific_extra_data_keys() -> None:
