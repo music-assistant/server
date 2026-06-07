@@ -13,7 +13,6 @@ URL_BOOKMARK_GET = (
 URL_BOOKMARK_SET = "https://api.storytel.net/bookmarks/positional?version=22.43.0"
 URL_CONSUMABLE_DETAILS = "https://api.storytel.net/book-details/consumables/{CONSUMABLE_ID}"
 URL_PLAYBACK_BOOK_DETAILS = "https://api.storytel.net/playback-metadata/consumable/{CONSUMABLE_ID}"
-URL_CHAPTERS = "https://api.storytel.net/playback-metadata/consumable/{CONSUMABLE_ID}"
 URL_SEARCH = "https://api.storytel.net/search/client"
 URL_FRONTPAGE = "https://api.storytel.net/explore/frontpage/chips"
 URL_PODCAST_DETAILS = "https://api.storytel.net/explore/lists/series/{CONSUMABLE_ID}"

@@ -51,7 +51,6 @@ from .constants import (
     API_HEADER_CONTENT_TYPE_SEARCH,
     URL_BOOKMARK_GET,
     URL_BOOKMARK_SET,
-    URL_CHAPTERS,
     URL_CONSUMABLE_DETAILS,
     URL_FRONTPAGE,
     URL_LIBRARY_MANAGEMENT,
@@ -333,7 +332,7 @@ class StorytelHelper:
         """Fetch chapters for a given consumable_id."""
         chapters: list[dict[str, Any]] = []
 
-        url = URL_CHAPTERS.replace("{CONSUMABLE_ID}", consumable_id)
+        url = URL_PLAYBACK_BOOK_DETAILS.replace("{CONSUMABLE_ID}", consumable_id)
         try:
             headers = self._headers_api()
             async with self._session.get(url, headers=headers) as resp:
@@ -343,42 +342,9 @@ class StorytelHelper:
             audiobook_format = next((f for f in formats if f.get("type") == "abook"), None)
             chapters = audiobook_format.get("chapters") or [] if audiobook_format else []
         except (ClientError, KeyError, TypeError, ValueError) as err:
-            self.logger.debug(
-                "Failed to fetch chapters for %s with playback-metadata endpoint: %s",
-                consumable_id,
-                err,
-            )
+            self.logger.debug("Failed to fetch chapters for %s: %s", consumable_id, err)
 
-        if chapters:
-            return list(chapters)
-
-        self.logger.debug(
-            "No chapters found for %s with playback-metadata endpoint, trying fallback",
-            consumable_id,
-        )
-
-        try:
-            url = URL_PLAYBACK_BOOK_DETAILS.replace("{CONSUMABLE_ID}", consumable_id)
-            headers = self._headers_api()
-            headers["Accept"] = "*/*"
-            async with self._session.get(url, headers=headers) as resp:
-                await self._raise_for_status(resp)
-                fallback_data: dict[str, Any] = await resp.json()
-            audiobook_data = next(
-                (f for f in fallback_data.get("formats", []) if f.get("type") == "abook"),
-                None,
-            )
-            chapters = audiobook_data.get("chapters") or [] if audiobook_data else []
-            if chapters:
-                return list(chapters)
-        except (ClientError, KeyError, TypeError, ValueError, StopIteration) as err:
-            self.logger.debug(
-                "Failed to fetch chapters for %s with fallback endpoint: %s",
-                consumable_id,
-                err,
-            )
-
-        return []
+        return list(chapters)
 
     async def _parse_chapters(self, chapters_data: list[dict[str, Any]]) -> list[MediaItemChapter]:
         """Parse raw chapter data into MediaChapter objects."""
