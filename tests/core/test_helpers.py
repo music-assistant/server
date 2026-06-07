@@ -61,6 +61,20 @@ def test_version_extract() -> None:
     assert version == "Mosquito Chillout mix"
 
 
+def test_version_extract_multiple_brackets() -> None:
+    """Test version extraction when several bracketed segments match version keywords."""
+    # The trailing segment is the version; earlier version-like segments
+    # (remix attribution) stay in the title.
+    test_str = "Fiji (Oliver Smith Remix) (Mixed)"
+    title, version = util.parse_title_and_version(test_str)
+    assert title == "Fiji (Oliver Smith Remix)"
+    assert version == "Mixed"
+    test_str = "Heaven Scent (Above & Beyond Remix) (Mixed)"
+    title, version = util.parse_title_and_version(test_str)
+    assert title == "Heaven Scent (Above & Beyond Remix)"
+    assert version == "Mixed"
+
+
 def test_with_handling_in_titles() -> None:
     """Test 'with' handling - preserved in title, stripped as featuring credit."""
     # 'with you' (preserved as title word)

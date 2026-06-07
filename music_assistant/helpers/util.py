@@ -316,6 +316,7 @@ def parse_title_and_version(
         return title, version
 
     # Standard version parsing
+    version_part: str | None = None
     for regex in (r"\(.*?\)", r"\[.*?\]", r" - .*"):
         for title_part in re.findall(regex, title):
             # Extract the content without brackets/dashes for checking
@@ -344,13 +345,17 @@ def parse_title_and_version(
             if should_ignore:
                 continue
 
-            # Check if this part is a version
-            for version_str in VERSION_PARTS:
-                if version_str in clean_part:
-                    # Preserve original casing for output
-                    version = title_part.strip("()[]- ").strip()
-                    title = title.replace(title_part, "").strip()
-                    return title, version
+            # Remember this part if it looks like a version; the last match wins so
+            # trailing markers like "(Mixed)" take precedence over earlier ones.
+            if any(version_str in clean_part for version_str in VERSION_PARTS):
+                version_part = title_part
+
+    if version_part is not None:
+        # Preserve original casing for output
+        version = version_part.strip("()[]- ").strip()
+        title = title.replace(version_part, "").strip()
+    # Collapse spaces left behind by removed segments
+    title = re.sub(r"\s{2,}", " ", title).strip()
     return title, version
 
 
