@@ -363,7 +363,8 @@ class AudioAnalysisProvider(Provider):
         reason: str,
         retry_at: datetime | None,
     ) -> None:
-        """Record a failure for this session's track; swallow recorder errors so finalize never breaks."""
+        """Record a failure for this session's track."""
+        # Swallow recorder errors so a failed write never breaks the session lifecycle.
         try:
             sd = session.streamdetails
             await self.mass.streams.audio_analysis.record_analysis_failure(
