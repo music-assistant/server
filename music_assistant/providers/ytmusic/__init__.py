@@ -736,17 +736,18 @@ class YoutubeMusicProvider(MusicProvider):
 
         folders = await asyncio.to_thread(_parse_sections)
         # Also add personalized mixes if available
-        if mixed_for_you_folder := await self._get_mixed_for_you_folder():
+        mixed_for_you_folder = await self._get_mixed_for_you_folder()
+        if mixed_for_you_folder.items:
             folders.append(mixed_for_you_folder)
 
         return folders
 
     @use_cache(3600 * 24, allow_expired_cache=True)  # Cache for 24 hours
-    async def _get_mixed_for_you_folder(self) -> RecommendationFolder | None:
+    async def _get_mixed_for_you_folder(self) -> RecommendationFolder:
         """
         Build the "Mixed for you" recommendation folder from the user's personal mixes.
 
-        :return: The folder, or None when none of the personal mixes are available.
+        :return: The folder, which has no items when no personal mixes are available.
         """
         mixed_for_you_folder = RecommendationFolder(
             name="Mixed for you",
@@ -780,8 +781,6 @@ class YoutubeMusicProvider(MusicProvider):
         mixed_for_you_folder.items.extend(
             preview for preview in playlist_previews if preview is not None
         )
-        if not mixed_for_you_folder.items:
-            return None
         return mixed_for_you_folder
 
     async def _post_data(self, endpoint: str, data: dict[str, str], **kwargs: Any) -> Any:
