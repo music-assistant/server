@@ -579,13 +579,19 @@ class UniversalGroupPlayer(Player):
             "Content-Type": get_mime_type(output_format_str),
         }
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
-        http_profile = cast("str", self.config.get_value(CONF_HTTP_PROFILE, "chunked"))
+        # http_profile is per-connection, not part of the shared encoded stream, so
+        # use each member's own config to support mixed members (e.g. a chunked
+        # Chromecast alongside an HTTP/1.0 Squeezelite). Fall back to the group config
+        # when the request has no player_id.
+        if child_player_id:
+            http_profile = await self.mass.config.get_player_config_value(
+                child_player_id, CONF_HTTP_PROFILE, default="default", return_type=str
+            )
+        else:
+            http_profile = cast("str", self.config.get_value(CONF_HTTP_PROFILE, "chunked"))
         if http_profile == "chunked" and request.version < HttpVersion11:
-            # chunked transfer-encoding is forbidden for HTTP/1.0 clients (e.g. some
-            # Squeezelite and older Chromecast firmware). Unlike the per-player flow
-            # stream, every UGP member shares the group's single http_profile, so an
-            # HTTP/1.0 member would otherwise crash on resp.prepare() and get no audio.
-            # Fall back to connection-close streaming so these members still play.
+            # chunked encoding is not allowed on HTTP/1.0; fall back to
+            # connection-close streaming to avoid raising in resp.prepare()
             self.logger.debug(
                 "Disabling chunked encoding for UGP stream to HTTP/1.0 client %s",
                 child_player_id or request.remote,
