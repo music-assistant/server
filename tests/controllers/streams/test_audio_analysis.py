@@ -366,11 +366,54 @@ async def test_find_candidates_handles_sqlite_row_without_get(
     ]
     controller.mass.music.database.get_rows_from_query = AsyncMock(return_value=rows)  # type: ignore[method-assign]
 
-    result = await controller._find_candidates_missing_analysis(["loudness_analysis"], 100)
+    result = await controller._find_candidates_missing_analysis({"loudness_analysis": 1}, 100)
 
     assert len(result) == 1
     assert result[0]["item_id"] == "track-1"
     assert result[0]["missing_domains"] == ["loudness_analysis"]
+
+
+@pytest.mark.asyncio
+async def test_find_candidates_query_gates_on_current_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The candidate query must treat stale-version rows as needing re-analysis.
+
+    The NOT EXISTS gate may only count a stored analysis row as up-to-date when
+    its analysis_version is non-NULL and >= the provider's current version, so a
+    provider bumping analysis_version re-surfaces previously analyzed tracks.
+    """
+    controller = _make_controller()
+    p1 = _make_aa_provider("prov-1", available=True)
+    p1.domain = "sonic_analysis"
+    monkeypatch.setattr(
+        controller.__class__,
+        "providers",
+        property(lambda _self: [p1]),
+    )
+
+    fs_prov = MagicMock()
+    fs_prov.domain = "filesystem_local"
+    fs_prov.available = True
+    controller.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
+
+    captured: dict[str, Any] = {}
+
+    async def _capture(query: str, params: dict[str, Any], limit: int) -> list[Any]:  # noqa: ARG001
+        captured["query"] = query
+        captured["params"] = params
+        return []
+
+    controller.mass.music.database.get_rows_from_query = AsyncMock(side_effect=_capture)  # type: ignore[method-assign]
+
+    await controller._find_candidates_missing_analysis({"sonic_analysis": 3}, 0)
+
+    sql = captured["query"]
+    assert "aa.analysis_version IS NOT NULL" in sql
+    assert "aa.analysis_version >= possible.current_version" in sql
+    assert captured["params"]["ver_0"] == 3
+    assert captured["params"]["aa_0"] == "sonic_analysis"
 
 
 @pytest.mark.asyncio
