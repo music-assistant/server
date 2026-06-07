@@ -19,6 +19,7 @@ from music_assistant.models.audio_analysis_provider import (
     AnalysisSessionData,
     AudioAnalysisProvider,
 )
+from music_assistant.models.music_provider import MusicProvider
 
 TEST_PCM_FORMAT = AudioFormat(
     content_type=ContentType.PCM_S16LE,
@@ -476,7 +477,7 @@ async def test_slow_provider_removed_after_timeout(
     mock_mass.get_providers.return_value = [prov_slow, prov_fast]
 
     def _get_prov(pid: str) -> MagicMock:
-        return {"prov_slow": prov_slow, "prov_fast": prov_fast}[pid]
+        return {"prov_slow": prov_slow, "prov_fast": prov_fast}.get(pid, prov_fast)
 
     mock_mass.get_provider = MagicMock(side_effect=_get_prov)
 
@@ -575,3 +576,42 @@ async def test_finalize_swallows_finalize_exception_and_cleans_up() -> None:
 
     assert "test_session" not in provider._sessions
     provider.logger.error.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_eviction_records_failure(
+    controller: AudioAnalysisController,
+    audio_buffer: AudioBuffer,
+    mock_stream_details: MagicMock,
+    mock_provider: MagicMock,
+    mock_mass: MagicMock,
+) -> None:
+    """A provider evicted during chunk processing has a failure recorded for it."""
+    mock_stream_details.media_type = MediaType.TRACK
+    music_prov = MagicMock(spec=MusicProvider)
+    music_prov.is_streaming_provider = False
+    music_prov.instance_id = "filesystem_local--abc"
+    music_prov.domain = "filesystem_local"
+
+    def _get_prov(pid: str) -> MagicMock:
+        return music_prov if pid == "test_prov" else mock_provider
+
+    mock_mass.get_provider = MagicMock(side_effect=_get_prov)
+    mock_mass.music.database.insert_or_replace = AsyncMock()
+
+    async def _boom(_session_id: str, _chunk: bytes) -> None:
+        raise RuntimeError("chunk fail")
+
+    mock_provider.process_pcm_chunk = AsyncMock(side_effect=_boom)
+    mock_provider.analysis_version = 1
+
+    await controller.start_analysis(audio_buffer, mock_stream_details)
+    await _send_chunks(audio_buffer, 2)
+    await _await_tasks(mock_mass)
+
+    mock_mass.music.database.insert_or_replace.assert_awaited()
+    table, values = mock_mass.music.database.insert_or_replace.call_args.args
+    assert table == "audio_analysis_failures"
+    assert values["item_id"] == "test_123"
+    assert values["aa_provider_domain"] == "test_domain"
+    assert values["next_retry"] is None

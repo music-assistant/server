@@ -179,6 +179,7 @@ class AudioAnalysisController:
         # Niced worker pool that runs analysis offloads, so the lower priority applies to
         # analysis threads only; created in ensure_inference_runtime_configured.
         self.analysis_executor: ThreadPoolExecutor | None = None
+        self._session_meta: dict[str, StreamDetails] = {}
 
     def setup(self) -> None:
         """Register the nightly background scan task."""
@@ -196,6 +197,7 @@ class AudioAnalysisController:
         """Drain in-flight sessions and chunk workers on shutdown."""
         workers = list(self._workers.values())
         self._workers.clear()
+        self._session_meta.clear()
         for worker in workers:
             if not worker.done():
                 worker.cancel()
@@ -328,6 +330,7 @@ class AudioAnalysisController:
 
         self._active_sessions[session_key] = provider_ids
         self._session_queues[session_key] = queue_id
+        self._session_meta[session_key] = streamdetails
         worker = self.mass.create_task(self._buffer_reader_worker(session_key, audio_buffer))
         self._workers[session_key] = worker
 
@@ -899,6 +902,9 @@ class AudioAnalysisController:
                 timeout_seconds,
                 session_key,
             )
+            await self._record_track_level_failure(
+                session_key, streamdetails, f"timed out after {timeout_seconds}s"
+            )
             self._cancel_providers(session_key)
             self.mass.tasks.add_task_failure(
                 BACKGROUND_SCAN_TASK_ID,
@@ -906,6 +912,9 @@ class AudioAnalysisController:
             )
         except Exception as err:
             self.logger.warning("Background analysis failed for %s: %s", session_key, err)
+            await self._record_track_level_failure(
+                session_key, streamdetails, f"background analysis failed: {err}"
+            )
             self._cancel_providers(session_key)
             self.mass.tasks.add_task_failure(
                 BACKGROUND_SCAN_TASK_ID,
@@ -941,6 +950,7 @@ class AudioAnalysisController:
             self.logger.debug("No providers accepted background analysis for %s", session_key)
             return
         self._active_sessions[session_key] = accepted
+        self._session_meta[session_key] = streamdetails
 
         audio_source = self.mass.streams.audio.get_media_stream(streamdetails, pcm_format)
         async for chunk in audio_source:
@@ -1100,6 +1110,7 @@ class AudioAnalysisController:
     def _finalize_providers(self, session_key: str) -> None:
         """Finalize each provider in the session."""
         provider_ids = self._active_sessions.pop(session_key, None)
+        self._session_meta.pop(session_key, None)
         if not provider_ids:
             return
         for provider_id in provider_ids:
@@ -1110,6 +1121,7 @@ class AudioAnalysisController:
     def _cancel_providers(self, session_key: str) -> None:
         """Cancel each provider in the session."""
         provider_ids = self._active_sessions.pop(session_key, None)
+        self._session_meta.pop(session_key, None)
         if not provider_ids:
             return
         for provider_id in provider_ids:
@@ -1180,9 +1192,19 @@ class AudioAnalysisController:
         results = await asyncio.gather(*[_process(prov_id) for prov_id in provider_ids])
         evicted = {prov_id for prov_id in results if prov_id is not None}
         if evicted:
+            sd = self._session_meta.get(session_key)
             for prov_id in evicted:
                 provider = self.mass.get_provider(prov_id)
                 if provider and isinstance(provider, AudioAnalysisProvider) and provider.available:
+                    if sd is not None:
+                        await self.record_analysis_failure(
+                            item_id=sd.item_id,
+                            provider_instance_id_or_domain=sd.provider,
+                            aa_provider_domain=provider.domain,
+                            reason="evicted: timed out or errored processing audio chunk",
+                            analysis_version=provider.analysis_version,
+                            media_type=sd.media_type,
+                        )
                     self.mass.create_task(provider.cancel(session_key))
             provider_ids -= evicted
             if not provider_ids:
@@ -1253,3 +1275,26 @@ class AudioAnalysisController:
         except Exception:
             value = DEFAULT_BACKGROUND_SCAN_CONCURRENCY
         return max(1, min(value, 16))
+
+    async def _record_track_level_failure(
+        self, session_key: str, streamdetails: StreamDetails, reason: str
+    ) -> None:
+        """
+        Record a failure for every provider that accepted this session.
+
+        :param session_key: Active-session key for the failed track.
+        :param streamdetails: Stream details for the failed track.
+        :param reason: Human-readable failure reason.
+        """
+        for prov_id in self._active_sessions.get(session_key, set()):
+            provider = self.mass.get_provider(prov_id)
+            if not isinstance(provider, AudioAnalysisProvider):
+                continue
+            await self.record_analysis_failure(
+                item_id=streamdetails.item_id,
+                provider_instance_id_or_domain=streamdetails.provider,
+                aa_provider_domain=provider.domain,
+                reason=reason,
+                analysis_version=provider.analysis_version,
+                media_type=streamdetails.media_type,
+            )
