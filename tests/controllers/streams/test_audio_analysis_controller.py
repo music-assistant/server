@@ -615,3 +615,6 @@ async def test_eviction_records_failure(
     assert values["item_id"] == "test_123"
     assert values["aa_provider_domain"] == "test_domain"
     assert values["next_retry"] is None
+    # Full eviction tears down the session: no _active_sessions or _session_meta leak.
+    assert "test_prov://track/test_123" not in controller._active_sessions
+    assert "test_prov://track/test_123" not in controller._session_meta

@@ -1209,6 +1209,7 @@ class AudioAnalysisController:
             provider_ids -= evicted
             if not provider_ids:
                 self._active_sessions.pop(session_key, None)
+                self._session_meta.pop(session_key, None)
 
     async def _buffer_reader_worker(self, session_key: str, audio_buffer: AudioBuffer) -> None:
         """
