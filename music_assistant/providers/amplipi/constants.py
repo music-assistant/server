@@ -1,5 +1,6 @@
 """Constants for the AmpliPi player provider."""
 
+import aiohttp
 from pyamplipi.error import AmpliPiError
 from pydantic import ValidationError
 
@@ -10,7 +11,8 @@ DOMAIN = "amplipi"
 # AmpliPiError; a malformed payload surfaces as a pydantic ValidationError or a KeyError on
 # a missing top-level field). Caught where an AmpliPi call is best-effort and a failure
 # should not abort the surrounding operation.
-AMPLIPI_API_ERRORS = (AmpliPiError, ValidationError, KeyError)
+AMPLIPI_API_ERRORS = (AmpliPiError, aiohttp.ClientError, TimeoutError, ValidationError, KeyError)
+
 
 CONF_HOST = "host"
 
