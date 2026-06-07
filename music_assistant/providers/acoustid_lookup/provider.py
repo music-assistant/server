@@ -14,6 +14,7 @@ import numpy as np
 from music_assistant_models.enums import ExternalID, MediaType, StreamType
 from music_assistant_models.errors import (
     MusicAssistantError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
 )
@@ -136,6 +137,9 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             self.logger.debug(
                 "Skipping %s — track already has a MusicBrainz Recording Id", session_id
             )
+            return False
+        if track.get_external_id(ExternalID.ISRC):
+            self.logger.debug("Skipping %s — track already has an ISRC", session_id)
             return False
 
         fingerprinter = self._create_fingerprinter(audio_format.sample_rate, audio_format.channels)
@@ -349,7 +353,7 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         async with self.mass.http_session.get(ACOUSTID_LOOKUP_URL, params=params) as response:
             if response.status == 429:
                 backoff = int(response.headers.get("Retry-After", 0))
-                raise ResourceTemporarilyUnavailable("AcoustID rate limit", backoff_time=backoff)
+                raise RateLimited("AcoustID rate limit", backoff_time=backoff)
             if 500 <= response.status < 600:
                 raise ResourceTemporarilyUnavailable("AcoustID server error", backoff_time=30)
             if response.status in (401, 403):

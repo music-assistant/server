@@ -10,7 +10,7 @@ from mcp.types import ToolAnnotations
 
 from ..models import PlayerBrief
 from ..tags import Tag
-from ._common import TIMEOUT_FAST, TIMEOUT_MUTATION, to_brief_player
+from ._common import TIMEOUT_FAST, TIMEOUT_MUTATION, safe_active_queue, to_brief_player
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -40,12 +40,18 @@ def build_players_server(mass: MusicAssistant) -> FastMCP:
 
         Returns ``PlayerBrief`` items with ``player_id``, ``name``, ``state``,
         ``powered``, ``volume_level``, ``available``, ``enabled``,
-        ``needs_setup``, ``active_group``, ``synced_to`` and the currently
-        playing item (if any). ``state`` summarises usability — values are
-        ``unavailable`` (offline), ``disabled`` (admin-disabled),
-        ``needs_setup`` (first-run config pending), ``synced`` (member of an
-        active sync group; its queue belongs to the group leader), or the
-        normal playback states (``idle`` / ``playing`` / ``paused`` / ...).
+        ``needs_setup``, ``active_group``, ``synced_to``, ``external_source``
+        and the currently playing item (if any). ``state`` summarises
+        usability — values are ``unavailable`` (offline), ``disabled``
+        (admin-disabled), ``needs_setup`` (first-run config pending),
+        ``synced`` (member of an active sync group; its queue belongs to the
+        group leader), or the normal playback states
+        (``idle`` / ``playing`` / ``paused`` / ...). When a player is being
+        driven by an external "Connect"-style source (e.g. Spotify Connect,
+        AirPlay, Yandex Ynison), ``state`` reflects the active queue
+        (``playing`` / ``paused``) rather than ``idle``, ``external_source``
+        holds the controlling provider instance id, and ``current_item``
+        shows the real track title rather than the source wrapper name.
         Offline and admin-disabled players are hidden by default — flip the
         corresponding ``include_*`` flag to get them back. Does not include
         queue contents — use the ``queue`` tools for that.
@@ -66,7 +72,7 @@ def build_players_server(mass: MusicAssistant) -> FastMCP:
             return_unavailable=include_unavailable,
             return_disabled=include_disabled,
         )
-        return [to_brief_player(p) for p in players]
+        return [to_brief_player(p, safe_active_queue(mass, p.player_id)) for p in players]
 
     @sub.tool(
         tags={Tag.QUERY_PLAYERS},
@@ -89,7 +95,9 @@ def build_players_server(mass: MusicAssistant) -> FastMCP:
         :param player_id: Player identifier (from ``PlayerBrief.player_id``).
         """
         player = mass.players.get_player(player_id)
-        return to_brief_player(player) if player is not None else None
+        if player is None:
+            return None
+        return to_brief_player(player, safe_active_queue(mass, player_id))
 
     @sub.tool(
         tags={Tag.CONTROL_PLAYERS},

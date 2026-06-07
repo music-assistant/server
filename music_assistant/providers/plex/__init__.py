@@ -957,19 +957,19 @@ class PlexProvider(MusicProvider):
 
         return search_results
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Plex Music."""
         artists_obj = await self._run_async(self._plex_library.all)
         for artist in artists_obj:
             yield await self._parse_artist(artist)
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve all library albums from Plex Music."""
         albums_obj = await self._run_async(self._plex_library.albums)
         for album in albums_obj:
             yield await self._parse_album(album)
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from the provider."""
         playlists_obj = await self._run_async(self._plex_library.playlists)
         for playlist in playlists_obj:
@@ -981,7 +981,7 @@ class PlexProvider(MusicProvider):
             for collection in collections_obj:
                 yield await self._parse_collection(collection)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Plex Music."""
         page_size = 500
         offset = 0

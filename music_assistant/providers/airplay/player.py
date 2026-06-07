@@ -44,6 +44,7 @@ from .constants import (
     CONF_PAIRING_PIN,
     CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
+    CONF_RAOP_LATENCY,
     CONF_SESSION_ESTABLISHMENT_LATENCY,
     CONF_STORED_VOLUME,
     FALLBACK_VOLUME,
@@ -52,6 +53,8 @@ from .constants import (
     PIN_REQUIRED,
     RAOP_CONNECT_TIME_MS,
     RAOP_DISCOVERY_TYPE,
+    RAOP_OUTPUT_BUFFER_MAX_DURATION_MS,
+    RAOP_OUTPUT_BUFFER_MIN_DURATION_MS,
     StreamingProtocol,
 )
 from .helpers import (
@@ -174,6 +177,13 @@ class AirPlayPlayer(Player):
     @property
     def output_buffer_duration_ms(self) -> int:
         """Get the output buffer duration in milliseconds."""
+        # Only the RAOP (AirPlay 1) path exposes a configurable read-ahead buffer;
+        # AirPlay 2 uses the fixed default to avoid interfering with sync.
+        if self.protocol == StreamingProtocol.RAOP:
+            return cast(
+                "int",
+                self.config.get_value(CONF_RAOP_LATENCY, AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS),
+            )
         return AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS
 
     @property
@@ -288,6 +298,27 @@ class AirPlayPlayer(Player):
                 required=False,
                 label="Device password",
                 description="Some devices require a password to connect/play.",
+                depends_on=CONF_AIRPLAY_PROTOCOL,
+                depends_on_value=StreamingProtocol.RAOP.value,
+                hidden=not is_raop,
+                category="protocol_generic",
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_RAOP_LATENCY,
+                type=ConfigEntryType.INTEGER,
+                default_value=AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS,
+                range=(
+                    RAOP_OUTPUT_BUFFER_MIN_DURATION_MS,
+                    RAOP_OUTPUT_BUFFER_MAX_DURATION_MS,
+                ),
+                label="Milliseconds of data to buffer",
+                description=(
+                    "The number of milliseconds of data to buffer\n"
+                    "NOTE: This adds to the latency experienced for commencement "
+                    "of playback. \n"
+                    "Try increasing value if playback is unreliable."
+                ),
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
                 hidden=not is_raop,

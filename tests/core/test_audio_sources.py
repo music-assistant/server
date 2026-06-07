@@ -156,7 +156,7 @@ class _FakePluginProvider:
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         del streamdetails, seek_position
         # Snapshot BOTH the queue id and the session id at stream start. The
         # queue-id-only guard is unsafe for same-queue reconnects: a fresh
@@ -815,7 +815,7 @@ class TestAudioSourceSilenceKeepalive:
             audio_source_silence_keepalive,
         )
 
-        async def _inner() -> AsyncGenerator[bytes, None]:
+        async def _inner() -> AsyncGenerator[bytes]:
             yield b"chunk1"
             yield b"chunk2"
 
@@ -829,7 +829,7 @@ class TestAudioSourceSilenceKeepalive:
             audio_source_silence_keepalive,
         )
 
-        async def _inner() -> AsyncGenerator[bytes, None]:
+        async def _inner() -> AsyncGenerator[bytes]:
             yield b"hello"
             # stall longer than the idle threshold
             await asyncio.sleep(0.25)
@@ -858,7 +858,7 @@ class TestAudioSourceSilenceKeepalive:
             audio_source_silence_keepalive,
         )
 
-        async def _inner() -> AsyncGenerator[bytes, None]:
+        async def _inner() -> AsyncGenerator[bytes]:
             yield b"one"
 
         chunks = [

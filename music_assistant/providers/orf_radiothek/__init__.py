@@ -730,9 +730,7 @@ class RadiothekProvider(MusicProvider):
 
         raise MediaNotFoundError("Podcast not found.")
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get episodes of a specific podcast."""
         bundle = await self._get_bundle()
 

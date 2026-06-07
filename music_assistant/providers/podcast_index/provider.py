@@ -226,9 +226,7 @@ class PodcastIndexProvider(MusicProvider):
 
         raise MediaNotFoundError(f"Podcast {prov_podcast_id} not found")
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get episodes for a podcast."""
         self.logger.debug("Getting episodes for podcast ID: %s", prov_podcast_id)
 

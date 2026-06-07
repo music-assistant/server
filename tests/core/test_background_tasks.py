@@ -65,7 +65,7 @@ async def _wait_for_task_status(
 
 
 @pytest.fixture
-async def tasks_controller(mass_minimal: MusicAssistant) -> AsyncGenerator[TasksController, None]:
+async def tasks_controller(mass_minimal: MusicAssistant) -> AsyncGenerator[TasksController]:
     """Set up the background tasks controller on a minimal Music Assistant instance."""
     controller = TasksController(mass_minimal)
     mass_minimal.tasks = controller

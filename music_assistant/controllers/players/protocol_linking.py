@@ -641,13 +641,23 @@ class ProtocolLinkingMixin:
                 )
                 continue
 
-            # Determine which player absorbs the other (more protocols wins)
-            keep, remove = (
-                (universal_player, player)
-                if len(universal_player.linked_output_protocols)
-                >= len(player.linked_output_protocols)
-                else (player, universal_player)
-            )
+            # Determine which player absorbs the other (more protocols wins).
+            # On ties, fall back to a deterministic tiebreaker on player_id so
+            # the merge outcome is stable across server restarts. Without this,
+            # which UniversalPlayer "wins" depends on iteration order of
+            # self._players.values(), which can shift between runs and causes
+            # downstream player_id reshuffling (and broken entity bindings in
+            # consumers like the Home Assistant MA integration).
+            len_u = len(universal_player.linked_output_protocols)
+            len_p = len(player.linked_output_protocols)
+            if len_u > len_p:
+                keep, remove = universal_player, player
+            elif len_u < len_p:
+                keep, remove = player, universal_player
+            elif universal_player.player_id < player.player_id:
+                keep, remove = universal_player, player
+            else:
+                keep, remove = player, universal_player
 
             self.logger.info(
                 "Merging universal player %s into %s (shared identifiers)",

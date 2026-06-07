@@ -288,7 +288,7 @@ class PandoraProvider(MusicProvider):
             },
         )
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
         response = await self._api_request(
             "POST",

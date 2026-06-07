@@ -316,8 +316,12 @@ def parse_title_and_version(
         return title, version
 
     # Standard version parsing
-    for regex in (r"\(.*?\)", r"\[.*?\]", r" - .*"):
-        for title_part in re.findall(regex, title):
+    for parts in (
+        _balanced_bracket_groups(title, "(", ")"),
+        _balanced_bracket_groups(title, "[", "]"),
+        re.findall(r" - .*", title),
+    ):
+        for title_part in parts:
             # Extract the content without brackets/dashes for checking
             clean_part = title_part.translate(str.maketrans("", "", "()[]-")).strip().lower()
 
@@ -347,11 +351,47 @@ def parse_title_and_version(
             # Check if this part is a version
             for version_str in VERSION_PARTS:
                 if version_str in clean_part:
-                    # Preserve original casing for output
-                    version = title_part.strip("()[]- ").strip()
+                    # Preserve original casing (and any nested brackets) for output
+                    version = _strip_outer_markers(title_part)
                     title = title.replace(title_part, "").strip()
                     return title, version
     return title, version
+
+
+def _balanced_bracket_groups(text: str, open_char: str, close_char: str) -> list[str]:
+    """
+    Return the top-level balanced bracketed substrings, including the outer brackets.
+
+    :param text: The text to scan.
+    :param open_char: The opening bracket character.
+    :param close_char: The closing bracket character.
+    """
+    groups: list[str] = []
+    depth = 0
+    start = -1
+    for idx, char in enumerate(text):
+        if char == open_char:
+            if depth == 0:
+                start = idx
+            depth += 1
+        elif char == close_char and depth > 0:
+            depth -= 1
+            if depth == 0:
+                groups.append(text[start : idx + 1])
+    return groups
+
+
+def _strip_outer_markers(part: str) -> str:
+    """
+    Strip the outer brackets or leading hyphen from a parsed title part.
+
+    :param part: The raw title part as matched from the title.
+    """
+    part = part.strip()
+    # only strip a single outer bracket pair so nested brackets stay intact
+    if part[:1] in "([" and part[-1:] in ")]":
+        return part[1:-1].strip()
+    return part.lstrip("- ").strip()
 
 
 def infer_album_type(title: str, version: str) -> AlbumType:
@@ -901,7 +941,7 @@ def get_zeroconf_args(
     return {"ip_version": ip_version, "interfaces": InterfaceChoice.All}
 
 
-async def close_async_generator(agen: AsyncGenerator[Any, None]) -> None:
+async def close_async_generator(agen: AsyncGenerator[Any]) -> None:
     """Force close an async generator."""
     task = asyncio.create_task(agen.__anext__())
     task.cancel()
