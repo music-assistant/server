@@ -1122,12 +1122,8 @@ class AudioAnalysisController:
             )
         return results
 
-    async def _count_candidates_missing_analysis(
-        self, aa_domain: str, current_version: int
-    ) -> int:
-        """
-        Count filesystem candidate tracks with no up-to-date analysis row and no blocking failure.
-        """
+    async def _count_candidates_missing_analysis(self, aa_domain: str, current_version: int) -> int:
+        """Count filesystem candidate tracks lacking a current analysis row or blocking failure."""
         filesystem_domains = self._available_filesystem_domains()
         if not filesystem_domains:
             return 0
