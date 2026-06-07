@@ -27,8 +27,11 @@ class AudioAnalysisError(Exception):
         Initialize the error.
 
         :param reason: Human-readable failure reason.
-        :param retry_at: Timezone-aware datetime when a retry is allowed; None (default) means do not retry.
+        :param retry_at: Timezone-aware datetime when a retry is allowed; None (default)
+            means do not retry.
         """
+        if retry_at is not None and retry_at.tzinfo is None:
+            raise ValueError("retry_at must be timezone-aware")
         super().__init__(reason)
         self.reason = reason
         self.retry_at = retry_at

@@ -347,6 +347,12 @@ def test_audio_analysis_error_carries_reason_and_retry() -> None:
     assert str(err2) == "offline"
 
 
+def test_audio_analysis_error_rejects_naive_retry_at() -> None:
+    """A naive (tz-unaware) retry_at is rejected to avoid silent epoch skew."""
+    with pytest.raises(ValueError, match="timezone-aware"):
+        AudioAnalysisError("x", retry_at=datetime(2030, 1, 1))  # noqa: DTZ001
+
+
 @pytest.mark.asyncio
 async def test_finalize_records_classified_failure_on_audio_analysis_error() -> None:
     """A raised AudioAnalysisError in _finalize records reason + retry_at and skips persist."""
@@ -427,3 +433,27 @@ async def test_start_analysis_records_on_audio_analysis_error() -> None:
     rec.assert_awaited_once()
     assert rec.call_args.kwargs["reason"] == "unsupported codec"
     assert "s4" not in provider._sessions
+
+
+@pytest.mark.asyncio
+async def test_finalize_swallows_recorder_error() -> None:
+    """If record_analysis_failure raises, finalize must not propagate and must still clean up."""
+    provider = _make_provider()
+    provider.logger = MagicMock()
+    streamdetails = MagicMock()
+    streamdetails.item_id = "track-x"
+    streamdetails.provider = "test_prov"
+    streamdetails.media_type = "track"
+    provider._finalize = AsyncMock(  # type: ignore[method-assign]
+        side_effect=AudioAnalysisError("boom")
+    )
+    provider.mass.streams.audio_analysis.record_analysis_failure = AsyncMock(
+        side_effect=RuntimeError("db down")
+    )
+
+    await provider.start_analysis("sx", streamdetails, MagicMock())
+    # Must not raise despite the recorder failing.
+    await provider.finalize("sx")
+
+    provider.logger.warning.assert_called()
+    assert "sx" not in provider._sessions

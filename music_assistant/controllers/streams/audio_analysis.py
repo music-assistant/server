@@ -179,7 +179,6 @@ class AudioAnalysisController:
         # Niced worker pool that runs analysis offloads, so the lower priority applies to
         # analysis threads only; created in ensure_inference_runtime_configured.
         self.analysis_executor: ThreadPoolExecutor | None = None
-        self._session_meta: dict[str, StreamDetails] = {}
 
     def setup(self) -> None:
         """Register the nightly background scan task."""
@@ -197,7 +196,6 @@ class AudioAnalysisController:
         """Drain in-flight sessions and chunk workers on shutdown."""
         workers = list(self._workers.values())
         self._workers.clear()
-        self._session_meta.clear()
         for worker in workers:
             if not worker.done():
                 worker.cancel()
@@ -330,7 +328,6 @@ class AudioAnalysisController:
 
         self._active_sessions[session_key] = provider_ids
         self._session_queues[session_key] = queue_id
-        self._session_meta[session_key] = streamdetails
         worker = self.mass.create_task(self._buffer_reader_worker(session_key, audio_buffer))
         self._workers[session_key] = worker
 
@@ -395,16 +392,23 @@ class AudioAnalysisController:
         """
         Record an analysis failure for a track.
 
+        No-op when the provider does not resolve to a loaded music provider.
+
         :param item_id: Provider-native item ID from streamdetails.item_id.
         :param provider_instance_id_or_domain: Music provider instance ID or domain.
         :param aa_provider_domain: Domain of the AA provider that failed.
         :param reason: Human-readable failure reason.
-        :param retry_at: Timezone-aware datetime when to allow a retry; None (default) means never auto-retry.
+        :param retry_at: Timezone-aware datetime when to allow a retry; None (default)
+            means never auto-retry.
         :param analysis_version: The AA provider's algorithm version at failure time.
         :param media_type: The media type of the item.
         """
         provider = self.mass.get_provider(provider_instance_id_or_domain)
         if not isinstance(provider, MusicProvider):
+            self.logger.debug(
+                "Skipping failure record for %s: not a loaded music provider",
+                provider_instance_id_or_domain,
+            )
             return
         prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
         await self.mass.music.database.insert_or_replace(
@@ -430,6 +434,8 @@ class AudioAnalysisController:
         """
         Delete a recorded analysis failure (e.g. after a later success).
 
+        No-op when the provider does not resolve to a loaded music provider.
+
         :param item_id: Provider-native item ID from streamdetails.item_id.
         :param provider_instance_id_or_domain: Music provider instance ID or domain.
         :param aa_provider_domain: Domain of the AA provider whose failure to clear.
@@ -437,6 +443,10 @@ class AudioAnalysisController:
         """
         provider = self.mass.get_provider(provider_instance_id_or_domain)
         if not isinstance(provider, MusicProvider):
+            self.logger.debug(
+                "Skipping failure clear for %s: not a loaded music provider",
+                provider_instance_id_or_domain,
+            )
             return
         prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
         await self.mass.music.database.delete(
@@ -958,9 +968,6 @@ class AudioAnalysisController:
                 timeout_seconds,
                 session_key,
             )
-            await self._record_track_level_failure(
-                session_key, streamdetails, f"timed out after {timeout_seconds}s"
-            )
             self._cancel_providers(session_key)
             self.mass.tasks.add_task_failure(
                 BACKGROUND_SCAN_TASK_ID,
@@ -968,9 +975,6 @@ class AudioAnalysisController:
             )
         except Exception as err:
             self.logger.warning("Background analysis failed for %s: %s", session_key, err)
-            await self._record_track_level_failure(
-                session_key, streamdetails, f"background analysis failed: {err}"
-            )
             self._cancel_providers(session_key)
             self.mass.tasks.add_task_failure(
                 BACKGROUND_SCAN_TASK_ID,
@@ -1006,7 +1010,6 @@ class AudioAnalysisController:
             self.logger.debug("No providers accepted background analysis for %s", session_key)
             return
         self._active_sessions[session_key] = accepted
-        self._session_meta[session_key] = streamdetails
 
         audio_source = self.mass.streams.audio.get_media_stream(streamdetails, pcm_format)
         async for chunk in audio_source:
@@ -1058,9 +1061,9 @@ class AudioAnalysisController:
             return []
 
         # CROSS JOIN (track x possible domain), drop pairs that already have an up-to-date
-        # analysis row (non-NULL version >= current) or a blocking failure row (current-version
-        # failure that is NULL/future retry), then GROUP_CONCAT the remaining missing domains
-        # per track.
+        # analysis row (non-NULL version >= current) or a blocking failure row (failure at the
+        # current-or-newer analysis_version whose retry is NULL or still in the future), then
+        # GROUP_CONCAT the missing domains per track.
         aa_domains = list(aa_provider_versions)
         fs_inline = ", ".join(f"'{d}'" for d in filesystem_domains)
         aa_select_terms = " UNION ALL ".join(
@@ -1190,7 +1193,6 @@ class AudioAnalysisController:
     def _finalize_providers(self, session_key: str) -> None:
         """Finalize each provider in the session."""
         provider_ids = self._active_sessions.pop(session_key, None)
-        self._session_meta.pop(session_key, None)
         if not provider_ids:
             return
         for provider_id in provider_ids:
@@ -1201,7 +1203,6 @@ class AudioAnalysisController:
     def _cancel_providers(self, session_key: str) -> None:
         """Cancel each provider in the session."""
         provider_ids = self._active_sessions.pop(session_key, None)
-        self._session_meta.pop(session_key, None)
         if not provider_ids:
             return
         for provider_id in provider_ids:
@@ -1272,24 +1273,13 @@ class AudioAnalysisController:
         results = await asyncio.gather(*[_process(prov_id) for prov_id in provider_ids])
         evicted = {prov_id for prov_id in results if prov_id is not None}
         if evicted:
-            sd = self._session_meta.get(session_key)
             for prov_id in evicted:
                 provider = self.mass.get_provider(prov_id)
                 if provider and isinstance(provider, AudioAnalysisProvider) and provider.available:
-                    if sd is not None:
-                        await self.record_analysis_failure(
-                            item_id=sd.item_id,
-                            provider_instance_id_or_domain=sd.provider,
-                            aa_provider_domain=provider.domain,
-                            reason="evicted: timed out or errored processing audio chunk",
-                            analysis_version=provider.analysis_version,
-                            media_type=sd.media_type,
-                        )
                     self.mass.create_task(provider.cancel(session_key))
             provider_ids -= evicted
             if not provider_ids:
                 self._active_sessions.pop(session_key, None)
-                self._session_meta.pop(session_key, None)
 
     async def _buffer_reader_worker(self, session_key: str, audio_buffer: AudioBuffer) -> None:
         """
@@ -1356,26 +1346,3 @@ class AudioAnalysisController:
         except Exception:
             value = DEFAULT_BACKGROUND_SCAN_CONCURRENCY
         return max(1, min(value, 16))
-
-    async def _record_track_level_failure(
-        self, session_key: str, streamdetails: StreamDetails, reason: str
-    ) -> None:
-        """
-        Record a failure for every provider that accepted this session.
-
-        :param session_key: Active-session key for the failed track.
-        :param streamdetails: Stream details for the failed track.
-        :param reason: Human-readable failure reason.
-        """
-        for prov_id in self._active_sessions.get(session_key, set()):
-            provider = self.mass.get_provider(prov_id)
-            if not isinstance(provider, AudioAnalysisProvider):
-                continue
-            await self.record_analysis_failure(
-                item_id=streamdetails.item_id,
-                provider_instance_id_or_domain=streamdetails.provider,
-                aa_provider_domain=provider.domain,
-                reason=reason,
-                analysis_version=provider.analysis_version,
-                media_type=streamdetails.media_type,
-            )
