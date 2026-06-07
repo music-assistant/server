@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pathlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
@@ -176,3 +176,66 @@ async def test_set_audio_analysis_clears_existing_failure(real_db: DatabaseConne
         analysis=AudioAnalysisData(energy=0.5),
     )
     assert await real_db.get_rows(DB_TABLE_AUDIO_ANALYSIS_FAILURES, limit=0) == []
+
+
+async def _insert_pm(db: DatabaseConnection, item_id: str) -> None:
+    await db.insert(
+        DB_TABLE_PROVIDER_MAPPINGS,
+        {
+            "provider_item_id": item_id,
+            "provider_instance": "filesystem_local--abc",
+            "provider_domain": "filesystem_local",
+            "media_type": "track",
+        },
+    )
+
+
+async def _insert_failure(
+    db: DatabaseConnection, item_id: str, *, next_retry, version: int = 1
+) -> None:
+    await db.insert_or_replace(
+        DB_TABLE_AUDIO_ANALYSIS_FAILURES,
+        {
+            "media_type": "track",
+            "item_id": item_id,
+            "provider": "filesystem_local--abc",
+            "aa_provider_domain": "sonic_analysis",
+            "reason": "x",
+            "analysis_version": version,
+            "next_retry": next_retry,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_candidate_gate_excludes_blocked_includes_eligible(
+    real_db: DatabaseConnection,
+) -> None:
+    """Blocked (NULL / future, current version) failures are excluded; others are candidates."""
+    music_prov = _make_fs_music_provider()
+    controller = _make_controller(real_db, music_prov)
+
+    aa_provider = MagicMock()
+    aa_provider.domain = "sonic_analysis"
+    aa_provider.analysis_version = 2
+
+    # never-retry, current version -> excluded
+    await _insert_pm(real_db, "blocked_null")
+    await _insert_failure(real_db, "blocked_null", next_retry=None, version=2)
+    # future retry, current version -> excluded
+    future = int((datetime.now(UTC) + timedelta(days=1)).timestamp())
+    await _insert_pm(real_db, "blocked_future")
+    await _insert_failure(real_db, "blocked_future", next_retry=future, version=2)
+    # past-due retry -> included
+    past = int((datetime.now(UTC) - timedelta(days=1)).timestamp())
+    await _insert_pm(real_db, "due")
+    await _insert_failure(real_db, "due", next_retry=past, version=2)
+    # stale version (1 < current 2) -> included
+    await _insert_pm(real_db, "stale")
+    await _insert_failure(real_db, "stale", next_retry=None, version=1)
+    # no failure at all -> included
+    await _insert_pm(real_db, "clean")
+
+    candidates = await controller._find_candidates_missing_analysis([aa_provider], limit=0)
+    found = {c["item_id"] for c in candidates}
+    assert found == {"due", "stale", "clean"}

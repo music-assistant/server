@@ -30,7 +30,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBufferDiscarded, AudioBufferEOF
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.datetime import local_clock_time_to_utc
+from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.helpers.util import is_arm
 from music_assistant.models.audio_analysis import AudioAnalysisData
@@ -986,6 +986,7 @@ class AudioAnalysisController:
         pre-versioning rows, is also treated as stale). This mirrors the
         per-track version gate in AudioAnalysisProvider.start_analysis so a
         provider bumping its analysis_version triggers a background re-scan.
+        Tracks with a blocking failure row for the domain are also excluded.
 
         :param aa_provider_versions: Mapping of AA provider domain to the
             provider's current analysis_version.
@@ -1010,6 +1011,7 @@ class AudioAnalysisController:
         )
         params: dict[str, Any] = {
             "media_type": MediaType.TRACK.value,
+            "now": int(utc_timestamp()),
             **{f"aa_{i}": d for i, d in enumerate(aa_domains)},
             **{f"ver_{i}": aa_provider_versions[d] for i, d in enumerate(aa_domains)},
         }
@@ -1033,6 +1035,15 @@ class AudioAnalysisController:
             f"      AND aa.analysis_version IS NOT NULL "
             f"      AND aa.analysis_version >= possible.current_version"
             f"  ) "
+            f"  AND NOT EXISTS ("
+            f"    SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS_FAILURES} f "
+            f"    WHERE f.item_id = pm.provider_item_id "
+            f"      AND f.provider = pm.provider_instance "
+            f"      AND f.aa_provider_domain = possible.aa_provider_domain "
+            f"      AND f.media_type = :media_type "
+            f"      AND f.analysis_version >= possible.current_version "
+            f"      AND (f.next_retry IS NULL OR f.next_retry > :now)"
+            f"  ) "
             f"GROUP BY pm.provider_item_id, pm.provider_instance"
         )
         rows = await self.mass.music.database.get_rows_from_query(query, params, limit=limit)
@@ -1055,7 +1066,8 @@ class AudioAnalysisController:
         Count filesystem candidate tracks needing (re)analysis for aa_domain.
 
         A track is counted when it has no analysis row for the domain, or when
-        its stored analysis_version is NULL or less than current_version.
+        its stored analysis_version is NULL or less than current_version, and it
+        has no blocking failure row for the domain.
         """
         filesystem_domains = self._available_filesystem_domains()
         if not filesystem_domains:
@@ -1073,6 +1085,15 @@ class AudioAnalysisController:
             f"      AND aa.media_type = :media_type "
             f"      AND aa.analysis_version IS NOT NULL "
             f"      AND aa.analysis_version >= :current_version"
+            f"  ) "
+            f"  AND NOT EXISTS ("
+            f"    SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS_FAILURES} f "
+            f"    WHERE f.item_id = pm.provider_item_id "
+            f"      AND f.provider = pm.provider_instance "
+            f"      AND f.aa_provider_domain = :aa_domain "
+            f"      AND f.media_type = :media_type "
+            f"      AND f.analysis_version >= :current_version "
+            f"      AND (f.next_retry IS NULL OR f.next_retry > :now)"
             f"  )"
         )
         return await self.mass.music.database.get_count_from_query(
@@ -1081,6 +1102,7 @@ class AudioAnalysisController:
                 "media_type": MediaType.TRACK.value,
                 "aa_domain": aa_domain,
                 "current_version": current_version,
+                "now": int(utc_timestamp()),
             },
         )
 
