@@ -22,6 +22,7 @@ from bandcamp_async_api.models import (
     CollectionSummary,
     CollectionType,
     FanItem,
+    FeedResponse,
     FollowingItem,
 )
 from mashumaro.exceptions import UnserializableDataError
@@ -36,7 +37,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
-    ResourceTemporarilyUnavailable,
+    RateLimited,
 )
 from music_assistant_models.media_items import (
     Album,
@@ -46,8 +47,10 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemImage,
     MediaItemType,
+    RecommendationFolder,
     SearchResults,
     Track,
+    UniqueList,
 )
 from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.streamdetails import StreamDetails
@@ -140,7 +143,7 @@ class BandcampProvider(MusicProvider):
         rate_limit=50,  # requests per period seconds
         period=10,
         initial_backoff=3,  # Bandcamp responds with Retry-After 3
-        retry_attempts=10,
+        retry_attempts=5,
     )
     top_tracks_limit: int
 
@@ -190,7 +193,7 @@ class BandcampProvider(MusicProvider):
         except BandcampNotFoundError as error:
             raise MediaNotFoundError("No results for Bandcamp search") from error
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampAPIError as error:
@@ -230,7 +233,7 @@ class BandcampProvider(MusicProvider):
                 fan_id=fan_id,
             )
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
 
@@ -271,7 +274,7 @@ class BandcampProvider(MusicProvider):
             older_than_token = page.last_token
         return all_items
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from Bandcamp."""
         if not self._client.identity:  # library requires identity
             return
@@ -295,13 +298,13 @@ class BandcampProvider(MusicProvider):
         except BandcampNotFoundError as error:
             raise MediaNotFoundError("Bandcamp library artists returned no results") from error
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampAPIError as error:
             raise MediaNotFoundError("Failed to get library artists") from error
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from Bandcamp."""
         if not self._client.identity:  # library requires identity
             return
@@ -318,13 +321,13 @@ class BandcampProvider(MusicProvider):
         except BandcampNotFoundError as error:
             raise MediaNotFoundError("Bandcamp library albums returned no results") from error
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampAPIError as error:
             raise MediaNotFoundError("Failed to get library albums") from error
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Bandcamp."""
         if not self._client.identity:  # library requires identity
             return
@@ -345,7 +348,7 @@ class BandcampProvider(MusicProvider):
         except BandcampNotFoundError as error:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found on Bandcamp") from error
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampAPIError as error:
@@ -362,7 +365,7 @@ class BandcampProvider(MusicProvider):
         except BandcampNotFoundError as error:
             raise MediaNotFoundError(f"Album {prov_album_id} not found on Bandcamp") from error
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampAPIError as error:
@@ -394,7 +397,7 @@ class BandcampProvider(MusicProvider):
         except BandcampNotFoundError as error:
             raise MediaNotFoundError(f"Track {item_id} not found on Bandcamp") from error
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampAPIError as error:
@@ -444,7 +447,7 @@ class BandcampProvider(MusicProvider):
                 f"Album tracks for {prov_album_id} not found on Bandcamp"
             ) from error
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampAPIError as error:
@@ -466,7 +469,7 @@ class BandcampProvider(MusicProvider):
                 f"Artist {prov_artist_id} albums not found on Bandcamp"
             ) from error
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampAPIError as error:
@@ -486,6 +489,65 @@ class BandcampProvider(MusicProvider):
                 break
 
         return tracks[: self.top_tracks_limit]
+
+    async def recommendations(self) -> list[RecommendationFolder]:
+        """Surface Bandcamp's personalised feed and wishlist as recommendations."""
+        if not self._client.identity:
+            return []
+        folders: list[RecommendationFolder] = []
+        if feed_tracks := await self._get_feed_tracks():
+            folders.append(
+                RecommendationFolder(
+                    item_id="feed",
+                    provider=self.instance_id,
+                    name="Bandcamp Feed",
+                    icon="mdi-rss",
+                    items=UniqueList(feed_tracks),
+                )
+            )
+        if wishlist := await self._browse_person_content(None, CollectionType.WISHLIST):
+            folders.append(
+                RecommendationFolder(
+                    item_id="wishlist",
+                    provider=self.instance_id,
+                    name="Wishlist",
+                    icon="mdi-heart",
+                    items=UniqueList(wishlist),
+                )
+            )
+        return folders
+
+    @throttle_with_retries
+    async def _fetch_feed(self) -> FeedResponse:
+        """Fetch the authenticated user's feed with throttling and retry."""
+        try:
+            return await self._client.get_feed()
+        except BandcampRateLimitError as error:
+            raise RateLimited(
+                "Bandcamp rate limit reached", backoff_time=error.retry_after
+            ) from error
+
+    async def _get_feed_tracks(self) -> list[Track]:
+        """Fetch and convert the streamable tracks from the user's feed."""
+        cache_key = "_feed_tracks"
+        cached = await self.mass.cache.get(cache_key, provider=self.instance_id, base_class=Track)
+        if cached is not None:
+            return cached  # type: ignore[no-any-return]
+        tracks: list[Track] = []
+        async with self._map_api_errors("Failed to get Bandcamp feed"):
+            feed = await self._fetch_feed()
+            tracks = [
+                self._converters.track_from_feed(track)
+                for track in feed.track_list
+                if track.streaming_url
+            ]
+        await self.mass.cache.set(
+            cache_key,
+            [t.to_dict() for t in tracks],
+            expiration=CACHE_USER_LISTS if tracks else CACHE_EMPTY_RESULTS,
+            provider=self.instance_id,
+        )
+        return tracks
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this provider's items.
@@ -671,7 +733,7 @@ class BandcampProvider(MusicProvider):
         except BandcampMustBeLoggedInError as error:
             raise LoginFailed("Wrong Bandcamp identity token.") from error
         except BandcampRateLimitError as error:
-            raise ResourceTemporarilyUnavailable(
+            raise RateLimited(
                 "Bandcamp rate limit reached", backoff_time=error.retry_after
             ) from error
         except BandcampAPIError as error:

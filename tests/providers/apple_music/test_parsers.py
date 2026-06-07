@@ -1,13 +1,24 @@
 """Regression tests for Apple Music parser and library fallbacks."""
 
+from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.media_items import Album, ItemMapping
 
-from music_assistant.providers.apple_music.library import AppleMusicLibraryManager
+from music_assistant.providers.apple_music.library import _TRACK_PAGE_SIZE, AppleMusicLibraryManager
 from music_assistant.providers.apple_music.media import AppleMusicMediaManager
 from music_assistant.providers.apple_music.parsers import parse_album, parse_track
+
+
+def _stream(items: list[dict[str, Any]]) -> MagicMock:
+    """Mock api.iter_all_items: a sync callable returning a fresh async iterator over items."""
+
+    async def _gen(*_args: Any, **_kwargs: Any) -> Any:
+        for item in items:
+            yield item
+
+    return MagicMock(side_effect=_gen)
 
 
 def _create_provider_mock() -> MagicMock:
@@ -166,14 +177,14 @@ async def test_library_tracks_request_includes_album_relations() -> None:
     """Library track sync should request catalog/album/artist relations from Apple API."""
     provider = _create_provider_mock()
     provider.api_client = MagicMock()
-    provider.api_client.get_all_items = AsyncMock(return_value=[])
+    provider.api_client.iter_all_items = _stream([])
     provider.api_client.get_ratings = AsyncMock(return_value={})
 
     manager = AppleMusicLibraryManager(provider)
     _ = [track async for track in manager.get_library_tracks()]
 
-    provider.api_client.get_all_items.assert_called_once_with(
-        "me/library/songs", include="catalog,albums,artists"
+    provider.api_client.iter_all_items.assert_called_once_with(
+        "me/library/songs", include="catalog,albums,artists", page_size=_TRACK_PAGE_SIZE
     )
 
 
@@ -182,8 +193,8 @@ async def test_library_tracks_falls_back_to_library_item_when_catalog_missing() 
     """Library sync should still parse track if catalog endpoint omits a catalog ID."""
     provider = _create_provider_mock()
     provider.api_client = MagicMock()
-    provider.api_client.get_all_items = AsyncMock(
-        return_value=[
+    provider.api_client.iter_all_items = _stream(
+        [
             {
                 "id": "i.librarytrack2",
                 "type": "library-songs",
@@ -229,8 +240,8 @@ async def test_library_tracks_replaces_weak_catalog_album_mapping() -> None:
     """A weak catalog albumName mapping should be replaced by library album relation."""
     provider = _create_provider_mock()
     provider.api_client = MagicMock()
-    provider.api_client.get_all_items = AsyncMock(
-        return_value=[
+    provider.api_client.iter_all_items = _stream(
+        [
             {
                 "id": "i.librarytrack5",
                 "type": "library-songs",
@@ -306,8 +317,8 @@ async def test_library_tracks_fetches_detail_when_list_item_has_no_album() -> No
     """Library-only tracks should be reparsed from detail endpoint when album is missing."""
     provider = _create_provider_mock()
     provider.api_client = MagicMock()
-    provider.api_client.get_all_items = AsyncMock(
-        return_value=[
+    provider.api_client.iter_all_items = _stream(
+        [
             {
                 "id": "i.librarytrack3",
                 "type": "library-songs",
@@ -357,8 +368,8 @@ async def test_library_tracks_fetches_detail_for_album_name_only_mapping() -> No
     """List items with only albumName fallback should be upgraded to a resolvable album id."""
     provider = _create_provider_mock()
     provider.api_client = MagicMock()
-    provider.api_client.get_all_items = AsyncMock(
-        return_value=[
+    provider.api_client.iter_all_items = _stream(
+        [
             {
                 "id": "i.librarytrack4",
                 "type": "library-songs",

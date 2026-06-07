@@ -350,7 +350,7 @@ class ZvukMusicProvider(MusicProvider):
         fetcher: Any,
         parser: Any,
         item_type: str,
-    ) -> AsyncGenerator[Any, None]:
+    ) -> AsyncGenerator[Any]:
         """Yield parsed items by fetching ``ids`` in batches of DEFAULT_LIMIT.
 
         :param ids: List of item IDs to fetch.
@@ -367,7 +367,7 @@ class ZvukMusicProvider(MusicProvider):
                 except InvalidDataError as err:
                     self.logger.debug("Error parsing library %s: %s", item_type, err)
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from Zvuk Music."""
         collection = await self.client.get_collection()
         if not collection or not collection.artists:
@@ -378,7 +378,7 @@ class ZvukMusicProvider(MusicProvider):
         ):
             yield artist
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from Zvuk Music."""
         collection = await self.client.get_collection()
         if not collection or not collection.releases:
@@ -387,7 +387,7 @@ class ZvukMusicProvider(MusicProvider):
         async for album in self._iter_batched(ids, self.client.get_releases, parse_album, "album"):
             yield album
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Zvuk Music."""
         collection = await self.client.get_collection()
         if not collection or not collection.tracks:
@@ -396,7 +396,7 @@ class ZvukMusicProvider(MusicProvider):
         async for track in self._iter_batched(ids, self.client.get_tracks, parse_track, "track"):
             yield track
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library playlists from Zvuk Music.
 
         Yields user's own playlists followed by Zvuk's personalized synthesis

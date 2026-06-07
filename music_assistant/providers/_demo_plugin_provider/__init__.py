@@ -273,7 +273,7 @@ class MyDemoPluginprovider(PluginProvider):
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Yield raw audio bytes for the given streamdetails."""
         # OPTIONAL
         # Will only be called when get_stream_details returned

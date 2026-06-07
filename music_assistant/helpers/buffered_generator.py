@@ -22,7 +22,7 @@ _ACTIVE_PRODUCER_TASKS: set[asyncio.Task[Any]] = set()
 
 
 async def _finalize_producer(
-    generator: AsyncGenerator[bytes, None],
+    generator: AsyncGenerator[bytes],
     completed_naturally: bool,
     buffer: asyncio.Queue[bytes | None],
     threshold_reached: asyncio.Event,
@@ -67,10 +67,10 @@ async def _shutdown_producer(
 
 
 async def buffered(
-    generator: AsyncGenerator[bytes, None],
+    generator: AsyncGenerator[bytes],
     buffer_size: int = DEFAULT_BUFFER_SIZE,
     min_buffer_before_yield: int = DEFAULT_MIN_BUFFER_BEFORE_YIELD,
-) -> AsyncGenerator[bytes, None]:
+) -> AsyncGenerator[bytes]:
     """
     Add buffering to an async generator that yields (chunks of) bytes.
 
@@ -168,8 +168,8 @@ def use_buffer(
     buffer_size: int = DEFAULT_BUFFER_SIZE,
     min_buffer_before_yield: int = DEFAULT_MIN_BUFFER_BEFORE_YIELD,
 ) -> Callable[
-    [Callable[_P, AsyncGenerator[bytes, None]]],
-    Callable[_P, AsyncGenerator[bytes, None]],
+    [Callable[_P, AsyncGenerator[bytes]]],
+    Callable[_P, AsyncGenerator[bytes]],
 ]:
     """
     Add buffering to async generator functions that yield bytes (decorator).
@@ -189,10 +189,10 @@ def use_buffer(
     """
 
     def decorator(
-        func: Callable[_P, AsyncGenerator[bytes, None]],
-    ) -> Callable[_P, AsyncGenerator[bytes, None]]:
+        func: Callable[_P, AsyncGenerator[bytes]],
+    ) -> Callable[_P, AsyncGenerator[bytes]]:
         @wraps(func)
-        async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> AsyncGenerator[bytes, None]:
+        async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> AsyncGenerator[bytes]:
             async for chunk in buffered(
                 func(*args, **kwargs),
                 buffer_size=buffer_size,

@@ -113,32 +113,32 @@ class DeezerProvider(MusicProvider):
 
     # -- Library retrieval --
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Deezer."""
         async for item in self.media_manager.get_library_artists():
             yield item
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve all library albums from Deezer."""
         async for item in self.media_manager.get_library_albums():
             yield item
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from Deezer."""
         async for item in self.media_manager.get_library_playlists():
             yield item
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve all library tracks from Deezer."""
         async for item in self.media_manager.get_library_tracks():
             yield item
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library/subscribed podcasts from Deezer."""
         async for item in self.media_manager.get_library_podcasts():
             yield item
 
-    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Retrieve library/subscribed audiobooks from Deezer."""
         async for item in self.media_manager.get_library_audiobooks():
             yield item
@@ -205,7 +205,7 @@ class DeezerProvider(MusicProvider):
 
     async def get_podcast_episodes(
         self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    ) -> AsyncGenerator[PodcastEpisode]:
         """Get all episodes for a given podcast."""
         async for ep in self.media_manager.get_podcast_episodes(prov_podcast_id):
             yield ep
@@ -282,7 +282,7 @@ class DeezerProvider(MusicProvider):
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Return the audio stream for the provider item."""
         async for chunk in self.streaming_manager.get_audio_stream(streamdetails, seek_position):
             yield chunk

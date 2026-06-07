@@ -44,6 +44,7 @@ from music_assistant_models.media_items import (
     Playlist,
     Podcast,
     ProviderMapping,
+    Radio,
     RecommendationFolder,
     SearchResults,
     Track,
@@ -71,6 +72,7 @@ from music_assistant.constants import (
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
     DEFAULT_GENRE_MAPPING,
+    GENRE_ICONS_DIR_NAME,
     LOUDNESS_MEASUREMENT_MIN_LUFS,
     PROVIDERS_WITH_SHAREABLE_URLS,
 )
@@ -107,16 +109,18 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import Audiobook, PodcastEpisode
 
     from music_assistant import MusicAssistant
+    from music_assistant.controllers.media.base import MediaControllerBase
     from music_assistant.models import ProviderInstanceType
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.models.provider import Provider
+    from music_assistant.providers.builtin import BuiltinProvider
 
 
 CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 40
+DB_SCHEMA_VERSION: Final[int] = 41
 # tracks longer that this will not be included in radio mode
 RADIO_TRACK_MAX_DURATION_SECS: Final[int] = 20 * 60
 _DYNAMIC_RADIO_BASE_SAMPLE_SIZE: Final[int] = 5
@@ -167,7 +171,7 @@ class MusicController(CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        entries = (
+        entries: tuple[ConfigEntry, ...] = (
             ConfigEntry(
                 key=CONF_RESET_DB,
                 type=ConfigEntryType.ACTION,
@@ -199,8 +203,9 @@ class MusicController(CoreController):
         # setup library database
         await self._setup_database()
         # make sure to finish any removal jobs
-        for removed_provider in self.mass.config.get_raw_core_config_value(
-            self.domain, CONF_DELETED_PROVIDERS, []
+        for removed_provider in cast(
+            "list[str]",
+            self.mass.config.get_raw_core_config_value(self.domain, CONF_DELETED_PROVIDERS, []),
         ):
             await self.cleanup_provider(removed_provider)
 
@@ -230,11 +235,14 @@ class MusicController(CoreController):
 
         Note that this applies user provider filters (for all user types).
         """
-        return [
-            x
-            for x in self._apply_user_provider_filter(self.mass.providers)
-            if x.type == ProviderType.MUSIC
-        ]
+        return cast(
+            "list[MusicProvider]",
+            [
+                x
+                for x in self._apply_user_provider_filter(self.mass.providers)
+                if x.type == ProviderType.MUSIC
+            ],
+        )
 
     def _apply_user_provider_filter(
         self,
@@ -277,7 +285,7 @@ class MusicController(CoreController):
                     continue
                 # handle mediatype specific sync config
                 conf_key = f"library_sync_{media_type}s"
-                sync_conf = await self.mass.config.get_provider_config_value(
+                sync_conf: ConfigValueType = await self.mass.config.get_provider_config_value(
                     provider.instance_id, conf_key
                 )
                 if not sync_conf:
@@ -294,7 +302,7 @@ class MusicController(CoreController):
                             handler=self._create_provider_sync_handler(provider, media_type),
                             translation_key=self._get_sync_task_translation_key(media_type),
                             translation_args=[provider.name],
-                            user_id=get_current_user().user_id if get_current_user() else None,
+                            user_id=(user.user_id if (user := get_current_user()) else None),
                             metadata=self._get_sync_task_metadata(provider, media_type),
                             allow_retry=True,
                             priority=True,
@@ -342,7 +350,7 @@ class MusicController(CoreController):
             category=CACHE_CATEGORY_SEARCH_RESULTS,
             base_class=SearchResults,
         ):
-            return cache
+            return cast("SearchResults", cache)
         if not media_types:
             media_types = MediaType.ALL
         # Check if the search query is a streaming provider public shareable URL
@@ -369,17 +377,17 @@ class MusicController(CoreController):
                     return SearchResults()
                 else:
                     if media_type == MediaType.ARTIST:
-                        return SearchResults(artists=[item])
+                        return SearchResults(artists=[cast("Artist", item)])
                     if media_type == MediaType.ALBUM:
-                        return SearchResults(albums=[item])
+                        return SearchResults(albums=[cast("Album", item)])
                     if media_type == MediaType.TRACK:
-                        return SearchResults(tracks=[item])
+                        return SearchResults(tracks=[cast("Track", item)])
                     if media_type == MediaType.PLAYLIST:
-                        return SearchResults(playlists=[item])
+                        return SearchResults(playlists=[cast("Playlist", item)])
                     if media_type == MediaType.AUDIOBOOK:
-                        return SearchResults(audiobooks=[item])
+                        return SearchResults(audiobooks=[cast("Audiobook", item)])
                     if media_type == MediaType.PODCAST:
-                        return SearchResults(podcasts=[item])
+                        return SearchResults(podcasts=[cast("Podcast", item)])
                     return SearchResults()
         # handle normal global search by querying all providers
         results_per_provider: list[SearchResults] = []
@@ -400,7 +408,7 @@ class MusicController(CoreController):
                     library_results.podcasts,
                 )
                 for item in items
-                for prov_mapping in item.provider_mappings
+                for prov_mapping in cast("MediaItemType", item).provider_mappings
             }
             # include results from library + all (unique) music providers
             results_per_provider += await asyncio.gather(
@@ -497,7 +505,7 @@ class MusicController(CoreController):
         :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
         """
-        prov = self.mass.get_provider(provider_instance_id_or_domain)
+        prov = self.mass.get_provider(provider_instance_id_or_domain, provider_type=MusicProvider)
         if not prov:
             return SearchResults()
         if ProviderFeature.SEARCH not in prov.supported_features:
@@ -505,11 +513,15 @@ class MusicController(CoreController):
 
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")
-        prov_search_results = await prov.search(
-            search_query,
-            media_types,
-            limit,
-        )
+        try:
+            prov_search_results = await prov.search(
+                search_query,
+                media_types,
+                limit,
+            )
+        except MusicAssistantError as err:
+            self.logger.warning("Search on provider %s failed: %s", prov.name, err)
+            raise MusicAssistantError(f"Search failed due to an error on {prov.name}") from err
         if skip_item_ids:
             # filter out items already in skip_item_ids
             prov_search_results.artists = [
@@ -562,23 +574,25 @@ class MusicController(CoreController):
             search_results = await ctrl.search(search_query, "library", limit=limit)
             if search_results:
                 if media_type == MediaType.ARTIST:
-                    result.artists = search_results
+                    result.artists = cast("list[Artist]", search_results)
                 elif media_type == MediaType.ALBUM:
-                    result.albums = search_results
+                    result.albums = cast("list[Album]", search_results)
                 elif media_type == MediaType.TRACK:
-                    result.tracks = search_results
+                    result.tracks = cast("list[Track]", search_results)
                 elif media_type == MediaType.PLAYLIST:
-                    result.playlists = search_results
+                    result.playlists = cast("list[Playlist]", search_results)
                 elif media_type == MediaType.RADIO:
-                    result.radio = search_results
+                    result.radio = cast("list[Radio]", search_results)
                 elif media_type == MediaType.AUDIOBOOK:
-                    result.audiobooks = search_results
+                    result.audiobooks = cast("list[Audiobook]", search_results)
                 elif media_type == MediaType.PODCAST:
-                    result.podcasts = search_results
+                    result.podcasts = cast("list[Podcast]", search_results)
         return result
 
     @api_command("music/browse")
-    async def browse(self, path: str | None = None) -> Sequence[MediaItemType | BrowseFolder]:
+    async def browse(
+        self, path: str | None = None
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse Music providers."""
         if not path or path == "root":
             # root level; folder per provider that declares BROWSE
@@ -627,13 +641,13 @@ class MusicController(CoreController):
         # provider level
         prepend_items: list[BrowseFolder] = []
         provider_instance, sub_path = path.split("://", 1)
-        prov = self.mass.get_provider(provider_instance)
+        browse_prov = self.mass.get_provider(provider_instance)
         # handle regular provider listing, always add back folder first
-        if not prov or not sub_path:
+        if not browse_prov or not sub_path:
             prepend_items.append(
                 BrowseFolder(item_id="root", provider="library", path="root", name="..")
             )
-            if not prov:
+            if not browse_prov:
                 return prepend_items
         else:
             back_path = f"{provider_instance}://" + "/".join(sub_path.split("/")[:-1])
@@ -647,16 +661,16 @@ class MusicController(CoreController):
             )
         # AudioSource providers don't implement browse(); list their initiable sources directly
         if (
-            isinstance(prov, PluginProvider)
-            and ProviderFeature.AUDIO_SOURCE in prov.supported_features
+            isinstance(browse_prov, PluginProvider)
+            and ProviderFeature.AUDIO_SOURCE in browse_prov.supported_features
         ):
-            initiable: list[MediaItemType | BrowseFolder] = [
-                source for source in await prov.get_audio_sources() if source.can_initiate
+            initiable_items: list[MediaItemType | BrowseFolder] = [
+                source for source in await browse_prov.get_audio_sources() if source.can_initiate
             ]
-            return [*prepend_items, *initiable]
+            return [*prepend_items, *initiable_items]
         # limit -1 to account for the prepended items
-        prov_items = await prov.browse(path=path)
-        return prepend_items + prov_items
+        prov_items = await cast("MusicProvider", browse_prov).browse(path=path)
+        return [*prepend_items, *prov_items]
 
     @api_command("music/recently_played_items")
     async def recently_played(
@@ -667,6 +681,7 @@ class MusicController(CoreController):
         queue_id: str | None = None,
         fully_played_only: bool = True,
         user_initiated_only: bool = False,
+        played_after_timestamp: int | None = None,
     ) -> list[ItemMapping]:
         """Return a list of the last played items.
 
@@ -676,6 +691,8 @@ class MusicController(CoreController):
         :param queue_id: Filter by specific queue ID.
         :param fully_played_only: If True, only return fully played items.
         :param user_initiated_only: If True, only return items initiated by the user.
+        :param played_after_timestamp: If set, only return items played at or after this
+            epoch-seconds timestamp.
         """
         if media_types is None:
             media_types = MediaType.ALL
@@ -701,6 +718,9 @@ class MusicController(CoreController):
         if queue_id:
             query += "AND queue_id = :queue_id "
             params["queue_id"] = queue_id
+        if played_after_timestamp is not None:
+            query += "AND timestamp >= :played_after_timestamp "
+            params["played_after_timestamp"] = played_after_timestamp
         query += "ORDER BY timestamp DESC"
         db_rows = await self.mass.music.database.get_rows_from_query(
             query, params=params or None, limit=limit
@@ -874,7 +894,9 @@ class MusicController(CoreController):
         results_per_provider: list[list[RecommendationFolder]] = await asyncio.gather(
             self._get_default_recommendations(),
             *[
-                self._get_provider_recommendations(provider_instance)
+                self._get_provider_recommendations(
+                    cast("MusicProvider | MetadataProvider | PluginProvider", provider_instance)
+                )
                 for provider_instance in recommendation_providers
             ],
         )
@@ -973,7 +995,8 @@ class MusicController(CoreController):
             provider_instance_id_or_domain = "library"
         if provider_instance_id_or_domain == "builtin":
             # handle special case of 'builtin' MusicProvider which allows us to play regular url's
-            return await self.mass.get_provider("builtin").parse_item(item_id)
+            builtin_prov = cast("BuiltinProvider", self.mass.get_provider("builtin"))
+            return await builtin_prov.parse_item(item_id)
         if media_type == MediaType.PODCAST_EPISODE:
             # special case for podcast episodes
             return await self.podcasts.episode(item_id, provider_instance_id_or_domain)
@@ -1033,7 +1056,8 @@ class MusicController(CoreController):
                 uri_media_type = None
             if uri_media_type == MediaType.AUDIO_SOURCE:
                 raise UnsupportedFeaturedException("AudioSource items can not be favorites")
-            item = await self.get_item_by_uri(item)
+            # a favorite URI always resolves to a media item, never a BrowseFolder
+            item = cast("MediaItemType", await self.get_item_by_uri(item))
         if item.media_type == MediaType.AUDIO_SOURCE:
             # AudioSources are dynamic plugin surfaces (existence depends on a
             # running plugin and its current device state) and have no stable
@@ -1041,10 +1065,13 @@ class MusicController(CoreController):
             raise UnsupportedFeaturedException("AudioSource items can not be favorites")
         # make sure we have a full library item
         # a favorite must always be in the library
-        full_item = await self.get_item(
-            item.media_type,
-            item.item_id,
-            item.provider,
+        full_item = cast(
+            "MediaItemType",
+            await self.get_item(
+                item.media_type,
+                item.item_id,
+                item.provider,
+            ),
         )
         if full_item.provider != "library":
             full_item = await self.add_item_to_library(full_item)
@@ -1056,7 +1083,9 @@ class MusicController(CoreController):
         )
         # forward to provider(s) if needed
         for prov_mapping in full_item.provider_mappings:
-            provider = self.mass.get_provider(prov_mapping.provider_instance)
+            provider = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
             if not provider or not self.library_favorites_edit_supported(
                 provider, full_item.media_type
             ):
@@ -1078,7 +1107,9 @@ class MusicController(CoreController):
         # forward to provider(s) if needed
         full_item = await ctrl.get_library_item(library_item_id)
         for prov_mapping in full_item.provider_mappings:
-            provider = self.mass.get_provider(prov_mapping.provider_instance)
+            provider = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
             if not provider or not self.library_favorites_edit_supported(
                 provider, full_item.media_type
             ):
@@ -1100,7 +1131,9 @@ class MusicController(CoreController):
         for prov_mapping in full_item.provider_mappings:
             if not prov_mapping.in_library:
                 continue
-            provider = self.mass.get_provider(prov_mapping.provider_instance)
+            provider = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
             if not provider or not self.library_edit_supported(provider, full_item.media_type):
                 continue
             if not self.library_sync_back_enabled(provider, full_item.media_type):
@@ -1117,7 +1150,8 @@ class MusicController(CoreController):
         """Add item (uri or mediaitem) to the library."""
         if isinstance(item, ItemMapping):
             # handle browse results that are returned as ItemMappings
-            item = item.uri
+            # uri is always populated post-init, so it is never None here
+            item = cast("str", item.uri)
         # ensure we have a full item
         if isinstance(item, str):
             # Inspect the URI's media_type first so a stale audio-source URI
@@ -1142,6 +1176,7 @@ class MusicController(CoreController):
                 item.item_id,
                 item.provider,
             )
+        full_item = cast("MediaItemType", full_item)
         if full_item.media_type == MediaType.AUDIO_SOURCE:
             # AudioSources are dynamic plugin surfaces (existence depends on a
             # running plugin and its current device state) and have no stable
@@ -1153,7 +1188,9 @@ class MusicController(CoreController):
             # from disappearing when the provider doesn't support library edit
             # or 2-way sync is disabled.
             prov_mapping.in_library = True
-            provider = self.mass.get_provider(prov_mapping.provider_instance)
+            provider = self.mass.get_provider(
+                prov_mapping.provider_instance, provider_type=MusicProvider
+            )
             if not provider or not self.library_edit_supported(provider, full_item.media_type):
                 continue
             if not self.library_sync_back_enabled(provider, full_item.media_type):
@@ -1164,7 +1201,10 @@ class MusicController(CoreController):
             self.mass.create_task(provider.library_add(prov_item))
         # add (or overwrite) to library
         ctrl = self.get_controller(full_item.media_type)
-        library_item = await ctrl.add_item_to_library(full_item, overwrite_existing)
+        # ctrl is chosen by media_type, so it matches full_item's runtime type
+        library_item = await cast("MediaControllerBase[MediaItemType]", ctrl).add_item_to_library(
+            full_item, overwrite_existing
+        )
         # optionally import all album tracks into the library, mirroring the behavior
         # of the library sync (which only triggers on a (scheduled) full sync run)
         if full_item.media_type == MediaType.ALBUM:
@@ -1205,7 +1245,8 @@ class MusicController(CoreController):
         """Try to refresh a mediaitem by requesting it's full object or search for substitutes."""
         if isinstance(media_item, str):
             # media item uri given
-            media_item = await self.get_item_by_uri(media_item)
+            # a refresh URI always resolves to a media item, never a BrowseFolder
+            media_item = cast("MediaItemType", await self.get_item_by_uri(media_item))
 
         media_type = media_item.media_type
         ctrl = self.get_controller(media_type)
@@ -1245,6 +1286,7 @@ class MusicController(CoreController):
         else:
             # try to find a substitute using search
             searchresult = await self.search(media_item.name, [media_item.media_type], 20)
+            result: Sequence[MediaItemType | ItemMapping]
             if media_item.media_type == MediaType.ARTIST:
                 result = searchresult.artists
             elif media_item.media_type == MediaType.ALBUM:
@@ -1279,7 +1321,10 @@ class MusicController(CoreController):
             key = (prov_mapping.provider_instance, prov_mapping.item_id)
             if prov_mapping.in_library is None and key in in_library_cache:
                 prov_mapping.in_library = in_library_cache[key]
-        library_item = await ctrl.update_item_in_library(library_id, media_item, overwrite=True)
+        # ctrl is chosen by media_type, so it matches media_item's runtime type
+        library_item = await cast(
+            "MediaControllerBase[MediaItemType]", ctrl
+        ).update_item_in_library(library_id, media_item, overwrite=True)
         if library_item.media_type == MediaType.ALBUM:
             # update (local) album tracks
             for album_track in await self.albums.tracks(
@@ -1297,7 +1342,7 @@ class MusicController(CoreController):
                         await self.mass.music.tracks.update_item_in_library(
                             album_track.item_id, prov_track
                         )
-        await ctrl.match_providers(library_item)
+        await cast("MediaControllerBase[MediaItemType]", ctrl).match_providers(library_item)
         await self.mass.metadata.update_metadata(library_item, force_refresh=True)
         return library_item
 
@@ -1509,15 +1554,14 @@ class MusicController(CoreController):
         )
         for allow_item_mapping in (False, True):
             for search_track in search_result.tracks:
-                is_track = isinstance(search_track, Track)
-                if not allow_item_mapping and not is_track:
+                if not allow_item_mapping and not isinstance(search_track, Track):
                     continue
                 if not compare_strings(track_name, search_track.name):
                     continue
                 if not compare_version(version, search_track.version):
                     continue
                 # check optional artist(s)
-                if artist_name and is_track:
+                if artist_name and isinstance(search_track, Track):
                     for artist in search_track.artists:
                         if compare_strings(artist_name, artist.name, False):
                             break
@@ -1525,14 +1569,15 @@ class MusicController(CoreController):
                         # no artist match found: abort
                         continue
                 # check optional album
-                if (
-                    album_name
-                    and is_track
-                    and not compare_strings(album_name, search_track.album.name, False)
-                ):
-                    # no album match found: abort
-                    continue
-                    # if we reach this, we found a match
+                if album_name and isinstance(search_track, Track):
+                    track_album = search_track.album
+                    # a track without album info can never match a requested album
+                    if track_album is None or not compare_strings(
+                        album_name, track_album.name, False
+                    ):
+                        # no album match found: abort
+                        continue
+                # if we reach this, we found a match
                 if not isinstance(search_track, Track):
                     # ensure we return an actual Track object
                     return await self.mass.music.tracks.get(
@@ -1552,10 +1597,10 @@ class MusicController(CoreController):
                 )
         # try to handle case where multiple artists are given as single string
         if artist_name and (artists := split_artists(artist_name, True)) and len(artists) > 1:
-            for artist in artists:
+            for single_artist in artists:
                 return await self.get_track_by_name(
                     track_name=track_name,
-                    artist_name=artist.split(splitter)[0].strip(),
+                    artist_name=single_artist.split(splitter)[0].strip(),
                     album_name=None,
                     track_version=track_version,
                 )
@@ -1644,7 +1689,8 @@ class MusicController(CoreController):
             params["userid"] = user.user_id
         if db_entry := await self.database.get_row(DB_TABLE_PLAYLOG, params):
             ma_position_ms = db_entry["seconds_played"] * 1000 if db_entry["seconds_played"] else 0
-            ma_fully_played = parse_optional_bool(db_entry["fully_played"])
+            # fully_played is a nullable column; treat an unknown (NULL) value as not played
+            ma_fully_played = parse_optional_bool(db_entry["fully_played"]) or False
             ma_timestamp = from_utc_timestamp(db_entry["timestamp"])
 
         if provider_timestamp is not None and provider_timestamp > ma_timestamp:
@@ -1819,7 +1865,9 @@ class MusicController(CoreController):
 
     async def schedule_provider_sync(self, provider_instance_id: str) -> None:
         """Schedule Library sync for given provider."""
-        if not (provider := self.mass.get_provider(provider_instance_id)):
+        if not (
+            provider := self.mass.get_provider(provider_instance_id, provider_type=MusicProvider)
+        ):
             return
         self.unschedule_provider_sync(provider.instance_id, clear_persisted_state=False)
         for media_type in MediaType:
@@ -1849,7 +1897,9 @@ class MusicController(CoreController):
         with suppress(InvalidDataError):
             task = self.mass.tasks.get_task(task_id)
             return task.schedule
-        if not (provider := self.mass.get_provider(provider_instance_id)):
+        if not (
+            provider := self.mass.get_provider(provider_instance_id, provider_type=MusicProvider)
+        ):
             return None
         if not self.library_supported(provider, media_type):
             return None
@@ -1924,7 +1974,8 @@ class MusicController(CoreController):
         """Search for mappings on all providers for the given library item."""
         ctrl = self.get_controller(media_type)
         db_item = await ctrl.get_library_item(db_id)
-        await ctrl.match_providers(db_item)
+        # ctrl is chosen by media_type, so it matches db_item's runtime type
+        await cast("MediaControllerBase[MediaItemType]", ctrl).match_providers(db_item)
 
     async def update_provider_mapping(
         self,
@@ -1963,7 +2014,10 @@ class MusicController(CoreController):
                 name="In progress",
                 translation_key="in_progress_items",
                 icon="mdi-motion-play",
-                items=await self.in_progress_items(limit=10),
+                items=cast(
+                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
+                    await self.in_progress_items(limit=10),
+                ),
             ),
             RecommendationFolder(
                 item_id="recently_played",
@@ -1971,7 +2025,10 @@ class MusicController(CoreController):
                 name="Recently played",
                 translation_key="recently_played",
                 icon="mdi-motion-play",
-                items=await self.recently_played(limit=10, user_initiated_only=True),
+                items=cast(
+                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
+                    await self.recently_played(limit=10, user_initiated_only=True),
+                ),
             ),
             RecommendationFolder(
                 item_id="recently_added_tracks",
@@ -1979,7 +2036,10 @@ class MusicController(CoreController):
                 name="Recently added tracks",
                 translation_key="recently_added_tracks",
                 icon="music-note-plus",
-                items=await self.tracks.library_items(limit=10, order_by="timestamp_added_desc"),
+                items=cast(
+                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
+                    await self.tracks.library_items(limit=10, order_by="timestamp_added_desc"),
+                ),
             ),
             RecommendationFolder(
                 item_id="recently_added_albums",
@@ -1987,7 +2047,10 @@ class MusicController(CoreController):
                 name="Recently added albums",
                 translation_key="recently_added_albums",
                 icon="music-note-plus",
-                items=await self.albums.library_items(limit=10, order_by="timestamp_added_desc"),
+                items=cast(
+                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
+                    await self.albums.library_items(limit=10, order_by="timestamp_added_desc"),
+                ),
             ),
             RecommendationFolder(
                 item_id="random_artists",
@@ -1995,7 +2058,10 @@ class MusicController(CoreController):
                 name="Random artists",
                 translation_key="random_artists",
                 icon="mdi-account-music",
-                items=await self.artists.library_items(limit=10, order_by="random_play_count"),
+                items=cast(
+                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
+                    await self.artists.library_items(limit=10, order_by="random_play_count"),
+                ),
             ),
             RecommendationFolder(
                 item_id="random_albums",
@@ -2003,7 +2069,10 @@ class MusicController(CoreController):
                 name="Random albums",
                 translation_key="random_albums",
                 icon="mdi-album",
-                items=await self.albums.library_items(limit=10, order_by="random_play_count"),
+                items=cast(
+                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
+                    await self.albums.library_items(limit=10, order_by="random_play_count"),
+                ),
             ),
             RecommendationFolder(
                 item_id="recent_favorite_tracks",
@@ -2011,8 +2080,11 @@ class MusicController(CoreController):
                 name="Recently favorited tracks",
                 translation_key="recent_favorite_tracks",
                 icon="mdi-file-music",
-                items=await self.tracks.library_items(
-                    favorite=True, limit=10, order_by="timestamp_modified_desc"
+                items=cast(
+                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
+                    await self.tracks.library_items(
+                        favorite=True, limit=10, order_by="timestamp_modified_desc"
+                    ),
                 ),
             ),
             RecommendationFolder(
@@ -2021,8 +2093,9 @@ class MusicController(CoreController):
                 name="Favorite playlists",
                 translation_key="favorite_playlists",
                 icon="mdi-playlist-music",
-                items=await self.playlists.library_items(
-                    favorite=True, limit=10, order_by="random"
+                items=cast(
+                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
+                    await self.playlists.library_items(favorite=True, limit=10, order_by="random"),
                 ),
             ),
             RecommendationFolder(
@@ -2031,8 +2104,11 @@ class MusicController(CoreController):
                 name="Favorite Radio stations",
                 translation_key="favorite_radio_stations",
                 icon="mdi-access-point",
-                items=await self.radio.library_items(
-                    favorite=True, limit=10, order_by="play_count_desc"
+                items=cast(
+                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
+                    await self.radio.library_items(
+                        favorite=True, limit=10, order_by="play_count_desc"
+                    ),
                 ),
             ),
         ]
@@ -2160,21 +2236,21 @@ class MusicController(CoreController):
         self._register_provider_mapping_correction_task()
         return self.mass.tasks.run_task(PROVIDER_MAPPING_CORRECTION_TASK_ID)
 
-    def _sort_search_result(
+    def _sort_search_result[SortItemT: MediaItemType | ItemMapping](
         self,
         search_query: str,
-        items: Sequence[MediaItemType | ItemMapping],
-    ) -> UniqueList[MediaItemType | ItemMapping]:
+        items: Sequence[SortItemT],
+    ) -> UniqueList[SortItemT]:
         """Sort search results on priority/preference."""
-        scored_items: list[tuple[int, MediaItemType | ItemMapping]] = []
+        scored_items: list[tuple[int, SortItemT]] = []
         # search results are already sorted by (streaming) providers on relevance
         # but we prefer exact name matches and library items so we simply put those
         # on top of the list.
         safe_title_str = create_safe_string(search_query)
         if " - " in search_query:
-            artist, title_alt = search_query.split(" - ", 1)
+            artist_name, title_alt = search_query.split(" - ", 1)
             safe_title_alt = create_safe_string(title_alt)
-            safe_artist_str = create_safe_string(artist)
+            safe_artist_str = create_safe_string(artist_name)
         else:
             safe_artist_str = None
             safe_title_alt = None
@@ -2206,7 +2282,9 @@ class MusicController(CoreController):
         """Schedule Library sync for given provider and media type."""
         # handle mediatype specific sync config
         conf_key = f"library_sync_{media_type}s"
-        sync_conf = await self.mass.config.get_provider_config_value(provider.instance_id, conf_key)
+        sync_conf: ConfigValueType = await self.mass.config.get_provider_config_value(
+            provider.instance_id, conf_key
+        )
         if not sync_conf:
             self.mass.tasks.unregister_scheduled_task(self._get_sync_task_id(provider, media_type))
             return
@@ -2347,18 +2425,18 @@ class MusicController(CoreController):
                 DB_TABLE_PODCASTS,
             ):
                 try:
-                    await self._database.execute(
+                    await self.database.execute(
                         f"ALTER TABLE {table} ADD COLUMN search_name TEXT DEFAULT '' NOT NULL"
                     )
-                    await self._database.execute(
+                    await self.database.execute(
                         f"ALTER TABLE {table} ADD COLUMN search_sort_name TEXT DEFAULT '' NOT NULL"
                     )
                 except Exception as err:
                     if "duplicate column" not in str(err):
                         raise
                 # migrate all existing values
-                async for db_row in self._database.iter_items(table):
-                    await self._database.update(
+                async for db_row in self.database.iter_items(table):
+                    await self.database.update(
                         table,
                         {"item_id": db_row["item_id"]},
                         {
@@ -2375,7 +2453,7 @@ class MusicController(CoreController):
                 DB_TABLE_AUDIOBOOKS,
                 DB_TABLE_PODCASTS,
             ):
-                async for db_row in self._database.iter_items(table):
+                async for db_row in self.database.iter_items(table):
                     if '"release_date":null' in db_row["metadata"]:
                         continue
                     metadata = json_loads(db_row["metadata"])
@@ -2384,7 +2462,7 @@ class MusicController(CoreController):
                     except (KeyError, ValueError):
                         # this is not a valid date, so we set it to None
                         metadata["release_date"] = None
-                        await self._database.update(
+                        await self.database.update(
                             table,
                             {"item_id": db_row["item_id"]},
                             {
@@ -2404,16 +2482,16 @@ class MusicController(CoreController):
                 "audiobooks",
                 "podcasts",
             ):
-                await self._database.execute(f"DROP TRIGGER IF EXISTS update_{db_table}_timestamp;")
+                await self.database.execute(f"DROP TRIGGER IF EXISTS update_{db_table}_timestamp;")
 
         if prev_version <= 18:
             # add in_library column to provider_mappings table
-            await self._database.execute(
+            await self.database.execute(
                 f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD COLUMN in_library "
                 "BOOLEAN NOT NULL DEFAULT 0;"
             )
             # migrate existing entries in provider_mappings which are filesystem
-            await self._database.execute(
+            await self.database.execute(
                 f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
                 "WHERE provider_domain in ('filesystem_local', 'filesystem_smb');"
             )
@@ -2422,7 +2500,7 @@ class MusicController(CoreController):
             # drop column cache_checksum from playlists table
             # this is no longer used and is a leftover from previous designs
             try:
-                await self._database.execute(
+                await self.database.execute(
                     f"ALTER TABLE {DB_TABLE_PLAYLISTS} DROP COLUMN cache_checksum"
                 )
             except Exception as err:
@@ -2431,13 +2509,13 @@ class MusicController(CoreController):
 
         if prev_version <= 21:
             # drop table for smart fades analysis - it will be recreated with needed columns
-            await self._database.execute("DROP TABLE IF EXISTS smart_fades_analysis")
+            await self.database.execute("DROP TABLE IF EXISTS smart_fades_analysis")
             await self.__create_database_tables()
 
         if prev_version <= 22:
             # add userid column to playlog table
             try:
-                await self._database.execute(
+                await self.database.execute(
                     f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN userid TEXT"
                 )
             except Exception as err:
@@ -2447,8 +2525,8 @@ class MusicController(CoreController):
             # The UNIQUE constraint will be updated when the table is recreated
             # For now, we'll keep the old constraint and add a new one via unique index
             try:
-                await self._database.execute(f"DROP INDEX IF EXISTS {DB_TABLE_PLAYLOG}_unique_idx")
-                await self._database.execute(
+                await self.database.execute(f"DROP INDEX IF EXISTS {DB_TABLE_PLAYLOG}_unique_idx")
+                await self.database.execute(
                     f"CREATE UNIQUE INDEX {DB_TABLE_PLAYLOG}_unique_idx "
                     f"ON {DB_TABLE_PLAYLOG}(item_id,provider,media_type,userid)"
                 )
@@ -2459,7 +2537,7 @@ class MusicController(CoreController):
         if prev_version <= 23:
             # add is_unique column to provider_mappings table
             try:
-                await self._database.execute(
+                await self.database.execute(
                     f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD COLUMN is_unique BOOLEAN"
                 )
             except Exception as err:
@@ -2469,14 +2547,14 @@ class MusicController(CoreController):
         if prev_version <= 24:
             # add queue_id and user_initiated columns to playlog table
             try:
-                await self._database.execute(
+                await self.database.execute(
                     f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN queue_id TEXT"
                 )
             except Exception as err:
                 if "duplicate column" not in str(err):
                     raise
             try:
-                await self._database.execute(
+                await self.database.execute(
                     f"ALTER TABLE {DB_TABLE_PLAYLOG} "
                     "ADD COLUMN user_initiated BOOLEAN NOT NULL DEFAULT 1"
                 )
@@ -2487,18 +2565,18 @@ class MusicController(CoreController):
         if prev_version <= 26:
             # force in_library=True for provider mappings from non-streaming providers
             # streaming providers will be automatically added to library when synced
-            await self._database.execute(
+            await self.database.execute(
                 f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
                 "WHERE provider_domain NOT IN "
                 "('spotify', 'deezer', 'tidal', 'qobuz', 'apple_music', 'ytmusic');"
             )
             # also set in_library=True for all radio items
-            await self._database.execute(
+            await self.database.execute(
                 f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
                 "WHERE media_type = 'radio';"
             )
             # remove invalid playlist provider mappings for playlists which are not in library
-            await self._database.execute(
+            await self.database.execute(
                 f"DELETE FROM {DB_TABLE_PROVIDER_MAPPINGS} "
                 "WHERE media_type = 'playlist' AND in_library = 0;"
             )
@@ -2507,7 +2585,7 @@ class MusicController(CoreController):
             # set streaming provider mappings to in_library=True, but only for items
             # that do not already have any mapping with in_library=True
             # (to avoid overwriting explicit values in multi-instance setups)
-            await self._database.execute(
+            await self.database.execute(
                 f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
                 "WHERE provider_domain NOT IN "
                 "('filesystem_local', 'builtin', 'test', 'jellyfin', 'emby', "
@@ -2524,7 +2602,7 @@ class MusicController(CoreController):
             await self.__create_database_tables()
 
             # Use raw aiosqlite connection for bulk operations.
-            db = self._database._db
+            db = self.database._db
 
             empty_metadata = serialize_to_json({})
             empty_external_ids = serialize_to_json(set())
@@ -2577,12 +2655,12 @@ class MusicController(CoreController):
                 )
                 if row_id and row_id[0]:
                     genre_cache[search_name] = row_id[0]
-                    return row_id[0]
+                    return cast("int", row_id[0])
                 async with db.execute(genre_select_sql, (search_name,)) as cursor:
                     row = await cursor.fetchone()
                     if row:
                         genre_cache[search_name] = row[0]
-                        return row[0]
+                        return cast("int", row[0])
                 return 0
 
             # Phase 1: Seed DEFAULT_GENRE_MAPPING — create genres with aliases.
@@ -2732,13 +2810,13 @@ class MusicController(CoreController):
             # so beat timestamps are misaligned with the unstripped buffers now passed
             # to the crossfade mixer. Truncate the table so all analyses are re-computed.
             with suppress(Exception):
-                await self._database.execute("DELETE FROM smart_fades_analysis")
+                await self.database.execute("DELETE FROM smart_fades_analysis")
 
         if prev_version <= 30:
             # add supported_mediatypes column to playlist table, and make {MediaType.TRACK},
             # i.e. ["track"] the default, as this was the only media type supported.
             try:
-                await self._database.execute(
+                await self.database.execute(
                     f"ALTER TABLE {DB_TABLE_PLAYLISTS} ADD COLUMN supported_mediatypes"
                     " json DEFAULT '[\"track\"]' NOT NULL"
                 )
@@ -2748,7 +2826,7 @@ class MusicController(CoreController):
 
         if prev_version <= 31:
             # create the genre_media_item_exclusion table (new in schema 31)
-            await self._database.execute(
+            await self.database.execute(
                 f"""
                 CREATE TABLE IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(
                 [genre_id] INTEGER NOT NULL,
@@ -2758,11 +2836,11 @@ class MusicController(CoreController):
                 UNIQUE(genre_id, media_id, media_type)
                 );"""
             )
-            await self._database.execute(
+            await self.database.execute(
                 f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}_media_idx "
                 f"on {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(media_id,media_type);"
             )
-            await self._database.execute(
+            await self.database.execute(
                 f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}_genre_idx "
                 f"on {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(genre_id);"
             )
@@ -2770,11 +2848,11 @@ class MusicController(CoreController):
         if prev_version <= 32:
             # recreate genre_media_item_mapping with nullable alias and is_derived column
             # (new in schema 33 to support propagated genre mappings from tracks)
-            await self._database.execute(
+            await self.database.execute(
                 f"ALTER TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
                 f"RENAME TO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_old;"
             )
-            await self._database.execute(
+            await self.database.execute(
                 f"""
                 CREATE TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}(
                 [genre_id] INTEGER NOT NULL,
@@ -2786,18 +2864,18 @@ class MusicController(CoreController):
                 UNIQUE(genre_id, media_id, media_type)
                 );"""
             )
-            await self._database.execute(
+            await self.database.execute(
                 f"INSERT INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
                 f"(genre_id, media_id, media_type, alias) "
                 f"SELECT genre_id, media_id, media_type, alias "
                 f"FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_old;"
             )
-            await self._database.execute(f"DROP TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_old;")
+            await self.database.execute(f"DROP TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_old;")
 
         if prev_version <= 33:
             # add is_excluded column to genres table (new in schema 34)
             try:
-                await self._database.execute(
+                await self.database.execute(
                     f"ALTER TABLE {DB_TABLE_GENRES} "
                     "ADD COLUMN [is_excluded] BOOLEAN NOT NULL DEFAULT 0;"
                 )
@@ -2805,10 +2883,10 @@ class MusicController(CoreController):
                 if "duplicate column" not in str(err):
                     raise
             # drop the old genre_global_exclusion table (replaced by is_excluded column)
-            await self._database.execute("DROP TABLE IF EXISTS genre_global_exclusion;")
+            await self.database.execute("DROP TABLE IF EXISTS genre_global_exclusion;")
             # add is_default column to genres table (new in schema 34)
             try:
-                await self._database.execute(
+                await self.database.execute(
                     f"ALTER TABLE {DB_TABLE_GENRES} "
                     "ADD COLUMN [is_default] BOOLEAN NOT NULL DEFAULT 0;"
                 )
@@ -2816,12 +2894,12 @@ class MusicController(CoreController):
                 if "duplicate column" not in str(err):
                     raise
             # mark all existing genres with a translation_key as default
-            await self._database.execute(
+            await self.database.execute(
                 f"UPDATE {DB_TABLE_GENRES} SET is_default = 1 WHERE translation_key IS NOT NULL;"
             )
         if prev_version <= 34:
             # fix filesystem playlists missing in_library flag
-            await self._database.execute(
+            await self.database.execute(
                 f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
                 "WHERE media_type = 'playlist' "
                 "AND provider_domain IN ('filesystem_local', 'filesystem_smb', 'filesystem_nfs');"
@@ -2830,7 +2908,7 @@ class MusicController(CoreController):
         if prev_version <= 35:
             # add is_dynamic column to playlist table
             try:
-                await self._database.execute(
+                await self.database.execute(
                     f"ALTER TABLE {DB_TABLE_PLAYLISTS} ADD COLUMN is_dynamic"
                     " BOOLEAN NOT NULL DEFAULT 0"
                 )
@@ -2838,7 +2916,7 @@ class MusicController(CoreController):
                 if "duplicate column" not in str(err):
                     raise
             # backfill is_dynamic for existing Apple Music station playlists
-            await self._database.execute(
+            await self.database.execute(
                 f"UPDATE {DB_TABLE_PLAYLISTS} SET is_dynamic = 1 "
                 f"WHERE item_id IN ("
                 f"  SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
@@ -2851,17 +2929,17 @@ class MusicController(CoreController):
         if prev_version <= 36:
             # drop legacy smart_fades_analysis table — analysis is now handled by
             # audio analysis providers and stored in the audio_analysis table.
-            await self._database.execute("DROP TABLE IF EXISTS smart_fades_analysis")
+            await self.database.execute("DROP TABLE IF EXISTS smart_fades_analysis")
 
         if prev_version <= 37:
             # purge unreliable loudness measurements persisted by earlier versions
             # (ebur128 reports ~-70 LUFS on near-silence / early-cancelled streams,
             # which caused huge gain corrections on subsequent plays)
-            await self._database.execute(
+            await self.database.execute(
                 f"DELETE FROM {DB_TABLE_LOUDNESS_MEASUREMENTS} "
                 f"WHERE loudness <= {LOUDNESS_MEASUREMENT_MIN_LUFS}"
             )
-            await self._database.execute(
+            await self.database.execute(
                 f"UPDATE {DB_TABLE_LOUDNESS_MEASUREMENTS} "
                 f"SET loudness_album = NULL "
                 f"WHERE loudness_album <= {LOUDNESS_MEASUREMENT_MIN_LUFS}"
@@ -2871,7 +2949,7 @@ class MusicController(CoreController):
             # migrate loudness measurements to the unified audio_analysis table
             # under the new builtin loudness_analysis provider, then drop the
             # legacy table. album loudness rides along when present.
-            await self._database.execute(
+            await self.database.execute(
                 f"INSERT OR IGNORE INTO {DB_TABLE_AUDIO_ANALYSIS} "
                 f"(media_type, item_id, provider, aa_provider_domain, "
                 f" analysis_data, analysis_version) "
@@ -2884,12 +2962,12 @@ class MusicController(CoreController):
                 f"WHERE loudness IS NOT NULL "
                 f"  AND loudness > {LOUDNESS_MEASUREMENT_MIN_LUFS}"
             )
-            await self._database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_LOUDNESS_MEASUREMENTS}")
+            await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_LOUDNESS_MEASUREMENTS}")
 
         if prev_version <= 39:
             # add is_manual column to genre_media_item_mapping
             try:
-                await self._database.execute(
+                await self.database.execute(
                     f"ALTER TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
                     "ADD COLUMN [is_manual] BOOLEAN NOT NULL DEFAULT 0;"
                 )
@@ -2897,8 +2975,41 @@ class MusicController(CoreController):
                 if "duplicate column" not in str(err):
                     raise
 
+        if prev_version <= 40:
+            # genre icons were previously stored with an absolute filesystem path to
+            # the builtin SVG, which is install-location dependent. after a runtime
+            # upgrade or relocation (e.g. the python3.13 -> python3.14 site-packages
+            # move) that path no longer existed, so genre icons 404'd via imageproxy.
+            # rewrite them to the install-independent "<GENRE_ICONS_DIR_NAME>/<file>"
+            # form; the builtin provider resolves that against RESOURCES_DIR at serve
+            # time.
+            genre_dir_marker = f"/resources/{GENRE_ICONS_DIR_NAME}/"
+            async for db_row in self.database.iter_items(DB_TABLE_GENRES):
+                raw_metadata = db_row["metadata"]
+                if not raw_metadata:
+                    continue
+                metadata = json_loads(raw_metadata)
+                images = metadata.get("images")
+                if not images:
+                    continue
+                changed = False
+                for image in images:
+                    path = image.get("path")
+                    if not (image.get("provider") == "builtin" and isinstance(path, str)):
+                        continue
+                    norm = path.replace("\\", "/")
+                    if genre_dir_marker in norm and norm.endswith(".svg"):
+                        image["path"] = f"{GENRE_ICONS_DIR_NAME}/{norm.rsplit('/', 1)[-1]}"
+                        changed = True
+                if changed:
+                    await self.database.update(
+                        DB_TABLE_GENRES,
+                        {"item_id": db_row["item_id"]},
+                        {"metadata": serialize_to_json(metadata)},
+                    )
+
         # save changes
-        await self._database.commit()
+        await self.database.commit()
 
         # always clear the cache after a db migration
         await self.mass.cache.clear()
@@ -3353,7 +3464,10 @@ class MusicController(CoreController):
                 provider=list(multi_instance_providers), library_items_only=False
             ):
                 if self.match_provider_instances(db_item):
-                    await ctrl.update_item_in_library(db_item.item_id, db_item)
+                    # ctrl is the per-type controller, so it matches db_item's runtime type
+                    await cast("MediaControllerBase[MediaItemType]", ctrl).update_item_in_library(
+                        db_item.item_id, db_item
+                    )
                 # prevent overwhelming the event loop
                 await asyncio.sleep(0.2)
         self.logger.debug("Provider mappings correction done")

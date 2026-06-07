@@ -2093,9 +2093,7 @@ class YandexMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Podcast {prov_podcast_id} not found")
         return parse_podcast(self, album)
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Iterate podcast episodes for a given podcast (album) ID."""
         album = await self.client.get_album_with_tracks(prov_podcast_id)
         if not album:
@@ -3049,7 +3047,7 @@ class YandexMusicProvider(MusicProvider):
 
     # Library methods
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from Yandex Music."""
         artists = await self.client.get_liked_artists()
         for artist in artists:
@@ -3077,7 +3075,7 @@ class YandexMusicProvider(MusicProvider):
             self._liked_albums_cache = (now, albums)
             return albums
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from Yandex Music.
 
         Excludes entries classified as podcasts or audiobooks so they don't
@@ -3091,7 +3089,7 @@ class YandexMusicProvider(MusicProvider):
             except InvalidDataError as err:
                 self.logger.debug("Error parsing library album: %s", err)
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library podcasts from Yandex Music (filtered liked albums)."""
         for album in await self._get_liked_albums_cached():
             if classify_album(album) != "podcast":
@@ -3101,7 +3099,7 @@ class YandexMusicProvider(MusicProvider):
             except InvalidDataError as err:
                 self.logger.debug("Error parsing library podcast: %s", err)
 
-    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Retrieve library audiobooks from Yandex Music (filtered liked albums)."""
         for album in await self._get_liked_albums_cached():
             if classify_album(album) != "audiobook":
@@ -3111,7 +3109,7 @@ class YandexMusicProvider(MusicProvider):
             except InvalidDataError as err:
                 self.logger.debug("Error parsing library audiobook: %s", err)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Yandex Music."""
         track_shorts = await self.client.get_liked_tracks()
         if not track_shorts:
@@ -3129,7 +3127,7 @@ class YandexMusicProvider(MusicProvider):
                 except InvalidDataError as err:
                     self.logger.debug("Error parsing library track: %s", err)
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library playlists from Yandex Music.
 
         Includes virtual playlists (My Wave and Liked Tracks if enabled), user-created playlists,
@@ -3274,7 +3272,7 @@ class YandexMusicProvider(MusicProvider):
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Return the audio stream for the provider item.
 
         For tracks and podcast episodes, streams via windowed Range requests
@@ -3329,7 +3327,7 @@ class YandexMusicProvider(MusicProvider):
 
     async def _stream_audiobook_chapters(
         self, data: dict[str, Any], seek_position: int
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Concatenate per-chapter streams of an audiobook.
 
         Translates ``seek_position`` into (start_chapter, in_chapter_offset) and

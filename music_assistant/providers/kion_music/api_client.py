@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from music_assistant_models.errors import (
     LoginFailed,
     ProviderUnavailableError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
 )
 from yandex_music import Album as KionAlbum
@@ -154,9 +155,7 @@ class KionMusicClient:
             return await func(client)
         except Exception as err:
             if self._is_rate_limit_error(err):
-                raise ResourceTemporarilyUnavailable(
-                    "KION Music rate limit", backoff_time=60
-                ) from err
+                raise RateLimited("KION Music rate limit", backoff_time=60) from err
             if not self._is_connection_error(err):
                 raise
             LOGGER.warning("Connection error, reconnecting and retrying: %s", err)

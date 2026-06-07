@@ -304,7 +304,7 @@ class DatabaseConnection:
         self,
         table: str,
         match: dict[str, Any] | None = None,
-    ) -> AsyncGenerator[Mapping[str, Any], None]:
+    ) -> AsyncGenerator[Mapping[str, Any]]:
         """Iterate all items within a table."""
         limit: int = 500
         offset: int = 0

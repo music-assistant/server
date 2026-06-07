@@ -100,7 +100,7 @@ class DeezerMediaManager:
         self,
         fetch: Callable[..., Awaitable[Any]],
         extract: Callable[..., _Connection | None],
-    ) -> AsyncGenerator[Any, None]:
+    ) -> AsyncGenerator[Any]:
         """Iterate a cursor-paginated connection, yielding edges with non-null nodes."""
         cursor: str | None = None
         while True:
@@ -136,7 +136,7 @@ class DeezerMediaManager:
 
     # -- Library retrieval --
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Deezer."""
         async for edge in self._iter_paged(
             self.provider.gql_client.get_favorite_artists,
@@ -179,7 +179,7 @@ class DeezerMediaManager:
             )
         return self._audiobook_ids_in_favorites
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve all library albums from Deezer."""
         # Collect all favorite album edges in a single pass, then determine
         # which are audiobooks via check_audiobook_ids, and yield the rest.
@@ -213,7 +213,7 @@ class DeezerMediaManager:
                 seen_album_names.add(track.album.name)
                 yield track.album
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from Deezer."""
         # User-owned playlists first
         seen_ids: set[str] = set()
@@ -235,7 +235,7 @@ class DeezerMediaManager:
                 item.date_added = parse_date(edge.favorited_at)
             yield item
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve all library tracks from Deezer (favorites + personal uploads)."""
         async for edge in self._iter_paged(
             self.provider.gql_client.get_favorite_tracks,
@@ -250,7 +250,7 @@ class DeezerMediaManager:
         for idx, song in enumerate(personal_songs, 1):
             yield parse_gw_track(self.provider, song, position=idx)
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library/subscribed podcasts from Deezer."""
         async for edge in self._iter_paged(
             self.provider.gql_client.get_favorite_podcasts,
@@ -261,7 +261,7 @@ class DeezerMediaManager:
                 item.date_added = parse_date(edge.favorited_at)
             yield item
 
-    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """
         Retrieve library/subscribed audiobooks from Deezer.
 
@@ -573,7 +573,7 @@ class DeezerMediaManager:
 
     async def get_podcast_episodes(
         self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    ) -> AsyncGenerator[PodcastEpisode]:
         """Get all episodes for a given podcast with current resume state."""
         episodes = await self._fetch_podcast_episodes(prov_podcast_id)
         if not episodes:

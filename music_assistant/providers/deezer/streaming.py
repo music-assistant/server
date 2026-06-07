@@ -232,7 +232,7 @@ class DeezerStreamingManager:
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Return the audio stream for the provider item."""
         if streamdetails.media_type == MediaType.AUDIOBOOK and isinstance(streamdetails.data, dict):
             async for chunk in self._stream_audiobook_chapters(streamdetails, seek_position):
@@ -243,7 +243,7 @@ class DeezerStreamingManager:
 
     async def _stream_audiobook_chapters(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Stream audiobook by iterating through encrypted chapter tracks."""
         chapter_ids: list[str] = streamdetails.data["chapter_ids"]
         chapter_durations_ms: list[int] = streamdetails.data["chapter_durations_ms"]
@@ -312,7 +312,7 @@ class DeezerStreamingManager:
 
     async def _stream_encrypted_track(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Stream and decrypt a single encrypted Deezer track."""
         blowfish_key = self._get_blowfish_key(streamdetails.data["track_id"])
         chunk_index = 0

@@ -273,7 +273,7 @@ class JellyfinProvider(MusicProvider):
 
         return search_results
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Jellyfin Music."""
         jellyfin_libraries = await self._get_music_libraries()
         for jellyfin_library in jellyfin_libraries:
@@ -286,7 +286,7 @@ class JellyfinProvider(MusicProvider):
             async for artist in stream:
                 yield parse_artist(self.logger, self.instance_id, self._client, artist)
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve all library albums from Jellyfin Music."""
         jellyfin_libraries = await self._get_music_libraries()
         for jellyfin_library in jellyfin_libraries:
@@ -299,7 +299,7 @@ class JellyfinProvider(MusicProvider):
             async for album in stream:
                 yield parse_album(self.logger, self.instance_id, self._client, album)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Jellyfin Music."""
         jellyfin_libraries = await self._get_music_libraries()
         for jellyfin_library in jellyfin_libraries:
@@ -317,7 +317,7 @@ class JellyfinProvider(MusicProvider):
                     continue
                 yield parse_track(self.logger, self.instance_id, self._client, track)
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from the provider."""
         playlist_libraries = await self._get_playlists()
         for playlist_library in playlist_libraries:
