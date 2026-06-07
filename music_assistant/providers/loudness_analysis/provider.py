@@ -13,7 +13,7 @@ from music_assistant_models.enums import VolumeNormalizationMode
 from music_assistant.constants import LOUDNESS_MEASUREMENT_MIN_LUFS
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.helpers.tags import write_replaygain_track_gain
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
 if TYPE_CHECKING:
@@ -151,14 +151,7 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
             return None
 
         if data.chunks_received < MIN_DURATION_SECONDS:
-            self.logger.debug(
-                "Loudness analysis for %s skipped: "
-                "insufficient audio data (%s/%s seconds analyzed)",
-                session.streamdetails.uri,
-                data.chunks_received,
-                MIN_DURATION_SECONDS,
-            )
-            return None
+            raise AudioAnalysisError("track too short for loudness measurement")
 
         loudness, loudness_range, true_peak = metrics
         if loudness is None:
