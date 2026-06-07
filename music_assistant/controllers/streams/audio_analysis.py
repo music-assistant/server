@@ -399,7 +399,7 @@ class AudioAnalysisController:
         :param provider_instance_id_or_domain: Music provider instance ID or domain.
         :param aa_provider_domain: Domain of the AA provider that failed.
         :param reason: Human-readable failure reason.
-        :param retry_at: When to allow a retry; None (default) means never auto-retry.
+        :param retry_at: Timezone-aware datetime when to allow a retry; None (default) means never auto-retry.
         :param analysis_version: The AA provider's algorithm version at failure time.
         :param media_type: The media type of the item.
         """
