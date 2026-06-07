@@ -718,6 +718,14 @@ class YoutubeMusicProvider(MusicProvider):
                     elif recommended_item.get("subscribers"):
                         # Probably artist
                         folder.items.append(self._parse_album(recommended_item))
+                    elif recommended_item.get("videoType") == "MUSIC_VIDEO_TYPE_PODCAST_EPISODE":
+                        # Podcast episodes show up here without a videoId/browseId,
+                        # so there is no playable item to build from them
+                        self.logger.debug(
+                            "Skipping podcast episode in recommendation folder: %s",
+                            recommended_item.get("title"),
+                        )
+                        continue
                     else:
                         self.logger.warning(
                             "Unknown item type in recommendation folder: %s", recommended_item
@@ -728,6 +736,19 @@ class YoutubeMusicProvider(MusicProvider):
 
         folders = await asyncio.to_thread(_parse_sections)
         # Also add personalized mixes if available
+        mixed_for_you_folder = await self._get_mixed_for_you_folder()
+        if mixed_for_you_folder.items:
+            folders.append(mixed_for_you_folder)
+
+        return folders
+
+    @use_cache(3600 * 24, allow_expired_cache=True)  # Cache for 24 hours
+    async def _get_mixed_for_you_folder(self) -> RecommendationFolder:
+        """
+        Build the "Mixed for you" recommendation folder from the user's personal mixes.
+
+        :return: The folder, which has no items when no personal mixes are available.
+        """
         mixed_for_you_folder = RecommendationFolder(
             name="Mixed for you",
             item_id=f"{self.instance_id}_mixed_for_you",
@@ -760,10 +781,7 @@ class YoutubeMusicProvider(MusicProvider):
         mixed_for_you_folder.items.extend(
             preview for preview in playlist_previews if preview is not None
         )
-        if mixed_for_you_folder.items:
-            folders.append(mixed_for_you_folder)
-
-        return folders
+        return mixed_for_you_folder
 
     async def _post_data(self, endpoint: str, data: dict[str, str], **kwargs: Any) -> Any:
         """Post data to the given endpoint."""
