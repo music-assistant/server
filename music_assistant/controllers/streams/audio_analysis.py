@@ -1039,19 +1039,19 @@ class AudioAnalysisController:
         """
         Return tracks that need (re)analysis for one or more AA providers.
 
-        A track is a candidate for a given AA provider domain when it has no
-        analysis row for that domain, or when its stored row predates the
-        provider's current analysis_version (a NULL stored version, from
-        pre-versioning rows, is also treated as stale). This mirrors the
-        per-track version gate in AudioAnalysisProvider.start_analysis so a
-        provider bumping its analysis_version triggers a background re-scan.
-        Tracks with a blocking failure row for the domain are also excluded.
+        A track is a candidate for a given AA provider domain when it has no analysis row for
+        that domain, when its stored row predates the provider's current analysis_version (a
+        NULL stored version, from pre-versioning rows, is also treated as stale), and when no
+        blocking failure row exists (a failure at the current-or-newer analysis_version whose
+        retry is NULL or still in the future). The version check mirrors the per-track gate in
+        AudioAnalysisProvider.start_analysis so a provider bumping its analysis_version triggers
+        a background re-scan.
 
-        :param aa_provider_versions: Mapping of AA provider domain to the
-            provider's current analysis_version.
+        :param aa_provider_versions: Mapping of AA provider domain to the provider's current
+            analysis_version.
         :param limit: Maximum number of candidate rows to return (0 for no limit).
-        :returns: Rows {item_id, provider_instance, missing_domains} where
-            missing_domains lists the AA provider domains needing analysis.
+        :returns: Rows {item_id, provider_instance, missing_domains} where missing_domains
+            lists the AA provider domains needing analysis.
         """
         if not aa_provider_versions:
             return []
@@ -1060,10 +1060,10 @@ class AudioAnalysisController:
         if not filesystem_domains:
             return []
 
-        # CROSS JOIN (track x possible domain), drop pairs that already have an up-to-date
-        # analysis row (non-NULL version >= current) or a blocking failure row (failure at the
-        # current-or-newer analysis_version whose retry is NULL or still in the future), then
-        # GROUP_CONCAT the missing domains per track.
+        # CROSS JOIN (track x possible domain), keep pairs with no up-to-date analysis row and
+        # no blocking failure row, then GROUP_CONCAT the missing domains per track. An analysis
+        # row counts as up-to-date only when its analysis_version is non-NULL and >= the
+        # provider's current version, so missing and stale-version rows both surface.
         aa_domains = list(aa_provider_versions)
         fs_inline = ", ".join(f"'{d}'" for d in filesystem_domains)
         aa_select_terms = " UNION ALL ".join(

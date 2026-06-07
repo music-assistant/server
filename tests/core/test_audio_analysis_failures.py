@@ -215,10 +215,6 @@ async def test_candidate_gate_excludes_blocked_includes_eligible(
     music_prov = _make_fs_music_provider()
     controller = _make_controller(real_db, music_prov)
 
-    aa_provider = MagicMock()
-    aa_provider.domain = "sonic_analysis"
-    aa_provider.analysis_version = 2
-
     # never-retry, current version -> excluded
     await _insert_pm(real_db, "blocked_null")
     await _insert_failure(real_db, "blocked_null", next_retry=None, version=2)
@@ -236,7 +232,7 @@ async def test_candidate_gate_excludes_blocked_includes_eligible(
     # no failure at all -> included
     await _insert_pm(real_db, "clean")
 
-    candidates = await controller._find_candidates_missing_analysis([aa_provider], limit=0)
+    candidates = await controller._find_candidates_missing_analysis({"sonic_analysis": 2}, limit=0)
     found = {c["item_id"] for c in candidates}
     assert found == {"due", "stale", "clean"}
 
