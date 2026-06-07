@@ -22,6 +22,7 @@ from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant.constants import (
     CONF_BACKGROUND_SCAN_CONCURRENCY,
     DB_TABLE_AUDIO_ANALYSIS,
+    DB_TABLE_AUDIO_ANALYSIS_FAILURES,
     DB_TABLE_PROVIDER_MAPPINGS,
     DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
     LOUDNESS_MEASUREMENT_MIN_LUFS,
@@ -67,6 +68,8 @@ FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_analysis")
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -367,6 +370,73 @@ class AudioAnalysisController:
                 "aa_provider_domain": aa_provider_domain,
                 "analysis_data": data_json,
                 "analysis_version": analysis_version,
+            },
+        )
+
+    async def record_analysis_failure(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        aa_provider_domain: str,
+        reason: str,
+        retry_at: datetime | None = None,
+        analysis_version: int = 1,
+        media_type: MediaType = MediaType.TRACK,
+    ) -> None:
+        """
+        Record an analysis failure for a track.
+
+        :param item_id: Provider-native item ID from streamdetails.item_id.
+        :param provider_instance_id_or_domain: Music provider instance ID or domain.
+        :param aa_provider_domain: Domain of the AA provider that failed.
+        :param reason: Human-readable failure reason.
+        :param retry_at: When to allow a retry; None (default) means never auto-retry.
+        :param analysis_version: The AA provider's algorithm version at failure time.
+        :param media_type: The media type of the item.
+        """
+        provider = self.mass.get_provider(provider_instance_id_or_domain)
+        if not isinstance(provider, MusicProvider):
+            return
+        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
+        await self.mass.music.database.insert_or_replace(
+            DB_TABLE_AUDIO_ANALYSIS_FAILURES,
+            {
+                "media_type": media_type.value,
+                "item_id": item_id,
+                "provider": prov_key,
+                "aa_provider_domain": aa_provider_domain,
+                "reason": reason,
+                "analysis_version": analysis_version,
+                "next_retry": int(retry_at.timestamp()) if retry_at is not None else None,
+            },
+        )
+
+    async def clear_analysis_failure(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        aa_provider_domain: str,
+        media_type: MediaType = MediaType.TRACK,
+    ) -> None:
+        """
+        Delete a recorded analysis failure (e.g. after a later success).
+
+        :param item_id: Provider-native item ID from streamdetails.item_id.
+        :param provider_instance_id_or_domain: Music provider instance ID or domain.
+        :param aa_provider_domain: Domain of the AA provider whose failure to clear.
+        :param media_type: The media type of the item.
+        """
+        provider = self.mass.get_provider(provider_instance_id_or_domain)
+        if not isinstance(provider, MusicProvider):
+            return
+        prov_key = provider.domain if provider.is_streaming_provider else provider.instance_id
+        await self.mass.music.database.delete(
+            DB_TABLE_AUDIO_ANALYSIS_FAILURES,
+            {
+                "item_id": item_id,
+                "provider": prov_key,
+                "aa_provider_domain": aa_provider_domain,
+                "media_type": media_type.value,
             },
         )
 

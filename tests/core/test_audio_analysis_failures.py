@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pathlib
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
@@ -87,3 +88,64 @@ async def test_table_roundtrip(real_db: DatabaseConnection) -> None:
     assert len(rows) == 1
     assert rows[0]["reason"] == "boom"
     assert rows[0]["next_retry"] is None
+
+
+@pytest.mark.asyncio
+async def test_record_and_clear_failure_roundtrip(real_db: DatabaseConnection) -> None:
+    """record_analysis_failure writes prov_key + NULL retry; clear deletes the row."""
+    music_prov = _make_fs_music_provider()
+    controller = _make_controller(real_db, music_prov)
+
+    await controller.record_analysis_failure(
+        item_id="t1",
+        provider_instance_id_or_domain="filesystem_local--abc",
+        aa_provider_domain="sonic_analysis",
+        reason="no usable audio frames extracted",
+    )
+    rows = await real_db.get_rows(DB_TABLE_AUDIO_ANALYSIS_FAILURES, limit=0)
+    assert len(rows) == 1
+    assert rows[0]["provider"] == "filesystem_local--abc"  # instance_id for non-streaming
+    assert rows[0]["next_retry"] is None
+    assert rows[0]["reason"] == "no usable audio frames extracted"
+
+    await controller.clear_analysis_failure(
+        item_id="t1",
+        provider_instance_id_or_domain="filesystem_local--abc",
+        aa_provider_domain="sonic_analysis",
+    )
+    rows = await real_db.get_rows(DB_TABLE_AUDIO_ANALYSIS_FAILURES, limit=0)
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_record_failure_converts_retry_at_to_epoch(real_db: DatabaseConnection) -> None:
+    """A datetime retry_at is stored as an integer epoch in next_retry."""
+    music_prov = _make_fs_music_provider()
+    controller = _make_controller(real_db, music_prov)
+    when = datetime(2030, 6, 1, 12, 0, tzinfo=UTC)
+
+    await controller.record_analysis_failure(
+        item_id="t2",
+        provider_instance_id_or_domain="filesystem_local--abc",
+        aa_provider_domain="sonic_analysis",
+        reason="offline",
+        retry_at=when,
+    )
+    rows = await real_db.get_rows(DB_TABLE_AUDIO_ANALYSIS_FAILURES, limit=0)
+    assert rows[0]["next_retry"] == int(when.timestamp())
+
+
+@pytest.mark.asyncio
+async def test_record_failure_skips_when_not_music_provider(real_db: DatabaseConnection) -> None:
+    """No row is written when the provider lookup is not a MusicProvider."""
+    controller = _make_controller(real_db, music_prov=MagicMock())  # not a MusicProvider spec
+    controller.mass.get_provider = MagicMock(return_value=MagicMock())
+
+    await controller.record_analysis_failure(
+        item_id="t3",
+        provider_instance_id_or_domain="whatever",
+        aa_provider_domain="sonic_analysis",
+        reason="x",
+    )
+    rows = await real_db.get_rows(DB_TABLE_AUDIO_ANALYSIS_FAILURES, limit=0)
+    assert rows == []
