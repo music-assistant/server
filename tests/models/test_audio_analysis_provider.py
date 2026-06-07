@@ -41,6 +41,8 @@ def _make_provider() -> _StubProvider:
     mass = MagicMock()
     mass.streams.audio_analysis.get_audio_analysis_version = AsyncMock(return_value=None)
     mass.streams.audio_analysis.set_audio_analysis = AsyncMock()
+    mass.streams.audio_analysis.record_analysis_failure = AsyncMock()
+    mass.streams.audio_analysis.clear_analysis_failure = AsyncMock()
     manifest = MagicMock()
     manifest.domain = "test_stub_provider"
     config = MagicMock()
@@ -343,3 +345,85 @@ def test_audio_analysis_error_carries_reason_and_retry() -> None:
     err2 = AudioAnalysisError("offline", retry_at=when)
     assert err2.retry_at == when
     assert str(err2) == "offline"
+
+
+@pytest.mark.asyncio
+async def test_finalize_records_classified_failure_on_audio_analysis_error() -> None:
+    """A raised AudioAnalysisError in _finalize records reason + retry_at and skips persist."""
+    provider = _make_provider()
+    streamdetails = MagicMock()
+    streamdetails.item_id = "track-1"
+    streamdetails.provider = "test_prov"
+    streamdetails.media_type = "track"
+    when = datetime(2030, 1, 1, tzinfo=UTC)
+
+    provider._finalize = AsyncMock(  # type: ignore[method-assign]
+        side_effect=AudioAnalysisError("no usable audio frames extracted", retry_at=when)
+    )
+
+    await provider.start_analysis("s1", streamdetails, MagicMock())
+    await provider.finalize("s1")
+
+    provider.mass.streams.audio_analysis.record_analysis_failure.assert_awaited_once()
+    kwargs = provider.mass.streams.audio_analysis.record_analysis_failure.call_args.kwargs
+    assert kwargs["reason"] == "no usable audio frames extracted"
+    assert kwargs["retry_at"] == when
+    assert kwargs["aa_provider_domain"] == "test_stub_provider"
+    provider.mass.streams.audio_analysis.set_audio_analysis.assert_not_awaited()
+    assert "s1" not in provider._sessions
+
+
+@pytest.mark.asyncio
+async def test_finalize_records_never_retry_on_generic_exception() -> None:
+    """A generic exception in _finalize records str(err) with retry_at None."""
+    provider = _make_provider()
+    streamdetails = MagicMock()
+    streamdetails.item_id = "track-2"
+    streamdetails.provider = "test_prov"
+    streamdetails.media_type = "track"
+
+    provider._finalize = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
+
+    await provider.start_analysis("s2", streamdetails, MagicMock())
+    await provider.finalize("s2")
+
+    rec = provider.mass.streams.audio_analysis.record_analysis_failure
+    rec.assert_awaited_once()
+    assert rec.call_args.kwargs["reason"] == "boom"
+    assert rec.call_args.kwargs["retry_at"] is None
+    assert "s2" not in provider._sessions
+
+
+@pytest.mark.asyncio
+async def test_finalize_no_record_on_none_return() -> None:
+    """A plain None return from _finalize records nothing (deliberate skip)."""
+    provider = _make_provider()
+    streamdetails = MagicMock()
+    provider._finalize = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    await provider.start_analysis("s3", streamdetails, MagicMock())
+    await provider.finalize("s3")
+
+    provider.mass.streams.audio_analysis.record_analysis_failure.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_start_analysis_records_on_audio_analysis_error() -> None:
+    """A raised AudioAnalysisError in _start_analysis records the failure and rejects."""
+    provider = _make_provider()
+    streamdetails = MagicMock()
+    streamdetails.item_id = "track-4"
+    streamdetails.provider = "test_prov"
+    streamdetails.media_type = "track"
+
+    provider._start_analysis = AsyncMock(  # type: ignore[method-assign]
+        side_effect=AudioAnalysisError("unsupported codec")
+    )
+
+    accepted = await provider.start_analysis("s4", streamdetails, MagicMock())
+
+    assert accepted is False
+    rec = provider.mass.streams.audio_analysis.record_analysis_failure
+    rec.assert_awaited_once()
+    assert rec.call_args.kwargs["reason"] == "unsupported codec"
+    assert "s4" not in provider._sessions
