@@ -16,6 +16,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
 from music_assistant.helpers.database import DatabaseConnection
+from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -33,7 +34,10 @@ async def real_db(tmp_path: pathlib.Path) -> AsyncGenerator[DatabaseConnection, 
     )
     await db.execute(
         f"CREATE TABLE {DB_TABLE_AUDIO_ANALYSIS}("
-        "item_id TEXT, provider TEXT, aa_provider_domain TEXT, media_type TEXT)"
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, media_type TEXT, item_id TEXT, provider TEXT, "
+        "aa_provider_domain TEXT, analysis_data json, analysis_version INTEGER, "
+        "timestamp_created INTEGER DEFAULT (cast(strftime('%s','now') as int)), "
+        "UNIQUE(item_id,provider,aa_provider_domain,media_type))"
     )
     await db.execute(
         f"CREATE TABLE {DB_TABLE_AUDIO_ANALYSIS_FAILURES}("
@@ -149,3 +153,26 @@ async def test_record_failure_skips_when_not_music_provider(real_db: DatabaseCon
     )
     rows = await real_db.get_rows(DB_TABLE_AUDIO_ANALYSIS_FAILURES, limit=0)
     assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_set_audio_analysis_clears_existing_failure(real_db: DatabaseConnection) -> None:
+    """A successful set_audio_analysis removes any prior failure row for the same key."""
+    music_prov = _make_fs_music_provider()
+    controller = _make_controller(real_db, music_prov)
+
+    await controller.record_analysis_failure(
+        item_id="t1",
+        provider_instance_id_or_domain="filesystem_local--abc",
+        aa_provider_domain="sonic_analysis",
+        reason="boom",
+    )
+    assert len(await real_db.get_rows(DB_TABLE_AUDIO_ANALYSIS_FAILURES, limit=0)) == 1
+
+    await controller.set_audio_analysis(
+        item_id="t1",
+        provider_instance_id_or_domain="filesystem_local--abc",
+        aa_provider_domain="sonic_analysis",
+        analysis=AudioAnalysisData(energy=0.5),
+    )
+    assert await real_db.get_rows(DB_TABLE_AUDIO_ANALYSIS_FAILURES, limit=0) == []

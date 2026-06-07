@@ -372,6 +372,12 @@ class AudioAnalysisController:
                 "analysis_version": analysis_version,
             },
         )
+        await self.clear_analysis_failure(
+            item_id=item_id,
+            provider_instance_id_or_domain=provider_instance_id_or_domain,
+            aa_provider_domain=aa_provider_domain,
+            media_type=media_type,
+        )
 
     async def record_analysis_failure(
         self,
