@@ -568,15 +568,36 @@ class TestAvailability:
         player.update_from_status(mock_provider.status)
         assert player.active_source == "stream=7"
 
-    def test_connected_non_stream_source_not_reflected(self, mock_provider: MagicMock) -> None:
-        """A connected source whose input is not a 'stream=<id>' is not surfaced as active."""
+    def test_connected_non_stream_source_defaults_to_ma(self, mock_provider: MagicMock) -> None:
+        """A connected source that is not a selectable external stream defaults to MA playback."""
         mock_provider.status = _status(
             zones=[_zone(0, source_id=0)],
             sources=[_source(0, input_str="")],
         )
         player = _make_player(mock_provider, 0)
         player.update_from_status(mock_provider.status)
-        assert player.active_source is None
+        assert player.active_source == player.player_id
+
+    def test_external_active_source_cleared_when_input_changes(
+        self, mock_provider: MagicMock
+    ) -> None:
+        """A previously-reflected external source must not stay selected after the input changes."""
+        mock_provider.selectable_streams = MagicMock(
+            return_value=[SimpleNamespace(id=7, name="AirPlay", type="airplay")]
+        )
+        player = _make_player(mock_provider, 0)
+        # external source selected and reflected
+        mock_provider.status = _status(
+            zones=[_zone(0, source_id=0)], sources=[_source(0, input_str="stream=7")]
+        )
+        player.update_from_status(mock_provider.status)
+        assert player.active_source == "stream=7"
+        # input changes back to our own (non-selectable) MA stream: must revert to MA playback
+        mock_provider.status = _status(
+            zones=[_zone(0, source_id=0)], sources=[_source(0, input_str="stream=42")]
+        )
+        player.update_from_status(mock_provider.status)
+        assert player.active_source == player.player_id
 
 
 class TestGrouping:

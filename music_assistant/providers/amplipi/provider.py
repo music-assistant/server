@@ -81,6 +81,10 @@ class AmpliPiPlayerProvider(PlayerProvider):
         """Handle unload/close of the provider."""
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
+            # await the cancelled task so it finishes cleanly (avoids "Task was destroyed
+            # but it is pending" warnings and surfaces any cleanup errors)
+            with suppress(asyncio.CancelledError):
+                await self._poll_task
         for player in list(self._players.values()):
             await self.mass.players.unregister(player.player_id)
         self._players.clear()

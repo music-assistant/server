@@ -159,10 +159,13 @@ class TestLifecycle:
         assert prov._ma_streams == {0: 7, 2: 8}
 
     async def test_unload_reload_keeps_streams(self) -> None:
-        """A plain reload cancels polling and unregisters players but keeps MA streams."""
+        """A plain reload cancels (and awaits) polling and unregisters players, keeping streams."""
         prov = _provider()
-        task = MagicMock()
-        task.done.return_value = False
+
+        async def _poll() -> None:
+            await asyncio.sleep(3600)
+
+        task = asyncio.ensure_future(_poll())
         prov._poll_task = task
         player = MagicMock()
         player.player_id = "amplipi_test_zone_0"
@@ -172,7 +175,8 @@ class TestLifecycle:
 
         await prov.unload()
 
-        task.cancel.assert_called_once()
+        # the poll task is cancelled and awaited to completion
+        assert task.cancelled()
         prov.mass.players.unregister.assert_awaited_once_with("amplipi_test_zone_0")
         assert prov._players == {}
         prov.api.delete_stream.assert_not_awaited()

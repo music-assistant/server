@@ -293,9 +293,11 @@ class AmpliPiZonePlayer(Player):
             self._attr_playback_state = PlaybackState.IDLE
             self._attr_active_source = None
         else:
-            # if a user-selectable AmpliPi source (native stream / RCA input) is connected,
-            # reflect it as the active source. Our own MA streams are excluded from the
-            # selectable list, so MA playback keeps active_source == player_id.
+            # connected to a source: default to MA playback (active_source == player_id),
+            # then, if a user-selectable AmpliPi source (native stream / RCA input) is the
+            # connected input, reflect that instead. Resetting first avoids leaving a stale
+            # external source selected after the input changes back to our own MA stream.
+            self._attr_active_source = self.player_id
             self._reflect_external_active_source(status)
         # NOTE: while the zone is connected to a source we deliberately keep the
         # playback_state set by our play/stop commands and do NOT derive it from the
