@@ -571,9 +571,7 @@ class DeezerMediaManager:
             if edge.node is not None
         ]
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get all episodes for a given podcast with current resume state."""
         episodes = await self._fetch_podcast_episodes(prov_podcast_id)
         if not episodes:

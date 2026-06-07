@@ -203,9 +203,7 @@ class DeezerProvider(MusicProvider):
         """Get top tracks of an artist."""
         return await self.media_manager.get_artist_toptracks(prov_artist_id)
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get all episodes for a given podcast."""
         async for ep in self.media_manager.get_podcast_episodes(prov_podcast_id):
             yield ep
