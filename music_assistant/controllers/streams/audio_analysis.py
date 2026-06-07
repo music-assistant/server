@@ -1001,8 +1001,10 @@ class AudioAnalysisController:
         if not filesystem_domains:
             return []
 
-        # CROSS JOIN (track x possible domain), keep pairs with no up-to-date analysis
-        # row, GROUP_CONCAT the missing domains per track.
+        # CROSS JOIN (track x possible domain), drop pairs that already have an up-to-date
+        # analysis row (non-NULL version >= current) or a blocking failure row (current-version
+        # failure that is NULL/future retry), then GROUP_CONCAT the remaining missing domains
+        # per track.
         aa_domains = list(aa_provider_versions)
         fs_inline = ", ".join(f"'{d}'" for d in filesystem_domains)
         aa_select_terms = " UNION ALL ".join(
