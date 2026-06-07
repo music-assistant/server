@@ -505,6 +505,8 @@ class LocalAudioBridgeManager:
                 protocol_player._attr_type = PlayerType.PROTOCOL
                 protocol_player._attr_name = display_name
                 protocol_player._attr_available = True
+                protocol_player._attr_hidden_by_default = True  # attribution stub — hide from UI
+                protocol_player._attr_supported_features = set()  # no direct playback capability
                 protocol_player._attr_device_info = DeviceInfo(
                     model=display_name,
                     manufacturer="Local Audio",
