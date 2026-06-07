@@ -104,14 +104,13 @@ class TestSupportedFeatures:
         player = _make_player(mock_provider, 0)
         for feature in (
             PlayerFeature.PLAY_MEDIA,
+            PlayerFeature.PAUSE,
             PlayerFeature.POWER,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.SET_MEMBERS,
         ):
             assert feature in player.supported_features
-        # AmpliPi streams cannot be truly paused, so PAUSE must not be advertised
-        assert PlayerFeature.PAUSE not in player.supported_features
 
     def test_player_id_includes_instance_and_zone(self, mock_provider: MagicMock) -> None:
         """Player id should be namespaced by provider instance and zone id."""
@@ -276,6 +275,11 @@ class TestPlayMedia:
         assert player.active_source == player.player_id
         assert player.playback_state == PlaybackState.PLAYING
         assert player.powered is True
+        # AmpliPi reports no position, so play_media must seed the self-clock: without it
+        # the queue elapsed time stays pinned at the stream start and pause/seek-resume
+        # would always jump back to the start (see _get_flow_queue_stream_index).
+        assert player.elapsed_time == 0
+        assert player.elapsed_time_last_updated is not None
 
     async def test_play_media_binds_source_to_stream_and_plays(
         self, mock_provider: MagicMock
@@ -468,9 +472,24 @@ class TestPlayStop:
         """With no source bound, play() still reports PLAYING but issues no stream command."""
         player = _make_player(mock_provider, 0)
         player._source_id = None
+        # an inactive queue must not divert play() into the resume path
+        mock_provider.mass.player_queues.get.return_value = SimpleNamespace(active=False)
         await player.play()
         mock_provider.api.play_stream.assert_not_awaited()
         assert player.playback_state == PlaybackState.PLAYING
+
+    async def test_play_resumes_from_pause_via_queue(self, mock_provider: MagicMock) -> None:
+        """Unpausing a paused MA queue re-resolves from the saved position, not the stale stream."""
+        player = _make_player(mock_provider, 0)
+        player._source_id = 0
+        player._attr_playback_state = PlaybackState.PAUSED
+        mock_provider.mass.player_queues.get.return_value = SimpleNamespace(active=True)
+        mock_provider.mass.player_queues.resume = AsyncMock()
+        await player.play()
+        # AmpliPi cannot unpause in place, so play() delegates to the queue's resume
+        mock_provider.mass.player_queues.resume.assert_awaited_once_with(player.player_id)
+        # it must NOT replay the stale (stopped) stream
+        mock_provider.api.play_stream.assert_not_awaited()
 
     async def test_stop_stops_active_stream(self, mock_provider: MagicMock) -> None:
         """stop() should stop the bound stream and mark the zone idle."""
@@ -481,6 +500,25 @@ class TestPlayStop:
         mock_provider.api.stop_stream.assert_awaited_once_with(5)
         assert player.playback_state == PlaybackState.IDLE
         assert player.stop_called is True
+
+    async def test_pause_stops_active_stream(self, mock_provider: MagicMock) -> None:
+        """pause() should stop the bound stream but report PAUSED (not idle)."""
+        player = _make_player(mock_provider, 0)
+        player._source_id = 0
+        mock_provider.api.get_source = AsyncMock(return_value=SimpleNamespace(input="stream=5"))
+        await player.pause()
+        mock_provider.api.stop_stream.assert_awaited_once_with(5)
+        assert player.playback_state == PlaybackState.PAUSED
+        # unlike stop(), pause() must not mark the queue as stopped (resume re-plays it)
+        assert player.stop_called is False
+
+    async def test_pause_without_active_stream(self, mock_provider: MagicMock) -> None:
+        """With no source bound, pause() still reports PAUSED but issues no stream command."""
+        player = _make_player(mock_provider, 0)
+        player._source_id = None
+        await player.pause()
+        mock_provider.api.stop_stream.assert_not_awaited()
+        assert player.playback_state == PlaybackState.PAUSED
 
     async def test_active_stream_id_non_stream_input(self, mock_provider: MagicMock) -> None:
         """A source input that is not 'stream=<id>' yields no active stream."""

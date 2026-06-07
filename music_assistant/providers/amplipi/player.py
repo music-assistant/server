@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
@@ -13,6 +14,7 @@ from pyamplipi.models import MultiZoneUpdate, SourceUpdate, ZoneUpdate
 from music_assistant.models.player import Player
 
 from .constants import (
+    AMPLIPI_API_ERRORS,
     FREE_SOURCE_INPUTS,
     INPUT_STREAM_TYPES,
     SOURCE_DISCONNECTED,
@@ -29,11 +31,14 @@ if TYPE_CHECKING:
     from .provider import AmpliPiPlayerProvider
 
 
-# NOTE: PlayerFeature.PAUSE is intentionally NOT advertised. AmpliPi streams cannot be
-# truly paused (the stream keeps running), so exposing pause would give a dead button;
-# Music Assistant shows a play/stop transport instead, which AmpliPi honors reliably.
+# NOTE: AmpliPi has no native pause for a stream (the backend keeps reading the source URL),
+# so PAUSE is emulated by stopping the stream. Music Assistant captures the queue position
+# before pausing and, on resume, re-issues play_media; in flow mode that re-resolves the
+# stream URL at the resume offset, so playback continues from where it was paused. This
+# relies on the player self-clocking its position (AmpliPi reports none) - see play_media.
 PLAYER_FEATURES = {
     PlayerFeature.PLAY_MEDIA,
+    PlayerFeature.PAUSE,
     PlayerFeature.VOLUME_SET,
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.POWER,
@@ -110,6 +115,13 @@ class AmpliPiZonePlayer(Player):
 
     async def play(self) -> None:
         """Handle PLAY command on the player."""
+        # AmpliPi has no native unpause: pause() stopped the stream, so a play/unpause of a
+        # Music Assistant queue must re-resolve playback from the saved resume position
+        # rather than replay the (stale) stream, which would restart from the stream's start.
+        queue = self.mass.player_queues.get(self.player_id)
+        if self._attr_playback_state == PlaybackState.PAUSED and queue is not None and queue.active:
+            await self.mass.player_queues.resume(self.player_id)
+            return
         if (stream_id := await self._active_stream_id()) is not None:
             await self._prov.api.play_stream(stream_id)
         self._attr_playback_state = PlaybackState.PLAYING
@@ -123,6 +135,16 @@ class AmpliPiZonePlayer(Player):
         self._attr_playback_state = PlaybackState.IDLE
         self.update_state()
 
+    async def pause(self) -> None:
+        """Handle PAUSE command on the player."""
+        # AmpliPi cannot truly pause a stream, so we stop it and report PAUSED; Music
+        # Assistant captures the resume position before this runs and, on play, resumes
+        # from it (see the PLAYER_FEATURES note and the play/resume delegation above).
+        if (stream_id := await self._active_stream_id()) is not None:
+            await self._prov.api.stop_stream(stream_id)
+        self._attr_playback_state = PlaybackState.PAUSED
+        self.update_state()
+
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA command on the player."""
         url = await self.mass.streams.resolve_stream_url(self.player_id, media)
@@ -132,8 +154,8 @@ class AmpliPiZonePlayer(Player):
         self._source_id = source.id
         # Use AmpliPi's internetradio stream type (not the announcement fileplayer):
         # it is built for continuous HTTP streams and supports reliable play/stop,
-        # where the fileplayer does not. (MA does not expose pause for AmpliPi - see
-        # the PLAYER_FEATURES note above.)
+        # where the fileplayer does not. (Pause is emulated via stop - see the
+        # PLAYER_FEATURES note above.)
         stream_id = await self._prov.ensure_stream(source.id, url)
         zone_ids = self._member_zone_ids()
         self.logger.debug(
@@ -146,7 +168,9 @@ class AmpliPiZonePlayer(Player):
         # point the source at our stream, then make its zones EXACTLY this group
         # (attach our members unmuted; detach any stray zones left on the source),
         # so playback follows the Music Assistant group and nothing else
-        await self._prov.api.set_source(source.id, SourceUpdate(input=f"stream={stream_id}"))
+        await self._prov.api.set_source(
+            source.id, SourceUpdate(input=f"{SOURCE_ID_STREAM_PREFIX}{stream_id}")
+        )
         await self._attach_only_zones(source.id, zone_ids)
         await self._prov.api.play_stream(stream_id)
         self._attr_active_source = self.player_id
@@ -154,6 +178,13 @@ class AmpliPiZonePlayer(Player):
         self._attr_powered = True
         self._attr_volume_muted = False
         self._attr_playback_state = PlaybackState.PLAYING
+        # AmpliPi reports no playback position, so we self-clock: start at 0 for this (flow)
+        # stream and let corrected_elapsed_time advance with wall time while PLAYING. Music
+        # Assistant maps this cumulative stream-time back to the queue position - without it
+        # the queue's elapsed time stays pinned at the stream start, so pause/seek-resume
+        # would always jump back to the start of the stream.
+        self._attr_elapsed_time = 0
+        self._attr_elapsed_time_last_updated = time.time()
         self.update_state()
 
     async def select_source(self, source: str) -> None:
@@ -377,7 +408,7 @@ class AmpliPiZonePlayer(Player):
         """Return the id of the stream currently connected to this zone's source, if any."""
         if self._source_id is None:
             return None
-        with suppress(Exception):
+        with suppress(*AMPLIPI_API_ERRORS):
             source = await self._prov.api.get_source(self._source_id)
             if source.input and source.input.startswith(SOURCE_ID_STREAM_PREFIX):
                 with suppress(ValueError):

@@ -14,6 +14,7 @@ from pyamplipi.models import Stream, StreamUpdate
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
+    AMPLIPI_API_ERRORS,
     CONF_HOST,
     EXCLUDED_SELECTABLE_STREAM_TYPES,
     MA_STREAM_NAME,
@@ -63,12 +64,12 @@ class AmpliPiPlayerProvider(PlayerProvider):
         )
         try:
             self._status = await self.api.get_status()
-        except Exception as err:
+        except AMPLIPI_API_ERRORS as err:
             raise SetupFailedError(f"Unable to connect to AmpliPi at {host}: {err}") from err
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
-        with suppress(Exception):
+        with suppress(*AMPLIPI_API_ERRORS):
             self._streams = await self.api.get_streams()
         # adopt (reuse) any Music Assistant streams left by a previous run instead of
         # recreating them, so a reload does not interrupt active playback
@@ -80,19 +81,16 @@ class AmpliPiPlayerProvider(PlayerProvider):
         """Handle unload/close of the provider."""
         if self._poll_task and not self._poll_task.done():
             self._poll_task.cancel()
-        for player in list(getattr(self, "_players", {}).values()):
-            # keep unregistering the rest (and finish cleanup) even if one player fails
-            with suppress(Exception):
-                await self.mass.players.unregister(player.player_id)
-        if hasattr(self, "_players"):
-            self._players.clear()
+        for player in list(self._players.values()):
+            await self.mass.players.unregister(player.player_id)
+        self._players.clear()
         # only delete our streams when the provider is being removed; on a plain reload
         # they are kept (and re-adopted) so playback survives and they can be reused
         if is_removed:
-            with suppress(Exception):
-                await self._remove_ma_streams()
-        with suppress(Exception):
-            await self.api.close()
+            await self._remove_ma_streams()
+        # NOTE: we deliberately do not call api.close(): the AmpliPi client was created with
+        # Music Assistant's shared http_session, and pyamplipi's close() would close that
+        # session, tearing down networking for the rest of Music Assistant.
 
     async def ensure_stream(self, source_id: int, url: str) -> int:
         """
@@ -167,13 +165,13 @@ class AmpliPiPlayerProvider(PlayerProvider):
                 self._status = await self.api.get_status()
             except asyncio.CancelledError:
                 raise
-            except Exception as err:
+            except AMPLIPI_API_ERRORS as err:
                 self.logger.warning("Failed to poll AmpliPi controller: %s", err)
                 for player in self._players.values():
                     player.set_unavailable()
                 continue
             # refresh the selectable stream list (native streams + RCA inputs); best-effort
-            with suppress(Exception):
+            with suppress(*AMPLIPI_API_ERRORS):
                 self._streams = await self.api.get_streams()
             # register any newly enabled zones that appeared
             await self.discover_players()
@@ -199,9 +197,9 @@ class AmpliPiPlayerProvider(PlayerProvider):
 
     async def _remove_ma_streams(self) -> None:
         """Delete every Music Assistant stream from the AmpliPi controller."""
-        with suppress(Exception):
+        with suppress(*AMPLIPI_API_ERRORS):
             for stream in await self.api.get_streams():
                 if stream.id is not None and (stream.name or "").startswith(MA_STREAM_NAME):
-                    with suppress(Exception):
+                    with suppress(*AMPLIPI_API_ERRORS):
                         await self.api.delete_stream(stream.id)
         self._ma_streams = {}

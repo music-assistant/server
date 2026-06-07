@@ -1,6 +1,16 @@
 """Constants for the AmpliPi player provider."""
 
+from pyamplipi.error import AmpliPiError
+from pydantic import ValidationError
+
 DOMAIN = "amplipi"
+
+# Errors the pyamplipi client raises when the controller is unreachable, returns an API
+# error, or sends an unexpected/garbled response (AmpliPiUnreachableError/APIError extend
+# AmpliPiError; a malformed payload surfaces as a pydantic ValidationError or a KeyError on
+# a missing top-level field). Caught where an AmpliPi call is best-effort and a failure
+# should not abort the surrounding operation.
+AMPLIPI_API_ERRORS = (AmpliPiError, ValidationError, KeyError)
 
 CONF_HOST = "host"
 

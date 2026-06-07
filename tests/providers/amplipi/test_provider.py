@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.errors import PlayerCommandFailed, SetupFailedError
+from pyamplipi.error import AmpliPiUnreachableError
 
 from music_assistant.providers.amplipi import get_config_entries, setup
 from music_assistant.providers.amplipi.constants import CONF_HOST, MA_STREAM_NAME
@@ -123,7 +124,7 @@ class TestHandleAsyncInit:
         prov.config.get_value.return_value = "amplipi.local"
         prov.mass = MagicMock()
         fake_api = MagicMock()
-        fake_api.get_status = AsyncMock(side_effect=OSError("no route"))
+        fake_api.get_status = AsyncMock(side_effect=AmpliPiUnreachableError("no route"))
         monkeypatch.setattr(
             "music_assistant.providers.amplipi.provider.AmpliPi", lambda **_kwargs: fake_api
         )
@@ -168,7 +169,6 @@ class TestLifecycle:
         prov._players = {0: player}
         prov.mass.players.unregister = AsyncMock()  # type: ignore[method-assign]
         prov.api.delete_stream = AsyncMock()
-        prov.api.close = AsyncMock()
 
         await prov.unload()
 
@@ -176,27 +176,6 @@ class TestLifecycle:
         prov.mass.players.unregister.assert_awaited_once_with("amplipi_test_zone_0")
         assert prov._players == {}
         prov.api.delete_stream.assert_not_awaited()
-        prov.api.close.assert_awaited_once()
-
-    async def test_unload_survives_unregister_error(self) -> None:
-        """A failing unregister for one player must not abort the rest of unload."""
-        prov = _provider()
-        prov._poll_task = None
-        bad = MagicMock()
-        bad.player_id = "amplipi_test_zone_0"
-        good = MagicMock()
-        good.player_id = "amplipi_test_zone_1"
-        prov._players = {0: bad, 1: good}
-        prov.mass.players.unregister = AsyncMock(  # type: ignore[method-assign]
-            side_effect=[RuntimeError("boom"), None]
-        )
-        prov.api.close = AsyncMock()
-
-        await prov.unload()
-
-        assert prov.mass.players.unregister.await_count == 2
-        assert prov._players == {}
-        prov.api.close.assert_awaited_once()
 
     async def test_unload_removed_deletes_streams(self) -> None:
         """When the provider is removed, its MA streams are deleted from the controller."""
@@ -207,12 +186,10 @@ class TestLifecycle:
             return_value=[SimpleNamespace(id=7, name=f"{MA_STREAM_NAME} 0")]
         )
         prov.api.delete_stream = AsyncMock()
-        prov.api.close = AsyncMock()
 
         await prov.unload(is_removed=True)
 
         prov.api.delete_stream.assert_awaited_once_with(7)
-        prov.api.close.assert_awaited_once()
 
 
 class TestEnsureStream:
@@ -363,7 +340,7 @@ class TestPollLoop:
     async def test_poll_error_marks_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A failed poll marks every player unavailable and continues."""
         prov = _provider()
-        prov.api.get_status = AsyncMock(side_effect=OSError("boom"))
+        prov.api.get_status = AsyncMock(side_effect=AmpliPiUnreachableError("boom"))
         player = MagicMock()
         prov._players = {0: player}
         monkeypatch.setattr(
