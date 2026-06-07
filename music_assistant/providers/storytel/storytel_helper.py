@@ -733,8 +733,10 @@ class StorytelHelper:
         release_date = (item_data.get("formats") or [{}])[0].get("releaseDate") or ""
         description = item_data.get("description") or ""
         cover_url = (item_data.get("cover") or {}).get("url")
-        languages = UniqueList([item_data.get("language") or ""])
-        genres = {(item_data.get("category") or {}).get("name", "")}
+        language = item_data.get("language") or ""
+        category_name = (item_data.get("category") or {}).get("name") or ""
+        languages = UniqueList([language]) if language else UniqueList()
+        genres = {category_name} if category_name else set()
 
         if bookmark:
             media_item.resume_position_ms = int(bookmark.get("position") or 0)
