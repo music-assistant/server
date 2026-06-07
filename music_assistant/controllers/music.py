@@ -44,6 +44,7 @@ from music_assistant_models.media_items import (
     Playlist,
     Podcast,
     ProviderMapping,
+    Radio,
     RecommendationFolder,
     SearchResults,
     Track,
@@ -108,6 +109,7 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import Audiobook, PodcastEpisode
 
     from music_assistant import MusicAssistant
+    from music_assistant.controllers.media.base import MediaControllerBase
     from music_assistant.models import ProviderInstanceType
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.models.provider import Provider
@@ -233,11 +235,14 @@ class MusicController(CoreController):
 
         Note that this applies user provider filters (for all user types).
         """
-        return [
-            x
-            for x in self._apply_user_provider_filter(self.mass.providers)
-            if x.type == ProviderType.MUSIC
-        ]
+        return cast(
+            "list[MusicProvider]",
+            [
+                x
+                for x in self._apply_user_provider_filter(self.mass.providers)
+                if x.type == ProviderType.MUSIC
+            ],
+        )
 
     def _apply_user_provider_filter(
         self,
@@ -372,17 +377,17 @@ class MusicController(CoreController):
                     return SearchResults()
                 else:
                     if media_type == MediaType.ARTIST:
-                        return SearchResults(artists=[item])
+                        return SearchResults(artists=[cast("Artist", item)])
                     if media_type == MediaType.ALBUM:
-                        return SearchResults(albums=[item])
+                        return SearchResults(albums=[cast("Album", item)])
                     if media_type == MediaType.TRACK:
-                        return SearchResults(tracks=[item])
+                        return SearchResults(tracks=[cast("Track", item)])
                     if media_type == MediaType.PLAYLIST:
-                        return SearchResults(playlists=[item])
+                        return SearchResults(playlists=[cast("Playlist", item)])
                     if media_type == MediaType.AUDIOBOOK:
-                        return SearchResults(audiobooks=[item])
+                        return SearchResults(audiobooks=[cast("Audiobook", item)])
                     if media_type == MediaType.PODCAST:
-                        return SearchResults(podcasts=[item])
+                        return SearchResults(podcasts=[cast("Podcast", item)])
                     return SearchResults()
         # handle normal global search by querying all providers
         results_per_provider: list[SearchResults] = []
@@ -403,7 +408,7 @@ class MusicController(CoreController):
                     library_results.podcasts,
                 )
                 for item in items
-                for prov_mapping in item.provider_mappings
+                for prov_mapping in cast("MediaItemType", item).provider_mappings
             }
             # include results from library + all (unique) music providers
             results_per_provider += await asyncio.gather(
@@ -569,23 +574,25 @@ class MusicController(CoreController):
             search_results = await ctrl.search(search_query, "library", limit=limit)
             if search_results:
                 if media_type == MediaType.ARTIST:
-                    result.artists = search_results
+                    result.artists = cast("list[Artist]", search_results)
                 elif media_type == MediaType.ALBUM:
-                    result.albums = search_results
+                    result.albums = cast("list[Album]", search_results)
                 elif media_type == MediaType.TRACK:
-                    result.tracks = search_results
+                    result.tracks = cast("list[Track]", search_results)
                 elif media_type == MediaType.PLAYLIST:
-                    result.playlists = search_results
+                    result.playlists = cast("list[Playlist]", search_results)
                 elif media_type == MediaType.RADIO:
-                    result.radio = search_results
+                    result.radio = cast("list[Radio]", search_results)
                 elif media_type == MediaType.AUDIOBOOK:
-                    result.audiobooks = search_results
+                    result.audiobooks = cast("list[Audiobook]", search_results)
                 elif media_type == MediaType.PODCAST:
-                    result.podcasts = search_results
+                    result.podcasts = cast("list[Podcast]", search_results)
         return result
 
     @api_command("music/browse")
-    async def browse(self, path: str | None = None) -> Sequence[MediaItemType | BrowseFolder]:
+    async def browse(
+        self, path: str | None = None
+    ) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse Music providers."""
         if not path or path == "root":
             # root level; folder per provider that declares BROWSE
@@ -634,13 +641,13 @@ class MusicController(CoreController):
         # provider level
         prepend_items: list[BrowseFolder] = []
         provider_instance, sub_path = path.split("://", 1)
-        prov = self.mass.get_provider(provider_instance)
+        browse_prov = self.mass.get_provider(provider_instance)
         # handle regular provider listing, always add back folder first
-        if not prov or not sub_path:
+        if not browse_prov or not sub_path:
             prepend_items.append(
                 BrowseFolder(item_id="root", provider="library", path="root", name="..")
             )
-            if not prov:
+            if not browse_prov:
                 return prepend_items
         else:
             back_path = f"{provider_instance}://" + "/".join(sub_path.split("/")[:-1])
@@ -654,16 +661,16 @@ class MusicController(CoreController):
             )
         # AudioSource providers don't implement browse(); list their initiable sources directly
         if (
-            isinstance(prov, PluginProvider)
-            and ProviderFeature.AUDIO_SOURCE in prov.supported_features
+            isinstance(browse_prov, PluginProvider)
+            and ProviderFeature.AUDIO_SOURCE in browse_prov.supported_features
         ):
             initiable_items: list[MediaItemType | BrowseFolder] = [
-                source for source in await prov.get_audio_sources() if source.can_initiate
+                source for source in await browse_prov.get_audio_sources() if source.can_initiate
             ]
             return [*prepend_items, *initiable_items]
         # limit -1 to account for the prepended items
-        prov_items = await cast("MusicProvider", prov).browse(path=path)
-        return prepend_items + prov_items
+        prov_items = await cast("MusicProvider", browse_prov).browse(path=path)
+        return [*prepend_items, *prov_items]
 
     @api_command("music/recently_played_items")
     async def recently_played(
@@ -887,7 +894,9 @@ class MusicController(CoreController):
         results_per_provider: list[list[RecommendationFolder]] = await asyncio.gather(
             self._get_default_recommendations(),
             *[
-                self._get_provider_recommendations(provider_instance)
+                self._get_provider_recommendations(
+                    cast("MusicProvider | MetadataProvider | PluginProvider", provider_instance)
+                )
                 for provider_instance in recommendation_providers
             ],
         )
@@ -1056,10 +1065,13 @@ class MusicController(CoreController):
             raise UnsupportedFeaturedException("AudioSource items can not be favorites")
         # make sure we have a full library item
         # a favorite must always be in the library
-        full_item = await self.get_item(
-            item.media_type,
-            item.item_id,
-            item.provider,
+        full_item = cast(
+            "MediaItemType",
+            await self.get_item(
+                item.media_type,
+                item.item_id,
+                item.provider,
+            ),
         )
         if full_item.provider != "library":
             full_item = await self.add_item_to_library(full_item)
@@ -1138,7 +1150,8 @@ class MusicController(CoreController):
         """Add item (uri or mediaitem) to the library."""
         if isinstance(item, ItemMapping):
             # handle browse results that are returned as ItemMappings
-            item = item.uri
+            # uri is always populated post-init, so it is never None here
+            item = cast("str", item.uri)
         # ensure we have a full item
         if isinstance(item, str):
             # Inspect the URI's media_type first so a stale audio-source URI
@@ -1163,6 +1176,7 @@ class MusicController(CoreController):
                 item.item_id,
                 item.provider,
             )
+        full_item = cast("MediaItemType", full_item)
         if full_item.media_type == MediaType.AUDIO_SOURCE:
             # AudioSources are dynamic plugin surfaces (existence depends on a
             # running plugin and its current device state) and have no stable
@@ -1187,7 +1201,10 @@ class MusicController(CoreController):
             self.mass.create_task(provider.library_add(prov_item))
         # add (or overwrite) to library
         ctrl = self.get_controller(full_item.media_type)
-        library_item = await ctrl.add_item_to_library(full_item, overwrite_existing)
+        # ctrl is chosen by media_type, so it matches full_item's runtime type
+        library_item = await cast("MediaControllerBase[MediaItemType]", ctrl).add_item_to_library(
+            full_item, overwrite_existing
+        )
         # optionally import all album tracks into the library, mirroring the behavior
         # of the library sync (which only triggers on a (scheduled) full sync run)
         if full_item.media_type == MediaType.ALBUM:
@@ -1269,6 +1286,7 @@ class MusicController(CoreController):
         else:
             # try to find a substitute using search
             searchresult = await self.search(media_item.name, [media_item.media_type], 20)
+            result: Sequence[MediaItemType | ItemMapping]
             if media_item.media_type == MediaType.ARTIST:
                 result = searchresult.artists
             elif media_item.media_type == MediaType.ALBUM:
@@ -1303,7 +1321,10 @@ class MusicController(CoreController):
             key = (prov_mapping.provider_instance, prov_mapping.item_id)
             if prov_mapping.in_library is None and key in in_library_cache:
                 prov_mapping.in_library = in_library_cache[key]
-        library_item = await ctrl.update_item_in_library(library_id, media_item, overwrite=True)
+        # ctrl is chosen by media_type, so it matches media_item's runtime type
+        library_item = await cast(
+            "MediaControllerBase[MediaItemType]", ctrl
+        ).update_item_in_library(library_id, media_item, overwrite=True)
         if library_item.media_type == MediaType.ALBUM:
             # update (local) album tracks
             for album_track in await self.albums.tracks(
@@ -1321,7 +1342,7 @@ class MusicController(CoreController):
                         await self.mass.music.tracks.update_item_in_library(
                             album_track.item_id, prov_track
                         )
-        await ctrl.match_providers(library_item)
+        await cast("MediaControllerBase[MediaItemType]", ctrl).match_providers(library_item)
         await self.mass.metadata.update_metadata(library_item, force_refresh=True)
         return library_item
 
@@ -1533,15 +1554,14 @@ class MusicController(CoreController):
         )
         for allow_item_mapping in (False, True):
             for search_track in search_result.tracks:
-                is_track = isinstance(search_track, Track)
-                if not allow_item_mapping and not is_track:
+                if not allow_item_mapping and not isinstance(search_track, Track):
                     continue
                 if not compare_strings(track_name, search_track.name):
                     continue
                 if not compare_version(version, search_track.version):
                     continue
                 # check optional artist(s)
-                if artist_name and is_track:
+                if artist_name and isinstance(search_track, Track):
                     for artist in search_track.artists:
                         if compare_strings(artist_name, artist.name, False):
                             break
@@ -1549,7 +1569,7 @@ class MusicController(CoreController):
                         # no artist match found: abort
                         continue
                 # check optional album
-                if album_name and is_track:
+                if album_name and isinstance(search_track, Track):
                     track_album = search_track.album
                     # a track without album info can never match a requested album
                     if track_album is None or not compare_strings(
@@ -1577,10 +1597,10 @@ class MusicController(CoreController):
                 )
         # try to handle case where multiple artists are given as single string
         if artist_name and (artists := split_artists(artist_name, True)) and len(artists) > 1:
-            for artist in artists:
+            for single_artist in artists:
                 return await self.get_track_by_name(
                     track_name=track_name,
-                    artist_name=artist.split(splitter)[0].strip(),
+                    artist_name=single_artist.split(splitter)[0].strip(),
                     album_name=None,
                     track_version=track_version,
                 )
@@ -1845,7 +1865,9 @@ class MusicController(CoreController):
 
     async def schedule_provider_sync(self, provider_instance_id: str) -> None:
         """Schedule Library sync for given provider."""
-        if not (provider := self.mass.get_provider(provider_instance_id)):
+        if not (
+            provider := self.mass.get_provider(provider_instance_id, provider_type=MusicProvider)
+        ):
             return
         self.unschedule_provider_sync(provider.instance_id, clear_persisted_state=False)
         for media_type in MediaType:
@@ -1952,7 +1974,8 @@ class MusicController(CoreController):
         """Search for mappings on all providers for the given library item."""
         ctrl = self.get_controller(media_type)
         db_item = await ctrl.get_library_item(db_id)
-        await ctrl.match_providers(db_item)
+        # ctrl is chosen by media_type, so it matches db_item's runtime type
+        await cast("MediaControllerBase[MediaItemType]", ctrl).match_providers(db_item)
 
     async def update_provider_mapping(
         self,
@@ -1991,7 +2014,10 @@ class MusicController(CoreController):
                 name="In progress",
                 translation_key="in_progress_items",
                 icon="mdi-motion-play",
-                items=await self.in_progress_items(limit=10),
+                items=cast(
+                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
+                    await self.in_progress_items(limit=10),
+                ),
             ),
             RecommendationFolder(
                 item_id="recently_played",
@@ -1999,7 +2025,10 @@ class MusicController(CoreController):
                 name="Recently played",
                 translation_key="recently_played",
                 icon="mdi-motion-play",
-                items=await self.recently_played(limit=10, user_initiated_only=True),
+                items=cast(
+                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
+                    await self.recently_played(limit=10, user_initiated_only=True),
+                ),
             ),
             RecommendationFolder(
                 item_id="recently_added_tracks",
@@ -2007,7 +2036,10 @@ class MusicController(CoreController):
                 name="Recently added tracks",
                 translation_key="recently_added_tracks",
                 icon="music-note-plus",
-                items=await self.tracks.library_items(limit=10, order_by="timestamp_added_desc"),
+                items=cast(
+                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
+                    await self.tracks.library_items(limit=10, order_by="timestamp_added_desc"),
+                ),
             ),
             RecommendationFolder(
                 item_id="recently_added_albums",
@@ -2015,7 +2047,10 @@ class MusicController(CoreController):
                 name="Recently added albums",
                 translation_key="recently_added_albums",
                 icon="music-note-plus",
-                items=await self.albums.library_items(limit=10, order_by="timestamp_added_desc"),
+                items=cast(
+                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
+                    await self.albums.library_items(limit=10, order_by="timestamp_added_desc"),
+                ),
             ),
             RecommendationFolder(
                 item_id="random_artists",
@@ -2023,7 +2058,10 @@ class MusicController(CoreController):
                 name="Random artists",
                 translation_key="random_artists",
                 icon="mdi-account-music",
-                items=await self.artists.library_items(limit=10, order_by="random_play_count"),
+                items=cast(
+                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
+                    await self.artists.library_items(limit=10, order_by="random_play_count"),
+                ),
             ),
             RecommendationFolder(
                 item_id="random_albums",
@@ -2031,7 +2069,10 @@ class MusicController(CoreController):
                 name="Random albums",
                 translation_key="random_albums",
                 icon="mdi-album",
-                items=await self.albums.library_items(limit=10, order_by="random_play_count"),
+                items=cast(
+                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
+                    await self.albums.library_items(limit=10, order_by="random_play_count"),
+                ),
             ),
             RecommendationFolder(
                 item_id="recent_favorite_tracks",
@@ -2039,8 +2080,11 @@ class MusicController(CoreController):
                 name="Recently favorited tracks",
                 translation_key="recent_favorite_tracks",
                 icon="mdi-file-music",
-                items=await self.tracks.library_items(
-                    favorite=True, limit=10, order_by="timestamp_modified_desc"
+                items=cast(
+                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
+                    await self.tracks.library_items(
+                        favorite=True, limit=10, order_by="timestamp_modified_desc"
+                    ),
                 ),
             ),
             RecommendationFolder(
@@ -2049,8 +2093,9 @@ class MusicController(CoreController):
                 name="Favorite playlists",
                 translation_key="favorite_playlists",
                 icon="mdi-playlist-music",
-                items=await self.playlists.library_items(
-                    favorite=True, limit=10, order_by="random"
+                items=cast(
+                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
+                    await self.playlists.library_items(favorite=True, limit=10, order_by="random"),
                 ),
             ),
             RecommendationFolder(
@@ -2059,8 +2104,11 @@ class MusicController(CoreController):
                 name="Favorite Radio stations",
                 translation_key="favorite_radio_stations",
                 icon="mdi-access-point",
-                items=await self.radio.library_items(
-                    favorite=True, limit=10, order_by="play_count_desc"
+                items=cast(
+                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
+                    await self.radio.library_items(
+                        favorite=True, limit=10, order_by="play_count_desc"
+                    ),
                 ),
             ),
         ]
@@ -2188,13 +2236,13 @@ class MusicController(CoreController):
         self._register_provider_mapping_correction_task()
         return self.mass.tasks.run_task(PROVIDER_MAPPING_CORRECTION_TASK_ID)
 
-    def _sort_search_result(
+    def _sort_search_result[SortItemT: MediaItemType | ItemMapping](
         self,
         search_query: str,
-        items: Sequence[MediaItemType | ItemMapping],
-    ) -> UniqueList[MediaItemType | ItemMapping]:
+        items: Sequence[SortItemT],
+    ) -> UniqueList[SortItemT]:
         """Sort search results on priority/preference."""
-        scored_items: list[tuple[int, MediaItemType | ItemMapping]] = []
+        scored_items: list[tuple[int, SortItemT]] = []
         # search results are already sorted by (streaming) providers on relevance
         # but we prefer exact name matches and library items so we simply put those
         # on top of the list.
@@ -3416,7 +3464,10 @@ class MusicController(CoreController):
                 provider=list(multi_instance_providers), library_items_only=False
             ):
                 if self.match_provider_instances(db_item):
-                    await ctrl.update_item_in_library(db_item.item_id, db_item)
+                    # ctrl is the per-type controller, so it matches db_item's runtime type
+                    await cast("MediaControllerBase[MediaItemType]", ctrl).update_item_in_library(
+                        db_item.item_id, db_item
+                    )
                 # prevent overwhelming the event loop
                 await asyncio.sleep(0.2)
         self.logger.debug("Provider mappings correction done")
