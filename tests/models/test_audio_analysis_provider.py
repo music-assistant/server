@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from music_assistant.models.audio_analysis import AudioAnalysisData
+from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import (
     AudioAnalysisProvider,
     InstrumentedSemaphore,
@@ -330,3 +331,15 @@ async def test_run_offloaded_releases_permit_if_scheduling_fails() -> None:
         await provider._run_offloaded(lambda: "x")
 
     assert not semaphore.locked()  # permit released despite the failure
+
+
+def test_audio_analysis_error_carries_reason_and_retry() -> None:
+    """AudioAnalysisError exposes reason and retry_at; retry_at defaults to None."""
+    err = AudioAnalysisError("bad file")
+    assert err.reason == "bad file"
+    assert err.retry_at is None
+
+    when = datetime(2030, 1, 1, tzinfo=UTC)
+    err2 = AudioAnalysisError("offline", retry_at=when)
+    assert err2.retry_at == when
+    assert str(err2) == "offline"

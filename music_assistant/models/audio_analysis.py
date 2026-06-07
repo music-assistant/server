@@ -10,12 +10,31 @@ music_assistant_models.audio_analysis instead.
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
+from datetime import datetime
 from typing import Any
 
 import numpy as np
 import numpy.typing as npt
 from mashumaro import DataClassDictMixin
 from mashumaro.config import BaseConfig
+
+
+class AudioAnalysisError(Exception):
+    """
+    Raised by an Audio Analysis provider to record a classified analysis failure.
+
+    Raising this from `_start_analysis` or `_finalize` records a failure row that gates the
+    track out of future candidate runs until `retry_at` (or forever when `retry_at` is None).
+
+    :param reason: Human-readable failure reason, surfaced via the failures API.
+    :param retry_at: When to allow a retry. None (default) means never auto-retry.
+    """
+
+    def __init__(self, reason: str, retry_at: datetime | None = None) -> None:
+        """Initialise the error with a reason string and an optional retry timestamp."""
+        super().__init__(reason)
+        self.reason = reason
+        self.retry_at = retry_at
 
 
 @dataclass(kw_only=True)
