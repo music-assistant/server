@@ -598,7 +598,9 @@ class AudioAnalysisController:
             raise ProviderUnavailableError(f"{aa_domain} is not available")
 
         analyzed = await self.get_audio_analysis_count(aa_domain)
-        pending = await self._count_candidates_missing_analysis(aa_domain)
+        pending = await self._count_candidates_missing_analysis(
+            aa_domain, provider.analysis_version
+        )
         # NULL analysis_version (pre-versioning rows) is treated as stale: SQLite
         # evaluates `NULL < N` as NULL (falsy), so it must be matched explicitly.
         stale_query = (
@@ -912,8 +914,14 @@ class AudioAnalysisController:
             )
         return results
 
-    async def _count_candidates_missing_analysis(self, aa_domain: str) -> int:
-        """Count filesystem candidate tracks with no analysis row for aa_domain."""
+    async def _count_candidates_missing_analysis(
+        self, aa_domain: str, current_version: int
+    ) -> int:
+        """Count filesystem candidate tracks needing (re)analysis for aa_domain.
+
+        A track is counted when it has no analysis row for the domain, or when
+        its stored analysis_version is NULL or less than current_version.
+        """
         filesystem_domains = self._available_filesystem_domains()
         if not filesystem_domains:
             return 0
@@ -927,12 +935,18 @@ class AudioAnalysisController:
             f"    WHERE aa.item_id = pm.provider_item_id "
             f"      AND aa.provider = pm.provider_instance "
             f"      AND aa.aa_provider_domain = :aa_domain "
-            f"      AND aa.media_type = :media_type"
+            f"      AND aa.media_type = :media_type "
+            f"      AND aa.analysis_version IS NOT NULL "
+            f"      AND aa.analysis_version >= :current_version"
             f"  )"
         )
         return await self.mass.music.database.get_count_from_query(
             query,
-            {"media_type": MediaType.TRACK.value, "aa_domain": aa_domain},
+            {
+                "media_type": MediaType.TRACK.value,
+                "aa_domain": aa_domain,
+                "current_version": current_version,
+            },
         )
 
     async def _start_analysis_on_providers(

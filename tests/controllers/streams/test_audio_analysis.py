@@ -1075,7 +1075,7 @@ async def test_count_candidates_missing_analysis_zero_without_filesystem() -> No
     c, _ = _stub_controller()
     c.mass.get_providers = MagicMock(return_value=[])  # type: ignore[method-assign]
 
-    assert await c._count_candidates_missing_analysis("sonic_analysis") == 0
+    assert await c._count_candidates_missing_analysis("sonic_analysis", 1) == 0
 
 
 @pytest.mark.asyncio
@@ -1088,14 +1088,20 @@ async def test_count_candidates_missing_analysis_queries_with_available_filesyst
     fs_prov.available = True
     c.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
 
-    result = await c._count_candidates_missing_analysis("sonic_analysis")
+    result = await c._count_candidates_missing_analysis("sonic_analysis", 2)
 
     assert result == 7
     db.get_count_from_query.assert_awaited_once()
     sql, params = db.get_count_from_query.await_args.args
     assert "NOT EXISTS" in sql
+    assert "aa.analysis_version IS NOT NULL" in sql
+    assert "aa.analysis_version >= :current_version" in sql
     assert f"'{domain}'" in sql
-    assert params == {"media_type": MediaType.TRACK.value, "aa_domain": "sonic_analysis"}
+    assert params == {
+        "media_type": MediaType.TRACK.value,
+        "aa_domain": "sonic_analysis",
+        "current_version": 2,
+    }
 
 
 def test_controller_has_no_provider_specific_extra_data_keys() -> None:
