@@ -79,6 +79,32 @@ async def test_finalize_returns_analysis_on_success(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
+async def test_finalize_raises_when_below_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_finalize must raise AudioAnalysisError when measured loudness is below the reliability floor."""
+    provider = _make_provider()
+    session_id = "test-session-quiet"
+
+    session_data, streamdetails = _make_session_data()
+    session_data.chunks_received = MIN_DURATION_SECONDS + 1
+    session_data.eof_sent = True
+
+    provider._data[session_id] = session_data
+    provider._sessions[session_id] = AnalysisSessionData(
+        streamdetails=streamdetails,
+        audio_format=MagicMock(),
+    )
+
+    # ebur128 reports ~-70 LUFS on near-silent tracks, below the reliability floor.
+    monkeypatch.setattr(
+        "music_assistant.providers.loudness_analysis.provider._parse_ebur128_metrics",
+        lambda _log: (-70.0, 5.0, -1.0),
+    )
+
+    with pytest.raises(AudioAnalysisError, match="quiet"):
+        await provider._finalize(session_id)
+
+
+@pytest.mark.asyncio
 async def test_finalize_raises_when_insufficient_duration() -> None:
     """_finalize must raise AudioAnalysisError when chunks_received is below the minimum."""
     provider = _make_provider()

@@ -162,16 +162,9 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
             return None
 
         if loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
-            # ebur128 reports ~-70 LUFS on near-silence / cancelled streams,
-            # which would cause huge gain corrections on subsequent plays.
-            self.logger.debug(
-                "Loudness measurement for %s discarded: "
-                "%s LUFS is below the reliability threshold (%s LUFS)",
-                session.streamdetails.uri,
-                loudness,
-                LOUDNESS_MEASUREMENT_MIN_LUFS,
-            )
-            return None
+            # ebur128 reports ~-70 LUFS on a near-silent track; below the reliability floor
+            # it would cause huge gain corrections, and the reading is deterministic per file.
+            raise AudioAnalysisError("track too quiet to measure loudness")
 
         analysis = AudioAnalysisData(
             loudness_integrated=round(loudness, 2),
