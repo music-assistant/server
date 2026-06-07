@@ -239,3 +239,64 @@ async def test_candidate_gate_excludes_blocked_includes_eligible(
     candidates = await controller._find_candidates_missing_analysis([aa_provider], limit=0)
     found = {c["item_id"] for c in candidates}
     assert found == {"due", "stale", "clean"}
+
+
+@pytest.mark.asyncio
+async def test_get_failures_returns_rows_and_filters_by_domain(
+    real_db: DatabaseConnection,
+) -> None:
+    """get_failures returns the stored shape, optionally filtered by aa_domain."""
+    music_prov = _make_fs_music_provider()
+    controller = _make_controller(real_db, music_prov)
+    await _insert_failure(real_db, "t1", next_retry=None)
+    await real_db.insert_or_replace(
+        DB_TABLE_AUDIO_ANALYSIS_FAILURES,
+        {
+            "media_type": "track",
+            "item_id": "t2",
+            "provider": "filesystem_local--abc",
+            "aa_provider_domain": "loudness_analysis",
+            "reason": "y",
+            "analysis_version": 1,
+            "next_retry": None,
+        },
+    )
+
+    all_rows = await controller.get_failures()
+    assert {r["item_id"] for r in all_rows} == {"t1", "t2"}
+    assert set(all_rows[0]) == {
+        "item_id",
+        "provider",
+        "aa_provider_domain",
+        "reason",
+        "next_retry",
+        "timestamp_created",
+    }
+
+    sonic_rows = await controller.get_failures(aa_domain="sonic_analysis")
+    assert {r["item_id"] for r in sonic_rows} == {"t1"}
+
+
+@pytest.mark.asyncio
+async def test_clear_failures_requires_a_filter(real_db: DatabaseConnection) -> None:
+    """clear_failures with no filter deletes nothing and returns 0."""
+    music_prov = _make_fs_music_provider()
+    controller = _make_controller(real_db, music_prov)
+    await _insert_failure(real_db, "t1", next_retry=None)
+
+    deleted = await controller.clear_failures()
+    assert deleted == 0
+    assert len(await real_db.get_rows(DB_TABLE_AUDIO_ANALYSIS_FAILURES, limit=0)) == 1
+
+
+@pytest.mark.asyncio
+async def test_clear_failures_by_domain(real_db: DatabaseConnection) -> None:
+    """clear_failures(aa_domain=...) deletes all rows for that domain and returns the count."""
+    music_prov = _make_fs_music_provider()
+    controller = _make_controller(real_db, music_prov)
+    await _insert_failure(real_db, "t1", next_retry=None)
+    await _insert_failure(real_db, "t2", next_retry=None)
+
+    deleted = await controller.clear_failures(aa_domain="sonic_analysis")
+    assert deleted == 2
+    assert await real_db.get_rows(DB_TABLE_AUDIO_ANALYSIS_FAILURES, limit=0) == []

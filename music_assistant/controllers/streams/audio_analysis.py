@@ -772,6 +772,62 @@ class AudioAnalysisController:
             analysis_version=provider.analysis_version,
         )
 
+    @api_command("audio_analysis/failures")
+    async def get_failures(self, aa_domain: str | None = None) -> list[dict[str, Any]]:
+        """
+        Return recorded analysis failures, optionally filtered by AA provider domain.
+
+        :param aa_domain: When given, only failures for this AA provider domain are returned.
+        """
+        match = {"aa_provider_domain": aa_domain} if aa_domain is not None else None
+        rows = await self.mass.music.database.get_rows(
+            DB_TABLE_AUDIO_ANALYSIS_FAILURES, match, limit=0
+        )
+        return [
+            {
+                "item_id": r["item_id"],
+                "provider": r["provider"],
+                "aa_provider_domain": r["aa_provider_domain"],
+                "reason": r["reason"],
+                "next_retry": r["next_retry"],
+                "timestamp_created": r["timestamp_created"],
+            }
+            for r in rows
+        ]
+
+    @api_command("audio_analysis/failures/clear")
+    async def clear_failures(
+        self,
+        item_id: str | None = None,
+        provider: str | None = None,
+        aa_domain: str | None = None,
+    ) -> int:
+        """
+        Delete recorded failures matching the given filters; returns the number deleted.
+
+        At least one filter is required; a call with all filters None deletes nothing.
+
+        :param item_id: Provider-native item ID to clear.
+        :param provider: Stored music-provider key (domain or instance_id) to clear.
+        :param aa_domain: AA provider domain to clear.
+        """
+        match: dict[str, Any] = {}
+        if item_id is not None:
+            match["item_id"] = item_id
+        if provider is not None:
+            match["provider"] = provider
+        if aa_domain is not None:
+            match["aa_provider_domain"] = aa_domain
+        if not match:
+            return 0
+        rows = await self.mass.music.database.get_rows(
+            DB_TABLE_AUDIO_ANALYSIS_FAILURES, match, limit=0
+        )
+        count = len(rows)
+        if count:
+            await self.mass.music.database.delete(DB_TABLE_AUDIO_ANALYSIS_FAILURES, match)
+        return count
+
     async def _run_background_scan(self) -> None:
         """Run the scan as decode-once-fan-out streaming over candidate tracks."""
         providers = self.providers
