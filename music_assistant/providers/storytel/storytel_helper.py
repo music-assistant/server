@@ -259,7 +259,7 @@ class StorytelHelper:
             k: v
             for k, v in library_items.items()
             if self._is_audiobook(v.get("model", {}))
-            and self._abook_is_released(v.get("model", {}).get("formats", [{}]))
+            and self._abook_is_released((v.get("model") or {}).get("formats") or [{}])
         }
 
         return library_items, following_items
@@ -470,26 +470,20 @@ class StorytelHelper:
             await self._raise_for_status(resp)
             response_data: dict[str, Any] = await resp.json()
 
+        following_items = response_data.get("followingItems") or {}
+        library_items = response_data.get("items") or {}
         success = False
         if item.media_type == MediaType.PODCAST:
+            podcast_item = following_items.get("podcast-" + consumable_id) or {}
             success = (
-                response_data.get("followingItems", {})
-                .get("podcast-" + consumable_id, {})
-                .get("action")
-                == "SET"
-            ) and (
-                response_data.get("followingItems", {})
-                .get("podcast-" + consumable_id, {})
-                .get("model", {})
-                .get("state")
-                == "DO_NOT_NOTIFY"
+                podcast_item.get("action") == "SET"
+                and (podcast_item.get("model") or {}).get("state") == "DO_NOT_NOTIFY"
             )
         elif item.media_type == MediaType.AUDIOBOOK:
+            audiobook_item = library_items.get(consumable_id) or {}
             success = (
-                response_data.get("items", {}).get(consumable_id, {}).get("action") == "SET"
-            ) and (
-                response_data.get("items", {}).get(consumable_id, {}).get("model", {}).get("state")
-                == "WILL_CONSUME"
+                audiobook_item.get("action") == "SET"
+                and (audiobook_item.get("model") or {}).get("state") == "WILL_CONSUME"
             )
 
         if success:
@@ -534,18 +528,15 @@ class StorytelHelper:
             await self._raise_for_status(resp)
             response_data: dict[str, Any] = await resp.json()
 
+        following_items = response_data.get("followingItems") or {}
+        library_items = response_data.get("items") or {}
         success = False
         if media_type == MediaType.PODCAST:
-            success = (
-                response_data.get("followingItems", {})
-                .get("podcast-" + consumable_id, {})
-                .get("action")
-                == "DELETE"
-            )
+            podcast_item = following_items.get("podcast-" + consumable_id) or {}
+            success = podcast_item.get("action") == "DELETE"
         elif media_type == MediaType.AUDIOBOOK:
-            success = (
-                response_data.get("items", {}).get(consumable_id, {}).get("action") == "DELETE"
-            )
+            audiobook_item = library_items.get(consumable_id) or {}
+            success = audiobook_item.get("action") == "DELETE"
 
         if success:
             self.logger.debug("Removed %s %s from bookshelf.", media_type.value, consumable_id)
@@ -581,9 +572,9 @@ class StorytelHelper:
             )
         else:
             mass_first_episode = await self.get_consumable_details(first_episode_id)
-            publisher = (
-                mass_first_episode.get("formats", [{}])[0].get("publisher", {}).get("name") or ""
-            )
+            publisher = ((mass_first_episode.get("formats") or [{}])[0].get("publisher") or {}).get(
+                "name"
+            ) or ""
 
         podcast = Podcast(
             item_id=consumable_id,
@@ -707,7 +698,7 @@ class StorytelHelper:
         duration_seconds = self._parse_duration(item_data.get("duration") or {})
         authors = [a.get("name") for a in item_data.get("authors", []) if a.get("name")]
         narrators = [n.get("name") for n in item_data.get("narrators", []) if n.get("name")]
-        publisher = item_data.get("formats", [{}])[0].get("publisher", {}).get("name") or ""
+        publisher = ((item_data.get("formats") or [{}])[0].get("publisher") or {}).get("name") or ""
         media_item = Audiobook(
             item_id=consumable_id,
             provider=self.provider_id,
@@ -739,11 +730,11 @@ class StorytelHelper:
         item_data: dict[str, Any],
         bookmark: dict[str, Any] | None,
     ) -> Audiobook | PodcastEpisode:
-        release_date = item_data.get("formats", [{}])[0].get("releaseDate") or ""
+        release_date = (item_data.get("formats") or [{}])[0].get("releaseDate") or ""
         description = item_data.get("description") or ""
         cover_url = (item_data.get("cover") or {}).get("url")
         languages = UniqueList([item_data.get("language") or ""])
-        genres = {item_data.get("category", {}).get("name", "")}
+        genres = {(item_data.get("category") or {}).get("name", "")}
 
         if bookmark:
             media_item.resume_position_ms = int(bookmark.get("position") or 0)

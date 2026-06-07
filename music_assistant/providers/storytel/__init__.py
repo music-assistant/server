@@ -335,7 +335,7 @@ class Storytel(MusicProvider):
             ) as stream_info_response:
                 await self.api._raise_for_status(stream_info_response)
                 response = await stream_info_response.json()
-                stream_url = response.get("result").get("signedUrl") or ""
+                stream_url = (response.get("result") or {}).get("signedUrl") or ""
                 if stream_url == "":
                     self.logger.error("No signed URL returned for %s", item_id)
                     raise MediaNotFoundError("No signed URL returned")
@@ -621,7 +621,7 @@ class Storytel(MusicProvider):
         """Yield podcasts from the user's library."""
         _, podcasts = await self.api.get_library()
         for podcast_data in podcasts.values():
-            podcast_id = podcast_data.get("model", {}).get("id") or ""
+            podcast_id = (podcast_data.get("model") or {}).get("id") or ""
             try:
                 yield await self.get_podcast(podcast_id)
             except Exception as err:
