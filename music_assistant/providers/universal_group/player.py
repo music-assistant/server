@@ -7,7 +7,7 @@ from copy import deepcopy
 from time import time
 from typing import TYPE_CHECKING, cast
 
-from aiohttp import web
+from aiohttp import HttpVersion11, web
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.constants import PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
@@ -580,6 +580,17 @@ class UniversalGroupPlayer(Player):
         }
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
         http_profile = cast("str", self.config.get_value(CONF_HTTP_PROFILE, "chunked"))
+        if http_profile == "chunked" and request.version < HttpVersion11:
+            # chunked transfer-encoding is forbidden for HTTP/1.0 clients (e.g. some
+            # Squeezelite and older Chromecast firmware). Unlike the per-player flow
+            # stream, every UGP member shares the group's single http_profile, so an
+            # HTTP/1.0 member would otherwise crash on resp.prepare() and get no audio.
+            # Fall back to connection-close streaming so these members still play.
+            self.logger.debug(
+                "Disabling chunked encoding for UGP stream to HTTP/1.0 client %s",
+                child_player_id or request.remote,
+            )
+            http_profile = "no_content_length"
         if http_profile == "forced_content_length":
             # some clients (notably older Chromecast firmware) refuse to play unless
             # they see a Content-Length header up front
