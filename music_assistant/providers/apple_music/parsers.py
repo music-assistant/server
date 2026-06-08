@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlparse
 
 from music_assistant_models.enums import AlbumType, ContentType, ExternalID, ImageType, MediaType
 from music_assistant_models.media_items import (
@@ -23,11 +24,25 @@ from music_assistant.helpers.util import (
     parse_title_and_version,
 )
 
-from .constants import MAX_ARTWORK_DIMENSION, UNKNOWN_PLAYLIST_NAME
+from .constants import BLOBSTORE_DOMAIN, MAX_ARTWORK_DIMENSION, UNKNOWN_PLAYLIST_NAME
 from .helpers.utils import is_library_id
 
 if TYPE_CHECKING:
     from .provider import AppleMusicProvider
+
+
+def is_remotely_accessible_artwork_url(url: str) -> bool:
+    """
+    Check if artwork URL is remotely accessible without caching.
+
+    Blobstore URLs have AWS signatures that expire after 24h, so they must be cached immediately.
+    mzstatic.com URLs are permanent CDN URLs that can be used directly.
+
+    :param url: The artwork URL to check.
+    :return: True if the URL is remotely accessible (permanent), False if it needs caching.
+    """
+    hostname = urlparse(url).hostname or ""
+    return BLOBSTORE_DOMAIN not in hostname
 
 
 def parse_artist(provider: AppleMusicProvider, artist_obj: dict[str, Any]) -> Artist | ItemMapping:
@@ -76,7 +91,7 @@ def parse_artist(provider: AppleMusicProvider, artist_obj: dict[str, Any]) -> Ar
                 provider=provider.instance_id,
                 type=ImageType.THUMB,
                 path=url,
-                remotely_accessible=True,
+                remotely_accessible=is_remotely_accessible_artwork_url(url),
             )
         )
     if genres := attributes.get("genreNames"):
@@ -154,7 +169,7 @@ def parse_album(
                 provider=provider.instance_id,
                 type=ImageType.THUMB,
                 path=url,
-                remotely_accessible=True,
+                remotely_accessible=is_remotely_accessible_artwork_url(url),
             )
         )
     if album_copyright := attributes.get("copyright"):
@@ -266,7 +281,7 @@ def parse_track(
                 provider=provider.instance_id,
                 type=ImageType.THUMB,
                 path=url,
-                remotely_accessible=True,
+                remotely_accessible=is_remotely_accessible_artwork_url(url),
             )
         )
     if genres := attributes.get("genreNames"):
