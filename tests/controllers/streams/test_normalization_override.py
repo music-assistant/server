@@ -64,7 +64,8 @@ def audio(monkeypatch: pytest.MonkeyPatch) -> tuple[StreamsAudio, dict[str, list
             filter_params: list[str] | None = None,
         ) -> AsyncGenerator[bytes]:
             captured["filter_params"] = filter_params or []
-            for chunk in ():
+            empty: tuple[bytes, ...] = ()
+            for chunk in empty:
                 yield chunk
 
     monkeypatch.setattr(audio_mod, "AudioBuffer", _FakeBuffer)
