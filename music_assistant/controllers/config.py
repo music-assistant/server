@@ -1431,7 +1431,7 @@ class ConfigController:
         # to run at 04:00 local. They are now registered under new ("_v2") task ids with a
         # randomized full-day schedule (to avoid spiking the shared musicbrainz mirror), so the
         # old persisted state is orphaned and can be removed.
-        # TODO: remove after 2.10 release
+        # TODO: remove after 2.9 release
         if self._migrate_metadata_maintenance_schedule():
             changed = True
 
