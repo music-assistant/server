@@ -1909,12 +1909,11 @@ class MetaDataController(CoreController):
                     return mb_artist.id
 
         # start lookup of musicbrainz id using artist name, albums and tracks
-        ref_albums = await self.mass.music.artists.albums(
-            artist.item_id, artist.provider, in_library_only=False
-        )
-        ref_tracks = await self.mass.music.artists.tracks(
-            artist.item_id, artist.provider, in_library_only=False
-        )
+        ref_albums = await self.mass.music.artists.albums(artist.item_id, artist.provider)
+        # prefer the (widely supported) top tracks listing, falling back to all tracks
+        ref_tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
+        if not ref_tracks:
+            ref_tracks = await self.mass.music.artists.tracks(artist.item_id, artist.provider)
         # try with (strict) ref track(s), using recording id
         for ref_track in ref_tracks:
             if mb_artist := await musicbrainz.get_artist_details_by_track(artist.name, ref_track):

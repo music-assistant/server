@@ -136,66 +136,63 @@ class MusicProvider(Provider):
         raise NotImplementedError
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get a list of all albums for the given artist.
+        """
+        Get a list of all albums for the given artist.
 
         Only called if provider supports ProviderFeature.ARTIST_ALBUMS.
         """
         raise NotImplementedError
 
+    async def get_artist_tracks(self, prov_artist_id: str) -> list[Track]:
+        """
+        Get a list of all tracks for the given artist.
+
+        Only called if provider supports ProviderFeature.ARTIST_TRACKS.
+        """
+        raise NotImplementedError
+
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Get a list of most popular tracks for the given artist.
+        """
+        Get a list of most popular tracks for the given artist.
 
         Only called if provider supports ProviderFeature.ARTIST_TOPTRACKS.
         """
         raise NotImplementedError
 
-    async def get_album(self, prov_album_id: str) -> Album:
-        """Get full album details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_ALBUMS.
+    async def get_artist_topalbums(self, prov_artist_id: str) -> list[Album]:
         """
+        Get a list of most popular albums for the given artist.
+
+        Only called if provider supports ProviderFeature.ARTIST_TOPALBUMS.
+        """
+        raise NotImplementedError
+
+    async def get_album(self, prov_album_id: str) -> Album:
+        """Get full album details by id."""
         raise NotImplementedError
 
     async def get_track(self, prov_track_id: str) -> Track:
-        """Get full track details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_TRACKS.
-        """
+        """Get full track details by id."""
         raise NotImplementedError
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
-        """Get full playlist details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_PLAYLISTS.
-        """
+        """Get full playlist details by id."""
         raise NotImplementedError
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
-        """Get full radio details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_RADIOS.
-        """
+        """Get full radio details by id."""
         raise NotImplementedError
 
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
-        """Get full audiobook details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_AUDIOBOOKS.
-        """
+        """Get full audiobook details by id."""
         raise NotImplementedError
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
-        """Get full podcast details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_PODCASTS.
-        """
+        """Get full podcast details by id."""
         raise NotImplementedError
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
-        """Get (full) podcast episode details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_PODCASTS.
-        """
+        """Get (full) podcast episode details by id."""
         raise NotImplementedError
 
     async def get_item_genre_names(self, media_type: MediaType, item_id: str) -> set[str]:
@@ -206,10 +203,7 @@ class MusicProvider(Provider):
         self,
         prov_album_id: str,
     ) -> list[Track]:
-        """Get album tracks for given album id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_ALBUMS.
-        """
+        """Get album tracks for given album id."""
         raise NotImplementedError
 
     async def get_playlist_tracks(
@@ -217,20 +211,14 @@ class MusicProvider(Provider):
         prov_playlist_id: str,
         page: int = 0,
     ) -> Sequence[PlaylistPlayableItem]:
-        """Get all playlist tracks for given playlist id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_PLAYLISTS.
-        """
+        """Get all playlist tracks for given playlist id."""
         raise NotImplementedError
 
     async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
     ) -> AsyncGenerator[PodcastEpisode]:
-        """Get all PodcastEpisodes for given podcast id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_PODCASTS.
-        """
+        """Get all PodcastEpisodes for given podcast id."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
@@ -377,21 +365,24 @@ class MusicProvider(Provider):
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
-        """Remove track(s) from playlist.
+        """
+        Remove track(s) from playlist.
 
         Only called if provider supports ProviderFeature.PLAYLIST_TRACKS_EDIT.
         """
         raise NotImplementedError
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
-        """Create a new playlist on provider with given name and targeting media_types.
+        """
+        Create a new playlist on provider with given name and targeting media_types.
 
         Only called if provider supports ProviderFeature.PLAYLIST_CREATE.
         """
         raise NotImplementedError
 
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
-        """Retrieve a dynamic list of similar tracks based on the provided track.
+        """
+        Retrieve a dynamic list of similar tracks based on the provided track.
 
         Only called if provider supports ProviderFeature.SIMILAR_TRACKS.
         """
