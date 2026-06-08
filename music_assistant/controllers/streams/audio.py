@@ -142,6 +142,8 @@ class CrossfadeData:
     queue_item_id: str
     # Offset for the fade_in track's elapsed time calculation, to account for crossfade duration and trim
     elapsed_time_offset: float = 0.0
+    # Normalization mode the intro PCM was baked with, used to pin the next track's body to the same mode
+    normalization_mode: VolumeNormalizationMode | None = None
 
 
 def _snap_supported_rate_up(target: int, supported_sample_rates: list[int]) -> int:
@@ -1451,6 +1453,7 @@ class StreamsAudio:
         seek_position: int = 0,
         playback_speed: float = 1.0,
         raise_on_error: bool = True,
+        normalization_override: VolumeNormalizationMode | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Get the (PCM) audio stream for a single queue item.
@@ -1461,6 +1464,10 @@ class StreamsAudio:
 
         AudioSource items dispatch to ``get_audio_source_stream`` instead: they
         are realtime and bypass the buffering/normalization/filter machinery.
+
+        :param normalization_override: Force this volume normalization mode instead of
+            re-evaluating it from the (possibly just-updated) loudness measurement. Used by
+            the crossfade path to keep a track's replayed intro and its body on the same mode.
         """
         if queue_item.media_type == MediaType.AUDIO_SOURCE:
             async for chunk in self.get_audio_source_stream(
@@ -1477,31 +1484,35 @@ class StreamsAudio:
 
         logger = self.logger.getChild("queue_item_stream")
 
-        # hydrate loudness from audio analysis (just-in-time, so that a measurement
-        # completed during a previous play is picked up here). A live analyzer run
-        # may have already populated streamdetails.loudness in memory — don't clobber
-        # that, and don't clobber a value set upstream by the music provider.
-        if streamdetails.loudness is None:
-            if analysis := await self.mass.streams.audio_analysis.get_audio_analysis(
-                streamdetails.item_id,
-                streamdetails.provider,
-                media_type=streamdetails.media_type,
-                # use the authoritative EBU R128 value, not another provider's loudness proxy
-                priority=(LOUDNESS_ANALYSIS_DOMAIN,),
-            ):
-                if analysis.loudness_integrated is not None:
-                    streamdetails.loudness = round(analysis.loudness_integrated, 2)
-                if analysis.loudness_album is not None and streamdetails.loudness_album is None:
-                    streamdetails.loudness_album = round(analysis.loudness_album, 2)
+        if normalization_override is not None:
+            # crossfade path pins the body to the intro's mode; skip hydration/re-eval that could flip it
+            streamdetails.volume_normalization_mode = normalization_override
+        else:
+            # hydrate loudness from audio analysis (just-in-time, so that a measurement
+            # completed during a previous play is picked up here). A live analyzer run
+            # may have already populated streamdetails.loudness in memory — don't clobber
+            # that, and don't clobber a value set upstream by the music provider.
+            if streamdetails.loudness is None:
+                if analysis := await self.mass.streams.audio_analysis.get_audio_analysis(
+                    streamdetails.item_id,
+                    streamdetails.provider,
+                    media_type=streamdetails.media_type,
+                    # use the authoritative EBU R128 value, not another provider's loudness proxy
+                    priority=(LOUDNESS_ANALYSIS_DOMAIN,),
+                ):
+                    if analysis.loudness_integrated is not None:
+                        streamdetails.loudness = round(analysis.loudness_integrated, 2)
+                    if analysis.loudness_album is not None and streamdetails.loudness_album is None:
+                        streamdetails.loudness_album = round(analysis.loudness_album, 2)
 
-        # re-evaluate normalization mode: the background loudness analyzer may have
-        # updated streamdetails.loudness since get_stream_details was called
-        if streamdetails.queue_id:
-            core_config = await self.mass.config.get_core_config("streams")
-            player_settings = await self.mass.config.get_player_config(streamdetails.queue_id)
-            streamdetails.volume_normalization_mode = get_normalization_mode(
-                core_config, player_settings, streamdetails
-            )
+            # re-evaluate normalization mode: the background loudness analyzer may have
+            # updated streamdetails.loudness since get_stream_details was called
+            if streamdetails.queue_id:
+                core_config = await self.mass.config.get_core_config("streams")
+                player_settings = await self.mass.config.get_player_config(streamdetails.queue_id)
+                streamdetails.volume_normalization_mode = get_normalization_mode(
+                    core_config, player_settings, streamdetails
+                )
 
         # handle volume normalization
         gain_correct: float | None = None
@@ -1740,6 +1751,12 @@ class StreamsAudio:
         crossfade_buffer_size = (crossfade_buffer_size // frame_size) * frame_size
         fade_out_data: bytes | None = None
 
+        # pin the body to DYNAMIC when the intro was baked DYNAMIC,
+        # else a late measurement flips it and causes a volume jump
+        norm_override: VolumeNormalizationMode | None = None
+        if crossfade_data and crossfade_data.normalization_mode == VolumeNormalizationMode.DYNAMIC:
+            norm_override = VolumeNormalizationMode.DYNAMIC
+
         if crossfade_data:
             # reported media-time (TRIM + CF) is decoupled from the raw buffer seek below (X)
             streamdetails.seek_position = crossfade_data.elapsed_time_offset
@@ -1780,6 +1797,7 @@ class StreamsAudio:
             pcm_format,
             seek_position=discard_seconds,
             playback_speed=playback_speed,
+            normalization_override=norm_override,
         ):
             total_chunks_received += 1
             if discard_leftover:
@@ -1931,6 +1949,9 @@ class StreamsAudio:
                         crossfade_timing.fadein_trimmed_duration
                         + crossfade_timing.crossfade_duration
                     ),
+                    normalization_mode=cast(
+                        "StreamDetails", next_queue_item.streamdetails
+                    ).volume_normalization_mode,
                 )
                 crossfade_elapsed = asyncio.get_event_loop().time() - crossfade_start_time
                 self.logger.debug(
