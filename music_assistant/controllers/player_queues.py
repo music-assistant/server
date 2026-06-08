@@ -1061,7 +1061,12 @@ class PlayerQueuesController(CoreController):
 
         # capture source state before stopping (stop resets these)
         source_items = self._queue_items[source_queue_id]
-        source_resume_pos = int(source_queue.corrected_elapsed_time)
+        if source_queue.state == PlaybackState.PLAYING:
+            # use the live playback clock while actively playing
+            source_resume_pos = int(source_queue.corrected_elapsed_time)
+        else:
+            # when not playing the live clock is stale, so use the stored resume position
+            source_resume_pos = int(source_queue.resume_pos or source_queue.elapsed_time or 0)
         source_current_index = source_queue.current_index
         source_current_item = source_queue.current_item
 
