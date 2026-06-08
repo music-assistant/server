@@ -583,12 +583,15 @@ class UniversalGroupPlayer(Player):
         # use each member's own config to support mixed members (e.g. a chunked
         # Chromecast alongside an HTTP/1.0 Squeezelite). Fall back to the group config
         # when the request has no player_id.
+        http_profile = cast("str", self.config.get_value(CONF_HTTP_PROFILE, "chunked"))
         if child_player_id:
-            http_profile = await self.mass.config.get_player_config_value(
-                child_player_id, CONF_HTTP_PROFILE, default="default", return_type=str
-            )
-        else:
-            http_profile = cast("str", self.config.get_value(CONF_HTTP_PROFILE, "chunked"))
+            try:
+                http_profile = await self.mass.config.get_player_config_value(
+                    child_player_id, CONF_HTTP_PROFILE, default=http_profile, return_type=str
+                )
+            except KeyError:
+                # player_id may be stale/invalid; fall back to the group profile
+                pass
         if http_profile == "chunked" and request.version < HttpVersion11:
             # chunked encoding is not allowed on HTTP/1.0; fall back to
             # connection-close streaming to avoid raising in resp.prepare()
