@@ -245,11 +245,12 @@ class ArtistsController(MediaControllerBase[Artist]):
 
         Each track is resolved to its in-library equivalent where available.
         """
-        assert provider_instance_id_or_domain != "library"
-        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
-            return []
-        provider = cast("MusicProvider", provider)
-        if ProviderFeature.ARTIST_TOPTRACKS not in provider.supported_features:
+        provider = self.mass.get_provider(
+            provider_instance_id_or_domain, provider_type=MusicProvider
+        )
+        if provider is None or not provider.available:
+            return []  # guard against unavailable provider
+        if not provider.supports_feature(ProviderFeature.ARTIST_TOPTRACKS):
             self.logger.warning(
                 "Provider %s does not support fetching artist top tracks.",
                 provider.name,
@@ -312,10 +313,21 @@ class ArtistsController(MediaControllerBase[Artist]):
                 continue
             fetches.append(cast("MetadataProvider", prov).get_artist_toptracks(ref_item))
         per_provider = await asyncio.gather(*fetches, return_exceptions=True)
+        # drop (and log) any provider that failed so one bad provider can't sink the listing
+        listings: list[list[Track]] = []
+        for listing in per_provider:
+            if isinstance(listing, BaseException):
+                self.logger.warning(
+                    "Error fetching top tracks for artist %s from a provider",
+                    ref_item.name,
+                    exc_info=listing,
+                )
+                continue
+            listings.append(listing)
         # interleave the providers' rankings by position (zip), deduplicating with the compare
         # helper (which also matches on version/duration)
         result: list[Track] = []
-        for row in zip_longest(*(items for items in per_provider if isinstance(items, list))):
+        for row in zip_longest(*listings):
             for candidate in row:
                 if candidate is None or any(
                     compare_track(existing, candidate) for existing in result
@@ -334,11 +346,12 @@ class ArtistsController(MediaControllerBase[Artist]):
 
         Each album is resolved to its in-library equivalent where available.
         """
-        assert provider_instance_id_or_domain != "library"
-        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
-            return []
-        provider = cast("MusicProvider", provider)
-        if ProviderFeature.ARTIST_TOPALBUMS not in provider.supported_features:
+        provider = self.mass.get_provider(
+            provider_instance_id_or_domain, provider_type=MusicProvider
+        )
+        if provider is None or not provider.available:
+            return []  # guard against unavailable provider
+        if not provider.supports_feature(ProviderFeature.ARTIST_TOPALBUMS):
             self.logger.warning(
                 "Provider %s does not support fetching artist top albums.",
                 provider.name,
@@ -401,10 +414,21 @@ class ArtistsController(MediaControllerBase[Artist]):
                 continue
             fetches.append(cast("MetadataProvider", prov).get_artist_topalbums(ref_item))
         per_provider = await asyncio.gather(*fetches, return_exceptions=True)
+        # drop (and log) any provider that failed so one bad provider can't sink the listing
+        listings: list[list[Album]] = []
+        for listing in per_provider:
+            if isinstance(listing, BaseException):
+                self.logger.warning(
+                    "Error fetching top albums for artist %s from a provider",
+                    ref_item.name,
+                    exc_info=listing,
+                )
+                continue
+            listings.append(listing)
         # interleave the providers' rankings by position (zip), deduplicating with the compare
         # helper (which also matches on version/duration)
         result: list[Album] = []
-        for row in zip_longest(*(items for items in per_provider if isinstance(items, list))):
+        for row in zip_longest(*listings):
             for candidate in row:
                 if candidate is None or any(
                     compare_album(existing, candidate) for existing in result
@@ -573,10 +597,21 @@ class ArtistsController(MediaControllerBase[Artist]):
                 cast("MetadataProvider", prov).get_similar_artists(ref_item, limit=limit)
             )
         per_provider = await asyncio.gather(*fetches, return_exceptions=True)
+        # drop (and log) any provider that failed so one bad provider can't sink the listing
+        listings: list[list[Artist]] = []
+        for listing in per_provider:
+            if isinstance(listing, BaseException):
+                self.logger.warning(
+                    "Error fetching similar artists for %s from a provider",
+                    ref_item.name,
+                    exc_info=listing,
+                )
+                continue
+            listings.append(listing)
         # interleave the providers' results by position (zip), deduplicating with the compare
         # helper, and cap to the requested limit
         result: list[Artist] = []
-        for row in zip_longest(*(items for items in per_provider if isinstance(items, list))):
+        for row in zip_longest(*listings):
             for candidate in row:
                 if candidate is None or any(
                     compare_artist(existing, candidate) for existing in result
