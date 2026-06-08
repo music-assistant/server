@@ -1751,7 +1751,8 @@ class StreamsAudio:
         crossfade_buffer_size = (crossfade_buffer_size // frame_size) * frame_size
         fade_out_data: bytes | None = None
 
-        # pin the body to DYNAMIC when the intro was baked DYNAMIC, else a late measurement flips it and causes a volume jump
+        # pin the body to DYNAMIC when the intro was baked DYNAMIC,
+        # else a late measurement flips it and causes a volume jump
         norm_override: VolumeNormalizationMode | None = None
         if crossfade_data and crossfade_data.normalization_mode == VolumeNormalizationMode.DYNAMIC:
             norm_override = VolumeNormalizationMode.DYNAMIC
