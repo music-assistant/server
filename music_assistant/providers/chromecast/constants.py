@@ -6,6 +6,7 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import (
+    CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
     CONF_ENTRY_OUTPUT_CODEC,
     create_sample_rates_config_entry,
@@ -29,6 +30,9 @@ SENDSPIN_CAST_BLOCKLIST: set[tuple[str, str]] = {
 CAST_PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
+    # enable flow mode by default as cast devices handle a continuous
+    # flow stream more reliably than enqueueing individual tracks
+    ConfigEntry.from_dict({**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": True}),
     ConfigEntry(
         key=CONF_USE_MASS_APP,
         type=ConfigEntryType.BOOLEAN,
