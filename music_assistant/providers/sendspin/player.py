@@ -647,6 +647,10 @@ class SendspinPlayer(SendspinBasePlayer):
         roles = self.api.roles_by_family("player")
         for role in roles:
             role.set_player_mute(muted)
+        # Native clients don't always emit a VolumeChangedEvent in response to a
+        # mute command, so update our state directly to keep MA in sync.
+        self._attr_volume_muted = muted
+        self.update_state()
 
     async def stop(self) -> None:
         """Stop command."""
