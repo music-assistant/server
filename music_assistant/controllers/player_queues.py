@@ -683,6 +683,10 @@ class PlayerQueuesController(CoreController):
         self._check_player_permission(queue_id)
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{queue_id}")
+        # cancel in-flight preload/enqueue-next so it can't enqueue after stop
+        self.mass.cancel_task(f"preload_next_item_{queue_id}")
+        self.mass.cancel_timer(f"enqueue_next_item_{queue_id}")
+        self.mass.cancel_task(f"enqueue_next_item_{queue_id}")
         self._transitioning_players.discard(queue_id)
         queue_player = self.mass.players.get_player(queue_id, True)
         if queue_player is None:
@@ -2387,7 +2391,11 @@ class PlayerQueuesController(CoreController):
             return
 
         async def _enqueue_next_item_on_player(next_item: QueueItem) -> None:
-            if not queue.active or queue.session_id != session_id:
+            if (
+                not queue.active
+                or queue.session_id != session_id
+                or queue.state != PlaybackState.PLAYING
+            ):
                 # queue is not active anymore or session_id does not match, so we bail out
                 return
             await self.mass.players.enqueue_next_media(
