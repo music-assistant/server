@@ -1751,7 +1751,7 @@ class StreamsAudio:
         crossfade_buffer_size = (crossfade_buffer_size // frame_size) * frame_size
         fade_out_data: bytes | None = None
 
-        # pin the body to DYNAMIC when the intro was baked DYNAMIC, else a late measurement flips it and jumps
+        # pin the body to DYNAMIC when the intro was baked DYNAMIC, else a late measurement flips it and causes a volume jump
         norm_override: VolumeNormalizationMode | None = None
         if crossfade_data and crossfade_data.normalization_mode == VolumeNormalizationMode.DYNAMIC:
             norm_override = VolumeNormalizationMode.DYNAMIC
@@ -1948,7 +1948,6 @@ class StreamsAudio:
                         crossfade_timing.fadein_trimmed_duration
                         + crossfade_timing.crossfade_duration
                     ),
-                    # mode the intro PCM was baked with (set on streamdetails by the fade-in stream above)
                     normalization_mode=cast(
                         "StreamDetails", next_queue_item.streamdetails
                     ).volume_normalization_mode,
