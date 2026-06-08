@@ -148,7 +148,6 @@ enable_error_code = [
   "truthy-iterable",
 ]
 exclude = [
-  '^music_assistant/controllers/music.py$',
   '^music_assistant/helpers/app_vars.py',
   '^music_assistant/providers/sonic_analysis/vendored_clap/.*$',
 ]
