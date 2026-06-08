@@ -31,6 +31,7 @@ from music_assistant.controllers.media.playlists import PlaylistController
 from music_assistant.controllers.metadata import (
     MISSING_ARTIST_METADATA_SCAN_TASK_ID,
     PLAYLIST_METADATA_SCAN_TASK_ID,
+    THUMB_CACHE_CLEANUP_TASK_ID,
     MetaDataController,
 )
 from music_assistant.controllers.music import MusicController
@@ -438,6 +439,7 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     cache_task = tasks_controller.get_task("cache_database_cleanup")
     artist_scan_task = tasks_controller.get_task(MISSING_ARTIST_METADATA_SCAN_TASK_ID)
     playlist_scan_task = tasks_controller.get_task(PLAYLIST_METADATA_SCAN_TASK_ID)
+    thumb_cleanup_task = tasks_controller.get_task(THUMB_CACHE_CLEANUP_TASK_ID)
 
     assert cache_task.translation_key == "background_task.cache_database_cleanup"
     assert cache_task.schedule == maintenance_schedule
@@ -460,12 +462,15 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     assert playlist_scan_task.metadata == {"task_domain": "metadata_playlist_metadata_scan"}
 
     # Metadata maintenance tasks pick a random time spread across the full day (instead of a
-    # fixed 04:00) to avoid spiking the shared musicbrainz mirror, but share one time per instance.
+    # fixed 04:00) to avoid spiking the shared MusicBrainz mirror, but share one time per instance.
     assert artist_scan_task.schedule is not None
     assert artist_scan_task.schedule.type == TaskScheduleType.DAILY
-    assert 0 <= (artist_scan_task.schedule.hour or 0) <= 23
-    assert 0 <= (artist_scan_task.schedule.minute or 0) <= 59
+    assert artist_scan_task.schedule.hour is not None
+    assert artist_scan_task.schedule.minute is not None
+    assert 0 <= artist_scan_task.schedule.hour <= 23
+    assert 0 <= artist_scan_task.schedule.minute <= 59
     assert artist_scan_task.schedule == playlist_scan_task.schedule
+    assert thumb_cleanup_task.schedule == artist_scan_task.schedule
 
 
 async def test_music_sync_completion_queues_database_cleanup_background_task(

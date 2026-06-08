@@ -1948,7 +1948,7 @@ class MetaDataController(CoreController):
 
     def _register_maintenance_tasks(self) -> None:
         """Register the recurring metadata maintenance background tasks."""
-        # Spread across the full day so instances don't all hit the shared musicbrainz mirror at once
+        # Spread across the full day so instances don't all hit the shared MusicBrainz mirror at once
         utc_hour, utc_minute = divmod(random.randint(0, 24 * 60 - 1), 60)
         desired_schedule = TaskSchedule.daily(hour=utc_hour, minute=utc_minute)
         self.mass.tasks.register_scheduled_task(
