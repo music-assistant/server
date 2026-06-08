@@ -256,7 +256,7 @@ class AppleMusicLibraryManager:
             yield parsed_track
         # Handle deprecated catalog IDs: search replacement with per-window limit
         search_attempts = 0
-        for missing_catalog_id in set(catalog_ids) - returned_catalog_ids:
+        for missing_catalog_id in (cid for cid in catalog_ids if cid not in returned_catalog_ids):
             if library_item := library_items_by_catalog_id.get(missing_catalog_id):
                 library_item_id = library_item.get("id")
                 is_favourite = rating_response.get(missing_catalog_id)
