@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import logging
 from asyncio import Task, TaskGroup
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 from urllib.parse import quote
 
 from aiohttp.client_exceptions import ClientError, ContentTypeError
@@ -66,6 +66,10 @@ if TYPE_CHECKING:
     from aiohttp import ClientResponse, ClientSession
 
     from music_assistant.providers.storytel import Storytel
+
+
+# Generic type for async fetch functions used by _fetch_search_page
+T = TypeVar("T")
 
 
 # -------------------------------
@@ -758,8 +762,8 @@ class StorytelHelper:
         search_for: str,
         page_token: str,
         filter_func: Callable[[list[dict[str, Any]]], list[str]],
-        fetch_func: Callable[[str], Any],
-    ) -> tuple[list[Any], int, int]:
+        fetch_func: Callable[[str], Coroutine[Any, Any, T]],
+    ) -> tuple[list[T], int, int]:
         """
         Fetch a single search page and prepare items for the given search type.
 
@@ -797,9 +801,9 @@ class StorytelHelper:
             query,
         )
 
-        page_items: list[Any] = []
+        page_items: list[T] = []
         if item_ids:
-            task_results: list[Task[Any]] = []
+            task_results: list[Task[T]] = []
             async with TaskGroup() as tg:
                 for item_id in item_ids:
                     task_results.append(tg.create_task(fetch_func(item_id)))
