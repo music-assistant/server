@@ -391,10 +391,7 @@ class AirPlayPlayer(Player):
         """
         if not (self._get_flags() & (LEGACY_PAIRING_BIT | PIN_REQUIRED)):
             return False
-        # Only devices advertising a public key ('pk') support HAP/SRP PIN pairing.
-        # Legacy RAOP-only devices (e.g. AirPort Express) may set PIN_REQUIRED when a
-        # speaker password is enabled but don't implement /pair-setup-pin — they use
-        # simple password authentication via the CONF_PASSWORD setting instead.
+        # Devices without 'pk' in their mDNS use password auth, not HAP/SRP PIN pairing.
         return any(
             di.decoded_properties.get("pk")
             for di in filter(None, [self.raop_discovery_info, self.airplay_discovery_info])
