@@ -2946,6 +2946,11 @@ class MusicController(CoreController):
             )
 
         if prev_version <= 38:
+            # stable 2.8.9 shipped schema v38 without the smart_fades_analysis drop
+            # (that drop is gated at <= 36, which v38 users leapfrog). re-run it here
+            # so stable->2.9.0 upgraders also lose the legacy table. idempotent: a
+            # no-op for beta users who already dropped it at v36.
+            await self.database.execute("DROP TABLE IF EXISTS smart_fades_analysis")
             # migrate loudness measurements to the unified audio_analysis table
             # under the new builtin loudness_analysis provider, then drop the
             # legacy table. album loudness rides along when present.
