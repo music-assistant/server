@@ -28,6 +28,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
     SetupFailedError,
+    UnplayableMediaError,
 )
 from music_assistant_models.media_items import (
     Audiobook,
@@ -57,7 +58,12 @@ from .constants import (
     DEFAULT_LANGUAGES,
     URL_CONSUMABLE_DOWNLOAD_NO_RANGE,
 )
-from .storytel_helper import StorytelHelper, parse_content_type, parse_raw_headers
+from .storytel_helper import (
+    StorytelHelper,
+    parse_content_type,
+    parse_partial_content_probe,
+    parse_raw_headers,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
@@ -363,18 +369,19 @@ class Storytel(MusicProvider):
 
                         await self.api._raise_for_status(stream_response)
                         stream_headers = parse_raw_headers(stream_response.raw_headers)
-                        content_type = stream_headers.get("content-type", "")
-                        content_content_range = stream_headers.get("content-range", "")
-                        content_full_size = int(content_content_range.rsplit("/", maxsplit=1)[-1])
+                        content_type, content_full_size = parse_partial_content_probe(
+                            status_code=stream_response.status,
+                            stream_headers=stream_headers,
+                        )
                         resolved_stream_url = str(current_stream_url)
                         break
                 else:
-                    raise MediaNotFoundError("Too many redirects while resolving Storytel stream")
+                    raise UnplayableMediaError("Too many redirects while resolving Storytel stream")
         except Exception as err:
             if isinstance(err, LoginFailed):
                 raise
             self.logger.error("Failed to fetch stream details for %s: %s", item_id, err)
-            raise MediaNotFoundError(f"Failed to fetch stream details: {err}") from err
+            raise UnplayableMediaError(f"Failed to fetch stream details: {err}") from err
 
         mass_content_type: ContentType | None = parse_content_type(content_type)
         content_duration_seconds: int = int(

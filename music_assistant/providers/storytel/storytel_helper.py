@@ -27,6 +27,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     ProviderUnavailableError,
+    UnplayableMediaError,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import (
@@ -1082,6 +1083,34 @@ def parse_content_type(content_type: str) -> ContentType | None:
     if content_type == "audio/mpeg":
         return ContentType.MP3
     return None
+
+
+def parse_partial_content_probe(
+    status_code: int, stream_headers: dict[str, str]
+) -> tuple[str, int]:
+    """
+    Validate a range probe response and extract stream metadata.
+
+    :param status_code: the HTTP status code from the probe response.
+    :param stream_headers: the parsed response headers.
+    """
+    if status_code != 206:
+        raise UnplayableMediaError(
+            "Storytel stream endpoint did not honor range request (expected HTTP 206)"
+        )
+
+    content_type = stream_headers.get("content-type", "")
+    content_content_range = stream_headers.get("content-range", "")
+    if content_content_range == "":
+        raise UnplayableMediaError("Storytel stream response missing Content-Range header")
+
+    try:
+        content_full_size = int(content_content_range.rsplit("/", maxsplit=1)[-1])
+    except ValueError as err:
+        raise UnplayableMediaError(
+            "Storytel stream response has invalid Content-Range header"
+        ) from err
+    return content_type, content_full_size
 
 
 def parse_podcast_hosts(podcast_metadata: dict[str, Any]) -> list[str]:
