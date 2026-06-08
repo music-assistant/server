@@ -48,7 +48,6 @@ from .constants import (
     API_HEADER_STORYTEL_MEDIA_ACCEPT,
     API_HEADER_STORYTEL_MEDIA_FORMATS,
     CACHE_CATEGORY_AUDIOBOOK,
-    CACHE_CATEGORY_BOOKMARK,
     CACHE_CATEGORY_PODCAST,
     CACHE_CATEGORY_PODCAST_EPISODE,
     CACHE_CATEGORY_PODCAST_EPISODES,
@@ -409,42 +408,17 @@ class Storytel(MusicProvider):
 
     @handle_login_failed
     async def get_resume_position(
-        self, item_id: str, media_type: MediaType, use_cache: bool = True
+        self, item_id: str, media_type: MediaType
     ) -> tuple[bool, int, datetime | None]:
         """
         Get the resume position for a media item.
 
         :param item_id: the provider item id.
         :param media_type: the media type of the item.
-        :param use_cache: boolean to indicate if a cache lookup is allowed.
         """
         if media_type not in {MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE}:
             self.logger.error("Unsupported media type for resume position: %s", media_type)
             raise InvalidDataError("Only audiobooks and podcasts are supported for resume position")
-        if use_cache:
-            cached_bookmark = await self.mass.cache.get(
-                key=item_id,
-                provider=self.instance_id,
-                category=CACHE_CATEGORY_BOOKMARK,
-                default=None,
-            )
-            if cached_bookmark is not None:
-                try:
-                    fully_played, pos, updated_dt = cached_bookmark
-                    if isinstance(updated_dt, str):
-                        updated_dt = datetime.fromisoformat(updated_dt)
-                    if isinstance(updated_dt, datetime):
-                        updated_dt = (
-                            updated_dt.replace(tzinfo=UTC)
-                            if updated_dt.tzinfo is None
-                            else updated_dt.astimezone(UTC)
-                        )
-                    else:
-                        updated_dt = None
-                    return bool(fully_played), int(pos), updated_dt
-                except (TypeError, ValueError):
-                    # Ignore malformed cache values and refresh from provider.
-                    pass
         bm = await self.api.get_bookmark(item_id)
         if not bm:
             self.logger.debug("No bookmark found for %s", item_id)
@@ -458,12 +432,6 @@ class Storytel(MusicProvider):
             except Exception:
                 bookmark_updated_dt = None
 
-        await self.mass.cache.set(
-            key=item_id,
-            provider=self.instance_id,
-            category=CACHE_CATEGORY_BOOKMARK,
-            data=(False, pos, bookmark_updated_dt),
-        )
         return False, pos, bookmark_updated_dt
 
     @handle_login_failed
@@ -493,11 +461,6 @@ class Storytel(MusicProvider):
             return
         try:
             await self.api.set_bookmark(consumable_id, position, kids_mode=self._kids_mode)
-            await self.mass.cache.delete(
-                key=consumable_id,
-                provider=self.instance_id,
-                category=CACHE_CATEGORY_BOOKMARK,
-            )
         except Exception as err:
             if isinstance(err, (LoginFailed, ProviderUnavailableError, SetupFailedError)):
                 raise
