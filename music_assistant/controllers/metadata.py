@@ -1948,7 +1948,11 @@ class MetaDataController(CoreController):
 
     def _register_maintenance_tasks(self) -> None:
         """Register the recurring metadata maintenance background tasks."""
-        utc_hour, utc_minute = local_clock_time_to_utc(4, 0)
+        # Pick a random minute within a 3-hour window (02:00-05:00 local time) so that
+        # instances across the globe don't all hit the shared musicbrainz mirror at the
+        # exact same moment, spreading out the load and avoiding a request spike.
+        local_hour, local_minute = divmod(2 * 60 + random.randint(0, 3 * 60 - 1), 60)
+        utc_hour, utc_minute = local_clock_time_to_utc(local_hour, local_minute)
         desired_schedule = TaskSchedule.daily(hour=utc_hour, minute=utc_minute)
         self.mass.tasks.register_scheduled_task(
             task_id=MISSING_ARTIST_METADATA_SCAN_TASK_ID,
