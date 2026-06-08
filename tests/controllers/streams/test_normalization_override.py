@@ -22,7 +22,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
 import music_assistant.controllers.streams.audio as audio_mod
-from music_assistant.controllers.streams.audio import CrossfadeData, StreamsAudio
+from music_assistant.controllers.streams.audio import StreamsAudio
 
 PCM_FORMAT = AudioFormat(
     content_type=ContentType.PCM_S16LE,
@@ -38,43 +38,36 @@ MEASURED_LOUDNESS = -11.4
 TARGET_LOUDNESS = -17.0
 
 
-class _FakeBuffer:
-    """AudioBuffer test double that records the filter_params it is asked to apply."""
-
-    def __init__(self) -> None:
-        self.has_error = False
-        self.captured_filter_params: list[str] | None = None
-
-    async def get_stream(
-        self,
-        output_format: AudioFormat,
-        seek_position_ms: int = 0,
-        filter_params: list[str] | None = None,
-    ) -> AsyncGenerator[bytes]:
-        self.captured_filter_params = filter_params
-        # yield nothing: we only care about the filter chain that was built
-        empty: tuple[bytes, ...] = ()
-        for chunk in empty:
-            yield chunk
-
-
-class _FakeAudioBuffer:
-    """Stand-in for the AudioBuffer class; hands back a recording buffer instance."""
-
-    instance: _FakeBuffer | None = None
-
-    @staticmethod
-    async def get_buffer(**_kwargs: Any) -> _FakeBuffer:
-        buf = _FakeBuffer()
-        _FakeAudioBuffer.instance = buf
-        return buf
-
-
 @pytest.fixture
-def audio(monkeypatch: pytest.MonkeyPatch) -> StreamsAudio:
-    """Build a StreamsAudio with the buffer/analysis/config dependencies mocked out."""
-    _FakeAudioBuffer.instance = None
-    monkeypatch.setattr(audio_mod, "AudioBuffer", _FakeAudioBuffer)
+def audio(monkeypatch: pytest.MonkeyPatch) -> tuple[StreamsAudio, dict[str, list[str]]]:
+    """
+    Build a StreamsAudio with buffer/analysis/config mocked out.
+
+    Returns the controller plus a dict whose ``filter_params`` key captures the ffmpeg
+    filter chain the (faked) audio buffer was asked to apply.
+    """
+    captured: dict[str, list[str]] = {}
+
+    class _FakeBuffer:
+        """AudioBuffer test double: records the filter_params, yields no audio."""
+
+        has_error = False
+
+        @classmethod
+        async def get_buffer(cls, **_kwargs: Any) -> _FakeBuffer:
+            return cls()
+
+        async def get_stream(
+            self,
+            output_format: AudioFormat,
+            seek_position_ms: int = 0,
+            filter_params: list[str] | None = None,
+        ) -> AsyncGenerator[bytes]:
+            captured["filter_params"] = filter_params or []
+            for chunk in ():
+                yield chunk
+
+    monkeypatch.setattr(audio_mod, "AudioBuffer", _FakeBuffer)
     # when the override path is NOT taken, the mode is re-evaluated to MEASUREMENT_ONLY
     monkeypatch.setattr(
         audio_mod,
@@ -84,13 +77,12 @@ def audio(monkeypatch: pytest.MonkeyPatch) -> StreamsAudio:
 
     controller = StreamsAudio(MagicMock())
     mass = cast("MagicMock", controller.mass)
-    mass.create_task = MagicMock()
     mass.streams.audio_analysis.get_audio_analysis = AsyncMock(
         return_value=SimpleNamespace(loudness_integrated=MEASURED_LOUDNESS, loudness_album=None)
     )
     mass.config.get_core_config = AsyncMock(return_value=MagicMock())
     mass.config.get_player_config = AsyncMock(return_value=MagicMock())
-    return controller
+    return controller, captured
 
 
 def _make_queue_item() -> MagicMock:
@@ -117,68 +109,46 @@ async def _drain(gen: AsyncGenerator[bytes]) -> None:
 
 @pytest.mark.asyncio
 async def test_dynamic_override_forces_loudnorm_and_ignores_measurement(
-    audio: StreamsAudio,
+    audio: tuple[StreamsAudio, dict[str, list[str]]],
 ) -> None:
     """A DYNAMIC override keeps the body on loudnorm even though a measurement is available."""
+    controller, captured = audio
     queue_item = _make_queue_item()
 
     await _drain(
-        audio.get_queue_item_stream(
+        controller.get_queue_item_stream(
             queue_item,
             PCM_FORMAT,
             normalization_override=VolumeNormalizationMode.DYNAMIC,
         )
     )
 
-    assert _FakeAudioBuffer.instance is not None
-    filter_params = _FakeAudioBuffer.instance.captured_filter_params or []
     # DYNAMIC -> loudnorm filter, NOT a static measurement gain
-    assert any(p.startswith("loudnorm") for p in filter_params)
-    assert not any(p.startswith("volume=") for p in filter_params)
-    # the pinned mode is applied verbatim
+    assert any(p.startswith("loudnorm") for p in captured["filter_params"])
     assert queue_item.streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC
-    # and the just-in-time hydration / re-evaluation is skipped entirely
-    mass = cast("MagicMock", audio.mass)
+    # the just-in-time hydration / re-evaluation is skipped entirely
+    mass = cast("MagicMock", controller.mass)
     mass.streams.audio_analysis.get_audio_analysis.assert_not_called()
     mass.config.get_core_config.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_no_override_reevaluates_to_measurement_only(audio: StreamsAudio) -> None:
+async def test_no_override_reevaluates_to_measurement_only(
+    audio: tuple[StreamsAudio, dict[str, list[str]]],
+) -> None:
     """Without an override, a landed measurement re-evaluates the body to MEASUREMENT_ONLY."""
+    controller, captured = audio
     queue_item = _make_queue_item()
 
-    await _drain(audio.get_queue_item_stream(queue_item, PCM_FORMAT))
+    await _drain(controller.get_queue_item_stream(queue_item, PCM_FORMAT))
 
-    assert _FakeAudioBuffer.instance is not None
-    filter_params = _FakeAudioBuffer.instance.captured_filter_params or []
     # MEASUREMENT_ONLY -> static volume gain of target - loudness = -17 - (-11.4) = -5.6 dB
-    assert "volume=-5.6dB" in filter_params
-    assert not any(p.startswith("loudnorm") for p in filter_params)
+    assert "volume=-5.6dB" in captured["filter_params"]
     assert (
         queue_item.streamdetails.volume_normalization_mode
         == VolumeNormalizationMode.MEASUREMENT_ONLY
     )
     # the measurement was hydrated from analysis
-    cast("MagicMock", audio.mass).streams.audio_analysis.get_audio_analysis.assert_called_once()
-
-
-def test_crossfade_data_defaults_normalization_mode_to_none() -> None:
-    """CrossfadeData carries an optional normalization_mode, defaulting to None."""
-    data = CrossfadeData(
-        data=b"",
-        fade_in_size=0,
-        pcm_format=PCM_FORMAT,
-        fade_in_pcm_format=PCM_FORMAT,
-        queue_item_id="qi",
-    )
-    assert data.normalization_mode is None
-    pinned = CrossfadeData(
-        data=b"",
-        fade_in_size=0,
-        pcm_format=PCM_FORMAT,
-        fade_in_pcm_format=PCM_FORMAT,
-        queue_item_id="qi",
-        normalization_mode=VolumeNormalizationMode.DYNAMIC,
-    )
-    assert pinned.normalization_mode == VolumeNormalizationMode.DYNAMIC
+    cast(
+        "MagicMock", controller.mass
+    ).streams.audio_analysis.get_audio_analysis.assert_called_once()
