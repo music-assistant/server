@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from copy import deepcopy
 from time import time
 from typing import TYPE_CHECKING, cast
@@ -585,13 +586,11 @@ class UniversalGroupPlayer(Player):
         # when the request has no player_id.
         http_profile = cast("str", self.config.get_value(CONF_HTTP_PROFILE, "chunked"))
         if child_player_id:
-            try:
+            # player_id may be stale/invalid; fall back to the group profile
+            with contextlib.suppress(KeyError):
                 http_profile = await self.mass.config.get_player_config_value(
                     child_player_id, CONF_HTTP_PROFILE, default=http_profile, return_type=str
                 )
-            except KeyError:
-                # player_id may be stale/invalid; fall back to the group profile
-                pass
         if http_profile == "chunked" and request.version < HttpVersion11:
             # chunked encoding is not allowed on HTTP/1.0; fall back to
             # connection-close streaming to avoid raising in resp.prepare()
