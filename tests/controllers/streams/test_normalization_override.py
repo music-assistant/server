@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -47,14 +47,15 @@ class _FakeBuffer:
 
     async def get_stream(
         self,
-        output_format: AudioFormat,  # noqa: ARG002
-        seek_position_ms: int = 0,  # noqa: ARG002
+        output_format: AudioFormat,
+        seek_position_ms: int = 0,
         filter_params: list[str] | None = None,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         self.captured_filter_params = filter_params
         # yield nothing: we only care about the filter chain that was built
-        return
-        yield b""  # pragma: no cover - makes this an async generator
+        empty: tuple[bytes, ...] = ()
+        for chunk in empty:
+            yield chunk
 
 
 class _FakeAudioBuffer:
@@ -82,14 +83,13 @@ def audio(monkeypatch: pytest.MonkeyPatch) -> StreamsAudio:
     )
 
     controller = StreamsAudio(MagicMock())
-    controller.mass.create_task = MagicMock()
-    controller.mass.streams.audio_analysis.get_audio_analysis = AsyncMock(
-        return_value=SimpleNamespace(
-            loudness_integrated=MEASURED_LOUDNESS, loudness_album=None
-        )
+    mass = cast("MagicMock", controller.mass)
+    mass.create_task = MagicMock()
+    mass.streams.audio_analysis.get_audio_analysis = AsyncMock(
+        return_value=SimpleNamespace(loudness_integrated=MEASURED_LOUDNESS, loudness_album=None)
     )
-    controller.mass.config.get_core_config = AsyncMock(return_value=MagicMock())
-    controller.mass.config.get_player_config = AsyncMock(return_value=MagicMock())
+    mass.config.get_core_config = AsyncMock(return_value=MagicMock())
+    mass.config.get_player_config = AsyncMock(return_value=MagicMock())
     return controller
 
 
@@ -110,7 +110,7 @@ def _make_queue_item() -> MagicMock:
     return queue_item
 
 
-async def _drain(gen: AsyncGenerator[bytes, None]) -> None:
+async def _drain(gen: AsyncGenerator[bytes]) -> None:
     async for _ in gen:
         pass
 
@@ -138,8 +138,9 @@ async def test_dynamic_override_forces_loudnorm_and_ignores_measurement(
     # the pinned mode is applied verbatim
     assert queue_item.streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC
     # and the just-in-time hydration / re-evaluation is skipped entirely
-    audio.mass.streams.audio_analysis.get_audio_analysis.assert_not_called()
-    audio.mass.config.get_core_config.assert_not_called()
+    mass = cast("MagicMock", audio.mass)
+    mass.streams.audio_analysis.get_audio_analysis.assert_not_called()
+    mass.config.get_core_config.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -159,7 +160,7 @@ async def test_no_override_reevaluates_to_measurement_only(audio: StreamsAudio) 
         == VolumeNormalizationMode.MEASUREMENT_ONLY
     )
     # the measurement was hydrated from analysis
-    audio.mass.streams.audio_analysis.get_audio_analysis.assert_called_once()
+    cast("MagicMock", audio.mass).streams.audio_analysis.get_audio_analysis.assert_called_once()
 
 
 def test_crossfade_data_defaults_normalization_mode_to_none() -> None:

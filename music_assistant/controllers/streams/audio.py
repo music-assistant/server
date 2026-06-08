@@ -142,10 +142,7 @@ class CrossfadeData:
     queue_item_id: str
     # Offset for the fade_in track's elapsed time calculation, to account for crossfade duration and trim
     elapsed_time_offset: float = 0.0
-    # Volume normalization mode the intro PCM ('data') was baked with at crossfade-build time.
-    # Used to pin the next track's body to the same mode, so the replayed intro and the body
-    # cannot disagree (e.g. a DYNAMIC intro followed by a MEASUREMENT_ONLY body once the
-    # loudness measurement lands mid-transition, which causes an audible volume jump).
+    # Normalization mode the intro PCM was baked with, used to pin the next track's body to the same mode
     normalization_mode: VolumeNormalizationMode | None = None
 
 
@@ -1488,10 +1485,7 @@ class StreamsAudio:
         logger = self.logger.getChild("queue_item_stream")
 
         if normalization_override is not None:
-            # Pinned by the crossfade path: reuse the exact mode the replayed intro was baked
-            # with, so the intro and the body cannot disagree. Skip the just-in-time loudness
-            # hydration and mode re-evaluation that would otherwise let a measurement landing
-            # mid-transition flip the body to a different mode than the intro.
+            # crossfade path pins the body to the intro's mode; skip hydration/re-eval that could flip it
             streamdetails.volume_normalization_mode = normalization_override
         else:
             # hydrate loudness from audio analysis (just-in-time, so that a measurement
@@ -1757,11 +1751,7 @@ class StreamsAudio:
         crossfade_buffer_size = (crossfade_buffer_size // frame_size) * frame_size
         fade_out_data: bytes | None = None
 
-        # When the replayed crossfade intro was baked with DYNAMIC normalization, pin the body
-        # to DYNAMIC too. Otherwise a loudness measurement that landed during the transition
-        # would flip the body to MEASUREMENT_ONLY while the intro stays on loudnorm, producing
-        # an audible volume jump at the intro->body seam. Static intro modes already match the
-        # body, so they are left to re-evaluate normally (and can adopt a fresher measurement).
+        # pin the body to DYNAMIC when the intro was baked DYNAMIC, else a late measurement flips it and jumps
         norm_override: VolumeNormalizationMode | None = None
         if crossfade_data and crossfade_data.normalization_mode == VolumeNormalizationMode.DYNAMIC:
             norm_override = VolumeNormalizationMode.DYNAMIC
@@ -1958,9 +1948,10 @@ class StreamsAudio:
                         crossfade_timing.fadein_trimmed_duration
                         + crossfade_timing.crossfade_duration
                     ),
-                    # mode the intro PCM was baked with, set on the next track's streamdetails
-                    # by the _limited_fade_in() -> get_queue_item_stream() call just consumed above
-                    normalization_mode=next_queue_item.streamdetails.volume_normalization_mode,
+                    # mode the intro PCM was baked with (set on streamdetails by the fade-in stream above)
+                    normalization_mode=cast(
+                        "StreamDetails", next_queue_item.streamdetails
+                    ).volume_normalization_mode,
                 )
                 crossfade_elapsed = asyncio.get_event_loop().time() - crossfade_start_time
                 self.logger.debug(
