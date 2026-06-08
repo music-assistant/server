@@ -1065,9 +1065,7 @@ class PlayerQueuesController(CoreController):
             # use the live playback clock while actively playing
             source_resume_pos = int(source_queue.corrected_elapsed_time)
         else:
-            # when paused/idle the live clock is stale (e.g. the queue was itself
-            # just handed over by a previous transfer and never played), so fall
-            # back to the stored resume position - mirrors the resume() precedence
+            # when not playing the live clock is stale, so use the stored resume position
             source_resume_pos = int(source_queue.resume_pos or source_queue.elapsed_time or 0)
         source_current_index = source_queue.current_index
         source_current_item = source_queue.current_item
