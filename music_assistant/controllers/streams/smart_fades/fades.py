@@ -210,8 +210,6 @@ class SmartFade(ABC):
                 raise RuntimeError(
                     f"Smart crossfade FFmpeg failed (rc={proc.returncode}): {stderr_msg}"
                 )
-            # No output is a distinct failure mode from a non-zero exit and must not
-            # be reported as an rc-based failure (rc is 0 or unknown here).
             if not got_output:
                 raise RuntimeError("Smart crossfade FFmpeg produced no output")
         finally:
