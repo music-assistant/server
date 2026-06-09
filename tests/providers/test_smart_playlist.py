@@ -1589,3 +1589,21 @@ async def test_refresh_ai_description_no_provider_uses_fallback(tmp_path: Any) -
     assert "abc" not in plugin._descriptions_store
     written = cast("Any", plugin)._update_playlist_description.await_args.args[1]
     assert written == f"[Smart Playlist] {rules.human_readable()}"
+
+
+@pytest.mark.asyncio
+async def test_refresh_ai_description_skips_flush_when_unchanged(tmp_path: Any) -> None:
+    """No rules-file flush when the stored description doesn't change (e.g. no AI provider)."""
+    plugin = _make_ai_plugin(tmp_path, ai_provider=None)
+    await plugin.handle_async_init()
+    plugin._rules_store["abc"] = SmartPlaylistRules(favorites_only=True)
+    plugin._names_store["abc"] = "Name"  # no stored description to begin with
+    cast("Any", plugin)._flush_rules_to_disk = AsyncMock()
+    cast("Any", plugin)._update_playlist_description = AsyncMock()
+    cast("Any", plugin.mass).music.playlists.get_library_item_by_prov_id = AsyncMock(
+        return_value=_make_library_item(plugin, "abc")
+    )
+
+    await plugin._refresh_ai_description("abc")
+
+    cast("Any", plugin)._flush_rules_to_disk.assert_not_awaited()

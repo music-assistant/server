@@ -1048,11 +1048,13 @@ class SmartPlaylistProvider(PluginProvider):
             return
         name = self._names_store.get(playlist_id, playlist_id)
         description = await self._generate_ai_description(name, rules)
+        previous = self._descriptions_store.get(playlist_id)
         if description:
             self._descriptions_store[playlist_id] = description
         else:
             self._descriptions_store.pop(playlist_id, None)
-        await self._flush_rules_to_disk()
+        if self._descriptions_store.get(playlist_id) != previous:
+            await self._flush_rules_to_disk()
         library_item = await self.mass.music.playlists.get_library_item_by_prov_id(
             playlist_id, self.instance_id
         )
