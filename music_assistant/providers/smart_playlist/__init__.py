@@ -1030,6 +1030,8 @@ class SmartPlaylistProvider(PluginProvider):
 
     def _schedule_ai_description_refresh(self, playlist_id: str) -> None:
         """Schedule a background AI description refresh, deduped per playlist."""
+        if not self.config.get_value(CONF_AI_DESCRIPTIONS):
+            return
         self.mass.create_task(
             self._refresh_ai_description(playlist_id),
             task_id=f"smart_playlist_ai_desc_{playlist_id}",
@@ -1058,7 +1060,7 @@ class SmartPlaylistProvider(PluginProvider):
 
     async def _generate_ai_description(self, name: str, rules: SmartPlaylistRules) -> str | None:
         """
-        Generate a natural-language description via the first available AI provider.
+        Generate a natural-language description via the first AI provider that responds.
 
         :param name: The playlist name, included in the prompt for context.
         :param rules: The rules whose summary the description should reflect.
@@ -1074,8 +1076,9 @@ class SmartPlaylistProvider(PluginProvider):
                 response = await provider.ai_query(self._build_ai_prompt(name, rules, locale))
             except Exception as exc:
                 self.logger.debug("AI description generation failed for '%s': %s", name, exc)
-                return None
-            return response.strip() or None
+                continue
+            if cleaned := response.strip():
+                return cleaned
         return None
 
     def _build_ai_prompt(self, name: str, rules: SmartPlaylistRules, locale: str) -> str:

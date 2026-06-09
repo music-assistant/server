@@ -22,6 +22,7 @@ from music_assistant.providers.smart_playlist.helpers import (
     LOGIC_OR,
     RULES_FILENAME,
     SmartPlaylistRules,
+    write_json,
 )
 
 # ---------------------------------------------------------------------------
@@ -1311,6 +1312,37 @@ async def test_generate_ai_description_provider_error_returns_none(tmp_path: Any
 
 
 @pytest.mark.asyncio
+async def test_generate_ai_description_falls_back_to_next_provider(tmp_path: Any) -> None:
+    """If the first provider errors, the next available provider is tried."""
+    bad = MagicMock(spec=PluginProvider)
+    bad.ai_query = AsyncMock(side_effect=Exception("boom"))
+    good = _make_ai_provider("Second provider result.")
+    plugin = _make_ai_plugin(tmp_path, ai_enabled=True)
+    cast("Any", plugin.mass).get_providers_supporting_feature = MagicMock(return_value=[bad, good])
+
+    result = await plugin._generate_ai_description("X", SmartPlaylistRules(favorites_only=True))
+
+    assert result == "Second provider result."
+    bad.ai_query.assert_awaited_once()
+    good.ai_query.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_disabled_toggle_does_not_schedule_refresh(tmp_path: Any) -> None:
+    """With the toggle off, creating a playlist schedules no background AI refresh."""
+    plugin = _make_ai_plugin(tmp_path, ai_enabled=False)
+    await plugin.handle_async_init()
+    mass = cast("Any", plugin.mass)
+    mass.music.playlists.add_item_to_library = AsyncMock(return_value=MagicMock())
+    scheduled: list[str] = []
+    mass.create_task = MagicMock(side_effect=_capture_scheduled(scheduled))
+
+    await plugin.create_smart_playlist("Evening Chill", {"favorites_only": True})
+
+    assert scheduled == []
+
+
+@pytest.mark.asyncio
 async def test_generate_ai_description_blank_response_returns_none(tmp_path: Any) -> None:
     """A blank/whitespace AI response is treated as no description."""
     plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_provider=_make_ai_provider("   "))
@@ -1382,6 +1414,24 @@ async def test_ai_description_persists_to_disk(tmp_path: Any) -> None:
     await plugin2._load_rules_from_disk()
 
     assert plugin2._descriptions_store.get("42") == "Persisted AI text."
+
+
+@pytest.mark.asyncio
+async def test_write_json_preserves_original_on_failure(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed atomic replace must leave the existing file intact, never truncated."""
+    target = tmp_path / "rules.json"
+    await write_json(str(target), {"value": "original"})
+
+    def _boom(*_: Any, **__: Any) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.helpers.os.replace", _boom)
+    with pytest.raises(OSError, match="replace failed"):
+        await write_json(str(target), {"value": "new"})
+
+    assert json.loads(target.read_text()) == {"value": "original"}
 
 
 @pytest.mark.asyncio

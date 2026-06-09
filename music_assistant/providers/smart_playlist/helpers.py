@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -318,6 +320,11 @@ async def read_json(path: str) -> dict[str, Any]:
 
 
 async def write_json(path: str, data: dict[str, Any]) -> None:
-    """Write data as JSON to a file."""
-    async with aiofiles.open(path, "w", encoding="utf-8") as fh:
-        await fh.write(json_dumps(data, indent=True))
+    """Write data as JSON to a file atomically (write to a temp file, then replace)."""
+    # Serialize first so a serialization error never touches the destination file, then
+    # write+rename so an interrupted write (e.g. task cancellation) can't truncate it.
+    payload = json_dumps(data, indent=True)
+    tmp_path = f"{path}.tmp"
+    async with aiofiles.open(tmp_path, "w", encoding="utf-8") as fh:
+        await fh.write(payload)
+    await asyncio.to_thread(os.replace, tmp_path, path)
