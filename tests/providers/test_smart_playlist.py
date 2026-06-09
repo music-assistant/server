@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -1434,6 +1435,25 @@ async def test_write_json_preserves_original_on_failure(
 
     assert json.loads(target.read_text()) == {"value": "original"}
     # The temp file must be cleaned up so it can't accumulate on repeated failures.
+    assert not (tmp_path / "rules.json.tmp").exists()
+
+
+@pytest.mark.asyncio
+async def test_write_json_cleans_temp_on_cancellation(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancellation during the write must not leave a temp file behind or corrupt the original."""
+    target = tmp_path / "rules.json"
+    await write_json(str(target), {"value": "original"})
+
+    def _cancel(*_: Any, **__: Any) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.helpers.os.replace", _cancel)
+    with pytest.raises(asyncio.CancelledError):
+        await write_json(str(target), {"value": "new"})
+
+    assert json.loads(target.read_text()) == {"value": "original"}
     assert not (tmp_path / "rules.json.tmp").exists()
 
 

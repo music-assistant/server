@@ -6,6 +6,7 @@ import asyncio
 import os
 from contextlib import suppress
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, cast
 
 import aiofiles
@@ -326,12 +327,15 @@ async def write_json(path: str, data: dict[str, Any]) -> None:
     # write+rename so an interrupted write (e.g. task cancellation) can't truncate it.
     payload = json_dumps(data, indent=True)
     tmp_path = f"{path}.tmp"
-    async with aiofiles.open(tmp_path, "w", encoding="utf-8") as fh:
-        await fh.write(payload)
+    replaced = False
     try:
+        async with aiofiles.open(tmp_path, "w", encoding="utf-8") as fh:
+            await fh.write(payload)
         await asyncio.to_thread(os.replace, tmp_path, path)
-    except OSError:
-        # Don't leave a stray temp file behind to accumulate on repeated failures.
-        with suppress(OSError):
-            await asyncio.to_thread(os.remove, tmp_path)
-        raise
+        replaced = True
+    finally:
+        # On any failure or cancellation before the rename completed, don't leave a stray
+        # temp file behind to accumulate over time.
+        if not replaced:
+            with suppress(OSError):
+                Path(tmp_path).unlink(missing_ok=True)
