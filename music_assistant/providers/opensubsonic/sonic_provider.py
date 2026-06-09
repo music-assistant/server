@@ -831,6 +831,7 @@ class OpenSonicProvider(MusicProvider):
             item_id="subsonic_newest_podcasts",
             provider=self.domain,
             name="Newest Podcast Episodes",
+            translation_key="recommendations.episodes_recently_added",
         )
         sonic_episodes = await self.conn.get_newest_podcasts(count=self._reco_limit)
         for ep in sonic_episodes:
@@ -841,7 +842,10 @@ class OpenSonicProvider(MusicProvider):
 
     async def _favorites_recommendation(self) -> RecommendationFolder:
         faves: RecommendationFolder = RecommendationFolder(
-            item_id="subsonic_starred_albums", provider=self.domain, name="Starred Items"
+            item_id="subsonic_starred_albums",
+            provider=self.domain,
+            name="Starred Items",
+            translation_key="provider.opensubsonic.starred_items",
         )
         starred = await self.conn.get_starred2()
         if starred.album:
@@ -861,7 +865,10 @@ class OpenSonicProvider(MusicProvider):
 
     async def _new_recommendations(self) -> RecommendationFolder:
         new_stuff: RecommendationFolder = RecommendationFolder(
-            item_id="subsonic_new_albums", provider=self.domain, name="New Albums"
+            item_id="subsonic_new_albums",
+            provider=self.domain,
+            name="New Albums",
+            translation_key="recommendations.recently_added_albums",
         )
         new_albums = await self.conn.get_album_list2(ltype="newest", size=self._reco_limit)
         for sonic_album in new_albums:
@@ -870,7 +877,10 @@ class OpenSonicProvider(MusicProvider):
 
     async def _played_recommendations(self) -> RecommendationFolder:
         recent: RecommendationFolder = RecommendationFolder(
-            item_id="subsonic_most_played", provider=self.domain, name="Most Played Albums"
+            item_id="subsonic_most_played",
+            provider=self.domain,
+            name="Most Played Albums",
+            translation_key="recommendations.most_played_albums",
         )
         albums = await self.conn.get_album_list2(ltype="frequent", size=self._reco_limit)
         for sonic_album in albums:

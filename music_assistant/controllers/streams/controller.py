@@ -875,10 +875,14 @@ class StreamsController(CoreController):
         enable_icy = request.headers.get("Icy-MetaData", "") == "1" and icy_preference != "disabled"
         icy_meta_interval = 256000 if icy_preference == "full" else 16384
 
-        # prepare request, add some DLNA/UPNP compatible headers
+        # prepare request, add some DLNA/UPNP compatible headers.
+        # icy-name (in DEFAULT_STREAM_HEADERS) is always present so players have a
+        # readable stream name; the rest of the ICY/shoutcast metadata headers are
+        # only advertised when the client actually requested ICY metadata, rather
+        # than on every flow response.
         headers = {
             **DEFAULT_STREAM_HEADERS,
-            **ICY_HEADERS,
+            **(ICY_HEADERS if enable_icy else {}),
             "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_REALTIME,
             "Content-Type": get_mime_type(output_format.output_format_str),
         }
