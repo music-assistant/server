@@ -205,11 +205,15 @@ class SmartFade(ABC):
                     with suppress(TimeoutError, asyncio.CancelledError):
                         await asyncio.wait_for(stderr_task, timeout=2)
 
-            failure_reason = self._ffmpeg_failure_reason(
-                proc.returncode, got_output=got_output, stderr_lines=stderr_lines
-            )
-            if failure_reason is not None:
-                raise RuntimeError(failure_reason)
+            if proc.returncode not in (None, 0):
+                stderr_msg = "; ".join(stderr_lines) if stderr_lines else "(no stderr)"
+                raise RuntimeError(
+                    f"Smart crossfade FFmpeg failed (rc={proc.returncode}): {stderr_msg}"
+                )
+            # No output is a distinct failure mode from a non-zero exit and must not
+            # be reported as an rc-based failure (rc is 0 or unknown here).
+            if not got_output:
+                raise RuntimeError("Smart crossfade FFmpeg produced no output")
         finally:
             # Always cleanup temp file, even if ffmpeg fails
             await remove_file(fadeout_filename)
@@ -221,29 +225,6 @@ class SmartFade(ABC):
 
         chain = " → ".join(repr(f) for f in self.filters)
         return f"<{self.__class__.__name__}: {len(self.filters)} filters> {chain}"
-
-    @staticmethod
-    def _ffmpeg_failure_reason(
-        returncode: int | None,
-        *,
-        got_output: bool,
-        stderr_lines: list[str],
-    ) -> str | None:
-        """
-        Describe why a smart-crossfade FFmpeg run failed, or None if it succeeded.
-
-        :param returncode: FFmpeg process exit code (None if it never ran/exited).
-        :param got_output: Whether any output PCM was produced.
-        :param stderr_lines: Captured FFmpeg stderr lines, if any.
-        """
-        if returncode not in (None, 0):
-            stderr_msg = "; ".join(stderr_lines) if stderr_lines else "(no stderr)"
-            return f"Smart crossfade FFmpeg failed (rc={returncode}): {stderr_msg}"
-        # No output is a distinct failure mode from a non-zero exit and must not be
-        # reported as an rc-based failure (rc is 0 or unknown here, not an error code).
-        if not got_output:
-            return "Smart crossfade FFmpeg produced no output"
-        return None
 
 
 class SmartCrossFade(SmartFade):
