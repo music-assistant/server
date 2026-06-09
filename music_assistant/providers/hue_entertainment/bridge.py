@@ -246,11 +246,17 @@ class HueEntertainmentBridge:
             str(self.provider.config.get_value(CONF_CLIENTKEY) or ""),
             idle_timeout=0,
         )
+        # The session is only handed off to self._session once it is streaming;
+        # until then it is closed in the finally so a failed - or cancelled -
+        # start never leaks the DTLS sender thread or leaves the bridge's
+        # entertainment stream active.
+        adopted = False
         try:
             for attempt in range(3):
                 try:
                     await session.start(self.area.id)
                     self._session = session
+                    adopted = True
                     self._is_streaming = True
                     self._start_render_loop()
                     self.logger.info("Entertainment streaming active for area '%s'", self.area.name)
@@ -268,9 +274,10 @@ class HueEntertainmentBridge:
             self.logger.error(
                 "Failed to start entertainment for '%s' after 3 attempts", self.area.name
             )
-            await session.aclose()
         finally:
             self._entertainment_starting = False
+            if not adopted:
+                await session.aclose()
 
     async def _stop_entertainment(self) -> None:
         """Stop the Hue stream and deactivate entertainment mode."""
