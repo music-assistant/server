@@ -15,6 +15,8 @@ from music_assistant.controllers.metadata import (
     _normalize_imageproxy_format,
 )
 from music_assistant.helpers.images import (
+    _THUMB_CACHE_VERSION,
+    _THUMB_FILENAME_RE,
     _extract_imageproxy_id,
     _has_alpha,
     _thumb_cache_filename,
@@ -289,11 +291,12 @@ def test_thumb_cache_filename_separates_flatten_variants() -> None:
     thumb_hash = "a" * 64
     plain = _thumb_cache_filename(thumb_hash, 512, "jpeg", flatten_transparency=False)
     flat = _thumb_cache_filename(thumb_hash, 512, "jpeg", flatten_transparency=True)
-    assert plain == f"{thumb_hash}_512.jpg"
-    assert flat == f"{thumb_hash}_512_flat.jpg"
+    assert plain == f"{thumb_hash}_512_v{_THUMB_CACHE_VERSION}.jpg"
+    assert flat == f"{thumb_hash}_512_v{_THUMB_CACHE_VERSION}_flat.jpg"
     assert plain != flat
     # png requests keep their own extension/bucket
-    assert _thumb_cache_filename(thumb_hash, 0, "png") == f"{thumb_hash}_0.png"
+    png_name = _thumb_cache_filename(thumb_hash, 0, "png")
+    assert png_name == f"{thumb_hash}_0_v{_THUMB_CACHE_VERSION}.png"
 
 
 def test_has_alpha() -> None:
@@ -309,3 +312,40 @@ def test_has_alpha() -> None:
     assert not _has_alpha(Image.new("RGB", (4, 4), (10, 20, 30)))
     assert not _has_alpha(Image.new("L", (4, 4)))
     assert not _has_alpha(Image.new("P", (4, 4)))
+
+
+def test_thumb_cache_filename_includes_cache_version() -> None:
+    """The version is in the filename so pre-upgrade thumbnails can't be reused."""
+    thumb_hash = "a" * 64
+    name = _thumb_cache_filename(thumb_hash, 512, "jpeg")
+    assert f"_v{_THUMB_CACHE_VERSION}" in name
+    # the unversioned (pre-PR) filename must not collide with the current one
+    assert name != f"{thumb_hash}_512.jpg"
+    # the sanitizer must accept the versioned shape it now produces
+    assert _THUMB_FILENAME_RE.fullmatch(name)
+    assert _THUMB_FILENAME_RE.fullmatch(
+        _thumb_cache_filename(thumb_hash, 0, "png", flatten_transparency=True)
+    )
+
+
+async def test_serve_thumbnail_sets_csp_for_svg(
+    metadata_controller: MetaDataController, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SVG responses carry a script-blocking CSP; raster responses do not."""
+    served: dict[str, tuple[bytes, str]] = {"value": (b"<svg></svg>", "svg")}
+
+    async def _fake_resolve(*_args: object, **_kwargs: object) -> tuple[bytes, str]:
+        return served["value"]
+
+    monkeypatch.setattr(metadata_controller, "_resolve_thumbnail", _fake_resolve)
+
+    svg_resp = await metadata_controller._serve_thumbnail("p", "builtin", 0, "svg")
+    assert svg_resp.headers["Content-Security-Policy"] == (
+        "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+    )
+    assert svg_resp.headers["X-Content-Type-Options"] == "nosniff"
+
+    served["value"] = (b"\xff\xd8\xff", "jpg")
+    jpg_resp = await metadata_controller._serve_thumbnail("p", "builtin", 256, "jpeg")
+    assert "Content-Security-Policy" not in jpg_resp.headers
+    assert "X-Content-Type-Options" not in jpg_resp.headers

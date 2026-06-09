@@ -38,11 +38,15 @@ _THUMB_CACHE_DIR = "thumbnails"
 _THUMB_MEMORY_CACHE_MAX = 50
 _ALLOWED_THUMB_FORMATS: frozenset[str] = frozenset({"PNG", "JPEG"})
 
-# By construction the filename is `<sha256>_<int>[_flat].(jpg|png)`; the regex
-# is an explicit sanitizer that also lets CodeQL prove the value is safe to
-# join into a filesystem path. The `_flat` marker separates the flattened and
-# transparency-preserving cache variants.
-_THUMB_FILENAME_RE = re.compile(r"^[0-9a-f]{64}_\d+(?:_flat)?\.(?:jpg|png)$")
+# Bump on encoding-rule changes so stale entries (e.g. old black-bg JPEGs for
+# transparent logos) aren't served from a colliding filename after upgrade.
+_THUMB_CACHE_VERSION = 2
+
+# By construction the filename is `<sha256>_<int>_v<int>[_flat].(jpg|png)`; the
+# regex is an explicit sanitizer that also lets CodeQL prove the value is safe
+# to join into a filesystem path. The `_flat` marker separates the flattened
+# and transparency-preserving cache variants.
+_THUMB_FILENAME_RE = re.compile(r"^[0-9a-f]{64}_\d+_v\d+(?:_flat)?\.(?:jpg|png)$")
 
 _thumb_memory_cache: OrderedDict[str, bytes] = OrderedDict()
 
@@ -95,7 +99,7 @@ def _thumb_cache_filename(
     if ext == "jpeg":
         ext = "jpg"
     suffix = "_flat" if flatten_transparency else ""
-    return f"{thumb_hash}_{size or 0}{suffix}.{ext}"
+    return f"{thumb_hash}_{size or 0}_v{_THUMB_CACHE_VERSION}{suffix}.{ext}"
 
 
 def _get_from_memory_cache(key: str) -> bytes | None:

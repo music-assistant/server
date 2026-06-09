@@ -809,9 +809,20 @@ class MetaDataController(CoreController):
                     exc_info=err if self.logger.isEnabledFor(10) else None,
                 )
             return web.Response(status=404)
+        response_headers = {
+            "Cache-Control": "max-age=31536000",
+            "Access-Control-Allow-Origin": "*",
+        }
+        if content_format == "svg":
+            # Sniffed SVGs from attacker-influenceable sources (radio favicons) are
+            # served same-origin; without a CSP an embedded <script> would run.
+            response_headers["Content-Security-Policy"] = (
+                "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+            )
+            response_headers["X-Content-Type-Options"] = "nosniff"
         return web.Response(
             body=image_data,
-            headers={"Cache-Control": "max-age=31536000", "Access-Control-Allow-Origin": "*"},
+            headers=response_headers,
             content_type=_IMAGEPROXY_CONTENT_TYPES[content_format],
         )
 
