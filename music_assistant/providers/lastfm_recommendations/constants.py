@@ -31,8 +31,8 @@ TARGET_ITEM_COUNT = 10
 # Number of items to fetch when we expect some resolution failures (small buffer)
 RESOLUTION_BUFFER_SMALL = 15
 
-# Number of items to fetch when we expect many resolution failures (large buffer)
-RESOLUTION_BUFFER_LARGE = 40
+# Genre chart pool (single fetch); sized so the hourly rotation surfaces more of the genre per day
+RESOLUTION_BUFFER_LARGE = 60
 
 # Number of top items to always include when sampling (before random selection)
 TOP_ITEMS_TO_TAKE = 3
