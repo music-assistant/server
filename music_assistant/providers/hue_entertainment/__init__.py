@@ -14,11 +14,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from hue_entertainment import HueEntertainmentAPI
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, SetupFailedError
-
-from music_assistant.providers.hue_entertainment.hue_sendspin_bridge import HueEntertainmentAPI
 
 from .constants import (
     COLOR_MODES,
@@ -32,6 +31,7 @@ from .constants import (
     CONF_USERNAME,
     DEFAULT_COLOR_MODE,
     DEFAULT_HUE_LATENCY_MS,
+    HUE_DEVICE_TYPE,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -71,7 +71,7 @@ async def _handle_pair_action(values: dict[str, ConfigValueType]) -> None:
     LOGGER.info("Starting Hue bridge pairing with %s ...", host)
     api = HueEntertainmentAPI(host)
     try:
-        credentials = await api.pair()
+        credentials = await api.pair(device_type=HUE_DEVICE_TYPE)
         values[CONF_USERNAME] = credentials["username"]
         values[CONF_CLIENTKEY] = credentials["clientkey"]
         # Fetch and store bridge ID for mDNS IP tracking

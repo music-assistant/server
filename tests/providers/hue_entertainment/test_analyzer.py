@@ -6,17 +6,14 @@ import colorsys
 
 import pytest
 from aiosendspin.models.visualizer import BeatTiming
+from hue_entertainment import LightChannel, LightColorCommand
 
-from music_assistant.providers.hue_entertainment.hue_sendspin_bridge.analyzer import (
+from music_assistant.providers.hue_entertainment.analyzer import (
     _NEUTRAL_GRADIENT,
     DEFAULT_MODE,
     HueAudioAnalyzer,
     _distinct_hue_count,
     _ScheduledBeat,
-)
-from music_assistant.providers.hue_entertainment.hue_sendspin_bridge.models import (
-    LightChannel,
-    LightColorCommand,
 )
 
 
