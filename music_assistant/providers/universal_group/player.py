@@ -580,10 +580,6 @@ class UniversalGroupPlayer(Player):
             "Content-Type": get_mime_type(output_format_str),
         }
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
-        # http_profile is per-connection, not part of the shared encoded stream, so
-        # use each member's own config to support mixed members (e.g. a chunked
-        # Chromecast alongside an HTTP/1.0 Squeezelite). Fall back to the group config
-        # when the request has no player_id.
         http_profile = cast("str", self.config.get_value(CONF_HTTP_PROFILE, "chunked"))
         if child_player_id:
             # player_id may be stale/invalid; fall back to the group profile
