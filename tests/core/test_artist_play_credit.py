@@ -1,4 +1,5 @@
-"""Tests for crediting artists and albums from track plays.
+"""
+Tests for crediting artists and albums from track plays.
 
 The integration tests use the ``mass`` fixture from ``tests/conftest.py`` which
 creates a full MusicAssistant instance with a real SQLite database in a
