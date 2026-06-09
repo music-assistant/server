@@ -2484,19 +2484,9 @@ class PlayerQueuesController(CoreController):
             return list(await self.get_playlist_tracks(media_item, start_item, sort_by=sort_by))
         if media_item.media_type == MediaType.ARTIST:
             media_item = cast("Artist", media_item)
-            self.mass.create_task(
-                self.mass.music.mark_item_played(
-                    media_item, userid=userid, queue_id=queue_id, user_initiated=True
-                )
-            )
             return list(await self.get_artist_tracks(media_item))
         if media_item.media_type == MediaType.ALBUM:
             media_item = cast("Album", media_item)
-            self.mass.create_task(
-                self.mass.music.mark_item_played(
-                    media_item, userid=userid, queue_id=queue_id, user_initiated=True
-                )
-            )
             return list(await self.get_album_tracks(media_item, start_item, sort_by=sort_by))
         if media_item.media_type == MediaType.GENRE:
             media_item = cast("Genre", media_item)
@@ -3287,6 +3277,9 @@ class PlayerQueuesController(CoreController):
                 user_initiated=False,
             )
         )
+        if fully_played and not is_playing:
+            if credit_album := self._enqueued_album_for_track(queue, item_to_report, media_item):
+                self.mass.create_task(self._mark_album_played(credit_album, media_item, queue))
 
         album: Album | ItemMapping | None = getattr(media_item, "album", None)
         # signal 'media item played' event,
@@ -3329,6 +3322,53 @@ class PlayerQueuesController(CoreController):
                 userid=queue.userid,
                 player_id=queue.queue_id,
             ),
+        )
+
+    def _enqueued_album_for_track(
+        self, queue: PlayerQueue, item_to_report: QueueItem, media_item: MediaItemType
+    ) -> Album | None:
+        """Return the album to credit for this played track, or None.
+
+        Only an album the user explicitly enqueued is eligible, and only on the first
+        track of a contiguous run of its tracks (the previous queue item must belong to
+        a different album), so a single album play is credited once.
+        """
+        album = getattr(media_item, "album", None)
+        if album is None:
+            return None
+        enqueued = next(
+            (
+                item
+                for item in queue.enqueued_media_items
+                if isinstance(item, Album) and item == album
+            ),
+            None,
+        )
+        if enqueued is None:
+            return None
+        index = self.index_by_id(queue.queue_id, item_to_report.queue_item_id)
+        if index:
+            prev_item = self.get_item(queue.queue_id, index - 1)
+            prev_album = (
+                getattr(prev_item.media_item, "album", None)
+                if prev_item and prev_item.media_item
+                else None
+            )
+            if prev_album == album:
+                return None
+        return enqueued
+
+    async def _mark_album_played(
+        self, album: Album, track: MediaItemType, queue: PlayerQueue
+    ) -> None:
+        """Mark an enqueued album played, skipping artists already credited via its track."""
+        skip = await self.mass.music.resolve_library_artist_ids(getattr(track, "artists", []))
+        await self.mass.music.mark_item_played(
+            album,
+            userid=queue.userid,
+            queue_id=queue.queue_id,
+            user_initiated=False,
+            skip_artist_ids=list(skip),
         )
 
     async def _cleanup_stale_queue_buffers(self, queue_id: str, current_index: int) -> None:

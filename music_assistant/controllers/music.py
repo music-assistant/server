@@ -1210,6 +1210,7 @@ class MusicController(CoreController):
         userid: str | None = None,
         queue_id: str | None = None,
         user_initiated: bool = True,
+        skip_artist_ids: list[str] | None = None,
     ) -> None:
         """
         Mark item as played in playlog.
@@ -1221,6 +1222,7 @@ class MusicController(CoreController):
         :param userid: The user ID to mark the item as played for (instead of the current user).
         :param queue_id: The queue ID where the item was played.
         :param user_initiated: If True, the playback was initiated by the user (e.g. enqueued).
+        :param skip_artist_ids: Library artist ids to skip when crediting an album's artists.
         """
         timestamp = utc_timestamp()
         if (
@@ -1318,34 +1320,64 @@ class MusicController(CoreController):
                 f"UPDATE {ctrl.db_table} SET play_count = play_count + 1, "
                 f"last_played = {timestamp} WHERE item_id = {db_item.item_id}"
             )
-        if isinstance(media_item, Track) and media_item.artists:
-            primary_artist = media_item.artists[0]
-            db_artist = await self.artists.get_library_item_by_prov_id(
-                primary_artist.item_id, primary_artist.provider
+        if isinstance(media_item, Track | Album):
+            await self._credit_artist_plays(
+                media_item.artists,
+                timestamp=timestamp,
+                user_ids=user_ids,
+                queue_id=queue_id,
+                user_initiated=user_initiated,
+                skip_ids=set(skip_artist_ids or ()),
             )
-            if db_artist:
-                await self.database.execute(
-                    f"UPDATE {self.artists.db_table} SET play_count = play_count + 1, "
-                    f"last_played = {timestamp} WHERE item_id = {db_artist.item_id}"
-                )
-                artist_params = {
-                    "item_id": db_artist.item_id,
-                    "provider": "library",
-                    "media_type": MediaType.ARTIST.value,
-                    "name": db_artist.name,
-                    "image": serialize_to_json(db_artist.image.to_dict())
-                    if db_artist.image
-                    else None,
-                    "fully_played": fully_played,
-                    "seconds_played": seconds_played,
-                    "timestamp": timestamp,
-                    "queue_id": queue_id,
-                    "user_initiated": user_initiated,
-                }
-                for user_id in user_ids:
-                    artist_params["userid"] = user_id
-                    await self.database.insert(DB_TABLE_PLAYLOG, artist_params, allow_replace=True)
         await self.database.commit()
+
+    async def _credit_artist_plays(
+        self,
+        artists: Iterable[Artist | ItemMapping],
+        *,
+        timestamp: int,
+        user_ids: list[str],
+        queue_id: str | None,
+        user_initiated: bool,
+        skip_ids: set[str],
+    ) -> None:
+        """Credit each (library-resolvable) artist with a play, skipping skip_ids."""
+        for artist in artists:
+            db_artist = await self.artists.get_library_item_by_prov_id(
+                artist.item_id, artist.provider
+            )
+            if db_artist is None or db_artist.item_id in skip_ids:
+                continue
+            await self.database.execute(
+                f"UPDATE {self.artists.db_table} SET play_count = play_count + 1, "
+                f"last_played = {timestamp} WHERE item_id = {db_artist.item_id}"
+            )
+            playlog_entry: dict[str, Any] = {
+                "item_id": db_artist.item_id,
+                "provider": "library",
+                "media_type": MediaType.ARTIST.value,
+                "name": db_artist.name,
+                "image": serialize_to_json(db_artist.image.to_dict()) if db_artist.image else None,
+                "fully_played": True,
+                "seconds_played": None,
+                "timestamp": timestamp,
+                "queue_id": queue_id,
+                "user_initiated": user_initiated,
+            }
+            for user_id in user_ids:
+                playlog_entry["userid"] = user_id
+                await self.database.insert(DB_TABLE_PLAYLOG, playlog_entry, allow_replace=True)
+
+    async def resolve_library_artist_ids(self, artists: Iterable[Artist | ItemMapping]) -> set[str]:
+        """Resolve the given artist references to their library item ids (when present)."""
+        ids: set[str] = set()
+        for artist in artists:
+            db_artist = await self.artists.get_library_item_by_prov_id(
+                artist.item_id, artist.provider
+            )
+            if db_artist is not None:
+                ids.add(db_artist.item_id)
+        return ids
 
     @api_command("music/mark_unplayed")
     async def mark_item_unplayed(
