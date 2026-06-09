@@ -350,6 +350,7 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_similar_artists",
                     name="Discover Similar Artists",
+                    translation_key="recommendations.discover_similar_artists",
                     provider=self.provider.instance_id,
                     items=UniqueList(similar_artists[:TARGET_ITEM_COUNT]),
                     subtitle=f"Based on your top {len(top_artists)} artists",
@@ -367,6 +368,7 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_similar_tracks",
                     name="Discover Similar Tracks",
+                    translation_key="recommendations.discover_similar_tracks",
                     provider=self.provider.instance_id,
                     items=UniqueList(similar_tracks[:TARGET_ITEM_COUNT]),
                     subtitle=f"Based on your top {len(top_tracks)} tracks",
@@ -391,6 +393,7 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_chart_top_artists",
                     name="Global Top Artists",
+                    translation_key="recommendations.global_top_artists",
                     provider=self.provider.instance_id,
                     items=UniqueList(top_artists),
                     subtitle="Most popular artists worldwide",
@@ -409,6 +412,7 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_chart_top_tracks",
                     name="Global Top Tracks",
+                    translation_key="recommendations.global_top_tracks",
                     provider=self.provider.instance_id,
                     items=UniqueList(top_tracks),
                     subtitle="Most popular tracks worldwide",
