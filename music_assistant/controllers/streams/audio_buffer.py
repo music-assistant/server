@@ -176,7 +176,7 @@ class AudioBuffer:
         chunks_ahead = seek_chunk - total_chunks
         return chunks_ahead <= SEEK_WAIT_THRESHOLD
 
-    async def get_raw_stream(self, seek_position_ms: int = 0) -> AsyncGenerator[bytes, None]:
+    async def get_raw_stream(self, seek_position_ms: int = 0) -> AsyncGenerator[bytes]:
         """
         Get raw (unprocessed) PCM audio from the buffer.
 
@@ -210,7 +210,7 @@ class AudioBuffer:
         output_format: AudioFormat,
         seek_position_ms: int = 0,
         filter_params: list[str] | None = None,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Get processed audio from the buffer.
 
@@ -236,7 +236,7 @@ class AudioBuffer:
         ):
             yield chunk
 
-    def fill(self, audio_source: AsyncGenerator[bytes, None], source_name: str = "unknown") -> None:
+    def fill(self, audio_source: AsyncGenerator[bytes], source_name: str = "unknown") -> None:
         """
         Start filling the buffer from an async generator of PCM audio chunks.
 
@@ -295,12 +295,13 @@ class AudioBuffer:
             with suppress(asyncio.CancelledError):
                 await self._inactivity_task
 
-        # signal cancel to cancel callbacks before clearing them
-        for callback in list(self._cancel_callbacks):
-            try:
-                callback()
-            except Exception:
-                LOGGER.exception("Cancel callback failed during clear")
+        # signal cancel callbacks only if the stream did not complete normally
+        if not self._eof_received:
+            for callback in list(self._cancel_callbacks):
+                try:
+                    callback()
+                except Exception:
+                    LOGGER.exception("Cancel callback failed during clear")
 
         async with self._lock:
             self._chunks = deque()
@@ -400,9 +401,11 @@ class AudioBuffer:
             else SmartFadesMode.DISABLED
         )
         if smart_fades_mode != SmartFadesMode.DISABLED:
-            ready_threshold = 10
+            ready_threshold = 8
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC:
-            ready_threshold = 5
+            # radio streams are continuous so the normalization will converge quickly,
+            # use a lower threshold to reduce startup latency
+            ready_threshold = 3 if streamdetails.media_type == MediaType.RADIO else 5
         else:
             ready_threshold = 2
 
@@ -429,18 +432,10 @@ class AudioBuffer:
         streamdetails.buffer = audio_buffer
 
         # attach analyze jobs for ahead-of-time processing
-        if seek_position_ms == 0:
-            # TODO: Remove loudness / smart fades after they have been implemented as
-            # audio analysis providers
-            # loudness analysis for all streams (tracks and radio)
-            mass.streams.audio.attach_loudness_analyzer(audio_buffer, streamdetails)
-            # smart fades analysis only when enabled and only for music tracks
-            if (
-                streamdetails.media_type == MediaType.TRACK
-                and smart_fades_mode != SmartFadesMode.DISABLED
-            ):
-                mass.streams.smart_fades_analyzer.attach_to_buffer(audio_buffer, streamdetails)
-            # audio analysis providers (beat tracking, key detection, etc.)
+        # skip AudioSource — it's an open-ended live stream so analysis would never finalize
+        # (radio still runs analysis; the analyzer caps it at 10 minutes)
+        if seek_position_ms == 0 and streamdetails.media_type != MediaType.AUDIO_SOURCE:
+            # audio analysis providers (loudness, beat tracking, key detection, etc.)
             await mass.streams.audio_analysis.start_analysis(audio_buffer, streamdetails)
 
         # start filling from the media stream (seek in seconds for FFmpeg)

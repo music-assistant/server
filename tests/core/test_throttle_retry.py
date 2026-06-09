@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from music_assistant_models.errors import ResourceTemporarilyUnavailable, RetriesExhausted
+from music_assistant_models.errors import (
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+)
 
 from music_assistant.helpers.throttle_retry import (
     ThrottlerManager,
@@ -30,7 +34,7 @@ class FakeProvider:
         self.call_count = 0
         self._side_effects: list[Exception | str] = []
 
-    def set_side_effects(self, effects: list[Exception | str]) -> None:
+    def set_side_effects(self, effects: Sequence[Exception | str]) -> None:
         """Configure what happens on each call.
 
         :param effects: List of exceptions to raise, or "ok" to return successfully.
@@ -38,7 +42,7 @@ class FakeProvider:
         self._side_effects = list(effects)
         self.call_count = 0
 
-    @throttle_with_retries  # type: ignore[type-var]
+    @throttle_with_retries
     async def api_call(self, value: str) -> str:
         """Simulate an API call."""
         self.call_count += 1
@@ -56,7 +60,7 @@ def provider() -> FakeProvider:
 
 
 @pytest.fixture
-def mock_sleep() -> Generator[AsyncMock, None, None]:
+def mock_sleep() -> Generator[AsyncMock]:
     """Patch asyncio.sleep to capture sleep times without actually sleeping."""
     with patch(
         "music_assistant.helpers.throttle_retry.asyncio.sleep", new_callable=AsyncMock
@@ -97,17 +101,17 @@ class TestBasicBehavior:
 
 
 class TestServerProvidedBackoff:
-    """When the server provides a Retry-After value, use it exactly."""
+    """When the server names a recovery time (e.g. 503 Retry-After), respect it."""
 
-    async def test_server_backoff_used_exactly(
+    async def test_server_backoff_respected(
         self, provider: FakeProvider, mock_sleep: AsyncMock
     ) -> None:
-        """Server-provided backoff should be used without doubling."""
+        """Server-provided backoff should be honored without doubling."""
         provider.set_side_effects(
             [
-                ResourceTemporarilyUnavailable("rate limited", backoff_time=2),
-                ResourceTemporarilyUnavailable("rate limited", backoff_time=2),
-                ResourceTemporarilyUnavailable("rate limited", backoff_time=2),
+                ResourceTemporarilyUnavailable("unavailable", backoff_time=2),
+                ResourceTemporarilyUnavailable("unavailable", backoff_time=2),
+                ResourceTemporarilyUnavailable("unavailable", backoff_time=2),
                 "ok",
             ]
         )
@@ -115,9 +119,10 @@ class TestServerProvidedBackoff:
         assert result == "ok"
         assert provider.call_count == 4
 
-        # All three retries should sleep exactly 2s, not 2→4→8
+        # All three retries sleep ~2s (never less, up to +10% citizen jitter), not 2→4→8
         sleep_times = [call.args[0] for call in mock_sleep.call_args_list]
-        assert sleep_times == [2.0, 2.0, 2.0]
+        for t in sleep_times:
+            assert 2.0 <= t <= 2.2
 
     async def test_varying_server_backoff(
         self, provider: FakeProvider, mock_sleep: AsyncMock
@@ -125,9 +130,9 @@ class TestServerProvidedBackoff:
         """Each retry should use the server's current value."""
         provider.set_side_effects(
             [
-                ResourceTemporarilyUnavailable("rate limited", backoff_time=3),
-                ResourceTemporarilyUnavailable("rate limited", backoff_time=5),
-                ResourceTemporarilyUnavailable("rate limited", backoff_time=1),
+                ResourceTemporarilyUnavailable("unavailable", backoff_time=3),
+                ResourceTemporarilyUnavailable("unavailable", backoff_time=5),
+                ResourceTemporarilyUnavailable("unavailable", backoff_time=1),
                 "ok",
             ]
         )
@@ -135,7 +140,60 @@ class TestServerProvidedBackoff:
         assert result == "ok"
 
         sleep_times = [call.args[0] for call in mock_sleep.call_args_list]
-        assert sleep_times == [3.0, 5.0, 1.0]
+        assert 3.0 <= sleep_times[0] <= 3.3
+        assert 5.0 <= sleep_times[1] <= 5.5
+        assert 1.0 <= sleep_times[2] <= 1.1
+
+    async def test_negative_backoff_falls_back_to_exponential(
+        self, provider: FakeProvider, mock_sleep: AsyncMock
+    ) -> None:
+        """A malformed negative Retry-After must not yield a non-positive sleep."""
+        provider.set_side_effects(
+            [ResourceTemporarilyUnavailable("bad header", backoff_time=-5), "ok"]
+        )
+        await provider.api_call("ok")
+
+        sleep_times = [call.args[0] for call in mock_sleep.call_args_list]
+        assert 3.0 <= sleep_times[0] <= 5.0
+
+
+class TestRateLimited:
+    """When rate-limited (429), Retry-After is a floor and we escalate above it."""
+
+    async def test_floor_is_never_undercut(
+        self, provider: FakeProvider, mock_sleep: AsyncMock
+    ) -> None:
+        """A large Retry-After dominates until exponential backoff catches up."""
+        provider.set_side_effects([RateLimited("rate limited", backoff_time=50)] * 3 + ["ok"])
+        await provider.api_call("ok")
+
+        # exp_backoff starts at 4 and doubles; 50 stays the floor for these retries
+        sleep_times = [call.args[0] for call in mock_sleep.call_args_list]
+        for t in sleep_times:
+            assert 50.0 <= t <= 55.0
+
+    async def test_escalates_above_floor(
+        self, provider: FakeProvider, mock_sleep: AsyncMock
+    ) -> None:
+        """A small Retry-After is honored as a floor while exponential backoff grows."""
+        provider.set_side_effects([RateLimited("rate limited", backoff_time=2)] * 4 + ["ok"])
+        await provider.api_call("ok")
+
+        sleep_times = [call.args[0] for call in mock_sleep.call_args_list]
+        # exp from initial=4 dominates the 2s floor and doubles each retry (up to +10%)
+        assert 4.0 <= sleep_times[0] <= 4.4
+        assert 8.0 <= sleep_times[1] <= 8.8
+        assert 16.0 <= sleep_times[2] <= 17.6
+
+    async def test_absurd_retry_after_capped(
+        self, provider: FakeProvider, mock_sleep: AsyncMock
+    ) -> None:
+        """A hostile Retry-After is clamped to MAX_RETRY_AFTER (1 hour)."""
+        provider.set_side_effects([RateLimited("rate limited", backoff_time=999999), "ok"])
+        await provider.api_call("ok")
+
+        sleep_times = [call.args[0] for call in mock_sleep.call_args_list]
+        assert 3600.0 <= sleep_times[0] <= 3960.0
 
 
 class TestExponentialBackoffWithJitter:
@@ -215,8 +273,8 @@ class TestMixedBackoff:
         assert result == "ok"
 
         sleep_times = [call.args[0] for call in mock_sleep.call_args_list]
-        # Retry 1: server says 2
-        assert sleep_times[0] == 2.0
+        # Retry 1: server says 2 (honored, up to +10% jitter)
+        assert 2.0 <= sleep_times[0] <= 2.2
         # Retry 2: exponential starts at initial=4 (unchanged by server retry), jitter ±25%
         assert 3.0 <= sleep_times[1] <= 5.0
         # Retry 3: doubled to 8, jitter ±25%
@@ -230,7 +288,7 @@ class TestMixedBackoff:
             [
                 ResourceTemporarilyUnavailable("error"),  # no server guidance
                 ResourceTemporarilyUnavailable("error"),  # no server guidance
-                ResourceTemporarilyUnavailable("rate limited", backoff_time=1),  # server says 1
+                ResourceTemporarilyUnavailable("unavailable", backoff_time=1),  # server says 1
                 "ok",
             ]
         )
@@ -241,8 +299,8 @@ class TestMixedBackoff:
         # Retries 1-2: exponential (4 jittered, 8 jittered)
         assert 3.0 <= sleep_times[0] <= 5.0
         assert 6.0 <= sleep_times[1] <= 10.0
-        # Retry 3: server says 1, used exactly
-        assert sleep_times[2] == 1.0
+        # Retry 3: server says 1, honored (up to +10% jitter)
+        assert 1.0 <= sleep_times[2] <= 1.1
 
 
 class TestParseRetryAfter:

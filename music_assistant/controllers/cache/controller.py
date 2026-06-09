@@ -102,6 +102,7 @@ class CacheController(CoreController):
         default: Any = None,
         allow_bypass: bool | None = None,
         base_class: Any = None,
+        allow_expired_cache: bool = False,
     ) -> Any:
         """
         Get data from cache.
@@ -119,6 +120,9 @@ class CacheController(CoreController):
         :param default: Value to return if no cache object is found.
         :param allow_bypass: Whether to respect the BYPASS_CACHE context variable.
         :param base_class: If provided, reconstruct data using base_class.from_dict().
+        :param allow_expired_cache: If True, also return entries past their expiration
+            time instead of treating them as cache misses. Used by the
+            stale-while-revalidate path of `@use_cache`.
         """
         assert self.database is not None
         assert key, "No key provided"
@@ -133,7 +137,7 @@ class CacheController(CoreController):
                     DB_TABLE_CACHE, {"category": category, "provider": provider, "key": key}
                 )
             )
-            and db_row["expires"] >= cur_time
+            and (db_row["expires"] >= cur_time or allow_expired_cache)
             and (not checksum or db_row["checksum"] == checksum)
         ):
             # if allow_bypass is not explicitly set,
@@ -170,6 +174,7 @@ class CacheController(CoreController):
         category: int = 0,
         checksum: str | None = None,
         persistent: bool = False,
+        allow_expired_cache: bool = False,
     ) -> None:
         """
         Store data in cache.
@@ -185,6 +190,9 @@ class CacheController(CoreController):
         :param category: Category to group cache objects.
         :param checksum: Optional checksum to store with the cache object.
         :param persistent: If True, the entry survives cache clears.
+        :param allow_expired_cache: If True, the entry survives the auto-cleanup task
+            after it expires, so it can still be served as fallback data by the
+            stale-while-revalidate path of `@use_cache`.
         """
         assert self.database is not None
         if not key:
@@ -205,6 +213,7 @@ class CacheController(CoreController):
                 "checksum": checksum,
                 "data": data,
                 "persistent": persistent,
+                "allow_expired_cache": allow_expired_cache,
             },
         )
 
@@ -259,8 +268,9 @@ class CacheController(CoreController):
                 len(db_rows),
                 f"Scanning cache record {index}/{len(db_rows)}",
             )
-            # clean up db cache object only if expired
-            if db_row["expires"] < cur_timestamp:
+            # clean up db cache object only if expired; entries marked with
+            # allow_expired_cache are kept as fallback for stale-while-revalidate
+            if db_row["expires"] < cur_timestamp and not db_row["allow_expired_cache"]:
                 await self.database.delete(DB_TABLE_CACHE, {"id": db_row["id"]})
                 cleaned_records += 1
             await asyncio.sleep(0)  # yield to eventloop
@@ -268,7 +278,7 @@ class CacheController(CoreController):
         self.logger.debug("Automatic cleanup finished (cleaned up %s records)", cleaned_records)
 
     @asynccontextmanager
-    async def handle_refresh(self, bypass: bool) -> AsyncGenerator[None, None]:
+    async def handle_refresh(self, bypass: bool) -> AsyncGenerator[None]:
         """Handle the cache bypass."""
         try:
             token = BYPASS_CACHE.set(bypass)
@@ -276,11 +286,8 @@ class CacheController(CoreController):
         finally:
             BYPASS_CACHE.reset(token)
 
-    async def _check_and_reset_oversized_cache(self) -> bool:
-        """Check cache database size and remove it if it exceeds the max size.
-
-        Returns True if the cache database was removed.
-        """
+    async def _check_oversized_cache(self) -> None:
+        """Warn if the cache database exceeds the recommended max size."""
         db_path = os.path.join(self.mass.cache_path, "cache.db")
         # also include the write ahead log and shared memory db files
         db_files = [db_path + suffix for suffix in ("", "-wal", "-shm")]
@@ -293,21 +300,16 @@ class CacheController(CoreController):
             return total / (1024 * 1024)
 
         db_size_mb = await asyncio.to_thread(_get_db_size)
-        if db_size_mb <= MAX_CACHE_DB_SIZE_MB:
-            return False
-        self.logger.warning(
-            "Cache database size %.2f MB exceeds maximum of %d MB, removing cache database",
-            db_size_mb,
-            MAX_CACHE_DB_SIZE_MB,
-        )
-        for path in db_files:
-            if await asyncio.to_thread(os.path.exists, path):
-                await asyncio.to_thread(os.remove, path)
-        return True
+        if db_size_mb > MAX_CACHE_DB_SIZE_MB:
+            self.logger.warning(
+                "Cache database size %.2f MB exceeds recommended maximum of %d MB",
+                db_size_mb,
+                MAX_CACHE_DB_SIZE_MB,
+            )
 
     async def _setup_database(self) -> None:
         """Initialize database."""
-        cache_was_reset = await self._check_and_reset_oversized_cache()
+        await self._check_oversized_cache()
         db_path = os.path.join(self.mass.cache_path, "cache.db")
         self.database = DatabaseConnection(db_path)
         await self.database.setup()
@@ -315,27 +317,26 @@ class CacheController(CoreController):
         # always create db tables if they don't exist to prevent errors trying to access them later
         await self.__create_database_tables()
 
-        if not cache_was_reset:
-            try:
-                if db_row := await self.database.get_row(DB_TABLE_SETTINGS, {"key": "version"}):
-                    prev_version = int(db_row["value"])
-                else:
-                    prev_version = 0
-            except (KeyError, ValueError):
+        try:
+            if db_row := await self.database.get_row(DB_TABLE_SETTINGS, {"key": "version"}):
+                prev_version = int(db_row["value"])
+            else:
                 prev_version = 0
+        except (KeyError, ValueError):
+            prev_version = 0
 
-            if prev_version not in (0, DB_SCHEMA_VERSION):
-                LOGGER.warning(
-                    "Performing database migration from %s to %s",
-                    prev_version,
-                    DB_SCHEMA_VERSION,
-                )
-                try:
-                    await self.__migrate_database(prev_version)
-                except Exception as err:
-                    LOGGER.warning("Cache database migration failed: %s, resetting cache", err)
-                    await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_CACHE}")
-                    await self.__create_database_tables()
+        if prev_version not in (0, DB_SCHEMA_VERSION):
+            LOGGER.warning(
+                "Performing database migration from %s to %s",
+                prev_version,
+                DB_SCHEMA_VERSION,
+            )
+            try:
+                await self.__migrate_database(prev_version)
+            except Exception as err:
+                LOGGER.warning("Cache database migration failed: %s, resetting cache", err)
+                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_CACHE}")
+                await self.__create_database_tables()
 
         # store current schema version
         await self.database.insert_or_replace(
@@ -344,15 +345,14 @@ class CacheController(CoreController):
         )
         await self.__create_database_indexes()
 
-        if not cache_was_reset:
-            # compact db (vacuum) at startup
-            self.logger.debug("Compacting database...")
-            try:
-                await self.database.vacuum()
-            except Exception as err:
-                self.logger.warning("Database vacuum failed: %s", str(err))
-            else:
-                self.logger.debug("Compacting database done")
+        # compact db (vacuum) at startup
+        self.logger.debug("Compacting database...")
+        try:
+            await self.database.vacuum()
+        except Exception as err:
+            self.logger.warning("Database vacuum failed: %s", str(err))
+        else:
+            self.logger.debug("Compacting database done")
 
     async def __create_database_tables(self) -> None:
         """Create database table(s)."""
@@ -374,6 +374,7 @@ class CacheController(CoreController):
                     [data] TEXT NULL,
                     [checksum] TEXT NULL,
                     [persistent] INTEGER NOT NULL DEFAULT 0,
+                    [allow_expired_cache] INTEGER NOT NULL DEFAULT 0,
                     UNIQUE(category, key, provider)
                     )"""
         )
@@ -418,6 +419,11 @@ class CacheController(CoreController):
         if prev_version <= 6:
             # clear spotify cache entries to fix bloated cache from playlist pagination bug
             await self.database.delete(DB_TABLE_CACHE, query="WHERE provider LIKE '%spotify%'")
+        if prev_version <= 7:
+            await self.database.execute(
+                f"ALTER TABLE {DB_TABLE_CACHE} "
+                "ADD COLUMN allow_expired_cache INTEGER NOT NULL DEFAULT 0"
+            )
         await self.database.commit()
 
     def _register_cleanup_task(self) -> None:

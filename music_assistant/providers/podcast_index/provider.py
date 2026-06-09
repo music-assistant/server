@@ -226,9 +226,7 @@ class PodcastIndexProvider(MusicProvider):
 
         raise MediaNotFoundError(f"Podcast {prov_podcast_id} not found")
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get episodes for a podcast."""
         self.logger.debug("Getting episodes for podcast ID: %s", prov_podcast_id)
 
@@ -357,14 +355,6 @@ class PodcastIndexProvider(MusicProvider):
             self.logger.warning("Unexpected error getting stream for %s: %s", item_id, err)
 
         raise MediaNotFoundError(f"Stream not found for {item_id}")
-
-    async def get_item(self, media_type: MediaType, prov_item_id: str) -> Podcast | PodcastEpisode:
-        """Get single MediaItem from provider."""
-        if media_type == MediaType.PODCAST:
-            return await self.get_podcast(prov_item_id)
-        if media_type == MediaType.PODCAST_EPISODE:
-            return await self.get_podcast_episode(prov_item_id)
-        raise MediaNotFoundError(f"Media type {media_type} not supported by this provider")
 
     async def _fetch_podcasts(
         self, endpoint: str, params: dict[str, Any] | None = None

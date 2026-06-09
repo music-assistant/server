@@ -17,7 +17,6 @@ from aiofiles.os import wrap
 from cryptography.fernet import Fernet, InvalidToken
 from music_assistant_models import config_entries
 from music_assistant_models.config_entries import (
-    MULTI_VALUE_SPLITTER,
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
@@ -57,6 +56,7 @@ from music_assistant.constants import (
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_FLOW_MODE_SAMPLE_RATE,
     CONF_ENTRY_HTTP_PROFILE,
     CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS,
     CONF_ENTRY_LIBRARY_SYNC_ALBUMS,
@@ -69,16 +69,18 @@ from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
     CONF_ENTRY_LIBRARY_SYNC_RADIOS,
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+    CONF_ENTRY_MAX_VOLUME,
+    CONF_ENTRY_MIN_VOLUME,
     CONF_ENTRY_OUTPUT_CHANNELS,
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_OUTPUT_LIMITER,
+    CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
     CONF_ENTRY_SAMPLE_RATES,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_ENTRY_VOLUME_NORMALIZATION,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
-    CONF_ENTRY_ZEROCONF_INTERFACES,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_HIDE_IN_UI,
     CONF_MUTE_CONTROL,
@@ -100,6 +102,7 @@ from music_assistant.constants import (
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
     ENCRYPT_SUFFIX,
     NON_HTTP_PROVIDERS,
+    PLAYER_CONTROL_PROTOCOL,
 )
 from music_assistant.controllers.streams.constants import (
     CONF_BUFFER_SIZE,
@@ -505,9 +508,11 @@ class ConfigController:
                     continue
                 self.mass.players.delete_player_config(player.player_id)
             # cleanup remaining player configs
-            for player_conf in list(self.get(CONF_PLAYERS, {}).values()):
-                if player_conf["provider"] == instance_id:
-                    self.remove(f"{CONF_PLAYERS}/{player_conf['player_id']}")
+            for key, player_conf in list(self.get(CONF_PLAYERS, {}).items()):
+                if not isinstance(player_conf, dict):
+                    continue
+                if player_conf.get("provider") == instance_id:
+                    self.remove(f"{CONF_PLAYERS}/{player_conf.get('player_id') or key}")
 
     async def remove_provider_config_value(self, instance_id: str, key: str) -> None:
         """Remove/reset single Provider config value."""
@@ -532,9 +537,16 @@ class ConfigController:
     ) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider id."""
         result: list[PlayerConfig] = []
-        for raw_conf in list(self.get(CONF_PLAYERS, {}).values()):
+        for key, raw_conf in list(self.get(CONF_PLAYERS, {}).items()):
+            # guard against malformed entries that lost their base keys
+            # (can happen via race between delete_player_config and a stale player
+            # update writing back a nested sub-key, which recreates a partial dict).
+            if not isinstance(raw_conf, dict) or "player_id" not in raw_conf:
+                LOGGER.warning("Removing malformed player config entry %s (missing player_id)", key)
+                self.remove(f"{CONF_PLAYERS}/{key}")
+                continue
             # optional provider filter
-            if provider is not None and raw_conf["provider"] != provider:
+            if provider is not None and raw_conf.get("provider") != provider:
                 continue
             # filter out unavailable players
             # (unless disabled, otherwise there is no way to re-enable them)
@@ -588,7 +600,10 @@ class ConfigController:
                 # handle unavailable player and/or provider
                 config_entries = []
                 raw_conf["available"] = False
-                raw_conf["default_name"] = raw_conf.get("default_name") or raw_conf["player_id"]
+                raw_conf["default_name"] = (
+                    raw_conf.get("default_name") or raw_conf.get("player_id") or player_id
+                )
+                raw_conf.setdefault("player_id", player_id)
 
             return cast("PlayerConfig", PlayerConfig.parse(config_entries, raw_conf))
         msg = f"No config found for player id {player_id}"
@@ -849,11 +864,19 @@ class ConfigController:
 
     def set_player_default_name(self, player_id: str, default_name: str) -> None:
         """Set (or update) the default name for a player."""
+        # skip if the player config root no longer exists, otherwise the
+        # nested set would resurrect a partial entry (missing player_id etc).
+        if not self.get(f"{CONF_PLAYERS}/{player_id}"):
+            return
         conf_key = f"{CONF_PLAYERS}/{player_id}/default_name"
         self.set(conf_key, default_name)
 
     def set_player_type(self, player_id: str, player_type: PlayerType) -> None:
         """Set (or update) the type for a player."""
+        # skip if the player config root no longer exists, otherwise the
+        # nested set would resurrect a partial entry (missing player_id etc).
+        if not self.get(f"{CONF_PLAYERS}/{player_id}"):
+            return
         conf_key = f"{CONF_PLAYERS}/{player_id}/player_type"
         self.set(conf_key, player_type)
 
@@ -925,9 +948,11 @@ class ConfigController:
         # validate the new config
         config.validate()
 
+        old_dsp_enabled = self.get_player_dsp_config(player_id).enabled
         # Save and apply the new config to the player
         self.set(f"{CONF_PLAYER_DSP}/{player_id}", config.to_dict())
-        await self.mass.players.on_player_dsp_change(player_id)
+        if old_dsp_enabled or config.enabled:
+            await self.mass.players.on_player_dsp_change(player_id)
         # send the dsp config updated event
         self.mass.signal_event(
             EventType.PLAYER_DSP_CONFIG_UPDATED,
@@ -1337,34 +1362,8 @@ class ConfigController:
                 LOGGER.exception("Error while reading persistent storage file %s", filename)
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
 
-    async def _migrate(self) -> None:  # noqa: PLR0915
+    async def _migrate(self) -> None:
         changed = False
-
-        # some type hints to help with the code below
-        instance_id: str
-        player_id: str
-        provider_config: dict[str, Any]
-        player_config: dict[str, Any]
-
-        # Older versions of MA can create corrupt entries with no domain if retrying
-        # logic runs after a provider has been removed. Remove those corrupt entries.
-        # TODO: remove after 2.8 release
-        for instance_id, provider_config in {**self._data.get(CONF_PROVIDERS, {})}.items():
-            if "domain" not in provider_config:
-                self._data[CONF_PROVIDERS].pop(instance_id, None)
-                LOGGER.warning("Removed corrupt provider configuration: %s", instance_id)
-                changed = True
-
-        # Remove corrupt player configurations that are missing the required 'player_id' key
-        # This can happen when _clear_protocol_parent_id is called on an already-deleted player
-        # TODO: remove after 2.8 release
-        for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
-            if "player_id" not in player_config:
-                self._data[CONF_PLAYERS].pop(player_id, None)
-                # Also remove any DSP config for this player
-                if CONF_PLAYER_DSP in self._data:
-                    self._data[CONF_PLAYER_DSP].pop(player_id, None)
-                changed = True
 
         # The background tasks controller originally persisted runtime state directly under
         # core/tasks, which could create a CoreConfig object without the required domain field.
@@ -1376,152 +1375,161 @@ class ConfigController:
             LOGGER.warning("Repaired corrupt tasks core configuration")
             changed = True
 
-        # migrate manual_ips to new format
-        # TODO: remove after 2.8 release
-        for instance_id, provider_config in self._data.get(CONF_PROVIDERS, {}).items():
-            if not (values := provider_config.get("values")):
-                continue
-            if not (ips := values.get("ips")):
-                continue
-            values["manual_discovery_ip_addresses"] = ips.split(",")
-            del values["ips"]
+        # Collapse legacy multi-instance Fully Kiosk provider configs into a single
+        # provider instance with a list of devices (matching the MPD provider pattern).
+        # TODO: remove after 2.10 release
+        if self._migrate_fully_kiosk_multi_instance():
             changed = True
-
-        # migrate zeroconf interface selection from players controller to discovery controller
-        # TODO: remove after 2.8 release
-        core_configs = self._data.setdefault(CONF_CORE, {})
-        players_core = core_configs.get("players", {})
-        discovery_core = core_configs.setdefault("discovery", {"domain": "discovery", "values": {}})
-        discovery_values = discovery_core.setdefault("values", {})
-        players_values = players_core.get("values", {})
-        legacy_zeroconf_interfaces = players_values.pop(CONF_ENTRY_ZEROCONF_INTERFACES.key, None)
-        if legacy_zeroconf_interfaces is None and players_core:
-            legacy_zeroconf_interfaces = players_core.pop(CONF_ENTRY_ZEROCONF_INTERFACES.key, None)
-        if (
-            legacy_zeroconf_interfaces is not None
-            and CONF_ENTRY_ZEROCONF_INTERFACES.key not in discovery_values
-            and CONF_ENTRY_ZEROCONF_INTERFACES.key not in discovery_core
-        ):
-            discovery_values[CONF_ENTRY_ZEROCONF_INTERFACES.key] = legacy_zeroconf_interfaces
-            changed = True
-        elif legacy_zeroconf_interfaces is not None:
-            changed = True
-
-        # migrate sample_rates config entry
-        # TODO: remove after 2.8 release
-        for player_config in self._data.get(CONF_PLAYERS, {}).values():
-            if not (values := player_config.get("values")):
-                continue
-            if not (sample_rates := values.get("sample_rates")):
-                continue
-            if not isinstance(sample_rates, list):
-                del player_config["values"]["sample_rates"]
-            if not any(isinstance(x, list) for x in sample_rates):
-                continue
-            player_config["values"]["sample_rates"] = [
-                f"{x[0]}{MULTI_VALUE_SPLITTER}{x[1]}" if isinstance(x, list) else x
-                for x in sample_rates
-            ]
-            changed = True
-
-        # Remove obsolete builtin_player configurations (provider was deleted in 2.7)
-        # TODO: remove after 2.8 release
-        for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
-            if player_config.get("provider") != "builtin_player":
-                continue
-            self._data[CONF_PLAYERS].pop(player_id, None)
-            # Also remove any DSP config for this player
-            if CONF_PLAYER_DSP in self._data:
-                self._data[CONF_PLAYER_DSP].pop(player_id, None)
-            LOGGER.warning("Removed obsolete builtin_player configuration: %s", player_id)
-            changed = True
-
-        # Remove corrupt player configurations that are missing the required 'provider' key
-        # or have an invalid/removed provider
-        all_provider_ids: set[str] = set(self._data.get(CONF_PROVIDERS, {}).keys())
-        # TODO: remove after 2.8 release
-        for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
-            player_provider = player_config.get("provider")
-            if not player_provider:
-                LOGGER.warning("Removing corrupt player configuration: %s", player_id)
-            elif player_provider not in all_provider_ids:
-                LOGGER.warning("Removed orphaned player configuration: %s", player_id)
-            else:
-                continue
-            self._data[CONF_PLAYERS].pop(player_id, None)
-            # Also remove any DSP config for this player
-            if CONF_PLAYER_DSP in self._data:
-                self._data[CONF_PLAYER_DSP].pop(player_id, None)
-            changed = True
-
-        # migrate sync_group players to use the new sync_group provider
-        # TODO: remove after 2.8 release
-        for player_id, player_config in list(self._data.get(CONF_PLAYERS, {}).items()):
-            if not player_id.startswith(SGP_PREFIX):
-                continue
-            player_provider = player_config["provider"]
-            if player_provider == "sync_group":
-                continue
-            player_config["provider"] = "sync_group"
-            changed = True
-
-        # Migrate AirPlay legacy credentials (ap_credentials) to protocol-specific keys
-        # The old key was used for both RAOP and AirPlay, now we have separate keys
-        # TODO: remove after 2.8 release
-        for player_id, player_config in self._data.get(CONF_PLAYERS, {}).items():
-            if player_config.get("provider") != "airplay":
-                continue
-            if not (values := player_config.get("values")):
-                continue
-            if "ap_credentials" not in values:
-                continue
-            # Migrate to raop_credentials (RAOP is the default/fallback protocol)
-            # The new code will use the correct key based on the protocol
-            old_creds = values.pop("ap_credentials")
-            if old_creds and "raop_credentials" not in values:
-                values["raop_credentials"] = old_creds
-                LOGGER.info("Migrated AirPlay credentials for player %s", player_id)
-            changed = True
-
-        # Clean up stale ARP/MAC caches from group/stereo pair player configs
-        # and protocol players that were incorrectly linked to groups.
-        # TODO: remove after 2.8 release
-        group_player_ids: set[str] = set()
-        for player_id, player_config in self._data.get(CONF_PLAYERS, {}).items():
-            if player_config.get("player_type") not in ("group", "stereo_pair"):
-                continue
-            group_player_ids.add(player_id)
-            if not (values := player_config.get("values")):
-                continue
-            for key in ("cached_arp_mac", "reported_mac", "linked_protocol_ids"):
-                if values.pop(key, None) is not None:
-                    changed = True
-        for player_id, player_config in self._data.get(CONF_PLAYERS, {}).items():
-            if not (values := player_config.get("values")):
-                continue
-            if values.get("protocol_parent_id") in group_player_ids:
-                values.pop("protocol_parent_id")
+        # Migrate default_enqueue_option_radio -> default_enqueue_option_live_sources.
+        # The same setting now covers both radio stations and plugin AudioSources
+        # (Spotify Connect, AirPlay receiver, etc.); preserves the user's customised
+        # value if they set one.
+        # TODO: remove after 2.10 release
+        player_queues_cfg = self._data.get(CONF_CORE, {}).get("player_queues")
+        if isinstance(player_queues_cfg, dict):
+            values = player_queues_cfg.get("values")
+            if isinstance(values, dict) and "default_enqueue_option_radio" in values:
+                radio_value = values.pop("default_enqueue_option_radio")
+                values.setdefault("default_enqueue_option_live_sources", radio_value)
+                LOGGER.info(
+                    "Migrated default_enqueue_option_radio -> default_enqueue_option_live_sources"
+                )
                 changed = True
 
-        # Remove orphaned stored_radios config from RadioBrowser provider instances
-        # now that LIBRARY_RADIOS support has been removed from the provider.
-        # TODO: remove after 2.8 release
-        for instance_id, provider_config in self._data.get(CONF_PROVIDERS, {}).items():
-            if provider_config.get("domain") != "radiobrowser":
-                continue
-            if not (values := provider_config.get("values")):
-                continue
-            for key in (
-                "stored_radios",
-                "library_sync_radios",
-                "provider_sync_interval_radios",
-                "library_sync_back",
-            ):
-                if values.pop(key, None) is not None:
-                    changed = True
+        # Migrate sync_group members_filter (exclusion) -> allowed_members (inclusion).
+        # Inversion freezes the universe at migration time; speakers added after this
+        # point must be added by the user explicitly, which matches the new design's
+        # "limit to these" intent.
+        # TODO: remove after 2.10 release
+        all_player_configs = self._data.get(CONF_PLAYERS, {})
+        if isinstance(all_player_configs, dict):
+            group_provider_domains = {"sync_group", "universal_group"}
+            universe = {
+                pid
+                for pid, cfg in all_player_configs.items()
+                if isinstance(cfg, dict) and cfg.get("provider") not in group_provider_domains
+            }
+            for player_id, player_cfg in all_player_configs.items():
+                if not isinstance(player_cfg, dict):
+                    continue
+                if player_cfg.get("provider") != "sync_group":
+                    continue
+                values = player_cfg.setdefault("values", {})
+                old_exclude = values.get("members_filter") or []
+                if not old_exclude or values.get("allowed_members") is not None:
+                    continue
+                values["allowed_members"] = sorted(universe - set(old_exclude))
+                values["members_filter"] = []
+                LOGGER.info(
+                    "Migrated sync_group %s: members_filter (exclusion) "
+                    "-> allowed_members (inclusion)",
+                    player_id,
+                )
+                changed = True
+
+        # Drop the persisted schedule for the metadata maintenance tasks that were hardcoded
+        # to run at 04:00 local. They are now registered under new ("_v2") task ids with a
+        # randomized full-day schedule (to avoid spiking the shared MusicBrainz mirror), so the
+        # old persisted state is orphaned and can be removed.
+        # TODO: remove after 2.9 release
+        if self._migrate_metadata_maintenance_schedule():
+            changed = True
 
         if changed:
             await self._async_save()
+
+    def _migrate_metadata_maintenance_schedule(self) -> bool:
+        """Remove the orphaned persisted state for the pre-randomization metadata task ids."""
+        core_config = self._data.get(CONF_CORE)
+        if not isinstance(core_config, dict):
+            return False
+        tasks_config = core_config.get("tasks")
+        if not isinstance(tasks_config, dict):
+            return False
+        task_states = tasks_config.get("scheduled_task_states")
+        if not isinstance(task_states, dict):
+            return False
+        legacy_task_ids = (
+            "metadata_missing_artist_metadata_scan",
+            "metadata_playlist_metadata_scan",
+            "metadata_thumb_cache_cleanup",
+        )
+        removed = [task_id for task_id in legacy_task_ids if task_id in task_states]
+        for task_id in removed:
+            del task_states[task_id]
+        if removed:
+            LOGGER.info("Removed orphaned metadata maintenance schedule state for %s", removed)
+        return bool(removed)
+
+    def _migrate_fully_kiosk_multi_instance(self) -> bool:
+        """Collapse legacy multi-instance Fully Kiosk configs into a single provider instance."""
+        providers = self._data.get(CONF_PROVIDERS, {})
+        legacy_ids = [
+            iid
+            for iid, conf in providers.items()
+            if isinstance(conf, dict)
+            and conf.get("domain") == "fully_kiosk"
+            and iid != "fully_kiosk"
+        ]
+        if not legacy_ids:
+            return False
+
+        ip_entries: list[str] = []
+        players = self._data.setdefault(CONF_PLAYERS, {})
+        for iid in legacy_ids:
+            old_values = providers[iid].get("values") or {}
+            host = old_values.get("ip_address")
+            if not host:
+                del providers[iid]
+                continue
+            try:
+                port = int(old_values.get("port") or 2323)
+            except (TypeError, ValueError):
+                port = 2323
+            entry = host if port == 2323 else f"{host}:{port}"
+            if entry not in ip_entries:
+                ip_entries.append(entry)
+
+            new_player_id = f"fully_kiosk_{host}_{port}"
+            player_conf = players.setdefault(
+                new_player_id,
+                {
+                    "player_id": new_player_id,
+                    "provider": "fully_kiosk",
+                    "enabled": True,
+                    "values": {},
+                },
+            )
+            player_values = player_conf.setdefault("values", {})
+            for key in ("password", "use_ssl", "verify_ssl", "ssl_fingerprint"):
+                if old_values.get(key) is not None and key not in player_values:
+                    player_values[key] = old_values[key]
+
+            del providers[iid]
+
+        if "fully_kiosk" in providers:
+            existing_values = providers["fully_kiosk"].setdefault("values", {})
+            existing_ips = list(existing_values.get("manual_discovery_ip_addresses") or [])
+            for entry in ip_entries:
+                if entry not in existing_ips:
+                    existing_ips.append(entry)
+            existing_values["manual_discovery_ip_addresses"] = existing_ips
+        else:
+            providers["fully_kiosk"] = {
+                "type": "player",
+                "domain": "fully_kiosk",
+                "instance_id": "fully_kiosk",
+                "enabled": True,
+                "values": {"manual_discovery_ip_addresses": ip_entries},
+            }
+
+        LOGGER.warning(
+            "Migrated %d legacy Fully Kiosk provider instance(s) into a single instance. "
+            "Devices and their passwords have been preserved, but any Fully Kiosk player "
+            "that was part of a universal group will need to be re-added to it. ",
+            len(legacy_ids),
+        )
+        return True
 
     async def _async_save(self) -> None:
         """Save persistent data to disk."""
@@ -1616,9 +1624,11 @@ class ConfigController:
         else:
             msg = f"Unknown provider domain: {provider_domain}"
             raise KeyError(msg)
-        if prov.depends_on and not self.mass.get_provider(prov.depends_on):
-            msg = f"Provider {manifest.name} depends on {prov.depends_on}"
-            raise ValueError(msg)
+        if prov.depends_on:
+            dep_configs = await self.get_provider_configs(provider_domain=prov.depends_on)
+            if not any(dep_conf.enabled for dep_conf in dep_configs):
+                msg = f"Provider {manifest.name} depends on {prov.depends_on}"
+                raise ValueError(msg)
         # create new provider config with given values
         existing = {
             x.instance_id for x in await self.get_provider_configs(provider_domain=provider_domain)
@@ -1706,14 +1716,17 @@ class ConfigController:
             if is_http_based_player_protocol:
                 # for http based players we can add the http streaming related entries
                 default_entries += [
-                    CONF_ENTRY_SAMPLE_RATES,
                     CONF_ENTRY_OUTPUT_CODEC,
                     CONF_ENTRY_HTTP_PROFILE,
                     CONF_ENTRY_ENABLE_ICY_METADATA,
                 ]
+                # only inject the sample-rates config when the player can't declare its rates itself
+                if not player.declares_supported_sample_rates:
+                    default_entries.append(CONF_ENTRY_SAMPLE_RATES)
                 # add flow mode entry for http-based players that do not already enforce it
                 if not player.requires_flow_mode:
                     default_entries.append(CONF_ENTRY_FLOW_MODE)
+                default_entries.append(CONF_ENTRY_FLOW_MODE_SAMPLE_RATE)
         if PlayerFeature.GAPLESS_PLAYBACK in player.supported_features:
             default_entries.append(CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES)
         # request player specific entries
@@ -1749,7 +1762,7 @@ class ConfigController:
         if buffer_size != BufferSize.MINIMAL:
             smart_fades_options.insert(1, ConfigValueOption("Smart Crossfade", "smart_crossfade"))
 
-        entries += [
+        entries.append(
             ConfigEntry(
                 key=CONF_SMART_FADES_MODE,
                 type=ConfigEntryType.STRING,
@@ -1764,7 +1777,22 @@ class ConfigController:
                 "last/first x-seconds of a track.",
                 category="playback",
                 requires_reload=True,
-            ),
+            )
+        )
+        if buffer_size == BufferSize.MINIMAL:
+            entries.append(
+                ConfigEntry(
+                    key="smart_crossfade_unavailable",
+                    type=ConfigEntryType.ALERT,
+                    label="Smart Crossfade is unavailable because this system has limited "
+                    "memory. It requires more RAM than is currently available for audio "
+                    "buffering.",
+                    category="playback",
+                    required=False,
+                )
+            )
+
+        entries += [
             CONF_ENTRY_CROSSFADE_DURATION,
             # we allow volume normalization/output limiter here as it is a per-queue(player) setting
             CONF_ENTRY_VOLUME_NORMALIZATION,
@@ -1793,6 +1821,10 @@ class ConfigController:
                 key=CONF_HIDE_IN_UI,
                 type=ConfigEntryType.BOOLEAN,
                 label="Hide this player in the user interface",
+                description="Hide this player from the main players list and dashboard selection "
+                "menus.  The player remains fully controllable and still appears in any sync group "
+                "it currently belongs to and in the settings. Disable the player to exclude "
+                "it everywhere.",
                 default_value=player.hidden_by_default,
                 category="generic",
                 advanced=False,
@@ -1823,17 +1855,20 @@ class ConfigController:
             CONF_ENTRY_ANNOUNCE_VOLUME,
             CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
             CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
+            # play_media-on-self preference (only relevant to non-group players)
+            CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
         ]
         return entries
 
     def _create_player_control_config_entries(self, player: Player) -> list[ConfigEntry]:
         """Create config entries for player controls."""
+        is_group = player.state.type == PlayerType.GROUP
         all_controls = self.mass.players.player_controls()
         power_controls = [x for x in all_controls if x.supports_power]
         volume_controls = [x for x in all_controls if x.supports_volume]
         mute_controls = [x for x in all_controls if x.supports_mute]
         auto_option = ConfigValueOption(
-            title="Auto-select (based on active/preferred protocol)", value="auto"
+            title="Auto-select (based on active/preferred protocol)", value=PLAYER_CONTROL_PROTOCOL
         )
         # work out player supported features
         power_options: list[ConfigValueOption] = []
@@ -1842,7 +1877,9 @@ class ConfigController:
                 ConfigValueOption(title="Native power control", value=PLAYER_CONTROL_NATIVE),
             )
         volume_options: list[ConfigValueOption] = []
+        has_native_volume_control = False
         if player.supports_feature(PlayerFeature.VOLUME_SET):
+            has_native_volume_control = True
             volume_options.append(
                 ConfigValueOption(title="Native volume control", value=PLAYER_CONTROL_NATIVE),
             )
@@ -1851,18 +1888,37 @@ class ConfigController:
             mute_options.append(
                 ConfigValueOption(title="Native mute control", value=PLAYER_CONTROL_NATIVE),
             )
-        # add 'auto' option if any linked protocol players support the feature
+        # add player protocols as volume controls if native player has no volume control
         for linked_protocol in player.linked_output_protocols:
-            if protocol_player := self.mass.players.get_player(linked_protocol.output_protocol_id):
-                if protocol_player.supports_feature(PlayerFeature.VOLUME_SET):
-                    if auto_option not in volume_options:
-                        volume_options.append(auto_option)
-                if protocol_player.supports_feature(PlayerFeature.VOLUME_MUTE):
-                    if auto_option not in mute_options:
-                        mute_options.append(auto_option)
-                if protocol_player.supports_feature(PlayerFeature.POWER):
-                    if auto_option not in power_options:
-                        power_options.append(auto_option)
+            if has_native_volume_control:
+                break
+            protocol_player = self.mass.players.get_player(linked_protocol.output_protocol_id)
+            if not protocol_player or not protocol_player.available:
+                continue
+            if protocol_player.supports_feature(PlayerFeature.VOLUME_SET):
+                if auto_option not in volume_options:
+                    volume_options.append(auto_option)
+                if linked_protocol.protocol_domain in ("chromecast", "dlna"):
+                    # for chromecast/dlna we can use the protocol player for volume control
+                    # even if the protocol player is not the active protocol
+                    volume_options.append(
+                        ConfigValueOption(
+                            title=protocol_player.provider.name,
+                            value=protocol_player.player_id,
+                        )
+                    )
+            if protocol_player.supports_feature(PlayerFeature.VOLUME_MUTE):
+                if auto_option not in mute_options:
+                    mute_options.append(auto_option)
+                if linked_protocol.protocol_domain in ("chromecast", "dlna"):
+                    # for chromecast/dlna we can use the protocol player for volume control
+                    # even if the protocol player is not the active protocol
+                    mute_options.append(
+                        ConfigValueOption(
+                            title=protocol_player.provider.name,
+                            value=protocol_player.player_id,
+                        )
+                    )
 
         # append none+fake options
         power_options += [
@@ -1919,8 +1975,14 @@ class ConfigController:
                 ],
                 category="player_controls",
             ),
-            # auto-play on power on control config entry
-            CONF_ENTRY_AUTO_PLAY,
+            # Volume limit entries
+            CONF_ENTRY_MIN_VOLUME,
+            CONF_ENTRY_MAX_VOLUME,
+            # auto-play on power on — only meaningful for individual players.
+            # For group players, power on/off is purely a "capture members"
+            # toggle (Fake control) and auto-starting playback there causes
+            # surprise playback when the user just wanted to pin the group.
+            *([] if is_group else [CONF_ENTRY_AUTO_PLAY]),
         ]
 
     async def _create_output_protocol_config_entries(  # noqa: PLR0915

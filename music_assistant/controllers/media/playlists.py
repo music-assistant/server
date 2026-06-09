@@ -117,29 +117,20 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider_instance_id_or_domain: str,
         force_refresh: bool = False,
         allow_dynamic_tracks: bool = False,
-    ) -> AsyncGenerator[PlaylistPlayableItem, None]:
+    ) -> AsyncGenerator[PlaylistPlayableItem]:
         """Return playlist tracks for the given provider playlist id."""
-        library_item: Playlist | None = None
         if provider_instance_id_or_domain == "library":
             library_item = await self.get_library_item(item_id)
             provider_instance_id_or_domain, item_id = self._select_provider_id(library_item)
-        elif not allow_dynamic_tracks:
-            library_item = await self.get_library_item_by_prov_id(
-                item_id, provider_instance_id_or_domain
-            )
 
-        # Dynamic playlists always need fresh tracks from the provider.
+        # Playback/refill requests for dynamic playlists need fresh tracks from the provider.
+        # Browse requests may reuse cached tracks.
         if allow_dynamic_tracks:
             force_refresh = True
 
-        # Dynamic playlists should not expose a static track list in browse/refresh views.
-        # Only the playback queue may request tracks for dynamic refill.
-        if not allow_dynamic_tracks:
-            if library_item is not None and library_item.is_dynamic:
-                return
-
-        # playlist tracks are not stored in the db,
-        # we always fetched them (cached) from the provider
+        # playlist tracks are not stored in the db, we always fetch them (cached) from the
+        # provider. The provider decides how many tracks to return; for a dynamic playlist it
+        # returns a bounded sample/batch and terminates by yielding no further pages.
         page = 0
         while True:
             tracks = await self._get_provider_playlist_tracks(
@@ -682,7 +673,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
             provider_instance_id_or_domain="library",
         ):
             items.append(media_item_to_playlist_item(track))
-        return generate_m3u(playlist.name, items)
+        playlist_image_url = playlist.image.path if playlist.image else None
+        return generate_m3u(playlist.name, items, playlist_image_url)
 
     async def import_playlist(
         self,

@@ -9,6 +9,12 @@ from music_assistant_models.enums import ConfigEntryType, PlayerFeature
 
 SGP_PREFIX: Final[str] = "syncgroup_"
 
+# Grace period (seconds) before a sync group dissolves itself after the queue
+# naturally finishes (playback_state transitions to IDLE without an explicit
+# stop). A short grace window absorbs end-of-track gaps and a quick "play next"
+# from the user without disrupting the live sync session.
+IDLE_GRACE_SECONDS: Final[float] = 10.0
+
 CONF_ENTRY_SGP_NOTE = ConfigEntry(
     key="sgp_note",
     type=ConfigEntryType.ALERT,
@@ -17,21 +23,7 @@ CONF_ENTRY_SGP_NOTE = ConfigEntry(
     required=False,
 )
 
-CONF_MEMBERS_FILTER: Final[str] = "members_filter"
-
-SUPPORT_DYNAMIC_LEADER = {
-    # providers that support dynamic leader selection in a syncgroup
-    # meaning that if you would remove the current leader from the group,
-    # the provider will automatically select a new leader from the remaining members
-    # and the music keeps playing uninterrupted.
-    "airplay",
-    "snapcast",
-    "sendspin",
-    # TODO: Get this working with Sonos as well (need to handle range requests)
-    # TODO: Add squeezelite support. Currently restarts the entire stream session
-    #  on member changes (no late-join support), so removing the leader would still
-    #  cause a gap. Needs late-join / stream transfer support first.
-}
+CONF_ALLOWED_MEMBERS: Final[str] = "allowed_members"
 
 
 EXTRA_FEATURES_FROM_MEMBERS: Final[set[PlayerFeature]] = {
@@ -41,3 +33,15 @@ EXTRA_FEATURES_FROM_MEMBERS: Final[set[PlayerFeature]] = {
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.MULTI_DEVICE_DSP,
 }
+
+
+# Provider domains whose live sync session can survive removal of the current
+# leader (the protocol promotes another sync_client to leader at the protocol
+# level). When the active session is owned by one of these providers the sync
+# group can do a seamless leader handoff; otherwise it must dissolve and
+# re-form (with a brief audio gap) on leader change.
+PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH: Final[tuple[str, ...]] = (
+    "airplay",
+    "snapcast",
+    "sendspin",
+)

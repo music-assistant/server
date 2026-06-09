@@ -86,13 +86,12 @@ async def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
 
 
 def convert_airplay_volume(value: float) -> int:
-    """Remap AirPlay Volume to 0..100 scale."""
-    airplay_min = -30
-    airplay_max = 0
-    normal_min = 0
-    normal_max = 100
-    portion = (value - airplay_min) * (normal_max - normal_min) / (airplay_max - airplay_min)
-    return int(portion + normal_min)
+    """Remap AirPlay dB volume (-30..0) to 0..100 scale."""
+    airplay_min = -30.0
+    airplay_max = 0.0
+    value = max(airplay_min, min(airplay_max, value))
+    portion = (value - airplay_min) * 100.0 / (airplay_max - airplay_min)
+    return max(0, min(100, round(portion)))
 
 
 def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:  # noqa: PLR0911

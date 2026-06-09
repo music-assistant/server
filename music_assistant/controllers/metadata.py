@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import os
 import pathlib
 import random
+import threading
 import urllib.parse
 from base64 import b64encode
+from collections import OrderedDict
 from contextlib import suppress
+from dataclasses import replace
 from time import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import aiofiles
@@ -21,12 +25,19 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     AlbumType,
     ConfigEntryType,
+    ExternalID,
     ImageType,
     MediaType,
     ProviderFeature,
     ProviderType,
 )
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    MusicAssistantError,
+    ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import (
     Album,
@@ -35,11 +46,13 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
     MediaItemImage,
+    MediaItemMetadata,
     MediaItemType,
     Playlist,
     Podcast,
     Track,
 )
+from music_assistant_models.streamdetails import StreamMetadata
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
@@ -58,36 +71,100 @@ from music_assistant.controllers.tasks.context import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings
-from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.images import (
     cleanup_thumb_cache,
     create_collage,
+    create_thumb_hash,
+    detect_image_content_format,
     get_image_data,
     get_image_thumb,
 )
 from music_assistant.helpers.security import is_safe_path
+from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.throttle_retry import Throttler
-from music_assistant.helpers.util import try_parse_int
+from music_assistant.helpers.util import parse_title_and_version, try_parse_int
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from music_assistant_models.config_entries import CoreConfig
+    from music_assistant_models.streamdetails import StreamDetails
 
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
-    from music_assistant.providers.musicbrainz import MusicbrainzProvider
+    from music_assistant.providers.musicbrainz import MusicbrainzProvider, MusicBrainzReleaseGroup
 
 
 def _detect_image_format(path: str) -> str:
     """Detect image format from file path extension, defaulting to jpg."""
-    match pathlib.PurePath(path).suffix.lower():
+    # strip any query suffix (e.g. a cache-busting ?cs=) before extension detection
+    match pathlib.PurePath(path.split("?", 1)[0]).suffix.lower():
         case ".svg":
             return "svg"
         case ".png":
             return "png"
         case _:
             return "jpg"
+
+
+# Map of normalised imageproxy `fmt` values to standards-compliant MIME types.
+# Used both to validate the client-supplied `fmt` query parameter and to set
+# the Content-Type on the response.
+_IMAGEPROXY_CONTENT_TYPES: dict[str, str] = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "svg": "image/svg+xml",
+}
+
+
+def _normalize_imageproxy_format(value: str | None) -> str | None:
+    """Return a validated, lowercase imageproxy format, or None when invalid."""
+    if not value:
+        return None
+    normalized = value.strip().lower()
+    if normalized in _IMAGEPROXY_CONTENT_TYPES:
+        return normalized
+    return None
+
+
+# Schemes accepted from a client on the legacy /imageproxy?path= endpoint.
+# Allowlist (not blacklist) so a leading-whitespace or unknown-scheme value
+# cannot sneak through. Provider-supplied paths resolved internally via
+# `resolve_image` are not subject to this — only inbound client paths are.
+_ALLOWED_IMAGEPROXY_REQUEST_SCHEMES: frozenset[str] = frozenset({"", "http", "https"})
+
+
+def _is_safe_imageproxy_request_path(path: str) -> bool:
+    r"""
+    Return True if `path` is safe to fetch on behalf of an imageproxy client.
+
+    Rejects any input containing control characters or surrounding whitespace
+    (so a leading `\t`, ` `, or `\x00` cannot mask an otherwise-forbidden
+    scheme), restricts the scheme to http, https, or empty (local / relative
+    path), and for http(s) targets rejects IP-literal hosts that resolve to
+    loopback, private, link-local or multicast ranges. DNS-resolved hostnames
+    are trusted; full DNS-rebinding mitigation is out of scope here.
+    """
+    if any(ord(c) < 0x20 for c in path) or path != path.strip():
+        return False
+    parsed = urllib.parse.urlparse(path)
+    scheme = parsed.scheme.lower()
+    if scheme not in _ALLOWED_IMAGEPROXY_REQUEST_SCHEMES:
+        return False
+    if scheme in ("http", "https"):
+        host = parsed.hostname  # already lowercased; brackets stripped for IPv6
+        if not host or host == "localhost":
+            return False
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            return True
+        if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_multicast:
+            return False
+    return True
 
 
 LOCALES = {
@@ -131,15 +208,44 @@ LOCALES = {
 }
 
 DEFAULT_LANGUAGE = "en_US"
+
+# Radio stream artwork cache settings
+CACHE_CATEGORY_RADIO_ARTWORK = 101
+CACHE_EXPIRATION_RADIO_ARTWORK = 86400 * 90  # 90 days
+CACHE_EXPIRATION_RADIO_ARTWORK_MISS = 86400 * 7  # 7 days
+AD_DETECTION_PHRASES = ("asset link", "asset stop", "asset spot", "advert", "promo")
+
 REFRESH_INTERVAL = 60 * 60 * 24 * 90  # 90 days
 CONF_ENABLE_ONLINE_METADATA = "enable_online_metadata"
-MISSING_ARTIST_METADATA_SCAN_TASK_ID = "metadata_missing_artist_metadata_scan"
-PLAYLIST_METADATA_SCAN_TASK_ID = "metadata_playlist_metadata_scan"
-THUMB_CACHE_CLEANUP_TASK_ID = "metadata_thumb_cache_cleanup"
+CONF_PREFER_LOCAL_GENRES = "prefer_local_genres"
+CONF_ENABLE_RADIO_METADATA_LOOKUP = "enable_radio_metadata_lookup"
+MISSING_ARTIST_METADATA_SCAN_TASK_ID = "metadata_missing_artist_metadata_scan_v2"
+PLAYLIST_METADATA_SCAN_TASK_ID = "metadata_playlist_metadata_scan_v2"
+THUMB_CACHE_CLEANUP_TASK_ID = "metadata_thumb_cache_cleanup_v2"
 METADATA_LOOKUP_TASK_ID_PREFIX = "metadata_lookup"
 METADATA_SCAN_BATCH_SIZE = 5
 CONF_THUMB_CACHE_MAX_SIZE = "thumb_cache_max_size"
 DEFAULT_THUMB_CACHE_MAX_SIZE_MB = 500
+
+# Image-id system: maps a sha256(provider+path) hash to the (provider, path) tuple
+# so the imageproxy can be addressed by an opaque short id instead of a long
+# query string carrying the raw (often URL-shaped) path. The high category
+# number matches the convention used elsewhere in this controller and avoids
+# collisions with providers that use low category integers under the default
+# cache namespace.
+CACHE_CATEGORY_IMAGE_IDS = 102
+_IMAGE_ID_LRU_MAX = 10000
+_IMAGE_ID_CACHE_TTL = 86400 * 365  # 1 year, refreshed on each write
+
+# Sizes accepted by the imageproxy. 0 means "no resize". The set is small enough
+# to bound PIL memory + thumbnail cache cardinality; expand if a real use case appears.
+_ALLOWED_IMAGEPROXY_SIZES = frozenset({0, 80, 160, 256, 512, 1024})
+
+_IMAGEPROXY_PATH_PREFIX = "/imageproxy/"
+
+# Deprecation logging for the legacy /imageproxy query-string endpoint.
+_LEGACY_DEPRECATION_LOG_INTERVAL = 60  # seconds between log lines per IP
+_LEGACY_DEPRECATION_PRUNE_AFTER = 300  # drop tracking entries idle this long
 
 
 class MetaDataController(CoreController):
@@ -159,6 +265,15 @@ class MetaDataController(CoreController):
         )
         self.manifest.icon = "book-information-variant"
         self._throttler = Throttler(1, 30)
+        # image-id LRU: image_id -> (provider, path). Acts as a write-through
+        # hot cache in front of the cache controller so that resolving an image
+        # by id never blocks on sqlite if the URL was generated recently.
+        # The lock is needed because compute_image_id() runs from the executor
+        # thread during outbound websocket serialization.
+        self._image_id_lru: OrderedDict[str, tuple[str, str]] = OrderedDict()
+        self._image_id_lock = threading.Lock()
+        # per-IP throttle for the legacy /imageproxy deprecation warning
+        self._legacy_imageproxy_warn_at: dict[str, float] = {}
 
     async def get_config_entries(
         self,
@@ -196,6 +311,27 @@ class MetaDataController(CoreController):
                 "You can speedup the process by storing the images and other metadata locally.",
             ),
             ConfigEntry(
+                key=CONF_PREFER_LOCAL_GENRES,
+                type=ConfigEntryType.BOOLEAN,
+                label="Use local genre metadata only when available",
+                required=False,
+                default_value=False,
+                description="When enabled, online metadata providers will not add genres to "
+                "items that already have a genre from a local source such as a file tag "
+                "or NFO file. Items with no local genre still receive genres from online "
+                "providers as usual.",
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_RADIO_METADATA_LOOKUP,
+                type=ConfigEntryType.BOOLEAN,
+                label="Enable artist/track artwork lookup for radio streams",
+                required=False,
+                default_value=True,
+                description="Look up artist and track artwork for radio streams "
+                "from online sources when the station provides Artist - Track metadata.\n\n"
+                "When disabled, radio streams show only the station logo (when available).",
+            ),
+            ConfigEntry(
                 key=CONF_THUMB_CACHE_MAX_SIZE,
                 type=ConfigEntryType.INTEGER,
                 label="Maximum thumbnail cache size (MB)",
@@ -220,27 +356,27 @@ class MetaDataController(CoreController):
 
     async def post_setup(self) -> None:
         """Handle logic after all core controllers have been set up."""
-        self.mass.streams.register_dynamic_route("/imageproxy", self.handle_imageproxy)
+        # canonical opaque-id endpoint, served by both the public webserver
+        # and the streams server (the latter is what player metadata URLs hit)
+        self.mass.streams.register_dynamic_route("/imageproxy/*", self.handle_imageproxy)
+        self.mass.webserver.register_dynamic_route("/imageproxy/*", self.handle_imageproxy)
+        # deprecated /imageproxy?provider=&path=&size=&fmt= form (kept for back-compat)
+        self.mass.streams.register_dynamic_route("/imageproxy", self.handle_legacy_imageproxy)
         self._register_maintenance_tasks()
-        # migrate theaudiodb images to new url
-        # they updated their cdn url to r2.theaudiodb.com
-        # TODO: remove this after 2.7 release
-        query = (
-            "UPDATE artists SET metadata = "
-            "REPLACE (metadata, 'https://www.theaudiodb.com', 'https://r2.theaudiodb.com') "
-            "WHERE artists.metadata LIKE '%https://www.theaudiodb.com%'"
-        )
-        await self.mass.music.database.execute(query)
-        await self.mass.music.database.commit()
 
     async def close(self) -> None:
         """Handle logic on server stop."""
+        self.mass.streams.unregister_dynamic_route("/imageproxy/*")
+        self.mass.webserver.unregister_dynamic_route("/imageproxy/*")
         self.mass.streams.unregister_dynamic_route("/imageproxy")
 
     @property
     def providers(self) -> list[MetadataProvider]:
         """Return all loaded/running MetadataProviders."""
-        return cast("list[MetadataProvider]", self.mass.get_providers(ProviderType.METADATA))
+        return sorted(
+            cast("list[MetadataProvider]", self.mass.get_providers(ProviderType.METADATA)),
+            key=lambda p: p.priority,
+        )
 
     @property
     def preferred_language(self) -> str:
@@ -363,6 +499,65 @@ class MetaDataController(CoreController):
             },
         )
 
+    def compute_image_id(self, provider: str, path: str) -> str:
+        """
+        Return the opaque imageproxy image id for the given image.
+
+        The id is deterministic: the same (provider, path) pair always
+        yields the same id, across processes and restarts. Calling this
+        also ensures the id is resolvable back to (provider, path) by
+        a subsequent imageproxy request.
+
+        Safe to call from any thread.
+
+        :param provider: Provider id that owns / can resolve the image.
+        :param path: Image path or URL as the provider knows it.
+        """
+        image_id = create_thumb_hash(provider, path)
+        with self._image_id_lock:
+            if image_id in self._image_id_lru:
+                self._image_id_lru.move_to_end(image_id)
+                return image_id
+            self._image_id_lru[image_id] = (provider, path)
+            while len(self._image_id_lru) > _IMAGE_ID_LRU_MAX:
+                self._image_id_lru.popitem(last=False)
+        # the to_dict hook calls us from the executor when running under
+        # _send_message; only call create_task directly when we know we are
+        # on the loop thread, otherwise hop across via call_soon_threadsafe
+        coro = self._persist_image_id(image_id, provider, path)
+        if threading.get_ident() == self.mass.loop_thread_id:
+            self.mass.create_task(coro)
+        else:
+            self.mass.loop.call_soon_threadsafe(self.mass.create_task, coro)
+        return image_id
+
+    async def resolve_image_id(self, image_id: str) -> tuple[str, str] | None:
+        """
+        Return the (provider, path) tuple for a previously registered image id.
+
+        :param image_id: The opaque id as produced by `compute_image_id`.
+        """
+        with self._image_id_lock:
+            if cached := self._image_id_lru.get(image_id):
+                self._image_id_lru.move_to_end(image_id)
+                return cached
+        cached_db = await self.cache.get(
+            key=image_id,
+            category=CACHE_CATEGORY_IMAGE_IDS,
+            provider=self.domain,
+        )
+        if isinstance(cached_db, dict):
+            provider = cached_db.get("provider")
+            path = cached_db.get("path")
+            if isinstance(provider, str) and isinstance(path, str):
+                result = (provider, path)
+                with self._image_id_lock:
+                    self._image_id_lru[image_id] = result
+                    while len(self._image_id_lru) > _IMAGE_ID_LRU_MAX:
+                        self._image_id_lru.popitem(last=False)
+                return result
+        return None
+
     async def get_image_data_for_item(
         self,
         media_item: MediaItemType,
@@ -445,16 +640,12 @@ class MetaDataController(CoreController):
             # SVGs don't need resizing
             size = 0
         if not image.remotely_accessible or prefer_proxy or size:
-            # return imageproxy url for images that need to be resolved
-            # the original path is double encoded
-            encoded_url = urllib.parse.quote_plus(urllib.parse.quote_plus(image.path))
+            # short opaque id form; same id as the thumbnail cache key
+            image_id = self.compute_image_id(image.provider, image.path)
             base_url = (
                 self.mass.streams.base_url if prefer_stream_server else self.mass.webserver.base_url
             )
-            return (
-                f"{base_url}/imageproxy?provider={image.provider}"
-                f"&size={size}&fmt={image_format}&path={encoded_url}"
-            )
+            return f"{base_url}/imageproxy/{image_id}?size={size}&fmt={image_format}"
         return image.path
 
     async def get_thumbnail(
@@ -464,12 +655,116 @@ class MetaDataController(CoreController):
         size: int | None = None,
         base64: bool = False,
         image_format: str | None = None,
+        flatten_transparency: bool = False,
     ) -> bytes | str:
         """Get/create thumbnail image for path (image url or local path)."""
-        if not self.mass.get_provider(provider) and not path.startswith("http"):
-            raise ProviderUnavailableError
         if image_format is None:
             image_format = _detect_image_format(path)
+        thumbnail_bytes, content_format = await self._resolve_thumbnail(
+            path, provider, size, image_format, flatten_transparency
+        )
+        if base64:
+            enc_image = b64encode(thumbnail_bytes).decode()
+            return f"data:{_IMAGEPROXY_CONTENT_TYPES[content_format]};base64,{enc_image}"
+        return thumbnail_bytes
+
+    async def handle_imageproxy(self, request: web.Request) -> web.Response:
+        """
+        Serve an image for a `/imageproxy/<image_id>?size=&fmt=` request.
+
+        This is the canonical imageproxy endpoint: clients build the URL by
+        taking the `proxy_id` from a `MediaItemImage` and appending it as a
+        single path segment, optionally with `size` and `fmt` query parameters.
+        """
+        # require exactly /imageproxy/<id> (optionally with a trailing slash);
+        # extra path segments such as /imageproxy/foo/<id> must not validate
+        if not request.path.startswith(_IMAGEPROXY_PATH_PREFIX):
+            return web.Response(status=400)
+        image_id = request.path[len(_IMAGEPROXY_PATH_PREFIX) :].rstrip("/").lower()
+        if len(image_id) != 64 or any(c not in "0123456789abcdef" for c in image_id):
+            return web.Response(status=400)
+        try:
+            size = int(request.query.get("size", "0"))
+        except ValueError:
+            return web.Response(status=400)
+        if size not in _ALLOWED_IMAGEPROXY_SIZES:
+            return web.Response(status=400)
+        resolved = await self.resolve_image_id(image_id)
+        if resolved is None:
+            return web.Response(status=404)
+        provider, path = resolved
+        image_format = _normalize_imageproxy_format(
+            request.query.get("fmt")
+        ) or _detect_image_format(path)
+        return await self._serve_thumbnail(path, provider, size, image_format)
+
+    async def handle_legacy_imageproxy(self, request: web.Request) -> web.Response:
+        """
+        Serve an image for a legacy `/imageproxy?provider=&path=&size=&fmt=` request.
+
+        DEPRECATED: this form requires the client to carry the full provider id
+        and (often URL-shaped) path on the query string, which produces
+        unwieldy double-encoded URLs and an open surface for arbitrary path
+        injection. New clients must use the `proxy_id` field on
+        `MediaItemImage` and hit `handle_imageproxy` instead. Each remote IP
+        gets a throttled deprecation `warning` log per minute.
+        """
+        self._maybe_log_legacy_imageproxy(request)
+        try:
+            path = request.query["path"]
+        except KeyError:
+            return web.Response(status=400)
+        provider = request.query.get("provider", "builtin")
+        if provider in ("url", "file", "http"):
+            # legacy aliases kept for backwards compatibility with old clients
+            provider = "builtin"
+        try:
+            size = int(request.query.get("size", "0"))
+        except ValueError:
+            return web.Response(status=400)
+        if size not in _ALLOWED_IMAGEPROXY_SIZES:
+            return web.Response(status=400)
+        image_format = _normalize_imageproxy_format(
+            request.query.get("fmt")
+        ) or _detect_image_format(path)
+        # path was double-encoded by old get_image_url(); decode iteratively
+        # until stable so we cope with any extra wrapping clients may have done
+        for _ in range(3):
+            if "%" not in path:
+                break
+            decoded = urllib.parse.unquote_plus(path)
+            if decoded == path:
+                break
+            path = decoded
+        if not _is_safe_imageproxy_request_path(path):
+            return web.Response(status=400)
+        if not self.mass.get_provider(provider) and not path.startswith("http"):
+            return web.Response(status=404)
+        return await self._serve_thumbnail(path, provider, size, image_format)
+
+    async def _resolve_thumbnail(
+        self,
+        path: str,
+        provider: str,
+        size: int | None,
+        image_format: str,
+        flatten_transparency: bool,
+    ) -> tuple[bytes, str]:
+        """
+        Fetch image bytes and return them with their resolved content format.
+
+        The served format can differ from the requested one (SVG is passed
+        through unchanged and transparent sources may be kept as PNG), so the
+        actual format is determined once here and reused by every caller.
+
+        :param path: Image url or local path.
+        :param provider: Provider identifier for the image source.
+        :param size: Target thumbnail size (square), or None for original.
+        :param image_format: Requested output format (jpg/jpeg/png/svg).
+        :param flatten_transparency: Composite alpha onto white and keep JPEG when True.
+        """
+        if not self.mass.get_provider(provider) and not path.startswith("http"):
+            raise ProviderUnavailableError
         if provider == "builtin" and path.startswith("/collage/"):
             # special case for collage images
             collage_rel = path.rsplit("/collage/", maxsplit=1)[-1]
@@ -477,46 +772,29 @@ class MetaDataController(CoreController):
                 raise FileNotFoundError("Invalid collage path")
             path = os.path.join(self._collage_images_dir, collage_rel)
         if image_format == "svg":
-            svg_bytes = await get_image_data(self.mass, path, provider)
-            if base64:
-                enc_image = b64encode(svg_bytes).decode()
-                return f"data:image/svg+xml;base64,{enc_image}"
-            return svg_bytes
+            return await get_image_data(self.mass, path, provider), "svg"
         thumbnail_bytes = await get_image_thumb(
-            self.mass, path, size=size, provider=provider, image_format=image_format
+            self.mass,
+            path,
+            size=size,
+            provider=provider,
+            image_format=image_format,
+            flatten_transparency=flatten_transparency,
         )
-        if base64:
-            enc_image = b64encode(thumbnail_bytes).decode()
-            return f"data:image/{image_format};base64,{enc_image}"
-        return thumbnail_bytes
+        return thumbnail_bytes, detect_image_content_format(thumbnail_bytes) or image_format
 
-    async def handle_imageproxy(self, request: web.Request) -> web.Response:
-        """Handle request for image proxy."""
-        path = request.query["path"]
-        provider = request.query.get("provider", "builtin")
-        if provider in ("url", "file", "http"):
-            # temporary for backwards compatibility
-            provider = "builtin"
-        size = int(request.query.get("size", "0"))
-        image_format = request.query.get("fmt", None)
-        if image_format is None:
-            image_format = _detect_image_format(path)
-        if not self.mass.get_provider(provider) and not path.startswith("http"):
-            return web.Response(status=404)
-        if "%" in path:
-            # assume (double) encoded url, decode it
-            path = urllib.parse.unquote_plus(path)
+    async def _serve_thumbnail(
+        self, path: str, provider: str, size: int, image_format: str
+    ) -> web.Response:
+        """Fetch (or render+cache) the thumbnail and produce an HTTP response."""
+        # `fmt=jpeg` is the explicit player-media request: players are sent a
+        # JPEG for maximum compatibility, and since JPEG has no alpha channel we
+        # composite transparency onto white. The auto-detected `fmt=jpg`/`png`
+        # default (app/UI) instead keeps transparency as PNG.
+        flatten_transparency = image_format == "jpeg"
         try:
-            image_data = await self.get_thumbnail(
-                path, size=size, provider=provider, image_format=image_format
-            )
-            # we set the cache header to 1 year (forever)
-            # assuming that images do not/rarely change
-            content_type = "image/svg+xml" if image_format == "svg" else f"image/{image_format}"
-            return web.Response(
-                body=image_data,
-                headers={"Cache-Control": "max-age=31536000", "Access-Control-Allow-Origin": "*"},
-                content_type=content_type,
+            image_data, content_format = await self._resolve_thumbnail(
+                path, provider, size, image_format, flatten_transparency
             )
         except Exception as err:
             # broadly catch all exceptions here to ensure we dont crash the request handler
@@ -529,7 +807,47 @@ class MetaDataController(CoreController):
                     str(err),
                     exc_info=err if self.logger.isEnabledFor(10) else None,
                 )
-        return web.Response(status=404)
+            return web.Response(status=404)
+        response_headers = {
+            "Cache-Control": "max-age=31536000",
+            "Access-Control-Allow-Origin": "*",
+        }
+        if content_format == "svg":
+            # Sniffed SVGs from attacker-influenceable sources (radio favicons) are
+            # served same-origin; without a CSP an embedded <script> would run.
+            response_headers["Content-Security-Policy"] = (
+                "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+            )
+            response_headers["X-Content-Type-Options"] = "nosniff"
+        return web.Response(
+            body=image_data,
+            headers=response_headers,
+            content_type=_IMAGEPROXY_CONTENT_TYPES[content_format],
+        )
+
+    def _maybe_log_legacy_imageproxy(self, request: web.Request) -> None:
+        """Emit a throttled deprecation warning for the legacy /imageproxy form."""
+        remote = request.remote or "unknown"
+        now = time()
+        if len(self._legacy_imageproxy_warn_at) > 100:
+            self._legacy_imageproxy_warn_at = {
+                ip: ts
+                for ip, ts in self._legacy_imageproxy_warn_at.items()
+                if now - ts < _LEGACY_DEPRECATION_PRUNE_AFTER
+            }
+        if (
+            now - self._legacy_imageproxy_warn_at.get(remote, 0.0)
+            < _LEGACY_DEPRECATION_LOG_INTERVAL
+        ):
+            return
+        self._legacy_imageproxy_warn_at[remote] = now
+        self.logger.warning(
+            "Deprecated /imageproxy?provider=&path= request from %s (UA: %s); "
+            "clients should read the proxy_id field on MediaItemImage and use "
+            "the canonical /imageproxy/<proxy_id> endpoint instead",
+            remote,
+            request.headers.get("User-Agent", "?"),
+        )
 
     async def create_collage_image(
         self,
@@ -607,6 +925,578 @@ class MetaDataController(CoreController):
                 return metadata.lyrics, metadata.lrc_lyrics
         return None, None
 
+    # ========== Radio Stream Artwork Methods ==========
+
+    async def _get_release_group_artwork(
+        self, mb_release_group: MusicBrainzReleaseGroup
+    ) -> tuple[MediaItemMetadata, str] | None:
+        """
+        Try to get thumb artwork for a release group from metadata providers.
+
+        :param mb_release_group: MusicBrainz release group to look up.
+        :returns: Tuple of (metadata, provider_name) or None if not found.
+        """
+        self.logger.debug(
+            "Looking up artwork for release group '%s' (mbid: %s)",
+            mb_release_group.title,
+            mb_release_group.id,
+        )
+        # Create a minimal Album object to pass the MusicBrainz release group ID
+        # to metadata providers for artwork lookup.
+        temp_album = Album(
+            item_id="temp",
+            provider="temp",
+            name=mb_release_group.title,
+            provider_mappings=set(),
+        )
+        temp_album.add_external_id(ExternalID.MB_RELEASEGROUP, mb_release_group.id)
+        if mb_release_group.barcode:
+            temp_album.add_external_id(ExternalID.BARCODE, mb_release_group.barcode)
+        for provider in self.providers:
+            if ProviderFeature.ALBUM_METADATA not in provider.supported_features:
+                continue
+            try:
+                if metadata := await provider.get_album_metadata(temp_album):
+                    if thumb := self._get_thumb_image(metadata):
+                        return thumb, provider.name
+            except (
+                ProviderUnavailableError,
+                ResourceTemporarilyUnavailable,
+                InvalidDataError,
+            ):
+                pass
+        return None
+
+    async def _search_musicbrainz_with_variants(
+        self,
+        musicbrainz: MusicbrainzProvider,
+        artist_name: str,
+        track_name: str,
+    ) -> tuple[Any, bool]:
+        """
+        Search MusicBrainz with fallback variants (swapped, without 'The').
+
+        :param musicbrainz: MusicBrainz provider instance.
+        :param artist_name: Artist name to search for.
+        :param track_name: Track name to search for.
+        :returns: Tuple of (mb_result, swapped) where swapped indicates artist/track were reversed.
+        """
+        # Try original order
+        mb_result = await musicbrainz.get_release_group_by_track_name(artist_name, track_name)
+        if mb_result:
+            return mb_result, False
+
+        # Try swapped (some stations send "Track - Artist")
+        self.logger.debug(
+            "No MusicBrainz match for '%s - %s', trying swapped",
+            artist_name,
+            track_name,
+        )
+        mb_result = await musicbrainz.get_release_group_by_track_name(track_name, artist_name)
+        if mb_result:
+            return mb_result, True
+
+        # Try without "The " prefix
+        artist_no_the = artist_name[4:] if artist_name.lower().startswith("the ") else None
+        track_no_the = track_name[4:] if track_name.lower().startswith("the ") else None
+
+        if artist_no_the:
+            self.logger.debug(
+                "No match, trying without 'The': '%s - %s'", artist_no_the, track_name
+            )
+            mb_result = await musicbrainz.get_release_group_by_track_name(artist_no_the, track_name)
+            if mb_result:
+                return mb_result, False
+
+        if track_no_the:
+            self.logger.debug(
+                "No match, trying swapped without 'The': '%s - %s'", track_no_the, artist_name
+            )
+            mb_result = await musicbrainz.get_release_group_by_track_name(track_no_the, artist_name)
+            if mb_result:
+                return mb_result, True
+
+        return None, False
+
+    async def get_track_metadata_by_name(
+        self,
+        artist_name: str,
+        track_name: str,
+    ) -> tuple[MediaItemMetadata | None, str | None, str | None, str | None]:
+        """
+        Search for track/artist metadata by name.
+
+        Checks library first for immediate results, then falls back to
+        MusicBrainz for external metadata lookups.
+
+        :param artist_name: Artist name to search for.
+        :param track_name: Track title to search for.
+        :returns: Tuple of (metadata, source_description, corrected_artist, corrected_track).
+        """
+        # Clean track name by stripping version suffixes and featuring credits
+        clean_track_name, _ = parse_title_and_version(track_name, strip_for_search=True)
+
+        # Check library track first - fast, no API calls, respects user-curated images
+        if metadata := await self._get_library_track_metadata(artist_name, clean_track_name):
+            return metadata, "library track", artist_name, clean_track_name
+
+        # Use MusicBrainz to get IDs for accurate external metadata lookups
+        musicbrainz_provider = self.mass.get_provider("musicbrainz")
+        if not musicbrainz_provider:
+            # No MusicBrainz, try library artist as fallback
+            if metadata := await self._get_library_artist_metadata(artist_name):
+                return metadata, f"library artist '{artist_name}'", artist_name, clean_track_name
+            return None, None, None, None
+        musicbrainz: MusicbrainzProvider = cast("MusicbrainzProvider", musicbrainz_provider)
+
+        mb_result, swapped = await self._search_musicbrainz_with_variants(
+            musicbrainz, artist_name, clean_track_name
+        )
+
+        if not mb_result:
+            self.logger.debug("No MusicBrainz match for '%s - %s'", artist_name, clean_track_name)
+            # No MB match, try library artist as fallback
+            if metadata := await self._get_library_artist_metadata(artist_name):
+                return metadata, f"library artist '{artist_name}'", artist_name, clean_track_name
+            return None, None, None, None
+
+        mb_artist, mb_release_groups = mb_result
+        if swapped:
+            # Swap the variables so subsequent lookups use the correct order
+            artist_name, clean_track_name = clean_track_name, artist_name
+            self.logger.debug(
+                "MusicBrainz matched with swapped artist/track: '%s - %s'",
+                artist_name,
+                clean_track_name,
+            )
+
+        # Prefer single artwork (exact track art), then fall back to album artwork
+        singles = [rg for rg in mb_release_groups if rg.primary_type == "Single"]
+        albums = [rg for rg in mb_release_groups if rg.primary_type == "Album"]
+
+        for mb_release_group in singles:
+            if result := await self._get_release_group_artwork(mb_release_group):
+                thumb, provider_name = result
+                return (
+                    thumb,
+                    f"single '{mb_release_group.title}' via {provider_name}",
+                    artist_name,
+                    clean_track_name,
+                )
+
+        if singles:
+            self.logger.debug(
+                "No artwork found for single release of '%s - %s', trying album artwork",
+                artist_name,
+                clean_track_name,
+            )
+
+        for mb_release_group in albums:
+            if result := await self._get_release_group_artwork(mb_release_group):
+                thumb, provider_name = result
+                return (
+                    thumb,
+                    f"album '{mb_release_group.title}' via {provider_name}",
+                    artist_name,
+                    clean_track_name,
+                )
+
+        # Log when falling back to artist artwork
+        self.logger.debug(
+            "No album artwork for '%s - %s', trying artist artwork",
+            artist_name,
+            clean_track_name,
+        )
+
+        # Check library for artist before external lookup
+        if metadata := await self._get_library_artist_metadata(mb_artist.name):
+            return metadata, f"library artist '{mb_artist.name}'", artist_name, clean_track_name
+
+        # Fall back to external artist artwork
+        temp_artist = Artist(
+            item_id="temp",
+            provider="temp",
+            name=mb_artist.name,
+            provider_mappings=set(),
+        )
+        temp_artist.mbid = mb_artist.id
+        for provider in self.providers:
+            if ProviderFeature.ARTIST_METADATA not in provider.supported_features:
+                continue
+            try:
+                if artist_metadata := await provider.get_artist_metadata(temp_artist):
+                    if artist_thumb := self._get_thumb_image(artist_metadata):
+                        return (
+                            artist_thumb,
+                            f"artist '{mb_artist.name}' via {provider.name}",
+                            artist_name,
+                            clean_track_name,
+                        )
+            except (
+                ProviderUnavailableError,
+                ResourceTemporarilyUnavailable,
+                InvalidDataError,
+            ):
+                pass
+
+        return None, None, None, None
+
+    def _get_thumb_image(self, metadata: MediaItemMetadata) -> MediaItemMetadata | None:
+        """
+        Extract only THUMB type image from metadata.
+
+        Returns new metadata with only the thumb image, or None if no thumb found.
+        Used for radio artwork where we specifically need artist/album thumbnails,
+        not logos or banners.
+
+        :param metadata: Metadata to extract thumb from.
+        """
+        if not metadata.images:
+            return None
+        for img in metadata.images:
+            if img.type == ImageType.THUMB:
+                return MediaItemMetadata(images=UniqueList([img]))
+        return None
+
+    async def _get_library_track_metadata(
+        self, artist_name: str, track_name: str
+    ) -> MediaItemMetadata | None:
+        """
+        Search library for matching track and return its metadata.
+
+        :param artist_name: Artist name to match.
+        :param track_name: Track title to match.
+        """
+        try:
+            search_query = f"{artist_name} {track_name}"
+            library_tracks = await self.mass.music.tracks.search(search_query, "library", limit=5)
+            for track in library_tracks:
+                if not self._match_artist_name(artist_name, track.artists):
+                    continue
+                if not compare_strings(track_name, track.name, strict=False):
+                    continue
+                if image_url := await self._get_library_item_thumb(track):
+                    return MediaItemMetadata(
+                        images=UniqueList(
+                            [
+                                MediaItemImage(
+                                    type=ImageType.THUMB,
+                                    path=image_url,
+                                    provider="library",
+                                    remotely_accessible=True,
+                                )
+                            ]
+                        )
+                    )
+        except InvalidDataError:
+            pass
+        return None
+
+    async def _get_library_artist_metadata(self, artist_name: str) -> MediaItemMetadata | None:
+        """
+        Search library for matching artist and return its metadata.
+
+        :param artist_name: Artist name to match.
+        """
+        try:
+            library_artists = await self.mass.music.artists.search(artist_name, "library", limit=5)
+            for artist in library_artists:
+                if not compare_strings(artist_name, artist.name, strict=False):
+                    continue
+                if artist.metadata and artist.metadata.images:
+                    for img in artist.metadata.images:
+                        if img.type == ImageType.THUMB:
+                            return MediaItemMetadata(
+                                images=UniqueList(
+                                    [
+                                        MediaItemImage(
+                                            type=ImageType.THUMB,
+                                            path=self.get_image_url(img, prefer_proxy=True),
+                                            provider="library",
+                                            remotely_accessible=True,
+                                        )
+                                    ]
+                                )
+                            )
+        except InvalidDataError:
+            pass
+        return None
+
+    def _match_artist_name(self, search_name: str, artists: list[Artist | ItemMapping]) -> bool:
+        """
+        Check if any artist matches the search name.
+
+        :param search_name: Artist name to search for.
+        :param artists: List of artists to check against.
+        """
+        for artist in artists:
+            if compare_strings(search_name, artist.name, strict=False):
+                return True
+            # Handle "The" prefix variations
+            if compare_strings(f"The {search_name}", artist.name, strict=False):
+                return True
+            if artist.name.lower().startswith("the "):
+                if compare_strings(search_name, artist.name[4:], strict=False):
+                    return True
+        return False
+
+    async def _get_library_item_thumb(self, track: Track) -> str | None:
+        """
+        Get image URL for library track with fallback: track -> album -> artist.
+
+        :param track: Track to get image for.
+        """
+        # Try track image
+        if track.metadata and track.metadata.images:
+            for img in track.metadata.images:
+                if img.type == ImageType.THUMB:
+                    return self.get_image_url(img, prefer_proxy=True)
+
+        # Try album image
+        if track.album:
+            album = track.album
+            if isinstance(album, ItemMapping):
+                try:
+                    full_album = await self.mass.music.albums.get_library_item(album.item_id)
+                    if full_album and full_album.metadata and full_album.metadata.images:
+                        for img in full_album.metadata.images:
+                            if img.type == ImageType.THUMB:
+                                return self.get_image_url(img, prefer_proxy=True)
+                except MediaNotFoundError:
+                    pass
+            elif isinstance(album, Album) and album.metadata and album.metadata.images:
+                for img in album.metadata.images:
+                    if img.type == ImageType.THUMB:
+                        return self.get_image_url(img, prefer_proxy=True)
+
+        # Try artist image
+        for artist in track.artists:
+            if isinstance(artist, ItemMapping):
+                try:
+                    full_artist = await self.mass.music.artists.get_library_item(artist.item_id)
+                    if full_artist and full_artist.metadata and full_artist.metadata.images:
+                        for img in full_artist.metadata.images:
+                            if img.type == ImageType.THUMB:
+                                return self.get_image_url(img, prefer_proxy=True)
+                except MediaNotFoundError:
+                    pass
+            elif isinstance(artist, Artist) and artist.metadata and artist.metadata.images:
+                for img in artist.metadata.images:
+                    if img.type == ImageType.THUMB:
+                        return self.get_image_url(img, prefer_proxy=True)
+
+        return None
+
+    def get_radio_stream_station_image(self, streamdetails: StreamDetails) -> str | None:
+        """
+        Get station image URL from queue current item.
+
+        :param streamdetails: StreamDetails for the radio stream.
+        """
+        if streamdetails.queue_id and (
+            queue := self.mass.player_queues.get(streamdetails.queue_id)
+        ):
+            if queue.current_item and queue.current_item.media_item:
+                if station_image := queue.current_item.media_item.image:
+                    return station_image.path
+        return None
+
+    @staticmethod
+    def normalize_radio_artist_name(artist_name: str) -> str:
+        """
+        Normalize artist name from radio stream metadata.
+
+        Handles common formats like "Squier, Billy" -> "Billy Squier" while
+        avoiding mangling of names like "Lipps, Inc." or "Portugal. The Man".
+
+        :param artist_name: Raw artist name to normalize.
+        """
+        # Business/title suffixes that should not be flipped
+        no_flip_suffixes = ("inc", "inc.", "ltd", "ltd.", "llc", "corp")
+        # Specific known bands that are 2 words total and split by a comma
+        valid_artist_names = {
+            "hello, goodbye",
+            "wait, what",
+            "goodnight, sunrise",
+            "slaughter beach, dog",
+            "mount, eerie",
+            "american, native",
+        }
+
+        normalized = artist_name.replace("_", " ")
+
+        if "," not in normalized:
+            return normalized
+
+        # Check against known artist exceptions first
+        if normalized.lower() in valid_artist_names:
+            return normalized
+
+        # Don't flip if contains "and" or "&" (e.g., "Crosby, Stills & Nash")
+        if " and " in normalized.lower() or " & " in normalized:
+            return normalized
+
+        parts = normalized.split(",", 1)
+        if len(parts) != 2:
+            return normalized
+
+        before_comma = parts[0].strip()
+        after_comma = parts[1].strip()
+        after_comma_lower = after_comma.lower()
+
+        # Don't flip if suffix is a business/title term
+        if after_comma_lower in no_flip_suffixes:
+            return normalized
+
+        # Flip if suffix is exactly "The" (e.g., "Beatles, The" -> "The Beatles")
+        if after_comma_lower == "the":
+            return f"{after_comma} {before_comma}"
+
+        # Don't flip if 2+ words after comma (e.g., "Portugal, The Man")
+        if len(after_comma.split()) >= 2:
+            return normalized
+
+        # Standard flip (e.g., "Squier, Billy" -> "Billy Squier")
+        return f"{after_comma} {before_comma}"
+
+    async def get_image_url_by_name(
+        self,
+        artist_name: str,
+        track_name: str,
+        fallback_image_url: str | None = None,
+    ) -> tuple[str | None, str | None, str | None]:
+        """
+        Look up artwork by artist and track name.
+
+        Searches library and external providers for matching artwork.
+        Also returns corrected artist/track names if the search detects
+        swapped metadata (e.g., "Track - Artist" instead of "Artist - Track").
+
+        :param artist_name: Artist name to search for.
+        :param track_name: Track title to search for.
+        :param fallback_image_url: Fallback image URL if no artwork found.
+        :returns: Tuple of (image_url, corrected_artist, corrected_track).
+        """
+        if " / " in artist_name:
+            artist_name = artist_name.split(" / ", 1)[0].strip()
+        else:
+            artists_tuple = split_artists(artist_name)
+            artist_name = artists_tuple[0] if artists_tuple else artist_name
+
+        if any(phrase in artist_name.lower() for phrase in AD_DETECTION_PHRASES):
+            return fallback_image_url, None, None
+
+        cache_key = f"{artist_name.lower()}|{track_name.lower()}"
+        cached_result = await self.mass.cache.get(
+            key=cache_key,
+            category=CACHE_CATEGORY_RADIO_ARTWORK,
+        )
+        if cached_result is not None:
+            if cached_result != "":
+                self.logger.debug(
+                    "Radio artwork for '%s - %s': cached",
+                    artist_name,
+                    track_name,
+                )
+                return str(cached_result), None, None
+            self.logger.debug(
+                "Radio artwork for '%s - %s': cached miss",
+                artist_name,
+                track_name,
+            )
+            return fallback_image_url, None, None
+
+        image_url = None
+        corrected_artist = None
+        corrected_track = None
+        try:
+            (
+                metadata,
+                source,
+                corrected_artist,
+                corrected_track,
+            ) = await self.get_track_metadata_by_name(
+                artist_name=artist_name,
+                track_name=track_name,
+            )
+            # Use corrected artist/track for logging if available (handles swapped metadata)
+            log_artist = corrected_artist or artist_name
+            log_track = corrected_track or track_name
+            if metadata and metadata.images:
+                image_url = metadata.images[0].path
+                self.logger.debug(
+                    "Radio artwork found for '%s - %s': %s",
+                    log_artist,
+                    log_track,
+                    source,
+                )
+                if "imageproxy" not in image_url:
+                    await self.mass.cache.set(
+                        key=cache_key,
+                        data=image_url,
+                        expiration=CACHE_EXPIRATION_RADIO_ARTWORK,
+                        category=CACHE_CATEGORY_RADIO_ARTWORK,
+                    )
+            else:
+                self.logger.debug(
+                    "Radio artwork for '%s - %s': not found",
+                    log_artist,
+                    log_track,
+                )
+                await self.mass.cache.set(
+                    key=cache_key,
+                    data="",
+                    expiration=CACHE_EXPIRATION_RADIO_ARTWORK_MISS,
+                    category=CACHE_CATEGORY_RADIO_ARTWORK,
+                )
+        except (ProviderUnavailableError, ResourceTemporarilyUnavailable, InvalidDataError):
+            pass
+
+        return image_url or fallback_image_url, corrected_artist, corrected_track
+
+    async def update_radio_stream_artwork(self, streamdetails: StreamDetails) -> None:
+        """
+        Fetch and update radio stream artwork.
+
+        :param streamdetails: StreamDetails to update with artwork.
+        """
+        if not self.mass.config.get_raw_core_config_value(
+            self.domain, CONF_ENABLE_RADIO_METADATA_LOOKUP, True
+        ):
+            return
+        if not streamdetails.stream_metadata:
+            return
+        if not streamdetails.stream_metadata.artist or not streamdetails.stream_metadata.title:
+            return
+
+        try:
+            fallback_url = streamdetails.stream_metadata.image_url
+            original_artist = streamdetails.stream_metadata.artist
+            original_title = streamdetails.stream_metadata.title
+            image_url, corrected_artist, corrected_track = await self.get_image_url_by_name(
+                artist_name=original_artist,
+                track_name=original_title,
+                fallback_image_url=fallback_url,
+            )
+            # Use corrected artist/track if metadata was swapped
+            final_artist = corrected_artist or original_artist
+            final_title = corrected_track or original_title
+            if (
+                image_url != fallback_url
+                or final_artist != original_artist
+                or final_title != original_title
+            ):
+                streamdetails.stream_metadata = StreamMetadata(
+                    title=final_title,
+                    artist=final_artist,
+                    image_url=image_url,
+                )
+                streamdetails.stream_metadata_last_updated = time()
+                if streamdetails.queue_id:
+                    self.mass.player_queues.signal_update(streamdetails.queue_id)
+        except MusicAssistantError:
+            pass
+
     async def _update_artist_metadata(self, artist: Artist, force_refresh: bool = False) -> None:
         """Get/update rich metadata for an artist."""
         # collect metadata from all (online) music + metadata providers
@@ -617,6 +1507,14 @@ class MetaDataController(CoreController):
 
         self.logger.debug("Updating metadata for Artist %s", artist.name)
         unique_keys: set[str] = set()
+
+        # The bio is re-derived from the providers on every refresh. Each provider's
+        # description is collected as a (language, text) candidate and excluded from the
+        # field merge; _select_description picks the winner below. Candidates are appended
+        # in priority order: music providers first, then metadata providers (TADB, Wikipedia).
+        prev_description = artist.metadata.description
+        prev_description_language = artist.metadata.description_language
+        description_candidates: list[tuple[str | None, str]] = []
 
         # collect (local) metadata from all local providers
         local_provs = get_global_cache_value("non_streaming_providers")
@@ -643,13 +1541,27 @@ class MetaDataController(CoreController):
                 prov_item = await self.mass.music.artists.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
                 )
-                artist.metadata.update(prov_item.metadata)
+                if prov_item.metadata.description:
+                    description_candidates.append(
+                        (prov_item.metadata.description_language, prov_item.metadata.description)
+                    )
+                artist.metadata.update(
+                    replace(prov_item.metadata, description=None, description_language=None)
+                )
 
         # The musicbrainz ID is mandatory for all metadata lookups
         if not artist.mbid:
-            # TODO: Use a global cache/proxy for the MB lookups to save on API calls
             if mbid := await self._get_artist_mbid(artist):
                 artist.mbid = mbid
+
+        # don't merge online genres on top of source-supplied ones; propagation-derived
+        # genres also count as a local source so they survive metadata refreshes
+        prefer_local_genres = self.config.get_value(CONF_PREFER_LOCAL_GENRES) and (
+            bool(artist.metadata.genres)
+            or await self.mass.music.genres.has_derived_genre_mappings(
+                MediaType.ARTIST, artist.item_id
+            )
+        )
 
         # collect metadata from all (online)[metadata] providers
         # TODO: Utilize a global (cloud) cache for metadata lookups to save on API calls
@@ -658,16 +1570,61 @@ class MetaDataController(CoreController):
                 if ProviderFeature.ARTIST_METADATA not in provider.supported_features:
                     continue
                 if metadata := await provider.get_artist_metadata(artist):
+                    if prefer_local_genres:
+                        metadata = replace(metadata, genres=None)
+                    if metadata.description:
+                        description_candidates.append(
+                            (metadata.description_language, metadata.description)
+                        )
+                        metadata = replace(metadata, description=None, description_language=None)
                     artist.metadata.update(metadata)
                     self.logger.debug(
                         "Fetched metadata for Artist %s on provider %s",
                         artist.name,
                         provider.name,
                     )
+        artist.metadata.description, artist.metadata.description_language = (
+            self._select_description(
+                description_candidates, prev_description, prev_description_language
+            )
+        )
+
         # update final item in library database
         # set timestamp, used to determine when this function was last called
         artist.metadata.last_refresh = int(time())
         await self.mass.music.artists.update_item_in_library(artist.item_id, artist)
+
+    def _select_description(
+        self,
+        candidates: Sequence[tuple[str | None, str]],
+        prev_description: str | None,
+        prev_description_language: str | None,
+    ) -> tuple[str | None, str | None]:
+        """
+        Return the chosen ``(description, language)`` for the artist this refresh.
+
+        :param candidates: ``(language, text)`` tuples in provider-priority order
+            (music providers first, then TADB, then Wikipedia).
+        :param prev_description: Bio stored before this refresh.
+        :param prev_description_language: Language of the bio stored before this refresh.
+        """
+        pref = self.preferred_language
+        # 1. first candidate in the user's preferred language
+        for lang, text in candidates:
+            if lang == pref:
+                return text, lang
+        # 2. keep a stored preferred-language bio rather than downgrade
+        if prev_description is not None and prev_description_language == pref:
+            return prev_description, prev_description_language
+        # 3. English fallback, same priority order
+        for lang, text in candidates:
+            if lang == "en":
+                return text, lang
+        # 4. last resort: highest-priority bio in any (incl. unknown) language
+        if candidates:
+            lang, text = candidates[0]
+            return text, lang
+        return prev_description, prev_description_language
 
     async def _update_album_metadata(self, album: Album, force_refresh: bool = False) -> None:
         """Get/update rich metadata for an album."""
@@ -704,6 +1661,15 @@ class MetaDataController(CoreController):
                 if album.album_type == AlbumType.UNKNOWN:
                     album.album_type = prov_item.album_type
 
+        # don't merge online genres on top of source-supplied ones; propagation-derived
+        # genres also count as a local source so they survive metadata refreshes
+        prefer_local_genres = self.config.get_value(CONF_PREFER_LOCAL_GENRES) and (
+            bool(album.metadata.genres)
+            or await self.mass.music.genres.has_derived_genre_mappings(
+                MediaType.ALBUM, album.item_id
+            )
+        )
+
         # collect metadata from all (online) [metadata] providers
         # TODO: Utilize a global (cloud) cache for metadata lookups to save on API calls
         if self.config.get_value(CONF_ENABLE_ONLINE_METADATA):
@@ -711,6 +1677,8 @@ class MetaDataController(CoreController):
                 if ProviderFeature.ALBUM_METADATA not in provider.supported_features:
                     continue
                 if metadata := await provider.get_album_metadata(album):
+                    if prefer_local_genres:
+                        metadata = replace(metadata, genres=None)
                     album.metadata.update(metadata)
                     self.logger.debug(
                         "Fetched metadata for Album %s on provider %s",
@@ -753,6 +1721,11 @@ class MetaDataController(CoreController):
                 )
                 track.metadata.update(prov_item.metadata)
 
+        # don't merge online genres on top of source-supplied ones
+        prefer_local_genres = self.config.get_value(CONF_PREFER_LOCAL_GENRES) and bool(
+            track.metadata.genres
+        )
+
         # collect metadata from all [metadata] providers
         # Only fetch metadata from these sources if force_refresh is set OR
         # if the track needs a refresh (based on REFRESH_INTERVAL) AND
@@ -763,6 +1736,8 @@ class MetaDataController(CoreController):
                     continue
 
                 if metadata := await provider.get_track_metadata(track):
+                    if prefer_local_genres:
+                        metadata = replace(metadata, genres=None)
                     track.metadata.update(metadata)
                     self.logger.debug(
                         "Fetched metadata for Track %s on provider %s",
@@ -866,6 +1841,7 @@ class MetaDataController(CoreController):
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
         unique_keys: set[str] = set()
+        prov_images: UniqueList[MediaItemImage] | None = None
         for prov_mapping in sorted(
             audiobook.provider_mappings, key=lambda x: x.priority, reverse=True
         ):
@@ -883,6 +1859,8 @@ class MetaDataController(CoreController):
                 prov_item = await self.mass.music.audiobooks.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
                 )
+                if prov_images is None and prov_item.metadata.images:
+                    prov_images = prov_item.metadata.images
                 audiobook.metadata.update(prov_item.metadata)
                 if audiobook.publisher is None and prov_item.publisher:
                     audiobook.publisher = prov_item.publisher
@@ -892,6 +1870,11 @@ class MetaDataController(CoreController):
                     audiobook.narrators = prov_item.narrators
                 if not audiobook.duration and prov_item.duration:
                     audiobook.duration = prov_item.duration
+
+        # no way to select a cover for audiobooks, so replace rather than merge the
+        # images to keep it in sync with the provider; revisit if a picker is added
+        if prov_images is not None:
+            audiobook.metadata.images = prov_images
 
         # update final item in library database
         # set timestamp, used to determine when this function was last called
@@ -912,6 +1895,7 @@ class MetaDataController(CoreController):
         # note that we sort the providers by priority so that we always
         # prefer local providers over online providers
         unique_keys: set[str] = set()
+        prov_images: UniqueList[MediaItemImage] | None = None
         for prov_mapping in sorted(
             podcast.provider_mappings, key=lambda x: x.priority, reverse=True
         ):
@@ -929,11 +1913,18 @@ class MetaDataController(CoreController):
                 prov_item = await self.mass.music.podcasts.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
                 )
+                if prov_images is None and prov_item.metadata.images:
+                    prov_images = prov_item.metadata.images
                 podcast.metadata.update(prov_item.metadata)
                 if podcast.publisher is None and prov_item.publisher:
                     podcast.publisher = prov_item.publisher
                 if not podcast.total_episodes and prov_item.total_episodes:
                     podcast.total_episodes = prov_item.total_episodes
+
+        # no way to select a cover for podcasts, so replace rather than merge the
+        # images to keep it in sync with the provider; revisit if a picker is added
+        if prov_images is not None:
+            podcast.metadata.images = prov_images
 
         # update final item in library database
         # set timestamp, used to determine when this function was last called
@@ -962,12 +1953,11 @@ class MetaDataController(CoreController):
                     return mb_artist.id
 
         # start lookup of musicbrainz id using artist name, albums and tracks
-        ref_albums = await self.mass.music.artists.albums(
-            artist.item_id, artist.provider, in_library_only=False
-        )
-        ref_tracks = await self.mass.music.artists.tracks(
-            artist.item_id, artist.provider, in_library_only=False
-        )
+        ref_albums = await self.mass.music.artists.albums(artist.item_id, artist.provider)
+        # prefer the (widely supported) top tracks listing, falling back to all tracks
+        ref_tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
+        if not ref_tracks:
+            ref_tracks = await self.mass.music.artists.tracks(artist.item_id, artist.provider)
         # try with (strict) ref track(s), using recording id
         for ref_track in ref_tracks:
             if mb_artist := await musicbrainz.get_artist_details_by_track(artist.name, ref_track):
@@ -976,7 +1966,7 @@ class MetaDataController(CoreController):
         for ref_album in ref_albums:
             if mb_artist := await musicbrainz.get_artist_details_by_album(artist.name, ref_album):
                 return mb_artist.id
-        # last restort: track matching by name
+        # last resort: track matching by name
         for ref_track in ref_tracks:
             if not ref_track.album:
                 continue
@@ -1001,7 +1991,8 @@ class MetaDataController(CoreController):
 
     def _register_maintenance_tasks(self) -> None:
         """Register the recurring metadata maintenance background tasks."""
-        utc_hour, utc_minute = local_clock_time_to_utc(4, 0)
+        # Spread across the full day so instances don't all hit the shared MusicBrainz mirror at once
+        utc_hour, utc_minute = divmod(random.randint(0, 24 * 60 - 1), 60)
         desired_schedule = TaskSchedule.daily(hour=utc_hour, minute=utc_minute)
         self.mass.tasks.register_scheduled_task(
             task_id=MISSING_ARTIST_METADATA_SCAN_TASK_ID,
@@ -1117,3 +2108,14 @@ class MetaDataController(CoreController):
         removed = await cleanup_thumb_cache(self.mass.cache_path, max_size_mb * 1024 * 1024)
         if removed:
             self.logger.debug("Thumbnail cache cleanup: removed %s file(s)", removed)
+
+    async def _persist_image_id(self, image_id: str, provider: str, path: str) -> None:
+        """Store an image-id mapping so a later imageproxy request can resolve it."""
+        await self.cache.set(
+            key=image_id,
+            data={"provider": provider, "path": path},
+            category=CACHE_CATEGORY_IMAGE_IDS,
+            provider=self.domain,
+            expiration=_IMAGE_ID_CACHE_TTL,
+            persistent=True,
+        )

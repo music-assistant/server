@@ -23,7 +23,7 @@ def provider_mock() -> Mock:
     provider.api.paginate = MagicMock()
 
     # Configure async iterator for paginate
-    async def async_iter(*_args: Any, **_kwargs: Any) -> AsyncGenerator[Any, None]:
+    async def async_iter(*_args: Any, **_kwargs: Any) -> AsyncGenerator[Any]:
         for item in provider.api.paginate.return_value:
             yield item
 
@@ -127,9 +127,7 @@ async def test_get_playlists(
     ]
 
     # Configure paginate side effect
-    async def paginate_side_effect(
-        endpoint: str, **_kwargs: Any
-    ) -> AsyncGenerator[dict[str, Any], None]:
+    async def paginate_side_effect(endpoint: str, **_kwargs: Any) -> AsyncGenerator[dict[str, Any]]:
         if "mixes" in endpoint:
             for item in mixes_response:
                 yield item
@@ -148,9 +146,10 @@ async def test_get_playlists(
 
     playlists = [p async for p in library_manager.get_playlists()]
 
-    assert len(playlists) == 2
+    assert len(playlists) == 3
     assert playlists[0].item_id == "mix_1"
     assert playlists[1].item_id == "pl_1"
+    assert playlists[2].item_id == "favorite_tracks"
     assert mock_parse_playlist.call_count == 2
 
 
@@ -232,3 +231,17 @@ async def test_remove_item_playlist(
     await library_manager.remove_item("123", MediaType.PLAYLIST)
 
     provider_mock.api.delete.assert_called_with("users/12345/favorites/playlists/123")
+
+
+async def test_get_playlists_includes_favorite_tracks(
+    library_manager: TidalLibraryManager, provider_mock: Mock
+) -> None:
+    """Test that get_playlists yields the favorite tracks playlist as the first item."""
+    provider_mock.api.paginate.return_value = []
+
+    playlists = [p async for p in library_manager.get_playlists()]
+
+    assert len(playlists) >= 1
+    assert playlists[0].item_id == "favorite_tracks"
+    assert playlists[0].name == "Favorite Tracks"
+    assert not playlists[0].is_editable

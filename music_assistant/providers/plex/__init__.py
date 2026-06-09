@@ -49,10 +49,10 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from plexapi.audio import Album as PlexAlbum
 from plexapi.audio import Artist as PlexArtist
-from plexapi.audio import Playlist as PlexPlaylist
 from plexapi.audio import Track as PlexTrack
 from plexapi.base import PlexObject
 from plexapi.myplex import MyPlexAccount, MyPlexPinLogin
+from plexapi.playlist import Playlist as PlexPlaylist
 from plexapi.server import PlexServer
 
 from music_assistant.constants import UNKNOWN_ARTIST
@@ -447,7 +447,7 @@ class PlexProvider(MusicProvider):
             try:
                 session = requests.Session()
                 session.verify = (
-                    self.config.get_value(CONF_LOCAL_SERVER_VERIFY_CERT)
+                    bool(self.config.get_value(CONF_LOCAL_SERVER_VERIFY_CERT))
                     if self.config.get_value(CONF_LOCAL_SERVER_SSL)
                     else False
                 )
@@ -630,19 +630,19 @@ class PlexProvider(MusicProvider):
 
     async def _search_track_advanced(self, limit: int, **kwargs: Any) -> list[PlexTrack]:
         return cast(
-            "list[PlexPlaylist]",
+            "list[PlexTrack]",
             await self._run_async(self._plex_library.searchTracks, filters=kwargs, limit=limit),
         )
 
     async def _search_album_advanced(self, limit: int, **kwargs: Any) -> list[PlexAlbum]:
         return cast(
-            "list[PlexPlaylist]",
+            "list[PlexAlbum]",
             await self._run_async(self._plex_library.searchAlbums, filters=kwargs, limit=limit),
         )
 
     async def _search_artist_advanced(self, limit: int, **kwargs: Any) -> list[PlexArtist]:
         return cast(
-            "list[PlexPlaylist]",
+            "list[PlexArtist]",
             await self._run_async(self._plex_library.searchArtists, filters=kwargs, limit=limit),
         )
 
@@ -957,19 +957,19 @@ class PlexProvider(MusicProvider):
 
         return search_results
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Plex Music."""
         artists_obj = await self._run_async(self._plex_library.all)
         for artist in artists_obj:
             yield await self._parse_artist(artist)
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve all library albums from Plex Music."""
         albums_obj = await self._run_async(self._plex_library.albums)
         for album in albums_obj:
             yield await self._parse_album(album)
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from the provider."""
         playlists_obj = await self._run_async(self._plex_library.playlists)
         for playlist in playlists_obj:
@@ -981,7 +981,7 @@ class PlexProvider(MusicProvider):
             for collection in collections_obj:
                 yield await self._parse_collection(collection)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Plex Music."""
         page_size = 500
         offset = 0

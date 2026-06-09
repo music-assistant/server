@@ -7,7 +7,7 @@ https://github.com/music-assistant/aiosonos
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import web
 from aiohttp.client_exceptions import ClientError
@@ -45,7 +45,9 @@ class SonosPlayerProvider(PlayerProvider):
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
         # Handle config option for manual IP's
-        manual_ip_config: list[str] = self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key)
+        manual_ip_config = cast(
+            "list[str]", self.config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key)
+        )
         for ip_address in manual_ip_config:
             try:
                 # get discovery info from SONOS speaker so we can provide an ID & other info
@@ -72,11 +74,13 @@ class SonosPlayerProvider(PlayerProvider):
             # we don't listen for removed players here.
             # instead we just wait for the player connection to fail
             return
+        assert info is not None  # for type checking
         if "uuid" not in info.decoded_properties:
             # not a S2 player
             return
         name = name.split("@", 1)[1] if "@" in name else name
         player_id = info.decoded_properties["uuid"]
+        assert isinstance(player_id, str)  # for type checking
         # handle update for existing device
         if sonos_player := self.mass.players.get_player(player_id):
             assert isinstance(sonos_player, SonosPlayer), (
@@ -91,7 +95,7 @@ class SonosPlayerProvider(PlayerProvider):
                     cur_address,
                 )
                 sonos_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, cur_address)
-            if not sonos_player.connected:
+            if not sonos_player.connected and cur_address:
                 self.logger.debug("Player back online: %s", sonos_player.display_name)
                 sonos_player.client.player_ip = cur_address
                 # schedule reconnect
@@ -105,7 +109,9 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def _setup_player(self, player_id: str, name: str, info: AsyncServiceInfo) -> None:
         """Handle setup of a new player that is discovered using mdns."""
-        assert not self.mass.players.get_player(player_id)
+        if self.mass.players.get_player(player_id):
+            msg = f"Player {player_id} already exists"
+            raise ValueError(msg)
         address = get_primary_ip_address(info)
         if address is None:
             return
@@ -171,11 +177,15 @@ class SonosPlayerProvider(PlayerProvider):
         context_version = request.query.get("contextVersion", "1")
         queue_version = request.query.get("queueVersion", str(int(player.sonos_queue.last_updated)))
         # because Sonos does not show our queue in the app anyways,
-        # we just return the previous, current and next item in the queue
+        # we just return the previous, current and next item in the queue.
+        # the beginning/end flags must be honest though: signalling end-of-queue
+        # tells Sonos to drop any older items it may still have cached past our
+        # window, which is what prevents stale tracks from resurrecting after a
+        # queue rewrite (e.g. replace_next).
         items = list(player.sonos_queue.items)
         result = {
-            "includesBeginningOfQueue": False,
-            "includesEndOfQueue": False,
+            "includesBeginningOfQueue": player.sonos_queue.includes_beginning,
+            "includesEndOfQueue": player.sonos_queue.includes_end,
             "contextVersion": context_version,
             "queueVersion": queue_version,
             "items": [self._parse_sonos_queue_item(x) for x in items],

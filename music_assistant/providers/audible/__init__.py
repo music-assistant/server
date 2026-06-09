@@ -327,7 +327,7 @@ class Audibleprovider(MusicProvider):
         """Return True if the provider is a streaming provider."""
         return True
 
-    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Get all audiobooks from the library."""
         async for audiobook in self.helper.get_library():
             yield audiobook
@@ -517,7 +517,7 @@ class Audibleprovider(MusicProvider):
         """Return audiobooks from a specific publisher."""
         return await self.helper.get_audiobooks_by_publisher(publisher)
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Get all podcasts from the library."""
         async for podcast in self.helper.get_library_podcasts():
             yield podcast
@@ -526,9 +526,7 @@ class Audibleprovider(MusicProvider):
         """Get full podcast details by id."""
         return await self.helper.get_podcast(asin=prov_podcast_id)
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get all episodes for a podcast."""
         async for episode in self.helper.get_podcast_episodes(prov_podcast_id):
             yield episode

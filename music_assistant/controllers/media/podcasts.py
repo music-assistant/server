@@ -101,7 +101,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    ) -> AsyncGenerator[PodcastEpisode]:
         """Return podcast episodes for the given provider podcast id."""
         # always check if we have a library item for this podcast
         if provider_instance_id_or_domain == "library":
@@ -140,7 +140,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             provider = self.mass.get_provider(provider_id)
             if not isinstance(provider, MusicProvider):
                 continue
-            if not provider.library_supported(MediaType.PODCAST):
+            if not self.mass.music.library_supported(provider, MediaType.PODCAST):
                 continue
             result.extend(
                 prov_item
@@ -181,6 +181,10 @@ class PodcastsController(MediaControllerBase[Podcast]):
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
         metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+        if not overwrite and update.metadata.images is not None:
+            # podcasts have no image picker, so keep the cover in sync with the
+            # provider instead of accumulating merged entries
+            metadata.images = update.metadata.images
         cur_item.external_ids.update(update.external_ids)
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
@@ -215,7 +219,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
 
     async def _get_provider_podcast_episodes(
         self, item_id: str, provider_instance_id_or_domain: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    ) -> AsyncGenerator[PodcastEpisode]:
         """Return podcast episodes for the given provider podcast id."""
         prov = self.mass.get_provider(provider_instance_id_or_domain)
         if not isinstance(prov, MusicProvider):
@@ -331,7 +335,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
-            if not provider.library_supported(MediaType.PODCAST):
+            if not self.mass.music.library_supported(provider, MediaType.PODCAST):
                 continue
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA

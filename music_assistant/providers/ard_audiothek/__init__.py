@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from gql import Client
@@ -36,6 +36,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_PASSWORD
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.datetime import from_utc_timestamp, future_timestamp, utc
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.ard_audiothek.database_queries import (
     get_history_query,
@@ -248,16 +249,14 @@ class ARDAudiothek(MusicProvider):
         _password = self.config.get_value(CONF_PASSWORD)
         self.token = self.config.get_value(CONF_TOKEN_BEARER)
         self.user_id = self.config.get_value(CONF_USERID)
-        self.token_expire = datetime.fromtimestamp(
-            float(str(self.config.get_value(CONF_EXPIRY_TIME)))
-        )
+        self.token_expire = from_utc_timestamp(float(str(self.config.get_value(CONF_EXPIRY_TIME))))
 
         self.max_bitrate = int(float(str(self.config.get_value(CONF_MAX_BITRATE))))
 
         if (
             _email is not None
             and _password is not None
-            and (self.token is None or self.user_id is None or self.token_expire < datetime.now())
+            and (self.token is None or self.user_id is None or self.token_expire < utc())
         ):
             self.token, self.user_id, _display_name = await _login(
                 self.mass.http_session, str(_email), str(_password)
@@ -265,9 +264,7 @@ class ARDAudiothek(MusicProvider):
             self._update_config_value(CONF_TOKEN_BEARER, self.token, encrypted=True)
             self._update_config_value(CONF_USERID, self.user_id, encrypted=True)
             self._update_config_value(CONF_DISPLAY_NAME, _display_name)
-            self._update_config_value(
-                CONF_EXPIRY_TIME, str((datetime.now() + timedelta(hours=1)).timestamp())
-            )
+            self._update_config_value(CONF_EXPIRY_TIME, str(future_timestamp(hours=1)))
             self._client_initialized = False
 
         if not self._client_initialized:
@@ -428,7 +425,7 @@ class ARDAudiothek(MusicProvider):
             prov_radio_id,
         )
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library/subscribed podcasts from the provider.
 
         Minified podcast information is enough.
@@ -482,9 +479,7 @@ class ARDAudiothek(MusicProvider):
             prov_podcast_id,
         )
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get podcast episodes."""
         await self._update_progress()
         depublished_filter = {"isPublished": {"equalTo": True}}

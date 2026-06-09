@@ -10,7 +10,14 @@ from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import SearchResults
 
-from .parsers import parse_album, parse_artist, parse_playlist, parse_track
+from .constants import FAVORITE_TRACKS_PLAYLIST_ID, FAVORITES_TRACKS, PAGES_MIX, PLAYLISTS
+from .parsers import (
+    parse_album,
+    parse_artist,
+    parse_favorite_tracks_playlist,
+    parse_playlist,
+    parse_track,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import Album, Artist, Playlist, Track
@@ -104,11 +111,14 @@ class TidalMediaManager:
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get playlist details."""
+        if prov_playlist_id == FAVORITE_TRACKS_PLAYLIST_ID:
+            return parse_favorite_tracks_playlist(self.provider)
+
         if prov_playlist_id.startswith("mix_"):
             return await self._get_mix_details(prov_playlist_id[4:])
 
         try:
-            data = await self.api.get_data(f"playlists/{prov_playlist_id}")
+            data = await self.api.get_data(f"{PLAYLISTS}/{prov_playlist_id}")
             return parse_playlist(self.provider, data)
         except MediaNotFoundError:
             return await self._get_mix_details(prov_playlist_id)
@@ -119,7 +129,7 @@ class TidalMediaManager:
         """Get details for a Tidal Mix."""
         try:
             params = {"mixId": prov_mix_id, "deviceType": "BROWSER"}
-            tidal_mix = await self.api.get_data("pages/mix", params=params)
+            tidal_mix = await self.api.get_data(PAGES_MIX, params=params)
 
             mix_obj = {
                 "id": prov_mix_id,
@@ -182,23 +192,42 @@ class TidalMediaManager:
         page_size = 200
         offset = page * page_size
 
+        if prov_playlist_id == FAVORITE_TRACKS_PLAYLIST_ID:
+            return await self._get_favorite_tracks(page_size, offset)
+
         if prov_playlist_id.startswith("mix_"):
             return await self._get_mix_tracks(prov_playlist_id[4:], page_size, offset)
 
         try:
             data = await self.api.get_data(
-                f"playlists/{prov_playlist_id}/tracks",
+                f"{PLAYLISTS}/{prov_playlist_id}/tracks",
                 params={"limit": page_size, "offset": offset},
             )
             return self._process_tracks(data.get("items", []), offset)
         except MediaNotFoundError:
             return await self._get_mix_tracks(prov_playlist_id, page_size, offset)
 
+    async def _get_favorite_tracks(self, limit: int, offset: int) -> list[Track]:
+        """Get the user's favorite tracks in descending order (newest first)."""
+        try:
+            data = await self.api.get_data(
+                f"users/{self.provider.auth.user_id}/{FAVORITES_TRACKS}",
+                params={
+                    "limit": limit,
+                    "offset": offset,
+                    "order": "DATE",
+                    "orderDirection": "DESC",
+                },
+            )
+            return self._process_tracks(data.get("items", []), offset)
+        except (ClientError, KeyError, ValueError) as err:
+            raise MediaNotFoundError("Starred tracks not found") from err
+
     async def _get_mix_tracks(self, mix_id: str, limit: int, offset: int) -> list[Track]:
         """Get tracks from a mix."""
         try:
             params = {"mixId": mix_id, "deviceType": "BROWSER"}
-            data = await self.api.get_data("pages/mix", params=params)
+            data = await self.api.get_data(PAGES_MIX, params=params)
 
             # Mix tracks are usually in the second row
             rows = data.get("rows", [])

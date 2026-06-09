@@ -7,10 +7,16 @@ import logging
 from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
 from contextlib import suppress
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypeVar, cast, final
 
-from music_assistant_models.enums import EventType, ExternalID, MediaType, ProviderFeature
+from music_assistant_models.enums import (
+    EventType,
+    ExternalID,
+    MediaType,
+    ProviderFeature,
+    ProviderType,
+)
 from music_assistant_models.errors import (
     InsufficientPermissions,
     MediaNotFoundError,
@@ -25,6 +31,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import (
+    DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_PLAYLOG,
@@ -42,6 +49,7 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.models.music_provider import MusicProvider
+    from music_assistant.models.plugin import PluginProvider
 
 
 ItemCls = TypeVar("ItemCls", bound="MediaItemType")
@@ -81,8 +89,8 @@ SORT_KEYS = {
     "year_desc": "year DESC",
     "position": "position ASC",
     "position_desc": "position DESC",
-    "artist_name": "artists.search_name ASC",
-    "artist_name_desc": "artists.search_name DESC",
+    "artist_name": "artists.search_name ASC, year DESC",
+    "artist_name_desc": "artists.search_name DESC, year DESC",
     "random": "RANDOM()",
     "random_play_count": "RANDOM(), play_count ASC",
 }
@@ -203,6 +211,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             library_item.uri,
             library_item,
         )
+        # notify music providers of the update so they can sync their own storage
+        for prov_mapping in library_item.provider_mappings:
+            if provider := self.mass.get_provider(prov_mapping.provider_instance):
+                if provider.type != ProviderType.MUSIC:
+                    continue
+                provider = cast("MusicProvider", provider)
+                await provider.on_item_updated(library_item)
         return library_item
 
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
@@ -238,6 +253,16 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                     "provider": prov_mapping.provider_instance,
                 },
             )
+            # cleanup audio analysis rows for this provider mapping
+            for prov_key in (prov_mapping.provider_domain, prov_mapping.provider_instance):
+                await self.mass.music.database.delete(
+                    DB_TABLE_AUDIO_ANALYSIS,
+                    {
+                        "media_type": self.media_type.value,
+                        "item_id": prov_mapping.item_id,
+                        "provider": prov_key,
+                    },
+                )
         # delete genre exclusions for this media item
         await self.mass.music.database.delete(
             DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
@@ -296,7 +321,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
         library_items_only: bool = True,
-    ) -> AsyncGenerator[ItemCls, None]:
+    ) -> AsyncGenerator[ItemCls]:
         """Iterate all in-database items."""
         limit: int = 500
         offset: int = 0
@@ -372,7 +397,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         prov = cast("MusicProvider", prov)
         if ProviderFeature.SEARCH not in prov.supported_features:
             return []
-        if not prov.library_supported(self.media_type):
+        if not self.mass.music.library_supported(prov, self.media_type):
             # assume library supported also means that this mediatype is supported
             return []
         searchresult = await prov.search(
@@ -523,7 +548,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self,
         provider_instance_id_or_domain: str,
         provider_item_id: str | None = None,
-    ) -> AsyncGenerator[ItemCls, None]:
+    ) -> AsyncGenerator[ItemCls]:
         """Iterate all records from database for given provider."""
         limit: int = 500
         offset: int = 0
@@ -567,10 +592,24 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
         if provider := self.mass.get_provider(provider_instance_id_or_domain):
-            provider = cast("MusicProvider", provider)
+            provider = cast("MusicProvider | PluginProvider", provider)
             with suppress(MediaNotFoundError):
                 async with self.mass.cache.handle_refresh(force_refresh):
-                    return cast("ItemCls", await provider.get_item(self.media_type, item_id))
+                    if self.media_type == MediaType.PLAYLIST:
+                        return cast("ItemCls", await provider.get_playlist(item_id))
+                    music_prov = cast("MusicProvider", provider)
+                    if self.media_type == MediaType.ARTIST:
+                        return cast("ItemCls", await music_prov.get_artist(item_id))
+                    if self.media_type == MediaType.ALBUM:
+                        return cast("ItemCls", await music_prov.get_album(item_id))
+                    if self.media_type == MediaType.TRACK:
+                        return cast("ItemCls", await music_prov.get_track(item_id))
+                    if self.media_type == MediaType.RADIO:
+                        return cast("ItemCls", await music_prov.get_radio(item_id))
+                    if self.media_type == MediaType.AUDIOBOOK:
+                        return cast("ItemCls", await music_prov.get_audiobook(item_id))
+                    if self.media_type == MediaType.PODCAST:
+                        return cast("ItemCls", await music_prov.get_podcast(item_id))
         # if we reach this point all possibilities failed and the item could not be found.
         # There is a possibility that the (streaming) provider changed the id of the item
         # so we return the previous details (if we have any) marked as unavailable, so
@@ -1105,7 +1144,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         db_row_dict["favorite"] = bool(db_row_dict["favorite"])
         db_row_dict["item_id"] = str(db_row_dict["item_id"])
         db_row_dict["date_added"] = datetime.fromtimestamp(
-            db_row_dict["timestamp_added"]
+            db_row_dict["timestamp_added"], tz=UTC
         ).isoformat()
 
         for key in JSON_KEYS:
@@ -1154,13 +1193,18 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         user_provider_filter = user.provider_filter if user and user.provider_filter else None
         final_provider_filter: list[str] | None = None
         if user_provider_filter:
+            plugin_provider_instances = {
+                prov.instance_id for prov in self.mass.providers if prov.type == ProviderType.PLUGIN
+            }
             # User has a provider filter set
             if provider:
                 # Explicit provider filter provided - validate against user's allowed providers
                 requested_providers = [provider] if isinstance(provider, str) else provider
-                # Only include providers that are in both the user's filter and the requested list
+                # Only restrict access to music providers.
                 final_provider_filter = [
-                    p for p in requested_providers if p in user_provider_filter
+                    p
+                    for p in requested_providers
+                    if p in user_provider_filter or p in plugin_provider_instances
                 ]
                 if not final_provider_filter:
                     # No overlap - user requested providers they don't have access to
@@ -1168,8 +1212,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         "User does not have permission to access the requested provider(s)."
                     )
             else:
-                # No explicit filter - use user's provider filter
-                final_provider_filter = user_provider_filter
+                # No explicit filter - apply user music provider filter but keep plugin providers.
+                final_provider_filter = list(
+                    dict.fromkeys([*user_provider_filter, *plugin_provider_instances])
+                )
         elif provider is not None:
             # No user filter - use the provided filter as is
             final_provider_filter = [provider] if isinstance(provider, str) else provider
@@ -1180,11 +1226,29 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """Select the correct provider id to use for fetching the item."""
         user = get_current_user()
         user_provider_filter = user.provider_filter if user and user.provider_filter else None
+        if not user_provider_filter:
+            mapping = next(iter(library_item.provider_mappings))
+            return (mapping.provider_instance, mapping.item_id)
+
+        # First prefer music provider mappings that are explicitly allowed for this user.
         # prefer user provider filter if available
         for mapping in library_item.provider_mappings:
-            if user_provider_filter and mapping.provider_instance not in user_provider_filter:
-                continue
-            return (mapping.provider_instance, mapping.item_id)
+            provider = self.mass.get_provider(mapping.provider_instance)
+            if provider and provider.type == ProviderType.MUSIC:
+                if mapping.provider_instance in user_provider_filter:
+                    return (mapping.provider_instance, mapping.item_id)
+
+        # If no allowed music mapping exists, fall back to plugin mappings.
+        for mapping in library_item.provider_mappings:
+            provider = self.mass.get_provider(mapping.provider_instance)
+            if provider and provider.type == ProviderType.PLUGIN:
+                return (mapping.provider_instance, mapping.item_id)
+
+        # As a final fallback, preserve previous behavior.
+        for mapping in library_item.provider_mappings:
+            if mapping.provider_instance in user_provider_filter:
+                return (mapping.provider_instance, mapping.item_id)
+
         # fallback to first mapping
         mapping = next(iter(library_item.provider_mappings))
         return (mapping.provider_instance, mapping.item_id)

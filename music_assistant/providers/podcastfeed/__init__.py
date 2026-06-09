@@ -128,7 +128,7 @@ class PodcastMusicprovider(MusicProvider):
         """Return a (default) instance name postfix for this provider instance."""
         return self.parsed_podcast.get("title")
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library/subscribed podcasts from the provider."""
         """
         Only one podcast per rss feed is supported. The data format of the rss feed supports
@@ -158,7 +158,7 @@ class PodcastMusicprovider(MusicProvider):
     async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    ) -> AsyncGenerator[PodcastEpisode]:
         """List all episodes for the podcast."""
         if prov_podcast_id != self.podcast_id:
             raise Exception(f"Podcast id not in provider: {prov_podcast_id}")

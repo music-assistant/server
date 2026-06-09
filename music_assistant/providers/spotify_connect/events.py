@@ -1,16 +1,16 @@
 #!/usr/bin/env python
-# type: ignore
 """Events module for Spotify Connect."""
 
 import json
 import os
 import urllib.request
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import Any
 
 player_event = os.getenv("PLAYER_EVENT")
 
-json_dict = {
-    "event_time": str(datetime.now()),
+json_dict: dict[str, Any] = {
+    "event_time": str(datetime.now(UTC)),
     "event": player_event,
 }
 
@@ -54,7 +54,7 @@ elif player_event in (
     json_dict["track_id"] = os.environ["TRACK_ID"]
 
 elif player_event == "track_changed":
-    common_metadata_fields = {}
+    common_metadata_fields: dict[str, Any] = {}
     item_type = os.environ["ITEM_TYPE"]
     common_metadata_fields["item_type"] = item_type
     common_metadata_fields["track_id"] = os.environ["TRACK_ID"]
@@ -67,7 +67,7 @@ elif player_event == "track_changed":
     json_dict["common_metadata_fields"] = common_metadata_fields
 
     if item_type == "Track":
-        track_metadata_fields = {}
+        track_metadata_fields: dict[str, Any] = {}
         track_metadata_fields["number"] = os.environ["NUMBER"]
         track_metadata_fields["disc_number"] = os.environ["DISC_NUMBER"]
         track_metadata_fields["popularity"] = os.environ["POPULARITY"]
@@ -77,7 +77,7 @@ elif player_event == "track_changed":
         json_dict["track_metadata_fields"] = track_metadata_fields
 
     elif item_type == "Episode":
-        episode_metadata_fields = {}
+        episode_metadata_fields: dict[str, Any] = {}
         episode_metadata_fields["show_name"] = os.environ["SHOW_NAME"]
         episode_metadata_fields["description"] = os.environ["DESCRIPTION"]
         json_dict["episode_metadata_fields"] = episode_metadata_fields
@@ -87,5 +87,5 @@ req = urllib.request.Request(URL)  # noqa: S310
 req.add_header("Content-Type", "application/json; charset=utf-8")
 jsondata = json.dumps(json_dict)
 jsondataasbytes = jsondata.encode("utf-8")
-req.add_header("Content-Length", len(jsondataasbytes))
+req.add_header("Content-Length", str(len(jsondataasbytes)))
 response = urllib.request.urlopen(req, jsondataasbytes)  # noqa: S310

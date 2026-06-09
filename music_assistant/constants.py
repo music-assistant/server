@@ -1,7 +1,9 @@
 """All constants for Music Assistant."""
 
 import json
+import os
 import pathlib
+from collections.abc import Callable
 from copy import deepcopy
 from typing import Any, Final, cast
 
@@ -10,6 +12,7 @@ from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
 )
+from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, PlayerFeature
 from music_assistant_models.media_items import Audiobook, AudioFormat, PodcastEpisode, Radio, Track
 
@@ -17,6 +20,9 @@ APPLICATION_NAME: Final = "Music Assistant"
 
 # Type alias for items that can be added to playlists
 PlaylistPlayableItem = Track | Radio | PodcastEpisode | Audiobook
+
+# Default number of tracks a music provider may return as a preview sample for a dynamic playlist
+DYNAMIC_PLAYLIST_SAMPLE_SIZE: Final[int] = 25
 
 # Corresponding MediaType enum values (must match PlaylistPlayableItem types above)
 PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
@@ -28,7 +34,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 29
+API_SCHEMA_VERSION: Final[int] = 31
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -55,8 +61,10 @@ VARIOUS_ARTISTS_MBID: Final[str] = "89ad4ac3-39f7-470e-963a-56509c546377"
 RESOURCES_DIR: Final[pathlib.Path] = (
     pathlib.Path(__file__).parent.resolve().joinpath("helpers/resources")
 )
-GENRE_ICONS_DIR: Final[pathlib.Path] = RESOURCES_DIR.joinpath("genres")
-GENRE_MAPPING_FILE: Final[pathlib.Path] = GENRE_ICONS_DIR.joinpath("genre_mapping.json")
+GENRE_ICONS_DIR_NAME: Final[str] = "genres"
+GENRE_MAPPING_FILE: Final[pathlib.Path] = RESOURCES_DIR.joinpath(
+    GENRE_ICONS_DIR_NAME, "genre_mapping.json"
+)
 
 ANNOUNCE_ALERT_FILE: Final[str] = str(RESOURCES_DIR.joinpath("announce.mp3"))
 SILENCE_FILE: Final[str] = str(RESOURCES_DIR.joinpath("silence.mp3"))
@@ -84,6 +92,7 @@ CONF_PLAYER_DSP: Final[str] = "player_dsp"
 CONF_PLAYER_DSP_PRESETS: Final[str] = "player_dsp_presets"
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
 CONF_FLOW_MODE: Final[str] = "flow_mode"
+CONF_FLOW_MODE_SAMPLE_RATE: Final[str] = "flow_mode_sample_rate"
 CONF_LOG_LEVEL: Final[str] = "log_level"
 CONF_HIDE_GROUP_CHILDS: Final[str] = "hide_group_childs"
 CONF_CROSSFADE_DURATION: Final[str] = "crossfade_duration"
@@ -91,6 +100,7 @@ CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
 CONF_AUTO_PLAY: Final[str] = "auto_play"
+CONF_PLAY_MEDIA_OVERRIDES_GROUP: Final[str] = "play_media_overrides_group"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
 CONF_DYNAMIC_GROUP_MEMBERS: Final[str] = "dynamic_members"
 CONF_HIDE_IN_UI: Final[str] = "hide_in_ui"
@@ -115,6 +125,8 @@ CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS: Final[str] = "volume_normalization_
 CONF_POWER_CONTROL: Final[str] = "power_control"
 CONF_VOLUME_CONTROL: Final[str] = "volume_control"
 CONF_MUTE_CONTROL: Final[str] = "mute_control"
+CONF_MIN_VOLUME: Final[str] = "min_volume"
+CONF_MAX_VOLUME: Final[str] = "max_volume"
 CONF_PREFERRED_OUTPUT_PROTOCOL: Final[str] = "preferred_output_protocol"
 CONF_LINKED_PROTOCOL_IDS: Final[str] = "linked_protocol_ids"  # cached for fast restart
 CONF_PROTOCOL_PARENT_ID: Final[str] = (
@@ -135,11 +147,22 @@ CONF_ENABLED: Final[str] = "enabled"
 CONF_PROTOCOL_KEY_SPLITTER: Final[str] = "||protocol||"
 CONF_PROTOCOL_CATEGORY_PREFIX: Final[str] = "protocol"
 CONF_DEFAULT_PROVIDERS_SETUP: Final[str] = "default_providers_setup"
+CONF_BACKGROUND_SCAN_CONCURRENCY: Final[str] = "background_scan_concurrency"
+
+
+def _default_background_scan_concurrency() -> int:
+    cpu_count = os.process_cpu_count() or os.cpu_count() or 4
+    if cpu_count >= 16:
+        return 4
+    if cpu_count >= 8:
+        return 2
+    return 1
 
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
 DEFAULT_PORT: Final[int] = 8095
+DEFAULT_BACKGROUND_SCAN_CONCURRENCY: Final[int] = _default_background_scan_concurrency()
 
 
 # common db tables
@@ -159,11 +182,15 @@ DB_TABLE_ALBUM_TRACKS: Final[str] = "album_tracks"
 DB_TABLE_TRACK_ARTISTS: Final[str] = "track_artists"
 DB_TABLE_ALBUM_ARTISTS: Final[str] = "album_artists"
 DB_TABLE_LOUDNESS_MEASUREMENTS: Final[str] = "loudness_measurements"
-DB_TABLE_SMART_FADES_ANALYSIS: Final[str] = "smart_fades_analysis"
 DB_TABLE_AUDIO_ANALYSIS: Final[str] = "audio_analysis"
 DB_TABLE_GENRES: Final[str] = "genres"
 DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
 DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION: Final[str] = "genre_media_item_exclusion"
+
+# Loudness measurements at or below this value are considered unreliable:
+# ebur128 reports ~-70 LUFS when it receives near-silence or very little
+# audio (e.g. when a stream was cancelled early).
+LOUDNESS_MEASUREMENT_MIN_LUFS: Final[float] = -50.0
 
 
 def load_genre_mapping() -> list[dict[str, Any]]:
@@ -207,7 +234,7 @@ DEFAULT_GENRES: Final[tuple[str, ...]] = tuple(entry["genre"] for entry in DEFAU
 
 # all other
 MASS_LOGO_ONLINE: Final[str] = (
-    "https://github.com/music-assistant/server/blob/dev/music_assistant/logo.png"
+    "https://raw.githubusercontent.com/music-assistant/server/refs/heads/dev/music_assistant/logo.png"
 )
 ENCRYPT_SUFFIX = "_encrypted_"
 CONFIGURABLE_CORE_CONTROLLERS = (
@@ -259,6 +286,45 @@ CONF_ENTRY_FLOW_MODE = ConfigEntry(
 )
 
 
+FLOW_MODE_SAMPLE_RATE_SMART: Final[str] = "smart"
+FLOW_MODE_SAMPLE_RATE_BIT_PERFECT: Final[str] = "bit_perfect"
+FLOW_MODE_SAMPLE_RATE_48000: Final[str] = "48000"
+FLOW_MODE_SAMPLE_RATE_96000: Final[str] = "96000"
+FLOW_MODE_SAMPLE_RATE_HIGHEST: Final[str] = "highest"
+
+CONF_ENTRY_FLOW_MODE_SAMPLE_RATE = ConfigEntry(
+    key=CONF_FLOW_MODE_SAMPLE_RATE,
+    type=ConfigEntryType.STRING,
+    label="Flow Mode sample rate",
+    options=[
+        ConfigValueOption("Smart (upsample only)", FLOW_MODE_SAMPLE_RATE_SMART),
+        ConfigValueOption("Bit-perfect (no resampling)", FLOW_MODE_SAMPLE_RATE_BIT_PERFECT),
+        ConfigValueOption("48 kHz (balanced quality and bandwidth)", FLOW_MODE_SAMPLE_RATE_48000),
+        ConfigValueOption("96 kHz (high quality)", FLOW_MODE_SAMPLE_RATE_96000),
+        ConfigValueOption("Highest supported by player", FLOW_MODE_SAMPLE_RATE_HIGHEST),
+    ],
+    default_value=FLOW_MODE_SAMPLE_RATE_SMART,
+    description="When streaming in Flow Mode, the entire queue is sent as one gapless stream "
+    "and must use a single sample rate for the whole stream.\n\n"
+    "- 'Smart (upsample only)': Starts the flow stream at the sample rate of the first "
+    "track. Subsequent tracks with an equal or lower sample rate are upsampled to match; "
+    "if the next track has a higher sample rate, the flow stream is restarted at that "
+    "higher rate. This is the best balance between quality and seamless playback.\n"
+    "- 'Bit-perfect (no resampling)': Never resamples audio (unless the player does not "
+    "support the track's sample rate). Playback is restarted between queue tracks when "
+    "their sample rates differ, which disables gapless and crossfade between those tracks.\n"
+    "- '48 kHz': Resamples all audio to a fixed 48 kHz (or the closest rate supported by "
+    "the player) using a high quality resampler. A good compromise of quality and bandwidth.\n"
+    "- '96 kHz': Resamples all audio to a fixed 96 kHz (or the closest rate supported by "
+    "the player) using a high quality resampler.\n"
+    "- 'Highest supported by player': Resamples all audio to the highest sample rate the "
+    "player supports. Note that this can waste a lot of bandwidth.",
+    category="protocol_generic",
+    advanced=True,
+    requires_reload=True,
+)
+
+
 CONF_ENTRY_AUTO_PLAY = ConfigEntry(
     key=CONF_AUTO_PLAY,
     type=ConfigEntryType.BOOLEAN,
@@ -269,6 +335,49 @@ CONF_ENTRY_AUTO_PLAY = ConfigEntry(
     depends_on=CONF_POWER_CONTROL,
     depends_on_value_not="none",
     category="player_controls",
+)
+
+CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP = ConfigEntry(
+    key=CONF_PLAY_MEDIA_OVERRIDES_GROUP,
+    type=ConfigEntryType.BOOLEAN,
+    label="Play Media overrides active group",
+    description="When this player is currently captured by an active group or sync session, "
+    "an explicit Play Media command (e.g. starting a new playlist or track from Home "
+    "Assistant) will release this player from the group/sync and play the new media "
+    "directly on this player. Disable this to keep the legacy behavior where Play "
+    "Media is redirected to the group leader. Other commands (next/prev/pause/resume) "
+    "are always forwarded to the group leader as they act on the existing playback.",
+    default_value=True,
+    category="generic",
+    advanced=False,
+)
+
+CONF_ENTRY_MIN_VOLUME = ConfigEntry(
+    key=CONF_MIN_VOLUME,
+    type=ConfigEntryType.INTEGER,
+    range=(0, 100),
+    default_value=0,
+    label="Minimum volume",
+    description="Minimum device volume. "
+    "The volume slider (0-100) will be scaled to this as the lower bound.",
+    category="player_controls",
+    advanced=True,
+    depends_on=CONF_VOLUME_CONTROL,
+    depends_on_value_not=PLAYER_CONTROL_NONE,
+)
+
+CONF_ENTRY_MAX_VOLUME = ConfigEntry(
+    key=CONF_MAX_VOLUME,
+    type=ConfigEntryType.INTEGER,
+    range=(0, 100),
+    default_value=100,
+    label="Maximum volume",
+    description="Maximum device volume. "
+    "The volume slider (0-100) will be scaled to this as the upper bound.",
+    category="player_controls",
+    advanced=True,
+    depends_on=CONF_VOLUME_CONTROL,
+    depends_on_value_not=PLAYER_CONTROL_NONE,
 )
 
 CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
@@ -906,6 +1015,7 @@ ATTR_ANNOUNCEMENT_IN_PROGRESS: Final[str] = "announcement_in_progress"
 ATTR_PREVIOUS_VOLUME: Final[str] = "previous_volume"
 ATTR_LAST_POLL: Final[str] = "last_poll"
 ATTR_GROUP_MEMBERS: Final[str] = "group_members"
+ATTR_GROUP_VOLUME_SNAPSHOT: Final[str] = "group_volume_snapshot"
 ATTR_ELAPSED_TIME: Final[str] = "elapsed_time"
 ATTR_ENABLED: Final[str] = "enabled"
 ATTR_AVAILABLE: Final[str] = "available"
@@ -917,7 +1027,6 @@ ATTR_MUTE_CONTROL: Final[str] = "mute_control"
 ATTR_VOLUME_CONTROL: Final[str] = "volume_control"
 ATTR_POWER_CONTROL: Final[str] = "power_control"
 ATTR_PLAY_ACTION_IN_PROGRESS: Final[str] = "play_action_in_progress"
-ATTR_GROUP_VOLUME_SNAPSHOT: Final[str] = "group_volume_snapshot"
 
 # Album type detection patterns
 LIVE_INDICATORS = [
@@ -971,17 +1080,22 @@ ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.PAUSE,
 }
 
-DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
+PLAYER_CONTROL_PROTOCOL: Final[str] = "follow_protocol"
+DEFAULT_PROVIDERS: Final[set[tuple[str, bool, Callable[[], bool]]]] = {
     # list of providers that are setup by default once
     # (and they can be removed/disabled by the user if they want to)
     # the boolean value indicates whether it needs to be discovered on mdns
-    ("airplay", False),
-    ("chromecast", False),
-    ("dlna", False),
-    ("sonos", True),
-    ("bluesound", True),
-    ("heos", True),
-    ("party", False),
+    # the callable is a precondition that must return True for the provider to be setup
+    ("airplay", False, lambda: True),
+    ("chromecast", False, lambda: True),
+    ("dlna", False, lambda: True),
+    ("sonos", True, lambda: True),
+    ("bluesound", True, lambda: True),
+    ("heos", True, lambda: True),
+    ("wiim", True, lambda: True),
+    ("party", False, lambda: True),
+    ("smart_fades", False, lambda: (os.cpu_count() or 1) > 1),
+    ("lastfm_recommendations", False, lambda: True),
 }
 
 EXTERNAL_SOURCES: Final[set[str]] = {

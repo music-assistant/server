@@ -158,6 +158,17 @@ class DatabaseConnection:
         async with debug_query(_query, _params):
             return cast("list[Mapping[str, Any]]", await self._db.execute_fetchall(_query, _params))
 
+    async def iter_rows_from_query(
+        self,
+        query: str,
+        params: dict[str, Any] | None = None,
+    ) -> AsyncGenerator[Mapping[str, Any]]:
+        """Stream rows for a given custom query without materializing the full result."""
+        _query, _params = query_params(query, params)
+        async with debug_query(_query, _params), self._db.execute(_query, _params) as cursor:
+            async for row in cursor:
+                yield cast("Mapping[str, Any]", row)
+
     async def get_count_from_query(
         self,
         query: str,
@@ -293,7 +304,7 @@ class DatabaseConnection:
         self,
         table: str,
         match: dict[str, Any] | None = None,
-    ) -> AsyncGenerator[Mapping[str, Any], None]:
+    ) -> AsyncGenerator[Mapping[str, Any]]:
         """Iterate all items within a table."""
         limit: int = 500
         offset: int = 0

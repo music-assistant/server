@@ -25,9 +25,15 @@ from music_assistant_models.provider import ProviderManifest
 
 import music_assistant.controllers.media.playlists as playlists_module
 from music_assistant.controllers.cache import CacheController
+from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.media.genres import GenreController
 from music_assistant.controllers.media.playlists import PlaylistController
-from music_assistant.controllers.metadata import MetaDataController
+from music_assistant.controllers.metadata import (
+    MISSING_ARTIST_METADATA_SCAN_TASK_ID,
+    PLAYLIST_METADATA_SCAN_TASK_ID,
+    THUMB_CACHE_CLEANUP_TASK_ID,
+    MetaDataController,
+)
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.tasks import (
     TasksController,
@@ -65,7 +71,7 @@ async def _wait_for_task_status(
 
 
 @pytest.fixture
-async def tasks_controller(mass_minimal: MusicAssistant) -> AsyncGenerator[TasksController, None]:
+async def tasks_controller(mass_minimal: MusicAssistant) -> AsyncGenerator[TasksController]:
     """Set up the background tasks controller on a minimal Music Assistant instance."""
     controller = TasksController(mass_minimal)
     mass_minimal.tasks = controller
@@ -431,8 +437,9 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     metadata._register_maintenance_tasks()
 
     cache_task = tasks_controller.get_task("cache_database_cleanup")
-    artist_scan_task = tasks_controller.get_task("metadata_missing_artist_metadata_scan")
-    playlist_scan_task = tasks_controller.get_task("metadata_playlist_metadata_scan")
+    artist_scan_task = tasks_controller.get_task(MISSING_ARTIST_METADATA_SCAN_TASK_ID)
+    playlist_scan_task = tasks_controller.get_task(PLAYLIST_METADATA_SCAN_TASK_ID)
+    thumb_cleanup_task = tasks_controller.get_task(THUMB_CACHE_CLEANUP_TASK_ID)
 
     assert cache_task.translation_key == "background_task.cache_database_cleanup"
     assert cache_task.schedule == maintenance_schedule
@@ -449,12 +456,21 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     assert genre_scan_task.schedule == maintenance_schedule
 
     assert artist_scan_task.translation_key == "background_task.scan_missing_artist_metadata"
-    assert artist_scan_task.schedule == maintenance_schedule
     assert artist_scan_task.metadata == {"task_domain": "metadata_missing_artist_metadata_scan"}
 
     assert playlist_scan_task.translation_key == "background_task.refresh_playlist_metadata"
-    assert playlist_scan_task.schedule == maintenance_schedule
     assert playlist_scan_task.metadata == {"task_domain": "metadata_playlist_metadata_scan"}
+
+    # Metadata maintenance tasks pick a random time spread across the full day
+    # to avoid spiking the shared MusicBrainz mirror, but share one time per instance.
+    assert artist_scan_task.schedule is not None
+    assert artist_scan_task.schedule.type == TaskScheduleType.DAILY
+    assert artist_scan_task.schedule.hour is not None
+    assert artist_scan_task.schedule.minute is not None
+    assert 0 <= artist_scan_task.schedule.hour <= 23
+    assert 0 <= artist_scan_task.schedule.minute <= 59
+    assert artist_scan_task.schedule == playlist_scan_task.schedule
+    assert thumb_cleanup_task.schedule == artist_scan_task.schedule
 
 
 async def test_music_sync_completion_queues_database_cleanup_background_task(
@@ -587,3 +603,59 @@ async def test_schedule_update_metadata_uses_managed_background_task(
         await asyncio.sleep(0.01)
     else:
         raise AssertionError("Metadata lookup task did not finish successfully")
+
+
+def _legacy_maintenance_schedule_state() -> dict[str, Any]:
+    """Build a persisted core/tasks config holding the legacy 04:00 metadata schedules."""
+    return {
+        "tasks": {
+            "domain": "tasks",
+            "scheduled_task_states": {
+                "metadata_missing_artist_metadata_scan": {
+                    "status": "idle",
+                    "schedule": {"type": "daily", "enabled": True, "hour": 4, "minute": 0},
+                },
+                "metadata_playlist_metadata_scan": {
+                    "status": "idle",
+                    "schedule": {"type": "daily", "enabled": True, "hour": 4, "minute": 0},
+                },
+                "metadata_thumb_cache_cleanup": {
+                    "status": "idle",
+                    "schedule": {"type": "daily", "enabled": True, "hour": 4, "minute": 0},
+                },
+                "music_database_cleanup": {
+                    "status": "idle",
+                    "schedule": {"type": "daily", "enabled": True, "hour": 5, "minute": 0},
+                },
+            },
+        }
+    }
+
+
+async def test_metadata_maintenance_schedule_migration_drops_legacy_state(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """The config migration should remove only the orphaned legacy metadata task state."""
+    config = ConfigController(mass_minimal)
+    config._data = {"core": _legacy_maintenance_schedule_state()}
+
+    assert config._migrate_metadata_maintenance_schedule() is True
+
+    task_states = config._data["core"]["tasks"]["scheduled_task_states"]
+    assert "metadata_missing_artist_metadata_scan" not in task_states
+    assert "metadata_playlist_metadata_scan" not in task_states
+    assert "metadata_thumb_cache_cleanup" not in task_states
+    # Unrelated scheduled tasks must be left untouched.
+    assert "music_database_cleanup" in task_states
+
+    # Migration is idempotent: a second pass finds nothing left to remove.
+    assert config._migrate_metadata_maintenance_schedule() is False
+
+
+async def test_metadata_maintenance_schedule_migration_noop_without_state(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """The migration should be a no-op when no persisted task state exists."""
+    config = ConfigController(mass_minimal)
+    config._data = {}
+    assert config._migrate_metadata_maintenance_schedule() is False

@@ -11,7 +11,7 @@ from music_assistant_models.config_entries import (
     ConfigValueOption,
     ConfigValueType,
 )
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ConfigEntryType, MediaType
 
 if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
@@ -21,17 +21,24 @@ if TYPE_CHECKING:
 
 
 class ScrobblerHelper:
-    """Base class to aid scrobbling tracks."""
+    """Base class to aid scrobbling media items."""
 
     logger: logging.Logger
     config: ScrobblerConfig
+    supported_media_types: frozenset[MediaType] | None
     currently_playing: str | None = None
     last_scrobbled: str | None = None
 
-    def __init__(self, logger: logging.Logger, config: ScrobblerConfig | None = None) -> None:
+    def __init__(
+        self,
+        logger: logging.Logger,
+        config: ScrobblerConfig | None = None,
+        supported_media_types: frozenset[MediaType] | None = None,
+    ) -> None:
         """Initialize."""
         self.logger = logger
         self.config = config or ScrobblerConfig(suffix_version=False)
+        self.supported_media_types = supported_media_types
 
     def _is_configured(self) -> bool:
         """Override if subclass needs specific configuration."""
@@ -51,15 +58,26 @@ class ScrobblerHelper:
         """Scrobble."""
 
     async def _on_mass_media_item_played(self, event: MassEvent) -> None:
-        """Media item has finished playing, we'll scrobble the track."""
+        """Media item has finished playing, we'll scrobble the item."""
         if not self._is_configured():
             return
 
         report: MediaItemPlaybackProgressReport = event.data
 
+        if self.supported_media_types and report.media_type not in self.supported_media_types:
+            self.logger.debug("skipped scrobbling for unsupported media type %s", report.media_type)
+            return
+
         # handle optional user_id filtering
         if self.config.mass_userids and report.userid not in self.config.mass_userids:
             self.logger.debug("skipped scrobbling for user %s due to user filter", report.userid)
+            return
+
+        # handle optional player_id filtering
+        if self.config.mass_playerids and report.player_id not in self.config.mass_playerids:
+            self.logger.debug(
+                "skipped scrobbling for player %s due to player filter", report.player_id
+            )
             return
 
         # poor mans attempt to detect a song on loop
@@ -113,18 +131,27 @@ class ScrobblerHelper:
 
 CONF_VERSION_SUFFIX = "suffix_version"
 CONF_SCROBBLE_USERS = "scrobble_users"
+CONF_SCROBBLE_PLAYERS = "scrobble_players"
 
 
 class ScrobblerConfig:
     """Shared configuration options for scrobblers."""
 
-    def __init__(self, suffix_version: bool, mass_userids: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        suffix_version: bool,
+        mass_userids: list[str] | None = None,
+        mass_playerids: list[str] | None = None,
+    ) -> None:
         """Initialize."""
         self.suffix_version = suffix_version
         self.mass_userids = mass_userids or []
+        self.mass_playerids = mass_playerids or []
 
     @staticmethod
-    def get_shared_config_entries(values: dict[str, ConfigValueType] | None) -> list[ConfigEntry]:
+    async def get_shared_config_entries(
+        mass: MusicAssistant, values: dict[str, ConfigValueType] | None
+    ) -> list[ConfigEntry]:
         """Shared config entries."""
         return [
             ConfigEntry(
@@ -136,7 +163,10 @@ class ScrobblerConfig:
                 "e.g. 'Amazing Track (Live)'.",
                 default_value=True,
                 value=values.get(CONF_VERSION_SUFFIX) if values else None,
-            )
+            ),
+            # User and player filter options for scrobbling providers
+            await create_scrobble_users_config_entry(mass),
+            create_scrobble_players_config_entry(mass),
         ]
 
     @staticmethod
@@ -145,6 +175,7 @@ class ScrobblerConfig:
         return ScrobblerConfig(
             suffix_version=bool(config.get_value(CONF_VERSION_SUFFIX, True)),
             mass_userids=cast("list[str]", config.get_value(CONF_SCROBBLE_USERS, [])),
+            mass_playerids=cast("list[str]", config.get_value(CONF_SCROBBLE_PLAYERS, [])),
         )
 
 
@@ -165,6 +196,29 @@ async def create_scrobble_users_config_entry(mass: MusicAssistant) -> ConfigEntr
         description="Only register scrobbles for the selected users. "
         "Leave empty to scrobble for all users.",
         options=user_options,
+        multi_value=True,
+        default_value=[],
+    )
+
+
+def create_scrobble_players_config_entry(mass: MusicAssistant) -> ConfigEntry:
+    """Create a reusable configentry to specify a player list for scrobbling providers."""
+    ma_player_list = sorted(
+        mass.players.all_players(return_unavailable=True, return_disabled=False),
+        key=lambda player: player.display_name.lower(),
+    )
+    player_options = [
+        ConfigValueOption(title=player.display_name, value=player.player_id)
+        for player in ma_player_list
+    ]
+    return ConfigEntry(
+        key=CONF_SCROBBLE_PLAYERS,
+        type=ConfigEntryType.STRING,
+        label="Scrobble for players",
+        required=False,
+        description="Only register scrobbles for the selected players. "
+        "Leave empty to scrobble for all players.",
+        options=player_options,
         multi_value=True,
         default_value=[],
     )

@@ -1,4 +1,5 @@
-"""ORF Radiothek / ORF Sound provider for Music Assistant.
+"""
+ORF Radiothek / ORF Sound provider for Music Assistant.
 
 Features:
 - Live radios (ORF stations + privates) from ORF bundle.json
@@ -620,9 +621,9 @@ class RadiothekProvider(MusicProvider):
     # MA API: Radios
     # ----------------------------
 
-    @use_cache(3600 * 24)  # Cache for 24 hours
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse this provider's radio stations and podcasts.
+        """
+        Browse this provider's radio stations and podcasts.
 
         :param path: The path to browse, (e.g. provider_id://artists).
         """
@@ -729,9 +730,7 @@ class RadiothekProvider(MusicProvider):
 
         raise MediaNotFoundError("Podcast not found.")
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get episodes of a specific podcast."""
         bundle = await self._get_bundle()
 

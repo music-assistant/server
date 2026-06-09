@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import time
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import PlaybackState
@@ -108,6 +109,7 @@ class RaopStream(AirPlayProtocol):
         player = self.player
         logger = player.logger
         lost_packets = 0
+        expected_eof = False
         if not self._cli_proc:
             return
         async for line in self._cli_proc.iter_stderr():
@@ -129,7 +131,17 @@ class RaopStream(AirPlayProtocol):
                 # this is received more or less every second while playing
                 millis = int(line.split("elapsed milliseconds: ")[1])
                 elapsed_time = millis / 1000
-                player.set_state_from_stream(elapsed_time=elapsed_time)
+                # on the first elapsed time report, compute a fixed offset between
+                # the session start_time and this cliraop process start.
+                # this handles dynamic leader switching where a new cliraop process
+                # reports from 0 while the flow stream started much earlier.
+                if self._elapsed_time_offset is None and self.session:
+                    self._elapsed_time_offset = max(
+                        0, time.time() - self.session.start_time - elapsed_time
+                    )
+                if self._elapsed_time_offset:
+                    elapsed_time += self._elapsed_time_offset
+                player.set_state_from_stream(elapsed_time=elapsed_time, stream=self)
             elif "Password required, but none supplied." in line:
                 logger.error(
                     f"Player {self.player.name} requires a password. "
@@ -145,6 +157,7 @@ class RaopStream(AirPlayProtocol):
                     logger.warning("Packet loss detected!")
             if "end of stream reached" in line:
                 logger.debug("End of stream reached")
+                expected_eof = True
                 break
             logger.log(VERBOSE_LOG_LEVEL, line)
             await asyncio.sleep(0)  # Yield to event loop
@@ -152,4 +165,7 @@ class RaopStream(AirPlayProtocol):
         logger.debug("CLIRaop stderr reader ended")
         if not self._stopped:
             self._stopped = True
-            self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
+            player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
+            if not expected_eof:
+                logger.warning("CLIRaop process stopped unexpectedly for %s", player.display_name)
+                self.mass.create_task(self.mass.players.cmd_ungroup(player.player_id))

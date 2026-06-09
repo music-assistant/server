@@ -1,10 +1,15 @@
 # syntax=docker/dockerfile:1
 
+# Python version is centralized in .python-version at repo root.
+# Workflows read that file and pass it here via --build-arg PYTHON_VERSION=...
+# The default below is a safety net for manual `docker build` without --build-arg.
+ARG PYTHON_VERSION=3.14
+
 # BASE docker image for music assistant container
 # This image forms the base for the final image and is not meant to be used directly
 # NOTE that the dev add-on is also based on this base image
 
-FROM python:3.13-slim-bookworm AS ffmpeg-builder
+FROM python:${PYTHON_VERSION}-slim-bookworm AS ffmpeg-builder
 
 # Enable non-free and contrib repositories for FDK-AAC and other codecs
 RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
@@ -102,7 +107,7 @@ RUN set -x \
 ##################################################################################################
 
 # PyAV wheel builder - builds PyAV against the custom FFmpeg
-FROM python:3.13-slim-bookworm AS pyav-builder
+FROM python:${PYTHON_VERSION}-slim-bookworm AS pyav-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ python3-dev pkg-config && rm -rf /var/lib/apt/lists/*
@@ -124,7 +129,7 @@ RUN PYAV_VERSION=$(python -c "import json; reqs=json.load(open('/tmp/sendspin_ma
 
 ##################################################################################################
 
-FROM python:3.13-slim-bookworm
+FROM python:${PYTHON_VERSION}-slim-bookworm
 
 # Enable non-free and contrib repositories for codec libraries
 RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
@@ -159,6 +164,8 @@ RUN set -x \
         libavfilter8 \
         # libsndfile needed for librosa audio file support (smartfades)
         libsndfile1 \
+        # libchromaprint needed for AcoustID fingerprinting (acoustid_lookup)
+        libchromaprint1 \
         # Audio codec runtime libraries (needed for FFmpeg)
         libfdk-aac2 \
         libmp3lame0 \
@@ -188,6 +195,10 @@ RUN set -x \
         libasound2 \
         # PortAudio for local audio output (sounddevice)
         libportaudio2 \
+        # Allows pipewire devices to be detected when running in docker container. (local audio)
+        pipewire-alsa \
+        # Allows pulse audio devices to be detected using pactl. (local audio)
+        pulseaudio-utils \
         libvorbisidec1 \
         libflac12 \
         libavahi-client3 \
@@ -196,7 +207,15 @@ RUN set -x \
         libconfig9 \
         libpopt0 \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f \
+        /usr/bin/parecord \
+        /usr/bin/paplay \
+        /usr/bin/parec \
+        /usr/bin/pamon \
+        /usr/bin/pacat \
+        /usr/bin/pasuspender \
+        /usr/bin/pacmd
 
 # Install Snapcast 0.34.0 from GitHub releases (requires at least 0.27)
 ARG SNAPCAST_VERSION=0.34.0

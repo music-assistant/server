@@ -128,7 +128,7 @@ class AsyncProcess:
             VERBOSE_LOG_LEVEL, "Process %s started with PID %s", self.name, self.proc.pid
         )
 
-    async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
+    async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes]:
         """Yield chunks of n size from the process stdout."""
         while True:
             chunk = await self.readexactly(n)
@@ -136,7 +136,7 @@ class AsyncProcess:
                 break
             yield chunk
 
-    async def iter_any(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
+    async def iter_any(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes]:
         """Yield chunks as they come in from process stdout."""
         while True:
             chunk = await self.read(n)
@@ -177,15 +177,8 @@ class AsyncProcess:
         if self.proc.stdin is None:
             return
         async with self._stdin_lock:
-            mv = memoryview(data)
-            chunk_size = 65536
-            with suppress(BrokenPipeError, ConnectionResetError):
-                for i in range(0, len(mv), chunk_size):
-                    self.proc.stdin.write(mv[i : i + chunk_size])
-                    await self.proc.stdin.drain()
-                    # yield to the event loop to prevent blocking when
-                    # drain() completes immediately (buffer not full)
-                    await asyncio.sleep(0)
+            self.proc.stdin.write(data)
+            await self.proc.stdin.drain()
 
     async def write_eof(self) -> None:
         """Write end of file to to process stdin."""
@@ -228,7 +221,7 @@ class AsyncProcess:
                 # raise for all other (value) errors
                 raise
 
-    async def iter_stderr(self) -> AsyncGenerator[str, None]:
+    async def iter_stderr(self) -> AsyncGenerator[str]:
         """Iterate lines from the stderr stream as string."""
         line: str | bytes
         while True:

@@ -96,6 +96,7 @@ from music_assistant_models.media_items.media_item import RecommendationFolder
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 from music_assistant.constants import PLAYBACK_REPORT_INTERVAL_SECONDS, PlaylistPlayableItem
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audiobookshelf.parsers import (
@@ -457,7 +458,7 @@ for more details.
         user = await self._client.get_my_user()
         await self._set_playlog_from_user(user)
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve playlists from abs."""
         for playlist_dict, media_type in zip(
             [
@@ -538,7 +539,8 @@ for more details.
                         token=self._client.token,
                         base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                         media_progress=progress,
-                        add_cover=bool(item.library_item.media.cover_path or False),
+                        cover_path=item.library_item.media.cover_path,
+                        cover_version=item.library_item.updated_at,
                     )
                 )
         for cnt, item in enumerate(playlist_items):
@@ -647,7 +649,7 @@ for more details.
         )
         return False
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library/subscribed podcasts from the provider.
 
         Minified podcast information is enough.
@@ -698,9 +700,7 @@ for more details.
             base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
         )
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get all podcast episodes of podcast.
 
         Adds progress information.
@@ -727,7 +727,8 @@ for more details.
                 token=self._client.token,
                 base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                 media_progress=progress,
-                add_cover=bool(abs_podcast.media.cover_path or False),
+                cover_path=abs_podcast.media.cover_path,
+                cover_version=abs_podcast.updated_at,
             )
             yield mass_episode
             episode_cnt += 1
@@ -756,13 +757,14 @@ for more details.
                     token=self._client.token,
                     base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                     media_progress=progress,
-                    add_cover=bool(abs_podcast.media.cover_path or False),
+                    cover_path=abs_podcast.media.cover_path,
+                    cover_version=abs_podcast.updated_at,
                 )
 
             episode_cnt += 1
         raise MediaNotFoundError("Episode not found")
 
-    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Get Audiobook libraries.
 
         Need expanded version for chapters.
@@ -968,25 +970,32 @@ for more details.
         # this method is called _before_ get_stream_details, so the playback session
         # is created here.
         session = await self._get_playback_session(mass_item_id=item_id)
-        finished = session.current_time > session.duration - PLAYBACK_REPORT_INTERVAL_SECONDS
 
         item_ids = item_id.split(" ")
         abs_item_id = item_ids[0]
         episode_id = item_ids[1] if len(item_ids) == 2 else None
-        timestamp = None
-        if progress := await self._client.get_my_media_progress(
+        progress = await self._client.get_my_media_progress(
             item_id=abs_item_id, episode_id=episode_id
-        ):
-            # only the progress object has a timestamp of the progress (not the session)
-            # last_update is in ms epoch
-            timestamp = from_utc_timestamp(progress.last_update / 1000)
-        self.logger.debug("Resume position %s: obtained.", session.current_time)
+        )
+        # only the progress object has a timestamp of the progress (not the session)
+        # last_update is in ms epoch
+        # If there is an open session, that session might have the old progress time,
+        # whereas the explicit progress call above gives the most recent time.
+        timestamp = from_utc_timestamp(progress.last_update / 1000) if progress else None
+        current_time = (
+            progress.current_time
+            if progress is not None and progress.current_time is not None
+            else session.current_time
+        )
+        finished = current_time > session.duration - PLAYBACK_REPORT_INTERVAL_SECONDS
+        self.logger.debug("Resume position %s: obtained.", current_time)
         return (
             finished,
-            int(session.current_time * 1000),
+            int(current_time * 1000),
             timestamp,
         )
 
+    @use_cache(3600, base_class=RecommendationFolder, allow_expired_cache=True)
     @handle_refresh_token
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get recommendations."""
@@ -1123,9 +1132,11 @@ for more details.
                             podcast_id = entity.id_
                             if entity.recent_episode is None:
                                 continue
-                            _add_cover = False
+                            _cover_path = None
+                            _cover_version = None
                             if isinstance(entity, ShelfLibraryItemMinifiedPodcast):
-                                _add_cover = bool(entity.media.cover_path or False)
+                                _cover_path = entity.media.cover_path
+                                _cover_version = entity.updated_at
                             # we only have a PodcastEpisode here, with limited information
                             item = parse_podcast_episode(
                                 episode=entity.recent_episode,
@@ -1134,7 +1145,8 @@ for more details.
                                 domain=self.domain,
                                 token=self._client.token,
                                 base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
-                                add_cover=_add_cover,
+                                cover_path=_cover_path,
+                                cover_version=_cover_version,
                             )
                         if item is not None:
                             items.append(item)

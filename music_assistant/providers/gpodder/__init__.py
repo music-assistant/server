@@ -335,7 +335,7 @@ class GPodder(MusicProvider):
         # While the streams are remote, the user controls what is added.
         return False
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library/subscribed podcasts from the provider."""
         try:
             subscriptions = await self._client.get_subscriptions()
@@ -434,7 +434,7 @@ class GPodder(MusicProvider):
 
     async def get_podcast_episodes(
         self, prov_podcast_id: str, add_progress: bool = True
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    ) -> AsyncGenerator[PodcastEpisode]:
         """Get Podcast episodes. Add progress information."""
         if add_progress:
             episode_actions, timestamp = await self._client.get_episode_actions()

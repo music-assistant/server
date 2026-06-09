@@ -12,6 +12,7 @@ import re
 import shutil
 import socket
 import sys
+import unicodedata
 import urllib.error
 import urllib.request
 import weakref
@@ -136,6 +137,8 @@ artist_pattern = re.compile(r"artist=\"(?P<artist>.*?)\"")
 dot_com_pattern = re.compile(r"(?P<netloc>\(?\w+\.(?:\w+\.)?(\w{2,3})\)?)")
 ad_pattern = re.compile(r"((ad|advertisement)_)|^AD\s\d+$|ADBREAK", flags=re.IGNORECASE)
 title_artist_order_pattern = re.compile(r"(?P<title>.+)\sBy:\s(?P<artist>.+)", flags=re.IGNORECASE)
+# German format used by some stations: "Track" von Artist
+german_von_pattern = re.compile(r'^"(?P<title>[^"]+)"\s+von\s+(?P<artist>.+)$', flags=re.IGNORECASE)
 multi_space_pattern = re.compile(r"\s{2,}")
 end_junk_pattern = re.compile(r"(.+?)(\s\W+)$")
 
@@ -150,11 +153,21 @@ VERSION_PARTS = (
     "instrumental",
     "karaoke",
     "remaster",
+    "remastered",
     "versie",
     "unplugged",
     "disco",
     "akoestisch",
     "deluxe",
+    "video",
+    "radio",
+    "extended",
+    "single",
+    "edition",
+    "anniversary",
+    "stereo",
+    "album",
+    "bonus",
 )
 IGNORE_TITLE_PARTS = (
     # strings that may be stripped off a title part
@@ -173,6 +186,37 @@ WITH_TITLE_WORDS = (
     "u",
     "you",
     "no",
+)
+
+# Keywords for aggressive search cleaning (includes featuring).
+_VERSION_PATTERN = "|".join(re.escape(v) for v in VERSION_PARTS)
+_FEAT_PATTERN = r"feat(?:uring)?|ft"
+_SEARCH_PATTERN = rf"{_VERSION_PATTERN}|{_FEAT_PATTERN}"
+
+_SEARCH_PAREN_PATTERN = re.compile(
+    rf"[\(\[][^\)\]]*\b({_SEARCH_PATTERN})\b[^\)\]]*[\)\]]",
+    re.IGNORECASE,
+)
+_SEARCH_HYPHEN_PATTERN = re.compile(
+    rf"(\s*-\s*(\d{{4}}|{_SEARCH_PATTERN}).*)$",
+    re.IGNORECASE,
+)
+
+# Superfluous suffixes to strip for display (video/audio markers, etc.)
+_DISPLAY_STRIP_PATTERN = re.compile(
+    r"\s*[\(\[]"
+    r"(official\s+)?(lyric\s+|music\s+)?(video|audio|visualizer|clip)"
+    r"[\)\]]$",
+    re.IGNORECASE,
+)
+
+# Featuring patterns for stripping from titles (not in parentheses).
+_FEATURING_PATTERNS = (
+    " featuring ",
+    " feat. ",
+    " feat ",
+    " ft. ",
+    " ft ",
 )
 
 
@@ -220,11 +264,64 @@ def try_parse_duration(duration_str: str) -> float:
     return seconds + milliseconds
 
 
-def parse_title_and_version(title: str, track_version: str | None = None) -> tuple[str, str]:
-    """Try to parse version from the title."""
+def normalize_unicode(value: str | None) -> str | None:
+    """Normalize Unicode strings to NFC form for consistent handling.
+
+    This ensures that Unicode characters like "é" are stored as single
+    codepoints rather than "e" + combining accent mark, which prevents
+    issues with string comparisons and memory bloat.
+
+    :param value: String to normalize, or None.
+    """
+    if value is None:
+        return None
+    return unicodedata.normalize("NFC", value)
+
+
+def parse_title_and_version(
+    title: str,
+    track_version: str | None = None,
+    strip_for_search: bool = False,
+    strip_for_display: bool = False,
+) -> tuple[str, str]:
+    """
+    Parse version from the title and optionally clean for search or display.
+
+    :param title: The title to parse.
+    :param track_version: Optional existing version string.
+    :param strip_for_search: Aggressively strip for search matching.
+    :param strip_for_display: Strip superfluous suffixes for display.
+    """
     version = track_version or ""
-    for regex in (r"\(.*?\)", r"\[.*?\]", r" - .*"):
-        for title_part in re.findall(regex, title):
+
+    # Strip featuring, bracketed version info, and hyphen suffixes (e.g. "- Remastered 2019")
+    if strip_for_search:
+        title = _SEARCH_PAREN_PATTERN.sub("", title)
+        title = _SEARCH_HYPHEN_PATTERN.sub("", title)
+        # Strip bare featuring credits (not in parentheses)
+        title_lower = title.lower()
+        for pattern in _FEATURING_PATTERNS:
+            if pattern in title_lower:
+                idx = title_lower.find(pattern)
+                title = title[:idx]
+                break
+        # Clean up dangling hyphens and extra spaces
+        title = re.sub(r"\s*-\s*$", "", title)
+        title = re.sub(r"\s+", " ", title).strip()
+        return title, version
+
+    # Strip video/audio suffixes like "(Official Video)"
+    if strip_for_display:
+        title = _DISPLAY_STRIP_PATTERN.sub("", title).strip()
+        return title, version
+
+    # Standard version parsing
+    for parts in (
+        _balanced_bracket_groups(title, "(", ")"),
+        _balanced_bracket_groups(title, "[", "]"),
+        re.findall(r" - .*", title),
+    ):
+        for title_part in parts:
             # Extract the content without brackets/dashes for checking
             clean_part = title_part.translate(str.maketrans("", "", "()[]-")).strip().lower()
 
@@ -254,11 +351,47 @@ def parse_title_and_version(title: str, track_version: str | None = None) -> tup
             # Check if this part is a version
             for version_str in VERSION_PARTS:
                 if version_str in clean_part:
-                    # Preserve original casing for output
-                    version = title_part.strip("()[]- ").strip()
+                    # Preserve original casing (and any nested brackets) for output
+                    version = _strip_outer_markers(title_part)
                     title = title.replace(title_part, "").strip()
                     return title, version
     return title, version
+
+
+def _balanced_bracket_groups(text: str, open_char: str, close_char: str) -> list[str]:
+    """
+    Return the top-level balanced bracketed substrings, including the outer brackets.
+
+    :param text: The text to scan.
+    :param open_char: The opening bracket character.
+    :param close_char: The closing bracket character.
+    """
+    groups: list[str] = []
+    depth = 0
+    start = -1
+    for idx, char in enumerate(text):
+        if char == open_char:
+            if depth == 0:
+                start = idx
+            depth += 1
+        elif char == close_char and depth > 0:
+            depth -= 1
+            if depth == 0:
+                groups.append(text[start : idx + 1])
+    return groups
+
+
+def _strip_outer_markers(part: str) -> str:
+    """
+    Strip the outer brackets or leading hyphen from a parsed title part.
+
+    :param part: The raw title part as matched from the title.
+    """
+    part = part.strip()
+    # only strip a single outer bracket pair so nested brackets stay intact
+    if part[:1] in "([" and part[-1:] in ")]":
+        return part[1:-1].strip()
+    return part.lstrip("- ").strip()
 
 
 def infer_album_type(title: str, version: str) -> AlbumType:
@@ -320,6 +453,11 @@ def clean_stream_title(line: str) -> str:
     artist: str = ""
 
     if not keyword_pattern.search(line):
+        if german_match := german_von_pattern.match(line.strip()):
+            title = multi_strip(german_match.group("title"))
+            artist = multi_strip(german_match.group("artist")).strip('"')
+            if title and artist:
+                return f"{artist} - {title}"
         return multi_strip(line)
 
     if match := title_pattern.search(line):
@@ -803,7 +941,7 @@ def get_zeroconf_args(
     return {"ip_version": ip_version, "interfaces": InterfaceChoice.All}
 
 
-async def close_async_generator(agen: AsyncGenerator[Any, None]) -> None:
+async def close_async_generator(agen: AsyncGenerator[Any]) -> None:
     """Force close an async generator."""
     task = asyncio.create_task(agen.__anext__())
     task.cancel()
@@ -1132,13 +1270,13 @@ class TaskManager:
         self._tasks: list[asyncio.Task[None]] = []
         self._semaphore = asyncio.Semaphore(limit) if limit else None
 
-    def create_task(self, coro: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
+    def create_task(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[None]:
         """Create a new task and add it to the manager."""
         task = self.mass.create_task(coro)
         self._tasks.append(task)
         return task
 
-    async def create_task_with_limit(self, coro: Coroutine[Any, Any, None]) -> None:
+    async def create_task_with_limit(self, coro: Coroutine[Any, Any, Any]) -> None:
         """Create a new task with semaphore limit."""
         assert self._semaphore is not None
 

@@ -8,20 +8,18 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
+from typing import Final
 
 from liblistenbrainz import Listen, ListenBrainz
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
-from music_assistant_models.enums import ConfigEntryType, EventType, ProviderFeature
+from music_assistant_models.enums import ConfigEntryType, EventType, MediaType, ProviderFeature
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
 from music_assistant_models.provider import ProviderManifest
 
-from music_assistant.helpers.scrobbler import (
-    ScrobblerConfig,
-    ScrobblerHelper,
-    create_scrobble_users_config_entry,
-)
+from music_assistant.constants import UNKNOWN_ARTIST
+from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
@@ -32,6 +30,7 @@ LISTENBRAINZ_API_URL = "https://api.listenbrainz.org"
 SUPPORTED_FEATURES: set[ProviderFeature] = (
     set()
 )  # we don't have any special supported features (yet)
+SUPPORTED_SCROBBLE_MEDIA_TYPES: Final[frozenset[MediaType]] = frozenset({MediaType.TRACK})
 
 
 async def setup(
@@ -95,8 +94,18 @@ class ListenBrainzEventHandler(ScrobblerHelper):
         self, client: ListenBrainz, logger: logging.Logger, config: ProviderConfig
     ) -> None:
         """Initialize."""
-        super().__init__(logger, ScrobblerConfig.create_from_config(config))
+        super().__init__(
+            logger,
+            ScrobblerConfig.create_from_config(config),
+            SUPPORTED_SCROBBLE_MEDIA_TYPES,
+        )
         self._client = client
+
+    def _get_artist_name(self, report: MediaItemPlaybackProgressReport) -> str:
+        """Return the best available artist name for the ListenBrainz payload."""
+        if report.artists:
+            return ", ".join(artist for artist in report.artists)
+        return report.artist or UNKNOWN_ARTIST
 
     def _make_listen(self, report: MediaItemPlaybackProgressReport) -> Listen:
         # album artist and track number are not available without an extra API call
@@ -105,7 +114,7 @@ class ListenBrainzEventHandler(ScrobblerHelper):
         # https://pylistenbrainz.readthedocs.io/en/latest/api_ref.html#class-listen
         return Listen(
             track_name=self.get_name(report),
-            artist_name=report.artist,
+            artist_name=self._get_artist_name(report),
             artist_mbids=report.artist_mbids,
             release_name=report.album,
             release_mbid=report.album_mbid,
@@ -151,7 +160,7 @@ async def get_config_entries(
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     return (
-        *ScrobblerConfig.get_shared_config_entries(values),
+        *await ScrobblerConfig.get_shared_config_entries(mass, values),
         ConfigEntry(
             key=CONF_USER_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
@@ -169,6 +178,4 @@ async def get_config_entries(
             "to the public listenbrainz API.",
             advanced=True,
         ),
-        # add user selection entry
-        await create_scrobble_users_config_entry(mass),
     )

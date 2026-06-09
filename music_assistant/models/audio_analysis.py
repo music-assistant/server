@@ -1,4 +1,10 @@
-"""Data model for audio analysis results stored by Audio Analysis providers."""
+"""Data model for audio analysis results stored by Audio Analysis providers.
+
+Stays server-local: the numpy.ndarray fields below would force numpy as an
+upstream dep on every consumer of music_assistant_models if this module moved.
+The lightweight AudioAnalysisCoverage shape lives upstream at
+music_assistant_models.audio_analysis instead.
+"""
 
 from __future__ import annotations
 
@@ -24,6 +30,8 @@ class AudioAnalysisData(DataClassDictMixin):
 
     # EBU R128 integrated loudness in LUFS (typical range: -70.0 to 0.0).
     loudness_integrated: float | None = None
+    # EBU R128 integrated album loudness in LUFS, from provider metadata/tags.
+    loudness_album: float | None = None
     # EBU R128 loudness range in LU (typical range: 1.0 to 30.0).
     loudness_range: float | None = None
     # ITU-R BS.1770-4 true peak in dBTP (typical range: -20.0 to +3.0).
@@ -47,12 +55,12 @@ class AudioAnalysisData(DataClassDictMixin):
     # Tonality: "major" or "minor".
     mode: str | None = None
 
-    # Spectral & Energy (per-second timed arrays)
+    # Spectral & Energy (fixed 1800 bins covering track duration)
 
-    # Per-second RMS energy, normalized 0.0-1.0. Array length = duration in seconds.
-    rms_energy_per_second: npt.NDArray[np.float32] | None = None
-    # Per-second spectral centroid in Hz. Array length = duration in seconds.
-    spectral_centroid_per_second: npt.NDArray[np.float32] | None = None
+    # RMS energy, normalized 0.0-1.0. Fixed 1800 bins.
+    rms_energy: npt.NDArray[np.float32] | None = None
+    # Spectral centroid in Hz. Fixed 1800 bins.
+    spectral_centroid: npt.NDArray[np.float32] | None = None
 
     # High-Level Descriptors (all normalized 0.0-1.0)
 
@@ -80,9 +88,6 @@ class AudioAnalysisData(DataClassDictMixin):
     rhythmic_regularity: float | None = None
 
     # Visualization
-
-    # Peak amplitude waveform for frontend display, normalized 0.0-1.0. Fixed 800 bins.
-    wave_form: npt.NDArray[np.float32] | None = None
 
     # Provider-Specific
 

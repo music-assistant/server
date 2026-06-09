@@ -183,9 +183,10 @@ class ProtocolLinkingMixin:
             # Link was refused (domain already active on parent) - fall through
             return False
 
-        # Parent not registered yet - set parent and skip evaluation
-        protocol_player.set_protocol_parent_id(cached_parent_id)
-        return True
+        # Parent is not registered yet. Leave the protocol player unparented
+        # so the caller schedules delayed evaluation, which can wait for the
+        # cached parent without stranding the protocol player on a dangling id.
+        return False
 
     def _try_link_to_existing_player(self, protocol_player: Player, protocol_domain: str) -> bool:
         """
@@ -371,6 +372,21 @@ class ProtocolLinkingMixin:
                 if protocol_player.protocol_parent_id is not None:
                     return
                 # Link refused (domain duplicate) - fall through to create separate UP
+
+            # Refuse to create a universal player wrapper when the cached parent
+            # config exists but is disabled. The user explicitly turned the
+            # parent device off; surfacing its protocols as a separate player
+            # would defeat that intent.
+            cached_parent_id = self._get_cached_protocol_parent_id(player_id)
+            if cached_parent_id:
+                parent_raw = self.mass.config.get(f"{CONF_PLAYERS}/{cached_parent_id}")
+                if parent_raw and not parent_raw.get("enabled", True):
+                    self.logger.debug(
+                        "Skipping universal player creation for %s: cached parent %s is disabled",
+                        player_id,
+                        cached_parent_id,
+                    )
+                    return
 
             # Find all protocol players that match this device's identifiers
             matching_protocols = self._find_matching_protocol_players(protocol_player)
@@ -602,13 +618,46 @@ class ProtocolLinkingMixin:
             if not self._identifiers_match(universal_player, player, ""):
                 continue
 
-            # Determine which player absorbs the other (more protocols wins)
-            keep, remove = (
-                (universal_player, player)
-                if len(universal_player.linked_output_protocols)
-                >= len(player.linked_output_protocols)
-                else (player, universal_player)
-            )
+            # Do not merge if both UPs have protocols from the same domain.
+            # Multiple instances of the same protocol on one host (e.g., several
+            # squeezelite players on the same VM) are separate devices that happen
+            # to share an IP. Merging them would orphan one instance's protocol.
+            domains_a = {
+                link.protocol_domain
+                for link in universal_player.linked_output_protocols
+                if link.protocol_domain
+            }
+            domains_b = {
+                link.protocol_domain
+                for link in player.linked_output_protocols
+                if link.protocol_domain
+            }
+            if domains_a & domains_b:
+                self.logger.debug(
+                    "Skipping merge of %s and %s: shared protocol domain(s) %s",
+                    universal_player.player_id,
+                    player.player_id,
+                    domains_a & domains_b,
+                )
+                continue
+
+            # Determine which player absorbs the other (more protocols wins).
+            # On ties, fall back to a deterministic tiebreaker on player_id so
+            # the merge outcome is stable across server restarts. Without this,
+            # which UniversalPlayer "wins" depends on iteration order of
+            # self._players.values(), which can shift between runs and causes
+            # downstream player_id reshuffling (and broken entity bindings in
+            # consumers like the Home Assistant MA integration).
+            len_u = len(universal_player.linked_output_protocols)
+            len_p = len(player.linked_output_protocols)
+            if len_u > len_p:
+                keep, remove = universal_player, player
+            elif len_u < len_p:
+                keep, remove = player, universal_player
+            elif universal_player.player_id < player.player_id:
+                keep, remove = universal_player, player
+            else:
+                keep, remove = player, universal_player
 
             self.logger.info(
                 "Merging universal player %s into %s (shared identifiers)",
@@ -983,6 +1032,9 @@ class ProtocolLinkingMixin:
 
     def _save_protocol_parent_id(self, protocol_player_id: str, parent_id: str) -> None:
         """Save the parent ID for a protocol player for persistence across restarts."""
+        # Only save if the player config still exists to avoid creating partial entries
+        if not self.mass.config.get(f"{CONF_PLAYERS}/{protocol_player_id}"):
+            return
         conf_key = f"{CONF_PLAYERS}/{protocol_player_id}/values/{CONF_PROTOCOL_PARENT_ID}"
         self.mass.config.set(conf_key, parent_id)
 
@@ -1110,6 +1162,9 @@ class ProtocolLinkingMixin:
                         )
                     else:
                         parent_player.update_state()
+                else:
+                    # Parent not registered yet — still purge the cached id
+                    self._remove_protocol_id_from_cache(parent_id, player.player_id)
         else:
             # Native/universal player being removed: handle all linked protocol players.
             # Collect all known protocol IDs from both active links and cached state,
@@ -1883,17 +1938,21 @@ class ProtocolLinkingMixin:
                         parent_protocol_player.state.name,
                         old_parent_members,
                     )
+                    # Use internal handler to stop the specific protocol player,
+                    # bypassing group/sync redirect and queue redirect logic.
                     await self.mass.players._handle_cmd_stop(old_protocol_player.player_id)
                 else:
                     old_parent_members = []
                 # Resume playback on the new protocol and re-add migrated members.
-                await self.mass.players._handle_cmd_resume(parent_player.player_id)
+                await self.mass.players.cmd_resume(parent_player.player_id)
                 if old_parent_members:
                     self.logger.debug(
                         "Re-adding migrated members %s to %s on new protocol",
                         old_parent_members,
                         parent_player.state.name,
                     )
+                    # Use internal handler because we are already inside a
+                    # _handle_set_members call chain that holds the play lock.
                     await self.mass.players._handle_set_members(
                         parent_player,
                         player_ids_to_add=old_parent_members,

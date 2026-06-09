@@ -236,7 +236,7 @@ async def test_get_track_by_isrc_cache_miss_lookup_success(
 
     # Verify API call
     provider_mock.api.get.assert_called_with(
-        "/tracks",
+        "tracks",
         params={"filter[isrc]": "US1234567890"},
         base_url=provider_mock.api.OPEN_API_URL,
     )

@@ -230,7 +230,7 @@ class ITunesPodcastsProvider(MusicProvider):
             podcast_list.append(podcast)
         return podcast_list
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Get library podcasts.
 
         We use get_library_podcasts to sync all feeds which have been added to the MA library
@@ -289,9 +289,7 @@ class ITunesPodcastsProvider(MusicProvider):
             domain=self.domain,
         )
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get podcast episodes."""
         podcast = await self._cache_get_podcast(prov_podcast_id)
         podcast_cover = podcast.get("cover_url")
