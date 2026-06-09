@@ -26,6 +26,7 @@ from music_assistant.providers.lastfm_recommendations.constants import (
     CONF_ENABLE_GLOBAL_CHARTS,
     CONF_ENABLE_PERSONALIZED,
     CONF_GEO_COUNTRY,
+    RECENT_TRACKS_SCAN_LIMIT,
     RESOLUTION_BUFFER_LARGE,
     RESOLUTION_BUFFER_SMALL,
     SIMILAR_ITEMS_BUFFER,
@@ -336,12 +337,7 @@ class LastFMRecommendationManager:
         if not self.provider.config.get_value(CONF_ENABLE_PERSONALIZED):
             return
 
-        # TODO: evaluate recent play history (e.g. last_played, last 7 days) instead of all-time
-        # play_count, possibly weighted. Needs user feedback.
-
-        top_artists = await self.mass.music.artists.library_items(
-            limit=TOP_ARTISTS_LIMIT, order_by="play_count_desc"
-        )
+        top_artists = await self._get_top_artists_by_track_plays()
 
         if top_artists:
             similar_artists = await self._get_similar_artists_from_seeds(top_artists)
@@ -583,6 +579,34 @@ class LastFMRecommendationManager:
                     subtitle=f"Most popular tracks in {country}",
                     icon="mdi-earth",
                 )
+
+    async def _get_top_artists_by_track_plays(self) -> list[Artist]:
+        """
+        Return the user's most listened library artists to seed recommendations.
+
+        :return: Up to TOP_ARTISTS_LIMIT artists, most listened first.
+        """
+        # Artist play_count only increments when an artist is played as a unit, so rank by
+        # appearances across the user's most recently played tracks instead. Ordering happens
+        # in the DB; ties fall to the more recently played artist via insertion order.
+        recent_tracks = await self.mass.music.tracks.library_items(
+            limit=RECENT_TRACKS_SCAN_LIMIT, order_by="last_played_desc"
+        )
+        counts: dict[str | int, int] = {}
+        for track in recent_tracks:
+            if not track.last_played:
+                continue
+            for artist in track.artists:
+                counts[artist.item_id] = counts.get(artist.item_id, 0) + 1
+
+        top_artist_ids = sorted(counts, key=lambda item_id: counts[item_id], reverse=True)[
+            :TOP_ARTISTS_LIMIT
+        ]
+        resolved = await asyncio.gather(
+            *[self.mass.music.artists.get_library_item(item_id) for item_id in top_artist_ids],
+            return_exceptions=True,
+        )
+        return [artist for artist in resolved if isinstance(artist, Artist)]
 
     async def _get_similar_artists_from_seeds(self, seed_artists: list[Artist]) -> list[Artist]:
         """

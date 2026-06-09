@@ -46,6 +46,9 @@ SIMILAR_ITEMS_PER_SEED = 5
 # Number of top artists to use as seeds for personalized recommendations
 TOP_ARTISTS_LIMIT = 5
 
+# Number of recently played tracks to scan when ranking top artists by appearances
+RECENT_TRACKS_SCAN_LIMIT = 200
+
 # Number of top tracks to use as seeds for personalized recommendations
 TOP_TRACKS_LIMIT = 5
 
