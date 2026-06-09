@@ -3362,6 +3362,9 @@ class PlayerQueuesController(CoreController):
         self, album: Album, track: MediaItemType, queue: PlayerQueue
     ) -> None:
         """Mark an enqueued album played, skipping artists already credited via its track."""
+        self.logger.debug(
+            "Crediting album '%s' as played (triggered by track '%s')", album.name, track.name
+        )
         skip = await self.mass.music.resolve_library_artist_ids(getattr(track, "artists", []))
         await self.mass.music.mark_item_played(
             album,

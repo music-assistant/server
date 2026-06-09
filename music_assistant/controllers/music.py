@@ -1346,12 +1346,16 @@ class MusicController(CoreController):
             db_artist = await self.artists.get_library_item_by_prov_id(
                 artist.item_id, artist.provider
             )
-            if db_artist is None or db_artist.item_id in skip_ids:
+            if db_artist is None:
+                continue
+            if db_artist.item_id in skip_ids:
+                self.logger.debug("Skipping already-credited artist '%s'", db_artist.name)
                 continue
             await self.database.execute(
                 f"UPDATE {self.artists.db_table} SET play_count = play_count + 1, "
                 f"last_played = {timestamp} WHERE item_id = {db_artist.item_id}"
             )
+            self.logger.debug("Credited play for artist '%s'", db_artist.name)
             playlog_entry: dict[str, Any] = {
                 "item_id": db_artist.item_id,
                 "provider": "library",
