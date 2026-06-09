@@ -42,3 +42,30 @@ def test_distinct_items_each_count() -> None:
     ctrl = _controller()
     assert ctrl._should_mark_played("q1", "item1", fully_played=True, is_playing=False) is True
     assert ctrl._should_mark_played("q1", "item2", fully_played=True, is_playing=False) is True
+
+
+def test_partial_report_for_other_item_does_not_reset_guard() -> None:
+    """A not-fully-played report for a different item must not re-arm another item's guard."""
+    ctrl = _controller()
+    assert ctrl._should_mark_played("q1", "item1", fully_played=True, is_playing=False) is True
+    # a partial report for a *different* item must not reset item1's guard
+    assert ctrl._should_mark_played("q1", "item2", fully_played=False, is_playing=True) is True
+    # so the duplicate completion of item1 is still skipped
+    assert ctrl._should_mark_played("q1", "item1", fully_played=True, is_playing=False) is False
+
+
+def test_queues_are_independent() -> None:
+    """Each queue tracks its own last-counted play."""
+    ctrl = _controller()
+    assert ctrl._should_mark_played("q1", "item1", fully_played=True, is_playing=False) is True
+    # the same item id on a different queue is counted independently
+    assert ctrl._should_mark_played("q2", "item1", fully_played=True, is_playing=False) is True
+    # and each queue's own duplicate is skipped
+    assert ctrl._should_mark_played("q1", "item1", fully_played=True, is_playing=False) is False
+    assert ctrl._should_mark_played("q2", "item1", fully_played=True, is_playing=False) is False
+
+
+def test_not_fully_played_first_report_is_forwarded() -> None:
+    """A not-fully-played report with nothing counted yet is forwarded without error."""
+    ctrl = _controller()
+    assert ctrl._should_mark_played("q1", "item1", fully_played=False, is_playing=False) is True

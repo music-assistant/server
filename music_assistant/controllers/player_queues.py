@@ -1246,6 +1246,7 @@ class PlayerQueuesController(CoreController):
         self._prev_states.pop(player_id, None)
         self._transitioning_players.discard(player_id)
         self._play_action_refcount.pop(player_id, None)
+        self._last_counted_play.pop(player_id, None)
 
     async def load_next_queue_item(
         self,
@@ -3409,10 +3410,9 @@ class PlayerQueuesController(CoreController):
         """
         Return whether this playback report should be forwarded to ``mark_item_played``.
 
-        The last track of a queue is reported twice (on the state->idle change and on the
-        current-item change), so a completed play is de-duplicated to count it only once.
-        A following not-fully-played report for the same item resets the guard, so a looped
-        track is counted again on its next pass.
+        The final track of a queue is reported twice at end-of-queue; this returns ``False``
+        for the duplicate so a completed play is counted only once, while a looped or repeated
+        track is still counted again on its next pass.
 
         :param queue_id: The id of the queue the report belongs to.
         :param queue_item_id: The id of the queue item being reported.
@@ -3424,6 +3424,8 @@ class PlayerQueuesController(CoreController):
                 return False
             self._last_counted_play[queue_id] = queue_item_id
             return True
+        # a not-fully-played report for the same item means it restarted (e.g. on repeat),
+        # so re-arm the guard to count its next completion
         if not fully_played and self._last_counted_play.get(queue_id) == queue_item_id:
             del self._last_counted_play[queue_id]
         return True
