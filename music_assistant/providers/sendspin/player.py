@@ -829,23 +829,15 @@ class SendspinPlayer(SendspinBasePlayer):
                     f.cancel()
         # self.group_members will be updated by the group event callback
 
-    async def _send_album_artwork(
-        self, current_media: PlayerMedia, queue_item: QueueItem | None
-    ) -> str | None:
+    async def _send_album_artwork(self, current_media: PlayerMedia) -> str | None:
         """
         Send album artwork to the sendspin group.
 
         Args:
             current_media: The current player media.
-            queue_item: The current queue item, or None for raw streams
-                (radio, Spotify Connect) with no resolved MA queue item.
         """
-        # PlayerMedia.image_url is synthesized from stream_metadata.image_url
-        # by the players controller, so it carries radio / Spotify Connect art.
+        # image_url is resolved per-source upstream (radio / Spotify Connect / queue items).
         artwork_url = current_media.image_url
-        if artwork_url is None and queue_item is not None and queue_item.image is not None:
-            artwork_url = self.mass.metadata.get_image_url(queue_item.image)
-
         if artwork_url != self.last_sent_artwork_url:
             self.last_sent_artwork_url = artwork_url
             image_data: bytes | None = None
@@ -994,7 +986,7 @@ class SendspinPlayer(SendspinBasePlayer):
             )
 
         # Runs even without a queue item so radio / Spotify Connect streams still get art.
-        await self._send_album_artwork(current_media, queue_item)
+        await self._send_album_artwork(current_media)
         if queue_item:
             await self._send_artist_artwork(queue_item)
 
