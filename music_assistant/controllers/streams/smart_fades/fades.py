@@ -205,11 +205,11 @@ class SmartFade(ABC):
                     with suppress(TimeoutError, asyncio.CancelledError):
                         await asyncio.wait_for(stderr_task, timeout=2)
 
-            if proc.returncode not in (None, 0) or not got_output:
-                stderr_msg = "; ".join(stderr_lines) if stderr_lines else "(no stderr)"
-                raise RuntimeError(
-                    f"Smart crossfade FFmpeg failed (rc={proc.returncode}): {stderr_msg}"
-                )
+            failure_reason = self._ffmpeg_failure_reason(
+                proc.returncode, got_output=got_output, stderr_lines=stderr_lines
+            )
+            if failure_reason is not None:
+                raise RuntimeError(failure_reason)
         finally:
             # Always cleanup temp file, even if ffmpeg fails
             await remove_file(fadeout_filename)
@@ -221,6 +221,29 @@ class SmartFade(ABC):
 
         chain = " → ".join(repr(f) for f in self.filters)
         return f"<{self.__class__.__name__}: {len(self.filters)} filters> {chain}"
+
+    @staticmethod
+    def _ffmpeg_failure_reason(
+        returncode: int | None,
+        *,
+        got_output: bool,
+        stderr_lines: list[str],
+    ) -> str | None:
+        """
+        Describe why a smart-crossfade FFmpeg run failed, or None if it succeeded.
+
+        :param returncode: FFmpeg process exit code (None if it never ran/exited).
+        :param got_output: Whether any output PCM was produced.
+        :param stderr_lines: Captured FFmpeg stderr lines, if any.
+        """
+        if returncode not in (None, 0):
+            stderr_msg = "; ".join(stderr_lines) if stderr_lines else "(no stderr)"
+            return f"Smart crossfade FFmpeg failed (rc={returncode}): {stderr_msg}"
+        # FFmpeg exited cleanly but emitted no audio: a distinct failure mode that
+        # must not be reported as an rc-based failure (rc is 0 here).
+        if not got_output:
+            return "Smart crossfade FFmpeg exited cleanly but produced no output"
+        return None
 
 
 class SmartCrossFade(SmartFade):
