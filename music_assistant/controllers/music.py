@@ -1318,6 +1318,33 @@ class MusicController(CoreController):
                 f"UPDATE {ctrl.db_table} SET play_count = play_count + 1, "
                 f"last_played = {timestamp} WHERE item_id = {db_item.item_id}"
             )
+        if isinstance(media_item, Track) and media_item.artists:
+            primary_artist = media_item.artists[0]
+            db_artist = await self.artists.get_library_item_by_prov_id(
+                primary_artist.item_id, primary_artist.provider
+            )
+            if db_artist:
+                await self.database.execute(
+                    f"UPDATE {self.artists.db_table} SET play_count = play_count + 1, "
+                    f"last_played = {timestamp} WHERE item_id = {db_artist.item_id}"
+                )
+                artist_params = {
+                    "item_id": db_artist.item_id,
+                    "provider": "library",
+                    "media_type": MediaType.ARTIST.value,
+                    "name": db_artist.name,
+                    "image": serialize_to_json(db_artist.image.to_dict())
+                    if db_artist.image
+                    else None,
+                    "fully_played": fully_played,
+                    "seconds_played": seconds_played,
+                    "timestamp": timestamp,
+                    "queue_id": queue_id,
+                    "user_initiated": user_initiated,
+                }
+                for user_id in user_ids:
+                    artist_params["userid"] = user_id
+                    await self.database.insert(DB_TABLE_PLAYLOG, artist_params, allow_replace=True)
         await self.database.commit()
 
     @api_command("music/mark_unplayed")
