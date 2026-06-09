@@ -71,7 +71,6 @@ from music_assistant.controllers.tasks.context import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings
-from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.images import (
     cleanup_thumb_cache,
     create_collage,
@@ -220,9 +219,9 @@ REFRESH_INTERVAL = 60 * 60 * 24 * 90  # 90 days
 CONF_ENABLE_ONLINE_METADATA = "enable_online_metadata"
 CONF_PREFER_LOCAL_GENRES = "prefer_local_genres"
 CONF_ENABLE_RADIO_METADATA_LOOKUP = "enable_radio_metadata_lookup"
-MISSING_ARTIST_METADATA_SCAN_TASK_ID = "metadata_missing_artist_metadata_scan"
-PLAYLIST_METADATA_SCAN_TASK_ID = "metadata_playlist_metadata_scan"
-THUMB_CACHE_CLEANUP_TASK_ID = "metadata_thumb_cache_cleanup"
+MISSING_ARTIST_METADATA_SCAN_TASK_ID = "metadata_missing_artist_metadata_scan_v2"
+PLAYLIST_METADATA_SCAN_TASK_ID = "metadata_playlist_metadata_scan_v2"
+THUMB_CACHE_CLEANUP_TASK_ID = "metadata_thumb_cache_cleanup_v2"
 METADATA_LOOKUP_TASK_ID_PREFIX = "metadata_lookup"
 METADATA_SCAN_BATCH_SIZE = 5
 CONF_THUMB_CACHE_MAX_SIZE = "thumb_cache_max_size"
@@ -1992,7 +1991,8 @@ class MetaDataController(CoreController):
 
     def _register_maintenance_tasks(self) -> None:
         """Register the recurring metadata maintenance background tasks."""
-        utc_hour, utc_minute = local_clock_time_to_utc(4, 0)
+        # Spread across the full day so instances don't all hit the shared MusicBrainz mirror at once
+        utc_hour, utc_minute = divmod(random.randint(0, 24 * 60 - 1), 60)
         desired_schedule = TaskSchedule.daily(hour=utc_hour, minute=utc_minute)
         self.mass.tasks.register_scheduled_task(
             task_id=MISSING_ARTIST_METADATA_SCAN_TASK_ID,
