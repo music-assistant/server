@@ -347,7 +347,7 @@ class SmartPlaylistProvider(PluginProvider):
         playlist = self._build_playlist(playlist_id, parsed_rules)
         library_playlist = await self.mass.music.playlists.add_item_to_library(playlist)
         self.mass.metadata.schedule_update_metadata(library_playlist)
-        self.mass.create_task(self._refresh_ai_description(playlist_id))
+        self._schedule_ai_description_refresh(playlist_id)
         return library_playlist
 
     async def generate_playlist(
@@ -439,7 +439,7 @@ class SmartPlaylistProvider(PluginProvider):
             await self._update_playlist_description(
                 library_item.item_id, self._description_for(prov_id, parsed_rules)
             )
-        self.mass.create_task(self._refresh_ai_description(prov_id))
+        self._schedule_ai_description_refresh(prov_id)
 
     async def list_smart_playlists(self) -> list[dict[str, Any]]:
         """Return list of all smart playlist IDs and their rule summaries."""
@@ -1021,10 +1021,20 @@ class SmartPlaylistProvider(PluginProvider):
             self.logger.debug("Could not update description for %s: %s", library_item_id, exc)
 
     def _description_for(self, playlist_id: str, rules: SmartPlaylistRules) -> str:
-        """Return the stored AI description, or the rules summary as fallback."""
-        if stored := self._descriptions_store.get(playlist_id):
+        """Return the stored AI description when enabled, else the rules summary."""
+        if self.config.get_value(CONF_AI_DESCRIPTIONS) and (
+            stored := self._descriptions_store.get(playlist_id)
+        ):
             return stored
         return f"{DESCRIPTION_PREFIX}{rules.human_readable()}"
+
+    def _schedule_ai_description_refresh(self, playlist_id: str) -> None:
+        """Schedule a background AI description refresh, deduped per playlist."""
+        self.mass.create_task(
+            self._refresh_ai_description(playlist_id),
+            task_id=f"smart_playlist_ai_desc_{playlist_id}",
+            abort_existing=True,
+        )
 
     async def _refresh_ai_description(self, playlist_id: str) -> None:
         """Regenerate and persist the AI description for a playlist, updating the library item."""

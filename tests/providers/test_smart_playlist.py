@@ -1334,6 +1334,20 @@ async def test_build_playlist_uses_stored_ai_description(tmp_path: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_build_playlist_ignores_stored_description_when_disabled(tmp_path: Any) -> None:
+    """With the toggle off, a stored AI description is ignored in favour of the summary."""
+    plugin = _make_ai_plugin(tmp_path, ai_enabled=False)
+    await plugin.handle_async_init()
+    plugin._names_store["abc"] = "My List"
+    plugin._descriptions_store["abc"] = "Old AI text."
+    rules = SmartPlaylistRules(favorites_only=True)
+
+    playlist = plugin._build_playlist("abc", rules)
+
+    assert playlist.metadata.description == f"[Smart Playlist] {rules.human_readable()}"
+
+
+@pytest.mark.asyncio
 async def test_build_playlist_falls_back_to_human_readable(tmp_path: Any) -> None:
     """Without a stored AI description, _build_playlist uses the mechanical summary."""
     plugin = _make_ai_plugin(tmp_path)
@@ -1383,6 +1397,10 @@ async def test_create_smart_playlist_schedules_ai_generation(tmp_path: Any) -> N
     await plugin.create_smart_playlist("Evening Chill", {"favorites_only": True})
 
     assert scheduled == ["_refresh_ai_description"]
+    # Deduped per playlist so rapid calls don't run concurrent refreshes.
+    kwargs = mass.create_task.call_args.kwargs
+    assert kwargs["task_id"].startswith("smart_playlist_ai_desc_")
+    assert kwargs["abort_existing"] is True
 
 
 @pytest.mark.asyncio
@@ -1411,6 +1429,10 @@ async def test_update_rules_drops_stale_and_schedules_regeneration(tmp_path: Any
     scheduled_desc = cast("Any", plugin)._update_playlist_description.await_args.args[1]
     assert scheduled_desc.startswith("[Smart Playlist]")
     assert scheduled == ["_refresh_ai_description"]
+    assert mass.create_task.call_args.kwargs == {
+        "task_id": "smart_playlist_ai_desc_abc",
+        "abort_existing": True,
+    }
 
 
 @pytest.mark.asyncio
