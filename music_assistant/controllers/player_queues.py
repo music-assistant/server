@@ -3410,16 +3410,14 @@ class PlayerQueuesController(CoreController):
         """
         Return whether this playback report should be forwarded to ``mark_item_played``.
 
-        The final track of a queue is reported twice at end-of-queue; this returns ``False``
-        for the duplicate so a completed play is counted only once, while a looped or repeated
-        track is still counted again on its next pass.
-
         :param queue_id: The id of the queue the report belongs to.
         :param queue_item_id: The id of the queue item being reported.
         :param fully_played: Whether the item was played to completion.
         :param is_playing: Whether the item is still playing.
         """
         if fully_played and not is_playing:
+            # the final queue track is reported twice at end-of-queue; skip the duplicate
+            # so a completed play is only counted once
             if self._last_counted_play.get(queue_id) == queue_item_id:
                 return False
             self._last_counted_play[queue_id] = queue_item_id
