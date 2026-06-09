@@ -195,6 +195,7 @@ class PlayerQueuesController(CoreController):
         self._prev_states: dict[str, CompareState] = {}
         self._transitioning_players: set[str] = set()
         self._play_action_refcount: dict[str, int] = {}
+        self._last_counted_play: dict[str, str] = {}
         self.manifest.name = "Player Queues controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages the queues for all players."
@@ -3276,17 +3277,20 @@ class PlayerQueuesController(CoreController):
                 duration,
             )
         # add entry to playlog - this also handles resume of podcasts/audiobooks
-        self.mass.create_task(
-            self.mass.music.mark_item_played(
-                media_item,
-                fully_played=fully_played,
-                seconds_played=seconds_played,
-                is_playing=is_playing,
-                userid=queue.userid,
-                queue_id=queue.queue_id,
-                user_initiated=False,
+        if self._should_mark_played(
+            queue.queue_id, item_to_report.queue_item_id, fully_played, is_playing
+        ):
+            self.mass.create_task(
+                self.mass.music.mark_item_played(
+                    media_item,
+                    fully_played=fully_played,
+                    seconds_played=seconds_played,
+                    is_playing=is_playing,
+                    userid=queue.userid,
+                    queue_id=queue.queue_id,
+                    user_initiated=False,
+                )
             )
-        )
 
         album: Album | ItemMapping | None = getattr(media_item, "album", None)
         # signal 'media item played' event,
@@ -3398,6 +3402,31 @@ class PlayerQueuesController(CoreController):
                 buffers_cleared,
                 queue_id,
             )
+
+    def _should_mark_played(
+        self, queue_id: str, queue_item_id: str, fully_played: bool, is_playing: bool
+    ) -> bool:
+        """
+        Return whether this playback report should be forwarded to ``mark_item_played``.
+
+        The last track of a queue is reported twice (on the state->idle change and on the
+        current-item change), so a completed play is de-duplicated to count it only once.
+        A following not-fully-played report for the same item resets the guard, so a looped
+        track is counted again on its next pass.
+
+        :param queue_id: The id of the queue the report belongs to.
+        :param queue_item_id: The id of the queue item being reported.
+        :param fully_played: Whether the item was played to completion.
+        :param is_playing: Whether the item is still playing.
+        """
+        if fully_played and not is_playing:
+            if self._last_counted_play.get(queue_id) == queue_item_id:
+                return False
+            self._last_counted_play[queue_id] = queue_item_id
+            return True
+        if not fully_played and self._last_counted_play.get(queue_id) == queue_item_id:
+            del self._last_counted_play[queue_id]
+        return True
 
 
 def _is_radio_source_dynamic(radio_source: list[MediaItemType]) -> bool:
