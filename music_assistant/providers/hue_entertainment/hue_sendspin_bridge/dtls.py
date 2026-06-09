@@ -126,7 +126,18 @@ class HueDtlsStreamer:
         """Queue light color commands for sending (non-blocking, event-loop safe)."""
         if not self._connected:
             return
+        if not commands:
+            return
         message = self._build_huestream_message(commands)
+        # Frame-size invariant: 16-byte header + 36-byte UUID + 7 bytes per channel.
+        expected = 16 + 36 + 7 * len(commands)
+        if len(message) != expected:
+            LOGGER.warning(
+                "HueStream frame size mismatch: got %d expected %d (commands=%d)",
+                len(message),
+                expected,
+                len(commands),
+            )
         self._last_message = message
         try:
             self._send_queue.put_nowait(message)

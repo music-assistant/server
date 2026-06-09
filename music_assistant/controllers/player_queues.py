@@ -78,7 +78,10 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    get_current_user,
+    set_current_user,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import get_changed_keys, percentage
@@ -114,7 +117,6 @@ CONF_DEFAULT_ENQUEUE_OPTION_PODCAST = "default_enqueue_option_podcast"
 CONF_DEFAULT_ENQUEUE_OPTION_PODCAST_EPISODE = "default_enqueue_option_podcast_episode"
 CONF_DEFAULT_ENQUEUE_OPTION_FOLDER = "default_enqueue_option_folder"
 CONF_DEFAULT_ENQUEUE_OPTION_UNKNOWN = "default_enqueue_option_unknown"
-RADIO_TRACK_MAX_DURATION_SECS = 20 * 60  # 20 minutes
 CACHE_CATEGORY_PLAYER_QUEUE_STATE = 0
 CACHE_CATEGORY_PLAYER_QUEUE_ITEMS = 1
 
@@ -227,19 +229,19 @@ class PlayerQueuesController(CoreController):
                 label="Items to select when you play a (in-library) artist.",
                 options=[
                     ConfigValueOption(
-                        title="Only in-library tracks",
+                        title="Only tracks that are in your library",
                         value="library_tracks",
                     ),
                     ConfigValueOption(
-                        title="All tracks from all albums in the library",
+                        title="Tracks from all albums that are in your library",
                         value="library_album_tracks",
                     ),
                     ConfigValueOption(
-                        title="All (top) tracks from (all) streaming provider(s)",
+                        title="The artist's top tracks (from streaming provider(s))",
                         value="all_tracks",
                     ),
                     ConfigValueOption(
-                        title="All tracks from all albums from (all) streaming provider(s)",
+                        title="Tracks from all the artist's albums (from streaming provider(s))",
                         value="all_album_tracks",
                     ),
                 ],
@@ -682,6 +684,10 @@ class PlayerQueuesController(CoreController):
         self._check_player_permission(queue_id)
         # cancel any pending play_index calls for this queue to prevent conflicts
         self.mass.cancel_timer(f"queue_play_index_{queue_id}")
+        # cancel in-flight preload/enqueue-next so it can't enqueue after stop
+        self.mass.cancel_task(f"preload_next_item_{queue_id}")
+        self.mass.cancel_timer(f"enqueue_next_item_{queue_id}")
+        self.mass.cancel_task(f"enqueue_next_item_{queue_id}")
         self._transitioning_players.discard(queue_id)
         queue_player = self.mass.players.get_player(queue_id, True)
         if queue_player is None:
@@ -1060,7 +1066,12 @@ class PlayerQueuesController(CoreController):
 
         # capture source state before stopping (stop resets these)
         source_items = self._queue_items[source_queue_id]
-        source_resume_pos = int(source_queue.corrected_elapsed_time)
+        if source_queue.state == PlaybackState.PLAYING:
+            # use the live playback clock while actively playing
+            source_resume_pos = int(source_queue.corrected_elapsed_time)
+        else:
+            # when not playing the live clock is stale, so use the stored resume position
+            source_resume_pos = int(source_queue.resume_pos or source_queue.elapsed_time or 0)
         source_current_index = source_queue.current_index
         source_current_item = source_queue.current_item
 
@@ -1929,9 +1940,21 @@ class PlayerQueuesController(CoreController):
                 # we prefer the imageproxy on the streamserver here because this request is sent
                 # to the player itself which may not be able to reach the regular webserver
                 media.image_url = self.mass.metadata.get_image_url(
-                    queue_item.image, size=512, prefer_stream_server=True
+                    queue_item.image, size=512, image_format="jpeg", prefer_stream_server=True
                 )
         return media
+
+    async def _resolve_library_artist(self, artist: Artist) -> Artist | None:
+        """
+        Resolve the in-library artist for the given (possibly provider) artist item.
+
+        :param artist: The artist item, which may be a library or a provider item.
+        """
+        if artist.provider == "library":
+            return artist
+        return await self.mass.music.artists.get_library_item_by_prov_id(
+            artist.item_id, artist.provider
+        )
 
     async def get_artist_tracks(self, artist: Artist) -> list[Track]:
         """Return tracks for given artist, based on user preference."""
@@ -1944,29 +1967,48 @@ class PlayerQueuesController(CoreController):
             "Fetching tracks to play for artist %s",
             artist.name,
         )
-        if artist_items_conf in ("library_tracks", "all_tracks"):
-            all_items = await self.mass.music.artists.tracks(
-                artist.item_id,
-                artist.provider,
-                in_library_only=artist_items_conf == "library_tracks",
-            )
-            random.shuffle(all_items)
-            return all_items
-        if artist_items_conf in ("library_album_tracks", "all_album_tracks"):
-            all_tracks: list[Track] = []
-            for library_album in await self.mass.music.artists.albums(
-                artist.item_id,
-                artist.provider,
-                in_library_only=artist_items_conf == "library_album_tracks",
-            ):
-                for album_track in await self.mass.music.albums.tracks(
-                    library_album.item_id, library_album.provider
+        # track-based selection
+        if artist_items_conf == "library_tracks":
+            # operates on the in-library artist; bail out if it is not (yet) saved
+            if (library_artist := await self._resolve_library_artist(artist)) is None:
+                return []
+            tracks = await self.mass.music.artists.tracks(library_artist.item_id, "library")
+            random.shuffle(tracks)
+            return tracks
+        if artist_items_conf == "all_tracks":
+            # the artist's top tracks across the (streaming) providers
+            tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
+            random.shuffle(tracks)
+            return tracks
+        # album-based selection
+        albums: list[Album] = []
+        if artist_items_conf == "library_album_tracks":
+            # operates on the in-library artist; leave albums empty if it is not (yet) saved
+            if (library_artist := await self._resolve_library_artist(artist)) is not None:
+                albums = await self.mass.music.artists.albums(library_artist.item_id, "library")
+        elif artist_items_conf == "all_album_tracks":
+            # all (unique) albums across the (streaming) providers attached to the artist,
+            # respecting the user provider filter and a single instance per streaming domain
+            unique_providers = self.mass.music.get_unique_providers()
+            unique_ids: set[str] = set()
+            for mapping in artist.provider_mappings:
+                if mapping.provider_instance not in unique_providers:
+                    continue
+                for album in await self.mass.music.artists.get_provider_artist_albums(
+                    mapping.item_id, mapping.provider_instance
                 ):
-                    if album_track not in all_tracks:
-                        all_tracks.append(album_track)
-            random.shuffle(all_tracks)
-            return all_tracks
-        return []
+                    unique_id = f"{album.name}.{album.version}"
+                    if unique_id in unique_ids:
+                        continue
+                    unique_ids.add(unique_id)
+                    albums.append(album)
+        all_tracks: list[Track] = []
+        for album in albums:
+            for album_track in await self.mass.music.albums.tracks(album.item_id, album.provider):
+                if album_track not in all_tracks:
+                    all_tracks.append(album_track)
+        random.shuffle(all_tracks)
+        return all_tracks
 
     async def get_album_tracks(
         self, album: Album, start_item: str | None, sort_by: str | None = None
@@ -2297,6 +2339,11 @@ class PlayerQueuesController(CoreController):
         if dynamic_playlist is not None:
             # Dynamic playlist (e.g. a station): fetch next batch of tracks from the provider.
             # Do NOT fall back to generic radio - stations manage their own track supply.
+            # Restore the queue owner's user context so that provider filters are respected.
+            playback_user = (
+                await self.mass.webserver.auth.get_user(queue.userid) if queue.userid else None
+            )
+            set_current_user(playback_user)
             try:
                 dynamic_tracks = await self.get_playlist_tracks(dynamic_playlist, start_item=None)
                 queue_items = [
@@ -2346,7 +2393,11 @@ class PlayerQueuesController(CoreController):
             return
 
         async def _enqueue_next_item_on_player(next_item: QueueItem) -> None:
-            if not queue.active or queue.session_id != session_id:
+            if (
+                not queue.active
+                or queue.session_id != session_id
+                or queue.state != PlaybackState.PLAYING
+            ):
                 # queue is not active anymore or session_id does not match, so we bail out
                 return
             await self.mass.players.enqueue_next_media(
@@ -2486,19 +2537,9 @@ class PlayerQueuesController(CoreController):
             return list(await self.get_playlist_tracks(media_item, start_item, sort_by=sort_by))
         if media_item.media_type == MediaType.ARTIST:
             media_item = cast("Artist", media_item)
-            self.mass.create_task(
-                self.mass.music.mark_item_played(
-                    media_item, userid=userid, queue_id=queue_id, user_initiated=True
-                )
-            )
             return list(await self.get_artist_tracks(media_item))
         if media_item.media_type == MediaType.ALBUM:
             media_item = cast("Album", media_item)
-            self.mass.create_task(
-                self.mass.music.mark_item_played(
-                    media_item, userid=userid, queue_id=queue_id, user_initiated=True
-                )
-            )
             return list(await self.get_album_tracks(media_item, start_item, sort_by=sort_by))
         if media_item.media_type == MediaType.GENRE:
             media_item = cast("Genre", media_item)
@@ -2604,8 +2645,6 @@ class PlayerQueuesController(CoreController):
         ):
             preferred_provider_instances = playback_user.provider_filter
 
-        available_base_tracks: list[Track] = []
-        base_track_sample_size = 5
         # Some providers have very deterministic similar track algorithms when providing
         # a single track item. When we have a radio mode based on 1 track and we have to
         # refill the queue (ie not initial radio mode), we use the play history as base tracks
@@ -2613,88 +2652,24 @@ class PlayerQueuesController(CoreController):
             len(queue.radio_source) == 1
             and queue.radio_source[0].media_type == MediaType.TRACK
             and not is_initial_radio_mode
+            and queue_track_items
         ):
-            available_base_tracks = queue_track_items
-        else:
-            # Grab all the available base tracks based on the selected source items.
-            # shuffle the source items, just in case
-            for radio_item in random.sample(queue.radio_source, len(queue.radio_source)):
-                ctrl = self.mass.music.get_controller(radio_item.media_type)
-                try:
-                    available_base_tracks += [
-                        track
-                        for track in await ctrl.radio_mode_base_tracks(
-                            radio_item,  # type: ignore[arg-type]
-                            preferred_provider_instances,
-                        )
-                        # Avoid duplicate base tracks
-                        if track not in available_base_tracks
-                    ]
-                except UnsupportedFeaturedException as err:
-                    self.logger.debug(
-                        "Skip loading radio items for %s: %s ",
-                        radio_item.uri,
-                        str(err),
-                    )
-            if not available_base_tracks:
-                raise UnsupportedFeaturedException("Radio mode not available for source items")
-
-        # Sample tracks from the base tracks, which will be used to calculate the dynamic ones
-        base_tracks = random.sample(
-            available_base_tracks,
-            min(base_track_sample_size, len(available_base_tracks)),
-        )
-        # Use a set to avoid duplicate dynamic tracks
-        dynamic_tracks: set[Track] = set()
-        # Use base tracks + Trackcontroller to obtain similar tracks for every base Track
-        for allow_lookup in (False, True):
-            if dynamic_tracks:
-                break
-            for base_track in base_tracks:
-                try:
-                    _similar_tracks = await self.mass.music.tracks.similar_tracks(
-                        base_track.item_id,
-                        base_track.provider,
-                        allow_lookup=allow_lookup,
-                        preferred_provider_instances=preferred_provider_instances,
-                    )
-                except MediaNotFoundError:
-                    # Some providers don't have similar tracks for all items. For example,
-                    # Tidal can sometimes return a 404 when the 'similar_tracks' endpoint is called.
-                    # in that case, just skip the track.
-                    self.logger.debug("Similar tracks not found for track %s", base_track.name)
-                    continue
-                for track in _similar_tracks:
-                    if (
-                        track not in base_tracks
-                        # Exclude tracks we have already played / queued
-                        and track not in queue_track_items
-                        # Ignore tracks that are too long for radio mode, e.g. mixes
-                        and track.duration <= RADIO_TRACK_MAX_DURATION_SECS
-                    ):
-                        dynamic_tracks.add(track)
-                if len(dynamic_tracks) >= 50:
-                    break
-        queue_tracks: list[Track] = []
-        dynamic_tracks_list = list(dynamic_tracks)
-        # Only include the sampled base tracks when the radio mode is first initialized
-        if is_initial_radio_mode:
-            queue_tracks += [base_tracks[0]]
-            # Exhaust base tracks with the pattern of BDDBDDBDD (1 base track + 2 dynamic tracks)
-            if len(base_tracks) > 1:
-                for base_track in base_tracks[1:]:
-                    queue_tracks += [base_track]
-                    if len(dynamic_tracks_list) > 2:
-                        queue_tracks += random.sample(dynamic_tracks_list, 2)
-                    else:
-                        queue_tracks += dynamic_tracks_list
-        # Add dynamic tracks to the queue, make sure to exclude already picked tracks
-        remaining_dynamic_tracks = [t for t in dynamic_tracks_list if t not in queue_tracks]
-        if remaining_dynamic_tracks:
-            queue_tracks += random.sample(
-                remaining_dynamic_tracks, min(len(remaining_dynamic_tracks), 25)
+            # Helper samples 5 internally; bound the input.
+            seeds: list[MediaItemType] = random.sample(
+                queue_track_items, min(len(queue_track_items), 10)
             )
-        return queue_tracks
+        else:
+            seeds = list(queue.radio_source)
+
+        radio_tracks = await self.mass.music.get_dynamic_radio_tracks(
+            seeds,
+            include_base_tracks=is_initial_radio_mode,
+            target_size=25,
+            preferred_provider_instances=preferred_provider_instances,
+        )
+        # Drop anything already queued/played
+        queued_set = set(queue_track_items)
+        return [track for track in radio_tracks if track not in queued_set]
 
     async def _get_folder_tracks(self, folder: BrowseFolder) -> list[Track]:
         """Fetch (playable) tracks for given browse folder."""
@@ -3137,6 +3112,15 @@ class PlayerQueuesController(CoreController):
                 )
             if dynamic_playlist is not None:
                 try:
+                    # Restore the queue owner's user context so provider filters and
+                    # per-user logic (e.g. smart playlist dedup) are respected during
+                    # this background refill, mirroring _fill_radio_tracks.
+                    playback_user = (
+                        await self.mass.webserver.auth.get_user(queue.userid)
+                        if queue.userid
+                        else None
+                    )
+                    set_current_user(playback_user)
                     dynamic_tracks = await self.get_playlist_tracks(
                         dynamic_playlist, start_item=None
                     )
@@ -3183,7 +3167,15 @@ class PlayerQueuesController(CoreController):
         if queue.flow_mode and queue.flow_mode_stream_log:
             last_log_entry = queue.flow_mode_stream_log[-1]
             if last_log_entry.seconds_streamed is not None:
-                # The last track finished streaming, safe to clear queue
+                # Guard: if a next item (e.g. a radio that caused the flow stream to break
+                # out early) is already queued, the queue_buffer_completed path
+                # (_resume_on_idle) is responsible for starting it. Creating
+                # _clear_or_resume_delayed here would race with that restart and could
+                # incorrectly clear the queue or trigger a double play_index call.
+                if queue.current_index is not None and self.get_next_item(
+                    queue.queue_id, queue.current_index
+                ):
+                    return
                 self.mass.create_task(_clear_or_resume_delayed())
             return
 
@@ -3292,6 +3284,11 @@ class PlayerQueuesController(CoreController):
                     user_initiated=False,
                 )
             )
+            if fully_played and not is_playing:
+                if credit_album := self._enqueued_album_for_track(
+                    queue, item_to_report, media_item
+                ):
+                    self.mass.create_task(self._mark_album_played(credit_album, media_item, queue))
 
         album: Album | ItemMapping | None = getattr(media_item, "album", None)
         # signal 'media item played' event,
@@ -3334,6 +3331,57 @@ class PlayerQueuesController(CoreController):
                 userid=queue.userid,
                 player_id=queue.queue_id,
             ),
+        )
+
+    def _enqueued_album_for_track(
+        self, queue: PlayerQueue, item_to_report: QueueItem, media_item: MediaItemType
+    ) -> Album | None:
+        """
+        Return the album to credit for this played track, or None.
+
+        Only an album the user explicitly enqueued is eligible, and only on the first
+        track of a contiguous run of its tracks (the previous queue item must belong to
+        a different album), so a single album play is credited once.
+        """
+        album = getattr(media_item, "album", None)
+        if album is None:
+            return None
+        enqueued = next(
+            (
+                item
+                for item in queue.enqueued_media_items
+                if isinstance(item, Album) and item == album
+            ),
+            None,
+        )
+        if enqueued is None:
+            return None
+        index = self.index_by_id(queue.queue_id, item_to_report.queue_item_id)
+        if index:
+            prev_item = self.get_item(queue.queue_id, index - 1)
+            prev_album = (
+                getattr(prev_item.media_item, "album", None)
+                if prev_item and prev_item.media_item
+                else None
+            )
+            if prev_album == album:
+                return None
+        return enqueued
+
+    async def _mark_album_played(
+        self, album: Album, track: MediaItemType, queue: PlayerQueue
+    ) -> None:
+        """Mark an enqueued album played, skipping artists already credited via its track."""
+        self.logger.debug(
+            "Credited album '%s' as played (triggered by track '%s')", album.name, track.name
+        )
+        skip = await self.mass.music.resolve_library_artist_ids(getattr(track, "artists", []))
+        await self.mass.music.mark_item_played(
+            album,
+            userid=queue.userid,
+            queue_id=queue.queue_id,
+            user_initiated=False,
+            skip_artist_ids=list(skip),
         )
 
     async def _cleanup_stale_queue_buffers(self, queue_id: str, current_index: int) -> None:

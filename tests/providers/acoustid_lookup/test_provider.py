@@ -10,6 +10,7 @@ import pytest
 from music_assistant_models.enums import MediaType, StreamType
 
 from music_assistant.constants import CONF_LOG_LEVEL
+from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AnalysisSessionData
 from music_assistant.providers.acoustid_lookup.provider import (
@@ -17,6 +18,8 @@ from music_assistant.providers.acoustid_lookup.provider import (
     CONF_API_KEY,
     CONF_MIN_SCORE,
     CONF_WRITE_TAGS_BACK,
+    NO_MATCH_ANALYSIS_VERSION,
+    NO_MATCH_RETRY_DAYS,
     AcoustidLookupProvider,
     _parse_response,
 )
@@ -45,6 +48,7 @@ def _make_provider(
 
     mass.get_provider = MagicMock(side_effect=_default_get_provider)
     mass.streams.audio_analysis.get_audio_analysis_version = AsyncMock(return_value=None)
+    mass.streams.audio_analysis.get_audio_analysis = AsyncMock(return_value=None)
     mass.streams.audio_analysis.set_audio_analysis = AsyncMock()
     mass.music.tracks.set_identifiers = AsyncMock()
     mass.music.albums.set_release_group = AsyncMock()
@@ -220,13 +224,22 @@ def _rg(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("provider_kwargs", "streamdetails_kwargs", "track_mbid", "track_in_library", "expected"),
+    (
+        "provider_kwargs",
+        "streamdetails_kwargs",
+        "track_mbid",
+        "track_isrc",
+        "track_in_library",
+        "expected",
+    ),
     [
-        pytest.param({}, {}, "0000-mbid", True, False, id="mbid_already_present"),
-        pytest.param({}, {}, None, False, False, id="no_library_row"),
+        pytest.param({}, {}, "0000-mbid", None, True, False, id="mbid_already_present"),
+        pytest.param({}, {}, None, "USRC17607839", True, False, id="isrc_already_present"),
+        pytest.param({}, {}, None, None, False, False, id="no_library_row"),
         pytest.param(
             {},
             {"media_type": MediaType.PODCAST_EPISODE},
+            None,
             None,
             False,
             False,
@@ -236,6 +249,7 @@ def _rg(
             {"analyse_streaming": False},
             {"stream_type": StreamType.HTTP},
             None,
+            None,
             True,
             False,
             id="streaming_toggle_off",
@@ -244,12 +258,13 @@ def _rg(
             {"analyse_streaming": True},
             {"stream_type": StreamType.HTTP},
             None,
+            None,
             True,
             True,
             id="streaming_toggle_on",
         ),
-        pytest.param({}, {}, None, True, True, id="local_file_mbid_missing"),
-        pytest.param({"api_key": None}, {}, None, False, False, id="no_api_key"),
+        pytest.param({}, {}, None, None, True, True, id="local_file_mbid_missing"),
+        pytest.param({"api_key": None}, {}, None, None, False, False, id="no_api_key"),
     ],
 )
 async def test_start_analysis_gates(
@@ -258,6 +273,7 @@ async def test_start_analysis_gates(
     provider_kwargs: dict[str, Any],
     streamdetails_kwargs: dict[str, Any],
     track_mbid: str | None,
+    track_isrc: str | None,
     track_in_library: bool,
     expected: bool,
 ) -> None:
@@ -266,6 +282,7 @@ async def test_start_analysis_gates(
     if track_in_library:
         track = MagicMock()
         track.mbid = track_mbid
+        track.get_external_id.return_value = track_isrc
         cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
             return_value=track
         )
@@ -279,12 +296,111 @@ async def test_start_analysis_gates(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("track_mbid", "track_isrc", "expected_extra"),
+    [
+        pytest.param(
+            "0000-mbid", None, {"source": "existing_tags", "mbid": "0000-mbid"}, id="mbid_only"
+        ),
+        pytest.param(
+            None,
+            "USRC17607839",
+            {"source": "existing_tags", "isrc": "USRC17607839"},
+            id="isrc_only",
+        ),
+        pytest.param(
+            "0000-mbid",
+            "USRC17607839",
+            {"source": "existing_tags", "mbid": "0000-mbid", "isrc": "USRC17607839"},
+            id="mbid_and_isrc",
+        ),
+    ],
+)
+async def test_start_analysis_records_existing_identifiers(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    track_mbid: str | None,
+    track_isrc: str | None,
+    expected_extra: dict[str, Any],
+) -> None:
+    """An already-identified track is recorded as analyzed (no fingerprinting, no retry)."""
+    provider = _make_provider()
+    track = MagicMock()
+    track.mbid = track_mbid
+    track.get_external_id.return_value = track_isrc
+    cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
+        return_value=track
+    )
+    _install_fake_chromaprint(monkeypatch, _FakeFingerprinter())
+    set_aa = cast("AsyncMock", provider.mass.streams.audio_analysis.set_audio_analysis)
+
+    accepted = await provider.start_analysis("session", _make_streamdetails(), _make_audio_format())
+
+    # session is declined (no streaming) but a result row is recorded
+    assert accepted is False
+    set_aa.assert_awaited_once()
+    assert set_aa.await_args is not None
+    kwargs = set_aa.await_args.kwargs
+    assert kwargs["aa_provider_domain"] == provider.domain
+    assert kwargs["item_id"] == "track-1"
+    analysis = kwargs["analysis"]
+    assert analysis.extra_data == expected_extra
+    # permanent result — never re-collected by the background scan
+    assert "retry_after" not in analysis.extra_data
+
+
+@pytest.mark.asyncio
+async def test_start_analysis_skips_within_no_match_cooldown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A track whose prior no-match result is still inside its cooldown is declined."""
+    provider = _make_provider()
+    track = MagicMock(mbid=None)
+    track.get_external_id.return_value = None
+    cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
+        return_value=track
+    )
+    cast("MagicMock", provider.mass.streams.audio_analysis).get_audio_analysis = AsyncMock(
+        return_value=AudioAnalysisData(extra_data={"retry_after": int(utc_timestamp()) + 3600})
+    )
+    fp = _FakeFingerprinter()
+    _install_fake_chromaprint(monkeypatch, fp)
+
+    accepted = await provider.start_analysis("session", _make_streamdetails(), _make_audio_format())
+
+    assert accepted is False
+    # declined before any fingerprinting work
+    assert fp.start_args is None
+
+
+@pytest.mark.asyncio
+async def test_start_analysis_retries_after_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Once the cooldown has elapsed, the track is accepted for a fresh lookup."""
+    provider = _make_provider()
+    track = MagicMock(mbid=None)
+    track.get_external_id.return_value = None
+    cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
+        return_value=track
+    )
+    cast("MagicMock", provider.mass.streams.audio_analysis).get_audio_analysis = AsyncMock(
+        return_value=AudioAnalysisData(extra_data={"retry_after": int(utc_timestamp()) - 3600})
+    )
+    _install_fake_chromaprint(monkeypatch, _FakeFingerprinter())
+
+    accepted = await provider.start_analysis("session", _make_streamdetails(), _make_audio_format())
+
+    assert accepted is True
+
+
+@pytest.mark.asyncio
 async def test_finalize_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """A high-score match yields mbid + acoustid + candidates + release_groups."""
     provider = _make_provider()
     _install_fake_chromaprint(monkeypatch, _FakeFingerprinter())
+    track = MagicMock(mbid=None)
+    track.get_external_id.return_value = None
     cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
-        return_value=MagicMock(mbid=None)
+        return_value=track
     )
 
     session_id = "session-final"
@@ -340,11 +456,13 @@ async def test_finalize_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.asyncio
 async def test_finalize_rejects_low_score(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A best-result score below the threshold yields no analysis."""
+    """A best-result score below the threshold yields a retryable no-match marker."""
     provider = _make_provider(min_score=0.85)
     _install_fake_chromaprint(monkeypatch, _FakeFingerprinter())
+    track = MagicMock(mbid=None)
+    track.get_external_id.return_value = None
     cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
-        return_value=MagicMock(mbid=None)
+        return_value=track
     )
 
     session_id = "session-lowscore"
@@ -369,7 +487,18 @@ async def test_finalize_rejects_low_score(monkeypatch: pytest.MonkeyPatch) -> No
         },
     )
 
+    # _finalize persists a no-match result itself and returns None so the base class
+    # does not overwrite it at the current analysis_version
     assert await provider._finalize(session_id) is None
+    set_aa = cast("AsyncMock", provider.mass.streams.audio_analysis.set_audio_analysis)
+    set_aa.assert_awaited_once()
+    assert set_aa.await_args is not None
+    kwargs = set_aa.await_args.kwargs
+    # stored below the current version so it is re-offered, and gated on a future retry_after
+    assert kwargs["analysis_version"] == NO_MATCH_ANALYSIS_VERSION
+    now = int(utc_timestamp())
+    retry_after = kwargs["analysis"].extra_data["retry_after"]
+    assert now < retry_after <= now + NO_MATCH_RETRY_DAYS * 86400 + 5
 
 
 # ---------------------------------------------------------------------------

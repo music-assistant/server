@@ -21,14 +21,17 @@ from music_assistant_models.errors import LoginFailed, SetupFailedError
 from music_assistant.providers.hue_entertainment.hue_sendspin_bridge import HueEntertainmentAPI
 
 from .constants import (
+    COLOR_MODES,
     CONF_ACTION_PAIR,
     CONF_BRIDGE_HOST,
     CONF_BRIDGE_ID,
     CONF_BRIGHTNESS,
     CONF_CLIENTKEY,
     CONF_COLOR_MODE,
-    CONF_INTENSITY,
+    CONF_HUE_LATENCY_MS,
     CONF_USERNAME,
+    DEFAULT_COLOR_MODE,
+    DEFAULT_HUE_LATENCY_MS,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -181,26 +184,33 @@ async def get_config_entries(
             category="settings",
         ),
         ConfigEntry(
-            key=CONF_INTENSITY,
-            type=ConfigEntryType.INTEGER,
-            label="Intensity",
-            description="Reactivity to the music (0-100). "
-            "Higher values make lights react faster to changes.",
-            default_value=70,
-            range=(0, 100),
+            key=CONF_COLOR_MODE,
+            type=ConfigEntryType.STRING,
+            label="Mode",
+            description=(
+                "Visualization style. "
+                "Smooth (default): spectrum-driven brightness with a slowly "
+                "drifting palette. "
+                "Ambient: colour cycling only, no brightness modulation. "
+                "Flashing: brightness pulse on every beat, stronger on downbeats. "
+                "Energetic: large brightness swings on hits plus fast palette rotation."
+            ),
+            default_value=DEFAULT_COLOR_MODE,
+            options=[ConfigValueOption(mode.capitalize(), mode) for mode in COLOR_MODES],
             category="settings",
         ),
         ConfigEntry(
-            key=CONF_COLOR_MODE,
-            type=ConfigEntryType.STRING,
-            label="Color Mode",
-            description="How colors are mapped to the music.",
-            default_value="spectrum",
-            options=[
-                ConfigValueOption("Spectrum", "spectrum"),
-                ConfigValueOption("Bass Boost", "bass_boost"),
-                ConfigValueOption("Ambient", "ambient"),
-            ],
+            key=CONF_HUE_LATENCY_MS,
+            type=ConfigEntryType.INTEGER,
+            label="Light latency (ms)",
+            description=(
+                "Milliseconds to render light updates ahead of the audio, to "
+                "offset the Hue bridge and DTLS delay. Increase if the lights "
+                "lag the music, decrease if they run ahead of it."
+            ),
+            default_value=DEFAULT_HUE_LATENCY_MS,
+            range=(0, 3000),
+            immediate_apply=True,
             category="settings",
         ),
     )

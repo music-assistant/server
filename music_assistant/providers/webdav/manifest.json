@@ -7,5 +7,5 @@
   "requirements": [],
   "codeowners": "@ozgav",
   "multi_instance": true,
-  "stage": "beta"
+  "stage": "stable"
 }

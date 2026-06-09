@@ -20,7 +20,7 @@ from music_assistant_models.enums import ConfigEntryType, EventType, ProviderFea
 
 from music_assistant.models.plugin import PluginProvider
 
-from .player_remote import PlayerRemoteInstance
+from .server import PlayerRemoteInstance
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
@@ -35,6 +35,11 @@ CONF_MASS_PLAYER_ID = "mass_player_id"
 CONF_PLEX_PROVIDER_ID = "plex_provider_id"
 CONF_PLAYER_NAME = "player_name"
 CONF_DEVICE_CLASS = "device_class"
+CONF_PORT = "port"
+
+# Range to search for a free port when auto-assigning one for an instance.
+PORT_RANGE_START = 32500
+PORT_RANGE_ATTEMPTS = 100
 
 # No special features needed for this plugin
 SUPPORTED_FEATURES: set[ProviderFeature] = set()
@@ -127,6 +132,19 @@ async def get_config_entries(
                 ConfigValueOption("PC", "pc"),
                 ConfigValueOption("Cloud", "cloud"),
             ],
+        ),
+        ConfigEntry(
+            key=CONF_PORT,
+            type=ConfigEntryType.INTEGER,
+            label="Network Port",
+            description=(
+                "TCP port this player is advertised and reachable on in Plex apps. "
+                "Leave empty to auto-assign a free port and remember it for this instance."
+            ),
+            required=False,
+            default_value=None,
+            advanced=True,
+            requires_reload=True,
         ),
     )
 
@@ -230,23 +248,41 @@ class PlexConnectProvider(PluginProvider):
             return False
 
     def _find_available_port(self) -> int:
-        """Find the first available port starting from 32500.
+        """Find the first available port in the configured range.
 
         :return: First available port number.
         """
-        port = 32500
-        max_attempts = 100  # Prevent infinite loop
-        attempts = 0
-
-        while attempts < max_attempts:
+        for port in range(PORT_RANGE_START, PORT_RANGE_START + PORT_RANGE_ATTEMPTS):
             if self._is_port_available(port):
                 return port
-            port += 1
-            attempts += 1
 
         # Fallback - should rarely happen
-        msg = f"Could not find available port in range 32500-{32500 + max_attempts}"
+        msg = (
+            f"Could not find available port in range "
+            f"{PORT_RANGE_START}-{PORT_RANGE_START + PORT_RANGE_ATTEMPTS}"
+        )
         raise RuntimeError(msg)
+
+    def _resolve_port(self) -> int:
+        """Return the long-term port for this instance, allocating one if needed.
+
+        The port is persisted in the instance config so it stays stable across restarts.
+        A new port is allocated (and persisted) only on first setup, or if the configured
+        port is currently taken by another process.
+
+        :return: The port to bind this instance's remote control server to.
+        """
+        configured_port = self.config.get_value(CONF_PORT)
+        if isinstance(configured_port, int) and self._is_port_available(configured_port):
+            return configured_port
+
+        port = self._find_available_port()
+        if port != configured_port:
+            try:
+                self.mass.config.set_raw_provider_config_value(self.instance_id, CONF_PORT, port)
+            except Exception as err:
+                self.logger.debug("Failed to persist port %s: %s", port, err)
+        return port
 
     async def _setup_player_instance(self) -> None:
         """Set up the Plex remote control instance for the player."""
@@ -264,9 +300,9 @@ class PlexConnectProvider(PluginProvider):
             self.logger.warning(f"Player {self.mass_player_id} not found")
             return
 
-        # Allocate a port if we haven't already
+        # Resolve the long-term port for this instance (persisted across restarts)
         if not self._allocated_port:
-            self._allocated_port = self._find_available_port()
+            self._allocated_port = self._resolve_port()
 
         # Use custom name if provided, otherwise use player's display name
         player_name = self.custom_player_name or player.display_name

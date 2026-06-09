@@ -64,8 +64,10 @@ Unlike traditional Spotify integrations that require Web API authentication, Spo
   - Authentication using Spotify credentials
   - Audio streaming and decoding to PCM
   - Session management (connect/disconnect)
-- Outputs raw PCM audio to stdout (piped to ffmpeg)
-- Sends events to the custom webservice via HTTP
+- Writes raw PCM audio (44.1 kHz / 16-bit / stereo) to a named FIFO via
+  `--backend pipe --device <fifo>`; the core's streams controller opens the
+  FIFO with ffmpeg using `-re` (rate-paced read) when the stream starts
+- Sends events to the custom webservice via HTTP (see events.py)
 
 #### 2. **events.py Webservice**
 - Python script that receives event callbacks from librespot
@@ -89,11 +91,22 @@ the same way radio stations do.
 - `name`: Display name (e.g., "Music Assistant")
 - `exclusive`: True (a single librespot stream can only serve one queue at a time)
 - `allow_external_trigger`: True (Spotify app picks MA → plugin starts playback)
+- `can_initiate`: False — see "Cold-start limitation" below
 
 **Dynamic Capabilities:**
 - `can_play_pause`: Enabled when Web API control available
 - `can_seek`: Enabled when Web API control available
 - `can_next_previous`: Enabled when Web API control available
+
+**Cold-start limitation (`can_initiate=False`):**
+MA cannot reliably initiate Spotify Connect playback from a cold start. The Web
+API's `PUT /me/player/play?device_id=X` and `PUT /me/player` transfer endpoints
+return 200, but Spotify silently refuses to start when no playback context
+exists — librespot logs `context is not available` and the device stays idle.
+The "context" expires on any meaningful idle, so MA-initiated entry is
+fundamentally flaky. We therefore only advertise external entry (Spotify app →
+pick MA). Resume from MA *during* an existing Spotify session works, because a
+context is still present at that point.
 
 When capabilities flip (Web API becomes available/unavailable) the AudioSource is rebuilt
 via ``_build_audio_source()`` so the next ``get_audio_sources()`` returns the updated flags.
@@ -106,14 +119,25 @@ metadata uses.
 
 #### 4. **Audio Pipeline**
 ```
-librespot → PCM audio → ffmpeg → format conversion → Music Assistant Player
+librespot ──PCM──▶ FIFO ──▶ ffmpeg (-re, rate-paced) ──▶ MA player
 ```
 
-The provider streams audio through an async generator that:
-1. Starts librespot process
-2. Pipes audio through ffmpeg for format conversion
-3. Yields audio chunks to the player
-4. Handles cleanup on stream end
+The stream is exposed as ``StreamType.NAMED_PIPE`` so the streams controller
+can open the FIFO with ffmpeg directly. ffmpeg's `-re` flag paces the read at
+native rate, which is what keeps librespot's (non-realtime) pipe writer from
+filling an unbounded buffer ahead of playback. Routing through a Python
+``CUSTOM`` generator instead would re-introduce that buffering and make
+pause/skip take seconds to react.
+
+**Session-stall watchdog.** If librespot starts producing audio before the
+streams controller has attached ffmpeg, the FIFO's kernel pipe buffer (~64KB)
+fills, librespot's next pipe write blocks, and the daemon's main loop wedges —
+no further `playing`/`paused` events fire. To recover, `_arm_session_watchdog`
+is armed on every `session_connected`; if no definitive state event lands
+within ``SESSION_STALL_TIMEOUT_S`` (8s), `_emergency_drain_fifo` opens the
+FIFO with ``O_RDONLY | O_NONBLOCK`` for up to ``SESSION_STALL_DRAIN_TIMEOUT_S``
+(2s) to unblock the write. The drain bails out early if librespot recovers or
+the normal stream attaches, so it doesn't compete with ffmpeg for bytes.
 
 ## Multi-Instance Support
 
@@ -152,6 +176,16 @@ By default, Spotify Connect is a **passive source** - it receives audio but Musi
 
 ### Solution: Web API Integration
 When the Spotify account logged into Connect matches a configured Spotify music provider, the provider enables bidirectional control by using Spotify's Web API.
+
+### Active-device gating
+All transport commands (`on_source_control`) and volume changes
+(`on_volume_change`) check that MA is still the active Spotify device before
+calling the Web API. Without this guard the API answers 403 for any command
+issued while another Spotify device is active, surfacing as a generic failure
+in the UI. The guard raises ``AudioError(NOT_ACTIVE_DEVICE_MESSAGE)`` instead,
+which the queue/streams layer propagates verbatim to the frontend so the user
+sees a clear "Music Assistant is not the active Spotify playback device" hint
+and can re-select MA in the Spotify app.
 
 ### Architecture
 
@@ -198,25 +232,29 @@ async def on_source_control(
   from `on_source_control`
 
 **Web API Commands:**
-- `PUT /me/player/play` - Resume playback
+- `PUT /me/player/play?device_id={id}` - Resume playback on this device
+  (preferred for the play/resume path: transfer-with-play sometimes leaves the
+  device paused for a long time before it actually starts)
+- `PUT /me/player` with `{device_ids:[id], play:?}` - Transfer fallback
 - `PUT /me/player/pause` - Pause playback
 - `POST /me/player/next` - Skip to next track
 - `POST /me/player/previous` - Skip to previous track
 - `PUT /me/player/seek?position_ms={ms}` - Seek to position
+- `PUT /me/player/volume?volume_percent={pct}` - Set volume
 
 ### Event-Driven Updates
 
 The provider subscribes to events to maintain accurate state:
 
 **Events Monitored:**
-- `EventType.PROVIDERS_UPDATED`: Check for new Spotify provider
-- Custom session events: Update username and check for matches
-- Playback events (`sink`, `playing`): Trigger provider matching
+- `EventType.PROVIDERS_UPDATED`: Re-check Spotify music provider availability
+- Custom librespot events (via the events.py webservice): drive session and
+  playback state — see "Event Handling" below
 
 **State Changes:**
-- Session connected → Check for provider match
-- Session disconnected → Disable Web API control
-- Provider added/removed → Re-check matches
+- Session connected → record username, arm stall watchdog, re-check provider match
+- Session disconnected → clear active player and stop the consuming MA player
+- Provider added/removed → re-check matches and rebuild AudioSource capabilities
 
 ## Event Handling
 
@@ -303,38 +341,51 @@ The provider subscribes to events to maintain accurate state:
 ## Code Organization
 
 ### Main Class: `SpotifyConnectProvider`
-Inherits from `PluginProvider`
+Inherits from `PluginProvider`. File layout follows the project convention of
+"public methods at the top, private helpers below."
 
-**Key Methods:**
-- `handle_async_init()`: Setup provider, start webservice, load credentials
-- `unload()`: Cleanup, stop processes
-- `get_audio_sources()`: Return the AudioSource MediaItem(s) for browse/play
-- `get_stream_details()`: Return StreamDetails for a playback session.
-  Side-effect-free — exclusivity is claimed in `on_source_selected`, not here,
-  so preload paths (player_queues._load_item) can fetch streamdetails without
-  blocking a later cross-queue handoff.
-- `get_audio_stream()`: Provide audio bytes to the queue (when stream_type=CUSTOM)
-- `on_source_control()`: Dispatch playback commands to `_on_play/pause/next/previous/seek/volume`
-- `on_source_selected()`: Claim `_in_use_by_queue` and record `_active_session_id`;
-  stop the previous active player on cross-queue handoff. Raises `RuntimeError`
-  to abort the original request after redirecting to the configured target when
-  `allow_player_switch=False`.
-- `on_source_unselected()`: Release `_in_use_by_queue` if the per-request
-  `stream_session_id` still matches the active session (paired with `on_source_selected`).
+**Public API (called by Music Assistant core):**
+- `handle_async_init()` / `unload()` — provider lifecycle
+- `get_audio_sources()` — exposes the single AudioSource MediaItem
+- `get_stream_details()` — returns `StreamType.NAMED_PIPE` streamdetails with
+  `expiration=0`. Side-effect-free; exclusivity is claimed in
+  `on_source_selected`. Raises `AudioError` when MA cannot acquire the source
+  (idle librespot + no Web API provider, or MA is not the active Spotify
+  device).
+- `on_source_selected()` — claims `_in_use_by_queue` + `_active_session_id`,
+  stops a previously active MA player on cross-queue handoff, and (for
+  MA-initiated resume during an existing Spotify session) kicks the Web API
+  to start playback then waits for librespot's `playing` event.
+- `on_source_unselected()` — releases the claim, but only if `stream_session_id`
+  still matches the active session (rejects stale callbacks from superseded
+  same-queue requests).
+- `on_source_control()` / `on_volume_change()` — proxy transport and volume to
+  the Spotify Web API. Both gated on `_spotify_session_active`; bail out with
+  `AudioError(NOT_ACTIVE_DEVICE_MESSAGE)` when MA isn't the active device.
 
-**Event Handlers:**
-- `_handle_session_connected()`: Process session connect
-- `_handle_session_disconnected()`: Process session disconnect
-- `_handle_playback_started()`: Initialize playback
-- `_handle_metadata_update()`: Update track info
-- `_handle_volume_changed()`: Sync volume
-- `_handle_custom_webservice()`: Main event dispatcher
-
-**Playback Control:**
-- `_check_spotify_provider_match()`: Find matching provider
-- `_build_audio_source()`: Build AudioSource with current capability flags
-- `_update_source_capabilities()`: Rebuild AudioSource when Web API availability changes
-- `_on_play/pause/next/previous/seek/volume()`: Web API call implementations
+**Private helpers:**
+- `_build_audio_source()` / `_update_source_capabilities()` — construct and
+  refresh the AudioSource, propagating capability flags onto the live queue
+  item so the UI updates without waiting for the next play_media.
+- `_get_target_player_id()` — apply the auto/configured-player selection rules.
+- Watchdog + deferred fire: `_arm_session_watchdog`, `_cancel_session_watchdog`,
+  `_session_watchdog_body`, `_emergency_drain_fifo`,
+  `_deferred_play_media_fire`, `_cancel_pending_play_media`.
+- `_clear_active_player()` / `_save_last_player_id()` — state reset and config
+  persistence.
+- `_check_spotify_provider_match()` — match the Connect username to a
+  configured Spotify music provider; toggles Web API availability.
+- `_on_play/pause/next/previous/seek/volume()` — Web API call implementations.
+- `_get_spotify_device_id()`, `_wait_for_librespot_playing()`,
+  `_ensure_active_device()` — Web API plumbing.
+- `_on_provider_event()` — PROVIDERS_UPDATED subscriber.
+- `_process_librespot_stderr_line()`, `_librespot_runner()`,
+  `_setup_player_daemon()` — librespot subprocess lifecycle. Daemon readiness
+  is signalled by the codec/backend-independent "Connecting to AP" sentinel
+  in librespot's stderr.
+- `_handle_custom_webservice()` — single dispatcher for all events posted by
+  events.py (session connect/disconnect, sink/playing/paused, metadata,
+  volume_changed).
 
 ## Dependencies
 
@@ -389,6 +440,19 @@ Inherits from `PluginProvider`
 3. Volume control only works if player supports it
 4. Seek requires Web API (not available in passive mode)
 5. No native gapless playback support
+6. **MA-initiated cold start is intentionally disabled** (`can_initiate=False`)
+   because Spotify will not start playback when there is no current context;
+   entry must come from the Spotify app.
+7. Pausing from MA closes librespot's pipe sink so the player state transitions
+   to IDLE rather than PAUSED. The queue's auto-clear-on-end is guarded for
+   `MediaType.AUDIO_SOURCE` items so the queue item survives a pause-as-stop
+   and resume still works.
+8. Codec badge in the frontend shows PCM (the format on the FIFO), not Ogg
+   Vorbis (Spotify's actual stream codec). A `--passthrough` experiment to fix
+   this introduced multi-second track-change latency from chained-Ogg
+   buffering and was reverted; a future migration to librespot-go (with its
+   WebSocket API) or a display-only `source_audio_format` field on
+   `StreamDetails` are the parked options.
 
 ## Related Documentation
 

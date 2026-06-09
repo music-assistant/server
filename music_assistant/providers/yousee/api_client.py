@@ -45,7 +45,7 @@ class YouSeeAPIClient:
         self.logger = provider.logger
         self.mass = provider.mass
 
-    @throttle_with_retries  # type: ignore[type-var]
+    @throttle_with_retries
     async def post_graphql(
         self, query: str, variables: JsonLike, _headers: JsonLike | None = None
     ) -> JsonLike:
@@ -81,7 +81,7 @@ class YouSeeAPIClient:
         page_path: list[str],
         variables_first_key: str = "first",
         variables_after_key: str = "after",
-    ) -> AsyncGenerator[JsonLike, None]:
+    ) -> AsyncGenerator[JsonLike]:
         """Paginate GraphQL results."""
         after = None
         has_more = True

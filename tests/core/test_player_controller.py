@@ -18,7 +18,6 @@ from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerTyp
 from music_assistant_models.errors import UnsupportedFeaturedException
 
 from music_assistant.controllers.players import PlayerController
-from music_assistant.helpers.throttle_retry import Throttler
 from tests.common import MockPlayer, MockProvider
 
 
@@ -70,10 +69,6 @@ class TestSetMembersValidation:
         member = MockPlayer(provider, "member", "Member")
 
         controller._players = {"leader": leader, "member": member}
-        controller._player_throttlers = {
-            "leader": Throttler(1, 0.05),
-            "member": Throttler(1, 0.05),
-        }
         mock_mass.players = controller
 
         # Should raise exception because leader doesn't support SET_MEMBERS
@@ -93,10 +88,6 @@ class TestSetMembersValidation:
         player_b = MockPlayer(provider_b, "player_b", "Player B")
 
         controller._players = {"player_a": player_a, "player_b": player_b}
-        controller._player_throttlers = {
-            "player_a": Throttler(1, 0.05),
-            "player_b": Throttler(1, 0.05),
-        }
         mock_mass.players = controller
 
         # Should raise exception because players are incompatible
@@ -128,11 +119,6 @@ class TestCacheInvalidationAfterGrouping:
         other._attr_can_group_with = {"test"}
 
         controller._players = {"leader": leader, "member": member, "other": other}
-        controller._player_throttlers = {
-            "leader": Throttler(1, 0.05),
-            "member": Throttler(1, 0.05),
-            "other": Throttler(1, 0.05),
-        }
         mock_mass.players = controller
 
         # Populate caches
@@ -169,10 +155,6 @@ class TestGroupUngroup:
         member._attr_powered = True
 
         controller._players = {"leader": leader, "member": member}
-        controller._player_throttlers = {
-            "leader": Throttler(1, 0.05),
-            "member": Throttler(1, 0.05),
-        }
         mock_mass.players = controller
 
         # Update state after modifying attributes and registering with controller
@@ -227,10 +209,6 @@ class TestPlayerAvailability:
         member._attr_available = False  # Mark as unavailable
 
         controller._players = {"leader": leader, "member": member}
-        controller._player_throttlers = {
-            "leader": Throttler(1, 0.05),
-            "member": Throttler(1, 0.05),
-        }
         mock_mass.players = controller
 
         # Attempting to group with unavailable player should be handled
@@ -252,10 +230,6 @@ class TestStateForwarding:
         child = MockPlayer(provider, "child", "Child")
 
         controller._players = {"leader": leader, "child": child}
-        controller._player_throttlers = {
-            "leader": Throttler(1, 0.05),
-            "child": Throttler(1, 0.05),
-        }
         mock_mass.players = controller
 
         leader._attr_group_members = ["leader", "child"]
@@ -288,10 +262,6 @@ class TestStateForwarding:
         child = MockPlayer(provider, "child", "Child")
 
         controller._players = {"group": group_player, "child": child}
-        controller._player_throttlers = {
-            "group": Throttler(1, 0.05),
-            "child": Throttler(1, 0.05),
-        }
         mock_mass.players = controller
 
         group_player._attr_group_members = ["group", "child"]
@@ -317,19 +287,6 @@ class TestStateForwarding:
 class TestUnregisterCleanup:
     """Test that unregister cleans up leaked internal state."""
 
-    def test_throttler_removed(self, mock_mass: MagicMock) -> None:
-        """Unregistering a player removes its throttler entry."""
-        controller = PlayerController(mock_mass)
-        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
-        player = MockPlayer(provider, "player_1", "Player 1")
-
-        controller._players = {"player_1": player}
-        controller._player_throttlers = {"player_1": Throttler(1, 0.05)}
-
-        asyncio.run(controller.unregister("player_1"))
-
-        assert "player_1" not in controller._player_throttlers
-
     def test_command_locks_removed(self, mock_mass: MagicMock) -> None:
         """Unregistering a player removes its command lock entries."""
         controller = PlayerController(mock_mass)
@@ -337,7 +294,6 @@ class TestUnregisterCleanup:
         player = MockPlayer(provider, "player_1", "Player 1")
 
         controller._players = {"player_1": player}
-        controller._player_throttlers = {"player_1": Throttler(1, 0.05)}
         controller._player_command_locks = {
             "playback_player_1": asyncio.Lock(),
             "volume_player_1": asyncio.Lock(),
@@ -356,10 +312,6 @@ class TestUnregisterCleanup:
         player_b = MockPlayer(provider, "player_b", "Player B")
 
         controller._players = {"player_a": player_a, "player_b": player_b}
-        controller._player_throttlers = {
-            "player_a": Throttler(1, 0.05),
-            "player_b": Throttler(1, 0.05),
-        }
         controller._player_command_locks = {
             "playback_player_a": asyncio.Lock(),
             "playback_player_b": asyncio.Lock(),
@@ -367,9 +319,7 @@ class TestUnregisterCleanup:
 
         asyncio.run(controller.unregister("player_a"))
 
-        assert "player_b" in controller._player_throttlers
         assert "playback_player_b" in controller._player_command_locks
-        assert "player_a" not in controller._player_throttlers
         assert "playback_player_a" not in controller._player_command_locks
 
     def test_suffix_player_id_not_over_matched(self, mock_mass: MagicMock) -> None:
@@ -380,10 +330,6 @@ class TestUnregisterCleanup:
         player_a_b = MockPlayer(provider, "a_b", "Player A_B")
 
         controller._players = {"b": player_b, "a_b": player_a_b}
-        controller._player_throttlers = {
-            "b": Throttler(1, 0.05),
-            "a_b": Throttler(1, 0.05),
-        }
         controller._player_command_locks = {
             "playback_b": asyncio.Lock(),
             "playback_a_b": asyncio.Lock(),
@@ -402,7 +348,6 @@ class TestUnregisterCleanup:
 
         mock_handle = MagicMock()
         controller._players = {"player_1": player}
-        controller._player_throttlers = {"player_1": Throttler(1, 0.05)}
         controller._pending_protocol_evaluations = {"player_1": mock_handle}
 
         asyncio.run(controller.unregister("player_1"))
@@ -413,12 +358,10 @@ class TestUnregisterCleanup:
     def test_unregister_nonexistent_player_is_noop(self, mock_mass: MagicMock) -> None:
         """Unregistering a player that doesn't exist is silently ignored."""
         controller = PlayerController(mock_mass)
-        controller._player_throttlers = {"other": Throttler(1, 0.05)}
         controller._player_command_locks = {"set_members_other": asyncio.Lock()}
 
         asyncio.run(controller.unregister("nonexistent"))
 
-        assert "other" in controller._player_throttlers
         assert "set_members_other" in controller._player_command_locks
 
 
@@ -478,7 +421,6 @@ class TestCmdUngroupNewBranches:
         mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
 
         controller._players = {"g1": group}
-        controller._player_throttlers = {"g1": Throttler(1, 0.05)}
         mock_mass.players = controller
 
         # populate state.type / state.power_control / state.group_members
@@ -513,7 +455,6 @@ class TestCmdUngroupNewBranches:
         # no POWER feature → power_control auto-selects to NONE
 
         controller._players = {"g1": group}
-        controller._player_throttlers = {"g1": Throttler(1, 0.05)}
         mock_mass.players = controller
 
         group.set_initialized()
@@ -572,10 +513,6 @@ class TestPlayMediaOverride:
         member = MockPlayer(member_provider, "member", "Member")
 
         controller._players = {"g1": group, "member": member}
-        controller._player_throttlers = {
-            "g1": Throttler(1, 0.05),
-            "member": Throttler(1, 0.05),
-        }
         mock_mass.players = controller
 
         group.set_initialized()
@@ -624,10 +561,6 @@ class TestPlayMediaOverride:
         member = MockPlayer(member_provider, "member", "Member")
 
         controller._players = {"g1": group, "member": member}
-        controller._player_throttlers = {
-            "g1": Throttler(1, 0.05),
-            "member": Throttler(1, 0.05),
-        }
         mock_mass.players = controller
 
         group.set_initialized()
@@ -690,10 +623,6 @@ class TestPlayMediaOverride:
         member = MockPlayer(member_provider, "member", "Member")
 
         controller._players = {"g1": group, "member": member}
-        controller._player_throttlers = {
-            "g1": Throttler(1, 0.05),
-            "member": Throttler(1, 0.05),
-        }
         mock_mass.players = controller
 
         group.set_initialized()

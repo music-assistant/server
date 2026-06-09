@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MusicAssistantError
@@ -17,6 +17,13 @@ if TYPE_CHECKING:
 
     from .provider import AppleMusicProvider
 
+# Tracks carry heavy includes, so they page smaller than the library default.
+_TRACK_PAGE_SIZE = 30
+
+# Catalog enrichment batch size: 300 (the documented max) returns a 504, so cap at 150. This also
+# bounds the in-flight window, keeping a ~100k library from being materialized at once.
+_TRACK_SYNC_WINDOW = 150
+
 
 class AppleMusicLibraryManager:
     """Manages Apple Music library operations."""
@@ -27,16 +34,16 @@ class AppleMusicLibraryManager:
         self.api = provider.api_client
         self.logger = provider.logger
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
         endpoint = "me/library/artists"
         for item in await self.api.get_all_items(
             endpoint, include="catalog", extend="editorialNotes"
         ):
             if item and item["id"]:
-                yield parse_artist(self.provider, item)
+                yield cast("Artist", parse_artist(self.provider, item))
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from the provider."""
         endpoint = "me/library/albums"
         album_items = await self.api.get_all_items(
@@ -65,56 +72,33 @@ class AppleMusicLibraryManager:
                 )
                 album = parse_album(self.provider, item, is_favourite)
                 if album:
-                    yield album
+                    yield cast("Album", album)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from the provider."""
-        endpoint = "me/library/songs"
-        song_catalog_ids = []
-        library_items_by_catalog_id: dict[str, dict] = {}
-        library_only_tracks = []
-        for item in await self.api.get_all_items(endpoint, include="catalog,albums,artists"):
+        # Enrich and yield in bounded windows so the full library is never held in memory at once.
+        catalog_items: dict[str, dict[str, Any]] = {}
+        library_only_items: list[dict[str, Any]] = []
+        async for item in self.api.iter_all_items(
+            "me/library/songs", include="catalog,albums,artists", page_size=_TRACK_PAGE_SIZE
+        ):
             catalog_id = item.get("attributes", {}).get("playParams", {}).get("catalogId")
             if not catalog_id:
-                library_only_tracks.append(item)
+                library_only_items.append(item)
             else:
-                song_catalog_ids.append(catalog_id)
-                library_items_by_catalog_id[catalog_id] = item
-        # Obtain catalog info per 150 songs; the documented limit of 300 results in a 504 timeout.
-        max_limit = 150
-        for i in range(0, len(song_catalog_ids), max_limit):
-            catalog_ids = song_catalog_ids[i : i + max_limit]
-            catalog_endpoint = f"catalog/{self.provider._storefront}/songs"
-            response = await self.api.get_data(
-                catalog_endpoint, ids=",".join(catalog_ids), include="artists,albums"
-            )
-            rating_response = await self.api.get_ratings(catalog_ids, MediaType.TRACK)
-            returned_catalog_ids: set[str] = set()
-            for item in response["data"]:
-                returned_catalog_ids.add(item["id"])
-                is_favourite = rating_response.get(item["id"])
-                parsed_track = parse_track(self.provider, item, is_favourite)
-                if self._track_has_weak_album_mapping(parsed_track) and (
-                    library_item := library_items_by_catalog_id.get(item["id"])
-                ):
-                    parsed_library_track = parse_track(self.provider, library_item, is_favourite)
-                    if parsed_library_track.album and not self._track_has_weak_album_mapping(
-                        parsed_library_track
-                    ):
-                        parsed_track.album = parsed_library_track.album
-                yield parsed_track
-
-            # Some library items may not resolve on the catalog endpoint anymore.
-            for missing_catalog_id in set(catalog_ids) - returned_catalog_ids:
-                if library_item := library_items_by_catalog_id.get(missing_catalog_id):
-                    is_favourite = rating_response.get(missing_catalog_id)
-                    yield parse_track(self.provider, library_item, is_favourite)
-        library_ids = [item["id"] for item in library_only_tracks if item and item["id"]]
-        library_rating_response = await self.api.get_ratings(library_ids, MediaType.TRACK)
-        for item in library_only_tracks:
-            is_favourite = library_rating_response.get(item["id"])
-            parsed_track = await self._parse_library_track_with_detail_fallback(item, is_favourite)
-            yield parsed_track
+                catalog_items[catalog_id] = item
+            if len(catalog_items) >= _TRACK_SYNC_WINDOW:
+                async for track in self._flush_catalog_tracks(catalog_items):
+                    yield track
+                catalog_items = {}
+            if len(library_only_items) >= _TRACK_SYNC_WINDOW:
+                async for track in self._flush_library_only_tracks(library_only_items):
+                    yield track
+                library_only_items = []
+        async for track in self._flush_catalog_tracks(catalog_items):
+            yield track
+        async for track in self._flush_library_only_tracks(library_only_items):
+            yield track
 
     def _track_has_weak_album_mapping(self, track: Track) -> bool:
         """Return True for missing or name-only album mapping."""
@@ -128,7 +112,7 @@ class AppleMusicLibraryManager:
         )
 
     async def _parse_library_track_with_detail_fallback(
-        self, item: dict, is_favourite: bool | None
+        self, item: dict[str, Any], is_favourite: bool | None
     ) -> Track:
         """Parse library track and fetch detail when album mapping is weak."""
         parsed_track = parse_track(self.provider, item, is_favourite)
@@ -156,7 +140,7 @@ class AppleMusicLibraryManager:
             return parsed_track
         return detailed_track
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve playlists from the provider."""
         endpoint = "me/library/playlists"
         playlist_items = await self.api.get_all_items(endpoint)
@@ -169,13 +153,14 @@ class AppleMusicLibraryManager:
             playlist_library_item_ids, MediaType.PLAYLIST
         )
         for item in playlist_items:
-            is_favourite = rating_library_response.get(item["id"])
-            # Prefer catalog information over library information in case of public playlists
+            is_favourite = rating_library_response.get(item["id"], False)
+            # Fetch catalog metadata, but keep library ID for write operations.
             if item["attributes"]["hasCatalog"]:
                 yield await self.provider.media_manager.get_playlist(
                     item["attributes"]["playParams"]["globalId"],
                     is_favourite,
                     can_edit_hint=item["attributes"].get("canEdit"),
+                    library_id_override=item["id"] if is_library_id(item["id"]) else None,
                 )
             elif item and item["id"]:
                 yield parse_playlist(self.provider, item, is_favourite)
@@ -238,3 +223,47 @@ class AppleMusicLibraryManager:
         else:
             endpoint = f"me/ratings/library-{item_type}/{prov_item_id}"
         await self.api.put_data(endpoint, data=data)
+
+    async def _flush_catalog_tracks(
+        self, library_items_by_catalog_id: dict[str, dict[str, Any]]
+    ) -> AsyncGenerator[Track]:
+        """Enrich one window of catalog-backed library tracks with catalog detail and yield them."""
+        if not library_items_by_catalog_id:
+            return
+        catalog_ids = list(library_items_by_catalog_id)
+        catalog_endpoint = f"catalog/{self.provider._storefront}/songs"
+        response = await self.api.get_data(
+            catalog_endpoint, ids=",".join(catalog_ids), include="artists,albums"
+        )
+        rating_response = await self.api.get_ratings(catalog_ids, MediaType.TRACK)
+        returned_catalog_ids: set[str] = set()
+        for item in response.get("data", []):
+            returned_catalog_ids.add(item["id"])
+            is_favourite = rating_response.get(item["id"])
+            parsed_track = parse_track(self.provider, item, is_favourite)
+            if self._track_has_weak_album_mapping(parsed_track) and (
+                library_item := library_items_by_catalog_id.get(item["id"])
+            ):
+                parsed_library_track = parse_track(self.provider, library_item, is_favourite)
+                if parsed_library_track.album and not self._track_has_weak_album_mapping(
+                    parsed_library_track
+                ):
+                    parsed_track.album = parsed_library_track.album
+            yield parsed_track
+        # Some library items may not resolve on the catalog endpoint anymore.
+        for missing_catalog_id in set(catalog_ids) - returned_catalog_ids:
+            if library_item := library_items_by_catalog_id.get(missing_catalog_id):
+                is_favourite = rating_response.get(missing_catalog_id)
+                yield parse_track(self.provider, library_item, is_favourite)
+
+    async def _flush_library_only_tracks(
+        self, library_only_items: list[dict[str, Any]]
+    ) -> AsyncGenerator[Track]:
+        """Enrich one window of library-only tracks (no catalog id) and yield them."""
+        if not library_only_items:
+            return
+        library_ids = [item["id"] for item in library_only_items if item and item["id"]]
+        rating_response = await self.api.get_ratings(library_ids, MediaType.TRACK)
+        for item in library_only_items:
+            is_favourite = rating_response.get(item["id"])
+            yield await self._parse_library_track_with_detail_fallback(item, is_favourite)

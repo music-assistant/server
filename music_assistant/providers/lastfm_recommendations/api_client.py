@@ -169,6 +169,44 @@ class LastFMAPIClient:
 
         return similar_tracks
 
+    async def get_artist_top_tracks(
+        self, artist_name: str, artist_mbid: str | None = None, limit: int = 10
+    ) -> list[dict[str, Any]]:
+        """
+        Get an artist's top tracks from Last.fm, ordered by popularity.
+
+        :param artist_name: Name of the artist.
+        :param artist_mbid: Optional MusicBrainz ID for more accurate matching.
+        :param limit: Maximum number of top tracks to return.
+        """
+        params: dict[str, Any] = {"limit": limit}
+
+        # Prefer MBID for more accurate matching; fall back to name with autocorrect.
+        if artist_mbid:
+            params["mbid"] = artist_mbid
+        else:
+            params["artist"] = artist_name
+            params["autocorrect"] = 1
+
+        self.logger.debug(
+            "Fetching top tracks for artist: %s (MBID: %s)",
+            artist_name,
+            artist_mbid or "none",
+        )
+        try:
+            data = await self._get_data("artist.getTopTracks", **params)
+        except (TimeoutError, ClientError, InvalidDataError) as err:
+            self.logger.debug("Artist top tracks request failed: %s", err)
+            return []
+
+        tracks: list[dict[str, Any]] | dict[str, Any] = data.get("toptracks", {}).get("track", [])
+
+        # Last.fm returns a single dict when only one result is present.
+        if isinstance(tracks, dict):
+            return [tracks]
+
+        return tracks
+
     async def get_chart_top_artists(self, limit: int = 10) -> list[dict[str, Any]]:
         """
         Get global top artists chart from Last.fm.

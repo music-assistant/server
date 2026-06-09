@@ -18,11 +18,15 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     ResourceTemporarilyUnavailable,
 )
+from music_assistant_models.media_items import Track
 
 from music_assistant.constants import CONF_USERNAME
+from music_assistant.controllers.cache import use_cache
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.providers.lastfm_recommendations.api_client import LastFMAPIClient
 from music_assistant.providers.lastfm_recommendations.constants import (
+    CACHE_CATEGORY_RESOLVED_ITEMS,
+    CACHE_EXPIRATION_SECONDS,
     CONF_ACTION_CLEAR_CACHE,
     CONF_API_KEY,
     CONF_ENABLE_GENRE,
@@ -39,7 +43,7 @@ from music_assistant.providers.lastfm_recommendations.recommendations import (
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.media_items import Artist, RecommendationFolder, Track
+    from music_assistant_models.media_items import Artist, RecommendationFolder
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -49,6 +53,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.RECOMMENDATIONS,
     ProviderFeature.SIMILAR_ARTISTS,
     ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.ARTIST_TOPTRACKS,
 }
 
 
@@ -249,3 +254,40 @@ class LastFMRecommendationsProvider(MetadataProvider):
             *[self.recommendations_manager.get_or_resolve_track(raw) for raw in similar_raw]
         )
         return [t for t in resolved if t is not None]
+
+    async def get_artist_toptracks(self, artist: Artist, limit: int = 25) -> list[Track]:
+        """Retrieve an artist's top tracks from Last.fm.
+
+        :param artist: The reference artist.
+        :param limit: Maximum number of top tracks to return.
+        """
+        artist_mbid = artist.get_external_id(ExternalID.MB_ARTIST)
+        return await self._get_artist_toptracks(artist.name, artist_mbid, limit)
+
+    @use_cache(
+        CACHE_EXPIRATION_SECONDS,
+        category=CACHE_CATEGORY_RESOLVED_ITEMS,
+        allow_expired_cache=True,
+    )
+    async def _get_artist_toptracks(
+        self, artist_name: str, artist_mbid: str | None, limit: int
+    ) -> list[Track]:
+        """Fetch and resolve an artist's top tracks, keyed by name/mbid for caching."""
+        top_raw = await self.api.get_artist_top_tracks(artist_name, artist_mbid, limit)
+        if not top_raw:
+            return []
+
+        # Tolerate individual resolution failures (e.g. a rate-limited lookup) so one bad
+        # track can't sink the whole listing.
+        resolved = await asyncio.gather(
+            *[self.recommendations_manager.get_or_resolve_track(raw) for raw in top_raw],
+            return_exceptions=True,
+        )
+        tracks = [t for t in resolved if isinstance(t, Track)]
+        self.logger.debug(
+            "Resolved %d/%d top tracks to playable items for '%s'",
+            len(tracks),
+            len(top_raw),
+            artist_name,
+        )
+        return tracks
