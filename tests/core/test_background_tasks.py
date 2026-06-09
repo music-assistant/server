@@ -461,8 +461,8 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     assert playlist_scan_task.translation_key == "background_task.refresh_playlist_metadata"
     assert playlist_scan_task.metadata == {"task_domain": "metadata_playlist_metadata_scan"}
 
-    # Metadata maintenance tasks pick a random time spread across the full day (instead of a
-    # fixed 04:00) to avoid spiking the shared MusicBrainz mirror, but share one time per instance.
+    # Metadata maintenance tasks pick a random time spread across the full day
+    # to avoid spiking the shared MusicBrainz mirror, but share one time per instance.
     assert artist_scan_task.schedule is not None
     assert artist_scan_task.schedule.type == TaskScheduleType.DAILY
     assert artist_scan_task.schedule.hour is not None
