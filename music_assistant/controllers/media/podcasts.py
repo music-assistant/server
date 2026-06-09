@@ -101,7 +101,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    ) -> AsyncGenerator[PodcastEpisode]:
         """Return podcast episodes for the given provider podcast id."""
         # always check if we have a library item for this podcast
         if provider_instance_id_or_domain == "library":
@@ -219,7 +219,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
 
     async def _get_provider_podcast_episodes(
         self, item_id: str, provider_instance_id_or_domain: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    ) -> AsyncGenerator[PodcastEpisode]:
         """Return podcast episodes for the given provider podcast id."""
         prov = self.mass.get_provider(provider_instance_id_or_domain)
         if not isinstance(prov, MusicProvider):

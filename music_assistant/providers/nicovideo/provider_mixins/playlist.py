@@ -52,7 +52,7 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
     @override
     async def get_library_playlists(
         self,
-    ) -> AsyncGenerator[Playlist, None]:
+    ) -> AsyncGenerator[Playlist]:
         """Retrieve library playlists from the provider."""
         # Get own mylists (editable playlists)
         own_mylists = await self.service_manager.mylist.get_own_mylists()

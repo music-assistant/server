@@ -38,7 +38,7 @@ def _make_chunk(value: int = 0) -> bytes:
     return bytes([value % 256]) * TEST_PCM_FORMAT.pcm_sample_size
 
 
-async def _make_source(num_chunks: int) -> AsyncGenerator[bytes, None]:
+async def _make_source(num_chunks: int) -> AsyncGenerator[bytes]:
     """Create an async generator that yields numbered chunks."""
     for i in range(num_chunks):
         yield _make_chunk(i)
@@ -184,7 +184,7 @@ async def test_fill_sets_eof() -> None:
 async def test_fill_error_propagation() -> None:
     """When the source errors after producing data, valid chunks are still delivered."""
 
-    async def _failing_source() -> AsyncGenerator[bytes, None]:
+    async def _failing_source() -> AsyncGenerator[bytes]:
         yield ONE_SECOND_CHUNK
         msg = "test error"
         raise RuntimeError(msg)
@@ -207,7 +207,7 @@ async def test_fill_error_propagation() -> None:
 async def test_fill_error_no_data() -> None:
     """When the source errors without producing any data, the error propagates."""
 
-    async def _failing_source() -> AsyncGenerator[bytes, None]:
+    async def _failing_source() -> AsyncGenerator[bytes]:
         msg = "test error"
         raise RuntimeError(msg)
         yield  # type: ignore[unreachable]

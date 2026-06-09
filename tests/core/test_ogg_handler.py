@@ -31,7 +31,7 @@ class _FakeAudioStreamController:
     def __init__(self, chunks: list[bytes]) -> None:
         self._chunks = chunks
 
-    async def get_reconnecting_radio_stream(self, url: str) -> AsyncGenerator[bytes, None]:
+    async def get_reconnecting_radio_stream(self, url: str) -> AsyncGenerator[bytes]:
         """Yield the provided Ogg chunks."""
         del url
         for chunk in self._chunks:

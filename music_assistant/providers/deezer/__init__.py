@@ -321,7 +321,7 @@ class DeezerProvider(MusicProvider):
 
         return results
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Deezer."""
         async for artist in await self.client.get_user_artists():
             item = self.parse_artist(artist=artist)
@@ -329,7 +329,7 @@ class DeezerProvider(MusicProvider):
                 item.date_added = datetime.fromtimestamp(int(time_add), tz=UTC)
             yield item
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve all library albums from Deezer."""
         async for album in await self.client.get_user_albums():
             item = self.parse_album(album=album)
@@ -337,7 +337,7 @@ class DeezerProvider(MusicProvider):
                 item.date_added = datetime.fromtimestamp(int(time_add), tz=UTC)
             yield item
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from Deezer."""
         async for playlist in await self.user.get_playlists():
             item = self.parse_playlist(playlist=playlist)
@@ -345,7 +345,7 @@ class DeezerProvider(MusicProvider):
                 item.date_added = datetime.fromtimestamp(int(time_add), tz=UTC)
             yield item
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve all library tracks from Deezer."""
         async for track in await self.client.get_user_tracks():
             yield self.parse_track(track=track, user_country=self.gw_client.user_country)
@@ -619,6 +619,7 @@ class DeezerProvider(MusicProvider):
                 item_id="made_for_you",
                 provider=self.instance_id,
                 name="Made for you",
+                translation_key="recommendations.made_for_you",
                 items=UniqueList(made_for_you_items),
             )
         )
@@ -632,6 +633,7 @@ class DeezerProvider(MusicProvider):
                         item_id="recommended_albums",
                         provider=self.instance_id,
                         name="Recommended albums",
+                        translation_key="recommendations.recommended_albums",
                         items=UniqueList(
                             [self.parse_album(album=album) for album in recommended_albums]
                         ),
@@ -649,6 +651,7 @@ class DeezerProvider(MusicProvider):
                         item_id="recommended_artists",
                         provider=self.instance_id,
                         name="Recommended artists",
+                        translation_key="recommendations.recommended_artists",
                         items=UniqueList(
                             [self.parse_artist(artist=artist) for artist in recommended_artists]
                         ),
@@ -679,6 +682,7 @@ class DeezerProvider(MusicProvider):
                         item_id=folder_id,
                         provider=self.instance_id,
                         name=folder_name,
+                        translation_key=f"provider.deezer.{folder_id}",
                         items=UniqueList(flow_playlists),
                     )
                 )
@@ -704,6 +708,7 @@ class DeezerProvider(MusicProvider):
                     item_id="radios",
                     provider=self.instance_id,
                     name="Deezer Radios",
+                    translation_key="provider.deezer.radios",
                     items=UniqueList(radio_playlists),
                 )
             )
@@ -773,7 +778,7 @@ class DeezerProvider(MusicProvider):
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Return the audio stream for the provider item."""
         blowfish_key = self.get_blowfish_key(streamdetails.data["track_id"])
         chunk_index = 0

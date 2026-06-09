@@ -6,6 +6,6 @@
   "codeowners": [
     "@ozGav"
   ],
-  "stage": "beta",
+  "stage": "stable",
   "documentation": "https://music-assistant.io/metadata/lastfm_recommendations"
 }

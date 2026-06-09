@@ -573,18 +573,18 @@ class GenreController(MediaControllerBase[Genre]):
         item = await self.get(item_id, provider)
         db_id = int(item.item_id)
         gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
-        media_rows: list[tuple[MediaType, str]] = [
-            (MediaType.ARTIST, "Artists"),
-            (MediaType.ALBUM, "Albums"),
-            (MediaType.TRACK, "Tracks"),
-            (MediaType.PLAYLIST, "Playlists"),
-            (MediaType.RADIO, "Radio"),
-            (MediaType.PODCAST, "Podcasts"),
-            (MediaType.AUDIOBOOK, "Audiobooks"),
+        media_rows: list[tuple[MediaType, str, str]] = [
+            (MediaType.ARTIST, "Artists", "artists"),
+            (MediaType.ALBUM, "Albums", "albums"),
+            (MediaType.TRACK, "Tracks", "tracks"),
+            (MediaType.PLAYLIST, "Playlists", "playlists"),
+            (MediaType.RADIO, "Radio", "radios"),
+            (MediaType.PODCAST, "Podcasts", "podcasts"),
+            (MediaType.AUDIOBOOK, "Audiobooks", "audiobooks"),
         ]
 
         async def _fetch_media_type(
-            media_type: MediaType, title: str
+            media_type: MediaType, title: str, translation_key: str
         ) -> RecommendationFolder | None:
             ctrl = self.mass.music.get_controller(media_type)
             query = (
@@ -606,11 +606,14 @@ class GenreController(MediaControllerBase[Genre]):
             return RecommendationFolder(
                 item_id=f"genre_{media_type.value}",
                 name=title,
+                translation_key=translation_key,
                 provider="library",
                 items=UniqueList(items[:limit]),
             )
 
-        results = await asyncio.gather(*[_fetch_media_type(mt, title) for mt, title in media_rows])
+        results = await asyncio.gather(
+            *[_fetch_media_type(mt, title, key) for mt, title, key in media_rows]
+        )
         return [r for r in results if r is not None]
 
     async def get_genre_media_counts(self, genre_ids: list[str]) -> dict[str, dict[str, int]]:

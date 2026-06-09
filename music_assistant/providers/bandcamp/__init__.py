@@ -274,7 +274,7 @@ class BandcampProvider(MusicProvider):
             older_than_token = page.last_token
         return all_items
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from Bandcamp."""
         if not self._client.identity:  # library requires identity
             return
@@ -304,7 +304,7 @@ class BandcampProvider(MusicProvider):
         except BandcampAPIError as error:
             raise MediaNotFoundError("Failed to get library artists") from error
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from Bandcamp."""
         if not self._client.identity:  # library requires identity
             return
@@ -327,7 +327,7 @@ class BandcampProvider(MusicProvider):
         except BandcampAPIError as error:
             raise MediaNotFoundError("Failed to get library albums") from error
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Bandcamp."""
         if not self._client.identity:  # library requires identity
             return

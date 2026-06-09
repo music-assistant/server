@@ -829,29 +829,26 @@ class SendspinPlayer(SendspinBasePlayer):
                     f.cancel()
         # self.group_members will be updated by the group event callback
 
-    async def _send_album_artwork(self, current_item: QueueItem) -> str | None:
+    async def _send_album_artwork(self, current_media: PlayerMedia) -> str | None:
         """
         Send album artwork to the sendspin group.
 
         Args:
-            current_item: The current queue item.
+            current_media: The current player media.
         """
-        artwork_url = None
-        if current_item.image is not None:
-            artwork_url = self.mass.metadata.get_image_url(current_item.image)
-
+        # image_url is resolved per-source upstream (radio / Spotify Connect / queue items).
+        artwork_url = current_media.image_url
         if artwork_url != self.last_sent_artwork_url:
-            # Image changed, resend the artwork
             self.last_sent_artwork_url = artwork_url
-            if artwork_url is not None and current_item.media_item is not None:
-                image_data = await self.mass.metadata.get_image_data_for_item(
-                    current_item.media_item
-                )
-                if image_data is not None:
+            if artwork_url is not None:
+                # Fetch from the resolved URL so the bytes match artwork_url, even when
+                # radio now-playing art differs from the queue item's own image.
+                image_data = await self.mass.metadata.get_thumbnail(artwork_url, provider="builtin")
+                if isinstance(image_data, bytes):
+                    # decode through the guard so undecodable art (e.g. SVG) is skipped, not crashed
                     image = await self._decode_artwork(image_data)
                     if image is not None and (artwork_role := self._artwork_role) is not None:
                         await artwork_role.set_album_artwork(image)
-            # Clear artwork if none available
             elif (artwork_role := self._artwork_role) is not None:
                 await artwork_role.set_album_artwork(None)
 
@@ -1007,9 +1004,9 @@ class SendspinPlayer(SendspinBasePlayer):
                 current_media.source_id, current_media.queue_item_id
             )
 
-        # Send album and artist artwork
+        # Runs even without a queue item so radio / Spotify Connect streams still get art.
+        await self._send_album_artwork(current_media)
         if queue_item:
-            await self._send_album_artwork(queue_item)
             await self._send_artist_artwork(queue_item)
 
         track_number: int | None = None

@@ -151,7 +151,7 @@ class AudibleHelper:
         self,
         response_groups: str,
         content_types: tuple[str, ...],
-    ) -> AsyncGenerator[dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any]]:
         """Fetch items from the library with pagination."""
         page = 1
         page_size = 50
@@ -231,7 +231,7 @@ class AudibleHelper:
             )
             return None
 
-    async def get_library(self) -> AsyncGenerator[Audiobook, None]:
+    async def get_library(self) -> AsyncGenerator[Audiobook]:
         """Fetch the user's library with pagination."""
         response_groups = [
             "contributors",
@@ -699,7 +699,7 @@ class AudibleHelper:
             )
             return None
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Fetch podcasts from the user's library with pagination."""
         response_groups = [
             "contributors",
@@ -755,7 +755,7 @@ class AudibleHelper:
         )
         return self._parse_podcast(item_data)
 
-    async def get_podcast_episodes(self, podcast_asin: str) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, podcast_asin: str) -> AsyncGenerator[PodcastEpisode]:
         """Fetch all episodes for a podcast.
 
         :param podcast_asin: The ASIN of the parent podcast.

@@ -234,7 +234,7 @@ class AriaCastBridge(PluginProvider):
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Stream PCM audio frames from the binary's stdout pump."""
         consumer_queue = self._in_use_by_queue
         # Snapshot the active session id so a same-queue reconnect (which

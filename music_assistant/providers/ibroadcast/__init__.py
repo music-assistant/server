@@ -118,7 +118,7 @@ class IBroadcastProvider(MusicProvider):
         # temporary call to refresh library until ibroadcast provides a detailed api
         await self._client.refresh_library()
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from ibroadcast."""
         for album in (await self._client.get_albums()).values():
             try:
@@ -133,7 +133,7 @@ class IBroadcastProvider(MusicProvider):
         album_obj = await self._client.get_album(int(prov_album_id))
         return await self._parse_album(album_obj)
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from iBroadcast."""
         for artist in (await self._client.get_artists()).values():
             try:
@@ -177,7 +177,7 @@ class IBroadcastProvider(MusicProvider):
         artist_obj = await self._client.get_artist(int(prov_artist_id))
         return await self._parse_artist(artist_obj)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from iBroadcast."""
         for track in (await self._client.get_tracks()).values():
             try:
@@ -201,7 +201,7 @@ class IBroadcastProvider(MusicProvider):
             name=name,
         )
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve playlists from iBroadcast."""
         for playlist in (await self._client.get_playlists()).values():
             # Skip the auto generated playlist
