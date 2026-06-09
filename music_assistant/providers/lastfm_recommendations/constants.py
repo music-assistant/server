@@ -49,11 +49,11 @@ TOP_ARTISTS_LIMIT = 5
 # Number of recently played tracks to scan when ranking top artists by appearances
 RECENT_TRACKS_SCAN_LIMIT = 200
 
-# Number of top tracks to use as seeds for personalized recommendations
-TOP_TRACKS_LIMIT = 5
+# Number of top tracks fetched as seeds; over-fetched so enough are recognised by Last.fm
+TOP_TRACKS_LIMIT = 10
 
-# Number of top tags to fetch for genre-based recommendations
-TOP_TAGS_LIMIT = 1
+# Number of top genre tags fetched; the genre rows cycle through them daily
+TOP_TAGS_LIMIT = 3
 
 # API search settings
 # Search limit for provider API calls (workaround for Spotify API bug with limit=1)

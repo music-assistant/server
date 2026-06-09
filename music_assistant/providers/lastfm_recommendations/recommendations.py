@@ -363,6 +363,9 @@ class LastFMRecommendationManager:
         top_tracks = await self.mass.music.tracks.library_items(
             limit=TOP_TRACKS_LIMIT, order_by="play_count_desc"
         )
+        # only seed from tracks actually played, so a new library of unplayed tracks
+        # doesn't produce a row from arbitrary zero-play seeds
+        top_tracks = [track for track in top_tracks if track.last_played]
 
         if top_tracks:
             similar_tracks = await self._get_similar_tracks_from_seeds(top_tracks)
@@ -439,7 +442,9 @@ class LastFMRecommendationManager:
         if not top_tags:
             return
 
-        tag_name = top_tags[0].get("name")
+        # cycle through the user's top genres day by day so the genre rows vary
+        day_index = datetime.datetime.now(tz=datetime.UTC).date().toordinal()
+        tag_name = top_tags[day_index % len(top_tags)].get("name")
         if not tag_name:
             return
 
