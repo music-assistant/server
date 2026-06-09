@@ -44,6 +44,8 @@ from music_assistant.providers.lastfm_recommendations.parsers import (
 )
 
 if TYPE_CHECKING:
+    import logging
+
     from music_assistant.providers.lastfm_recommendations import LastFMRecommendationsProvider
 
 
@@ -58,11 +60,15 @@ class LastFMRecommendationManager:
         """
         self.provider = provider
         self.api = provider.api
-        self.logger = provider.logger
         self.mass = provider.mass
 
         # Resolved items keyed by MBID (preferred) or name to avoid re-resolving.
         self._resolved_cache: dict[str, Artist | Album | Track] = {}
+
+    @property
+    def logger(self) -> logging.Logger:
+        """Return the provider's active logger."""
+        return self.provider.logger
 
     async def clear_cache(self) -> None:
         """Clear in-memory and persistent recommendation caches."""
