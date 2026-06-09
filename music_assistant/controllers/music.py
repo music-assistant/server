@@ -1320,6 +1320,9 @@ class MusicController(CoreController):
                 f"UPDATE {ctrl.db_table} SET play_count = play_count + 1, "
                 f"last_played = {timestamp} WHERE item_id = {db_item.item_id}"
             )
+            self.logger.debug(
+                "Credited play for %s '%s'", media_item.media_type.value, media_item.name
+            )
         if isinstance(media_item, Track | Album):
             await self._credit_artist_plays(
                 media_item.artists,
