@@ -21,7 +21,15 @@ from dataclasses import replace as dc_replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import AlbumType, EventType, ImageType, MediaType, ProviderFeature
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import (
+    AlbumType,
+    ConfigEntryType,
+    EventType,
+    ImageType,
+    MediaType,
+    ProviderFeature,
+)
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     BrowseFolder,
@@ -54,7 +62,7 @@ from music_assistant.providers.smart_playlist.helpers import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
 
@@ -64,6 +72,9 @@ if TYPE_CHECKING:
 FETCH_LIMIT = 2000
 CACHE_CATEGORY_DYNAMIC_SAMPLE = 0
 DYNAMIC_SAMPLE_CACHE_EXPIRATION = 24 * 3600  # 24h; stale entries are still served via SWR
+
+CONF_AI_DESCRIPTIONS = "ai_descriptions"
+DESCRIPTION_PREFIX = "[Smart Playlist] "
 
 SUPPORTED_FEATURES: set[ProviderFeature] = {
     ProviderFeature.BROWSE,
@@ -85,7 +96,18 @@ async def get_config_entries(
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
-    return ()
+    return (
+        ConfigEntry(
+            key=CONF_AI_DESCRIPTIONS,
+            type=ConfigEntryType.BOOLEAN,
+            label="Generate descriptions with AI",
+            description="When a provider with AI support is available, use it to write a "
+            "natural-language description for each smart playlist. Falls back to a plain "
+            "rules summary when no AI provider is available.",
+            required=False,
+            default_value=True,
+        ),
+    )
 
 
 class SmartPlaylistProvider(PluginProvider):
@@ -94,6 +116,7 @@ class SmartPlaylistProvider(PluginProvider):
     _rules_dir: str
     _rules_store: dict[str, SmartPlaylistRules]
     _names_store: dict[str, str]
+    _descriptions_store: dict[str, str]
     _unregister_handles: list[Callable[[], None]]
     _flush_lock: asyncio.Lock
 
@@ -101,6 +124,7 @@ class SmartPlaylistProvider(PluginProvider):
         """Handle async initialization."""
         self._rules_store = {}
         self._names_store = {}
+        self._descriptions_store = {}
         self._unregister_handles = []
         self._flush_lock = asyncio.Lock()
         self._rules_dir = os.path.join(self.mass.storage_path, "smart_playlists")
@@ -275,6 +299,7 @@ class SmartPlaylistProvider(PluginProvider):
                 prov_id = mapping.item_id
                 self._rules_store.pop(prov_id, None)
                 self._names_store.pop(prov_id, None)
+                self._descriptions_store.pop(prov_id, None)
                 await self._invalidate_dynamic_sample_cache(prov_id)
                 await self._flush_rules_to_disk()
                 break
@@ -322,6 +347,7 @@ class SmartPlaylistProvider(PluginProvider):
         playlist = self._build_playlist(playlist_id, parsed_rules)
         library_playlist = await self.mass.music.playlists.add_item_to_library(playlist)
         self.mass.metadata.schedule_update_metadata(library_playlist)
+        self._schedule_ai_description_refresh(playlist_id)
         return library_playlist
 
     async def generate_playlist(
@@ -401,13 +427,19 @@ class SmartPlaylistProvider(PluginProvider):
         if existing is not None:
             parsed_rules.is_dynamic = existing.is_dynamic
         self._validate_rules(parsed_rules)
+        # Drop the stale AI description before saving so it is invalidated on disk in the
+        # same flush as the rule change, not left behind until the background refresh runs.
+        self._descriptions_store.pop(prov_id, None)
         await self._save_rules(prov_id, parsed_rules)
 
         library_item = await self.mass.music.playlists.get_library_item_by_prov_id(
             prov_id, self.instance_id
         )
         if library_item:
-            await self._update_playlist_description(library_item.item_id, parsed_rules)
+            await self._update_playlist_description(
+                library_item.item_id, self._description_for(prov_id, parsed_rules)
+            )
+        self._schedule_ai_description_refresh(prov_id)
 
     async def list_smart_playlists(self) -> list[dict[str, Any]]:
         """Return list of all smart playlist IDs and their rule summaries."""
@@ -513,7 +545,7 @@ class SmartPlaylistProvider(PluginProvider):
         )
         playlist.is_dynamic = rules.is_dynamic
         playlist.metadata = MediaItemMetadata(
-            description=f"[Smart Playlist] {rules.human_readable()}",
+            description=self._description_for(playlist_id, rules),
             images=UniqueList(
                 [
                     MediaItemImage(
@@ -975,18 +1007,94 @@ class SmartPlaylistProvider(PluginProvider):
             return []
 
     async def _update_playlist_description(
-        self, library_item_id: int | str, rules: SmartPlaylistRules
+        self, library_item_id: int | str, description: str
     ) -> None:
-        """Update the library playlist description with the rules summary."""
+        """Update the library playlist description with the given text."""
         try:
             playlist = await self.mass.music.playlists.get_library_item(library_item_id)
+            if playlist.metadata and playlist.metadata.description == description:
+                # Already up to date; skip the redundant write and update event.
+                return
             updated = Playlist.from_dict(playlist.to_dict())
-            updated.metadata.description = f"[Smart Playlist] {rules.human_readable()}"
+            updated.metadata.description = description
             await self.mass.music.playlists.update_item_in_library(
                 library_item_id, updated, overwrite=True
             )
         except Exception as exc:
             self.logger.debug("Could not update description for %s: %s", library_item_id, exc)
+
+    def _description_for(self, playlist_id: str, rules: SmartPlaylistRules) -> str:
+        """Return the stored AI description when enabled, else the rules summary."""
+        if self.config.get_value(CONF_AI_DESCRIPTIONS) and (
+            stored := self._descriptions_store.get(playlist_id)
+        ):
+            return stored
+        return f"{DESCRIPTION_PREFIX}{rules.human_readable()}"
+
+    def _schedule_ai_description_refresh(self, playlist_id: str) -> None:
+        """Schedule a background AI description refresh, deduped per playlist."""
+        if not self.config.get_value(CONF_AI_DESCRIPTIONS):
+            return
+        self.mass.create_task(
+            self._refresh_ai_description(playlist_id),
+            task_id=f"smart_playlist_ai_desc_{playlist_id}",
+            abort_existing=True,
+        )
+
+    async def _refresh_ai_description(self, playlist_id: str) -> None:
+        """Regenerate and persist the AI description for a playlist, updating the library item."""
+        rules = self._rules_store.get(playlist_id)
+        if rules is None:
+            return
+        name = self._names_store.get(playlist_id, playlist_id)
+        description = await self._generate_ai_description(name, rules)
+        previous = self._descriptions_store.get(playlist_id)
+        if description:
+            self._descriptions_store[playlist_id] = description
+        else:
+            self._descriptions_store.pop(playlist_id, None)
+        if self._descriptions_store.get(playlist_id) != previous:
+            await self._flush_rules_to_disk()
+        library_item = await self.mass.music.playlists.get_library_item_by_prov_id(
+            playlist_id, self.instance_id
+        )
+        if library_item:
+            await self._update_playlist_description(
+                library_item.item_id, self._description_for(playlist_id, rules)
+            )
+
+    async def _generate_ai_description(self, name: str, rules: SmartPlaylistRules) -> str | None:
+        """
+        Generate a natural-language description via the first AI provider that responds.
+
+        :param name: The playlist name, included in the prompt for context.
+        :param rules: The rules whose summary the description should reflect.
+        :return: The AI-generated description, or None when disabled, unavailable, or on error.
+        """
+        if not self.config.get_value(CONF_AI_DESCRIPTIONS):
+            return None
+        locale = self.mass.metadata.locale
+        for provider in self.mass.get_providers_supporting_feature(ProviderFeature.AI_QUERY):
+            if not isinstance(provider, PluginProvider):
+                continue
+            try:
+                response = await provider.ai_query(self._build_ai_prompt(name, rules, locale))
+            except Exception as exc:
+                self.logger.debug("AI description generation failed for '%s': %s", name, exc)
+                continue
+            if cleaned := response.strip():
+                return cleaned
+        return None
+
+    def _build_ai_prompt(self, name: str, rules: SmartPlaylistRules, locale: str) -> str:
+        """Build the prompt asking an AI provider to describe the smart playlist."""
+        return (
+            "Write a short, friendly description (one or two sentences) for a music playlist. "
+            f"Write it in the language matching the locale '{locale}'. "
+            "Reply with only the description, no quotes or preamble.\n"
+            f"Playlist name: {name}\n"
+            f"It contains tracks matching these rules: {rules.human_readable()}"
+        )
 
     async def _load_rules_from_disk(self) -> None:
         """Load all persisted rules from the rules directory."""
@@ -998,6 +1106,8 @@ class SmartPlaylistProvider(PluginProvider):
             for playlist_id, entry in data.items():
                 self._rules_store[playlist_id] = SmartPlaylistRules.from_dict(entry["rules"])
                 self._names_store[playlist_id] = entry.get("name", playlist_id)
+                if description := entry.get("ai_description"):
+                    self._descriptions_store[playlist_id] = description
         except Exception as exc:
             self.logger.warning("Failed to load smart playlist rules: %s", exc)
 
@@ -1020,7 +1130,11 @@ class SmartPlaylistProvider(PluginProvider):
         async with self._flush_lock:
             rules_file = os.path.join(self._rules_dir, RULES_FILENAME)
             data = {
-                pid: {"name": self._names_store.get(pid, pid), "rules": r.to_dict()}
+                pid: {
+                    "name": self._names_store.get(pid, pid),
+                    "rules": r.to_dict(),
+                    "ai_description": self._descriptions_store.get(pid),
+                }
                 for pid, r in self._rules_store.items()
             }
             await write_json(rules_file, data)
