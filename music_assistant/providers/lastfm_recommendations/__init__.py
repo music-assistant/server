@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import (
@@ -21,6 +21,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import Track
 
 from music_assistant.constants import CONF_USERNAME
+from music_assistant.controllers.cache import use_cache
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.providers.lastfm_recommendations.api_client import LastFMAPIClient
 from music_assistant.providers.lastfm_recommendations.constants import (
@@ -261,18 +262,18 @@ class LastFMRecommendationsProvider(MetadataProvider):
         :param limit: Maximum number of top tracks to return.
         """
         artist_mbid = artist.get_external_id(ExternalID.MB_ARTIST)
-        cache_key = f"toptracks.{artist.name}.{artist_mbid or ''}.{limit}"
-        # Resolving every track hits MusicBrainz/streaming providers, so serve a cached
-        # listing where we have one (shares the category the "Clear Cache" action flushes).
-        if cached := await self.mass.cache.get(
-            key=cache_key,
-            category=CACHE_CATEGORY_RESOLVED_ITEMS,
-            provider=self.instance_id,
-            base_class=Track,
-        ):
-            return cast("list[Track]", cached)
+        return await self._get_artist_toptracks(artist.name, artist_mbid, limit)
 
-        top_raw = await self.api.get_artist_top_tracks(artist.name, artist_mbid, limit)
+    @use_cache(
+        CACHE_EXPIRATION_SECONDS,
+        category=CACHE_CATEGORY_RESOLVED_ITEMS,
+        allow_expired_cache=True,
+    )
+    async def _get_artist_toptracks(
+        self, artist_name: str, artist_mbid: str | None, limit: int
+    ) -> list[Track]:
+        """Fetch and resolve an artist's top tracks, keyed by name/mbid for caching."""
+        top_raw = await self.api.get_artist_top_tracks(artist_name, artist_mbid, limit)
         if not top_raw:
             return []
 
@@ -287,16 +288,6 @@ class LastFMRecommendationsProvider(MetadataProvider):
             "Resolved %d/%d top tracks to playable items for '%s'",
             len(tracks),
             len(top_raw),
-            artist.name,
+            artist_name,
         )
-
-        # Only cache a non-empty result so a transient resolution failure isn't persisted.
-        if tracks:
-            await self.mass.cache.set(
-                cache_key,
-                [track.to_dict() for track in tracks],
-                category=CACHE_CATEGORY_RESOLVED_ITEMS,
-                provider=self.instance_id,
-                expiration=CACHE_EXPIRATION_SECONDS,
-            )
         return tracks
