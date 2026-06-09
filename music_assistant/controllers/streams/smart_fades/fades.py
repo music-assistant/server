@@ -205,7 +205,7 @@ class SmartFade(ABC):
                     with suppress(TimeoutError, asyncio.CancelledError):
                         await asyncio.wait_for(stderr_task, timeout=2)
 
-            if proc.returncode not in (None, 0):
+            if proc.returncode != 0:
                 stderr_msg = "; ".join(stderr_lines) if stderr_lines else "(no stderr)"
                 raise RuntimeError(
                     f"Smart crossfade FFmpeg failed (rc={proc.returncode}): {stderr_msg}"
