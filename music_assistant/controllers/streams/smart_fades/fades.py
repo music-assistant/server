@@ -211,7 +211,10 @@ class SmartFade(ABC):
                     f"Smart crossfade FFmpeg failed (rc={proc.returncode}): {stderr_msg}"
                 )
             if not got_output:
-                raise RuntimeError("Smart crossfade FFmpeg produced no output")
+                msg = "Smart crossfade FFmpeg produced no output"
+                if stderr_lines:
+                    msg += f": {'; '.join(stderr_lines)}"
+                raise RuntimeError(msg)
         finally:
             # Always cleanup temp file, even if ffmpeg fails
             await remove_file(fadeout_filename)
