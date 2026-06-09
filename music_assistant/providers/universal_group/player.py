@@ -581,6 +581,7 @@ class UniversalGroupPlayer(Player):
         }
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
         http_profile = cast("str", self.config.get_value(CONF_HTTP_PROFILE, "chunked"))
+        # prefer the child (protocol) player configuration
         if child_player_id:
             # player_id may be stale/invalid; fall back to the group profile
             with contextlib.suppress(KeyError):
