@@ -218,7 +218,6 @@ REFRESH_INTERVAL = 60 * 60 * 24 * 90  # 90 days
 CONF_ENABLE_ONLINE_METADATA = "enable_online_metadata"
 CONF_PREFER_LOCAL_GENRES = "prefer_local_genres"
 CONF_ENABLE_RADIO_METADATA_LOOKUP = "enable_radio_metadata_lookup"
-# "_v2" ids drop the legacy 04:00 schedule on existing installs (see ConfigController._migrate).
 MISSING_ARTIST_METADATA_SCAN_TASK_ID = "metadata_missing_artist_metadata_scan_v2"
 PLAYLIST_METADATA_SCAN_TASK_ID = "metadata_playlist_metadata_scan_v2"
 THUMB_CACHE_CLEANUP_TASK_ID = "metadata_thumb_cache_cleanup_v2"
