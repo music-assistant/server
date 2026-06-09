@@ -1092,8 +1092,10 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool, Callable[[], bool]]]] = {
     ("sonos", True, lambda: True),
     ("bluesound", True, lambda: True),
     ("heos", True, lambda: True),
+    ("wiim", True, lambda: True),
     ("party", False, lambda: True),
     ("smart_fades", False, lambda: (os.cpu_count() or 1) > 1),
+    ("lastfm_recommendations", False, lambda: True),
 }
 
 EXTERNAL_SOURCES: Final[set[str]] = {
