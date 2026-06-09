@@ -187,7 +187,7 @@ class LastFMRecommendationManager:
         self, items: list[dict[str, Any]], seed_suffix: str, target_count: int = TARGET_ITEM_COUNT
     ) -> list[dict[str, Any]]:
         """
-        Sample items using a 'top N + random remainder' strategy with a daily seed.
+        Sample items using a 'top N + random remainder' strategy with an hourly seed.
 
         :param items: List of items to sample from (already filtered).
         :param seed_suffix: Unique suffix for random seed (to vary between recommendation types).
@@ -201,8 +201,9 @@ class LastFMRecommendationManager:
         remaining = items[TOP_ITEMS_TO_TAKE:]
         random_count = target_count - TOP_ITEMS_TO_TAKE
 
-        # Daily seed keeps recommendations stable within the day and rotates them overnight.
-        seed = f"{datetime.datetime.now(tz=datetime.UTC).date().isoformat()}_{seed_suffix}"
+        # Hourly seed keeps the sampled remainder stable within the hour and rotates it each hour.
+        now = datetime.datetime.now(tz=datetime.UTC)
+        seed = f"{now.date().isoformat()}_{now.hour}_{seed_suffix}"
         rng = random.Random(seed)
         random_items = rng.sample(remaining, min(random_count, len(remaining)))
 
