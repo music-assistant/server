@@ -1336,47 +1336,6 @@ class MusicController(CoreController):
             )
         await self.database.commit()
 
-    async def _credit_artist_plays(
-        self,
-        artists: Iterable[Artist | ItemMapping],
-        *,
-        timestamp: float,
-        user_ids: list[str],
-        queue_id: str | None,
-        user_initiated: bool,
-        skip_ids: set[str],
-    ) -> None:
-        """Credit each (library-resolvable) artist with a play, skipping skip_ids."""
-        for artist in artists:
-            db_artist = await self.artists.get_library_item_by_prov_id(
-                artist.item_id, artist.provider
-            )
-            if db_artist is None:
-                continue
-            if db_artist.item_id in skip_ids:
-                self.logger.debug("Skipping already-credited artist '%s'", db_artist.name)
-                continue
-            await self.database.execute(
-                f"UPDATE {self.artists.db_table} SET play_count = play_count + 1, "
-                f"last_played = {timestamp} WHERE item_id = {db_artist.item_id}"
-            )
-            self.logger.debug("Credited play for artist '%s'", db_artist.name)
-            playlog_entry: dict[str, Any] = {
-                "item_id": db_artist.item_id,
-                "provider": "library",
-                "media_type": MediaType.ARTIST.value,
-                "name": db_artist.name,
-                "image": serialize_to_json(db_artist.image.to_dict()) if db_artist.image else None,
-                "fully_played": True,
-                "seconds_played": None,
-                "timestamp": timestamp,
-                "queue_id": queue_id,
-                "user_initiated": user_initiated,
-            }
-            for user_id in user_ids:
-                playlog_entry["userid"] = user_id
-                await self.database.insert(DB_TABLE_PLAYLOG, playlog_entry, allow_replace=True)
-
     async def resolve_library_artist_ids(self, artists: Iterable[Artist | ItemMapping]) -> set[str]:
         """Resolve the given artist references to their library item ids (when present)."""
         ids: set[str] = set()
@@ -3407,3 +3366,44 @@ class MusicController(CoreController):
             CONF_ENTRY_LIBRARY_SYNC_BACK.key, CONF_ENTRY_LIBRARY_SYNC_BACK.default_value
         )
         return bool(conf_value)
+
+    async def _credit_artist_plays(
+        self,
+        artists: Iterable[Artist | ItemMapping],
+        *,
+        timestamp: float,
+        user_ids: list[str],
+        queue_id: str | None,
+        user_initiated: bool,
+        skip_ids: set[str],
+    ) -> None:
+        """Credit each (library-resolvable) artist with a play, skipping skip_ids."""
+        for artist in artists:
+            db_artist = await self.artists.get_library_item_by_prov_id(
+                artist.item_id, artist.provider
+            )
+            if db_artist is None:
+                continue
+            if db_artist.item_id in skip_ids:
+                self.logger.debug("Skipping already-credited artist '%s'", db_artist.name)
+                continue
+            await self.database.execute(
+                f"UPDATE {self.artists.db_table} SET play_count = play_count + 1, "
+                f"last_played = {timestamp} WHERE item_id = {db_artist.item_id}"
+            )
+            self.logger.debug("Credited play for artist '%s'", db_artist.name)
+            playlog_entry: dict[str, Any] = {
+                "item_id": db_artist.item_id,
+                "provider": "library",
+                "media_type": MediaType.ARTIST.value,
+                "name": db_artist.name,
+                "image": serialize_to_json(db_artist.image.to_dict()) if db_artist.image else None,
+                "fully_played": True,
+                "seconds_played": None,
+                "timestamp": timestamp,
+                "queue_id": queue_id,
+                "user_initiated": user_initiated,
+            }
+            for user_id in user_ids:
+                playlog_entry["userid"] = user_id
+                await self.database.insert(DB_TABLE_PLAYLOG, playlog_entry, allow_replace=True)
