@@ -1012,6 +1012,9 @@ class SmartPlaylistProvider(PluginProvider):
         """Update the library playlist description with the given text."""
         try:
             playlist = await self.mass.music.playlists.get_library_item(library_item_id)
+            if playlist.metadata and playlist.metadata.description == description:
+                # Already up to date; skip the redundant write and update event.
+                return
             updated = Playlist.from_dict(playlist.to_dict())
             updated.metadata.description = description
             await self.mass.music.playlists.update_item_in_library(

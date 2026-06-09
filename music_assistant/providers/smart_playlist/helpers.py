@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -327,4 +328,10 @@ async def write_json(path: str, data: dict[str, Any]) -> None:
     tmp_path = f"{path}.tmp"
     async with aiofiles.open(tmp_path, "w", encoding="utf-8") as fh:
         await fh.write(payload)
-    await asyncio.to_thread(os.replace, tmp_path, path)
+    try:
+        await asyncio.to_thread(os.replace, tmp_path, path)
+    except OSError:
+        # Don't leave a stray temp file behind to accumulate on repeated failures.
+        with suppress(OSError):
+            await asyncio.to_thread(os.remove, tmp_path)
+        raise

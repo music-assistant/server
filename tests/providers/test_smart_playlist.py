@@ -9,7 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.enums import AlbumType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import ProviderMapping, Track
+from music_assistant_models.media_items import Playlist, ProviderMapping, Track
+from music_assistant_models.media_items.metadata import MediaItemMetadata
 
 from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
 from music_assistant.models.plugin import PluginProvider
@@ -1432,6 +1433,49 @@ async def test_write_json_preserves_original_on_failure(
         await write_json(str(target), {"value": "new"})
 
     assert json.loads(target.read_text()) == {"value": "original"}
+    # The temp file must be cleaned up so it can't accumulate on repeated failures.
+    assert not (tmp_path / "rules.json.tmp").exists()
+
+
+@pytest.mark.asyncio
+async def test_update_playlist_description_skips_when_unchanged(tmp_path: Any) -> None:
+    """No library write/event when the description already matches."""
+    plugin = _make_ai_plugin(tmp_path)
+    await plugin.handle_async_init()
+    existing = MagicMock()
+    existing.metadata.description = "Same text."
+    mass = cast("Any", plugin.mass)
+    mass.music.playlists.get_library_item = AsyncMock(return_value=existing)
+    mass.music.playlists.update_item_in_library = AsyncMock()
+
+    await plugin._update_playlist_description(7, "Same text.")
+
+    mass.music.playlists.update_item_in_library.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_playlist_description_writes_when_changed(tmp_path: Any) -> None:
+    """The library item is rewritten only when the description actually differs."""
+    plugin = _make_ai_plugin(tmp_path)
+    await plugin.handle_async_init()
+    existing = Playlist(
+        item_id="1",
+        provider="library",
+        name="P",
+        provider_mappings={
+            ProviderMapping(item_id="1", provider_domain="library", provider_instance="library")
+        },
+    )
+    existing.metadata = MediaItemMetadata(description="Old text.")
+    mass = cast("Any", plugin.mass)
+    mass.music.playlists.get_library_item = AsyncMock(return_value=existing)
+    mass.music.playlists.update_item_in_library = AsyncMock()
+
+    await plugin._update_playlist_description(7, "New text.")
+
+    mass.music.playlists.update_item_in_library.assert_awaited_once()
+    written = mass.music.playlists.update_item_in_library.await_args.args[1]
+    assert written.metadata.description == "New text."
 
 
 @pytest.mark.asyncio
