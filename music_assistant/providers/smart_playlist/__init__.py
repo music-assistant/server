@@ -427,8 +427,10 @@ class SmartPlaylistProvider(PluginProvider):
         if existing is not None:
             parsed_rules.is_dynamic = existing.is_dynamic
         self._validate_rules(parsed_rules)
-        await self._save_rules(prov_id, parsed_rules)
+        # Drop the stale AI description before saving so it is invalidated on disk in the
+        # same flush as the rule change, not left behind until the background refresh runs.
         self._descriptions_store.pop(prov_id, None)
+        await self._save_rules(prov_id, parsed_rules)
 
         library_item = await self.mass.music.playlists.get_library_item_by_prov_id(
             prov_id, self.instance_id

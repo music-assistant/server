@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -19,6 +20,7 @@ from music_assistant.providers.smart_playlist import (
 from music_assistant.providers.smart_playlist.helpers import (
     LOGIC_AND,
     LOGIC_OR,
+    RULES_FILENAME,
     SmartPlaylistRules,
 )
 
@@ -1402,6 +1404,10 @@ async def test_update_rules_drops_stale_and_schedules_regeneration(tmp_path: Any
     await plugin.update_smart_playlist_rules("abc", {"genre_ids": [1]})
 
     assert "abc" not in plugin._descriptions_store
+    # The stale description must also be invalidated on disk, not just in memory, so it
+    # cannot be reloaded after a restart before the background refresh runs.
+    persisted = json.loads((tmp_path / "smart_playlists" / RULES_FILENAME).read_text())
+    assert persisted["abc"]["ai_description"] is None
     scheduled_desc = cast("Any", plugin)._update_playlist_description.await_args.args[1]
     assert scheduled_desc.startswith("[Smart Playlist]")
     assert scheduled == ["_refresh_ai_description"]
