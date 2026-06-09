@@ -1209,6 +1209,7 @@ def _make_ai_plugin(
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
     mass.cache.clear = AsyncMock()
+    mass.metadata.locale = "en_US"
     providers = [ai_provider] if ai_provider is not None else []
     mass.get_providers_supporting_feature = MagicMock(return_value=providers)
     manifest = MagicMock()
@@ -1255,6 +1256,19 @@ async def test_generate_ai_description_uses_provider(tmp_path: Any) -> None:
     prompt = ai_provider.ai_query.await_args.args[0]
     assert "Evening Chill" in prompt
     assert "Favorites only" in prompt
+
+
+@pytest.mark.asyncio
+async def test_generate_ai_description_includes_locale(tmp_path: Any) -> None:
+    """The configured locale is passed to the provider so it answers in that language."""
+    ai_provider = _make_ai_provider("Een rustige mix voor de avond.")
+    plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_provider=ai_provider)
+    cast("Any", plugin.mass).metadata.locale = "nl_NL"
+
+    await plugin._generate_ai_description("Avond Chill", SmartPlaylistRules(favorites_only=True))
+
+    prompt = ai_provider.ai_query.await_args.args[0]
+    assert "nl_NL" in prompt
 
 
 @pytest.mark.asyncio

@@ -1054,21 +1054,23 @@ class SmartPlaylistProvider(PluginProvider):
         """
         if not self.config.get_value(CONF_AI_DESCRIPTIONS):
             return None
+        locale = self.mass.metadata.locale
         for provider in self.mass.get_providers_supporting_feature(ProviderFeature.AI_QUERY):
             if not isinstance(provider, PluginProvider):
                 continue
             try:
-                response = await provider.ai_query(self._build_ai_prompt(name, rules))
+                response = await provider.ai_query(self._build_ai_prompt(name, rules, locale))
             except Exception as exc:
                 self.logger.debug("AI description generation failed for '%s': %s", name, exc)
                 return None
             return response.strip() or None
         return None
 
-    def _build_ai_prompt(self, name: str, rules: SmartPlaylistRules) -> str:
+    def _build_ai_prompt(self, name: str, rules: SmartPlaylistRules, locale: str) -> str:
         """Build the prompt asking an AI provider to describe the smart playlist."""
         return (
             "Write a short, friendly description (one or two sentences) for a music playlist. "
+            f"Write it in the language matching the locale '{locale}'. "
             "Reply with only the description, no quotes or preamble.\n"
             f"Playlist name: {name}\n"
             f"It contains tracks matching these rules: {rules.human_readable()}"
