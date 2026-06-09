@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -321,21 +320,25 @@ async def read_json(path: str) -> dict[str, Any]:
         return cast("dict[str, Any]", json_loads(await fh.read()))
 
 
-async def write_json(path: str, data: dict[str, Any]) -> None:
-    """Write data as JSON to a file atomically (write to a temp file, then replace)."""
-    # Serialize first so a serialization error never touches the destination file, then
-    # write+rename so an interrupted write (e.g. task cancellation) can't truncate it.
-    payload = json_dumps(data, indent=True)
-    tmp_path = f"{path}.tmp"
+def _atomic_write(path: str, payload: str) -> None:
+    """Write payload to a temp file and atomically replace path, cleaning up on failure."""
+    tmp = Path(f"{path}.tmp")
     replaced = False
     try:
-        async with aiofiles.open(tmp_path, "w", encoding="utf-8") as fh:
-            await fh.write(payload)
-        await asyncio.to_thread(os.replace, tmp_path, path)
+        with tmp.open("w", encoding="utf-8") as fh:
+            fh.write(payload)
+        tmp.replace(path)
         replaced = True
     finally:
-        # On any failure or cancellation before the rename completed, don't leave a stray
-        # temp file behind to accumulate over time.
+        # On any failure mid-write, don't leave a stray temp file behind to accumulate.
         if not replaced:
             with suppress(OSError):
-                Path(tmp_path).unlink(missing_ok=True)
+                tmp.unlink(missing_ok=True)
+
+
+async def write_json(path: str, data: dict[str, Any]) -> None:
+    """Write data as JSON to a file atomically (temp file + replace, off the event loop)."""
+    # The whole write+rename+cleanup runs in one thread so a cancelled await can't race the
+    # rename against cleanup; the rename itself is atomic, so the destination is never truncated.
+    payload = json_dumps(data, indent=True)
+    await asyncio.to_thread(_atomic_write, path, payload)

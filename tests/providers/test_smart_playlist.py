@@ -1429,7 +1429,7 @@ async def test_write_json_preserves_original_on_failure(
     def _boom(*_: Any, **__: Any) -> None:
         raise OSError("replace failed")
 
-    monkeypatch.setattr("music_assistant.providers.smart_playlist.helpers.os.replace", _boom)
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.helpers.Path.replace", _boom)
     with pytest.raises(OSError, match="replace failed"):
         await write_json(str(target), {"value": "new"})
 
@@ -1449,7 +1449,7 @@ async def test_write_json_cleans_temp_on_cancellation(
     def _cancel(*_: Any, **__: Any) -> None:
         raise asyncio.CancelledError
 
-    monkeypatch.setattr("music_assistant.providers.smart_playlist.helpers.os.replace", _cancel)
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.helpers.Path.replace", _cancel)
     with pytest.raises(asyncio.CancelledError):
         await write_json(str(target), {"value": "new"})
 
