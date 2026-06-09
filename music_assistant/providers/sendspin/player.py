@@ -840,17 +840,15 @@ class SendspinPlayer(SendspinBasePlayer):
         artwork_url = current_media.image_url
         if artwork_url != self.last_sent_artwork_url:
             self.last_sent_artwork_url = artwork_url
-            image_data: bytes | None = None
             if artwork_url is not None:
                 # Fetch from the resolved URL so the bytes match artwork_url, even when
                 # radio now-playing art differs from the queue item's own image.
-                fetched = await self.mass.metadata.get_thumbnail(artwork_url, provider="builtin")
-                if isinstance(fetched, bytes):
-                    image_data = fetched
-            if image_data is not None:
-                image = await asyncio.to_thread(Image.open, BytesIO(image_data))
-                if (artwork_role := self._artwork_role) is not None:
-                    await artwork_role.set_album_artwork(image)
+                image_data = await self.mass.metadata.get_thumbnail(artwork_url, provider="builtin")
+                if isinstance(image_data, bytes):
+                    # decode through the guard so undecodable art (e.g. SVG) is skipped, not crashed
+                    image = await self._decode_artwork(image_data)
+                    if image is not None and (artwork_role := self._artwork_role) is not None:
+                        await artwork_role.set_album_artwork(image)
             elif (artwork_role := self._artwork_role) is not None:
                 await artwork_role.set_album_artwork(None)
 
@@ -883,11 +881,32 @@ class SendspinPlayer(SendspinBasePlayer):
                     artist_artwork_url, provider="builtin"
                 )
                 if isinstance(artist_image_data, bytes):
-                    artist_image = await asyncio.to_thread(Image.open, BytesIO(artist_image_data))
-                    if (artwork_role := self._artwork_role) is not None:
+                    artist_image = await self._decode_artwork(artist_image_data)
+                    if (
+                        artist_image is not None
+                        and (artwork_role := self._artwork_role) is not None
+                    ):
                         await artwork_role.set_artist_artwork(artist_image)
             elif (artwork_role := self._artwork_role) is not None:
                 await artwork_role.set_artist_artwork(None)
+
+    async def _decode_artwork(self, image_data: bytes) -> Image.Image | None:
+        """
+        Decode artwork bytes into a Pillow image, returning None if undecodable.
+
+        :param image_data: Raw image bytes to decode.
+        """
+
+        def _open() -> Image.Image:
+            img = Image.open(BytesIO(image_data))
+            img.load()
+            return img
+
+        try:
+            return await asyncio.to_thread(_open)
+        except OSError as err:
+            self.logger.debug("Skipping undecodable artwork: %s", err)
+            return None
 
     def _on_player_media_updated(self) -> None:
         """Handle callback when the current media of the player is updated."""

@@ -76,6 +76,7 @@ from music_assistant.helpers.images import (
     cleanup_thumb_cache,
     create_collage,
     create_thumb_hash,
+    detect_image_content_format,
     get_image_data,
     get_image_thumb,
 )
@@ -655,30 +656,17 @@ class MetaDataController(CoreController):
         size: int | None = None,
         base64: bool = False,
         image_format: str | None = None,
+        flatten_transparency: bool = False,
     ) -> bytes | str:
         """Get/create thumbnail image for path (image url or local path)."""
-        if not self.mass.get_provider(provider) and not path.startswith("http"):
-            raise ProviderUnavailableError
         if image_format is None:
             image_format = _detect_image_format(path)
-        if provider == "builtin" and path.startswith("/collage/"):
-            # special case for collage images
-            collage_rel = path.rsplit("/collage/", maxsplit=1)[-1]
-            if not is_safe_path(collage_rel):
-                raise FileNotFoundError("Invalid collage path")
-            path = os.path.join(self._collage_images_dir, collage_rel)
-        if image_format == "svg":
-            svg_bytes = await get_image_data(self.mass, path, provider)
-            if base64:
-                enc_image = b64encode(svg_bytes).decode()
-                return f"data:image/svg+xml;base64,{enc_image}"
-            return svg_bytes
-        thumbnail_bytes = await get_image_thumb(
-            self.mass, path, size=size, provider=provider, image_format=image_format
+        thumbnail_bytes, content_format = await self._resolve_thumbnail(
+            path, provider, size, image_format, flatten_transparency
         )
         if base64:
             enc_image = b64encode(thumbnail_bytes).decode()
-            return f"data:image/{image_format};base64,{enc_image}"
+            return f"data:{_IMAGEPROXY_CONTENT_TYPES[content_format]};base64,{enc_image}"
         return thumbnail_bytes
 
     async def handle_imageproxy(self, request: web.Request) -> web.Response:
@@ -755,13 +743,59 @@ class MetaDataController(CoreController):
             return web.Response(status=404)
         return await self._serve_thumbnail(path, provider, size, image_format)
 
+    async def _resolve_thumbnail(
+        self,
+        path: str,
+        provider: str,
+        size: int | None,
+        image_format: str,
+        flatten_transparency: bool,
+    ) -> tuple[bytes, str]:
+        """
+        Fetch image bytes and return them with their resolved content format.
+
+        The served format can differ from the requested one (SVG is passed
+        through unchanged and transparent sources may be kept as PNG), so the
+        actual format is determined once here and reused by every caller.
+
+        :param path: Image url or local path.
+        :param provider: Provider identifier for the image source.
+        :param size: Target thumbnail size (square), or None for original.
+        :param image_format: Requested output format (jpg/jpeg/png/svg).
+        :param flatten_transparency: Composite alpha onto white and keep JPEG when True.
+        """
+        if not self.mass.get_provider(provider) and not path.startswith("http"):
+            raise ProviderUnavailableError
+        if provider == "builtin" and path.startswith("/collage/"):
+            # special case for collage images
+            collage_rel = path.rsplit("/collage/", maxsplit=1)[-1]
+            if not is_safe_path(collage_rel):
+                raise FileNotFoundError("Invalid collage path")
+            path = os.path.join(self._collage_images_dir, collage_rel)
+        if image_format == "svg":
+            return await get_image_data(self.mass, path, provider), "svg"
+        thumbnail_bytes = await get_image_thumb(
+            self.mass,
+            path,
+            size=size,
+            provider=provider,
+            image_format=image_format,
+            flatten_transparency=flatten_transparency,
+        )
+        return thumbnail_bytes, detect_image_content_format(thumbnail_bytes) or image_format
+
     async def _serve_thumbnail(
         self, path: str, provider: str, size: int, image_format: str
     ) -> web.Response:
         """Fetch (or render+cache) the thumbnail and produce an HTTP response."""
+        # `fmt=jpeg` is the explicit player-media request: players are sent a
+        # JPEG for maximum compatibility, and since JPEG has no alpha channel we
+        # composite transparency onto white. The auto-detected `fmt=jpg`/`png`
+        # default (app/UI) instead keeps transparency as PNG.
+        flatten_transparency = image_format == "jpeg"
         try:
-            image_data = await self.get_thumbnail(
-                path, size=size, provider=provider, image_format=image_format
+            image_data, content_format = await self._resolve_thumbnail(
+                path, provider, size, image_format, flatten_transparency
             )
         except Exception as err:
             # broadly catch all exceptions here to ensure we dont crash the request handler
@@ -775,10 +809,21 @@ class MetaDataController(CoreController):
                     exc_info=err if self.logger.isEnabledFor(10) else None,
                 )
             return web.Response(status=404)
+        response_headers = {
+            "Cache-Control": "max-age=31536000",
+            "Access-Control-Allow-Origin": "*",
+        }
+        if content_format == "svg":
+            # Sniffed SVGs from attacker-influenceable sources (radio favicons) are
+            # served same-origin; without a CSP an embedded <script> would run.
+            response_headers["Content-Security-Policy"] = (
+                "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+            )
+            response_headers["X-Content-Type-Options"] = "nosniff"
         return web.Response(
             body=image_data,
-            headers={"Cache-Control": "max-age=31536000", "Access-Control-Allow-Origin": "*"},
-            content_type=_IMAGEPROXY_CONTENT_TYPES[image_format],
+            headers=response_headers,
+            content_type=_IMAGEPROXY_CONTENT_TYPES[content_format],
         )
 
     def _maybe_log_legacy_imageproxy(self, request: web.Request) -> None:

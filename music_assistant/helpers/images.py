@@ -38,14 +38,51 @@ _THUMB_CACHE_DIR = "thumbnails"
 _THUMB_MEMORY_CACHE_MAX = 50
 _ALLOWED_THUMB_FORMATS: frozenset[str] = frozenset({"PNG", "JPEG"})
 
-# By construction the filename is `<sha256>_<int>.(jpg|png)`; the regex is an
-# explicit sanitizer that also lets CodeQL prove the value is safe to join
-# into a filesystem path.
-_THUMB_FILENAME_RE = re.compile(r"^[0-9a-f]{64}_\d+\.(?:jpg|png)$")
+# Bump on encoding-rule changes so stale entries (e.g. old black-bg JPEGs for
+# transparent logos) aren't served from a colliding filename after upgrade.
+_THUMB_CACHE_VERSION = 2
+
+# By construction the filename is `<sha256>_<int>_v<int>[_flat].(jpg|png)`; the
+# regex is an explicit sanitizer that also lets CodeQL prove the value is safe
+# to join into a filesystem path. The `_flat` marker separates the flattened
+# and transparency-preserving cache variants.
+_THUMB_FILENAME_RE = re.compile(r"^[0-9a-f]{64}_\d+_v\d+(?:_flat)?\.(?:jpg|png)$")
 
 _thumb_memory_cache: OrderedDict[str, bytes] = OrderedDict()
 
 _MAX_IMAGEPROXY_RECURSION_DEPTH = 5
+
+# Leading magic bytes used to sniff raster image formats from their content.
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_JPEG_MAGIC = b"\xff\xd8\xff"
+
+
+def is_svg_data(data: bytes) -> bool:
+    """Return True when the given bytes appear to be an SVG image."""
+    if not data:
+        return False
+    # the root <svg> may be preceded by an xml declaration, doctype or comment
+    sample = data[:1024].lstrip()
+    if not sample[:64].lower().startswith((b"<?xml", b"<svg", b"<!--", b"<!doctype")):
+        return False
+    return b"<svg" in sample.lower()
+
+
+def detect_image_content_format(data: bytes) -> str | None:
+    """
+    Return the sniffed image format (`png`, `jpg` or `svg`), or None if unknown.
+
+    :param data: Raw image bytes to inspect.
+    """
+    if not data:
+        return None
+    if data.startswith(_PNG_MAGIC):
+        return "png"
+    if data.startswith(_JPEG_MAGIC):
+        return "jpg"
+    if is_svg_data(data):
+        return "svg"
+    return None
 
 
 def create_thumb_hash(provider: str, path_or_url: str) -> str:
@@ -54,12 +91,15 @@ def create_thumb_hash(provider: str, path_or_url: str) -> str:
     return hashlib.sha256(raw.encode(), usedforsecurity=False).hexdigest()
 
 
-def _thumb_cache_filename(thumb_hash: str, size: int | None, image_format: str) -> str:
+def _thumb_cache_filename(
+    thumb_hash: str, size: int | None, image_format: str, flatten_transparency: bool = False
+) -> str:
     """Build the cache filename for a thumbnail."""
     ext = image_format.lower()
     if ext == "jpeg":
         ext = "jpg"
-    return f"{thumb_hash}_{size or 0}.{ext}"
+    suffix = "_flat" if flatten_transparency else ""
+    return f"{thumb_hash}_{size or 0}_v{_THUMB_CACHE_VERSION}{suffix}.{ext}"
 
 
 def _get_from_memory_cache(key: str) -> bytes | None:
@@ -76,6 +116,18 @@ def _put_in_memory_cache(key: str, data: bytes) -> None:
     _thumb_memory_cache.move_to_end(key)
     while len(_thumb_memory_cache) > _THUMB_MEMORY_CACHE_MAX:
         _thumb_memory_cache.popitem(last=False)
+
+
+def _has_alpha(img: ImageClass) -> bool:
+    """Return True if the image actually uses transparency."""
+    if img.mode == "P":
+        return "transparency" in img.info
+    if img.mode in ("RGBA", "LA", "PA"):
+        # an alpha channel may still be fully opaque; only treat it as
+        # transparent when some pixel is not fully opaque
+        # single-band getextrema() returns a (min, max) numeric tuple
+        return cast("tuple[float, float]", img.getchannel("A").getextrema())[0] < 255
+    return False
 
 
 _IMAGEPROXY_V2_PREFIX = "/imageproxy/"
@@ -227,6 +279,7 @@ async def get_image_thumb(
     size: int | None,
     provider: str,
     image_format: str = "PNG",
+    flatten_transparency: bool = False,
 ) -> bytes:
     """Get (optimized) thumbnail from image url.
 
@@ -240,6 +293,8 @@ async def get_image_thumb(
     :param size: Target thumbnail size (square), or None for original.
     :param provider: Provider identifier for the image source.
     :param image_format: Output format (PNG or JPEG/JPG).
+    :param flatten_transparency: When True, alpha is composited onto white and
+        kept as JPEG; when False, transparent sources are emitted as PNG.
     """
     image_format = image_format.upper()
     if image_format == "JPG":
@@ -249,7 +304,7 @@ async def get_image_thumb(
         raise ValueError(msg)
 
     thumb_hash = create_thumb_hash(provider, path_or_url)
-    cache_filename = _thumb_cache_filename(thumb_hash, size, image_format)
+    cache_filename = _thumb_cache_filename(thumb_hash, size, image_format, flatten_transparency)
     if not _THUMB_FILENAME_RE.fullmatch(cache_filename):
         # cache_filename is built from a sha256 + int + fixed extension, so this
         # is unreachable in practice — it is here so a future change to either
@@ -282,6 +337,7 @@ async def get_image_thumb(
         provider,
         image_format,
         cache_filepath,
+        flatten_transparency,
         task_id=f"thumb.{cache_filename}",
         abort_existing=False,
     )
@@ -297,6 +353,7 @@ async def _generate_and_cache_thumb(
     provider: str,
     image_format: str,
     cache_filepath: str,
+    flatten_transparency: bool = False,
 ) -> bytes:
     """Generate a thumbnail, persist it on disk, and return the bytes.
 
@@ -306,28 +363,42 @@ async def _generate_and_cache_thumb(
     :param provider: Provider identifier for the image source.
     :param image_format: Normalized output format (PNG or JPEG).
     :param cache_filepath: Absolute path where the thumbnail will be stored.
+    :param flatten_transparency: When True, alpha is composited onto white and
+        kept as JPEG; when False, transparent sources are emitted as PNG.
     """
     img_data = await get_image_data(mass, path_or_url, provider)
     if not img_data or not isinstance(img_data, bytes):
         raise FileNotFoundError(f"Image not found: {path_or_url}")
 
-    if not size and image_format.encode() in img_data:
+    if is_svg_data(img_data):
+        # Pillow can't decode SVG; pass it through unchanged.
+        thumb_data = img_data
+    elif not size and image_format.encode() in img_data:
         thumb_data = img_data
     else:
 
         def _create_image() -> bytes:
             data = BytesIO()
             try:
-                img = Image.open(BytesIO(img_data))
+                img: ImageClass = Image.open(BytesIO(img_data))
             except UnidentifiedImageError:
                 raise FileNotFoundError(f"Invalid image: {path_or_url}")
             if size:
                 img.thumbnail((size, size), Image.Resampling.LANCZOS)
-            mode = "RGBA" if image_format == "PNG" else "RGB"
-            if image_format == "JPEG":
-                img.convert(mode).save(data, image_format, quality=95, optimize=False)
+            target_format = image_format
+            if target_format == "JPEG" and _has_alpha(img):
+                if flatten_transparency:
+                    # composite onto white, else the alpha would flatten to black
+                    background = Image.new("RGBA", img.size, (255, 255, 255, 255))
+                    background.alpha_composite(img.convert("RGBA"))
+                    img = background
+                else:
+                    target_format = "PNG"
+            mode = "RGBA" if target_format == "PNG" else "RGB"
+            if target_format == "JPEG":
+                img.convert(mode).save(data, target_format, quality=95, optimize=False)
             else:
-                img.convert(mode).save(data, image_format, optimize=False)
+                img.convert(mode).save(data, target_format, optimize=False)
             return data.getvalue()
 
         thumb_data = await asyncio.to_thread(_create_image)

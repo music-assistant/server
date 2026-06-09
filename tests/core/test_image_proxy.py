@@ -5,6 +5,7 @@ import hashlib
 from unittest.mock import MagicMock
 
 import pytest
+from PIL import Image
 
 from music_assistant.controllers.metadata import (
     _IMAGEPROXY_CONTENT_TYPES,
@@ -13,7 +14,16 @@ from music_assistant.controllers.metadata import (
     _is_safe_imageproxy_request_path,
     _normalize_imageproxy_format,
 )
-from music_assistant.helpers.images import _extract_imageproxy_id, create_thumb_hash
+from music_assistant.helpers.images import (
+    _THUMB_CACHE_VERSION,
+    _THUMB_FILENAME_RE,
+    _extract_imageproxy_id,
+    _has_alpha,
+    _thumb_cache_filename,
+    create_thumb_hash,
+    detect_image_content_format,
+    is_svg_data,
+)
 from music_assistant.mass import MusicAssistant
 
 
@@ -243,3 +253,99 @@ async def test_handle_imageproxy_rejects_extra_path_segments(
     # double slash after the prefix must not be accepted either
     bad = await metadata_controller.handle_imageproxy(_fake_request(f"/imageproxy//{image_id}"))
     assert bad.status == 400
+
+
+def test_is_svg_data() -> None:
+    """SVG bytes are detected by content, regardless of file extension."""
+    # plain root element
+    assert is_svg_data(b'<svg xmlns="http://www.w3.org/2000/svg"></svg>')
+    # XML declaration before the root element
+    assert is_svg_data(b'<?xml version="1.0"?>\n<svg viewBox="0 0 10 10"></svg>')
+    # leading whitespace and a comment before the root element
+    assert is_svg_data(b"  \n<!-- a logo -->\n<svg></svg>")
+    # doctype before the root element
+    assert is_svg_data(b'<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN">\n<svg></svg>')
+    # raster formats and arbitrary data are not SVG
+    assert not is_svg_data(b"\xff\xd8\xff\xe0JFIF")  # jpeg magic
+    assert not is_svg_data(b"\x89PNG\r\n\x1a\n")  # png magic
+    assert not is_svg_data(b"")
+    assert not is_svg_data(b"<html><body>not svg</body></html>")
+    # an XML document that never declares an <svg> element is not SVG
+    assert not is_svg_data(b'<?xml version="1.0"?><rss></rss>')
+
+
+def test_detect_image_content_format() -> None:
+    """Image format is sniffed from leading magic bytes (png/jpg/svg)."""
+    assert detect_image_content_format(b"\x89PNG\r\n\x1a\n....") == "png"
+    assert detect_image_content_format(b"\xff\xd8\xff\xe0JFIF") == "jpg"
+    assert detect_image_content_format(b'<svg xmlns="http://www.w3.org/2000/svg"></svg>') == "svg"
+    assert detect_image_content_format(b"") is None
+    assert detect_image_content_format(b"GIF89a") is None
+    # every sniffed value must map to a known content type
+    for fmt in ("png", "jpg", "svg"):
+        assert fmt in _IMAGEPROXY_CONTENT_TYPES
+
+
+def test_thumb_cache_filename_separates_flatten_variants() -> None:
+    """Flattened (player-compat) and transparency-preserving variants differ."""
+    thumb_hash = "a" * 64
+    plain = _thumb_cache_filename(thumb_hash, 512, "jpeg", flatten_transparency=False)
+    flat = _thumb_cache_filename(thumb_hash, 512, "jpeg", flatten_transparency=True)
+    assert plain == f"{thumb_hash}_512_v{_THUMB_CACHE_VERSION}.jpg"
+    assert flat == f"{thumb_hash}_512_v{_THUMB_CACHE_VERSION}_flat.jpg"
+    assert plain != flat
+    # png requests keep their own extension/bucket
+    png_name = _thumb_cache_filename(thumb_hash, 0, "png")
+    assert png_name == f"{thumb_hash}_0_v{_THUMB_CACHE_VERSION}.png"
+
+
+def test_has_alpha() -> None:
+    """Only images that actually use transparency are detected."""
+    assert _has_alpha(Image.new("RGBA", (4, 4), (0, 0, 0, 0)))
+    assert _has_alpha(Image.new("LA", (4, 4)))
+    palette_img = Image.new("P", (4, 4))
+    palette_img.info["transparency"] = 0
+    assert _has_alpha(palette_img)
+    # a fully-opaque alpha channel does not count as transparent
+    assert not _has_alpha(Image.new("RGBA", (4, 4), (1, 2, 3, 255)))
+    # opaque modes have no alpha
+    assert not _has_alpha(Image.new("RGB", (4, 4), (10, 20, 30)))
+    assert not _has_alpha(Image.new("L", (4, 4)))
+    assert not _has_alpha(Image.new("P", (4, 4)))
+
+
+def test_thumb_cache_filename_includes_cache_version() -> None:
+    """The version is in the filename so pre-upgrade thumbnails can't be reused."""
+    thumb_hash = "a" * 64
+    name = _thumb_cache_filename(thumb_hash, 512, "jpeg")
+    assert f"_v{_THUMB_CACHE_VERSION}" in name
+    # the unversioned (pre-PR) filename must not collide with the current one
+    assert name != f"{thumb_hash}_512.jpg"
+    # the sanitizer must accept the versioned shape it now produces
+    assert _THUMB_FILENAME_RE.fullmatch(name)
+    assert _THUMB_FILENAME_RE.fullmatch(
+        _thumb_cache_filename(thumb_hash, 0, "png", flatten_transparency=True)
+    )
+
+
+async def test_serve_thumbnail_sets_csp_for_svg(
+    metadata_controller: MetaDataController, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SVG responses carry a script-blocking CSP; raster responses do not."""
+    served: dict[str, tuple[bytes, str]] = {"value": (b"<svg></svg>", "svg")}
+
+    async def _fake_resolve(*_args: object, **_kwargs: object) -> tuple[bytes, str]:
+        return served["value"]
+
+    monkeypatch.setattr(metadata_controller, "_resolve_thumbnail", _fake_resolve)
+
+    svg_resp = await metadata_controller._serve_thumbnail("p", "builtin", 0, "svg")
+    assert svg_resp.headers["Content-Security-Policy"] == (
+        "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+    )
+    assert svg_resp.headers["X-Content-Type-Options"] == "nosniff"
+
+    served["value"] = (b"\xff\xd8\xff", "jpg")
+    jpg_resp = await metadata_controller._serve_thumbnail("p", "builtin", 256, "jpeg")
+    assert "Content-Security-Policy" not in jpg_resp.headers
+    assert "X-Content-Type-Options" not in jpg_resp.headers
