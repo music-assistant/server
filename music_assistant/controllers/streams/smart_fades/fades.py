@@ -239,10 +239,10 @@ class SmartFade(ABC):
         if returncode not in (None, 0):
             stderr_msg = "; ".join(stderr_lines) if stderr_lines else "(no stderr)"
             return f"Smart crossfade FFmpeg failed (rc={returncode}): {stderr_msg}"
-        # FFmpeg exited cleanly but emitted no audio: a distinct failure mode that
-        # must not be reported as an rc-based failure (rc is 0 here).
+        # No output is a distinct failure mode from a non-zero exit and must not be
+        # reported as an rc-based failure (rc is 0 or unknown here, not an error code).
         if not got_output:
-            return "Smart crossfade FFmpeg exited cleanly but produced no output"
+            return "Smart crossfade FFmpeg produced no output"
         return None
 
 
