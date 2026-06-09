@@ -1335,7 +1335,7 @@ class MusicController(CoreController):
         self,
         artists: Iterable[Artist | ItemMapping],
         *,
-        timestamp: int,
+        timestamp: float,
         user_ids: list[str],
         queue_id: str | None,
         user_initiated: bool,
