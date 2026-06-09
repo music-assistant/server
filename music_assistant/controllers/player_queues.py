@@ -3327,7 +3327,8 @@ class PlayerQueuesController(CoreController):
     def _enqueued_album_for_track(
         self, queue: PlayerQueue, item_to_report: QueueItem, media_item: MediaItemType
     ) -> Album | None:
-        """Return the album to credit for this played track, or None.
+        """
+        Return the album to credit for this played track, or None.
 
         Only an album the user explicitly enqueued is eligible, and only on the first
         track of a contiguous run of its tracks (the previous queue item must belong to
