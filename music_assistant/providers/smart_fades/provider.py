@@ -16,6 +16,7 @@ from music_assistant_models.enums import MediaType
 from torchaudio.transforms import SpectralCentroid
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.helpers.util import verify_cpu_supports_ml_inference
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
@@ -73,6 +74,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        verify_cpu_supports_ml_inference()
         (
             self._beat_this_model,
             self._beat_this_post_processor,
