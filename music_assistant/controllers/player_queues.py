@@ -228,20 +228,20 @@ class PlayerQueuesController(CoreController):
                 label="Items to select when you play a (in-library) artist.",
                 options=[
                     ConfigValueOption(
-                        title="Only tracks that are in your library",
+                        title="Artist top tracks only",
+                        value="top_tracks",
+                    ),
+                    ConfigValueOption(
+                        title="In-library tracks for the artist only",
                         value="library_tracks",
                     ),
                     ConfigValueOption(
-                        title="Tracks from all albums that are in your library",
-                        value="library_album_tracks",
+                        title="Prefer library, fall back to top",
+                        value="prefer_library",
                     ),
                     ConfigValueOption(
-                        title="The artist's top tracks (from streaming provider(s))",
+                        title="All tracks from all providers",
                         value="all_tracks",
-                    ),
-                    ConfigValueOption(
-                        title="Tracks from all the artist's albums (from streaming provider(s))",
-                        value="all_album_tracks",
                     ),
                 ],
             ),
@@ -1954,59 +1954,86 @@ class PlayerQueuesController(CoreController):
             artist.item_id, artist.provider
         )
 
+    async def _library_artist_tracks(self, artist: Artist) -> list[Track]:
+        """
+        Return the in-library tracks for the given artist (empty if it is not saved).
+
+        :param artist: The artist to resolve in-library tracks for.
+        """
+        if (library_artist := await self._resolve_library_artist(artist)) is None:
+            return []
+        return await self.mass.music.artists.tracks(library_artist.item_id, "library")
+
+    async def _provider_discography_tracks(self, artist: Artist) -> list[Track]:
+        """
+        Return the tracks of every (deduplicated) album across the artist's providers.
+
+        :param artist: The artist to resolve album tracks for.
+        """
+        # unique albums across the (streaming) providers attached to the artist, respecting the
+        # user provider filter and a single instance per streaming domain
+        unique_providers = self.mass.music.get_unique_providers()
+        album_ids: set[str] = set()
+        albums: list[Album] = []
+        for mapping in artist.provider_mappings:
+            if mapping.provider_instance not in unique_providers:
+                continue
+            for album in await self.mass.music.artists.get_provider_artist_albums(
+                mapping.item_id, mapping.provider_instance
+            ):
+                unique_id = f"{album.name}.{album.version}"
+                if unique_id in album_ids:
+                    continue
+                album_ids.add(unique_id)
+                albums.append(album)
+        tracks: list[Track] = []
+        for album in albums:
+            tracks.extend(await self.mass.music.albums.tracks(album.item_id, album.provider))
+        return tracks
+
     async def get_artist_tracks(self, artist: Artist) -> list[Track]:
-        """Return tracks for given artist, based on user preference."""
+        """Return the tracks to play for the given artist, based on user preference."""
         artist_items_conf = self.mass.config.get_raw_core_config_value(
             self.domain,
             CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
             ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
         )
-        self.logger.info(
-            "Fetching tracks to play for artist %s",
-            artist.name,
-        )
-        # track-based selection
-        if artist_items_conf == "library_tracks":
-            # operates on the in-library artist; bail out if it is not (yet) saved
-            if (library_artist := await self._resolve_library_artist(artist)) is None:
-                return []
-            tracks = await self.mass.music.artists.tracks(library_artist.item_id, "library")
-            random.shuffle(tracks)
-            return tracks
-        if artist_items_conf == "all_tracks":
-            # the artist's top tracks across the (streaming) providers
+        self.logger.info("Fetching tracks to play for artist %s", artist.name)
+        # the artist's top/popular tracks from the (streaming) provider(s)
+        if artist_items_conf == "top_tracks":
             tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
             random.shuffle(tracks)
             return tracks
-        # album-based selection
-        albums: list[Album] = []
-        if artist_items_conf == "library_album_tracks":
-            # operates on the in-library artist; leave albums empty if it is not (yet) saved
-            if (library_artist := await self._resolve_library_artist(artist)) is not None:
-                albums = await self.mass.music.artists.albums(library_artist.item_id, "library")
-        elif artist_items_conf == "all_album_tracks":
-            # all (unique) albums across the (streaming) providers attached to the artist,
-            # respecting the user provider filter and a single instance per streaming domain
-            unique_providers = self.mass.music.get_unique_providers()
-            unique_ids: set[str] = set()
-            for mapping in artist.provider_mappings:
-                if mapping.provider_instance not in unique_providers:
+        # only the artist's in-library tracks (legacy "library_album_tracks" maps here)
+        if artist_items_conf in ("library_tracks", "library_album_tracks"):
+            tracks = await self._library_artist_tracks(artist)
+            random.shuffle(tracks)
+            return tracks
+        # in-library tracks, falling back to top tracks when the artist is not (yet) in the library
+        if artist_items_conf == "prefer_library":
+            tracks = await self._library_artist_tracks(artist)
+            if not tracks:
+                tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
+            random.shuffle(tracks)
+            return tracks
+        # default ("all_tracks", legacy "all_album_tracks"): every track we can find for the
+        # artist, deduplicated — in-library tracks, top tracks and the full per-provider album
+        # discography (so newly released albums are included too)
+        result: list[Track] = []
+        seen: set[str] = set()
+        for source in (
+            await self._library_artist_tracks(artist),
+            await self.mass.music.artists.top_tracks(artist.item_id, artist.provider),
+            await self._provider_discography_tracks(artist),
+        ):
+            for track in source:
+                unique_id = f"{track.name}.{track.version}"
+                if unique_id in seen:
                     continue
-                for album in await self.mass.music.artists.get_provider_artist_albums(
-                    mapping.item_id, mapping.provider_instance
-                ):
-                    unique_id = f"{album.name}.{album.version}"
-                    if unique_id in unique_ids:
-                        continue
-                    unique_ids.add(unique_id)
-                    albums.append(album)
-        all_tracks: list[Track] = []
-        for album in albums:
-            for album_track in await self.mass.music.albums.tracks(album.item_id, album.provider):
-                if album_track not in all_tracks:
-                    all_tracks.append(album_track)
-        random.shuffle(all_tracks)
-        return all_tracks
+                seen.add(unique_id)
+                result.append(track)
+        random.shuffle(result)
+        return result
 
     async def get_album_tracks(
         self, album: Album, start_item: str | None, sort_by: str | None = None
