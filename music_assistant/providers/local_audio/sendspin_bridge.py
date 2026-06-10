@@ -187,7 +187,7 @@ class SendspinLocalAudioBridge:
             on_mute_change=self._on_mute_change,
             on_stream_start=self._on_bridge_stream_start,
             on_stream_end=self._on_bridge_stream_end,
-            initial_volume=100,  # always 100 — software scaling handles actual volume
+            initial_volume=self._volume_level,  # restore cached volume for correct slider position
         )
         self._bridge_role.setup_audio_requirements(
             sample_rate=self.sample_rate,
