@@ -18,6 +18,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import CONF_USERNAME
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.providers.lastfm_recommendations.constants import (
     CACHE_CATEGORY_RESOLVED_ITEMS,
     CACHE_EXPIRATION_SECONDS,
@@ -26,6 +27,7 @@ from music_assistant.providers.lastfm_recommendations.constants import (
     CONF_ENABLE_GLOBAL_CHARTS,
     CONF_ENABLE_PERSONALIZED,
     CONF_GEO_COUNTRY,
+    LIBRARY_MATCH_SCAN_LIMIT,
     RECENT_TRACKS_SCAN_LIMIT,
     RESOLUTION_BUFFER_LARGE,
     RESOLUTION_BUFFER_SMALL,
@@ -144,21 +146,36 @@ class LastFMRecommendationManager:
                     self.logger.debug("Filtered track '%s' (MBID match: %s)", name, mbid)
                     return True
 
+        # Library search is fuzzy and always returns a best-effort row, so verify the hit's
+        # name actually matches before treating the item as owned. Lenient (strict=False) so
+        # tagging variants still count, erring towards filtering over showing owned items.
         if media_type == MediaType.ARTIST:
             if name:
-                artist_results = await self.mass.music.artists.library_items(search=name, limit=1)
-                if artist_results:
+                artist_results = await self.mass.music.artists.library_items(
+                    search=name, limit=LIBRARY_MATCH_SCAN_LIMIT
+                )
+                artist_match = next(
+                    (a for a in artist_results if compare_strings(name, a.name, strict=False)),
+                    None,
+                )
+                if artist_match:
                     self.logger.debug(
-                        "Filtered artist '%s' (name match: '%s')", name, artist_results[0].name
+                        "Filtered artist '%s' (name match: '%s')", name, artist_match.name
                     )
                     return True
 
         elif media_type == MediaType.ALBUM:
             if name:
-                album_results = await self.mass.music.albums.library_items(search=name, limit=1)
-                if album_results:
+                album_results = await self.mass.music.albums.library_items(
+                    search=name, limit=LIBRARY_MATCH_SCAN_LIMIT
+                )
+                album_match = next(
+                    (a for a in album_results if compare_strings(name, a.name, strict=False)),
+                    None,
+                )
+                if album_match:
                     self.logger.debug(
-                        "Filtered album '%s' (name match: '%s')", name, album_results[0].name
+                        "Filtered album '%s' (name match: '%s')", name, album_match.name
                     )
                     return True
 
@@ -170,14 +187,28 @@ class LastFMRecommendationManager:
             if name and artist_name:
                 search_query = f"{artist_name} {name}"
                 track_results = await self.mass.music.tracks.library_items(
-                    search=search_query, limit=1
+                    search=search_query, limit=LIBRARY_MATCH_SCAN_LIMIT
                 )
-                if track_results:
+                # Match both title and artist; a title-only check would treat a same-named
+                # track by a different artist as owned.
+                track_match = next(
+                    (
+                        track
+                        for track in track_results
+                        if compare_strings(name, track.name, strict=False)
+                        and any(
+                            compare_strings(artist_name, track_artist.name, strict=False)
+                            for track_artist in track.artists
+                        )
+                    ),
+                    None,
+                )
+                if track_match:
                     self.logger.debug(
                         "Filtered track '%s - %s' (name match: '%s')",
                         artist_name,
                         name,
-                        track_results[0].name,
+                        track_match.name,
                     )
                     return True
 

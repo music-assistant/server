@@ -42,6 +42,10 @@ RESOLUTION_BUFFER_LARGE = 60
 # Number of top items to always include when sampling (before random selection)
 TOP_ITEMS_TO_TAKE = 3
 
+# Number of library search hits scanned when verifying an item is already in the library.
+# A small window so a genuine match ranked behind a fuzzier one is still caught.
+LIBRARY_MATCH_SCAN_LIMIT = 5
+
 # Number of similar items to fetch before filtering to target count
 SIMILAR_ITEMS_BUFFER = 12
 
