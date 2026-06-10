@@ -1,5 +1,6 @@
 """Tests for the DatabaseConnection helper."""
 
+import os
 import pathlib
 from collections.abc import AsyncGenerator
 from sqlite3 import OperationalError
@@ -8,6 +9,7 @@ from typing import Any
 import pytest
 
 from music_assistant.helpers.database import DatabaseConnection
+from music_assistant.mass import MusicAssistant
 
 # PRAGMA temp_store integer values (sqlite docs)
 TEMP_STORE_FILE = 1
@@ -66,3 +68,25 @@ async def test_vacuum_restores_temp_store_on_failure(
     db_connection._db.execute = original_execute  # type: ignore[method-assign]
 
     assert await _get_temp_store(db_connection) == TEMP_STORE_MEMORY
+
+
+def test_sqlite_tmpdir_defaults_to_storage_path(tmp_path: pathlib.Path) -> None:
+    """Test that SQLITE_TMPDIR is pointed at the storage path on server init."""
+    original = os.environ.pop("SQLITE_TMPDIR", None)
+    try:
+        MusicAssistant(str(tmp_path / "data"), str(tmp_path / "cache"))
+        assert os.environ.get("SQLITE_TMPDIR") == str(tmp_path / "data")
+    finally:
+        if original is None:
+            os.environ.pop("SQLITE_TMPDIR", None)
+        else:
+            os.environ["SQLITE_TMPDIR"] = original
+
+
+def test_sqlite_tmpdir_respects_existing_value(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that a user-provided SQLITE_TMPDIR is not overwritten."""
+    monkeypatch.setenv("SQLITE_TMPDIR", "/custom/tmp")
+    MusicAssistant(str(tmp_path / "data"), str(tmp_path / "cache"))
+    assert os.environ["SQLITE_TMPDIR"] == "/custom/tmp"
