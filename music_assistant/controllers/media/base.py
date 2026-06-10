@@ -577,7 +577,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         library_item = await self.get_library_item(db_id)
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
 
-    @guard_single_request  # type: ignore[type-var]  # TODO: fix typing for MediaControllerBase
+    @guard_single_request
     @final
     async def get_provider_item(
         self,

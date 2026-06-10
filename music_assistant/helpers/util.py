@@ -24,7 +24,7 @@ from importlib.metadata import version as pkg_version
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from pathlib import Path
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Self, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Protocol, Self, TypeVar, cast
 from urllib.parse import urlparse
 
 import chardet
@@ -49,8 +49,6 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderModuleType
-    from music_assistant.models.core_controller import CoreController
-    from music_assistant.models.provider import Provider
 
 from dataclasses import fields, is_dataclass
 
@@ -1379,13 +1377,22 @@ class TimedAsyncGenerator:
         return self._factory()
 
 
-def guard_single_request[ProviderT: "Provider | CoreController", **P, R](
-    func: Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]],
-) -> Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]]:
+# Bound for guard_single_request: it only needs ``.mass``, so a structural protocol
+# lets it decorate providers, core controllers and media controllers alike without
+# coupling to their concrete base classes.
+class _SupportsMass(Protocol):
+    """Structural type for objects exposing a MusicAssistant reference."""
+
+    mass: MusicAssistant
+
+
+def guard_single_request[SelfT: _SupportsMass, **P, R](
+    func: Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]],
+) -> Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]]:
     """Guard single request to a function."""
 
     @functools.wraps(func)
-    async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(self: SelfT, *args: P.args, **kwargs: P.kwargs) -> R:
         mass = self.mass
         # create a task_id dynamically based on the function and args/kwargs
         cache_key_parts = [func.__class__.__name__, func.__name__, *args]
