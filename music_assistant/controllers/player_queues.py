@@ -2012,8 +2012,6 @@ class PlayerQueuesController(CoreController):
         # newly released albums are included too)
         result: list[Track] = []
         seen: set[str] = set()
-        # gather the sources concurrently and drop (with a warning) any that fail, so a single
-        # flaky provider cannot sink the tracks resolved from the other source
         sources = await asyncio.gather(
             self._library_artist_tracks(artist),
             self._provider_artist_tracks(artist),
