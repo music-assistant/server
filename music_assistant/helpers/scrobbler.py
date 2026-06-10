@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from music_assistant_models.config_entries import (
     Config,
@@ -28,6 +28,11 @@ class ScrobblerHelper:
     supported_media_types: frozenset[MediaType] | None
     currently_playing: str | None = None
     last_scrobbled: str | None = None
+    # Exceptions the concrete scrobble client raises when a submission can't reach
+    # the service (network blips, service-side errors). Subclasses set this to their
+    # client library's error hierarchy so those are logged and swallowed, while any
+    # exception outside the set surfaces as the bug it is.
+    scrobble_exceptions: ClassVar[tuple[type[Exception], ...]] = ()
 
     def __init__(
         self,
@@ -94,16 +99,14 @@ class ScrobblerHelper:
                 await self._update_now_playing(report)
                 self.logger.debug(f"track {report.uri} marked as 'now playing'")
                 self.currently_playing = report.uri
-            except Exception as err:
-                # TODO: try to make this a more specific exception instead of a generic one
+            except self.scrobble_exceptions as err:
                 self.logger.exception(err)
 
         async def scrobble() -> None:
             try:
                 await self._scrobble(report)
                 self.last_scrobbled = report.uri
-            except Exception as err:
-                # TODO: try to make this a more specific exception instead of a generic one
+            except self.scrobble_exceptions as err:
                 self.logger.exception(err)
 
         # update now playing if needed

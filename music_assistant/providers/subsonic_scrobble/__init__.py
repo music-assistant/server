@@ -3,8 +3,10 @@
 import logging
 import time
 from collections.abc import Callable
-from typing import Final
+from typing import ClassVar, Final
 
+import aiohttp
+from libopensonic.errors import SonicError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import EventType, MediaType
 from music_assistant_models.errors import SetupFailedError
@@ -74,6 +76,14 @@ class SubsonicScrobbleProvider(PluginProvider):
 class SubsonicScrobbleEventHandler(ScrobblerHelper):
     """Handles the scrobbling event handling."""
 
+    # SonicError covers Subsonic API failures; aiohttp.ClientError and TimeoutError
+    # cover the underlying transport the libopensonic connection uses.
+    scrobble_exceptions: ClassVar[tuple[type[Exception], ...]] = (
+        SonicError,
+        aiohttp.ClientError,
+        TimeoutError,
+    )
+
     def __init__(
         self, mass: MusicAssistant, logger: logging.Logger, config: ProviderConfig
     ) -> None:
@@ -135,13 +145,7 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
         if not prov:
             return
 
-        try:
-            self.logger.info("scrobble play now event")
-            await prov.conn.scrobble(item_id, submission=False)
-            self.logger.debug("track %s marked as 'now playing'", report.uri)
-            self.currently_playing = report.uri
-        except Exception as err:
-            self.logger.exception(err)
+        await prov.conn.scrobble(item_id, submission=False)
 
     async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
         media_type, provider_instance_id_or_domain, item_id = await parse_uri(report.uri)
@@ -151,12 +155,7 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
         if not prov:
             return
 
-        try:
-            await prov.conn.scrobble(item_id, submission=True, listen_time=int(time.time()))
-            self.logger.debug("track %s marked as 'played'", report.uri)
-            self.last_scrobbled = report.uri
-        except Exception as err:
-            self.logger.exception(err)
+        await prov.conn.scrobble(item_id, submission=True, listen_time=int(time.time()))
 
 
 async def get_config_entries(
