@@ -42,8 +42,17 @@ RESOLUTION_BUFFER_LARGE = 60
 # Number of top items to always include when sampling (before random selection)
 TOP_ITEMS_TO_TAKE = 3
 
+# Number of library search hits scanned when verifying an item is already in the library.
+# A small window so a genuine match ranked behind a fuzzier one is still caught.
+LIBRARY_MATCH_SCAN_LIMIT = 5
+
 # Number of similar items to fetch before filtering to target count
 SIMILAR_ITEMS_BUFFER = 12
+
+# Number of similar tracks to resolve before filtering to target count. Larger than the
+# artist buffer to absorb this row's extra attrition: stricter ISRC matching and the
+# exclusion of tracks that resolve to the user's own library copy.
+SIMILAR_TRACKS_BUFFER = 15
 
 # Number of similar items to fetch for each seed artist/track
 SIMILAR_ITEMS_PER_SEED = 5

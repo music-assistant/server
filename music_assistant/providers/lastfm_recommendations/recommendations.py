@@ -6,7 +6,7 @@ import asyncio
 import datetime
 import random
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.media_items import (
@@ -18,6 +18,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import CONF_USERNAME
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.providers.lastfm_recommendations.constants import (
     CACHE_CATEGORY_RESOLVED_ITEMS,
     CACHE_EXPIRATION_SECONDS,
@@ -26,11 +27,13 @@ from music_assistant.providers.lastfm_recommendations.constants import (
     CONF_ENABLE_GLOBAL_CHARTS,
     CONF_ENABLE_PERSONALIZED,
     CONF_GEO_COUNTRY,
+    LIBRARY_MATCH_SCAN_LIMIT,
     RECENT_TRACKS_SCAN_LIMIT,
     RESOLUTION_BUFFER_LARGE,
     RESOLUTION_BUFFER_SMALL,
     SIMILAR_ITEMS_BUFFER,
     SIMILAR_ITEMS_PER_SEED,
+    SIMILAR_TRACKS_BUFFER,
     TARGET_ITEM_COUNT,
     TOP_ARTISTS_LIMIT,
     TOP_ITEMS_TO_TAKE,
@@ -47,6 +50,8 @@ if TYPE_CHECKING:
     import logging
 
     from music_assistant.providers.lastfm_recommendations import LastFMRecommendationsProvider
+
+_MediaItemT = TypeVar("_MediaItemT", Artist, Album, Track)
 
 
 class LastFMRecommendationManager:
@@ -144,21 +149,36 @@ class LastFMRecommendationManager:
                     self.logger.debug("Filtered track '%s' (MBID match: %s)", name, mbid)
                     return True
 
+        # Library search is fuzzy and always returns a best-effort row, so verify the hit's
+        # name actually matches before treating the item as owned. Lenient (strict=False) so
+        # tagging variants still count, erring towards filtering over showing owned items.
         if media_type == MediaType.ARTIST:
             if name:
-                artist_results = await self.mass.music.artists.library_items(search=name, limit=1)
-                if artist_results:
+                artist_results = await self.mass.music.artists.library_items(
+                    search=name, limit=LIBRARY_MATCH_SCAN_LIMIT
+                )
+                artist_match = next(
+                    (a for a in artist_results if compare_strings(name, a.name, strict=False)),
+                    None,
+                )
+                if artist_match:
                     self.logger.debug(
-                        "Filtered artist '%s' (name match: '%s')", name, artist_results[0].name
+                        "Filtered artist '%s' (name match: '%s')", name, artist_match.name
                     )
                     return True
 
         elif media_type == MediaType.ALBUM:
             if name:
-                album_results = await self.mass.music.albums.library_items(search=name, limit=1)
-                if album_results:
+                album_results = await self.mass.music.albums.library_items(
+                    search=name, limit=LIBRARY_MATCH_SCAN_LIMIT
+                )
+                album_match = next(
+                    (a for a in album_results if compare_strings(name, a.name, strict=False)),
+                    None,
+                )
+                if album_match:
                     self.logger.debug(
-                        "Filtered album '%s' (name match: '%s')", name, album_results[0].name
+                        "Filtered album '%s' (name match: '%s')", name, album_match.name
                     )
                     return True
 
@@ -170,18 +190,43 @@ class LastFMRecommendationManager:
             if name and artist_name:
                 search_query = f"{artist_name} {name}"
                 track_results = await self.mass.music.tracks.library_items(
-                    search=search_query, limit=1
+                    search=search_query, limit=LIBRARY_MATCH_SCAN_LIMIT
                 )
-                if track_results:
+                # Match both title and artist; a title-only check would treat a same-named
+                # track by a different artist as owned.
+                track_match = next(
+                    (
+                        track
+                        for track in track_results
+                        if compare_strings(name, track.name, strict=False)
+                        and any(
+                            compare_strings(artist_name, track_artist.name, strict=False)
+                            for track_artist in track.artists
+                        )
+                    ),
+                    None,
+                )
+                if track_match:
                     self.logger.debug(
                         "Filtered track '%s - %s' (name match: '%s')",
                         artist_name,
                         name,
-                        track_results[0].name,
+                        track_match.name,
                     )
                     return True
 
         return False
+
+    @staticmethod
+    def _exclude_owned(items: list[_MediaItemT]) -> list[_MediaItemT]:
+        """
+        Drop items that resolved to the user's own library copy from a discovery row.
+
+        :param items: Resolved discovery items to filter.
+        """
+        # Resolution returns the library copy when a recommendation matches on ISRC/MBID,
+        # which the cheaper pre-filter can miss; exclude those so Discover rows stay discovery.
+        return [item for item in items if item.provider != "library"]
 
     def _sample_items(
         self, items: list[dict[str, Any]], seed_suffix: str, target_count: int = TARGET_ITEM_COUNT
@@ -470,7 +515,7 @@ class LastFMRecommendationManager:
             resolved_artists = await asyncio.gather(
                 *[self.get_or_resolve_artist(artist_data) for artist_data in sampled_artists_raw]
             )
-            all_resolved = [a for a in resolved_artists if a is not None]
+            all_resolved = self._exclude_owned([a for a in resolved_artists if a is not None])
             genre_artists = list(UniqueList(all_resolved))[:TARGET_ITEM_COUNT]
 
             if genre_artists:
@@ -502,7 +547,9 @@ class LastFMRecommendationManager:
             resolved_albums = await asyncio.gather(
                 *[self._get_or_resolve_album(album_data) for album_data in sampled_albums_raw]
             )
-            all_resolved_albums = [album for album in resolved_albums if album is not None]
+            all_resolved_albums = self._exclude_owned(
+                [album for album in resolved_albums if album is not None]
+            )
             genre_albums = list(UniqueList(all_resolved_albums))[:TARGET_ITEM_COUNT]
 
             if genre_albums:
@@ -534,7 +581,9 @@ class LastFMRecommendationManager:
             resolved_tracks = await asyncio.gather(
                 *[self.get_or_resolve_track(track_data) for track_data in sampled_tracks_raw]
             )
-            all_resolved_genre_tracks = [track for track in resolved_tracks if track is not None]
+            all_resolved_genre_tracks = self._exclude_owned(
+                [track for track in resolved_tracks if track is not None]
+            )
             genre_tracks = list(UniqueList(all_resolved_genre_tracks))[:TARGET_ITEM_COUNT]
 
             if genre_tracks:
@@ -682,7 +731,7 @@ class LastFMRecommendationManager:
                 for artist_data in unique_similar[:SIMILAR_ITEMS_BUFFER]
             ]
         )
-        return [artist for artist in resolved_artists if artist is not None]
+        return self._exclude_owned([artist for artist in resolved_artists if artist is not None])
 
     async def _get_similar_tracks_from_seeds(self, seed_tracks: list[Track]) -> list[Track]:
         """
@@ -751,10 +800,11 @@ class LastFMRecommendationManager:
 
         unique_similar.sort(key=lambda x: float(x.get("match", 0)), reverse=True)
 
-        # Only resolve ISRCs for the top results to avoid unnecessary MusicBrainz lookups.
-        top_tracks_data = unique_similar[:TARGET_ITEM_COUNT]
+        # Resolve a small buffer beyond the target so resolution failures and owned-copy
+        # exclusion still leave enough to fill the row, while capping MusicBrainz ISRC lookups.
+        top_tracks_data = unique_similar[:SIMILAR_TRACKS_BUFFER]
 
         resolved_tracks = await asyncio.gather(
             *[self.get_or_resolve_track(track_data) for track_data in top_tracks_data]
         )
-        return [track for track in resolved_tracks if track is not None]
+        return self._exclude_owned([track for track in resolved_tracks if track is not None])
