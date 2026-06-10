@@ -1992,17 +1992,15 @@ class PlayerQueuesController(CoreController):
         self.logger.info(
             "Fetching tracks to play for artist %s (selection: %s)", artist.name, artist_items_conf
         )
-        # the artist's top/popular tracks from the (streaming) provider(s)
         if artist_items_conf == "top_tracks":
             tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
             random.shuffle(tracks)
             return tracks
-        # only the artist's in-library tracks (legacy "library_album_tracks" maps here)
+        # legacy "library_album_tracks" also resolves to the in-library tracks
         if artist_items_conf in ("library_tracks", "library_album_tracks"):
             tracks = await self._library_artist_tracks(artist)
             random.shuffle(tracks)
             return tracks
-        # in-library tracks, falling back to top tracks when the artist is not (yet) in the library
         if artist_items_conf == "prefer_library":
             tracks = await self._library_artist_tracks(artist)
             if not tracks:
