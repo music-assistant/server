@@ -1964,31 +1964,23 @@ class PlayerQueuesController(CoreController):
             return []
         return await self.mass.music.artists.tracks(library_artist.item_id, "library")
 
-    async def _provider_discography_tracks(self, artist: Artist) -> list[Track]:
+    async def _provider_artist_tracks(self, artist: Artist) -> list[Track]:
         """
-        Return the tracks of every (deduplicated) album across the artist's providers.
+        Return all of the artist's tracks across its (streaming) providers.
 
-        :param artist: The artist to resolve album tracks for.
+        :param artist: The artist to resolve provider tracks for.
         """
-        # unique albums across the (streaming) providers attached to the artist, respecting the
-        # user provider filter and a single instance per streaming domain
+        # one instance per streaming domain, respecting the user provider filter; artists.tracks
+        # returns the provider's full catalog in a single call where the provider supports it,
+        # only falling back to enumerating album tracks when it does not
         unique_providers = self.mass.music.get_unique_providers()
-        album_ids: set[str] = set()
-        albums: list[Album] = []
+        tracks: list[Track] = []
         for mapping in artist.provider_mappings:
             if mapping.provider_instance not in unique_providers:
                 continue
-            for album in await self.mass.music.artists.get_provider_artist_albums(
-                mapping.item_id, mapping.provider_instance
-            ):
-                unique_id = f"{album.name}.{album.version}"
-                if unique_id in album_ids:
-                    continue
-                album_ids.add(unique_id)
-                albums.append(album)
-        tracks: list[Track] = []
-        for album in albums:
-            tracks.extend(await self.mass.music.albums.tracks(album.item_id, album.provider))
+            tracks.extend(
+                await self.mass.music.artists.tracks(mapping.item_id, mapping.provider_instance)
+            )
         return tracks
 
     async def get_artist_tracks(self, artist: Artist) -> list[Track]:
@@ -2019,16 +2011,15 @@ class PlayerQueuesController(CoreController):
             random.shuffle(tracks)
             return tracks
         # default ("all_tracks", legacy "all_album_tracks"): every track we can find for the
-        # artist, deduplicated — in-library tracks, top tracks and the full per-provider album
-        # discography (so newly released albums are included too)
+        # artist, deduplicated — the in-library tracks plus each provider's full catalog (so
+        # newly released albums are included too)
         result: list[Track] = []
         seen: set[str] = set()
         # gather the sources concurrently and drop (with a warning) any that fail, so a single
-        # flaky provider cannot sink the tracks resolved from the other sources
+        # flaky provider cannot sink the tracks resolved from the other source
         sources = await asyncio.gather(
             self._library_artist_tracks(artist),
-            self.mass.music.artists.top_tracks(artist.item_id, artist.provider),
-            self._provider_discography_tracks(artist),
+            self._provider_artist_tracks(artist),
             return_exceptions=True,
         )
         for source in sources:

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-from music_assistant_models.media_items import Album, Artist, ProviderMapping, Track
+from music_assistant_models.media_items import Artist, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.player_queues import (
@@ -122,17 +122,12 @@ async def test_top_tracks_excludes_library_tracks(mass: MusicAssistant) -> None:
     assert "Honey Honey" not in {t.name for t in result}
 
 
-# --- unit tests for the all_tracks union and discography helper (mocked, no DB) ---
+# --- unit tests for the all_tracks union and provider-tracks helper (mocked, no DB) ---
 
 
 def _track_obj(name: str, version: str = "") -> Track:
     """Create a minimal track with the given name and version (for dedup-key tests)."""
     return Track(item_id=name, provider="test", name=name, version=version, provider_mappings=set())
-
-
-def _album_obj(name: str, version: str = "") -> Album:
-    """Create a minimal album with the given name and version (for dedup-key tests)."""
-    return Album(item_id=name, provider="test", name=name, version=version, provider_mappings=set())
 
 
 def _prov_mapping(instance: str, item_id: str) -> ProviderMapping:
@@ -155,27 +150,27 @@ def _fake_queues(selection: str) -> MagicMock:
 
 
 async def test_all_tracks_unions_and_dedups_sources() -> None:
-    """all_tracks merges the three sources and deduplicates by name+version."""
+    """all_tracks merges the in-library and provider tracks, deduplicated by name+version."""
     fake = _fake_queues("all_tracks")
-    fake._library_artist_tracks = AsyncMock(return_value=[_track_obj("Shared")])
-    fake.mass.music.artists.top_tracks = AsyncMock(
-        return_value=[_track_obj("Shared"), _track_obj("TopOnly")]
+    fake._library_artist_tracks = AsyncMock(
+        return_value=[_track_obj("Shared"), _track_obj("LibOnly")]
     )
-    fake._provider_discography_tracks = AsyncMock(return_value=[_track_obj("DiscOnly")])
+    fake._provider_artist_tracks = AsyncMock(
+        return_value=[_track_obj("Shared"), _track_obj("ProvOnly")]
+    )
 
     result = await PlayerQueuesController.get_artist_tracks(
         cast("PlayerQueuesController", fake), _artist_obj()
     )
 
-    assert sorted(t.name for t in result) == ["DiscOnly", "Shared", "TopOnly"]
+    assert sorted(t.name for t in result) == ["LibOnly", "ProvOnly", "Shared"]
 
 
 async def test_all_tracks_keeps_distinct_versions() -> None:
     """Tracks sharing a name but differing in version are both kept."""
     fake = _fake_queues("all_tracks")
     fake._library_artist_tracks = AsyncMock(return_value=[_track_obj("Song", "")])
-    fake.mass.music.artists.top_tracks = AsyncMock(return_value=[_track_obj("Song", "Remix")])
-    fake._provider_discography_tracks = AsyncMock(return_value=[])
+    fake._provider_artist_tracks = AsyncMock(return_value=[_track_obj("Song", "Remix")])
 
     result = await PlayerQueuesController.get_artist_tracks(
         cast("PlayerQueuesController", fake), _artist_obj()
@@ -185,17 +180,16 @@ async def test_all_tracks_keeps_distinct_versions() -> None:
 
 
 async def test_all_tracks_survives_a_failing_source() -> None:
-    """A failing source (e.g. a flaky provider) is dropped; the other sources still resolve."""
+    """A failing source (e.g. a flaky provider) is dropped; the in-library tracks still resolve."""
     fake = _fake_queues("all_tracks")
     fake._library_artist_tracks = AsyncMock(return_value=[_track_obj("Local")])
-    fake.mass.music.artists.top_tracks = AsyncMock(side_effect=RuntimeError("provider down"))
-    fake._provider_discography_tracks = AsyncMock(return_value=[_track_obj("Disc")])
+    fake._provider_artist_tracks = AsyncMock(side_effect=RuntimeError("provider down"))
 
     result = await PlayerQueuesController.get_artist_tracks(
         cast("PlayerQueuesController", fake), _artist_obj()
     )
 
-    assert {t.name for t in result} == {"Local", "Disc"}
+    assert {t.name for t in result} == {"Local"}
     fake.logger.warning.assert_called_once()
 
 
@@ -212,20 +206,17 @@ async def test_prefer_library_falls_back_to_top_tracks() -> None:
     assert {t.name for t in result} == {"Top"}
 
 
-async def test_provider_discography_dedups_albums_across_providers() -> None:
-    """_provider_discography_tracks deduplicates albums shared across providers by name+version."""
+async def test_provider_artist_tracks_respects_unique_providers() -> None:
+    """_provider_artist_tracks queries only unique providers and aggregates their tracks."""
     fake = _fake_queues("all_tracks")
     artist = _artist_obj({_prov_mapping("p1", "a1"), _prov_mapping("p2", "a2")})
-    fake.mass.music.get_unique_providers = MagicMock(return_value=["p1", "p2"])
-    fake.mass.music.artists.get_provider_artist_albums = AsyncMock(
-        return_value=[_album_obj("Arrival")]
-    )
-    fake.mass.music.albums.tracks = AsyncMock(return_value=[_track_obj("Dancing Queen")])
+    fake.mass.music.get_unique_providers = MagicMock(return_value=["p1"])  # p2 filtered out
+    fake.mass.music.artists.tracks = AsyncMock(return_value=[_track_obj("Dancing Queen")])
 
-    result = await PlayerQueuesController._provider_discography_tracks(
+    result = await PlayerQueuesController._provider_artist_tracks(
         cast("PlayerQueuesController", fake), artist
     )
 
     assert [t.name for t in result] == ["Dancing Queen"]
-    # both providers list the same album -> deduped -> a single album-tracks fetch
-    assert fake.mass.music.albums.tracks.await_count == 1
+    # only the unique provider is queried (the duplicate streaming domain is skipped)
+    assert fake.mass.music.artists.tracks.await_count == 1
