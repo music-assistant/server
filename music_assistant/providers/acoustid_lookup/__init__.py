@@ -48,12 +48,15 @@ async def get_config_entries(
             type=ConfigEntryType.SECURE_STRING,
             label="AcoustID API key",
             description=(
-                "Free API key from https://acoustid.org/api-key. "
+                "Optional. Music Assistant ships with a shared AcoustID API key, so "
+                "this can be left empty. Provide your own free key from "
+                "https://acoustid.org/api-key if you prefer to use a dedicated one. "
                 "AcoustID requests that high-traffic deployments notify the project "
                 "in advance — see https://acoustid.org/webservice for details."
             ),
-            required=True,
+            required=False,
             default_value=None,
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_MIN_SCORE,
