@@ -715,7 +715,7 @@ class TwitchProvider(MusicProvider):
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Return the audio stream for a Twitch channel."""
         item_id = streamdetails.item_id
         reconnects = 0
@@ -813,7 +813,7 @@ class TwitchProvider(MusicProvider):
         # Parse path: "" for root, "instance://live" or "instance://following"
         subpath = ""
         if "://" in path:
-            subpath = path.split("://")[1].split("/")[0]
+            subpath = path.split("://")[1].split("/", maxsplit=1)[0]
 
         if not subpath:
             return [
@@ -863,7 +863,7 @@ class TwitchProvider(MusicProvider):
 
         return []  # pragma: no cover
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Retrieve live followed channels as radio stations."""
         if not self.is_authenticated or not self._user_id:
             return
