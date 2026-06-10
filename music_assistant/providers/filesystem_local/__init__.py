@@ -119,6 +119,7 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
+    from music_assistant.providers.musicbrainz import MusicbrainzProvider
 
 
 isdir = wrap(os.path.isdir)
@@ -860,9 +861,7 @@ class LocalFileSystemProvider(MusicProvider):
 
         return result
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get podcast episodes for given podcast id."""
         episodes: list[PodcastEpisode] = []
 
@@ -997,8 +996,16 @@ class LocalFileSystemProvider(MusicProvider):
         This either returns (a generator to get) raw bytes of the image or
         a string with an http(s) URL or local path that is accessible from the server.
         """
-        file_item = await self.resolve(path)
+        # drop the cache-busting suffix appended by _versioned_image_path
+        file_item = await self.resolve(path.split("?cs=", 1)[0])
         return file_item.absolute_path
+
+    @staticmethod
+    def _versioned_image_path(relative_path: str, checksum: str | None) -> str:
+        """Append the file checksum so the image cache busts when the file is replaced."""
+        if checksum:
+            return f"{relative_path}?cs={checksum}"
+        return relative_path
 
     async def _parse_track(
         self, file_item: FileSystemItem, tags: AudioTags, full_album_metadata: bool = False
@@ -1056,26 +1063,18 @@ class LocalFileSystemProvider(MusicProvider):
         )
 
         # track artist(s)
-        for index, track_artist_str in enumerate(tags.artists):
-            # prefer album artist if match
-            if album and (
-                album_artist_match := next(
-                    (x for x in album.artists if x.name == track_artist_str), None
-                )
-            ):
+        resolved_track_artists = await self._resolve_artists_with_mbids(
+            tags.artists,
+            tags.musicbrainz_artistids,
+            tags.artist_sort_names,
+            log_label="ARTISTS tag",
+        )
+        for name, mbid, sort_name in resolved_track_artists:
+            # prefer the existing album artist object when it's the same artist
+            if album_artist_match := self._match_album_artist(album, name, mbid):
                 track.artists.append(album_artist_match)
                 continue
-            artist = await self._parse_artist(
-                track_artist_str,
-                sort_name=(
-                    tags.artist_sort_names[index] if index < len(tags.artist_sort_names) else None
-                ),
-                mbid=(
-                    tags.musicbrainz_artistids[index]
-                    if index < len(tags.musicbrainz_artistids)
-                    else None
-                ),
-            )
+            artist = await self._parse_artist(name, sort_name=sort_name, mbid=mbid)
             track.artists.append(artist)
 
         # handle embedded cover image
@@ -1143,6 +1142,99 @@ class LocalFileSystemProvider(MusicProvider):
                 )
 
         return track
+
+    async def _resolve_artists_with_mbids(
+        self,
+        parsed_names: tuple[str, ...],
+        mbids: tuple[str, ...],
+        sort_names: tuple[str, ...],
+        log_label: str,
+    ) -> list[tuple[str, str | None, str | None]]:
+        """
+        Return ``(name, mbid, sort_name)`` triples for a track's or album's artists.
+
+        When the parsed name count and the MBID count disagree, canonical names
+        are looked up from MusicBrainz; otherwise the tag-parsed names are used.
+
+        :param parsed_names: Tag-parsed artist names.
+        :param mbids: MusicBrainz artist IDs from the tag.
+        :param sort_names: Sort names from the corresponding *sort tag.
+        :param log_label: Tag name used in warning messages (e.g. "ARTISTS tag").
+        """
+
+        def _sort_name(index: int) -> str | None:
+            return sort_names[index] if index < len(sort_names) else None
+
+        def _from_tags() -> list[tuple[str, str | None, str | None]]:
+            return [
+                (
+                    name,
+                    mbids[i] if i < len(mbids) else None,
+                    _sort_name(i),
+                )
+                for i, name in enumerate(parsed_names)
+            ]
+
+        if not mbids or len(parsed_names) == len(mbids):
+            return _from_tags()
+
+        mb_provider = cast("MusicbrainzProvider | None", self.mass.get_provider("musicbrainz"))
+        if mb_provider is None:
+            self.logger.warning(
+                "%s count (%d) doesn't match MBID count (%d) and MusicBrainz "
+                "provider is not loaded; using tag-parsed names: %s",
+                log_label,
+                len(parsed_names),
+                len(mbids),
+                parsed_names,
+            )
+            return _from_tags()
+
+        mb_results = await mb_provider.resolve_artists_from_mbids(mbids)
+        # counts disagree, so positional fallback to a tag name is unreliable;
+        # drop any MBID whose lookup failed (already logged per-MBID)
+        resolved: list[tuple[str, str | None, str | None]] = [
+            mb_result for mb_result in mb_results if mb_result is not None
+        ]
+        if not resolved:
+            self.logger.warning(
+                "%s count (%d) didn't match MBID count (%d) and every MusicBrainz "
+                "lookup failed; falling back to tag-parsed names: %s",
+                log_label,
+                len(parsed_names),
+                len(mbids),
+                parsed_names,
+            )
+            return _from_tags()
+        self.logger.info(
+            "%s count (%d) didn't match MBID count (%d); resolved canonical names "
+            "via MusicBrainz: %s",
+            log_label,
+            len(parsed_names),
+            len(mbids),
+            [r[0] for r in resolved],
+        )
+        return resolved
+
+    def _match_album_artist(
+        self, album: Album | None, name: str, mbid: str | None
+    ) -> Artist | ItemMapping | None:
+        """
+        Return an existing album artist representing the same artist, if any.
+
+        Matches on MusicBrainz ID when available (names may differ when only one
+        side was resolved against MusicBrainz), otherwise on exact name.
+
+        :param album: The track's album, if known.
+        :param name: Resolved track-artist name.
+        :param mbid: Resolved track-artist MusicBrainz ID, if any.
+        """
+        if not album:
+            return None
+        return next(
+            (x for x in album.artists if (mbid and x.mbid == mbid) or x.name == name),
+            None,
+        )
 
     async def _parse_artist(
         self,
@@ -1257,14 +1349,17 @@ class LocalFileSystemProvider(MusicProvider):
         Audiobooks can be single files with embedded chapters or multiple files per folder.
         Only the first file (by track number or alphabetically) is processed as the audiobook.
         """
-        # Skip files that aren't the first chapter
+        # Skip files that aren't the first chapter.
+        # A file carrying its own embedded chapter markers is a standalone audiobook,
+        # so it should never be treated as a chapter file of another book.
         track_tag = tags.tags.get("track")
         if track_tag:
             track_num = try_parse_int(str(track_tag).split("/")[0], None)
-            if track_num and track_num > 1:
+            if track_num and track_num > 1 and not tags.chapters:
                 raise IsChapterFile
-        else:
-            # No track tag - only process the first file alphabetically
+        elif not tags.chapters:
+            # No track tag and no embedded chapters -
+            # assume part of a multi-file audiobook, only process the first file alphabetically
             items = await self._scandir(file_item.parent_path)
             # Sort by filename for alphabetical ordering
             items.sort(key=lambda x: x.filename.lower())
@@ -1324,7 +1419,7 @@ class LocalFileSystemProvider(MusicProvider):
             audio_book.metadata.add_image(
                 MediaItemImage(
                     type=ImageType.THUMB,
-                    path=file_item.relative_path,
+                    path=self._versioned_image_path(file_item.relative_path, file_item.checksum),
                     provider=self.instance_id,
                     remotely_accessible=False,
                 )
@@ -1354,7 +1449,7 @@ class LocalFileSystemProvider(MusicProvider):
                     audio_book.metadata.add_image(
                         MediaItemImage(
                             type=ImageType.THUMB,
-                            path=_item.relative_path,
+                            path=self._versioned_image_path(_item.relative_path, _item.checksum),
                             provider=self.instance_id,
                             remotely_accessible=False,
                         )
@@ -1542,20 +1637,15 @@ class LocalFileSystemProvider(MusicProvider):
         # album artist(s)
         album_artists: UniqueList[Artist | ItemMapping] = UniqueList()
         if track_tags.album_artists:
-            for index, album_artist_str in enumerate(track_tags.album_artists):
+            resolved_album_artists = await self._resolve_artists_with_mbids(
+                track_tags.album_artists,
+                track_tags.musicbrainz_albumartistids,
+                track_tags.album_artist_sort_names,
+                log_label="ALBUMARTIST tag",
+            )
+            for name, mbid, sort_name in resolved_album_artists:
                 artist = await self._parse_artist(
-                    album_artist_str,
-                    album_dir=album_dir,
-                    sort_name=(
-                        track_tags.album_artist_sort_names[index]
-                        if index < len(track_tags.album_artist_sort_names)
-                        else None
-                    ),
-                    mbid=(
-                        track_tags.musicbrainz_albumartistids[index]
-                        if index < len(track_tags.musicbrainz_albumartistids)
-                        else None
-                    ),
+                    name, album_dir=album_dir, sort_name=sort_name, mbid=mbid
                 )
                 album_artists.append(artist)
         else:

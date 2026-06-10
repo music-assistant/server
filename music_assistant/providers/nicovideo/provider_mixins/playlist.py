@@ -36,7 +36,7 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
         return playlist_with_tracks.playlist
 
     @override
-    @use_cache(3600 * 3)  # Cache for 3 hours
+    @use_cache(3600 * 3, allow_expired_cache=True)  # Cache for 3 hours
     async def get_playlist_tracks(
         self,
         prov_playlist_id: str,
@@ -52,7 +52,7 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
     @override
     async def get_library_playlists(
         self,
-    ) -> AsyncGenerator[Playlist, None]:
+    ) -> AsyncGenerator[Playlist]:
         """Retrieve library playlists from the provider."""
         # Get own mylists (editable playlists)
         own_mylists = await self.service_manager.mylist.get_own_mylists()

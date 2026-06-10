@@ -271,7 +271,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
         results.radio = radios
         return results
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Retrieve all radio stations from active networks."""
         for network_key in self._get_active_networks():
             try:

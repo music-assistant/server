@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 async def get_hass_media_players(
     hass_prov: HomeAssistantProvider,
-) -> AsyncGenerator[HassState, None]:
+) -> AsyncGenerator[HassState]:
     """Return all HA state objects for (valid) media_player entities."""
     entity_registry = {x["entity_id"]: x for x in await hass_prov.hass.get_entity_registry()}
     for state in await hass_prov.hass.get_states():

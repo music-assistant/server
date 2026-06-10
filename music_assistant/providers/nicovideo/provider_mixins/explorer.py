@@ -119,7 +119,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         return recommendation_folders
 
     @override
-    @use_cache(3600 * 6)  # Cache for 6 hours
+    @use_cache(3600 * 6, allow_expired_cache=True)  # Cache for 6 hours
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of similar tracks based on the provided track."""
         return await self.service_manager.user.get_similar_tracks(prov_track_id, limit)

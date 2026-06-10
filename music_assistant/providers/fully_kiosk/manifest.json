@@ -10,6 +10,6 @@
   ],
   "requirements": ["python-fullykiosk==0.0.15"],
   "documentation": "https://music-assistant.io/player-support/fully-kiosk/",
-  "multi_instance": true,
+  "multi_instance": false,
   "builtin": false
 }

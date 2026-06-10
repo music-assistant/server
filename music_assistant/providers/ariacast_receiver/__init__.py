@@ -17,16 +17,24 @@ from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
     ImageType,
+    MediaType,
     PlaybackState,
     ProviderFeature,
+    SourceControl,
     StreamType,
 )
-from music_assistant_models.media_items import AudioFormat, MediaItemImage
-from music_assistant_models.streamdetails import StreamMetadata
+from music_assistant_models.errors import AudioError, MediaNotFoundError
+from music_assistant_models.media_items import (
+    AudioFormat,
+    AudioSource,
+    MediaItemImage,
+    ProviderMapping,
+)
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.helpers.process import AsyncProcess
-from music_assistant.models.plugin import PluginProvider, PluginSource
+from music_assistant.models.plugin import PluginProvider
 
 from .helpers import _get_binary_path
 
@@ -38,11 +46,14 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 CONF_MASS_PLAYER_ID = "mass_player_id"
-CONF_ALLOW_PLAYER_SWITCH = "allow_player_switch"
 
 
 PLAYER_ID_AUTO = "__auto__"
 SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
+
+# stable id for the single AudioSource this provider exposes;
+# combined with the provider instance_id this forms the persistent uri
+AUDIO_SOURCE_ID = "main"
 
 
 async def setup(
@@ -78,12 +89,6 @@ async def get_config_entries(
             ],
             required=True,
         ),
-        ConfigEntry(
-            key=CONF_ALLOW_PLAYER_SWITCH,
-            type=ConfigEntryType.BOOLEAN,
-            label="Allow manual player switching",
-            default_value=True,
-        ),
     )
 
 
@@ -96,13 +101,25 @@ class AriaCastBridge(PluginProvider):
         """Initialize AriaCast Receiver."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         self._default_player_id = str(config.get_value(CONF_MASS_PLAYER_ID))
-        self._allow_player_switch = bool(config.get_value(CONF_ALLOW_PLAYER_SWITCH))
 
         # Process
         self._binary_process: AsyncProcess | None = None
 
         # Internal State
+        # _active_player_id remembers the player that last consumed our stream so
+        # we can reclaim it when the external app resumes after a pause.
         self._active_player_id: str | None = None
+        # _in_use_by_queue is the queue currently streaming us (set in
+        # on_source_selected, used to detect stream cancellation from inside
+        # get_audio_stream and to gate metadata pushes to the consumer queue).
+        self._in_use_by_queue: str | None = None
+        # _active_session_id is the controller-provided token for the current
+        # stream request — used to reject stale on_source_unselected callbacks
+        # after a same-queue reconnect supersedes the previous request.
+        self._active_session_id: str | None = None
+        # mutable metadata mirroring what we'll push out via stream_metadata
+        # updates on the active queue's streamdetails
+        self._stream_metadata = StreamMetadata(title="AriaCast Ready")
         self._metadata_task: asyncio.Task[None] | None = None
         self._stdout_reader_task: asyncio.Task[None] | None = None
         self._stop_called = False
@@ -119,30 +136,35 @@ class AriaCastBridge(PluginProvider):
         self._artwork_bytes: bytes | None = None
         self._artwork_timestamp: int = 0
 
-        # Define the Source
-        self._source_details = PluginSource(
-            id=self.instance_id,
+        self._audio_format = AudioFormat(
+            content_type=ContentType.PCM_S16LE,
+            sample_rate=48000,
+            bit_depth=16,
+            channels=2,
+        )
+        self._audio_source = AudioSource(
+            item_id=AUDIO_SOURCE_ID,
+            provider=self.instance_id,
             name=self.name,
-            passive=not self._allow_player_switch,
-            can_play_pause=True,  # Binary stops stdout writes when paused
+            provider_mappings={
+                ProviderMapping(
+                    item_id=AUDIO_SOURCE_ID,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=self._audio_format,
+                )
+            },
+            # Binary stops stdout writes when paused, but MA proxies the
+            # play/pause/next/previous commands via on_source_control to the
+            # binary's HTTP API.
+            can_play_pause=True,
             can_seek=False,
             can_next_previous=True,
-            audio_format=AudioFormat(
-                content_type=ContentType.PCM_S16LE,
-                sample_rate=48000,
-                bit_depth=16,
-                channels=2,
-            ),
-            metadata=StreamMetadata(title="AriaCast Ready"),
-            stream_type=StreamType.CUSTOM,
+            exclusive=True,
+            allow_external_trigger=True,
+            # passive: only flows when an external Cast client is connected
+            can_initiate=False,
         )
-
-        # Bind Hooks
-        self._source_details.on_select = self._on_source_selected
-        self._source_details.on_play = self._cmd_play
-        self._source_details.on_pause = self._cmd_pause
-        self._source_details.on_next = self._cmd_next
-        self._source_details.on_previous = self._cmd_previous
 
     async def handle_async_init(self) -> None:
         """Start the provider."""
@@ -181,9 +203,160 @@ class AriaCastBridge(PluginProvider):
             self.logger.info("Stopping AriaCast binary...")
             await self._binary_process.close()
 
-    def get_source(self) -> PluginSource:
-        """Return the plugin source details."""
-        return self._source_details
+    async def get_audio_sources(self) -> list[AudioSource]:
+        """Return the AudioSources this plugin currently exposes."""
+        return [self._audio_source]
+
+    async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
+        """Return StreamDetails for streaming the AriaCast audio to a queue.
+
+        Side-effect-free: ownership is claimed in on_source_selected (which the
+        streams controller fires before this method on the actual stream
+        request). Keeping this idempotent means preload paths like
+        player_queues._load_item can fetch streamdetails without claiming the
+        source and blocking a subsequent cross-queue handoff.
+        """
+        if source_id != AUDIO_SOURCE_ID:
+            raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
+        if not self._binary_is_playing:
+            raise AudioError(
+                "AriaCast has no active Cast client — start playback from your "
+                "Cast-capable device first"
+            )
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=source_id,
+            audio_format=self._audio_format,
+            media_type=MediaType.AUDIO_SOURCE,
+            stream_type=StreamType.CUSTOM,
+            stream_metadata=self._stream_metadata,
+        )
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes]:
+        """Stream PCM audio frames from the binary's stdout pump."""
+        consumer_queue = self._in_use_by_queue
+        # Snapshot the active session id so a same-queue reconnect (which
+        # refreshes _active_session_id but not _in_use_by_queue) supersedes
+        # this stream: the loop exits and the finally release skips so it
+        # doesn't clobber the new session's claim.
+        captured_session_id = self._active_session_id
+        self.logger.debug("Audio stream requested by queue %s", consumer_queue)
+
+        # Pre-buffering phase for high-latency players
+        min_buffer_size = int(self.max_frames * 0.6)  # Wait for 60% full buffer
+        self.logger.info("Pre-buffering: waiting for %d frames...", min_buffer_size)
+
+        buffer_start = time.time()
+        while len(self.frame_queue) < min_buffer_size and not self._stop_called:
+            if time.time() - buffer_start > 5:  # Timeout after 5 seconds
+                self.logger.warning(
+                    "Pre-buffering timeout, starting with %d frames", len(self.frame_queue)
+                )
+                break
+            await asyncio.sleep(0.05)
+
+        self.logger.info("Starting playback with %d frames buffered", len(self.frame_queue))
+
+        # Stream audio frames from the queue until playback stops
+        try:
+            while not self._stop_called:
+                # Stop if our exclusive lock was released (pause), another queue
+                # took over (cross-queue handoff), or a same-queue reconnect
+                # superseded this session (session id rolled forward).
+                if (
+                    self._in_use_by_queue != consumer_queue
+                    or self._active_session_id != captured_session_id
+                ):
+                    self.logger.debug("Stream lock released or taken over, stopping stream")
+                    break
+
+                if self.frame_queue:
+                    try:
+                        frame = self.frame_queue.popleft()
+                        yield frame
+                    except IndexError:
+                        # Queue became empty between the check and the pop
+                        continue
+                else:
+                    # No data available, wait for new frames or stop
+                    with suppress(asyncio.TimeoutError):
+                        await asyncio.wait_for(self.frame_available.wait(), timeout=1.0)
+                        # Only clear the event if the queue is still empty
+                        if not self.frame_queue:
+                            self.frame_available.clear()
+        finally:
+            self.logger.debug("Audio stream ended for queue %s", consumer_queue)
+            self.frame_queue.clear()
+            # Guard release on BOTH queue id AND session id so a stale
+            # generator teardown after a same-queue reconnect doesn't clear
+            # the new session's claim.
+            if (
+                self._in_use_by_queue == consumer_queue
+                and self._active_session_id == captured_session_id
+            ):
+                self._in_use_by_queue = None
+
+    async def on_source_control(
+        self,
+        source_id: str,
+        action: SourceControl,
+        value: int | None = None,
+    ) -> None:
+        """Proxy playback control commands to the AriaCast binary HTTP API."""
+        if source_id != AUDIO_SOURCE_ID:
+            return
+        if action == SourceControl.PLAY:
+            await self._cmd_play()
+        elif action == SourceControl.PAUSE:
+            await self._cmd_pause()
+        elif action == SourceControl.NEXT:
+            await self._send_api_command("next")
+        elif action == SourceControl.PREVIOUS:
+            await self._send_api_command("previous")
+
+    async def on_source_selected(
+        self,
+        source_id: str,
+        player_id: str,
+        queue_id: str,
+        stream_session_id: str,
+    ) -> None:
+        """Handle manual selection from the MA UI."""
+        if source_id != AUDIO_SOURCE_ID:
+            return
+        # Claim ownership for this queue. The lock lives here (not in
+        # get_stream_details) so preload paths can fetch streamdetails without
+        # accidentally blocking a subsequent cross-queue handoff at the actual
+        # stream request. Overwriting any prior claim is intentional: the
+        # previous stream's get_audio_stream loop notices the queue change and
+        # exits cleanly.
+        self._in_use_by_queue = queue_id
+        # Record this request's session id so a later on_source_unselected can
+        # tell whether it is the live teardown or a stale callback from a
+        # superseded same-queue request.
+        self._active_session_id = stream_session_id
+        # cache the queue_id (== MA player), not the protocol-level player_id —
+        # protocol bridges (e.g. Sendspin spb_…) can tear down between streams
+        self._active_player_id = queue_id
+
+    async def on_source_unselected(
+        self, source_id: str, queue_id: str, stream_session_id: str
+    ) -> None:
+        """Release the queue-scoped exclusive claim when MA tears down the stream."""
+        if source_id != AUDIO_SOURCE_ID:
+            return
+        # Reject stale callbacks: only release if this is still the active
+        # session. A queue_id check alone is not sufficient — same-queue
+        # reconnects (player drops + reopens the same stream URL before the
+        # original request's finally fires) would otherwise let the old
+        # request's late callback clear the live claim of the new stream.
+        if self._active_session_id != stream_session_id:
+            return
+        self._active_session_id = None
+        if self._in_use_by_queue == queue_id:
+            self._in_use_by_queue = None
 
     async def _monitor_metadata(self) -> None:
         """Connect to local Go binary WebSocket to receive metadata updates."""
@@ -214,10 +387,7 @@ class AriaCastBridge(PluginProvider):
 
     def _update_metadata(self, data: dict[str, Any]) -> None:
         """Update Music Assistant metadata from Go binary data."""
-        if not self._source_details.metadata:
-            self._source_details.metadata = StreamMetadata(title="AriaCast Ready")
-
-        meta = self._source_details.metadata
+        meta = self._stream_metadata
 
         # Detect song change and clear queue to prevent stale audio
         new_title = data.get("title", "Unknown")
@@ -241,9 +411,11 @@ class AriaCastBridge(PluginProvider):
         # Handle playback state
         self._handle_playback_state_update(data.get("is_playing", False))
 
-        # Trigger UI Update
-        if self._source_details.in_use_by:
-            self.mass.players.trigger_player_update(self._source_details.in_use_by)
+        # Push the update through the streamdetails layer if a queue is consuming us
+        if self._in_use_by_queue:
+            self.mass.streams.update_stream_metadata(
+                self._in_use_by_queue, AUDIO_SOURCE_ID, self.instance_id, meta
+            )
 
     def _handle_track_change(self, new_title: str) -> None:
         """Handle track change detection and queue clearing."""
@@ -284,94 +456,69 @@ class AriaCastBridge(PluginProvider):
         """Handle binary playback state and player management."""
         was_playing = self._binary_is_playing
         self.logger.debug(
-            "Metadata update: is_playing=%s, was_playing=%s, active=%s, in_use=%s",
+            "Metadata update: is_playing=%s, was_playing=%s, active=%s, in_use_by_queue=%s",
             is_playing,
             was_playing,
             self._active_player_id,
-            self._source_details.in_use_by,
+            self._in_use_by_queue,
         )
 
         # Track binary state
         self._binary_is_playing = is_playing
 
-        if is_playing and not self._source_details.in_use_by:
-            # Binary is playing but no player is consuming the stream
-            if self._active_player_id:
-                # Resume after pause - reclaim the same player
-                self.logger.info(
-                    "App resumed playback, reclaiming player %s", self._active_player_id
-                )
+        if is_playing and not self._in_use_by_queue:
+            # Binary is playing but no queue is consuming the stream
+            target = self._active_player_id or self._get_target_player_id()
+            if target:
+                self.logger.info("External playback started, routing to player %s", target)
                 # Clear queue before resuming to remove old silence/data
                 self.frame_queue.clear()
                 self.frame_available.clear()
-                self._source_details.in_use_by = self._active_player_id
-                self.mass.players.trigger_player_update(self._active_player_id)
+                self._active_player_id = target
                 self.mass.create_task(
-                    self.mass.players.select_source(self._active_player_id, self.instance_id)
+                    self.mass.player_queues.play_media(target, str(self._audio_source.uri))
                 )
-            else:
-                # First time playing - auto-select a player
-                self._handle_auto_play()
-        elif not is_playing and was_playing and self._source_details.in_use_by:
-            # App paused playback - release the player
-            self.logger.info("App paused playback, releasing player")
-            self._active_player_id = self._source_details.in_use_by
-            self._source_details.in_use_by = None
-            # Clear queue to prevent old silence from accumulating
+        elif not is_playing and was_playing and self._in_use_by_queue:
+            # App paused playback - release the player so MA can play other content;
+            # _active_player_id is preserved so resume can reclaim it.
+            self.logger.info("External playback paused, releasing player")
+            self._active_player_id = self._in_use_by_queue
+            # Stopping the player closes our generator and clears _in_use_by_queue
+            target_player = self._in_use_by_queue
             self.frame_queue.clear()
             self.frame_available.clear()
-            self.mass.players.trigger_player_update(self._active_player_id)
-
-    def _handle_auto_play(self) -> None:
-        """Automatically select a player when music starts."""
-        target_id = self._get_target_player_id()
-        if target_id:
-            self._active_player_id = target_id
-            self._source_details.in_use_by = target_id
-            self.mass.create_task(self.mass.players.select_source(target_id, self.instance_id))
-
-    # --- Command Wrappers ---
+            self.mass.create_task(self.mass.players.cmd_stop(target_player))
 
     async def _cmd_play(self) -> None:
-        """Send play command."""
+        """Send play command to the binary."""
         self.logger.info("PLAY command")
 
-        # If player was released on pause, reclaim it
-        if not self._source_details.in_use_by and self._active_player_id:
+        # If player was released on pause, reclaim it via play_media
+        if not self._in_use_by_queue and self._active_player_id:
             # Clear queue before resuming to remove old silence/data
             self.frame_queue.clear()
             self.frame_available.clear()
-            self._source_details.in_use_by = self._active_player_id
-            self.mass.players.trigger_player_update(self._active_player_id)
-            # Restart playback on the player
-            await self.mass.players.select_source(self._active_player_id, self.instance_id)
+            await self.mass.player_queues.play_media(
+                self._active_player_id, str(self._audio_source.uri)
+            )
 
         await self._send_api_command("play")
 
     async def _cmd_pause(self) -> None:
-        """Send pause command."""
+        """Send pause command to the binary."""
         self.logger.info("PAUSE command")
 
-        # Release the player (like Spotify Connect does) - this makes MA show it as idle
+        # Release the player (mirrors the external-pause path) - this makes MA show it as idle
         # Keep track of active_player_id so we can reclaim it on resume
-        if self._source_details.in_use_by:
-            self._active_player_id = self._source_details.in_use_by
-            self._source_details.in_use_by = None
-            self.mass.players.trigger_player_update(self._active_player_id)
-
-        # Clear the frame queue to prevent old silence from being played on resume
-        self.frame_queue.clear()
-        self.frame_available.clear()
+        if self._in_use_by_queue:
+            self._active_player_id = self._in_use_by_queue
+            target_player = self._in_use_by_queue
+            # Clear the frame queue to prevent old silence from being played on resume
+            self.frame_queue.clear()
+            self.frame_available.clear()
+            await self.mass.players.cmd_stop(target_player)
 
         await self._send_api_command("pause")
-
-    async def _cmd_next(self) -> None:
-        """Send next-track command."""
-        await self._send_api_command("next")
-
-    async def _cmd_previous(self) -> None:
-        """Send previous-track command."""
-        await self._send_api_command("previous")
 
     async def _send_api_command(self, action: str) -> None:
         """Send control command (POST) using shared session."""
@@ -416,13 +563,15 @@ class AriaCastBridge(PluginProvider):
                             remotely_accessible=False,
                         )
 
-                        if self._source_details.metadata:
-                            self._source_details.metadata.image_url = (
-                                self.mass.metadata.get_image_url(image)
-                            )
+                        self._stream_metadata.image_url = self.mass.metadata.get_image_url(image)
 
-                        if self._source_details.in_use_by:
-                            self.mass.players.trigger_player_update(self._source_details.in_use_by)
+                        if self._in_use_by_queue:
+                            self.mass.streams.update_stream_metadata(
+                                self._in_use_by_queue,
+                                AUDIO_SOURCE_ID,
+                                self.instance_id,
+                                self._stream_metadata,
+                            )
                 else:
                     self.logger.warning("Failed to download artwork: HTTP %s", response.status)
         except Exception as e:
@@ -485,53 +634,6 @@ class AriaCastBridge(PluginProvider):
         async for line in self._binary_process.iter_stderr():
             self.logger.debug("[%s stderr] %s", self.name, line)
 
-    async def get_audio_stream(self, player_id: str) -> AsyncGenerator[bytes, None]:
-        """Return the custom audio stream for this source (like original ariacast_receiver)."""
-        self.logger.debug("Audio stream requested by player %s", player_id)
-
-        # Pre-buffering phase for high-latency players
-        min_buffer_size = int(self.max_frames * 0.6)  # Wait for 60% full buffer
-        self.logger.info("Pre-buffering: waiting for %d frames...", min_buffer_size)
-
-        buffer_start = time.time()
-        while len(self.frame_queue) < min_buffer_size and not self._stop_called:
-            if time.time() - buffer_start > 5:  # Timeout after 5 seconds
-                self.logger.warning(
-                    "Pre-buffering timeout, starting with %d frames", len(self.frame_queue)
-                )
-                break
-            await asyncio.sleep(0.05)
-
-        self.logger.info("Starting playback with %d frames buffered", len(self.frame_queue))
-
-        # Stream audio frames from the queue until playback stops
-        try:
-            while not self._stop_called:
-                # Stop if player was released (pause) or changed
-                if self._source_details.in_use_by != player_id:
-                    self.logger.debug("Player released or changed, stopping stream")
-                    break
-
-                if self.frame_queue:
-                    try:
-                        frame = self.frame_queue.popleft()
-                        yield frame
-                    except IndexError:
-                        # Queue became empty between the check and the pop
-                        continue
-                else:
-                    # No data available, wait for new frames or stop
-                    with suppress(asyncio.TimeoutError):
-                        await asyncio.wait_for(self.frame_available.wait(), timeout=1.0)
-                        # Only clear the event if the queue is still empty
-                        if not self.frame_queue:
-                            self.frame_available.clear()
-        finally:
-            self.logger.debug("Audio stream ended for player %s", player_id)
-            self.frame_queue.clear()
-
-    # --- Helpers ---
-
     def _get_target_player_id(self) -> str | None:
         """Find the best player to use."""
         if self._active_player_id:
@@ -547,24 +649,3 @@ class AriaCastBridge(PluginProvider):
             return players[0].player_id if players else None
 
         return str(self._default_player_id)
-
-    async def _on_source_selected(self) -> None:
-        """Handle manual selection in UI."""
-        new_player_id = self._source_details.in_use_by
-        if not new_player_id:
-            return
-
-        # Check if manual player switching is allowed
-        if not self._allow_player_switch:
-            current_target = self._get_target_player_id()
-            if new_player_id != current_target:
-                self.logger.debug(
-                    "Manual player switching disabled, ignoring selection on %s",
-                    new_player_id,
-                )
-                # Revert in_use_by
-                self._source_details.in_use_by = current_target
-                self.mass.players.trigger_player_update(new_player_id)
-                return
-
-        self._active_player_id = new_player_id

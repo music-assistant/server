@@ -158,6 +158,17 @@ class DatabaseConnection:
         async with debug_query(_query, _params):
             return cast("list[Mapping[str, Any]]", await self._db.execute_fetchall(_query, _params))
 
+    async def iter_rows_from_query(
+        self,
+        query: str,
+        params: dict[str, Any] | None = None,
+    ) -> AsyncGenerator[Mapping[str, Any]]:
+        """Stream rows for a given custom query without materializing the full result."""
+        _query, _params = query_params(query, params)
+        async with debug_query(_query, _params), self._db.execute(_query, _params) as cursor:
+            async for row in cursor:
+                yield cast("Mapping[str, Any]", row)
+
     async def get_count_from_query(
         self,
         query: str,
@@ -293,7 +304,7 @@ class DatabaseConnection:
         self,
         table: str,
         match: dict[str, Any] | None = None,
-    ) -> AsyncGenerator[Mapping[str, Any], None]:
+    ) -> AsyncGenerator[Mapping[str, Any]]:
         """Iterate all items within a table."""
         limit: int = 500
         offset: int = 0
@@ -311,7 +322,33 @@ class DatabaseConnection:
             await asyncio.sleep(0)  # yield to eventloop
             offset += limit
 
+    async def get_reclaimable_ratio(self) -> float:
+        """
+        Return the fraction (0..1) of the database file that a VACUUM would reclaim.
+
+        This is the share of pages on the free list and is a cheap way to decide
+        whether a (potentially expensive) VACUUM is actually worthwhile.
+        """
+        page_count = await self._get_pragma_int("page_count")
+        if page_count <= 0:
+            return 0.0
+        freelist_count = await self._get_pragma_int("freelist_count")
+        return freelist_count / page_count
+
     async def vacuum(self) -> None:
         """Run vacuum command on database."""
-        await self._db.execute("VACUUM")
-        await self._db.commit()
+        # VACUUM rebuilds the whole database in temp storage; with temp_store=memory that
+        # copy lives entirely in RAM and OOMs memory constrained devices on large databases,
+        # so spill it to a temp file (located at SQLITE_TMPDIR) for the duration.
+        await self._db.execute("PRAGMA temp_store=FILE;")
+        try:
+            await self._db.execute("VACUUM")
+            await self._db.commit()
+        finally:
+            await self._db.execute("PRAGMA temp_store=memory;")
+
+    async def _get_pragma_int(self, pragma: str) -> int:
+        """Return the integer value of a single-value sqlite PRAGMA."""
+        async with self._db.execute(f"PRAGMA {pragma}") as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0

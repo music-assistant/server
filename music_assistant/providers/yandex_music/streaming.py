@@ -261,7 +261,13 @@ class YandexMusicStreamingManager:
         if preferred_normalized == QUALITY_EFFICIENT:
             sorted_infos_asc = sorted(
                 download_infos,
-                key=lambda x: x.bitrate_in_kbps or 999,
+                # ``or float('inf')`` (rather than the previous ``or 999``) makes
+                # the sentinel unambiguous: 999 kbps is conceivably a real
+                # bitrate, but no real Yandex stream reports infinity. Both
+                # ``None`` and ``0`` (which Yandex emits for lossless FLAC) are
+                # falsy and rank last so "efficient" never picks a lossless
+                # stream over a known low-bitrate AAC.
+                key=lambda x: x.bitrate_in_kbps or float("inf"),
             )
             for codec in ("aac-mp4", "aac", "he-aac-mp4", "he-aac", "mp3"):
                 for info in sorted_infos_asc:
@@ -535,7 +541,7 @@ class YandexMusicStreamingManager:
         key_bytes: bytes,
         block_size: int,
         bytes_delivered: int,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Decrypt one HTTP response and yield plaintext chunks.
 
         Aligns the AES-CTR counter to the correct block for resumption.
@@ -634,7 +640,7 @@ class YandexMusicStreamingManager:
         response: Any,
         bytes_delivered: int,
         block_start: int,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Yield raw (unencrypted) chunks from one HTTP response.
 
         If the server ignored the Range header (200 instead of 206), skips the
@@ -664,11 +670,12 @@ class YandexMusicStreamingManager:
         bytes_yielded: int,
         attempt: int,
         max_retries: int,
-    ) -> bytes | None:
+    ) -> bytes:
         """Handle URL expiry (401/403/410) by refreshing and returning updated key.
 
-        :return: Updated AES key bytes (or empty bytes for raw), None if exhausted.
-        :raises MediaNotFoundError: When refresh fails after retries exhausted.
+        :return: Updated AES key bytes for encrypted streams, or empty ``bytes``
+            for raw streams.
+        :raises MediaNotFoundError: When refresh fails or retries are exhausted.
         """
         if not await self._refresh_stream_url(
             streamdetails,
@@ -731,7 +738,7 @@ class YandexMusicStreamingManager:
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Return the audio stream via windowed Range requests.
 
         Handles both raw (direct) and encraw (AES-CTR encrypted) transports.
@@ -789,7 +796,12 @@ class YandexMusicStreamingManager:
                     try:
                         response.raise_for_status()
                     except Exception as err:
-                        raise MediaNotFoundError(f"Failed to fetch stream: {err}") from err
+                        # Do not embed err.__str__ — aiohttp's ClientResponseError
+                        # includes the signed CDN URL, which carries an expiring
+                        # signature that should not reach logs or the frontend.
+                        raise MediaNotFoundError(
+                            f"Failed to fetch stream: HTTP {response.status}"
+                        ) from err
 
                     bytes_before = bytes_yielded
                     if is_encrypted:

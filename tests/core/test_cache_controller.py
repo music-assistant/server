@@ -9,7 +9,9 @@ from unittest.mock import AsyncMock, patch
 import aiofiles
 import pytest
 
+from music_assistant.constants import DB_TABLE_CACHE, VACUUM_MIN_RECLAIM_RATIO
 from music_assistant.controllers.cache import MAX_CACHE_DB_SIZE_MB, CacheController
+from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.mass import MusicAssistant
 
 
@@ -284,8 +286,11 @@ async def test_set_with_empty_key_is_noop(cache: CacheController) -> None:
 # --- Oversized cache detection ---
 
 
-async def test_cache_reset_when_exceeding_limit(mass_minimal: MusicAssistant) -> None:
-    """Test that the cache database is removed when it exceeds MAX_CACHE_DB_SIZE_MB."""
+async def test_cache_warns_when_exceeding_limit(
+    mass_minimal: MusicAssistant,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test that a warning is logged (and files kept) when the db exceeds the limit."""
     cache = mass_minimal.cache
     db_files = await _create_db_files(mass_minimal.cache_path)
 
@@ -297,15 +302,18 @@ async def test_cache_reset_when_exceeding_limit(mass_minimal: MusicAssistant) ->
             return func(*args)
 
         mock_to_thread.side_effect = _side_effect
-        result = await cache._check_and_reset_oversized_cache()
+        await cache._check_oversized_cache()
 
-    assert result is True
+    assert "exceeds recommended maximum" in caplog.text
     for path in db_files:
-        assert not os.path.exists(path)
+        assert os.path.exists(path)
 
 
-async def test_cache_not_reset_when_under_limit(mass_minimal: MusicAssistant) -> None:
-    """Test that the cache database is kept when it is under MAX_CACHE_DB_SIZE_MB."""
+async def test_cache_does_not_warn_when_under_limit(
+    mass_minimal: MusicAssistant,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test that no warning is logged when the db is under the limit."""
     cache = mass_minimal.cache
     db_files = await _create_db_files(mass_minimal.cache_path)
 
@@ -317,14 +325,17 @@ async def test_cache_not_reset_when_under_limit(mass_minimal: MusicAssistant) ->
             return func(*args)
 
         mock_to_thread.side_effect = _side_effect
-        result = await cache._check_and_reset_oversized_cache()
+        await cache._check_oversized_cache()
 
-    assert result is False
+    assert "exceeds recommended maximum" not in caplog.text
     for path in db_files:
         assert os.path.exists(path)
 
 
-async def test_all_three_db_files_included_in_size(mass_minimal: MusicAssistant) -> None:
+async def test_all_three_db_files_included_in_size(
+    mass_minimal: MusicAssistant,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """Test that cache.db, cache.db-wal, and cache.db-shm are all summed for size check."""
     cache = mass_minimal.cache
     db_path = os.path.join(mass_minimal.cache_path, "cache.db")
@@ -337,35 +348,114 @@ async def test_all_three_db_files_included_in_size(mass_minimal: MusicAssistant)
     with patch(
         "music_assistant.controllers.cache.controller.MAX_CACHE_DB_SIZE_MB", size_threshold_mb
     ):
-        result = await cache._check_and_reset_oversized_cache()
+        await cache._check_oversized_cache()
 
-    assert result is True
-    assert not os.path.exists(db_path)
-    assert not os.path.exists(db_path + "-wal")
-    assert not os.path.exists(db_path + "-shm")
+    assert "exceeds recommended maximum" in caplog.text
+    for suffix in ("", "-wal", "-shm"):
+        assert os.path.exists(db_path + suffix)
 
 
-async def test_skip_migration_when_cache_reset(
-    mass_minimal: MusicAssistant,
-    caplog: pytest.LogCaptureFixture,
+# --- allow_expired_cache flag ---
+
+
+async def test_get_with_allow_expired_cache_returns_expired_data(
+    cache: CacheController,
 ) -> None:
-    """Test that database migration is skipped when the cache was reset."""
-    cache = mass_minimal.cache
+    """Test that get(allow_expired_cache=True) returns data past its expiration."""
+    await cache.set("stale", "old_data", provider="test", expiration=-1)
+    assert await cache.get("stale", provider="test", default="gone") == "gone"
+    assert (
+        await cache.get("stale", provider="test", default="gone", allow_expired_cache=True)
+        == "old_data"
+    )
 
-    with patch.object(cache, "_check_and_reset_oversized_cache", return_value=True):
-        await cache._setup_database()
 
-    assert "Performing database migration" not in caplog.text
-
-
-async def test_skip_vacuum_when_cache_reset(
-    mass_minimal: MusicAssistant,
-    caplog: pytest.LogCaptureFixture,
+async def test_get_with_allow_expired_cache_still_returns_default_when_missing(
+    cache: CacheController,
 ) -> None:
-    """Test that database vacuum is skipped when the cache was reset."""
+    """Test that allow_expired_cache=True still returns default when nothing is cached."""
+    result = await cache.get(
+        "nonexistent", provider="test", default="gone", allow_expired_cache=True
+    )
+    assert result == "gone"
+
+
+async def test_auto_cleanup_removes_expired_entries(cache: CacheController) -> None:
+    """Test that auto_cleanup removes expired entries by default."""
+    await cache.set("evict", "data", provider="test", expiration=-1)
+    await cache.auto_cleanup()
+    result = await cache.get("evict", provider="test", default="gone", allow_expired_cache=True)
+    assert result == "gone"
+
+
+async def test_auto_cleanup_keeps_allow_expired_cache_entries(
+    cache: CacheController,
+) -> None:
+    """Test that auto_cleanup keeps expired entries with allow_expired_cache=True."""
+    await cache.set("keep", "data", provider="test", expiration=-1, allow_expired_cache=True)
+    await cache.auto_cleanup()
+    result = await cache.get("keep", provider="test", allow_expired_cache=True)
+    assert result == "data"
+
+
+async def test_auto_cleanup_keeps_fresh_entries(cache: CacheController) -> None:
+    """Test that auto_cleanup keeps fresh entries regardless of the flag."""
+    await cache.set("alive", "data", provider="test", expiration=3600)
+    await cache.auto_cleanup()
+    assert await cache.get("alive", provider="test") == "data"
+
+
+async def test_auto_cleanup_scans_all_records(cache: CacheController) -> None:
+    """
+    Test that auto_cleanup removes expired entries beyond the row-fetch page size.
+
+    Regression test: cleanup previously fetched rows via the default 500-row limit,
+    so large caches kept most of their expired entries forever.
+    """
+    expired_count = 1200
+    for i in range(expired_count):
+        await cache.set(f"expired_{i}", "data", provider="test", expiration=-1)
+    await cache.set("fresh", "data", provider="test", expiration=3600)
+
+    await cache.auto_cleanup()
+
+    assert cache.database is not None
+    assert await cache.database.get_count(DB_TABLE_CACHE) == 1
+    assert await cache.get("fresh", provider="test") == "data"
+
+
+# --- Startup vacuum ---
+
+
+async def test_setup_skips_vacuum_when_little_reclaimable(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """Test that the startup vacuum is skipped when little space can be reclaimed."""
     cache = mass_minimal.cache
-
-    with patch.object(cache, "_check_and_reset_oversized_cache", return_value=True):
+    with (
+        patch.object(
+            DatabaseConnection,
+            "get_reclaimable_ratio",
+            AsyncMock(return_value=VACUUM_MIN_RECLAIM_RATIO / 2),
+        ),
+        patch.object(DatabaseConnection, "vacuum", AsyncMock()) as mock_vacuum,
+    ):
         await cache._setup_database()
+    mock_vacuum.assert_not_called()
 
-    assert "Compacting database" not in caplog.text
+
+async def test_setup_runs_vacuum_when_reclaimable(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """Test that the startup vacuum runs when enough space can be reclaimed."""
+    cache = mass_minimal.cache
+    with (
+        patch.object(
+            DatabaseConnection,
+            "get_reclaimable_ratio",
+            AsyncMock(return_value=VACUUM_MIN_RECLAIM_RATIO + 0.1),
+        ),
+        patch.object(DatabaseConnection, "vacuum", AsyncMock()) as mock_vacuum,
+    ):
+        await cache._setup_database()
+    mock_vacuum.assert_awaited_once_with()

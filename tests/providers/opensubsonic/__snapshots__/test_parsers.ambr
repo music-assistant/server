@@ -85,6 +85,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -177,6 +178,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -240,6 +242,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': list([
         'East coast',
@@ -250,6 +253,7 @@
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
@@ -316,6 +320,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -379,6 +384,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'Download the full release here (creative commons). These cripsy beats are ripe with thumping funk and techno influences, sample wizardry and daring shuffles. Composed with the help of unique sound plugins which were especially programmed to measure Comfort Fit’s needs and wishes, we think the chances aren’t bad that you’ll fall for the unique sound signature, bounce and elegance of this unusual Hip Hop production. Ltj bukem / Good looking Rec., UK: "Really love this music." Velanche / XLR8R, UK: "Awesome job he\'s done... overall production is dope." Kwesi / BBE Music, UK: "Wooooooowwwww... WHAT THE FUCK! THIS IS WHAT',
+      'description_language': None,
       'explicit': None,
       'genres': list([
         'East coast',
@@ -389,12 +395,14 @@
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
         dict({
           'path': 'http://localhost:8989/play/art/0f8c3cbd6b0b22c3b5402141351ac812/album/21/thumb34.jpg',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -512,6 +520,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': list([
         'East coast',
@@ -522,6 +531,7 @@
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
@@ -639,6 +649,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'Download the full release here (creative commons). These cripsy beats are ripe with thumping funk and techno influences, sample wizardry and daring shuffles. Composed with the help of unique sound plugins which were especially programmed to measure Comfort Fit’s needs and wishes, we think the chances aren’t bad that you’ll fall for the unique sound signature, bounce and elegance of this unusual Hip Hop production. Ltj bukem / Good looking Rec., UK: "Really love this music." Velanche / XLR8R, UK: "Awesome job he\'s done... overall production is dope." Kwesi / BBE Music, UK: "Wooooooowwwww... WHAT THE FUCK! THIS IS WHAT',
+      'description_language': None,
       'explicit': None,
       'genres': list([
         'East coast',
@@ -649,12 +660,14 @@
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
         dict({
           'path': 'http://localhost:8989/play/art/0f8c3cbd6b0b22c3b5402141351ac812/album/21/thumb34.jpg',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -772,6 +785,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': list([
         'East coast',
@@ -782,6 +796,7 @@
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
@@ -899,6 +914,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'Download the full release here (creative commons). These cripsy beats are ripe with thumping funk and techno influences, sample wizardry and daring shuffles. Composed with the help of unique sound plugins which were especially programmed to measure Comfort Fit’s needs and wishes, we think the chances aren’t bad that you’ll fall for the unique sound signature, bounce and elegance of this unusual Hip Hop production. Ltj bukem / Good looking Rec., UK: "Really love this music." Velanche / XLR8R, UK: "Awesome job he\'s done... overall production is dope." Kwesi / BBE Music, UK: "Wooooooowwwww... WHAT THE FUCK! THIS IS WHAT',
+      'description_language': None,
       'explicit': None,
       'genres': list([
         'East coast',
@@ -909,12 +925,14 @@
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
         dict({
           'path': 'http://localhost:8989/play/art/0f8c3cbd6b0b22c3b5402141351ac812/album/21/thumb34.jpg',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -982,6 +1000,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -989,12 +1008,14 @@
         dict({
           'path': 'ar-37ec820ca7193e17040c98f7da7c4b51_0',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
         dict({
           'path': 'https://demo.org/image.jpg',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -1061,6 +1082,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'Empty biography',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1068,18 +1090,21 @@
         dict({
           'path': 'ar-37ec820ca7193e17040c98f7da7c4b51_0',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
         dict({
           'path': 'https://demo.org/image.jpg',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
         dict({
           'path': 'http://localhost:8989/play/art/f20070e8e11611cc53542a38801d60fa/artist/2/thumb34.jpg',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -1146,6 +1171,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1153,12 +1179,14 @@
         dict({
           'path': 'ar-37ec820ca7193e17040c98f7da7c4b51_0',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
         dict({
           'path': 'https://demo.org/image.jpg',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -1225,6 +1253,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'Empty biography',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1232,18 +1261,21 @@
         dict({
           'path': 'ar-37ec820ca7193e17040c98f7da7c4b51_0',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
         dict({
           'path': 'https://demo.org/image.jpg',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
         dict({
           'path': 'http://localhost:8989/play/art/f20070e8e11611cc53542a38801d60fa/artist/2/thumb34.jpg',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -1306,6 +1338,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1313,6 +1346,7 @@
         dict({
           'path': 'ar-100000002',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
@@ -1375,6 +1409,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'Empty biography',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1382,12 +1417,14 @@
         dict({
           'path': 'ar-100000002',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
         dict({
           'path': 'http://localhost:8989/play/art/f20070e8e11611cc53542a38801d60fa/artist/2/thumb34.jpg',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -1451,6 +1488,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'The history of The History of Rome...Why the Western Empire Fell when it did...Some thoughts on the future...Thank you, goodnight.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1458,6 +1496,7 @@
         dict({
           'path': 'pd-5',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
@@ -1489,6 +1528,7 @@
         'chapters': None,
         'copyright': None,
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
+        'description_language': None,
         'explicit': None,
         'genres': None,
         'grouping': None,
@@ -1496,6 +1536,7 @@
           dict({
             'path': 'pd-5',
             'provider': 'xx-instance-id-xx',
+            'proxy_id': None,
             'remotely_accessible': False,
             'type': 'thumb',
           }),
@@ -1590,6 +1631,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'The history of The History of Rome...Why the Western Empire Fell when it did...Some thoughts on the future...Thank you, goodnight.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1597,6 +1639,7 @@
         dict({
           'path': 'pd-5',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
@@ -1628,6 +1671,7 @@
         'chapters': None,
         'copyright': None,
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
+        'description_language': None,
         'explicit': None,
         'genres': None,
         'grouping': None,
@@ -1635,6 +1679,7 @@
           dict({
             'path': 'pd-5',
             'provider': 'xx-instance-id-xx',
+            'proxy_id': None,
             'remotely_accessible': False,
             'type': 'thumb',
           }),
@@ -1729,6 +1774,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'The history of The History of Rome...Why the Western Empire Fell when it did...Some thoughts on the future...Thank you, goodnight.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1736,6 +1782,7 @@
         dict({
           'path': 'pd-5',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
@@ -1767,6 +1814,7 @@
         'chapters': None,
         'copyright': None,
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
+        'description_language': None,
         'explicit': None,
         'genres': None,
         'grouping': None,
@@ -1774,6 +1822,7 @@
           dict({
             'path': 'pd-5',
             'provider': 'xx-instance-id-xx',
+            'proxy_id': None,
             'remotely_accessible': False,
             'type': 'thumb',
           }),
@@ -1868,6 +1917,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1875,6 +1925,7 @@
         dict({
           'path': 'al-2250',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
@@ -1940,6 +1991,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1947,6 +1999,7 @@
         dict({
           'path': 'pd-5',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
@@ -2010,6 +2063,7 @@
       'chapters': None,
       'copyright': None,
       'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -2017,6 +2071,7 @@
         dict({
           'path': 'pd-5',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
@@ -2099,6 +2154,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -2165,6 +2221,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -2290,6 +2347,7 @@
         'chapters': None,
         'copyright': None,
         'description': None,
+        'description_language': None,
         'explicit': None,
         'genres': list([
           'East coast',
@@ -2300,6 +2358,7 @@
           dict({
             'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
             'provider': 'xx-instance-id-xx',
+            'proxy_id': None,
             'remotely_accessible': False,
             'type': 'thumb',
           }),
@@ -2362,6 +2421,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -2428,6 +2488,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -2516,6 +2577,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -2582,6 +2644,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -2707,6 +2770,7 @@
         'chapters': None,
         'copyright': None,
         'description': None,
+        'description_language': None,
         'explicit': None,
         'genres': list([
           'East coast',
@@ -2717,6 +2781,7 @@
           dict({
             'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
             'provider': 'xx-instance-id-xx',
+            'proxy_id': None,
             'remotely_accessible': False,
             'type': 'thumb',
           }),
@@ -2779,6 +2844,7 @@
           'chapters': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -2845,6 +2911,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -2987,6 +3054,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -3112,6 +3180,7 @@
         'chapters': None,
         'copyright': None,
         'description': None,
+        'description_language': None,
         'explicit': None,
         'genres': list([
           'East coast',
@@ -3122,6 +3191,7 @@
           dict({
             'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
             'provider': 'xx-instance-id-xx',
+            'proxy_id': None,
             'remotely_accessible': False,
             'type': 'thumb',
           }),
@@ -3238,6 +3308,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -3380,6 +3451,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -3505,6 +3577,7 @@
         'chapters': None,
         'copyright': None,
         'description': None,
+        'description_language': None,
         'explicit': None,
         'genres': list([
           'East coast',
@@ -3515,6 +3588,7 @@
           dict({
             'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
             'provider': 'xx-instance-id-xx',
+            'proxy_id': None,
             'remotely_accessible': False,
             'type': 'thumb',
           }),
@@ -3631,6 +3705,7 @@
       'chapters': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',

@@ -11,6 +11,7 @@ import aiohttp
 from music_assistant_models.errors import (
     InvalidDataError,
     MediaNotFoundError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
 )
 
@@ -43,7 +44,7 @@ class InternetArchiveClient:
                 if response.status == 429:
                     # Rate limited - let throttler handle this
                     backoff_time = int(response.headers.get("Retry-After", 60))
-                    raise ResourceTemporarilyUnavailable(
+                    raise RateLimited(
                         "Internet Archive rate limit exceeded", backoff_time=backoff_time
                     )
 

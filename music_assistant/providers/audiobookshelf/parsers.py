@@ -38,6 +38,25 @@ from music_assistant_models.media_items import Playlist as MassPlaylist
 from music_assistant_models.media_items import Podcast as MassPodcast
 from music_assistant_models.media_items import PodcastEpisode as MassPodcastEpisode
 
+from music_assistant.helpers.datetime import from_utc_timestamp
+
+
+def _build_cover_url(*, base_url: str, item_id: str, token: str, version: int | None = None) -> str:
+    """
+    Build the cover url for an Audiobookshelf library item.
+
+    :param base_url: Base url of the Audiobookshelf server.
+    :param item_id: Id of the library item to fetch the cover for.
+    :param token: Access token for the Audiobookshelf api.
+    :param version: Last-updated timestamp of the item.
+    """
+    # the cover endpoint is static and keeps its filename when artwork is
+    # replaced in place, so append the last-updated timestamp to bust caches
+    cover_url = f"{base_url}/api/items/{item_id}/cover?token={token}"
+    if version is not None:
+        cover_url += f"&ts={version}"
+    return cover_url
+
 
 def parse_playlist(
     *,
@@ -66,8 +85,12 @@ def parse_playlist(
     )
     # cover
     if abs_playlist.cover_path is not None:
-        api_url = f"/api/items/{abs_playlist.id_}/cover?token={token}"
-        cover_url = f"{base_url}{api_url}"
+        cover_url = _build_cover_url(
+            base_url=base_url,
+            item_id=abs_playlist.id_,
+            token=token,
+            version=abs_playlist.last_update,
+        )
         mass_playlist.metadata.images = UniqueList(
             [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=instance_id)]
         )
@@ -104,7 +127,12 @@ def parse_podcast(
     )
     mass_podcast.metadata.description = abs_podcast.media.metadata.description
     if token is not None and abs_podcast.media.cover_path is not None:
-        image_url = f"{base_url}/api/items/{abs_podcast.id_}/cover?token={token}"
+        image_url = _build_cover_url(
+            base_url=base_url,
+            item_id=abs_podcast.id_,
+            token=token,
+            version=abs_podcast.updated_at,
+        )
         mass_podcast.metadata.images = UniqueList(
             [MediaItemImage(type=ImageType.THUMB, path=image_url, provider=instance_id)]
         )
@@ -139,7 +167,8 @@ def parse_podcast_episode(
     token: str | None,
     base_url: str,
     media_progress: AbsMediaProgress | None = None,
-    add_cover: bool = False,
+    cover_path: str | None = None,
+    cover_version: int | None = None,
 ) -> MassPodcastEpisode:
     """Translate ABSPodcastEpisode to MassPodcastEpisode.
 
@@ -182,7 +211,7 @@ def parse_podcast_episode(
     if episode.published_at is not None:
         position = -episode.published_at
         # abs published_at is ms epoch
-        release_date = datetime.fromtimestamp(episode.published_at / 1000)
+        release_date = from_utc_timestamp(episode.published_at / 1000)
     else:
         position = 0
         if fallback_episode_cnt is not None:
@@ -205,9 +234,13 @@ def parse_podcast_episode(
     mass_episode.metadata.release_date = release_date
 
     # cover image
-    if token is not None and add_cover:
-        url_api = f"/api/items/{prov_podcast_id}/cover?token={token}"
-        url_cover = f"{base_url}{url_api}"
+    if token is not None and cover_path:
+        url_cover = _build_cover_url(
+            base_url=base_url,
+            item_id=prov_podcast_id,
+            token=token,
+            version=cover_version,
+        )
         mass_episode.metadata.images = UniqueList(
             [MediaItemImage(type=ImageType.THUMB, path=url_cover, provider=instance_id)]
         )
@@ -273,8 +306,12 @@ def parse_audiobook(
 
     # cover
     if token is not None and abs_audiobook.media.cover_path is not None:
-        api_url = f"/api/items/{abs_audiobook.id_}/cover?token={token}"
-        cover_url = f"{base_url}{api_url}"
+        cover_url = _build_cover_url(
+            base_url=base_url,
+            item_id=abs_audiobook.id_,
+            token=token,
+            version=abs_audiobook.updated_at,
+        )
         mass_audiobook.metadata.images = UniqueList(
             [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=instance_id)]
         )
@@ -303,6 +340,6 @@ def parse_audiobook(
         mass_audiobook.resume_position_ms = int(media_progress.current_time * 1000)
         mass_audiobook.fully_played = media_progress.is_finished
 
-    mass_audiobook.date_added = datetime.fromtimestamp(abs_audiobook.added_at / 1000)
+    mass_audiobook.date_added = from_utc_timestamp(abs_audiobook.added_at / 1000)
 
     return mass_audiobook

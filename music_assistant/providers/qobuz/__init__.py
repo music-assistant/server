@@ -7,6 +7,7 @@ import datetime
 import hashlib
 import time
 from contextlib import suppress
+from datetime import UTC
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import client_exceptions
@@ -25,6 +26,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import (
@@ -41,6 +43,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import (
+    CONF_ENTRY_UNOFFICIAL_PROVIDER,
     CONF_PASSWORD,
     CONF_USERNAME,
     VARIOUS_ARTISTS_MBID,
@@ -116,6 +119,7 @@ async def get_config_entries(
     """
     # ruff: noqa: ARG001
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
@@ -220,28 +224,28 @@ class QobuzProvider(MusicProvider):
                 ]
         return result
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Qobuz."""
         endpoint = "favorite/getUserFavorites"
         for item in await self._get_all_items(endpoint, key="artists", type="artists"):
             if item and item["id"]:
                 yield self._parse_artist(item)
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve all library albums from Qobuz."""
         endpoint = "favorite/getUserFavorites"
         for item in await self._get_all_items(endpoint, key="albums", type="albums"):
             if item and item["id"]:
                 yield await self._parse_album(item)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Qobuz."""
         endpoint = "favorite/getUserFavorites"
         for item in await self._get_all_items(endpoint, key="tracks", type="tracks"):
             if item and item["id"]:
                 yield await self._parse_track(item)
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from the provider."""
         endpoint = "playlist/getUserPlaylists"
         for item in await self._get_all_items(endpoint, key="playlists"):
@@ -302,7 +306,7 @@ class QobuzProvider(MusicProvider):
             raise InvalidDataError(msg)
         return self._parse_playlist(playlist_obj)
 
-    @use_cache(3600 * 24 * 30)  # Cache for 30 days
+    @use_cache(3600 * 24 * 30, allow_expired_cache=True)  # Cache for 30 days
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
         params = {"album_id": prov_album_id}
@@ -317,7 +321,7 @@ class QobuzProvider(MusicProvider):
                 await asyncio.sleep(0)
         return result
 
-    @use_cache(3600 * 3)  # Cache for 3 hours
+    @use_cache(3600 * 3, allow_expired_cache=True)  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
@@ -344,7 +348,7 @@ class QobuzProvider(MusicProvider):
                 await asyncio.sleep(0)
         return result
 
-    @use_cache(3600 * 24 * 14)  # Cache for 14 days
+    @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of albums for the given artist."""
         result = await self._get_data(
@@ -367,7 +371,7 @@ class QobuzProvider(MusicProvider):
             )
         ]
 
-    @use_cache(3600 * 24 * 14)  # Cache for 14 days
+    @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of most popular tracks for the given artist."""
         result = await self._get_data(
@@ -590,8 +594,9 @@ class QobuzProvider(MusicProvider):
                     remotely_accessible=True,
                 )
             )
-        if artist_obj.get("biography"):
-            artist.metadata.description = artist_obj["biography"].get("content")
+        if biography := artist_obj.get("biography"):
+            artist.metadata.description = biography.get("content")
+            artist.metadata.description_language = biography.get("language")
         if favorited_at := artist_obj.get("favorited_at"):
             artist.date_added = datetime.datetime.fromtimestamp(favorited_at, tz=datetime.UTC)
         return artist
@@ -663,7 +668,7 @@ class QobuzProvider(MusicProvider):
             album.metadata.label = album_obj["label"]["name"]
         if released_at := album_obj.get("released_at"):
             with suppress(ValueError):
-                album.year = datetime.datetime.fromtimestamp(released_at).year
+                album.year = datetime.datetime.fromtimestamp(released_at, tz=UTC).year
         if album_obj.get("copyright"):
             album.metadata.copyright = album_obj["copyright"]
         if album_obj.get("description"):
@@ -896,7 +901,7 @@ class QobuzProvider(MusicProvider):
                     endpoint,
                     retry_after or "not provided",
                 )
-                raise ResourceTemporarilyUnavailable("Rate Limiter", backoff_time=backoff_time)
+                raise RateLimited("Rate Limiter", backoff_time=backoff_time)
             # handle temporary server error
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
@@ -948,7 +953,7 @@ class QobuzProvider(MusicProvider):
                     endpoint,
                     retry_after or "not provided",
                 )
-                raise ResourceTemporarilyUnavailable("Rate Limiter", backoff_time=backoff_time)
+                raise RateLimited("Rate Limiter", backoff_time=backoff_time)
             # handle temporary server error
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)

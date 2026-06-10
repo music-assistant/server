@@ -10,50 +10,57 @@ Sendspin Server (PushStream → VisualizerV1Role → FFT/spectrum)
        ▼ (WebSocket, buffer-tracked delivery)
 SendspinClient (VISUALIZER role, small buffer for near-realtime)
        │
-       ▼ (VisualizerFrame callback, scheduled via compute_play_time)
-HueAudioAnalyzer (bass beat detection, color cycling, energy pulse)
+       ▼ (VisualizerFrame callbacks: spectrum / peaks / beats)
+HueAudioAnalyzer (bass beat detection, color cycling, energy pulse)   ← this provider
        │
-       ▼ (HueStream v2 binary protocol)
-HueDtlsStreamer (DTLS 1.2 + PSK, pure Python)
+       ▼ (LightColorCommand frames)
+EntertainmentSession → HueDtlsStreamer (DTLS 1.2 PSK + HueStream v2)   ← hue-entertainment lib
        │
        ▼ (encrypted UDP port 2100)
 Hue Bridge → Entertainment Area Lights
 ```
 
-The bridge connects as a Sendspin WebSocket client with the VISUALIZER role and a small buffer capacity (~100 bytes) so frames arrive near playback time rather than seconds ahead. Each frame is scheduled via `compute_play_time()` with Hue latency compensation.
+The bridge connects as a Sendspin WebSocket client with the VISUALIZER role and a small buffer capacity (2048 bytes) so frames arrive near playback time rather than seconds ahead. A fixed-rate render loop maps the current playhead onto the server timeline with `compute_server_time()` (plus a configurable Hue-latency lead) and samples the analyzer for each DTLS frame.
 
-Entertainment areas are discovered at plugin (re)load from the Hue bridge REST API. Each area gets its own Sendspin client and DTLS connection.
+Entertainment areas are discovered at plugin (re)load from the Hue bridge REST API. Each area gets its own Sendspin client and `EntertainmentSession`.
 
 ## Effect Modes
 
 | Mode | Description |
 |------|-------------|
-| **Spectrum** | Frequency bands spread across lights with vibrant palette colors. Colors and channel assignments rotate on beats. Bass-driven beat detection triggers white strobe on high energy peaks. Energy-adaptive color cycling speed. |
-| **Bass Boost** | All lights pulse with bass energy in warm tones. Beats flash with cycling palette colors or white strobe on peaks. |
-| **Ambient** | Slow hue rotation with gentle energy modulation. Per-channel hue offset for depth. Relaxing, smooth transitions. |
+| **Smooth** (default) | Spectrum-driven brightness with a slowly drifting palette. |
+| **Ambient** | Colour cycling only, no brightness modulation — relaxing, smooth transitions. |
+| **Flashing** | Brightness pulse on every beat, stronger on downbeats. |
+| **Energetic** | Large brightness swings on hits plus fast palette rotation. |
 
-## DTLS Implementation
+## Hue streaming layer
 
-Pure-Python DTLS 1.2 PSK using the `cryptography` library (AES-128-GCM) and stdlib (hmac, hashlib, socket). No ctypes, no C bindings, no external DTLS dependencies.
+The Hue bridge REST API (pairing, area discovery, entertainment start/stop) and the
+pure-Python DTLS 1.2 PSK + HueStream v2 streaming live in the standalone
+[`hue-entertainment`](https://github.com/music-assistant/hue-entertainment) library
+(published on PyPI, pinned in `manifest.json`). This provider drives it through the
+library's `EntertainmentSession` facade, which opens the stream on demand, runs the
+blocking DTLS handshake in an executor, and enforces the bridge's single-active-stream
+constraint.
 
-The HueStream v2 protocol sends per-channel RGB colors as duplicated bytes with the entertainment area UUID as a 36-byte ASCII string.
+Only the Sendspin-specific glue lives here: the visualizer client wiring (`bridge.py`)
+and the audio-to-color analyzer (`analyzer.py`).
 
 ## File Structure
 
 ```
 hue_entertainment/
-├── hue_sendspin_bridge/       Reusable bridge package
-│   ├── dtls.py                Pure-Python DTLS 1.2 PSK + HueStream protocol
-│   ├── analyzer.py            Bass beat detection, color cycling, effect modes
-│   ├── api.py                 Hue REST API (pairing, entertainment areas)
-│   ├── models.py              EntertainmentArea, LightChannel, LightColorCommand
-│   └── constants.py           Protocol and analysis constants
 ├── __init__.py                Config flow (pairing, settings)
 ├── provider.py                mDNS discovery, lifecycle management
-├── bridge.py                  Sendspin visualizer client + Hue DTLS bridge
-├── constants.py               MA config keys
-└── manifest.json              Experimental plugin manifest
+├── bridge.py                  Sendspin visualizer client → analyzer → EntertainmentSession
+├── analyzer.py                Bass beat detection, color cycling, effect modes
+├── constants.py               MA config keys + Sendspin spectrum request config
+└── manifest.json              Experimental plugin manifest (requires hue-entertainment)
 ```
+
+The Hue REST API, DTLS streamer, `EntertainmentSession` and data models
+(`EntertainmentArea`, `LightChannel`, `LightColorCommand`) are imported from the
+`hue-entertainment` library.
 
 ## Configuration
 
@@ -61,8 +68,8 @@ hue_entertainment/
 |-----|------|---------|-------------|
 | `bridge_host` | String | — | Bridge IP (auto-discovered via mDNS) |
 | `brightness` | Integer | 100 | Overall light brightness (0-100) |
-| `intensity` | Integer | 70 | Beat reactivity / flash intensity (0-100) |
-| `color_mode` | String | spectrum | Effect mode (spectrum / bass_boost / ambient) |
+| `color_mode` | String | smooth | Visualization mode (smooth / ambient / flashing / energetic) |
+| `hue_latency_ms` | Integer | 20 | Lead time lights render ahead of the playhead (0-3000) |
 
 ## Quick Setup
 
@@ -75,7 +82,7 @@ hue_entertainment/
 
 ## Status
 
-Working and tested on Hue Bridge V2 and Hue Bridge Pro. The current implementation provides a solid foundation with three effect modes and bass-driven beat detection. There is room for future improvements:
+Working and tested on Hue Bridge V2 and Hue Bridge Pro. The current implementation provides a solid foundation with four effect modes and bass-driven beat detection. There is room for future improvements:
 
 - More precise beat detection using the MA audio analyzer controller
 - Genre/mood-aware effects using track metadata

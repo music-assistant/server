@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import aiofiles
 from aiohttp.client_exceptions import ClientError
@@ -104,10 +104,10 @@ class AppleMusicStreamingManager:
             allow_seek=True,
         )
 
-    async def _fetch_song_stream_metadata(self, song_id: str) -> dict:
+    async def _fetch_song_stream_metadata(self, song_id: str) -> dict[str, Any]:
         """Get the stream metadata for a song from Apple Music."""
         playback_url = "https://play.music.apple.com/WebObjects/MZPlay.woa/wa/webPlayback"
-        data: dict = {}
+        data: dict[str, Any] = {}
         self.logger.debug("_fetch_song_stream_metadata: Check if Library ID: %s", song_id)
         if is_library_id(song_id):
             data["universalLibraryId"] = song_id
@@ -127,7 +127,7 @@ class AppleMusicStreamingManager:
                     if content.get("failureType"):
                         message = content.get("failureMessage")
                         raise MediaNotFoundError(f"Failed to get song stream metadata: {message}")
-                    return content["songList"][0]
+                    return cast("dict[str, Any]", content["songList"][0])
             except (MediaNotFoundError, ClientError) as exc:
                 if retry:
                     self.logger.warning("Failed to get song stream metadata: %s", exc)
@@ -136,7 +136,7 @@ class AppleMusicStreamingManager:
         raise MediaNotFoundError(f"Failed to get song stream metadata for {song_id}")
 
     async def _parse_stream_url_and_uri(
-        self, stream_assets: list[dict]
+        self, stream_assets: list[dict[str, Any]]
     ) -> tuple[str | None, str | None]:
         """Parse the stream URL and key URI from the song assets."""
         ctrp256_urls = [asset["URL"] for asset in stream_assets if asset["flavor"] == "28:ctrp256"]
@@ -157,7 +157,7 @@ class AppleMusicStreamingManager:
         """Return headers required for decryption requests."""
         return {
             "authorization": f"Bearer {self.provider._music_app_token}",
-            "media-user-token": self.provider._music_user_token,
+            "media-user-token": cast("str", self.provider._music_user_token),
             "connection": "keep-alive",
             "accept": "application/json",
             "origin": "https://music.apple.com",
@@ -181,7 +181,7 @@ class AppleMusicStreamingManager:
             checksum=self._session_id,
         ):
             self.logger.debug("Decryption key for %s found in cache.", item_id)
-            return decryption_key
+            return cast("str", decryption_key)
         pssh = self._build_pssh(key_id)
         device = Device(
             client_id=self._decrypt_client_id,
@@ -217,7 +217,7 @@ class AppleMusicStreamingManager:
     def _build_pssh(self, key_id: bytes) -> PSSH:
         """Build a Widevine PSSH object for the given key ID."""
         pssh_data = WidevinePsshData()
-        pssh_data.algorithm = 1
+        pssh_data.algorithm = WidevinePsshData.AESCTR
         pssh_data.key_ids.append(key_id)
         init_data = base64.b64encode(pssh_data.SerializeToString()).decode("utf-8")
         return PSSH.new(system_id=PSSH.SystemId.Widevine, init_data=init_data)
@@ -244,4 +244,4 @@ class AppleMusicStreamingManager:
             track_license = content.get("license")
             if not track_license:
                 raise MediaNotFoundError(f"No license found for song {item_id}.")
-            return track_license
+            return cast("str", track_license)

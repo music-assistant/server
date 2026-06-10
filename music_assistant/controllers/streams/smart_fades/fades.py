@@ -7,6 +7,7 @@ import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import aiofiles
@@ -28,7 +29,11 @@ from music_assistant.controllers.streams.smart_fades.helpers import (
     extrapolate_downbeats,
     generate_synthetic_timestamps,
 )
-from music_assistant.helpers.audio import iter_pcm_slices
+from music_assistant.helpers.audio import (
+    align_audio_to_frame_boundary,
+    iter_pcm_slices,
+    strip_silence,
+)
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import remove_file
 from music_assistant.models.audio_analysis import AudioAnalysisData
@@ -37,10 +42,21 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
 
 
+@dataclass(slots=True)
+class CrossfadeTimingInfo:
+    """Timing breakdown of a crossfade mix output: PRE | CF | POST."""
+
+    pre_crossfade_duration: float = 0.0
+    crossfade_duration: float = 0.0
+    fadein_trimmed_duration: float = 0.0
+    post_crossfade_duration: float = 0.0
+
+
 class SmartFade(ABC):
     """Abstract base class for Smart Fades."""
 
     filters: list[Filter]
+    timing_info: CrossfadeTimingInfo
 
     def __init__(self, logger: logging.Logger) -> None:
         """Initialize SmartFade base class."""
@@ -48,8 +64,13 @@ class SmartFade(ABC):
         self.logger = logger
 
     @abstractmethod
-    def _build(self) -> None:
-        """Build the smart fades filter chain."""
+    def _build(
+        self,
+        fade_out_bytes_len: int,
+        fade_in_bytes_len: int,
+        pcm_format: AudioFormat,
+    ) -> None:
+        """Build the filter chain and assign ``self.timing_info``."""
         ...
 
     def _get_ffmpeg_filters(
@@ -59,7 +80,7 @@ class SmartFade(ABC):
     ) -> list[str]:
         """Get FFmpeg filters for smart fades."""
         if not self.filters:
-            self._build()
+            raise RuntimeError("SmartFade not built — call Mixer.build() first")
         filters = []
         _cur_fadein_label = input_fadein_label
         _cur_fadeout_label = input_fadeout_label
@@ -73,9 +94,9 @@ class SmartFade(ABC):
     async def apply(
         self,
         fade_out_part: bytes,
-        fade_in_part: bytes | AsyncGenerator[bytes, None],
+        fade_in_part: bytes | AsyncGenerator[bytes],
         pcm_format: AudioFormat,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Apply the smart fade, yielding PCM audio chunks as they become available.
 
@@ -184,11 +205,16 @@ class SmartFade(ABC):
                     with suppress(TimeoutError, asyncio.CancelledError):
                         await asyncio.wait_for(stderr_task, timeout=2)
 
-            if proc.returncode not in (None, 0) or not got_output:
+            if proc.returncode != 0:
                 stderr_msg = "; ".join(stderr_lines) if stderr_lines else "(no stderr)"
                 raise RuntimeError(
                     f"Smart crossfade FFmpeg failed (rc={proc.returncode}): {stderr_msg}"
                 )
+            if not got_output:
+                msg = "Smart crossfade FFmpeg produced no output"
+                if stderr_lines:
+                    msg += f": {'; '.join(stderr_lines)}"
+                raise RuntimeError(msg)
         finally:
             # Always cleanup temp file, even if ffmpeg fails
             await remove_file(fadeout_filename)
@@ -248,8 +274,14 @@ class SmartCrossFade(SmartFade):
         )
         super().__init__(logger)
 
-    def _build(self) -> None:
-        """Build the smart fades filter chain."""
+    def _build(
+        self,
+        fade_out_bytes_len: int,
+        fade_in_bytes_len: int,
+        pcm_format: AudioFormat,
+    ) -> None:
+        """Build the smart fades filter chain and assign ``self.timing_info``."""
+        self.timing_info = CrossfadeTimingInfo()
         # Calculate tempo factor for time stretching
         bpm_ratio = self.fade_in_bpm / self.fade_out_bpm
         bpm_diff_percent = abs(1.0 - bpm_ratio) * 100
@@ -290,6 +322,7 @@ class SmartCrossFade(SmartFade):
             and fadein_start_pos + crossfade_duration <= SMART_CROSSFADE_DURATION
         ):
             self.filters.append(TrimFilter(logger=self.logger, fadein_start_pos=fadein_start_pos))
+            self.timing_info.fadein_trimmed_duration = fadein_start_pos
         else:
             self.logger.log(
                 VERBOSE_LOG_LEVEL,
@@ -371,6 +404,24 @@ class SmartCrossFade(SmartFade):
             logger=self.logger, crossfade_duration=crossfade_duration
         )
         self.filters.append(crossfade_filter)
+
+        fade_out_seconds = fade_out_bytes_len / pcm_format.pcm_sample_size
+        fade_in_seconds = fade_in_bytes_len / pcm_format.pcm_sample_size
+        # clamp CF to fit shorter inputs (defensive — normally full buffers)
+        self.timing_info.crossfade_duration = min(
+            crossfade_duration,
+            fade_out_seconds,
+            max(0.0, fade_in_seconds - self.timing_info.fadein_trimmed_duration),
+        )
+        self.timing_info.pre_crossfade_duration = max(
+            0.0, fade_out_seconds - self.timing_info.crossfade_duration
+        )
+        self.timing_info.post_crossfade_duration = max(
+            0.0,
+            fade_in_seconds
+            - self.timing_info.fadein_trimmed_duration
+            - self.timing_info.crossfade_duration,
+        )
 
     def _apply_gradual_time_stretch(
         self,
@@ -596,26 +647,43 @@ class StandardCrossFade(SmartFade):
 
     def __init__(self, logger: logging.Logger, crossfade_duration: float = 10.0) -> None:
         """Initialize StandardCrossFade with crossfade duration."""
-        self.crossfade_duration = crossfade_duration
         super().__init__(logger)
+        self.crossfade_duration = crossfade_duration
 
-    def _build(self) -> None:
-        """Build the standard crossfade filter chain."""
+    def _build(
+        self,
+        fade_out_bytes_len: int,
+        fade_in_bytes_len: int,
+        pcm_format: AudioFormat,
+    ) -> None:
+        """Build the standard crossfade filter chain and assign ``self.timing_info``."""
         self.filters = [
             CrossfadeFilter(logger=self.logger, crossfade_duration=self.crossfade_duration),
         ]
+        fade_out_seconds = fade_out_bytes_len / pcm_format.pcm_sample_size
+        fade_in_seconds = fade_in_bytes_len / pcm_format.pcm_sample_size
+        # clamp CF to fit shorter inputs (defensive — normally full buffers)
+        effective_cf = min(self.crossfade_duration, fade_out_seconds, fade_in_seconds)
+        self.timing_info = CrossfadeTimingInfo(
+            pre_crossfade_duration=max(0.0, fade_out_seconds - effective_cf),
+            crossfade_duration=effective_cf,
+            fadein_trimmed_duration=0.0,
+            post_crossfade_duration=max(0.0, fade_in_seconds - effective_cf),
+        )
 
     async def apply(
         self,
         fade_out_part: bytes,
-        fade_in_part: bytes | AsyncGenerator[bytes, None],
+        fade_in_part: bytes | AsyncGenerator[bytes],
         pcm_format: AudioFormat,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Apply standard crossfade, yielding PCM audio chunks.
 
         Only the overlapping portions are crossfaded, not the full buffers.
         """
+        fade_out_part = await strip_silence(fade_out_part, pcm_format=pcm_format, reverse=True)
+        fade_out_part = align_audio_to_frame_boundary(fade_out_part, pcm_format)
         crossfade_size = int(pcm_format.pcm_sample_size * self.crossfade_duration)
         # Pre-crossfade: outgoing track minus the crossfaded portion
         pre_crossfade = fade_out_part[:-crossfade_size]
@@ -624,7 +692,7 @@ class StandardCrossFade(SmartFade):
         # Collect only the crossfade portion from fade_in, keep the rest as a generator
         if isinstance(fade_in_part, bytes):
             adjusted_fade_in_part = fade_in_part[:crossfade_size]
-            post_crossfade: bytes | AsyncGenerator[bytes, None] = fade_in_part[crossfade_size:]
+            post_crossfade: bytes | AsyncGenerator[bytes] = fade_in_part[crossfade_size:]
         else:
             # read exactly crossfade_size bytes from the generator
             buf = bytearray()
@@ -636,7 +704,7 @@ class StandardCrossFade(SmartFade):
             # anything beyond crossfade_size plus the remaining generator is post_crossfade
             leftover = bytes(buf[crossfade_size:])
 
-            async def _post_crossfade() -> AsyncGenerator[bytes, None]:
+            async def _post_crossfade() -> AsyncGenerator[bytes]:
                 if leftover:
                     for pcm_slice in iter_pcm_slices(leftover, pcm_format, 1000):
                         yield pcm_slice
@@ -646,11 +714,6 @@ class StandardCrossFade(SmartFade):
 
             post_crossfade = _post_crossfade()
 
-        # Adjust the duration to match actual sizes
-        self.crossfade_duration = min(
-            len(adjusted_fade_in_part) / pcm_format.pcm_sample_size,
-            len(adjusted_fade_out_part) / pcm_format.pcm_sample_size,
-        )
         # Yield pre-crossfade, crossfaded section, and post-crossfade
         for pcm_slice in iter_pcm_slices(pre_crossfade, pcm_format, 1000):
             yield pcm_slice

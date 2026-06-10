@@ -9,6 +9,8 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
+
 from .auth import perform_device_auth, perform_qr_auth
 from .constants import (
     CONF_ACTION_AUTH_DEVICE,
@@ -22,6 +24,8 @@ from .constants import (
     CONF_QUALITY,
     CONF_REFRESH_TOKEN,
     CONF_REMEMBER_SESSION,
+    CONF_RESTRICTIVE_RATE_LIMITS,
+    CONF_SESSION_ID,
     CONF_TOKEN,
     CONF_WAVE_PRESET_DRAFT_DIVERSITY,
     CONF_WAVE_PRESET_DRAFT_LANGUAGE,
@@ -275,7 +279,7 @@ async def get_config_entries(
 
     # Handle QR auth action
     if action == CONF_ACTION_AUTH_QR:
-        session_id = values.get("session_id")
+        session_id = values.get(CONF_SESSION_ID)
         if not session_id:
             raise InvalidDataError("Missing session_id for QR authentication")
         x_token, music_token = await perform_qr_auth(mass, str(session_id))
@@ -291,7 +295,7 @@ async def get_config_entries(
     # Handle Device Flow auth action (yields x_token + refresh_token,
     # so we get silent auto-refresh on music-token AND x_token expiry)
     if action == CONF_ACTION_AUTH_DEVICE:
-        session_id = values.get("session_id")
+        session_id = values.get(CONF_SESSION_ID)
         if not session_id:
             raise InvalidDataError("Missing session_id for device authentication")
         x_token, music_token, refresh_token = await perform_device_auth(mass, str(session_id))
@@ -332,6 +336,7 @@ async def get_config_entries(
         label_text = "Authenticated to Yandex Music."
 
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         # Status label
         ConfigEntry(
             key="label_text",
@@ -460,6 +465,24 @@ async def get_config_entries(
             "Only change if Yandex Music changes their API endpoint. "
             f"Default: {DEFAULT_BASE_URL}",
             default_value=DEFAULT_BASE_URL,
+            required=False,
+            advanced=True,
+        ),
+        # Restrictive rate limits (advanced)
+        ConfigEntry(
+            key=CONF_RESTRICTIVE_RATE_LIMITS,
+            type=ConfigEntryType.BOOLEAN,
+            label="Restrictive rate limits (datacenter / VPN safe mode)",
+            description=(
+                "Enable when Music Assistant runs on a VPS, NAS-behind-VPN, "
+                "or any datacenter IP. Caps total in-flight requests to "
+                "Yandex below the edge concurrency limit observed for those "
+                "IPs (~6 simultaneous), trading some browse / recommendations "
+                "responsiveness for fewer captcha trips. Residential users "
+                "do not need this — Yandex tolerates much higher concurrency "
+                "from regular ISPs."
+            ),
+            default_value=False,
             required=False,
             advanced=True,
         ),

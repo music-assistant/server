@@ -137,7 +137,7 @@ class TidalProvider(MusicProvider):
         """Perform search on musicprovider."""
         return await self.media.search(search_query, media_types, limit)
 
-    @use_cache(3600 * 24)
+    @use_cache(3600 * 24, allow_expired_cache=True)
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Get similar tracks for given track id."""
         return await self.media.get_similar_tracks(prov_track_id, limit)
@@ -162,22 +162,22 @@ class TidalProvider(MusicProvider):
         """Get playlist details for given playlist id."""
         return await self.media.get_playlist(prov_playlist_id)
 
-    @use_cache(3600 * 24 * 30)
+    @use_cache(3600 * 24 * 30, allow_expired_cache=True)
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         return await self.media.get_album_tracks(prov_album_id)
 
-    @use_cache(3600 * 24 * 7)
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         return await self.media.get_artist_albums(prov_artist_id)
 
-    @use_cache(3600 * 24 * 7)
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         return await self.media.get_artist_toptracks(prov_artist_id)
 
-    @use_cache(3600 * 3)
+    @use_cache(3600 * 3, allow_expired_cache=True)
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         return await self.media.get_playlist_tracks(prov_playlist_id, page)
@@ -197,22 +197,22 @@ class TidalProvider(MusicProvider):
             name=name,
         )
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Tidal."""
         async for item in self.library.get_artists():
             yield item
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve all library albums from Tidal."""
         async for item in self.library.get_albums():
             yield item
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Tidal."""
         async for item in self.library.get_tracks():
             yield item
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from the provider."""
         async for item in self.library.get_playlists():
             yield item

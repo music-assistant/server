@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+import json
+import pathlib
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    ItemMapping,
     Playlist,
     RecommendationFolder,
     Track,
 )
+from yandex_music import Track as YandexTrack
 
 from music_assistant.providers.yandex_music.constants import (
     BROWSE_NAMES_EN,
@@ -22,6 +27,8 @@ from music_assistant.providers.yandex_music.constants import (
     ROTOR_STATION_MY_WAVE,
 )
 from music_assistant.providers.yandex_music.provider import YandexMusicProvider, _WaveState
+
+from .conftest import DE_JSON_CLIENT
 
 
 @pytest.fixture
@@ -712,9 +719,12 @@ async def test_get_seasonal_mix_recommendations_summer(provider_mock: Mock) -> N
 
 @pytest.mark.asyncio
 async def test_get_seasonal_mix_recommendations_spring_fallback(provider_mock: Mock) -> None:
-    """Test _get_seasonal_mix_recommendations falls back to autumn for spring months."""
+    """Spring with no playlists falls back to autumn (Yandex coverage gap)."""
     mock_playlist = Mock()
-    provider_mock.client.get_tag_playlists = AsyncMock(return_value=[mock_playlist])
+    # First call (spring) → empty; second call (autumn) → has playlists
+    provider_mock.client.get_tag_playlists = AsyncMock(
+        side_effect=[[], [mock_playlist]],
+    )
 
     mock_parsed_playlist = Mock(spec=Playlist)
     mock_parsed_playlist.item_id = "playlist_1"
@@ -723,9 +733,6 @@ async def test_get_seasonal_mix_recommendations_spring_fallback(provider_mock: M
     # Patch datetime to return March (month 3 - spring)
     mock_datetime = Mock()
     mock_datetime.now.return_value.month = 3
-
-    # _validate_tag returns False for spring, triggering fallback to autumn
-    provider_mock._validate_tag = AsyncMock(return_value=False)
 
     with (
         patch("music_assistant.providers.yandex_music.provider.datetime", mock_datetime),
@@ -737,8 +744,9 @@ async def test_get_seasonal_mix_recommendations_spring_fallback(provider_mock: M
         result = await YandexMusicProvider._get_seasonal_mix_recommendations(provider_mock)
 
     assert result is not None
-    # Verify it called with autumn tag (spring fallback)
-    provider_mock.client.get_tag_playlists.assert_called_once_with("autumn")
+    # Verify call sequence: spring first, autumn fallback after empty result
+    assert provider_mock.client.get_tag_playlists.await_args_list[0].args == ("spring",)
+    assert provider_mock.client.get_tag_playlists.await_args_list[1].args == ("autumn",)
 
 
 @pytest.mark.asyncio
@@ -910,3 +918,63 @@ async def test_get_similar_artists_empty(provider_mock: Mock) -> None:
     result = await YandexMusicProvider.get_similar_artists(provider_mock, "42")
 
     assert result == []
+
+
+# -- M18: integration coverage with the real parser path ---------------------
+#
+# Most tests in this file mock ``_parse_my_wave_track`` / ``parse_playlist``
+# directly. That keeps them fast but leaves the orchestrator-parser seam
+# untested: a regression where the orchestrator builds malformed inputs for
+# the parser, or where the parser returns shape-incompatible output, would
+# slip through. The tests below exercise the real parser end-to-end with a
+# minimal Yandex track fixture.
+
+
+def _real_yandex_track() -> Any:
+    """Return a minimally-shaped Yandex track for the real ``parse_track`` to consume."""
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "tracks" / "with_artist_and_album.json"
+    return YandexTrack.de_json(json.loads(fixture.read_text()), DE_JSON_CLIENT)
+
+
+@pytest.mark.asyncio
+async def test_get_my_wave_recommendations_with_real_parser(provider_mock: Mock) -> None:
+    """End-to-end: real ``_parse_my_wave_track`` against a real Yandex track fixture.
+
+    Mocking ``_parse_my_wave_track`` directly (as the success/duplicate/error
+    tests above do) cannot catch a regression where ``parse_track`` returns a
+    malformed Track, where the composite ``item_id`` is not stamped onto the
+    provider_mappings, or where the wave-state lock is not respected. This
+    test binds the real method and asserts on the produced ``Track``.
+    """
+    yt = _real_yandex_track()
+    assert yt is not None
+
+    # Bind the real method so it actually calls parse_track + composite item_id logic.
+    real_parse = YandexMusicProvider._parse_my_wave_track.__get__(provider_mock)
+    provider_mock._parse_my_wave_track = real_parse
+    provider_mock._fetch_rotor_session_batch = AsyncMock(return_value=([yt], "batch_x"))
+    # Wave-state lock is held during the loop; supply a fresh state.
+    provider_mock._get_wave_state = Mock(return_value=_WaveState())
+    # get_item_mapping is consumed by parse_track for provider_mappings; mock the spec
+    # method to return a minimal ItemMapping-like stub.
+    provider_mock.get_item_mapping = Mock(
+        side_effect=lambda mt, key, name: ItemMapping(
+            media_type=MediaType(mt) if isinstance(mt, str) else mt,
+            item_id=key,
+            provider=provider_mock.instance_id,
+            name=name,
+        )
+    )
+
+    result = await YandexMusicProvider._get_my_wave_recommendations(provider_mock)
+
+    assert result is not None
+    assert isinstance(result, RecommendationFolder)
+    assert len(result.items) == 1
+    track = result.items[0]
+    assert isinstance(track, Track)
+    # The orchestrator-parser contract: composite item_id, real Yandex track id.
+    assert track.item_id == f"500{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_WAVE}"
+    assert track.name == "Track With Album"
+    # provider_mappings carry the composite id too — not the bare track id.
+    assert all(pm.item_id == track.item_id for pm in track.provider_mappings)

@@ -118,12 +118,25 @@ class TestPowerControlExplicitConfig:
     """Test power_control with explicit config values."""
 
     def test_explicit_native(self, mock_mass: MagicMock) -> None:
-        """Power control returns native when explicitly configured."""
+        """Power control returns native when explicitly configured and feature is supported."""
         mock_mass.config.get_raw_player_config_value = MagicMock(
             side_effect=_make_config_side_effect({CONF_POWER_CONTROL: PLAYER_CONTROL_NATIVE})
         )
-        player = _create_player(mock_mass)
+        # NATIVE control requires the player to actually advertise POWER —
+        # otherwise the getter degrades to NONE (e.g. when a group player
+        # drops POWER from its feature set on upgrade but its stale config
+        # still says NATIVE).
+        player = _create_player(mock_mass, features={PlayerFeature.POWER})
         assert player.power_control == PLAYER_CONTROL_NATIVE
+
+    def test_explicit_native_degrades_when_feature_missing(self, mock_mass: MagicMock) -> None:
+        """Stale NATIVE config falls back to NONE when the player no longer advertises POWER."""
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_POWER_CONTROL: PLAYER_CONTROL_NATIVE})
+        )
+        # no POWER in features → the explicit NATIVE in config is invalid
+        player = _create_player(mock_mass)
+        assert player.power_control == PLAYER_CONTROL_NONE
 
     def test_explicit_fake(self, mock_mass: MagicMock) -> None:
         """Power control returns fake when explicitly configured."""

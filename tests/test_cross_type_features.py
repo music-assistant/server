@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, Mock
 
-from music_assistant_models.enums import ProviderFeature, ProviderType
-from music_assistant_models.media_items import ProviderMapping
+from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
+from music_assistant_models.media_items import Artist, ProviderMapping, SearchResults
 
 from music_assistant.controllers.media.artists import ArtistsController
 from music_assistant.controllers.media.tracks import TracksController
@@ -13,6 +13,7 @@ from music_assistant.controllers.music import MusicController
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.plugin import PluginProvider
 
 
 def _make_prov(
@@ -114,74 +115,75 @@ async def test_similar_tracks_falls_back_to_metadata_provider() -> None:
     assert call_kwargs.get("limit") == 5
 
 
-async def test_similar_artists_uses_music_provider_first() -> None:
-    """Similar artists should prefer a music provider mapped to the artist."""
+def _artist(item_id: str, name: str, instance: str) -> Artist:
+    """Build a minimal Artist for the given provider instance."""
+    return Artist(
+        item_id=item_id,
+        provider=instance,
+        name=name,
+        provider_mappings={
+            ProviderMapping(item_id=item_id, provider_domain=instance, provider_instance=instance)
+        },
+    )
+
+
+async def test_similar_artists_aggregates_across_providers() -> None:
+    """Similar artists for a library artist aggregate (and dedupe) across all its providers."""
     mass = Mock()
     music_prov = Mock(spec=MusicProvider)
-    music_prov.instance_id = "m_a"
-    music_prov.type = ProviderType.MUSIC
     music_prov.available = True
     music_prov.supported_features = {ProviderFeature.SIMILAR_ARTISTS}
-    music_prov.get_similar_artists = AsyncMock(return_value=["a1"])
-    mass.get_provider.return_value = music_prov
-    mass.get_providers_supporting_feature.return_value = []
-
-    ref_item = Mock()
-    ref_item.provider_mappings = [
-        ProviderMapping(
-            item_id="artist_123",
-            provider_domain="m_a",
-            provider_instance="m_a",
-            available=True,
-        )
-    ]
-
-    controller = ArtistsController.__new__(ArtistsController)
-    controller.mass = mass
-    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
-
-    result = await controller.similar_artists("artist_123", "m_a", limit=5)
-
-    assert result == ["a1"]
-    music_prov.get_similar_artists.assert_awaited_once_with(prov_artist_id="artist_123", limit=5)
-
-
-async def test_similar_artists_falls_back_to_metadata_provider() -> None:
-    """Falls through to metadata-tier provider when music provider doesn't support it."""
-    mass = Mock()
-    music_prov = Mock(spec=MusicProvider)
-    music_prov.instance_id = "m_a"
-    music_prov.type = ProviderType.MUSIC
-    music_prov.available = True
-    music_prov.supported_features = set()
+    music_prov.supports_feature = lambda feature: feature in music_prov.supported_features
+    music_prov.get_similar_artists = AsyncMock(
+        return_value=[_artist("a", "Artist A", "m_a"), _artist("b", "Artist B", "m_a")]
+    )
     metadata_prov = Mock(spec=MetadataProvider)
     metadata_prov.instance_id = "meta_a"
-    metadata_prov.type = ProviderType.METADATA
-    metadata_prov.available = True
-    metadata_prov.supported_features = {ProviderFeature.SIMILAR_ARTISTS}
-    metadata_prov.priority = 50
-    metadata_prov.get_similar_artists = AsyncMock(return_value=["a2"])
+    metadata_prov.get_similar_artists = AsyncMock(
+        return_value=[_artist("b2", "Artist B", "meta_a"), _artist("c", "Artist C", "meta_a")]
+    )
     mass.get_provider.return_value = music_prov
     mass.get_providers_supporting_feature.return_value = [metadata_prov]
 
     ref_item = Mock()
     ref_item.provider_mappings = [
-        ProviderMapping(
-            item_id="artist_123",
-            provider_domain="m_a",
-            provider_instance="m_a",
-            available=True,
-        )
+        ProviderMapping(item_id="artist_123", provider_domain="m_a", provider_instance="m_a")
     ]
 
     controller = ArtistsController.__new__(ArtistsController)
     controller.mass = mass
-    controller.get = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+    controller.get_library_item = AsyncMock(return_value=ref_item)  # type: ignore[method-assign]
+    # keep provider items (not resolved to a library equivalent)
+    controller.get_library_item_by_prov_id = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+    result = await controller.similar_artists("1", "library", limit=5)
+
+    # interleaved by rank, deduped on name ("Artist B" appears in both providers)
+    assert [artist.name for artist in result] == ["Artist A", "Artist B", "Artist C"]
+    music_prov.get_similar_artists.assert_awaited_once_with("artist_123", limit=5)
+    metadata_prov.get_similar_artists.assert_awaited_once_with(ref_item, limit=5)
+
+
+async def test_similar_artists_provider_queries_named_provider() -> None:
+    """Similar artists for a provider artist should query only that provider."""
+    mass = Mock()
+    music_prov = Mock(spec=MusicProvider)
+    music_prov.name = "Music Provider A"
+    music_prov.available = True
+    music_prov.supported_features = {ProviderFeature.SIMILAR_ARTISTS}
+    music_prov.supports_feature = lambda feature: feature in music_prov.supported_features
+    music_prov.get_similar_artists = AsyncMock(return_value=[_artist("x", "Artist X", "m_a")])
+    mass.get_provider.return_value = music_prov
+
+    controller = ArtistsController.__new__(ArtistsController)
+    controller.mass = mass
+    # keep provider items (not resolved to a library equivalent)
+    controller.get_library_item_by_prov_id = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
     result = await controller.similar_artists("artist_123", "m_a", limit=5)
 
-    assert result == ["a2"]
-    metadata_prov.get_similar_artists.assert_awaited_once_with(ref_item, limit=5)
+    assert [artist.name for artist in result] == ["Artist X"]
+    music_prov.get_similar_artists.assert_awaited_once_with("artist_123", limit=5)
 
 
 async def test_browse_root_includes_non_music_providers() -> None:
@@ -193,7 +195,15 @@ async def test_browse_root_includes_non_music_providers() -> None:
     plugin_prov = _make_prov("p_a", ProviderType.PLUGIN, {ProviderFeature.BROWSE})
     plugin_prov.domain = "plugin_a"
     plugin_prov.name = "Plugin A"
-    mass.get_providers_supporting_feature.return_value = [music_prov, plugin_prov]
+
+    # browse queries get_providers_supporting_feature twice: once for BROWSE, once
+    # for AUDIO_SOURCE (to decide whether to inject the Live Inputs root entry).
+    def _supports(feature: ProviderFeature) -> list[Mock]:
+        if feature == ProviderFeature.BROWSE:
+            return [music_prov, plugin_prov]
+        return []
+
+    mass.get_providers_supporting_feature.side_effect = _supports
 
     controller = MusicController.__new__(MusicController)
     controller.mass = mass
@@ -201,6 +211,64 @@ async def test_browse_root_includes_non_music_providers() -> None:
     result = await controller.browse(path=None)
 
     assert [folder.path for folder in result] == ["m_a://", "p_a://"]  # type: ignore[union-attr]
-    mass.get_providers_supporting_feature.assert_called_once()
+    calls = [
+        c.args[0] if c.args else c.kwargs["feature"]
+        for c in mass.get_providers_supporting_feature.call_args_list
+    ]
+    assert ProviderFeature.BROWSE in calls
+
+
+async def test_global_search_includes_plugin_providers_with_search() -> None:
+    """Plugins declaring SEARCH should be queried alongside music providers."""
+    mass = Mock()
+    mass.cache.get = AsyncMock(return_value=None)
+    mass.cache.set = AsyncMock(return_value=None)
+    plugin_prov = _make_prov("plug_a", ProviderType.PLUGIN, {ProviderFeature.SEARCH})
+    mass.get_providers_supporting_feature.return_value = [plugin_prov]
+
+    controller = MusicController.__new__(MusicController)
+    controller.mass = mass
+    controller.domain = "music"
+    controller.get_unique_providers = Mock(return_value=["m_a"])  # type: ignore[method-assign]
+    controller.search_library = AsyncMock(return_value=SearchResults())  # type: ignore[method-assign]
+    controller._search_provider = AsyncMock(return_value=SearchResults())  # type: ignore[method-assign]
+    controller._sort_search_result = Mock(side_effect=lambda _query, items: items)  # type: ignore[method-assign]
+
+    await controller.search("foo", media_types=[MediaType.TRACK], limit=5)
+
+    queried_provider_ids = sorted(
+        call.args[1] for call in controller._search_provider.await_args_list
+    )
+    assert queried_provider_ids == ["m_a", "plug_a"]
     args, kwargs = mass.get_providers_supporting_feature.call_args
-    assert (args[0] if args else kwargs["feature"]) == ProviderFeature.BROWSE
+    assert (args[0] if args else kwargs["feature"]) == ProviderFeature.SEARCH
+    assert kwargs.get("priority") == (ProviderType.PLUGIN,)
+
+
+async def test_plugin_search_default_stub_contract() -> None:
+    """PluginProvider.search returns empty unless SEARCH is declared, then raises NotImplementedError."""
+
+    class _StubPlugin(PluginProvider):
+        _features: set[ProviderFeature] = set()
+
+        @property
+        def supported_features(self) -> set[ProviderFeature]:
+            return self._features
+
+    plugin = _StubPlugin.__new__(_StubPlugin)
+    plugin._features = set()
+
+    result = await plugin.search("foo", [MediaType.TRACK], limit=5)
+    assert isinstance(result, SearchResults)
+    assert not result.tracks
+    assert not result.artists
+    assert not result.albums
+
+    plugin._features = {ProviderFeature.SEARCH}
+    try:
+        await plugin.search("foo", [MediaType.TRACK], limit=5)
+    except NotImplementedError:
+        pass
+    else:
+        msg = "expected NotImplementedError when SEARCH is declared but not overridden"
+        raise AssertionError(msg)

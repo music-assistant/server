@@ -1,0 +1,16 @@
+{
+  "type": "plugin",
+  "domain": "fastmcp_server",
+  "stage": "experimental",
+  "name": "MCP Server",
+  "description": "Exposes Music Assistant as a Model Context Protocol (MCP) server for Claude, Codex, and other MCP-aware LLM clients.",
+  "codeowners": ["@TrudenBoy"],
+  "credits": [
+    "[FastMCP](https://github.com/jlowin/fastmcp)",
+    "[Model Context Protocol](https://modelcontextprotocol.io/)"
+  ],
+  "requirements": ["fastmcp==3.3.1"],
+  "documentation": "https://music-assistant.io/plugins/fastmcp-server/",
+  "multi_instance": false,
+  "builtin": false
+}

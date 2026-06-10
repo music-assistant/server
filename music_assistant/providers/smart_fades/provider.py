@@ -272,7 +272,6 @@ class SmartFadesProvider(AudioAnalysisProvider):
         pcm_raw = np.concatenate(data.pcm_buffer)
         data.pcm_buffer.clear()
         data.pcm_samples = 0
-        num_samples = len(pcm_raw)
 
         if data.resampler is not None:
             pcm_22k = await asyncio.to_thread(data.resampler.resample_chunk, pcm_raw, last)
@@ -290,13 +289,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
             data.beats_feature_blocks.append(feats)
 
         elapsed_ms = (time.perf_counter() - start_time) * 1000
-        self.logger.debug(
-            "_process_block took %.1f ms (%d samples at %d Hz, resampled to %d samples)",
-            elapsed_ms,
-            num_samples,
-            data.input_audio_format.sample_rate,
-            len(pcm_22k),
-        )
+        self.logger.log(VERBOSE_LOG_LEVEL, "Processed 10s of PCM chunks in %.1fms", elapsed_ms)
 
     def _compute_energy_and_spectral_centroids(
         self, pcm_22k: np.ndarray, data: SmartFadesData
@@ -319,10 +312,12 @@ class SmartFadesProvider(AudioAnalysisProvider):
                 data.energy_chunks.append(np.concatenate(rms_list).astype(np.float32))
 
         # Spectral centroid: keep per-frame (hop_length=512, ~43 frames/s)
-        pcm_tensor = torch.from_numpy(pcm_22k)
-        centroid_frames = self._spectral_centroid(pcm_tensor.unsqueeze(0)).squeeze(0).numpy()
-        if len(centroid_frames) > 0:
-            data.centroid_chunks.append(centroid_frames.astype(np.float32))
+        # Skip short tail buffers: STFT reflect-pad requires len > n_fft // 2.
+        if len(pcm_22k) >= self._spectral_centroid.n_fft:
+            pcm_tensor = torch.from_numpy(pcm_22k)
+            centroid_frames = self._spectral_centroid(pcm_tensor.unsqueeze(0)).squeeze(0).numpy()
+            if len(centroid_frames) > 0:
+                data.centroid_chunks.append(centroid_frames.astype(np.float32))
 
     def _compute_musical_key_features(
         self, pcm_mono: np.ndarray, sample_rate: int, data: SmartFadesData

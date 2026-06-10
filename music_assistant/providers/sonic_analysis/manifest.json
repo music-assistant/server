@@ -1,0 +1,21 @@
+{
+  "type": "audio_analysis",
+  "domain": "sonic_analysis",
+  "name": "Sonic Analysis (on-device)",
+  "description": "Analyses how each track sounds to power similarity, mood-based playlists, and other audio-aware features.",
+  "codeowners": ["@music-assistant"],
+  "requirements": [
+    "transformers==5.6.2",
+    "huggingface-hub==1.12.0",
+    "PyYAML==6.0.3",
+    "torchlibrosa==0.1.0"
+  ],
+  "credits": [
+    "[Microsoft CLAP](https://github.com/microsoft/CLAP)",
+    "[librosa](https://librosa.org)"
+  ],
+  "documentation": "https://music-assistant.io/audio-analysis/sonic-analysis/",
+  "multi_instance": false,
+  "builtin": false,
+  "icon": "pulse"
+}
