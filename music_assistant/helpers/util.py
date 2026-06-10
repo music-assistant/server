@@ -145,7 +145,9 @@ def verify_cpu_supports_ml_inference() -> None:
     if torch.backends.cpu.get_cpu_capability() not in ("AVX2", "AVX512"):
         raise SetupFailedError(
             "On-device audio analysis requires a CPU with AVX2 support "
-            "(Intel Haswell / AMD Zen or newer). This CPU does not support AVX2."
+            "(Intel Haswell / AMD Zen or newer). This CPU does not support AVX2. "
+            "If you are running in a virtual machine (e.g. Proxmox), changing the "
+            "CPU type to 'host' may expose AVX2 to the guest."
         )
 
 
