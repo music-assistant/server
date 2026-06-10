@@ -41,7 +41,11 @@ from music_assistant_models.streamdetails import StreamMetadata
 from music_assistant_models.unique_list import UniqueList
 
 import music_assistant.helpers.datetime as dt
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.constants import (
+    CONF_ENTRY_UNOFFICIAL_PROVIDER,
+    CONF_PASSWORD,
+    CONF_USERNAME,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import LOCAL_TIMEZONE
 from music_assistant.models.music_provider import MusicProvider
@@ -106,6 +110,7 @@ async def get_config_entries(
     # ruff: noqa: ARG001
 
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=_Constants.CONF_INTRO,
             type=ConfigEntryType.LABEL,

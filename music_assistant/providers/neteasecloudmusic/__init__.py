@@ -48,6 +48,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
@@ -689,7 +690,7 @@ async def get_config_entries(
             await _check_qr_auth(mass, values)
     except ResourceTemporarilyUnavailable as err:
         raise InvalidDataError(str(err)) from err
-    return _build_config_entries(values)
+    return (CONF_ENTRY_UNOFFICIAL_PROVIDER, *_build_config_entries(values))
 
 
 class NeteaseCloudMusicProvider(MusicProvider):

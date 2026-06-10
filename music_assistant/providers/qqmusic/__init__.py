@@ -80,6 +80,7 @@ from qqmusic_api.utils.session import (
     set_session as qq_set_session,
 )
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
@@ -505,7 +506,7 @@ async def get_config_entries(
         await _start_qr_auth(mass, values, qq_login_mod.QRLoginType.WX)
     elif action == CONF_ACTION_CHECK_QR_AUTH:
         await _check_qr_auth(values)
-    return _build_config_entries(values)
+    return (CONF_ENTRY_UNOFFICIAL_PROVIDER, *_build_config_entries(values))
 
 
 class QQMusicProvider(MusicProvider):

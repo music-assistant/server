@@ -742,6 +742,16 @@ CONF_ENTRY_WARN_PREVIEW = ConfigEntry(
     required=False,
 )
 
+CONF_ENTRY_UNOFFICIAL_PROVIDER = ConfigEntry(
+    key="unofficial_provider_note",
+    type=ConfigEntryType.ALERT,
+    label="This is an unofficial integration that is not affiliated with, supported by, "
+    "or endorsed by the music service. It relies on interfaces that are not officially "
+    "supported and may stop working at any time. Use of this provider may also be subject "
+    "to the service's terms of use.",
+    required=False,
+)
+
 CONF_ENTRY_MANUAL_DISCOVERY_IPS = ConfigEntry(
     key="manual_discovery_ip_addresses",
     type=ConfigEntryType.STRING,
