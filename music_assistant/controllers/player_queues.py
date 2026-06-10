@@ -2007,9 +2007,6 @@ class PlayerQueuesController(CoreController):
                 tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
             random.shuffle(tracks)
             return tracks
-        # default ("all_tracks", legacy "all_album_tracks"): every track we can find for the
-        # artist, deduplicated — the in-library tracks plus each provider's full catalog (so
-        # newly released albums are included too)
         result: list[Track] = []
         seen: set[str] = set()
         sources = await asyncio.gather(
