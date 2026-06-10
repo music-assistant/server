@@ -12,7 +12,10 @@ import re
 
 import pytest
 
-from music_assistant.controllers.streams.smart_fades.filters import FrequencySweepFilter
+from music_assistant.controllers.streams.smart_fades.filters import (
+    CrossfadeFilter,
+    FrequencySweepFilter,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -172,3 +175,10 @@ def test_sweep_instances_are_unique_per_stream_type() -> None:
     assert out_match is not None
     assert in_match is not None
     assert out_match.group(2) != in_match.group(2)
+
+
+def test_crossfade_uses_equal_power_curves() -> None:
+    """The level crossfade must use equal-power curves, not ffmpeg's default tri/tri."""
+    crossfade = CrossfadeFilter(logger=LOGGER, crossfade_duration=12.5)
+    filter_strings = crossfade.apply("[fadein]", "[fadeout]")
+    assert filter_strings == ["[fadeout][fadein]acrossfade=d=12.5:c1=qsin:c2=qsin"]

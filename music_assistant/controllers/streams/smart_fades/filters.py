@@ -212,7 +212,11 @@ class CrossfadeFilter(Filter):
 
     def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
         """Apply the acrossfade filter."""
-        return [f"{input_fadeout_label}{input_fadein_label}acrossfade=d={self.crossfade_duration}"]
+        # equal-power qsin curves; the default tri/tri dips ~3dB mid-fade on uncorrelated material
+        return [
+            f"{input_fadeout_label}{input_fadein_label}"
+            f"acrossfade=d={self.crossfade_duration}:c1=qsin:c2=qsin"
+        ]
 
     def __repr__(self) -> str:
         """Return string representation of CrossfadeFilter."""
