@@ -14,7 +14,11 @@ from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 
-from music_assistant.constants import DB_TABLE_CACHE, DB_TABLE_SETTINGS
+from music_assistant.constants import (
+    DB_TABLE_CACHE,
+    DB_TABLE_SETTINGS,
+    VACUUM_MIN_RECLAIM_RATIO,
+)
 from music_assistant.controllers.cache.constants import (
     BYPASS_CACHE,
     CACHE_DATABASE_CLEANUP_TASK_ID,
@@ -23,7 +27,6 @@ from music_assistant.controllers.cache.constants import (
     DEFAULT_CACHE_EXPIRATION,
     LOGGER,
     MAX_CACHE_DB_SIZE_MB,
-    VACUUM_MIN_RECLAIM_RATIO,
     SerializableType,
 )
 from music_assistant.controllers.tasks.context import (

@@ -75,6 +75,7 @@ from music_assistant.constants import (
     GENRE_ICONS_DIR_NAME,
     LOUDNESS_MEASUREMENT_MIN_LUFS,
     PROVIDERS_WITH_SHAREABLE_URLS,
+    VACUUM_MIN_RECLAIM_RATIO,
 )
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
@@ -2417,14 +2418,22 @@ class MusicController(CoreController):
         if prev_version == 0:
             # fresh install - populate default genres
             await self.genres.restore_default_genres()
-        # compact db
-        self.logger.debug("Compacting database...")
+        # compact db - skip the full rebuild unless a meaningful share is reclaimable
         try:
-            await self._database.vacuum()
+            reclaimable_ratio = await self._database.get_reclaimable_ratio()
+            if reclaimable_ratio < VACUUM_MIN_RECLAIM_RATIO:
+                self.logger.debug(
+                    "Skipping database compaction (only %.1f%% reclaimable)",
+                    reclaimable_ratio * 100,
+                )
+            else:
+                self.logger.debug(
+                    "Compacting database (%.1f%% reclaimable)...", reclaimable_ratio * 100
+                )
+                await self._database.vacuum()
+                self.logger.debug("Compacting database done")
         except Exception as err:
             self.logger.warning("Database vacuum failed: %s", str(err))
-        else:
-            self.logger.debug("Compacting database done")
 
     async def __migrate_database(self, prev_version: int) -> None:  # noqa: PLR0915
         """Perform a database migration."""

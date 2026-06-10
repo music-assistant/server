@@ -9,9 +9,8 @@ from unittest.mock import AsyncMock, patch
 import aiofiles
 import pytest
 
-from music_assistant.constants import DB_TABLE_CACHE
+from music_assistant.constants import DB_TABLE_CACHE, VACUUM_MIN_RECLAIM_RATIO
 from music_assistant.controllers.cache import MAX_CACHE_DB_SIZE_MB, CacheController
-from music_assistant.controllers.cache.constants import VACUUM_MIN_RECLAIM_RATIO
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.mass import MusicAssistant
 

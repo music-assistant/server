@@ -337,8 +337,15 @@ class DatabaseConnection:
 
     async def vacuum(self) -> None:
         """Run vacuum command on database."""
-        await self._db.execute("VACUUM")
-        await self._db.commit()
+        # VACUUM rebuilds the whole database in temp storage; with temp_store=memory that
+        # copy lives entirely in RAM and OOMs memory constrained devices on large databases,
+        # so spill it to a temp file (located at SQLITE_TMPDIR) for the duration.
+        await self._db.execute("PRAGMA temp_store=FILE;")
+        try:
+            await self._db.execute("VACUUM")
+            await self._db.commit()
+        finally:
+            await self._db.execute("PRAGMA temp_store=memory;")
 
     async def _get_pragma_int(self, pragma: str) -> int:
         """Return the integer value of a single-value sqlite PRAGMA."""
