@@ -13,8 +13,6 @@ CONF_CLEAR_CACHE = "clear_cache"
 DEFAULT_CACHE_EXPIRATION = 86400 * 30  # 30 days
 DB_SCHEMA_VERSION = 8
 MAX_CACHE_DB_SIZE_MB = 2048
-# Min fraction of the db file reclaimable before the startup VACUUM is worth running.
-VACUUM_MIN_RECLAIM_RATIO = 0.2
 CACHE_DATABASE_CLEANUP_TASK_ID = "cache_database_cleanup"
 
 BYPASS_CACHE: ContextVar[bool] = ContextVar("BYPASS_CACHE", default=False)
