@@ -400,6 +400,7 @@ def test_get_zeroconf_args_all_interfaces() -> None:
     [
         ("x86_64", "DEFAULT", True),
         ("AMD64", "DEFAULT", True),
+        ("x86_64", "NO AVX", True),
         ("x86_64", "AVX2", False),
         ("x86_64", "AVX512", False),
     ],
@@ -421,5 +422,11 @@ def test_verify_cpu_supports_ml_inference_x86(
 
 def test_verify_cpu_supports_ml_inference_arm() -> None:
     """ARM machines pass without consulting torch (QNNPACK backend works there)."""
-    with patch("music_assistant.helpers.util.platform.machine", return_value="aarch64"):
+    with (
+        patch("music_assistant.helpers.util.platform.machine", return_value="aarch64"),
+        patch(
+            "torch.backends.cpu.get_cpu_capability",
+            side_effect=AssertionError("torch must not be consulted on ARM"),
+        ),
+    ):
         util.verify_cpu_supports_ml_inference()
