@@ -1998,7 +1998,9 @@ class PlayerQueuesController(CoreController):
             CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
             ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
         )
-        self.logger.info("Fetching tracks to play for artist %s", artist.name)
+        self.logger.info(
+            "Fetching tracks to play for artist %s (selection: %s)", artist.name, artist_items_conf
+        )
         # the artist's top/popular tracks from the (streaming) provider(s)
         if artist_items_conf == "top_tracks":
             tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
@@ -2021,11 +2023,20 @@ class PlayerQueuesController(CoreController):
         # discography (so newly released albums are included too)
         result: list[Track] = []
         seen: set[str] = set()
-        for source in (
-            await self._library_artist_tracks(artist),
-            await self.mass.music.artists.top_tracks(artist.item_id, artist.provider),
-            await self._provider_discography_tracks(artist),
-        ):
+        # gather the sources concurrently and drop (with a warning) any that fail, so a single
+        # flaky provider cannot sink the tracks resolved from the other sources
+        sources = await asyncio.gather(
+            self._library_artist_tracks(artist),
+            self.mass.music.artists.top_tracks(artist.item_id, artist.provider),
+            self._provider_discography_tracks(artist),
+            return_exceptions=True,
+        )
+        for source in sources:
+            if isinstance(source, BaseException):
+                self.logger.warning(
+                    "Error resolving some tracks for artist %s", artist.name, exc_info=source
+                )
+                continue
             for track in source:
                 unique_id = f"{track.name}.{track.version}"
                 if unique_id in seen:
