@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import ContentType
+from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.providers.sonic_analysis import (
@@ -220,3 +221,18 @@ async def test_start_analysis_returns_false_without_duration(
 
     debug_msgs = [str(c) for c in provider.logger.debug.call_args_list]  # type: ignore[attr-defined]
     assert any("duration missing or zero" in c for c in debug_msgs)
+
+
+async def test_handle_async_init_raises_on_unsupported_cpu() -> None:
+    """Setup fails before any model load when the CPU lacks AVX2."""
+    provider = _make_provider()
+    with (
+        patch(
+            "music_assistant.providers.sonic_analysis.verify_cpu_supports_ml_inference",
+            side_effect=SetupFailedError("CPU lacks AVX2"),
+        ),
+        patch.object(SonicAnalysisProvider, "_load_clap") as load_clap_mock,
+        pytest.raises(SetupFailedError),
+    ):
+        await provider.handle_async_init()
+    load_clap_mock.assert_not_called()

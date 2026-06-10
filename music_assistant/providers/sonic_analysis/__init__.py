@@ -13,6 +13,7 @@ import soxr
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ContentType
 
+from music_assistant.helpers.util import verify_cpu_supports_ml_inference
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import (
     AnalysisSessionData,
@@ -319,6 +320,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         available=False, which the AudioAnalysisController already honors when
         scheduling work.
         """
+        verify_cpu_supports_ml_inference()
         (
             self._clap_model,
             self._clap_text_embeddings,
