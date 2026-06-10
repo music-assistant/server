@@ -49,6 +49,11 @@ LIBRARY_MATCH_SCAN_LIMIT = 5
 # Number of similar items to fetch before filtering to target count
 SIMILAR_ITEMS_BUFFER = 12
 
+# Number of similar tracks to resolve before filtering to target count. Larger than the
+# artist buffer to absorb this row's extra attrition: stricter ISRC matching and the
+# exclusion of tracks that resolve to the user's own library copy.
+SIMILAR_TRACKS_BUFFER = 15
+
 # Number of similar items to fetch for each seed artist/track
 SIMILAR_ITEMS_PER_SEED = 5
 
