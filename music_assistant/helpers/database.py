@@ -322,7 +322,26 @@ class DatabaseConnection:
             await asyncio.sleep(0)  # yield to eventloop
             offset += limit
 
+    async def get_reclaimable_ratio(self) -> float:
+        """
+        Return the fraction (0..1) of the database file that a VACUUM would reclaim.
+
+        This is the share of pages on the free list and is a cheap way to decide
+        whether a (potentially expensive) VACUUM is actually worthwhile.
+        """
+        page_count = await self._get_pragma_int("page_count")
+        if page_count <= 0:
+            return 0.0
+        freelist_count = await self._get_pragma_int("freelist_count")
+        return freelist_count / page_count
+
     async def vacuum(self) -> None:
         """Run vacuum command on database."""
         await self._db.execute("VACUUM")
         await self._db.commit()
+
+    async def _get_pragma_int(self, pragma: str) -> int:
+        """Return the integer value of a single-value sqlite PRAGMA."""
+        async with self._db.execute(f"PRAGMA {pragma}") as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
