@@ -260,7 +260,8 @@ class CacheController(CoreController):
         self.logger.debug("Running automatic cleanup...")
         update_current_task_progress_text("Removing expired cache records")
         cur_timestamp = int(time.time())
-        # Single DELETE (no blob loads); allow_expired_cache survives for stale-while-revalidate.
+        # clean up db cache object only if expired; entries marked with
+        # allow_expired_cache are kept as fallback for stale-while-revalidate
         cursor = await self.database.execute(
             f"DELETE FROM {DB_TABLE_CACHE} WHERE expires < :timestamp AND allow_expired_cache = 0",
             {"timestamp": cur_timestamp},
