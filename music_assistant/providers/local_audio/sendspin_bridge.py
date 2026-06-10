@@ -187,7 +187,7 @@ class SendspinLocalAudioBridge:
             on_mute_change=self._on_mute_change,
             on_stream_start=self._on_bridge_stream_start,
             on_stream_end=self._on_bridge_stream_end,
-            initial_volume=self._volume_level,
+            initial_volume=100,  # always 100 — software scaling handles actual volume
         )
         self._bridge_role.setup_audio_requirements(
             sample_rate=self.sample_rate,
@@ -374,7 +374,7 @@ class SendspinLocalAudioBridge:
                 None,
                 lambda: PASimpleStream(
                     sink_name=pa_sink_name,
-                    app_name="music-assistant",
+                    app_name=f"music-assistant-{pa_sink_name}",
                     rate=self.sample_rate,
                     channels=BRIDGE_CHANNELS,
                     bit_depth=self.bit_depth,
