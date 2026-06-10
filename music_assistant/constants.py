@@ -187,6 +187,9 @@ DB_TABLE_GENRES: Final[str] = "genres"
 DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
 DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION: Final[str] = "genre_media_item_exclusion"
 
+# Min fraction of a database file reclaimable before a startup VACUUM is worth running.
+VACUUM_MIN_RECLAIM_RATIO: Final[float] = 0.2
+
 # Loudness measurements at or below this value are considered unreliable:
 # ebur128 reports ~-70 LUFS when it receives near-silence or very little
 # audio (e.g. when a stream was cancelled early).

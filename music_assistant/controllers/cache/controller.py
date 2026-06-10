@@ -14,7 +14,11 @@ from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 
-from music_assistant.constants import DB_TABLE_CACHE, DB_TABLE_SETTINGS
+from music_assistant.constants import (
+    DB_TABLE_CACHE,
+    DB_TABLE_SETTINGS,
+    VACUUM_MIN_RECLAIM_RATIO,
+)
 from music_assistant.controllers.cache.constants import (
     BYPASS_CACHE,
     CACHE_DATABASE_CLEANUP_TASK_ID,
@@ -26,7 +30,6 @@ from music_assistant.controllers.cache.constants import (
     SerializableType,
 )
 from music_assistant.controllers.tasks.context import (
-    update_current_task_progress_from_index,
     update_current_task_progress_text,
 )
 from music_assistant.helpers.database import DatabaseConnection
@@ -258,22 +261,16 @@ class CacheController(CoreController):
         """Run scheduled auto cleanup task."""
         assert self.database is not None
         self.logger.debug("Running automatic cleanup...")
-        update_current_task_progress_text("Loading cache records")
+        update_current_task_progress_text("Removing expired cache records")
         cur_timestamp = int(time.time())
-        cleaned_records = 0
-        db_rows = await self.database.get_rows(DB_TABLE_CACHE)
-        for index, db_row in enumerate(db_rows, 1):
-            update_current_task_progress_from_index(
-                index,
-                len(db_rows),
-                f"Scanning cache record {index}/{len(db_rows)}",
-            )
-            # clean up db cache object only if expired; entries marked with
-            # allow_expired_cache are kept as fallback for stale-while-revalidate
-            if db_row["expires"] < cur_timestamp and not db_row["allow_expired_cache"]:
-                await self.database.delete(DB_TABLE_CACHE, {"id": db_row["id"]})
-                cleaned_records += 1
-            await asyncio.sleep(0)  # yield to eventloop
+        # clean up db cache object only if expired; entries marked with
+        # allow_expired_cache are kept as fallback for stale-while-revalidate
+        cursor = await self.database.execute(
+            f"DELETE FROM {DB_TABLE_CACHE} WHERE expires < :timestamp AND allow_expired_cache = 0",
+            {"timestamp": cur_timestamp},
+        )
+        await self.database.commit()
+        cleaned_records = cursor.rowcount
         update_current_task_progress_text(f"Cleaned up {cleaned_records} expired cache record(s)")
         self.logger.debug("Automatic cleanup finished (cleaned up %s records)", cleaned_records)
 
@@ -345,14 +342,22 @@ class CacheController(CoreController):
         )
         await self.__create_database_indexes()
 
-        # compact db (vacuum) at startup
-        self.logger.debug("Compacting database...")
+        # Skip the full rebuild unless a meaningful share of the file can be reclaimed.
         try:
-            await self.database.vacuum()
+            reclaimable_ratio = await self.database.get_reclaimable_ratio()
+            if reclaimable_ratio < VACUUM_MIN_RECLAIM_RATIO:
+                self.logger.debug(
+                    "Skipping database compaction (only %.1f%% reclaimable)",
+                    reclaimable_ratio * 100,
+                )
+            else:
+                self.logger.debug(
+                    "Compacting database (%.1f%% reclaimable)...", reclaimable_ratio * 100
+                )
+                await self.database.vacuum()
+                self.logger.debug("Compacting database done")
         except Exception as err:
             self.logger.warning("Database vacuum failed: %s", str(err))
-        else:
-            self.logger.debug("Compacting database done")
 
     async def __create_database_tables(self) -> None:
         """Create database table(s)."""

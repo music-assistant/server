@@ -16,12 +16,11 @@ from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .models import LightColorCommand
+from hue_entertainment import LightColorCommand
 
 if TYPE_CHECKING:
     from aiosendspin.models.visualizer import BeatTiming
-
-    from .models import LightChannel
+    from hue_entertainment import LightChannel
 
 # color@v1 fields harvested for the cycling palette. Order here is only the
 # collection order — the rendering palette is reordered for vibrancy + maximal

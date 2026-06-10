@@ -21,6 +21,8 @@ from music_assistant.providers.lastfm_recommendations.constants import CONF_API_
 _DEFAULT_API_KEY: str = app_var(12)
 
 if TYPE_CHECKING:
+    import logging
+
     from aiohttp import ClientSession
 
     from music_assistant.providers.lastfm_recommendations import LastFMRecommendationsProvider
@@ -48,8 +50,12 @@ class LastFMAPIClient:
         :param provider: The Last.fm recommendations provider instance.
         """
         self.provider = provider
-        self.logger = provider.logger
         self.http_session: ClientSession = provider.mass.http_session
+
+    @property
+    def logger(self) -> logging.Logger:
+        """Return the provider's active logger."""
+        return self.provider.logger
 
     async def _get_data(self, method: str, **params: Any) -> dict[str, Any]:
         """
@@ -82,6 +88,49 @@ class LastFMAPIClient:
 
         return data
 
+    async def _get_list(
+        self,
+        method: str,
+        container: str,
+        item_key: str,
+        log_label: str,
+        primary_params: dict[str, Any],
+        fallback_params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Fetch a list-type Last.fm response, retrying with the fallback params when empty.
+
+        :param method: Last.fm API method to call.
+        :param container: Top-level response key wrapping the result list.
+        :param item_key: Key of the result list within the container.
+        :param log_label: Human-readable label used in debug logging.
+        :param primary_params: Preferred request params (MBID when available).
+        :param fallback_params: Name-based params to retry with, or None for no retry.
+        """
+        # Last.fm's MBID index is sparse (recording MBIDs especially), so a missing MBID
+        # is retried by name rather than treated as "no similar items exist".
+        attempts = [primary_params]
+        if fallback_params is not None:
+            attempts.append(fallback_params)
+
+        for index, params in enumerate(attempts):
+            if index:
+                self.logger.debug("%s: MBID lookup empty, retrying by name", log_label)
+            try:
+                data = await self._get_data(method, **params)
+            except (TimeoutError, ClientError, InvalidDataError) as err:
+                self.logger.debug("%s request failed: %s", log_label, err)
+                continue
+
+            items: list[dict[str, Any]] | dict[str, Any] = data.get(container, {}).get(item_key, [])
+            # Last.fm returns a single dict when only one result is present.
+            if isinstance(items, dict):
+                return [items]
+            if items:
+                return items
+
+        return []
+
     async def get_similar_artists(
         self, artist_name: str, artist_mbid: str | None = None, limit: int = 10
     ) -> list[dict[str, Any]]:
@@ -92,35 +141,35 @@ class LastFMAPIClient:
         :param artist_mbid: Optional MusicBrainz ID for more accurate matching.
         :param limit: Maximum number of similar artists to return.
         """
-        params: dict[str, Any] = {"limit": limit}
-
-        # Prefer MBID for more accurate matching; fall back to name with autocorrect.
-        if artist_mbid:
-            params["mbid"] = artist_mbid
-        else:
-            params["artist"] = artist_name
-            params["autocorrect"] = 1
-
         self.logger.debug(
             "Fetching similar artists for: %s (MBID: %s)",
             artist_name,
             artist_mbid or "none",
         )
-        try:
-            data = await self._get_data("artist.getSimilar", **params)
-        except (TimeoutError, ClientError, InvalidDataError) as err:
-            self.logger.debug("Similar artists request failed: %s", err)
+        name_params: dict[str, Any] | None = (
+            {"limit": limit, "artist": artist_name, "autocorrect": 1} if artist_name else None
+        )
+        primary_params: dict[str, Any] | None
+        fallback_params: dict[str, Any] | None
+        # Lead with the MBID (exact when Last.fm has it), fall back to the name lookup.
+        if artist_mbid:
+            primary_params = {"limit": limit, "mbid": artist_mbid}
+            fallback_params = name_params
+        else:
+            primary_params = name_params
+            fallback_params = None
+
+        if primary_params is None:
             return []
 
-        similar_artists: list[dict[str, Any]] | dict[str, Any] = data.get("similarartists", {}).get(
-            "artist", []
+        return await self._get_list(
+            "artist.getSimilar",
+            "similarartists",
+            "artist",
+            "Similar artists",
+            primary_params,
+            fallback_params,
         )
-
-        # Last.fm returns a single dict when only one result is present.
-        if isinstance(similar_artists, dict):
-            return [similar_artists]
-
-        return similar_artists
 
     async def get_similar_tracks(
         self,
@@ -137,37 +186,38 @@ class LastFMAPIClient:
         :param track_mbid: Optional MusicBrainz ID for more accurate matching.
         :param limit: Maximum number of similar tracks to return.
         """
-        params: dict[str, Any] = {"limit": limit}
-
-        # Prefer MBID for more accurate matching; fall back to name with autocorrect.
-        if track_mbid:
-            params["mbid"] = track_mbid
-        else:
-            params["artist"] = artist_name
-            params["track"] = track_name
-            params["autocorrect"] = 1
-
         self.logger.debug(
             "Fetching similar tracks for: %s - %s (MBID: %s)",
             artist_name,
             track_name,
             track_mbid or "none",
         )
-        try:
-            data = await self._get_data("track.getSimilar", **params)
-        except (TimeoutError, ClientError, InvalidDataError) as err:
-            self.logger.debug("Similar tracks request failed: %s", err)
+        name_params: dict[str, Any] | None = (
+            {"limit": limit, "artist": artist_name, "track": track_name, "autocorrect": 1}
+            if artist_name and track_name
+            else None
+        )
+        primary_params: dict[str, Any] | None
+        fallback_params: dict[str, Any] | None
+        # Lead with the MBID (exact when Last.fm has it), fall back to the name lookup.
+        if track_mbid:
+            primary_params = {"limit": limit, "mbid": track_mbid}
+            fallback_params = name_params
+        else:
+            primary_params = name_params
+            fallback_params = None
+
+        if primary_params is None:
             return []
 
-        similar_tracks: list[dict[str, Any]] | dict[str, Any] = data.get("similartracks", {}).get(
-            "track", []
+        return await self._get_list(
+            "track.getSimilar",
+            "similartracks",
+            "track",
+            "Similar tracks",
+            primary_params,
+            fallback_params,
         )
-
-        # Last.fm returns a single dict when only one result is present.
-        if isinstance(similar_tracks, dict):
-            return [similar_tracks]
-
-        return similar_tracks
 
     async def get_artist_top_tracks(
         self, artist_name: str, artist_mbid: str | None = None, limit: int = 10
@@ -179,33 +229,35 @@ class LastFMAPIClient:
         :param artist_mbid: Optional MusicBrainz ID for more accurate matching.
         :param limit: Maximum number of top tracks to return.
         """
-        params: dict[str, Any] = {"limit": limit}
-
-        # Prefer MBID for more accurate matching; fall back to name with autocorrect.
-        if artist_mbid:
-            params["mbid"] = artist_mbid
-        else:
-            params["artist"] = artist_name
-            params["autocorrect"] = 1
-
         self.logger.debug(
             "Fetching top tracks for artist: %s (MBID: %s)",
             artist_name,
             artist_mbid or "none",
         )
-        try:
-            data = await self._get_data("artist.getTopTracks", **params)
-        except (TimeoutError, ClientError, InvalidDataError) as err:
-            self.logger.debug("Artist top tracks request failed: %s", err)
+        name_params: dict[str, Any] | None = (
+            {"limit": limit, "artist": artist_name, "autocorrect": 1} if artist_name else None
+        )
+        primary_params: dict[str, Any] | None
+        fallback_params: dict[str, Any] | None
+        # Lead with the MBID (exact when Last.fm has it), fall back to the name lookup.
+        if artist_mbid:
+            primary_params = {"limit": limit, "mbid": artist_mbid}
+            fallback_params = name_params
+        else:
+            primary_params = name_params
+            fallback_params = None
+
+        if primary_params is None:
             return []
 
-        tracks: list[dict[str, Any]] | dict[str, Any] = data.get("toptracks", {}).get("track", [])
-
-        # Last.fm returns a single dict when only one result is present.
-        if isinstance(tracks, dict):
-            return [tracks]
-
-        return tracks
+        return await self._get_list(
+            "artist.getTopTracks",
+            "toptracks",
+            "track",
+            "Artist top tracks",
+            primary_params,
+            fallback_params,
+        )
 
     async def get_chart_top_artists(self, limit: int = 10) -> list[dict[str, Any]]:
         """

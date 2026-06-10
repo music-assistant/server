@@ -264,7 +264,8 @@ def _rg(
             id="streaming_toggle_on",
         ),
         pytest.param({}, {}, None, None, True, True, id="local_file_mbid_missing"),
-        pytest.param({"api_key": None}, {}, None, None, False, False, id="no_api_key"),
+        # No user-supplied key still proceeds — the shared AcoustID key is used.
+        pytest.param({"api_key": None}, {}, None, None, True, True, id="no_user_api_key"),
     ],
 )
 async def test_start_analysis_gates(

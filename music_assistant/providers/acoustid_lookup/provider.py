@@ -20,6 +20,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.tags import write_identifier_tags
@@ -94,6 +95,13 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         super().__init__(mass, manifest, config, supported_features)
         self._data: dict[str, _AcoustidSessionData] = {}
 
+    def _resolve_api_key(self) -> str:
+        """Return the user-supplied AcoustID API key, falling back to the shared key."""
+        user_key = self.config.get_value(CONF_API_KEY)
+        if isinstance(user_key, str) and user_key:
+            return user_key
+        return str(app_var(14))
+
     async def _start_analysis(
         self,
         session_id: str,
@@ -109,10 +117,6 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         """
         # Tracks only — podcasts and audiobooks must not reach the fingerprinter.
         if streamdetails.media_type != MediaType.TRACK:
-            return False
-        # API key is required=True at config time; defensive check here too.
-        if not self.config.get_value(CONF_API_KEY):
-            self.logger.debug("Skipping %s — no AcoustID API key configured", session_id)
             return False
         # Streaming-provider tracks are opt-in — local files always analyse.
         if streamdetails.stream_type != StreamType.LOCAL_FILE and not self.config.get_value(
@@ -282,7 +286,7 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             self.logger.debug("Discarding fingerprint — empty")
             return None
 
-        api_key = self.config.get_value(CONF_API_KEY)
+        api_key = self._resolve_api_key()
         duration_for_lookup = data.track_duration or round(data.pcm_seconds_fed)
         if duration_for_lookup <= 0:
             self.logger.debug("No usable track duration — cannot query AcoustID")

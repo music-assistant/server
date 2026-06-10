@@ -24,6 +24,11 @@ CACHE_EXPIRATION_SECONDS = 60 * 60 * 24 * 90  # 90 days
 # Maximum number of concurrent provider searches to prevent overwhelming APIs
 SEARCH_CONCURRENCY_LIMIT = 5
 
+# Maximum number of concurrent MusicBrainz ISRC lookups. MusicBrainz throttles all
+# callers to a shared global budget, so a wide fan-out just queues behind it while
+# bursting past the mirror's edge limit; cap it to stay within budget with headroom.
+MB_ISRC_CONCURRENCY_LIMIT = 5
+
 # Item counts and limits
 # Target number of items to return in recommendation folders
 TARGET_ITEM_COUNT = 10
@@ -31,14 +36,23 @@ TARGET_ITEM_COUNT = 10
 # Number of items to fetch when we expect some resolution failures (small buffer)
 RESOLUTION_BUFFER_SMALL = 15
 
-# Number of items to fetch when we expect many resolution failures (large buffer)
-RESOLUTION_BUFFER_LARGE = 40
+# Genre chart pool (single fetch); sized so the hourly rotation surfaces more of the genre per day
+RESOLUTION_BUFFER_LARGE = 60
 
 # Number of top items to always include when sampling (before random selection)
 TOP_ITEMS_TO_TAKE = 3
 
+# Number of library search hits scanned when verifying an item is already in the library.
+# A small window so a genuine match ranked behind a fuzzier one is still caught.
+LIBRARY_MATCH_SCAN_LIMIT = 5
+
 # Number of similar items to fetch before filtering to target count
 SIMILAR_ITEMS_BUFFER = 12
+
+# Number of similar tracks to resolve before filtering to target count. Larger than the
+# artist buffer to absorb this row's extra attrition: stricter ISRC matching and the
+# exclusion of tracks that resolve to the user's own library copy.
+SIMILAR_TRACKS_BUFFER = 15
 
 # Number of similar items to fetch for each seed artist/track
 SIMILAR_ITEMS_PER_SEED = 5
@@ -46,11 +60,14 @@ SIMILAR_ITEMS_PER_SEED = 5
 # Number of top artists to use as seeds for personalized recommendations
 TOP_ARTISTS_LIMIT = 5
 
-# Number of top tracks to use as seeds for personalized recommendations
-TOP_TRACKS_LIMIT = 5
+# Number of recently played tracks to scan when ranking top artists by appearances
+RECENT_TRACKS_SCAN_LIMIT = 200
 
-# Number of top tags to fetch for genre-based recommendations
-TOP_TAGS_LIMIT = 1
+# Number of top tracks fetched as seeds; over-fetched so enough are recognised by Last.fm
+TOP_TRACKS_LIMIT = 10
+
+# Number of top genre tags fetched; the genre rows cycle through them daily
+TOP_TAGS_LIMIT = 3
 
 # API search settings
 # Search limit for provider API calls (workaround for Spotify API bug with limit=1)
