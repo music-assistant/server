@@ -36,8 +36,8 @@ TARGET_ITEM_COUNT = 10
 # Number of items to fetch when we expect some resolution failures (small buffer)
 RESOLUTION_BUFFER_SMALL = 15
 
-# Number of items to fetch when we expect many resolution failures (large buffer)
-RESOLUTION_BUFFER_LARGE = 40
+# Genre chart pool (single fetch); sized so the hourly rotation surfaces more of the genre per day
+RESOLUTION_BUFFER_LARGE = 60
 
 # Number of top items to always include when sampling (before random selection)
 TOP_ITEMS_TO_TAKE = 3
@@ -51,11 +51,14 @@ SIMILAR_ITEMS_PER_SEED = 5
 # Number of top artists to use as seeds for personalized recommendations
 TOP_ARTISTS_LIMIT = 5
 
-# Number of top tracks to use as seeds for personalized recommendations
-TOP_TRACKS_LIMIT = 5
+# Number of recently played tracks to scan when ranking top artists by appearances
+RECENT_TRACKS_SCAN_LIMIT = 200
 
-# Number of top tags to fetch for genre-based recommendations
-TOP_TAGS_LIMIT = 1
+# Number of top tracks fetched as seeds; over-fetched so enough are recognised by Last.fm
+TOP_TRACKS_LIMIT = 10
+
+# Number of top genre tags fetched; the genre rows cycle through them daily
+TOP_TAGS_LIMIT = 3
 
 # API search settings
 # Search limit for provider API calls (workaround for Spotify API bug with limit=1)

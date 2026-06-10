@@ -26,6 +26,7 @@ from music_assistant.providers.lastfm_recommendations.constants import (
     CONF_ENABLE_GLOBAL_CHARTS,
     CONF_ENABLE_PERSONALIZED,
     CONF_GEO_COUNTRY,
+    RECENT_TRACKS_SCAN_LIMIT,
     RESOLUTION_BUFFER_LARGE,
     RESOLUTION_BUFFER_SMALL,
     SIMILAR_ITEMS_BUFFER,
@@ -43,6 +44,8 @@ from music_assistant.providers.lastfm_recommendations.parsers import (
 )
 
 if TYPE_CHECKING:
+    import logging
+
     from music_assistant.providers.lastfm_recommendations import LastFMRecommendationsProvider
 
 
@@ -57,11 +60,15 @@ class LastFMRecommendationManager:
         """
         self.provider = provider
         self.api = provider.api
-        self.logger = provider.logger
         self.mass = provider.mass
 
         # Resolved items keyed by MBID (preferred) or name to avoid re-resolving.
         self._resolved_cache: dict[str, Artist | Album | Track] = {}
+
+    @property
+    def logger(self) -> logging.Logger:
+        """Return the provider's active logger."""
+        return self.provider.logger
 
     async def clear_cache(self) -> None:
         """Clear in-memory and persistent recommendation caches."""
@@ -180,7 +187,7 @@ class LastFMRecommendationManager:
         self, items: list[dict[str, Any]], seed_suffix: str, target_count: int = TARGET_ITEM_COUNT
     ) -> list[dict[str, Any]]:
         """
-        Sample items using a 'top N + random remainder' strategy with a daily seed.
+        Sample items using a 'top N + random remainder' strategy with an hourly seed.
 
         :param items: List of items to sample from (already filtered).
         :param seed_suffix: Unique suffix for random seed (to vary between recommendation types).
@@ -194,8 +201,9 @@ class LastFMRecommendationManager:
         remaining = items[TOP_ITEMS_TO_TAKE:]
         random_count = target_count - TOP_ITEMS_TO_TAKE
 
-        # Daily seed keeps recommendations stable within the day and rotates them overnight.
-        seed = f"{datetime.datetime.now(tz=datetime.UTC).date().isoformat()}_{seed_suffix}"
+        # Hourly seed keeps the sampled remainder stable within the hour and rotates it each hour.
+        now = datetime.datetime.now(tz=datetime.UTC)
+        seed = f"{now.date().isoformat()}_{now.hour}_{seed_suffix}"
         rng = random.Random(seed)
         random_items = rng.sample(remaining, min(random_count, len(remaining)))
 
@@ -336,12 +344,7 @@ class LastFMRecommendationManager:
         if not self.provider.config.get_value(CONF_ENABLE_PERSONALIZED):
             return
 
-        # TODO: evaluate recent play history (e.g. last_played, last 7 days) instead of all-time
-        # play_count, possibly weighted. Needs user feedback.
-
-        top_artists = await self.mass.music.artists.library_items(
-            limit=TOP_ARTISTS_LIMIT, order_by="play_count_desc"
-        )
+        top_artists = await self._get_top_artists_by_track_plays()
 
         if top_artists:
             similar_artists = await self._get_similar_artists_from_seeds(top_artists)
@@ -360,6 +363,9 @@ class LastFMRecommendationManager:
         top_tracks = await self.mass.music.tracks.library_items(
             limit=TOP_TRACKS_LIMIT, order_by="play_count_desc"
         )
+        # only seed from tracks actually played, so a new library of unplayed tracks
+        # doesn't produce a row from arbitrary zero-play seeds
+        top_tracks = [track for track in top_tracks if track.last_played]
 
         if top_tracks:
             similar_tracks = await self._get_similar_tracks_from_seeds(top_tracks)
@@ -436,7 +442,9 @@ class LastFMRecommendationManager:
         if not top_tags:
             return
 
-        tag_name = top_tags[0].get("name")
+        # cycle through the user's top genres day by day so the genre rows vary
+        day_index = datetime.datetime.now(tz=datetime.UTC).date().toordinal()
+        tag_name = top_tags[day_index % len(top_tags)].get("name")
         if not tag_name:
             return
 
@@ -583,6 +591,34 @@ class LastFMRecommendationManager:
                     subtitle=f"Most popular tracks in {country}",
                     icon="mdi-earth",
                 )
+
+    async def _get_top_artists_by_track_plays(self) -> list[Artist]:
+        """
+        Return the user's most listened library artists to seed recommendations.
+
+        :return: Up to TOP_ARTISTS_LIMIT artists, most listened first.
+        """
+        # Artist play_count only increments when an artist is played as a unit, so rank by
+        # appearances across the user's most recently played tracks instead. Ordering happens
+        # in the DB; ties fall to the more recently played artist via insertion order.
+        recent_tracks = await self.mass.music.tracks.library_items(
+            limit=RECENT_TRACKS_SCAN_LIMIT, order_by="last_played_desc"
+        )
+        counts: dict[str | int, int] = {}
+        for track in recent_tracks:
+            if not track.last_played:
+                continue
+            for artist in track.artists:
+                counts[artist.item_id] = counts.get(artist.item_id, 0) + 1
+
+        top_artist_ids = sorted(counts, key=lambda item_id: counts[item_id], reverse=True)[
+            :TOP_ARTISTS_LIMIT
+        ]
+        resolved = await asyncio.gather(
+            *[self.mass.music.artists.get_library_item(item_id) for item_id in top_artist_ids],
+            return_exceptions=True,
+        )
+        return [artist for artist in resolved if isinstance(artist, Artist)]
 
     async def _get_similar_artists_from_seeds(self, seed_artists: list[Artist]) -> list[Artist]:
         """

@@ -21,6 +21,8 @@ from music_assistant.providers.lastfm_recommendations.constants import CONF_API_
 _DEFAULT_API_KEY: str = app_var(12)
 
 if TYPE_CHECKING:
+    import logging
+
     from aiohttp import ClientSession
 
     from music_assistant.providers.lastfm_recommendations import LastFMRecommendationsProvider
@@ -48,8 +50,12 @@ class LastFMAPIClient:
         :param provider: The Last.fm recommendations provider instance.
         """
         self.provider = provider
-        self.logger = provider.logger
         self.http_session: ClientSession = provider.mass.http_session
+
+    @property
+    def logger(self) -> logging.Logger:
+        """Return the provider's active logger."""
+        return self.provider.logger
 
     async def _get_data(self, method: str, **params: Any) -> dict[str, Any]:
         """
