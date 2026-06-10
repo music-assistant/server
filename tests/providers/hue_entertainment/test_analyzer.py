@@ -281,4 +281,4 @@ class TestScheduledBeatModel:
 
 def _channel_sum(command: LightColorCommand) -> int:
     """Total 16-bit energy across a command's RGB channels."""
-    return command.red + command.green + command.blue
+    return int(command.red + command.green + command.blue)
