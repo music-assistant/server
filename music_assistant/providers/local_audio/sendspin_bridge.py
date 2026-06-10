@@ -201,6 +201,11 @@ class SendspinLocalAudioBridge:
             self._bridge_client_id,
         )
 
+        # Reset PA sink hardware volume to 100% so software scaling has full range.
+        # PulseAudio deferred_volume can apply the stream's initial volume to the
+        # sink hardware volume when pa_simple_new opens — this undoes that.
+        await self._reset_sink_volume()
+
     def _get_sendspin_provider(self) -> SendspinProvider | None:
         """Get the Sendspin provider if available."""
         return cast("SendspinProvider | None", self.mass.get_provider("sendspin"))
@@ -238,6 +243,42 @@ class SendspinLocalAudioBridge:
         """Stop streaming when the stream ends."""
         self._is_streaming = False
         self.mass.create_task(self._stop_streaming_locked())
+        # Reset PA sink hardware volume back to 100% after playback ends.
+        self.mass.create_task(self._reset_sink_volume())
+
+    async def _reset_sink_volume(self) -> None:
+        """Reset PA sink hardware volume to 100% via pactl.
+
+        Called at bridge startup and after each playback session to undo any
+        hardware volume changes caused by PulseAudio deferred_volume applying
+        the stream's software volume to the sink hardware volume.
+        No-op on non-PA backends or if pactl is unavailable.
+        """
+        if self.backend != "pulse" or not self.pa_sink_name:
+            return
+        import os  # noqa: PLC0415
+        import shutil  # noqa: PLC0415
+        import subprocess  # noqa: PLC0415
+
+        pactl = shutil.which("pactl")
+        if not pactl:
+            return
+        from .pa_simple import _get_pulse_server  # noqa: PLC0415
+
+        env = {**os.environ}
+        if pulse_server := _get_pulse_server():
+            env["PULSE_SERVER"] = pulse_server
+        pa_sink_name = self.pa_sink_name
+        await self.mass.loop.run_in_executor(
+            None,
+            lambda: subprocess.run(  # noqa: S603
+                [pactl, "set-sink-volume", pa_sink_name, "100%"],
+                env=env,
+                timeout=3,
+                check=False,
+            ),
+        )
+        self.logger.debug("Reset PA sink hardware volume to 100%% for %s", self.pa_sink_name)
 
     def _on_volume_change(self, volume: int) -> None:
         """Sync volume from Sendspin side to bridge state and persist."""
