@@ -7,6 +7,7 @@ import contextlib
 import inspect
 import logging
 import os
+import re
 from collections import defaultdict
 from ipaddress import IPv4Address
 from typing import TYPE_CHECKING, Any
@@ -35,6 +36,10 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
 
     from music_assistant.models import ProviderInstanceType
+
+# RAOP cache keys prefix the device name with the device MAC, e.g. "aabbccddeeff@Kelder".
+# Cache keys are lowercased, so the hex is matched in lowercase.
+RAOP_MAC_PREFIX = re.compile(r"^[0-9a-f]{12}@")
 
 CONF_UPNP_NETWORK_SCAN = "upnp_network_scan"
 UPNP_DISCOVERY_INTERVAL = 300
@@ -171,10 +176,10 @@ class DiscoveryController(CoreController):
                     # Use exact matching on the device name portion to prevent a device named
                     # "Foo" from cross-matching another device named "ATV Foo".
                     # mDNS names are either "MAC@DeviceName.service.local." or "DeviceName.service.local."
+                    # Strip the MAC prefix only when present, so device names that legitimately
+                    # contain "@" are not truncated.
                     device_part = mdns_name.split(".")[0]
-                    device_name = (
-                        device_part.split("@", 1)[1] if "@" in device_part else device_part
-                    )
+                    device_name = RAOP_MAC_PREFIX.sub("", device_part, count=1)
                     if device_name != name_filter_lower:
                         continue
                     info = AsyncServiceInfo(service_type, mdns_name)
