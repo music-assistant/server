@@ -92,6 +92,7 @@ class HueEntertainmentBridge:
         self._unsubscribe_viz: Callable[[], None] | None = None
         self._unsubscribe_color: Callable[[], None] | None = None
         self._stop_debounce_task: asyncio.Task[None] | None = None
+        self._start_task: asyncio.Task[None] | None = None
         self._render_handle: asyncio.TimerHandle | None = None
         self._entertainment_starting: bool = False
         self._hue_latency_us: int = (
@@ -191,6 +192,15 @@ class HueEntertainmentBridge:
         if self._sendspin_client and self._sendspin_client.connected:
             await self._sendspin_client.disconnect()
         self._sendspin_client = None
+
+        # Cancel an in-flight start so it can't adopt a session after we stop.
+        if self._stop_debounce_task and not self._stop_debounce_task.done():
+            self._stop_debounce_task.cancel()
+        if self._start_task and not self._start_task.done():
+            self._start_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._start_task
+        self._start_task = None
 
         await self._stop_entertainment()
         self.logger.debug("Hue bridge stopped for area '%s'", self.area.name)
@@ -300,12 +310,17 @@ class HueEntertainmentBridge:
         if not self._is_streaming and not self._entertainment_starting:
             self._entertainment_starting = True
             self.logger.info("Stream starting for area '%s', connecting DTLS...", self.area.name)
-            self.mass.create_task(self._start_entertainment())
+            self._start_task = self.mass.create_task(self._start_entertainment())
 
     def _on_stream_end(self, roles: list[str] | None) -> None:
         """Handle stream end — debounce to survive track transitions."""
-        if roles and "visualizer" in roles and self._is_streaming:
-            # Cancel any pending stop
+        if not (roles and "visualizer" in roles):
+            return
+        # Also act while a start is still in flight: the stream can end before
+        # session.start() completes, and that late start would otherwise adopt a
+        # session that streams forever (idle_timeout=0).
+        starting = self._start_task is not None and not self._start_task.done()
+        if self._is_streaming or starting:
             if self._stop_debounce_task and not self._stop_debounce_task.done():
                 self._stop_debounce_task.cancel()
             self._stop_debounce_task = self.mass.create_task(self._debounced_stop())
@@ -313,6 +328,12 @@ class HueEntertainmentBridge:
     async def _debounced_stop(self) -> None:
         """Wait briefly before stopping — a new stream may start (track change)."""
         await asyncio.sleep(2.0)
+        # Cancel a still-running start first (its finally closes the not-yet-adopted
+        # session); if the start already completed, tear the live session down.
+        if self._start_task is not None and not self._start_task.done():
+            self._start_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._start_task
         if self._is_streaming:
             self.logger.info("Visualizer stream ended for area '%s'", self.area.name)
             await self._stop_entertainment()
