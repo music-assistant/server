@@ -49,6 +49,7 @@ from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant import MusicAssistant
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
 from music_assistant.helpers.auth import AuthenticationHelper
@@ -175,6 +176,7 @@ async def get_config_entries(
             )
 
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=CONF_ACCESS_TOKEN,
             type=ConfigEntryType.SECURE_STRING,

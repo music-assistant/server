@@ -21,6 +21,7 @@ from music_assistant_models.enums import ConfigEntryType, EventType, MediaType, 
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import BrowseFolder, ItemMapping
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audible.audible_helper import (
     AudibleHelper,
@@ -154,6 +155,7 @@ async def get_config_entries(
             raise LoginFailed(f"Verification failed: {e}") from e
 
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key="label_text",
             type=ConfigEntryType.LABEL,

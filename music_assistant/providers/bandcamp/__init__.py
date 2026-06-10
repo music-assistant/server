@@ -55,6 +55,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.mass import MusicAssistant
@@ -95,6 +96,7 @@ async def get_config_entries(
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=CONF_IDENTITY,
             type=ConfigEntryType.SECURE_STRING,
