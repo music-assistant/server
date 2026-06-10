@@ -1970,9 +1970,6 @@ class PlayerQueuesController(CoreController):
 
         :param artist: The artist to resolve provider tracks for.
         """
-        # one instance per streaming domain, respecting the user provider filter; artists.tracks
-        # returns the provider's full catalog in a single call where the provider supports it,
-        # only falling back to enumerating album tracks when it does not
         unique_providers = self.mass.music.get_unique_providers()
         tracks: list[Track] = []
         for mapping in artist.provider_mappings:
