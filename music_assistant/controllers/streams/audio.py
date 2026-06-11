@@ -1750,6 +1750,7 @@ class StreamsAudio:
         # Round down to nearest frame boundary
         crossfade_buffer_size = (crossfade_buffer_size // frame_size) * frame_size
         fade_out_data: bytes | None = None
+        uncredited_tail_bytes = 0
 
         # pin the body to DYNAMIC when the intro was baked DYNAMIC,
         # else a late measurement flips it and causes a volume jump
@@ -1939,6 +1940,8 @@ class StreamsAudio:
                             bytes_written += len(mix_chunk)
                     else:
                         second_part_buf.extend(mix_chunk)
+                # tail consumed by the mix but not credited to bytes_written
+                uncredited_tail_bytes = len(fade_out_data) - first_part_written
                 self._crossfade_data[queue_item.queue_id] = CrossfadeData(
                     data=bytes(second_part_buf),
                     fade_in_size=fade_in_bytes_consumed,
@@ -1983,10 +1986,12 @@ class StreamsAudio:
         # this also accounts for crossfade and silence stripping
         seconds_streamed = bytes_written / pcm_format.pcm_sample_size
         streamdetails.seconds_streamed = seconds_streamed
+        uncredited_tail_seconds = uncredited_tail_bytes / pcm_format.pcm_sample_size
         # streamdetails.duration is in media-time; seconds_streamed is stream-time
         # (post-atempo), so we scale by playback_speed to recover media-time.
         streamdetails.duration = int(
-            streamdetails.seek_position + seconds_streamed * playback_speed
+            streamdetails.seek_position
+            + (seconds_streamed + uncredited_tail_seconds) * playback_speed
         )
         # propagate accurate duration to queue_item so UI displays it
         queue_item.duration = streamdetails.duration
@@ -2355,10 +2360,13 @@ class StreamsAudio:
             # this also accounts for crossfade and silence stripping
             seconds_streamed = bytes_written / pcm_sample_size
             queue_track.streamdetails.seconds_streamed = seconds_streamed
+            # the held-back crossfade tail still counts as this track's media-time
+            tail_seconds = len(last_fadeout_part) / pcm_sample_size
             # streamdetails.duration is in media-time; seconds_streamed is stream-time
             # (post-atempo), so we scale by the track's playback_speed to recover media-time.
             queue_track.streamdetails.duration = int(
-                queue_track.streamdetails.seek_position + seconds_streamed * track_playback_speed
+                queue_track.streamdetails.seek_position
+                + (seconds_streamed + tail_seconds) * track_playback_speed
             )
             # propagate accurate duration to queue_item so UI displays it
             queue_track.duration = queue_track.streamdetails.duration
@@ -2389,14 +2397,13 @@ class StreamsAudio:
             for pcm_slice in iter_pcm_slices(last_fadeout_part, pcm_format, 1000):
                 yield pcm_slice
                 await asyncio.sleep(0)
-            # correct seconds streamed/duration
+            # correct seconds streamed - the duration already includes the tail
             last_part_seconds = len(last_fadeout_part) / pcm_sample_size
             streamdetails = queue_track.streamdetails
             assert streamdetails is not None
             streamdetails.seconds_streamed = (
                 streamdetails.seconds_streamed or 0
             ) + last_part_seconds
-            streamdetails.duration = int((streamdetails.duration or 0) + last_part_seconds)
             # also update the play log entry so elapsed time tracking stays in sync
             if last_play_log_entry:
                 assert last_play_log_entry.seconds_streamed is not None
