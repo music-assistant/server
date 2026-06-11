@@ -860,7 +860,6 @@ class SmartPlaylistProvider(PluginProvider):
             if t.item_id and str(t.item_id).isdigit() and (not t.metadata or not t.metadata.genres)
         }
 
-        # Query database for genre names for these tracks
         track_ids_str = ",".join(str(tid) for tid in library_track_ids)
         query = f"""
             SELECT gm.media_id, g.name
@@ -874,7 +873,6 @@ class SmartPlaylistProvider(PluginProvider):
             query, params=None, limit=0, offset=0
         )
 
-        # Merge DB genres into track metadata
         for row in result:
             track_id = row["media_id"]
             genre_name = row["name"]
