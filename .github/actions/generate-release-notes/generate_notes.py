@@ -39,9 +39,29 @@ def get_tag_date(repo, tag_name):
         return None
 
 
+def get_released_pr_numbers(repo, merge_base_sha, previous_tag):
+    """Get PR numbers that already shipped on the previous tag's (diverged) branch."""
+    merge_pattern = re.compile(r"Merge pull request #(\d+)")
+    squash_pattern = re.compile(r"\(#(\d+)\)\s*$")
+    released = set()
+    comparison = repo.compare(merge_base_sha, previous_tag)
+    for commit in comparison.commits:
+        # Only the first line (squash/merge commit title) identifies the released
+        # PR; the body may reference unrelated PRs/issues.
+        title = commit.commit.message.split("\n", 1)[0]
+        match = merge_pattern.search(title) or squash_pattern.search(title)
+        if match:
+            released.add(int(match.group(1)))
+    return released
+
+
 def get_prs_between_tags(repo, previous_tag, current_branch):
     """Get all merged PRs between the previous tag and current HEAD."""
-    tag_date = None
+    pr_pattern = re.compile(r"#(\d+)")
+    merge_pattern = re.compile(r"Merge pull request #(\d+)")
+
+    cutoff_date = None
+    released_pr_numbers = set()
     if not previous_tag:
         print("No previous tag specified, will include all PRs from branch history")  # noqa: T201
         # Get the first commit on the branch
@@ -50,17 +70,33 @@ def get_prs_between_tags(repo, previous_tag, current_branch):
         commits = commits[:100]
     else:
         print(f"Finding PRs between {previous_tag} and {current_branch}")  # noqa: T201
-        tag_date = get_tag_date(repo, previous_tag)
-        if tag_date:
-            print(f"Previous tag date: {tag_date}")  # noqa: T201
         comparison = repo.compare(previous_tag, current_branch)
         commits = comparison.commits
         print(f"Found {comparison.total_commits} commits")  # noqa: T201
+        if comparison.behind_by:
+            # The previous tag lives on a diverged branch: a minor release (e.g. 2.9.0)
+            # compares against the latest patch tag (2.8.9) on the old stable branch.
+            # That tag's date lies *after* most of this release's content was merged to
+            # dev, so cut off at the merge base (the old branch point) instead, and
+            # drop PRs that already shipped in the patch releases on the old branch.
+            merge_base = comparison.merge_base_commit
+            cutoff_date = merge_base.commit.committer.date
+            print(  # noqa: T201
+                f"Previous tag {previous_tag} has diverged from {current_branch}, "
+                f"using merge base date {cutoff_date} as cutoff"
+            )
+            released_pr_numbers = get_released_pr_numbers(repo, merge_base.sha, previous_tag)
+            print(  # noqa: T201
+                f"Found {len(released_pr_numbers)} PRs already released "
+                f"in patch releases up to {previous_tag}"
+            )
+        else:
+            cutoff_date = get_tag_date(repo, previous_tag)
+            if cutoff_date:
+                print(f"Previous tag date: {cutoff_date}")  # noqa: T201
 
     # Extract PR numbers from commit messages
     pr_numbers = set()
-    pr_pattern = re.compile(r"#(\d+)")
-    merge_pattern = re.compile(r"Merge pull request #(\d+)")
 
     for commit in commits:
         message = commit.commit.message
@@ -75,17 +111,24 @@ def get_prs_between_tags(repo, previous_tag, current_branch):
 
     print(f"Found {len(pr_numbers)} unique PRs")  # noqa: T201
 
-    # Fetch the actual PR objects, filtering out PRs merged before the previous tag
+    # Fetch the actual PR objects, filtering out PRs merged before the cutoff date
+    # and PRs that already shipped in patch releases on the previous (stable) branch
     prs = []
     skipped = 0
     for pr_num in sorted(pr_numbers):
+        if pr_num in released_pr_numbers:
+            skipped += 1
+            print(  # noqa: T201
+                f"  Skipping PR #{pr_num}: already released in a patch release"
+            )
+            continue
         try:
             pr = repo.get_pull(pr_num)
             if pr.merged:
-                if tag_date and pr.merged_at and pr.merged_at <= tag_date:
+                if cutoff_date and pr.merged_at and pr.merged_at <= cutoff_date:
                     skipped += 1
                     print(  # noqa: T201
-                        f"  Skipping PR #{pr_num}: merged at {pr.merged_at}, before tag date {tag_date}"
+                        f"  Skipping PR #{pr_num}: merged at {pr.merged_at}, before cutoff {cutoff_date}"
                     )
                     continue
                 prs.append(pr)
@@ -93,7 +136,7 @@ def get_prs_between_tags(repo, previous_tag, current_branch):
             print(f"Warning: Could not fetch PR #{pr_num}: {e}")  # noqa: T201
 
     if skipped:
-        print(f"Filtered out {skipped} PRs merged before {previous_tag}")  # noqa: T201
+        print(f"Filtered out {skipped} PRs already released before/in {previous_tag}")  # noqa: T201
 
     return prs
 
