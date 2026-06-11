@@ -18,10 +18,10 @@ import shortuuid
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.smart_fades.filters import (
     CrossfadeFilter,
+    FadeInTrimFilter,
     Filter,
     FrequencySweepFilter,
     GradualTimeStretchFilter,
-    TrimFilter,
 )
 from music_assistant.controllers.streams.smart_fades.helpers import (
     SMART_CROSSFADE_DURATION,
@@ -317,7 +317,9 @@ class SmartCrossFade(SmartFade):
             fadein_start_pos is not None
             and fadein_start_pos + crossfade_duration <= SMART_CROSSFADE_DURATION
         ):
-            self.filters.append(TrimFilter(logger=self.logger, fadein_start_pos=fadein_start_pos))
+            self.filters.append(
+                FadeInTrimFilter(logger=self.logger, fadein_start_pos=fadein_start_pos)
+            )
             self.timing_info.fadein_trimmed_duration = fadein_start_pos
         else:
             self.logger.log(
