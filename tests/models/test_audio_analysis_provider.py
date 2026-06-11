@@ -370,12 +370,13 @@ async def test_finalize_records_classified_failure_on_audio_analysis_error() -> 
     await provider.start_analysis("s1", streamdetails, MagicMock())
     await provider.finalize("s1")
 
-    provider.mass.streams.audio_analysis.record_analysis_failure.assert_awaited_once()
-    kwargs = provider.mass.streams.audio_analysis.record_analysis_failure.call_args.kwargs
+    rec = cast("AsyncMock", provider.mass.streams.audio_analysis.record_analysis_failure)
+    rec.assert_awaited_once()
+    kwargs = rec.call_args.kwargs
     assert kwargs["reason"] == "no usable audio frames extracted"
     assert kwargs["retry_at"] == when
     assert kwargs["aa_provider_domain"] == "test_stub_provider"
-    provider.mass.streams.audio_analysis.set_audio_analysis.assert_not_awaited()
+    cast("AsyncMock", provider.mass.streams.audio_analysis.set_audio_analysis).assert_not_awaited()
     assert "s1" not in provider._sessions
 
 
@@ -413,7 +414,7 @@ async def test_finalize_records_never_retry_on_generic_exception() -> None:
     await provider.start_analysis("s2", streamdetails, MagicMock())
     await provider.finalize("s2")
 
-    rec = provider.mass.streams.audio_analysis.record_analysis_failure
+    rec = cast("AsyncMock", provider.mass.streams.audio_analysis.record_analysis_failure)
     rec.assert_awaited_once()
     assert rec.call_args.kwargs["reason"] == "boom"
     assert rec.call_args.kwargs["retry_at"] is None
@@ -430,7 +431,9 @@ async def test_finalize_no_record_on_none_return() -> None:
     await provider.start_analysis("s3", streamdetails, MagicMock())
     await provider.finalize("s3")
 
-    provider.mass.streams.audio_analysis.record_analysis_failure.assert_not_awaited()
+    cast(
+        "AsyncMock", provider.mass.streams.audio_analysis.record_analysis_failure
+    ).assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -449,7 +452,7 @@ async def test_start_analysis_records_on_audio_analysis_error() -> None:
     accepted = await provider.start_analysis("s4", streamdetails, MagicMock())
 
     assert accepted is False
-    rec = provider.mass.streams.audio_analysis.record_analysis_failure
+    rec = cast("AsyncMock", provider.mass.streams.audio_analysis.record_analysis_failure)
     rec.assert_awaited_once()
     assert rec.call_args.kwargs["reason"] == "unsupported codec"
     assert "s4" not in provider._sessions
@@ -467,9 +470,8 @@ async def test_finalize_swallows_recorder_error() -> None:
     provider._finalize = AsyncMock(  # type: ignore[method-assign]
         side_effect=AudioAnalysisError("boom")
     )
-    provider.mass.streams.audio_analysis.record_analysis_failure = AsyncMock(
-        side_effect=RuntimeError("db down")
-    )
+    aa = cast("MagicMock", provider.mass.streams.audio_analysis)
+    aa.record_analysis_failure = AsyncMock(side_effect=RuntimeError("db down"))
 
     await provider.start_analysis("sx", streamdetails, MagicMock())
     # Must not raise despite the recorder failing.

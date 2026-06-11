@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture
-async def real_db(tmp_path: pathlib.Path) -> AsyncGenerator[DatabaseConnection, None]:
+async def real_db(tmp_path: pathlib.Path) -> AsyncGenerator[DatabaseConnection]:
     """Create a real on-disk sqlite DB with the minimal tables the gate/store touch."""
     db = DatabaseConnection(str(tmp_path / "test.db"))
     await db.setup()
@@ -143,7 +143,6 @@ async def test_record_failure_converts_retry_at_to_epoch(real_db: DatabaseConnec
 async def test_record_failure_skips_when_not_music_provider(real_db: DatabaseConnection) -> None:
     """No row is written when the provider lookup is not a MusicProvider."""
     controller = _make_controller(real_db, music_prov=MagicMock())  # not a MusicProvider spec
-    controller.mass.get_provider = MagicMock(return_value=MagicMock())
 
     await controller.record_analysis_failure(
         item_id="t3",
@@ -191,7 +190,7 @@ async def _insert_pm(db: DatabaseConnection, item_id: str) -> None:
 
 
 async def _insert_failure(
-    db: DatabaseConnection, item_id: str, *, next_retry, version: int = 1
+    db: DatabaseConnection, item_id: str, *, next_retry: int | None, version: int = 1
 ) -> None:
     await db.insert_or_replace(
         DB_TABLE_AUDIO_ANALYSIS_FAILURES,
