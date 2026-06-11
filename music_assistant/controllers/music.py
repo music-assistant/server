@@ -121,7 +121,7 @@ CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 41
+DB_SCHEMA_VERSION: Final[int] = 42
 # tracks longer that this will not be included in radio mode
 RADIO_TRACK_MAX_DURATION_SECS: Final[int] = 20 * 60
 _DYNAMIC_RADIO_BASE_SAMPLE_SIZE: Final[int] = 5
@@ -1380,11 +1380,16 @@ class MusicController(CoreController):
             # one-off items like TTS or some sound effect etc.
             return
 
+        # store the primary artist so streaming plays not in the library remain seedable
+        item_artists = getattr(media_item, "artists", None)
+        artist = item_artists[0].name if item_artists else None
+
         params = {
             "item_id": media_item.item_id,
             "provider": media_item.provider,
             "media_type": media_item.media_type.value,
             "name": media_item.name,
+            "artist": artist,
             "image": serialize_to_json(media_item.image.to_dict()) if media_item.image else None,
             "fully_played": fully_played,
             "seconds_played": seconds_played,
@@ -3046,6 +3051,17 @@ class MusicController(CoreController):
                         {"metadata": serialize_to_json(metadata)},
                     )
 
+        if prev_version <= 41:
+            # add artist column to playlog so recommendation seeds remain available for
+            # streaming plays that were never added to the library
+            try:
+                await self.database.execute(
+                    f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN artist TEXT"
+                )
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
+
         # save changes
         await self.database.commit()
 
@@ -3077,6 +3093,7 @@ class MusicController(CoreController):
                 [provider] TEXT NOT NULL,
                 [media_type] TEXT NOT NULL,
                 [name] TEXT NOT NULL,
+                [artist] TEXT,
                 [image] json,
                 [timestamp] INTEGER DEFAULT 0,
                 [fully_played] BOOLEAN,
