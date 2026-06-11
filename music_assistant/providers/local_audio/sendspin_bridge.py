@@ -26,6 +26,8 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 from music_assistant.providers.sendspin.helpers import bridge_client_id_from_uuid
 
+from music_assistant.constants import CONF_PLAYERS
+
 from .constants import (
     AUDIO_BACKEND_ALSA,
     AUDIO_BACKEND_AUTO,
@@ -553,6 +555,16 @@ class LocalAudioBridgeManager:
                     manufacturer="Local Audio",
                 )
                 await self.mass.players.register_or_update(protocol_player)
+                # Force-enable the attribution stub — if a user previously disabled it
+                # MA will skip registration on next startup, causing the player to
+                # disappear from the Local Audio Out provider filter.
+                # Use the raw config store to re-enable it directly.
+                if raw := self.mass.config.get(f"{CONF_PLAYERS}/{device_uuid}"):
+                    if not raw.get("enabled", True):
+                        self.logger.debug(
+                            "Re-enabling disabled attribution stub for %s", display_name
+                        )
+                        raw["enabled"] = True
 
                 bridge = SendspinLocalAudioBridge(
                     self.provider, device, sendspin_server, backend=resolved_backend
