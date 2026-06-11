@@ -701,6 +701,13 @@ class TestStretchSavings:
         fade._build(_seconds(45), _seconds(45), PCM)
         return fade
 
+    def _fadeout_sweep(self, fade: SmartCrossFade) -> FrequencySweepFilter:
+        return next(
+            f
+            for f in fade.filters
+            if isinstance(f, FrequencySweepFilter) and f.stream_type == "fadeout"
+        )
+
     def test_savings_until_integrates_piecewise(self) -> None:
         """_stretch_savings_until integrates savings piecewise over the step list."""
         fade = SmartCrossFade(
@@ -758,12 +765,55 @@ class TestStretchSavings:
     def test_sweep_schedule_ends_at_rendered_end(self) -> None:
         """Fade-out sweep schedule ends exactly at the rendered (output-time) tail end."""
         fade = self._stretched_fade()
-        sweep = next(
-            f
-            for f in fade.filters
-            if isinstance(f, FrequencySweepFilter) and f.stream_type == "fadeout"
-        )
+        sweep = self._fadeout_sweep(fade)
         rendered_end = fade.effective_end - fade._stretch_savings_until(fade.effective_end)
+        assert sweep.start_time + sweep.duration == pytest.approx(rendered_end, abs=0.05)
+
+    def test_sweep_start_is_remapped_to_output_time(self) -> None:
+        """The sweep start itself shifts left by the savings at its input-time position."""
+        # The standard fixture cannot pin the start remap: its EQ window begins
+        # before the stretch window, so the shift there is zero. A short (6-bar)
+        # crossfade — high BPM plus late fade-in downbeats — pushes the EQ start
+        # inside the stretch window where the remap actually binds.
+        fade = SmartCrossFade(
+            logger=LOGGER,
+            fade_out_analysis=_analysis(bpm=230.0, duration=240.0),
+            fade_in_analysis=_analysis(bpm=239.2, beats_start=38.0, duration=240.0),
+        )
+        fade._build(_seconds(45), _seconds(45), PCM)
+        assert fade.tempo_steps, "test requires the stretch to be active"
+        sweep = self._fadeout_sweep(fade)
+        timing = fade.timing_info
+        input_duration = min(max(timing.crossfade_duration * 2.5, 8.0), fade.effective_end)
+        input_start = max(0.0, fade.effective_end - input_duration)
+        start_shift = fade._stretch_savings_until(input_start)
+        assert start_shift > 0.0, "fixture must place the EQ start inside the stretch window"
+        assert sweep.start_time == pytest.approx(input_start - start_shift, abs=1e-9)
+        rendered_end = fade.effective_end - fade._stretch_savings_until(fade.effective_end)
+        assert sweep.start_time + sweep.duration == pytest.approx(rendered_end, abs=0.05)
+
+    def test_trim_and_stretch_combined(self) -> None:
+        """A trimmed silent tail and an active stretch compose: both anchor on the rendered end."""
+        duration = 240.0
+        fade = SmartCrossFade(
+            logger=LOGGER,
+            fade_out_analysis=_analysis(
+                bpm=120.0,
+                duration=duration,
+                rms_energy=_rms_with_silent_tail(duration, 10.0),
+            ),
+            fade_in_analysis=_analysis(bpm=124.8, duration=duration),
+        )
+        fade._build(_seconds(45), _seconds(45), PCM)
+        # tail trim must come first so every later schedule sees the trimmed stream
+        assert isinstance(fade.filters[0], FadeOutTrimFilter)
+        assert fade.tempo_steps, "test requires the stretch to be active"
+        rendered_end = fade.effective_end - fade._stretch_savings_until(fade.effective_end)
+        timing = fade.timing_info
+        assert timing.pre_crossfade_duration + timing.crossfade_duration == pytest.approx(
+            rendered_end, abs=0.05
+        )
+        sweep = self._fadeout_sweep(fade)
         assert sweep.start_time + sweep.duration == pytest.approx(rendered_end, abs=0.05)
 
     def test_unstretched_fade_has_zero_savings(self) -> None:

@@ -319,11 +319,11 @@ class SmartCrossFade(SmartFade):
         crossfade_duration = self._calculate_crossfade_duration(crossfade_bars=crossfade_bars)
 
         # Add gradual time stretch filter if needed
-        is_stretched = (
+        stretch_eligible = (
             0.1 < bpm_diff_percent <= self.time_stretch_bpm_percentage_threshold
             and crossfade_bars > 4
         )
-        if is_stretched:
+        if stretch_eligible:
             self._apply_gradual_time_stretch(bpm_ratio, bpm_diff_percent, crossfade_duration)
 
         if (
@@ -356,8 +356,8 @@ class SmartCrossFade(SmartFade):
         )
 
         # Compensate crossfade duration for time-stretch compression.
-        # Gate on tempo_steps (not is_stretched) so a guard-skipped stretch doesn't
-        # apply a compensation for a stretch that never ran.
+        # Gate on tempo_steps (not stretch_eligible) so a guard-skipped stretch
+        # doesn't apply a compensation for a stretch that never ran.
         if self.tempo_steps:
             crossfade_duration = crossfade_duration / bpm_ratio
 
@@ -390,6 +390,8 @@ class SmartCrossFade(SmartFade):
             # sweep still completes exactly when the rendered tail ends
             rendered_end = self.effective_end - self._stretch_savings_until(self.effective_end)
             fadeout_eq_start -= self._stretch_savings_until(fadeout_eq_start)
+            # defensive floor keeping the sweep non-degenerate; cannot bind given
+            # the 5% stretch cap and the 10s minimum audible tail
             fadeout_eq_duration = max(rendered_end - fadeout_eq_start, 1.0)
         fadeout_sweep = FrequencySweepFilter(
             logger=self.logger,
@@ -719,6 +721,8 @@ class SmartCrossFade(SmartFade):
     def _stretch_savings_until(self, t: float) -> float:
         """
         Seconds removed from the rendered stream by the piecewise stretch up to input time t.
+
+        Negative when the stretch slows the tail down (the rendered stream is lengthened).
 
         :param t: Input-time position (seconds) up to which to integrate savings.
         """
