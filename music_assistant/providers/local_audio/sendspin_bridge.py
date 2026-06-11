@@ -646,4 +646,3 @@ class LocalAudioBridgeManager:
                     await bridge.stop()
             self._bridges.clear()
         self.logger.debug("All local audio bridges stopped")
-        
