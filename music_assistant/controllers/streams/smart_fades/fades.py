@@ -29,11 +29,7 @@ from music_assistant.controllers.streams.smart_fades.helpers import (
     extrapolate_downbeats,
     generate_synthetic_timestamps,
 )
-from music_assistant.helpers.audio import (
-    align_audio_to_frame_boundary,
-    iter_pcm_slices,
-    strip_silence,
-)
+from music_assistant.helpers.audio import iter_pcm_slices
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import remove_file
 from music_assistant.models.audio_analysis import AudioAnalysisData
@@ -682,8 +678,6 @@ class StandardCrossFade(SmartFade):
 
         Only the overlapping portions are crossfaded, not the full buffers.
         """
-        fade_out_part = await strip_silence(fade_out_part, pcm_format=pcm_format, reverse=True)
-        fade_out_part = align_audio_to_frame_boundary(fade_out_part, pcm_format)
         crossfade_size = int(pcm_format.pcm_sample_size * self.crossfade_duration)
         # Pre-crossfade: outgoing track minus the crossfaded portion
         pre_crossfade = fade_out_part[:-crossfade_size]
