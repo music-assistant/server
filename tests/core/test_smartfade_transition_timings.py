@@ -32,7 +32,10 @@ from music_assistant.controllers.streams.smart_fades.fades import (
     SmartFade,
     StandardCrossFade,
 )
-from music_assistant.controllers.streams.smart_fades.filters import CrossfadeFilter
+from music_assistant.controllers.streams.smart_fades.filters import (
+    CrossfadeFilter,
+    FadeOutTrimFilter,
+)
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
 from music_assistant.controllers.streams.smart_fades.mixer import SmartFadesMixer
 from music_assistant.models.audio_analysis import AudioAnalysisData
@@ -82,16 +85,30 @@ def _beats(start: float, count: int, interval: float) -> np.ndarray:
     return np.arange(count, dtype=np.float32) * interval + start
 
 
-def _analysis(bpm: float, beats_start: float = 0.0, beats_count: int = 200) -> AudioAnalysisData:
+def _analysis(
+    bpm: float,
+    beats_start: float = 0.0,
+    beats_count: int = 200,
+    duration: float | None = None,
+    rms_energy: np.ndarray | None = None,
+) -> AudioAnalysisData:
     """Synthetic analysis data with enough beats for SmartCrossFade._build() to succeed."""
     interval = 60.0 / bpm  # seconds per beat
-    beats = _beats(beats_start, beats_count, interval)
+    # When an explicit duration is given, generate beats spanning the full track so the
+    # buffer-local shift (duration - 45s) leaves real beats inside the 45s window.
+    if duration is not None:
+        count = max(beats_count, int(duration / interval) + 1)
+        beats = _beats(beats_start, count, interval)
+    else:
+        beats = _beats(beats_start, beats_count, interval)
+        duration = float(beats[-1] + interval)
     downbeats = beats[::4]  # 4/4 time signature
     return AudioAnalysisData(
-        duration=beats[-1] + interval,
+        duration=duration,
         bpm=bpm,
         beats=beats,
         downbeats=downbeats,
+        rms_energy=rms_energy,
     )
 
 
@@ -570,3 +587,68 @@ class TestMixerBuild:
         assert mix_data is fade_out_data
         timing = smart_fade.timing_info
         assert timing.pre_crossfade_duration + timing.crossfade_duration == pytest.approx(45.0)
+
+
+# ---------------------------------------------------------------------------
+# SmartCrossFade — silence-aware fade-out anchoring
+# ---------------------------------------------------------------------------
+
+LOGGER = logging.getLogger(__name__)
+
+PCM_FORMAT = PCM
+
+
+def _rms_with_silent_tail(track_duration: float, silent_tail: float) -> np.ndarray:
+    bins = np.full(1800, 0.5, dtype=np.float32)
+    bins[0] = 1.0
+    if silent_tail > 0:
+        bins[-int(silent_tail / track_duration * 1800) :] = 0.001
+    return bins
+
+
+class TestSilenceAwareAnchoring:
+    """SmartCrossFade must anchor the fade where audible content ends."""
+
+    def _build_fade(self, silent_tail: float) -> SmartCrossFade:
+        duration = 240.0
+        fade = SmartCrossFade(
+            logger=LOGGER,
+            fade_out_analysis=_analysis(
+                bpm=120.0,
+                duration=duration,
+                rms_energy=_rms_with_silent_tail(duration, silent_tail),
+            ),
+            fade_in_analysis=_analysis(bpm=120.0, duration=duration),
+        )
+        fade._build(_seconds(45), _seconds(45), PCM_FORMAT)
+        return fade
+
+    def test_silent_tail_moves_the_anchor(self) -> None:
+        """A 10s silent tail shortens the audible anchor to ~35s and inserts FadeOutTrimFilter."""
+        fade = self._build_fade(silent_tail=10.0)
+        assert fade.effective_end == pytest.approx(35.0, abs=0.3)
+        # the rendered fade-out covers only the audible region
+        timing = fade.timing_info
+        assert timing.pre_crossfade_duration + timing.crossfade_duration == pytest.approx(
+            fade.effective_end, abs=0.05
+        )
+        # tail trim is the FIRST filter so later schedules see the trimmed stream
+        assert isinstance(fade.filters[0], FadeOutTrimFilter)
+        assert fade.filters[0].fadeout_end_pos == pytest.approx(fade.effective_end)
+
+    def test_no_silence_keeps_buffer_end_anchor(self) -> None:
+        """Without silence, effective_end equals the full buffer and no trim filter is added."""
+        fade = self._build_fade(silent_tail=0.0)
+        assert fade.effective_end == pytest.approx(45.0, abs=0.3)
+        assert not any(isinstance(f, FadeOutTrimFilter) for f in fade.filters)
+
+    def test_mostly_silent_tail_raises_for_fallback(self) -> None:
+        """A tail with only ~5s of audible content raises ValueError so the caller falls back."""
+        with pytest.raises(ValueError, match="silent"):
+            self._build_fade(silent_tail=40.0)
+
+    def test_fadeout_beats_are_masked_to_effective_end(self) -> None:
+        """Beats in the silent tail are dropped so no downbeat sits beyond effective_end."""
+        fade = self._build_fade(silent_tail=10.0)
+        assert fade.fade_out_beats.min() >= 0.0
+        assert fade.fade_out_beats.max() <= fade.effective_end + 0.01

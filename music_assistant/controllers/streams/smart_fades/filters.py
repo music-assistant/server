@@ -97,6 +97,8 @@ class FadeOutTrimFilter(Filter):
 
         :param fadeout_end_pos: Position in seconds where the outgoing track's
             audible content ends; everything after it is dropped.
+            Measured on the untrimmed input timeline, so this filter must precede
+            any time-stretching filter in the chain.
         """
         self.fadeout_end_pos = fadeout_end_pos
         super().__init__(logger)

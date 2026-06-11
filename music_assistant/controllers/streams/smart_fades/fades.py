@@ -19,13 +19,16 @@ from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.smart_fades.filters import (
     CrossfadeFilter,
     FadeInTrimFilter,
+    FadeOutTrimFilter,
     Filter,
     FrequencySweepFilter,
     GradualTimeStretchFilter,
 )
 from music_assistant.controllers.streams.smart_fades.helpers import (
+    MIN_EFFECTIVE_FADE_BUFFER,
     SMART_CROSSFADE_DURATION,
     compute_gradual_tempo_steps,
+    detect_effective_audio_end,
     extrapolate_downbeats,
     generate_synthetic_timestamps,
 )
@@ -268,6 +271,13 @@ class SmartCrossFade(SmartFade):
             if fade_out_analysis.downbeats is not None
             else np.array([], dtype=np.float32)
         )
+        # Only beats within the buffered head are usable for alignment decisions
+        self.fade_in_beats = self.fade_in_beats[self.fade_in_beats <= SMART_CROSSFADE_DURATION]
+        self.fade_in_downbeats = self.fade_in_downbeats[
+            self.fade_in_downbeats <= SMART_CROSSFADE_DURATION
+        ]
+        self.effective_end: float = SMART_CROSSFADE_DURATION
+        self.tempo_steps: list[tuple[float, float]] = []
         super().__init__(logger)
 
     def _build(
@@ -278,6 +288,8 @@ class SmartCrossFade(SmartFade):
     ) -> None:
         """Build the smart fades filter chain and assign ``self.timing_info``."""
         self.timing_info = CrossfadeTimingInfo()
+        self._setup_fadeout_window(fade_out_bytes_len, pcm_format)
+
         # Calculate tempo factor for time stretching
         bpm_ratio = self.fade_in_bpm / self.fade_out_bpm
         bpm_diff_percent = abs(1.0 - bpm_ratio) * 100
@@ -285,6 +297,7 @@ class SmartCrossFade(SmartFade):
         # Extrapolate downbeats for better bar calculation
         self.extrapolated_fadeout_downbeats = extrapolate_downbeats(
             self.fade_out_downbeats,
+            buffer_size=self.effective_end,
             bpm=self.fade_out_bpm,
         )
 
@@ -333,7 +346,7 @@ class SmartCrossFade(SmartFade):
         # Adjust crossfade duration to align with outgoing track's downbeats.
         # When stretching, only consider downbeats after the stretch window
         # to ensure the outgoing track has reached the target tempo.
-        crossfade_start = SMART_CROSSFADE_DURATION - crossfade_duration
+        crossfade_start = self.effective_end - crossfade_duration
         crossfade_duration = self._adjust_crossfade_to_downbeats(
             crossfade_duration=crossfade_duration,
             fadein_start_pos=fadein_start_pos,
@@ -365,9 +378,9 @@ class SmartCrossFade(SmartFade):
 
         # Create lowpass filter on the outgoing track (unfiltered → low-pass)
         # Extended lowpass effect to gradually remove bass frequencies
-        fadeout_eq_duration = min(max(crossfade_duration * 2.5, 8.0), SMART_CROSSFADE_DURATION)
-        # The crossfade always happens at the END of the buffer
-        fadeout_eq_start = max(0, SMART_CROSSFADE_DURATION - fadeout_eq_duration)
+        fadeout_eq_duration = min(max(crossfade_duration * 2.5, 8.0), self.effective_end)
+        # The crossfade always happens at the END of the audible tail
+        fadeout_eq_start = max(0, self.effective_end - fadeout_eq_duration)
         fadeout_sweep = FrequencySweepFilter(
             logger=self.logger,
             sweep_type="lowpass",
@@ -403,7 +416,7 @@ class SmartCrossFade(SmartFade):
         )
         self.filters.append(crossfade_filter)
 
-        fade_out_seconds = fade_out_bytes_len / pcm_format.pcm_sample_size
+        fade_out_seconds = self.effective_end
         fade_in_seconds = fade_in_bytes_len / pcm_format.pcm_sample_size
         # clamp CF to fit shorter inputs (defensive — normally full buffers)
         self.timing_info.crossfade_duration = min(
@@ -421,6 +434,48 @@ class SmartCrossFade(SmartFade):
             - self.timing_info.crossfade_duration,
         )
 
+    def _setup_fadeout_window(
+        self,
+        fade_out_bytes_len: int,
+        pcm_format: AudioFormat,
+    ) -> None:
+        """
+        Compute the effective audio end of the fade-out tail and prepare the filter chain.
+
+        Sets ``self.effective_end``, optionally prepends a ``FadeOutTrimFilter``,
+        and masks ``self.fade_out_beats`` / ``self.fade_out_downbeats`` to the
+        audible window.  Raises ``ValueError`` when the tail is too short to be
+        useful so the caller can fall back to a standard crossfade.
+
+        :param fade_out_bytes_len: Raw byte count of the fade-out holdback buffer.
+        :param pcm_format: PCM format used to convert bytes to seconds.
+        """
+        buffer_duration = min(
+            float(SMART_CROSSFADE_DURATION),
+            fade_out_bytes_len / pcm_format.pcm_sample_size,
+        )
+        self.effective_end = detect_effective_audio_end(
+            self.fade_out_analysis.rms_energy,
+            self.fade_out_analysis.duration,
+            buffer_duration,
+        )
+        if self.effective_end < MIN_EFFECTIVE_FADE_BUFFER:
+            raise ValueError(
+                f"Outgoing tail is mostly silent ({self.effective_end:.1f}s audible) - "
+                "smart crossfade not applicable"
+            )
+        if self.effective_end < buffer_duration - 0.5:
+            self.filters.append(
+                FadeOutTrimFilter(logger=self.logger, fadeout_end_pos=self.effective_end)
+            )
+
+        # Mask fade-out beats to the audible buffer window; negative timestamps are
+        # beats before the buffer, beats past effective_end sit in the silent tail
+        beat_mask = (self.fade_out_beats >= 0.0) & (self.fade_out_beats <= self.effective_end)
+        self.fade_out_beats = self.fade_out_beats[beat_mask]
+        db_mask = (self.fade_out_downbeats >= 0.0) & (self.fade_out_downbeats <= self.effective_end)
+        self.fade_out_downbeats = self.fade_out_downbeats[db_mask]
+
     def _apply_gradual_time_stretch(
         self,
         bpm_ratio: float,
@@ -429,7 +484,7 @@ class SmartCrossFade(SmartFade):
     ) -> None:
         """Apply gradual time stretch in the 10s window before the crossfade."""
         stretch_duration = 10.0
-        crossfade_start = SMART_CROSSFADE_DURATION - crossfade_duration
+        crossfade_start = self.effective_end - crossfade_duration
         stretch_start = max(0.0, crossfade_start - stretch_duration)
         stretch_end = crossfade_start
 
@@ -575,15 +630,15 @@ class SmartCrossFade(SmartFade):
             return crossfade_duration
 
         # Calculate where the crossfade would start in the buffer
-        ideal_start_pos = SMART_CROSSFADE_DURATION - crossfade_duration
+        ideal_start_pos = self.effective_end - crossfade_duration
 
         # Debug logging
         self.logger.log(
             VERBOSE_LOG_LEVEL,
-            "Downbeat adjustment - ideal_start=%.2fs (buffer=%.1fs - crossfade=%.2fs), "
+            "Downbeat adjustment - ideal_start=%.2fs (effective_end=%.1fs - crossfade=%.2fs), "
             "fadein_start=%.2fs",
             ideal_start_pos,
-            SMART_CROSSFADE_DURATION,
+            self.effective_end,
             crossfade_duration,
             fadein_start_pos,
         )
@@ -603,7 +658,7 @@ class SmartCrossFade(SmartFade):
 
         # Try earlier downbeat first (longer crossfade)
         if earlier_downbeat is not None:
-            adjusted_duration = float(SMART_CROSSFADE_DURATION - earlier_downbeat)
+            adjusted_duration = float(self.effective_end - earlier_downbeat)
             if fadein_start_pos + adjusted_duration <= SMART_CROSSFADE_DURATION:
                 if abs(adjusted_duration - crossfade_duration) > 0.1:
                     self.logger.log(
@@ -618,7 +673,7 @@ class SmartCrossFade(SmartFade):
 
         # Try later downbeat (shorter crossfade)
         if later_downbeat is not None:
-            adjusted_duration = float(SMART_CROSSFADE_DURATION - later_downbeat)
+            adjusted_duration = float(self.effective_end - later_downbeat)
             if fadein_start_pos + adjusted_duration <= SMART_CROSSFADE_DURATION:
                 if abs(adjusted_duration - crossfade_duration) > 0.1:
                     self.logger.log(

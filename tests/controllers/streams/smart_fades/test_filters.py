@@ -182,6 +182,7 @@ def test_fadeout_trim_trims_fadeout_and_passes_fadein_through() -> None:
     """The fadeout stream is end-trimmed; the fadein stream is untouched."""
     fadeout_trim = FadeOutTrimFilter(logger=LOGGER, fadeout_end_pos=35.0)
     filter_strings = fadeout_trim.apply("[fadein]", "[fadeout]")
+    assert len(filter_strings) == 2
 
     trim_chain = next(f for f in filter_strings if "atrim" in f)
     assert trim_chain.startswith("[fadeout]")
