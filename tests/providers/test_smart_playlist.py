@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from music_assistant_models.enums import AlbumType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import Playlist, ProviderMapping, Track
+from music_assistant_models.media_items import Genre, Playlist, ProviderMapping, Track
 from music_assistant_models.media_items.metadata import MediaItemMetadata
 
 from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
@@ -1229,18 +1229,19 @@ async def test_enrich_tracks_with_db_genres_adds_missing_genres() -> None:
     track_no_genres.metadata = MediaItemMetadata()
     track_no_genres.metadata.genres = None
 
-    # Mock DB response: track 123 has genres "Rock" and "Alternative"
-    mass.music.database.get_rows_from_query = AsyncMock(
-        return_value=[
-            {"media_id": 123, "name": "Rock"},
-            {"media_id": 123, "name": "Alternative"},
-        ]
+    # Mock genre controller response: track 123 has genres "Rock" and "Alternative"
+    rock_genre = Genre(item_id="1", provider="library", name="Rock", provider_mappings=set())
+    alternative_genre = Genre(
+        item_id="2", provider="library", name="Alternative", provider_mappings=set()
+    )
+    mass.music.genres.get_genres_for_media_item = AsyncMock(
+        return_value=[rock_genre, alternative_genre]
     )
 
     await plugin._enrich_tracks_with_db_genres([track_no_genres])
 
     assert track_no_genres.metadata.genres == {"Rock", "Alternative"}
-    mass.music.database.get_rows_from_query.assert_called_once()  # type: ignore[unreachable]
+    mass.music.genres.get_genres_for_media_item.assert_called_once()  # type: ignore[unreachable]
 
 
 @pytest.mark.asyncio
@@ -1419,12 +1420,13 @@ async def test_enrich_tracks_with_db_genres_handles_duplicate_item_ids() -> None
     track2.metadata = MediaItemMetadata()
     track2.metadata.genres = None
 
-    # Mock DB response
-    mass.music.database.get_rows_from_query = AsyncMock(
-        return_value=[
-            {"media_id": 123, "name": "Rock"},
-            {"media_id": 123, "name": "Alternative"},
-        ]
+    # Mock genre controller response
+    rock_genre = Genre(item_id="1", provider="library", name="Rock", provider_mappings=set())
+    alternative_genre = Genre(
+        item_id="2", provider="library", name="Alternative", provider_mappings=set()
+    )
+    mass.music.genres.get_genres_for_media_item = AsyncMock(
+        return_value=[rock_genre, alternative_genre]
     )
 
     await plugin._enrich_tracks_with_db_genres([track1, track2])
