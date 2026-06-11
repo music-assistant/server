@@ -678,6 +678,11 @@ class DeezerMediaManager:
             parse_album(self.provider, edge.node) for edge in all_edges if edge.node is not None
         ]
 
+    async def get_artist_topalbums(self, prov_artist_id: str) -> list[Album]:
+        """Get top albums of an artist, ranked by popularity."""
+        albums = await self.get_artist_albums(prov_artist_id)
+        return sorted(albums, key=lambda album: album.metadata.popularity or 0, reverse=True)
+
     @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get top tracks of an artist."""

@@ -55,6 +55,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.TRACK_METADATA,
     ProviderFeature.ARTIST_METADATA,
     ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.ARTIST_TOPALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
@@ -198,6 +199,10 @@ class DeezerProvider(MusicProvider):
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
         return await self.media_manager.get_artist_albums(prov_artist_id)
+
+    async def get_artist_topalbums(self, prov_artist_id: str) -> list[Album]:
+        """Get top albums of an artist."""
+        return await self.media_manager.get_artist_topalbums(prov_artist_id)
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get top tracks of an artist."""
