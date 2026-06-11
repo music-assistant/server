@@ -28,7 +28,12 @@ def detect_effective_audio_end(
     :param track_duration: Full track duration in seconds.
     :param buffer_duration: Length in seconds of the fade-out holdback buffer.
     """
-    if rms_energy is None or not track_duration or len(rms_energy) < 2:
+    if (
+        rms_energy is None
+        or not track_duration
+        or len(rms_energy) < 2
+        or not np.any(np.isfinite(rms_energy))
+    ):
         return buffer_duration
     bin_duration = track_duration / len(rms_energy)
     start_bin = max(0, int((track_duration - buffer_duration) / bin_duration))
@@ -40,7 +45,11 @@ def detect_effective_audio_end(
     audible = np.nonzero(tail > floor)[0]
     if len(audible) == 0:
         return 0.0
-    return min(float((audible[-1] + 1) * bin_duration), buffer_duration)
+    return min(
+        float((start_bin + audible[-1] + 1) * bin_duration)
+        - max(0.0, track_duration - buffer_duration),
+        buffer_duration,
+    )
 
 
 def extrapolate_downbeats(

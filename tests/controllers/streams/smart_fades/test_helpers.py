@@ -51,3 +51,27 @@ def test_quiet_but_musical_outro_is_kept() -> None:
     bins[-300:] = 0.15
     end = detect_effective_audio_end(bins, 240.0, 45.0)
     assert end == pytest.approx(45.0, abs=0.2)
+
+
+def test_hiss_tail_on_loud_track_counts_as_silence() -> None:
+    """On a loud track the floor scales up, so a hiss tail counts as silence."""
+    # sustained level 0.9 -> floor 0.045; the 0.03 hiss tail falls below it
+    bins = _rms(240.0, silent_tail=0.0, level=0.9)
+    bins[-75:] = 0.03
+    end = detect_effective_audio_end(bins, 240.0, 45.0)
+    assert end == pytest.approx(35.0, abs=0.3)
+
+
+def test_absolute_floor_applies_on_quiet_track() -> None:
+    """On a quiet track the absolute 0.02 floor still flags a near-silent tail."""
+    # sustained level 0.2 -> relative floor 0.01, clamped to absolute 0.02
+    bins = _rms(240.0, silent_tail=0.0, level=0.2)
+    bins[-75:] = 0.015
+    end = detect_effective_audio_end(bins, 240.0, 45.0)
+    assert end == pytest.approx(35.0, abs=0.3)
+
+
+def test_all_nan_rms_returns_buffer_duration() -> None:
+    """RMS data without any finite values fails open to the buffer duration."""
+    bins = np.full(1800, np.nan, dtype=np.float32)
+    assert detect_effective_audio_end(bins, 240.0, 45.0) == 45.0
