@@ -91,11 +91,12 @@ class PandoraProvider(MusicProvider):
     _sessions: dict[str, PandoraStationSession]
     _socks_proxy: bool = False
     _high_quality_available: bool = False
-    _audio_cache: OrderedDict[str, bytes] = OrderedDict()  # musicId → raw audio bytes
+    _audio_cache: OrderedDict[str, bytes]  # musicId → raw audio bytes
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._sessions = {}
+        self._audio_cache = OrderedDict()
 
         # Authenticate with Pandora
         username = str(self.config.get_value(CONF_USERNAME))
@@ -121,11 +122,19 @@ class PandoraProvider(MusicProvider):
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
         for player in self.mass.players.all_players(return_disabled=True):
-            items = self.mass.player_queues.items(player.player_id)
-            if items:
-                if track := items[-1].media_item:
-                    if track.provider == self.domain and self._find_track(track.item_id) == {}:
-                        self.mass.player_queues.clear(items[-1].queue_id)
+            try:
+                items = self.mass.player_queues.items(player.player_id)
+                if items:
+                    if track := items[-1].media_item:
+                        if track.provider == self.domain:
+                            self.logger.info(
+                                f"Clearing stale Pandora queue for player {player.player_id}"
+                            )
+                            self.mass.player_queues.clear(items[-1].queue_id)
+            except Exception as err:
+                self.logger.warning(
+                    f"Failed to check/clear queue for player {player.player_id}: {err}"
+                )
 
     async def _authenticate(self, username: str, password: str) -> None:
         """Authenticate with Pandora and get auth token."""
@@ -343,8 +352,12 @@ class PandoraProvider(MusicProvider):
     ) -> AsyncGenerator[bytes, None]:
         """Return bytes of track from local _audio_cache."""
         track_id = streamdetails.item_id.split("_")[-1]
-        audio = self._audio_cache.pop(track_id, b"")
-        for i in range(0, len(audio), 65536):
+        if not (audio := self._audio_cache.get(track_id)):
+            raise MediaNotFoundError(f"No cached audio for track {streamdetails.item_id}")
+        start = 0
+        if seek_position and streamdetails.duration:
+            start = int(len(audio) / streamdetails.duration * seek_position)
+        for i in range(start, len(audio), 65536):
             yield audio[i : i + 65536]
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
@@ -367,8 +380,23 @@ class PandoraProvider(MusicProvider):
             fragment = await self._get_fragment_data(session, fragment_index + i)
             for track in fragment:
                 if not track["cached"]:
-                    async with self.mass.http_session.get(track["audioURL"]) as resp:
-                        self._add_audio(track["musicId"], await resp.read())
+                    try:
+                        async with self.http_session.get(
+                            track["audioURL"], timeout=aiohttp.ClientTimeout(total=30)
+                        ) as resp:
+                            if resp.status != 200:
+                                self.logger.warning(
+                                    "Failed to download audio for %s (HTTP %s) - skipping",
+                                    track.get("songTitle"),
+                                    resp.status,
+                                )
+                                continue
+                            self._add_audio(track["musicId"], await resp.read())
+                    except (TimeoutError, aiohttp.ClientError) as err:
+                        self.logger.warning(
+                            "Error downloading audio for %s: %s", track.get("songTitle"), err
+                        )
+                        continue
                     track["cached"] = True
                     tracks.append(track)
                     if len(tracks) >= 2:
