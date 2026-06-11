@@ -207,6 +207,26 @@ async def _insert_failure(
     )
 
 
+async def _insert_analysis(
+    db: DatabaseConnection,
+    item_id: str,
+    *,
+    version: int | None,
+    aa_domain: str = "sonic_analysis",
+) -> None:
+    await db.insert_or_replace(
+        DB_TABLE_AUDIO_ANALYSIS,
+        {
+            "media_type": "track",
+            "item_id": item_id,
+            "provider": "filesystem_local--abc",
+            "aa_provider_domain": aa_domain,
+            "analysis_data": "{}",
+            "analysis_version": version,
+        },
+    )
+
+
 @pytest.mark.asyncio
 async def test_candidate_gate_excludes_blocked_includes_eligible(
     real_db: DatabaseConnection,
@@ -235,6 +255,51 @@ async def test_candidate_gate_excludes_blocked_includes_eligible(
     candidates = await controller._find_candidates_missing_analysis({"sonic_analysis": 2}, limit=0)
     found = {c["item_id"] for c in candidates}
     assert found == {"due", "stale", "clean"}
+
+
+@pytest.mark.asyncio
+async def test_candidate_gate_resurfaces_stale_analysis_versions(
+    real_db: DatabaseConnection,
+) -> None:
+    """Analysis rows below the current version (or NULL) surface; current-or-newer do not."""
+    music_prov = _make_fs_music_provider()
+    controller = _make_controller(real_db, music_prov)
+
+    # row at current version -> excluded
+    await _insert_pm(real_db, "current")
+    await _insert_analysis(real_db, "current", version=2)
+    # row at newer version -> excluded
+    await _insert_pm(real_db, "newer")
+    await _insert_analysis(real_db, "newer", version=3)
+    # row at older version -> included
+    await _insert_pm(real_db, "stale")
+    await _insert_analysis(real_db, "stale", version=1)
+    # pre-versioning row (NULL version) -> included
+    await _insert_pm(real_db, "nullver")
+    await _insert_analysis(real_db, "nullver", version=None)
+
+    candidates = await controller._find_candidates_missing_analysis({"sonic_analysis": 2}, limit=0)
+    found = {c["item_id"] for c in candidates}
+    assert found == {"stale", "nullver"}
+
+
+@pytest.mark.asyncio
+async def test_candidate_gate_tracks_versions_per_domain(real_db: DatabaseConnection) -> None:
+    """With multiple AA domains, each domain is gated by its own current version."""
+    music_prov = _make_fs_music_provider()
+    controller = _make_controller(real_db, music_prov)
+
+    # analyzed at v1 for both domains; only sonic_analysis bumped to v2
+    await _insert_pm(real_db, "t1")
+    await _insert_analysis(real_db, "t1", version=1, aa_domain="sonic_analysis")
+    await _insert_analysis(real_db, "t1", version=1, aa_domain="loudness_analysis")
+
+    candidates = await controller._find_candidates_missing_analysis(
+        {"sonic_analysis": 2, "loudness_analysis": 1}, limit=0
+    )
+    assert len(candidates) == 1
+    assert candidates[0]["item_id"] == "t1"
+    assert candidates[0]["missing_domains"] == ["sonic_analysis"]
 
 
 @pytest.mark.asyncio

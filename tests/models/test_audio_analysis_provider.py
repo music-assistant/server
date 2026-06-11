@@ -6,7 +6,7 @@ import asyncio
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -377,6 +377,26 @@ async def test_finalize_records_classified_failure_on_audio_analysis_error() -> 
     assert kwargs["aa_provider_domain"] == "test_stub_provider"
     provider.mass.streams.audio_analysis.set_audio_analysis.assert_not_awaited()
     assert "s1" not in provider._sessions
+
+
+@pytest.mark.asyncio
+async def test_record_failure_passes_provider_analysis_version() -> None:
+    """Failures are recorded at the provider's analysis_version so a version bump unblocks them."""
+    provider = _make_provider()
+    provider.analysis_version = 7
+    streamdetails = MagicMock()
+    streamdetails.item_id = "track-3"
+    streamdetails.provider = "test_prov"
+    streamdetails.media_type = "track"
+
+    provider._finalize = AsyncMock(side_effect=AudioAnalysisError("boom"))  # type: ignore[method-assign]
+
+    await provider.start_analysis("s5", streamdetails, MagicMock())
+    await provider.finalize("s5")
+
+    rec = cast("AsyncMock", provider.mass.streams.audio_analysis.record_analysis_failure)
+    rec.assert_awaited_once()
+    assert rec.call_args.kwargs["analysis_version"] == 7
 
 
 @pytest.mark.asyncio
