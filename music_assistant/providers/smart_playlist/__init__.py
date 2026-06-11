@@ -580,9 +580,7 @@ class SmartPlaylistProvider(PluginProvider):
         user_provider_filter: list[str] | None = None,
     ) -> list[Track]:
         """Evaluate the rules and return a list of matching Track objects."""
-        has_genre_filter = bool(
-            rules.genre_ids or rules.excluded_genre_ids or rules.excluded_genre_names
-        )
+        has_genre_filter = bool(rules.genre_ids or rules.excluded_genre_ids)
 
         seed_uris = rules.all_seed_uris()
         if seed_uris:

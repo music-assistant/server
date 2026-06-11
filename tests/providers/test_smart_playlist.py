@@ -1364,10 +1364,10 @@ async def test_seed_mode_enriches_genres_when_excluded_genres_present() -> None:
     cast("Any", plugin)._apply_exclusions = MagicMock(return_value=[track])
     cast("Any", plugin)._deduplicate_tracks = MagicMock(return_value=[track])
 
-    # Test with excluded_genre_names only (no included genres)
+    # Test with excluded_genre_ids only (no included genres)
     rules = SmartPlaylistRules(
         seed_track_uris=["library://track/99"],
-        excluded_genre_names={1: "rock"},
+        excluded_genre_ids=[1],
         limit=10,
     )
     await plugin._evaluate_rules(rules)
