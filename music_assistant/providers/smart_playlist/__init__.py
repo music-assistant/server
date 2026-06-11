@@ -668,8 +668,9 @@ class SmartPlaylistProvider(PluginProvider):
         has_genre_filter: bool,
     ) -> list[Track]:
         """Apply post-filters (popularity, favorites, genre, year) to a seed-derived track list."""
-        # Enrich library tracks with database genres before filtering
-        await self._enrich_tracks_with_db_genres(tracks)
+        # Enrich library tracks with database genres before filtering (only when needed)
+        if has_genre_filter:
+            await self._enrich_tracks_with_db_genres(tracks)
 
         if rules.min_popularity is not None:
             tracks = [

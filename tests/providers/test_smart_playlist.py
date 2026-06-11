@@ -713,6 +713,7 @@ async def test_evaluate_rules_removes_duplicate_track_uris() -> None:
     cast("Any", plugin)._get_library_tracks = AsyncMock(
         return_value=[dup_a_1, dup_a_2, dup_a_3, uniq_b]
     )
+    cast("Any", plugin)._enrich_tracks_with_db_genres = AsyncMock(return_value=None)
 
     rules = SmartPlaylistRules(limit=10, logic=LOGIC_AND)
     result = await plugin._evaluate_rules(rules)
@@ -1106,6 +1107,7 @@ async def test_evaluate_rules_album_types_filter() -> None:
     cast("Any", plugin)._get_library_tracks = AsyncMock(
         return_value=[album_track, single_track, unknown_track]
     )
+    cast("Any", plugin)._enrich_tracks_with_db_genres = AsyncMock(return_value=None)
     # albums.library_items returns only the "album" type album (album_track.album.item_id = "1000")
     mock_album = MagicMock()
     mock_album.item_id = "1000"
@@ -1139,6 +1141,7 @@ async def test_evaluate_rules_excluded_album_types_filter() -> None:
         t.metadata.genres = None
 
     cast("Any", plugin)._get_library_tracks = AsyncMock(return_value=[album_track, single_track])
+    cast("Any", plugin)._enrich_tracks_with_db_genres = AsyncMock(return_value=None)
     # albums.library_items returns only the "single" type album (single_track.album.item_id = "2000")
     mock_album = MagicMock()
     mock_album.item_id = "2000"
@@ -1176,6 +1179,7 @@ async def test_seed_mode_album_types_filter_is_applied() -> None:
     # Seed mode is triggered when seed_track_uris is non-empty.
     # Mock _tracks_from_seeds to return mixed album types.
     cast("Any", plugin)._tracks_from_seeds = AsyncMock(return_value=[album_track, single_track])
+    cast("Any", plugin)._enrich_tracks_with_db_genres = AsyncMock(return_value=None)
     # albums.library_items returns only the "album" type album (album_track.album.item_id = "1000")
     mock_album = MagicMock()
     mock_album.item_id = "1000"
@@ -1190,6 +1194,141 @@ async def test_seed_mode_album_types_filter_is_applied() -> None:
     uris = [t.uri for t in result]
     assert "library://track/1" in uris  # album → kept
     assert "library://track/2" not in uris  # single → filtered out by _apply_seed_post_filters
+
+
+# ---------------------------------------------------------------------------
+# Database genre enrichment tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_enrich_tracks_with_db_genres_adds_missing_genres() -> None:
+    """_enrich_tracks_with_db_genres should query DB and add genres to tracks without them."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    # Track with no metadata.genres
+    track_no_genres = Track(
+        item_id="123",
+        provider="library",
+        name="Track Without Genres",
+        uri="library://track/123",
+        provider_mappings={
+            ProviderMapping(
+                item_id="123",
+                provider_domain="library",
+                provider_instance="library",
+                available=True,
+            )
+        },
+    )
+    track_no_genres.metadata = MediaItemMetadata()
+    track_no_genres.metadata.genres = None
+
+    # Mock DB response: track 123 has genres "Rock" and "Alternative"
+    mass.music.database.get_rows_from_query = AsyncMock(
+        return_value=[
+            {"media_id": 123, "name": "Rock"},
+            {"media_id": 123, "name": "Alternative"},
+        ]
+    )
+
+    await plugin._enrich_tracks_with_db_genres([track_no_genres])
+
+    assert track_no_genres.metadata.genres == {"Rock", "Alternative"}
+    mass.music.database.get_rows_from_query.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_enrich_tracks_with_db_genres_skips_tracks_with_existing_genres() -> None:
+    """Tracks that already have genres should not be queried."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    # Track with existing genres
+    track_with_genres = Track(
+        item_id="456",
+        provider="library",
+        name="Track With Genres",
+        uri="library://track/456",
+        provider_mappings={
+            ProviderMapping(
+                item_id="456",
+                provider_domain="library",
+                provider_instance="library",
+                available=True,
+            )
+        },
+    )
+    track_with_genres.metadata = MediaItemMetadata()
+    track_with_genres.metadata.genres = {"Pop", "Dance"}
+
+    mass.music.database.get_rows_from_query = AsyncMock()
+
+    await plugin._enrich_tracks_with_db_genres([track_with_genres])
+
+    # Should not query DB since track already has genres
+    mass.music.database.get_rows_from_query.assert_not_called()
+    assert track_with_genres.metadata.genres == {"Pop", "Dance"}
+
+
+@pytest.mark.asyncio
+async def test_enrich_tracks_with_db_genres_only_queries_library_tracks() -> None:
+    """Non-library tracks (streaming) should not be queried."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    # Streaming track (item_id is not a digit string)
+    streaming_track = Track(
+        item_id="spotify:track:abc123",
+        provider="spotify",
+        name="Streaming Track",
+        uri="spotify://track/abc123",
+        provider_mappings={
+            ProviderMapping(
+                item_id="spotify:track:abc123",
+                provider_domain="spotify",
+                provider_instance="spotify_instance",
+                available=True,
+            )
+        },
+    )
+
+    mass.music.database.get_rows_from_query = AsyncMock()
+
+    await plugin._enrich_tracks_with_db_genres([streaming_track])
+
+    # Should not query DB for non-library tracks
+    mass.music.database.get_rows_from_query.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_enrich_tracks_with_db_genres_handles_empty_list() -> None:
+    """Empty track list should return immediately without querying."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    mass.music.database.get_rows_from_query = AsyncMock()
+
+    await plugin._enrich_tracks_with_db_genres([])
+
+    mass.music.database.get_rows_from_query.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
