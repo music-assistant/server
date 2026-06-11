@@ -1240,7 +1240,7 @@ async def test_enrich_tracks_with_db_genres_adds_missing_genres() -> None:
     await plugin._enrich_tracks_with_db_genres([track_no_genres])
 
     assert track_no_genres.metadata.genres == {"Rock", "Alternative"}
-    mass.music.database.get_rows_from_query.assert_called_once()  # type: ignore[unreachable]
+    mass.music.database.get_rows_from_query.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -1431,7 +1431,7 @@ async def test_enrich_tracks_with_db_genres_handles_duplicate_item_ids() -> None
 
     # Both tracks should have been enriched
     assert track1.metadata.genres == {"Rock", "Alternative"}
-    assert track2.metadata.genres == {"Rock", "Alternative"}  # type: ignore[unreachable]
+    assert track2.metadata.genres == {"Rock", "Alternative"}
 
 
 # ---------------------------------------------------------------------------
