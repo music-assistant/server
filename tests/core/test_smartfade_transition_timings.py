@@ -714,12 +714,42 @@ class TestStretchSavings:
         expected = 5.0 * (1.0 - 1.0 / 1.05)
         assert fade._stretch_savings_until(45.0) == pytest.approx(expected)
 
+    def test_savings_until_handles_slowdown(self) -> None:
+        """A ratio below 1.0 lengthens the rendered stream, so savings go negative."""
+        fade = SmartCrossFade(
+            logger=LOGGER,
+            fade_out_analysis=_analysis(bpm=120.0),
+            fade_in_analysis=_analysis(bpm=120.0),
+        )
+        fade.tempo_steps = [(35.0, 1.0), (40.0, 0.95)]
+        expected = 5.0 * (1.0 - 1.0 / 0.95)
+        assert expected < 0.0
+        assert fade._stretch_savings_until(45.0) == pytest.approx(expected)
+
     def test_pre_plus_cf_equals_rendered_tail(self) -> None:
         """PRE + CF equals the rendered tail duration (buffer minus stretch savings)."""
         fade = self._stretched_fade()
         assert fade.tempo_steps, "test requires the stretch to be active"
         total_savings = fade._stretch_savings_until(fade.effective_end)
         assert total_savings > 0.0
+        timing = fade.timing_info
+        assert timing.pre_crossfade_duration + timing.crossfade_duration == pytest.approx(
+            fade.effective_end - total_savings, abs=0.05
+        )
+
+    def test_pre_plus_cf_equals_rendered_tail_when_slowing_down(self) -> None:
+        """A slower incoming track lengthens the rendered tail — PRE + CF exceeds effective_end."""
+        duration = 240.0
+        # ~3.8% BPM difference downwards -> stretch slows the outgoing track
+        fade = SmartCrossFade(
+            logger=LOGGER,
+            fade_out_analysis=_analysis(bpm=120.0, duration=duration),
+            fade_in_analysis=_analysis(bpm=115.4, duration=duration),
+        )
+        fade._build(_seconds(45), _seconds(45), PCM)
+        assert fade.tempo_steps, "test requires the stretch to be active"
+        total_savings = fade._stretch_savings_until(fade.effective_end)
+        assert total_savings < 0.0
         timing = fade.timing_info
         assert timing.pre_crossfade_duration + timing.crossfade_duration == pytest.approx(
             fade.effective_end - total_savings, abs=0.05
