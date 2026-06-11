@@ -44,7 +44,10 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.media_items.metadata import MediaItemMetadata
 
-from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
+from music_assistant.constants import (
+    DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+    DYNAMIC_PLAYLIST_SAMPLE_SIZE,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.security import is_safe_name
@@ -616,6 +619,11 @@ class SmartPlaylistProvider(PluginProvider):
                 allowed_album_ids = await self._get_album_ids_for_types(rules.album_types)
                 tracks = self._filter_by_album_ids(tracks, allowed_album_ids)
 
+        # Enrich library tracks with database genres before applying exclusions
+        # (seed mode already enriches genres in _apply_seed_post_filters)
+        if not seed_uris:
+            await self._enrich_tracks_with_db_genres(tracks)
+
         # Apply exclusions and dedup regardless of source mode
         excluded_genre_names, excl_album_type_ids = await asyncio.gather(
             self._resolve_excluded_genre_names(rules),
@@ -660,6 +668,9 @@ class SmartPlaylistProvider(PluginProvider):
         has_genre_filter: bool,
     ) -> list[Track]:
         """Apply post-filters (popularity, favorites, genre, year) to a seed-derived track list."""
+        # Enrich library tracks with database genres before filtering
+        await self._enrich_tracks_with_db_genres(tracks)
+
         if rules.min_popularity is not None:
             tracks = [
                 t
@@ -671,8 +682,10 @@ class SmartPlaylistProvider(PluginProvider):
         if rules.favorites_only:
             tracks = [t for t in tracks if t.favorite]
         if has_genre_filter and rules.logic == LOGIC_AND:
-            # Best-effort genre filter: resolve names then match against track genre metadata.
-            # Tracks without genre metadata are kept (don't exclude for missing data).
+            # Genre filter: resolve names and match against track genre metadata.
+            # Note: Library tracks have been enriched with DB genres above.
+            # Non-library streaming tracks may still lack genre metadata and will be kept
+            # (don't exclude for missing data).
             genre_id_to_name = dict(rules.genre_names)
             for genre_id in rules.genre_ids:
                 if genre_id not in genre_id_to_name:
@@ -815,6 +828,60 @@ class SmartPlaylistProvider(PluginProvider):
                     genre = await self.mass.music.genres.get_library_item(genre_id)
                     genre_id_to_name[genre_id] = genre.name
         return {v.lower() for v in genre_id_to_name.values() if v}
+
+    async def _enrich_tracks_with_db_genres(self, tracks: list[Track]) -> None:
+        """
+        Enrich tracks with genre data from the database for library tracks.
+
+        For tracks that are in the library, load their enriched genre names from the
+        genre_media_item_mapping table and merge them into track.metadata.genres.
+        This ensures that genre filters work correctly even when tracks from streaming
+        providers don't have detailed genre metadata from the provider itself.
+        """
+        if not tracks:
+            return
+
+        # Collect library track IDs that don't already have genre metadata
+        # (item_id must be a digit string for library tracks)
+        library_track_ids = [
+            int(t.item_id)
+            for t in tracks
+            if t.item_id and str(t.item_id).isdigit() and (not t.metadata or not t.metadata.genres)
+        ]
+        if not library_track_ids:
+            return
+
+        # Build a map of track_id -> track object for fast lookup
+        track_id_to_track = {
+            int(t.item_id): t
+            for t in tracks
+            if t.item_id and str(t.item_id).isdigit() and (not t.metadata or not t.metadata.genres)
+        }
+
+        # Query database for genre names for these tracks
+        track_ids_str = ",".join(str(tid) for tid in library_track_ids)
+        query = f"""
+            SELECT gm.media_id, g.name
+            FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} gm
+            JOIN genres g ON g.item_id = gm.genre_id
+            WHERE gm.media_type = 'track'
+            AND gm.media_id IN ({track_ids_str})
+        """
+
+        result = await self.mass.music.database.get_rows_from_query(
+            query, params=None, limit=0, offset=0
+        )
+
+        # Merge DB genres into track metadata
+        for row in result:
+            track_id = row["media_id"]
+            genre_name = row["name"]
+            if track := track_id_to_track.get(track_id):
+                if not track.metadata:
+                    track.metadata = MediaItemMetadata()
+                if not track.metadata.genres:
+                    track.metadata.genres = set()
+                track.metadata.genres.add(genre_name)
 
     async def _recently_played_keys(self, dedup_hours: int) -> set[tuple[str, str]]:
         """
