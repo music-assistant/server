@@ -31,6 +31,7 @@ from music_assistant.controllers.streams.smart_fades.fades import (
     SmartFade,
     StandardCrossFade,
 )
+from music_assistant.controllers.streams.smart_fades.filters import CrossfadeFilter
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
 from music_assistant.controllers.streams.smart_fades.mixer import SmartFadesMixer
 from music_assistant.models.audio_analysis import AudioAnalysisData
@@ -189,6 +190,16 @@ class TestStandardCrossFadeBuild:
         assert timing.crossfade_duration == pytest.approx(3.0)
         assert timing.pre_crossfade_duration == pytest.approx(0.0)
         assert timing.post_crossfade_duration == pytest.approx(17.0)
+
+    def test_filter_duration_matches_clamped_timing(self) -> None:
+        """The acrossfade filter must use the clamped duration, not the configured one."""
+        fade = StandardCrossFade(logger=logging.getLogger(), crossfade_duration=10.0)
+        # only 6s of (stripped) fade-out audio available
+        fade._build(_seconds(6), _seconds(45), PCM)
+        assert fade.timing_info.crossfade_duration == pytest.approx(6.0)
+        crossfade_filter = fade.filters[0]
+        assert isinstance(crossfade_filter, CrossfadeFilter)
+        assert crossfade_filter.crossfade_duration == pytest.approx(6.0)
 
 
 # ---------------------------------------------------------------------------

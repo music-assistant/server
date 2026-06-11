@@ -653,9 +653,6 @@ class StandardCrossFade(SmartFade):
         pcm_format: AudioFormat,
     ) -> None:
         """Build the standard crossfade filter chain and assign ``self.timing_info``."""
-        self.filters = [
-            CrossfadeFilter(logger=self.logger, crossfade_duration=self.crossfade_duration),
-        ]
         fade_out_seconds = fade_out_bytes_len / pcm_format.pcm_sample_size
         fade_in_seconds = fade_in_bytes_len / pcm_format.pcm_sample_size
         # clamp CF to fit shorter inputs (defensive — normally full buffers)
@@ -666,6 +663,9 @@ class StandardCrossFade(SmartFade):
             fadein_trimmed_duration=0.0,
             post_crossfade_duration=max(0.0, fade_in_seconds - effective_cf),
         )
+        self.filters = [
+            CrossfadeFilter(logger=self.logger, crossfade_duration=effective_cf),
+        ]
 
     async def apply(
         self,
@@ -678,7 +678,9 @@ class StandardCrossFade(SmartFade):
 
         Only the overlapping portions are crossfaded, not the full buffers.
         """
-        crossfade_size = int(pcm_format.pcm_sample_size * self.crossfade_duration)
+        frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
+        crossfade_size = int(pcm_format.pcm_sample_size * self.timing_info.crossfade_duration)
+        crossfade_size = (crossfade_size // frame_size) * frame_size
         # Pre-crossfade: outgoing track minus the crossfaded portion
         pre_crossfade = fade_out_part[:-crossfade_size]
         adjusted_fade_out_part = fade_out_part[-crossfade_size:]
