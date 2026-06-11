@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, cast
 
+import plexapi
 import requests
 from music_assistant_models.enums import ImageType
 from music_assistant_models.media_items import MediaItemImage, UniqueList
@@ -13,12 +14,33 @@ from plexapi.library import LibrarySection as PlexLibrarySection
 from plexapi.library import MusicSection as PlexMusicSection
 from plexapi.server import PlexServer
 
-from music_assistant.providers.plex.constants import AUTH_TOKEN_UNAUTH
+from music_assistant.providers.plex.constants import AUTH_TOKEN_UNAUTH, PLEX_PRODUCT
 
 if TYPE_CHECKING:
     from plexapi.base import PlexObject
 
     from music_assistant.mass import MusicAssistant
+
+
+def configure_plex_identity(client_id: str) -> None:
+    """
+    Make every plexapi client announce "Music Assistant" with a stable identity.
+
+    plexapi builds each request's headers from these process-global defaults. The device
+    name otherwise falls back to the machine's hostname, and - critically - the client
+    identifier defaults to the MAC address, which is unstable in containers. Plex binds
+    OAuth tokens to the client identifier, so an unstable one makes plex.tv reject the
+    stored token after a restart. We pin it to Music Assistant's persistent server id.
+
+    :param client_id: Stable client identifier to advertise (Music Assistant's server id).
+    """
+    plexapi.X_PLEX_PRODUCT = PLEX_PRODUCT
+    plexapi.X_PLEX_DEVICE_NAME = PLEX_PRODUCT
+    plexapi.BASE_HEADERS["X-Plex-Product"] = PLEX_PRODUCT
+    plexapi.BASE_HEADERS["X-Plex-Device-Name"] = PLEX_PRODUCT
+    if client_id:
+        plexapi.X_PLEX_IDENTIFIER = client_id
+        plexapi.BASE_HEADERS["X-Plex-Client-Identifier"] = client_id
 
 
 async def get_libraries(
