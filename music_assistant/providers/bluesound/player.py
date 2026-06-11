@@ -111,8 +111,7 @@ class BluesoundPlayer(Player):
         if self._listen_task and not self._listen_task.done():
             self._listen_task.cancel()
         if self.client:
-            # pyblu's Player.close lacks a return annotation; remove ignore once fixed upstream
-            await self.client.close()  # type: ignore[no-untyped-call]
+            await self.client.close()
         self.connected = False
         self.logger.debug("Disconnected from player API")
 

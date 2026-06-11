@@ -21,6 +21,7 @@ from music_assistant_models.enums import ConfigEntryType, EventType, MediaType, 
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import BrowseFolder, ItemMapping
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audible.audible_helper import (
     AudibleHelper,
@@ -154,6 +155,7 @@ async def get_config_entries(
             raise LoginFailed(f"Verification failed: {e}") from e
 
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key="label_text",
             type=ConfigEntryType.LABEL,
@@ -327,7 +329,7 @@ class Audibleprovider(MusicProvider):
         """Return True if the provider is a streaming provider."""
         return True
 
-    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Get all audiobooks from the library."""
         async for audiobook in self.helper.get_library():
             yield audiobook
@@ -517,7 +519,7 @@ class Audibleprovider(MusicProvider):
         """Return audiobooks from a specific publisher."""
         return await self.helper.get_audiobooks_by_publisher(publisher)
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Get all podcasts from the library."""
         async for podcast in self.helper.get_library_podcasts():
             yield podcast
@@ -526,9 +528,7 @@ class Audibleprovider(MusicProvider):
         """Get full podcast details by id."""
         return await self.helper.get_podcast(asin=prov_podcast_id)
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get all episodes for a podcast."""
         async for episode in self.helper.get_podcast_episodes(prov_podcast_id):
             yield episode

@@ -13,7 +13,7 @@ dependencies = [
   "pycares==4.11.0",
   "aiohttp_asyncmdnsresolver==0.1.1",
   "Brotli>=1.0.9",
-  "aiohttp==3.13.5",
+  "aiohttp==3.14.0",
   "aiohttp-fast-zlib==0.3.0",
   "aiohttp-socks==0.11.0",
   "aiofiles==24.1.0",
@@ -28,7 +28,7 @@ dependencies = [
   "getmac==0.9.5",
   "mashumaro==3.20",
   "music-assistant-models==1.1.129",
-  "music-assistant-frontend==2.17.175",
+  "music-assistant-frontend==2.17.186",
   "mutagen==1.47.0",
   "orjson==3.11.6",
   "pillow==12.2.0",
@@ -148,13 +148,8 @@ enable_error_code = [
   "truthy-iterable",
 ]
 exclude = [
-  '^music_assistant/controllers/music.py$',
   '^music_assistant/helpers/app_vars.py',
-  '^music_assistant/providers/apple_music/.*$',
-  '^music_assistant/providers/plex/.*$',
-  '^music_assistant/providers/plex_connect/.*$',
   '^music_assistant/providers/sonic_analysis/vendored_clap/.*$',
-  '^music_assistant/providers/ytmusic/.*$',
 ]
 extra_checks = false
 local_partial_types = true
@@ -174,6 +169,13 @@ warn_return_any = true
 warn_unreachable = true
 warn_unused_configs = true
 warn_unused_ignores = true
+
+# plexapi ships a py.typed marker but its annotations are incomplete (unannotated
+# methods, attributes declared as None and only set dynamically). Treat it as an
+# untyped dependency rather than trusting its type info.
+[[tool.mypy.overrides]]
+module = ["plexapi", "plexapi.*"]
+follow_imports = "skip"
 
 [tool.ruff.format]
 # Force Linux/macOS line endings
@@ -219,7 +221,6 @@ ignore = [
   "PLW0108", # Just annoying, not really useful
   "FURB110", # Just annoying, not really useful
   # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
-  "UP043", # AsyncGenerator[X, None] → AsyncGenerator[X]; to enable later before 2.9 release
   "BLE001",
   "FBT001",
   "FBT002",

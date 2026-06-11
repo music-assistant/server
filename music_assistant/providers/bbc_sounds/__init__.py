@@ -41,7 +41,11 @@ from music_assistant_models.streamdetails import StreamMetadata
 from music_assistant_models.unique_list import UniqueList
 
 import music_assistant.helpers.datetime as dt
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.constants import (
+    CONF_ENTRY_UNOFFICIAL_PROVIDER,
+    CONF_PASSWORD,
+    CONF_USERNAME,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import LOCAL_TIMEZONE
 from music_assistant.models.music_provider import MusicProvider
@@ -106,6 +110,7 @@ async def get_config_entries(
     # ruff: noqa: ARG001
 
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=_Constants.CONF_INTRO,
             type=ConfigEntryType.LABEL,
@@ -514,6 +519,7 @@ class BBCSoundsProvider(MusicProvider):
                 item_id="stations",
                 provider=self.domain,
                 name="Schedule and Programmes",
+                translation_key="provider.bbc_sounds.schedule_programmes",
                 path=f"{self.domain}://stations",
                 image=MediaItemImage(
                     path="https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid/latest.png",
@@ -533,6 +539,7 @@ class BBCSoundsProvider(MusicProvider):
                 item_id="listen_live",
                 provider=self.domain,
                 name="Listen Live",
+                translation_key="provider.bbc_sounds.listen_live",
                 path=f"{self.domain}://listen_live",
                 image=MediaItemImage(
                     path="https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid/listen_live.png",
@@ -544,7 +551,8 @@ class BBCSoundsProvider(MusicProvider):
             BrowseFolder(
                 item_id="stations",
                 provider=self.domain,
-                name="Schedules and Programmes",
+                name="Schedule and Programmes",
+                translation_key="provider.bbc_sounds.schedule_programmes",
                 path=f"{self.domain}://stations",
                 image=MediaItemImage(
                     path="https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid/latest.png",
@@ -634,12 +642,14 @@ class BBCSoundsProvider(MusicProvider):
                 BrowseFolder(
                     item_id="today",
                     name="Today",
+                    translation_key="provider.bbc_sounds.today",
                     provider=self.domain,
                     path="/".join([*path_parts, dt.now().strftime("%Y-%m-%d")]),
                 ),
                 BrowseFolder(
                     item_id="yesterday",
                     name="Yesterday",
+                    translation_key="provider.bbc_sounds.yesterday",
                     provider=self.domain,
                     path="/".join(
                         [
@@ -753,7 +763,7 @@ class BBCSoundsProvider(MusicProvider):
     async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    ) -> AsyncGenerator[PodcastEpisode]:
         """Get all PodcastEpisodes for given podcast id."""
         podcast_episodes = await self.client.streaming.get_podcast_episodes(prov_podcast_id)
 

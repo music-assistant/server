@@ -91,7 +91,7 @@ class TidalAPIClient:
         kwargs["json"] = data
         return cast("dict[str, Any]", await self._request("DELETE", endpoint, **kwargs))
 
-    @throttle_with_retries  # type: ignore[type-var]
+    @throttle_with_retries
     async def _request(
         self, method: str, endpoint: str, **kwargs: Any
     ) -> dict[str, Any] | tuple[dict[str, Any], str]:
@@ -164,7 +164,7 @@ class TidalAPIClient:
         limit: int = 50,
         cursor_based: bool = False,
         **kwargs: Any,
-    ) -> AsyncGenerator[Any, None]:
+    ) -> AsyncGenerator[Any]:
         """Paginate through all items from a Tidal API endpoint."""
         offset = 0
         cursor = None

@@ -51,6 +51,9 @@ def mock_mass(tmp_path: Path) -> MagicMock:
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
     mass.cache = MagicMock()
+    # @use_cache on recommendations() awaits cache.get; return a miss so the
+    # wrapped method runs. cache.set is fire-and-forget via create_task (mocked).
+    mass.cache.get = AsyncMock(return_value=None)
     mass.create_task = MagicMock()  # fire-and-forget; we assert it was called
     mass.get_provider = MagicMock(return_value=None)
 

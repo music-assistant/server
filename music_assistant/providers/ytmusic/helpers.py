@@ -9,18 +9,21 @@ This also nicely separates the parsing logic from the Youtube Music provider log
 import asyncio
 from http.cookies import SimpleCookie
 from time import time
+from typing import Any
 
 import ytmusicapi
+from ytmusicapi import LikeStatus
+from ytmusicapi.exceptions import YTMusicError
 
 from music_assistant.providers.ytmusic.constants import YTMRecommendationIcons
 
 
 async def get_artist(
     prov_artist_id: str, headers: dict[str, str], language: str = "en"
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Async wrapper around the ytmusicapi get_artist function."""
 
-    def _get_artist():
+    def _get_artist() -> dict[str, Any]:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language)
         try:
             artist = ytm.get_artist(channelId=prov_artist_id)
@@ -39,10 +42,10 @@ async def get_artist(
 
 async def get_album(
     headers: dict[str, str], prov_album_id: str, language: str = "en", user: str | None = None
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Async wrapper around the ytmusicapi get_album function."""
 
-    def _get_album():
+    def _get_album() -> dict[str, Any]:
         if prov_album_id.startswith("FEmusic_library_privately_owned_release"):
             ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
             album = ytm.get_library_upload_album(browseId=prov_album_id)
@@ -55,7 +58,7 @@ async def get_album(
             # points to the videoId of the original version, while we want the album version
             try:
                 album_playlist = ytm.get_playlist(playlistId=album["audioPlaylistId"], limit=None)
-            except ytmusicapi.YTMusicError:
+            except YTMusicError:
                 return album
 
             # Do some basic checks
@@ -78,11 +81,11 @@ async def get_playlist(
     headers: dict[str, str],
     language: str = "en",
     user: str | None = None,
-    limit=None,
-) -> dict[str, str]:
+    limit: int | None = None,
+) -> dict[str, Any]:
     """Async wrapper around the ytmusicapi get_playlist function."""
 
-    def _get_playlist():
+    def _get_playlist() -> dict[str, Any]:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
         playlist = ytm.get_playlist(playlistId=prov_playlist_id, limit=limit)
         playlist["checksum"] = get_playlist_checksum(playlist)
@@ -95,13 +98,13 @@ async def get_playlist(
 
 async def get_track(
     prov_track_id: str, headers: dict[str, str], language: str = "en"
-) -> dict[str, str] | None:
+) -> dict[str, Any] | None:
     """Async wrapper around the ytmusicapi get_playlist function."""
 
-    def _get_song():
+    def _get_song() -> dict[str, Any] | None:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language)
         track_obj = ytm.get_song(videoId=prov_track_id)
-        track = {}
+        track: dict[str, Any] = {}
         if "videoDetails" not in track_obj:
             # video that no longer exists
             return None
@@ -127,10 +130,10 @@ async def get_track(
 
 async def get_podcast(
     prov_podcast_id: str, headers: dict[str, str], language: str = "en"
-) -> dict[str, str] | None:
+) -> dict[str, Any]:
     """Async wrapper around the get_podcast function."""
 
-    def _get_podcast():
+    def _get_podcast() -> dict[str, Any]:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language)
         podcast_obj = ytm.get_podcast(playlistId=prov_podcast_id)
         if "podcastId" not in podcast_obj:
@@ -142,10 +145,10 @@ async def get_podcast(
 
 async def get_podcast_episode(
     prov_episode_id: str, headers: dict[str, str], language: str = "en"
-) -> dict[str, str] | None:
+) -> dict[str, Any]:
     """Async wrapper around the podcast episode function."""
 
-    def _get_podcast_episode():
+    def _get_podcast_episode() -> dict[str, Any]:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language)
         episode = ytm.get_episode(videoId=prov_episode_id)
         if "videoId" not in episode:
@@ -157,10 +160,10 @@ async def get_podcast_episode(
 
 async def get_library_artists(
     headers: dict[str, str], language: str = "en", user: str | None = None
-) -> dict[str, str]:
+) -> list[dict[str, Any]]:
     """Async wrapper around the ytmusicapi get_library_artists function."""
 
-    def _get_library_artists():
+    def _get_library_artists() -> list[dict[str, Any]]:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
         artists = ytm.get_library_subscriptions(limit=9999)
         # Sync properties with uniformal artist object
@@ -176,10 +179,10 @@ async def get_library_artists(
 
 async def get_library_albums(
     headers: dict[str, str], language: str = "en", user: str | None = None
-) -> dict[str, str]:
+) -> list[dict[str, Any]]:
     """Async wrapper around the ytmusicapi get_library_albums function."""
 
-    def _get_library_albums():
+    def _get_library_albums() -> list[dict[str, Any]]:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
         return ytm.get_library_albums(limit=9999)
 
@@ -188,10 +191,10 @@ async def get_library_albums(
 
 async def get_library_playlists(
     headers: dict[str, str], language: str = "en", user: str | None = None
-) -> dict[str, str]:
+) -> list[dict[str, Any]]:
     """Async wrapper around the ytmusicapi get_library_playlists function."""
 
-    def _get_library_playlists():
+    def _get_library_playlists() -> list[dict[str, Any]]:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
         playlists = ytm.get_library_playlists(limit=9999)
         # Sync properties with uniformal playlist object
@@ -206,10 +209,10 @@ async def get_library_playlists(
 
 async def get_library_tracks(
     headers: dict[str, str], language: str = "en", user: str | None = None
-) -> dict[str, str]:
+) -> list[dict[str, Any]]:
     """Async wrapper around the ytmusicapi get_library_tracks function."""
 
-    def _get_library_tracks():
+    def _get_library_tracks() -> list[dict[str, Any]]:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
         return ytm.get_library_songs(limit=9999)
 
@@ -218,12 +221,12 @@ async def get_library_tracks(
 
 async def get_library_podcasts(
     headers: dict[str, str], language: str = "en", user: str | None = None
-) -> dict[str, str]:
+) -> list[dict[str, Any]]:
     """Async wrapper around the ytmusic api get_library_podcasts function."""
 
-    def _get_library_podcasts():
+    def _get_library_podcasts() -> list[dict[str, Any]]:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
-        return ytm.get_library_podcasts(limit=None)
+        return ytm.get_library_podcasts(limit=9999)
 
     return await asyncio.to_thread(_get_library_podcasts)
 
@@ -233,31 +236,27 @@ async def library_add_remove_artist(
 ) -> bool:
     """Add or remove an artist to the user's library."""
 
-    def _library_add_remove_artist():
+    def _library_add_remove_artist() -> bool:
         ytm = ytmusicapi.YTMusic(auth=headers, user=user)
         if add:
             return "actions" in ytm.subscribe_artists(channelIds=[prov_artist_id])
-        if not add:
-            return "actions" in ytm.unsubscribe_artists(channelIds=[prov_artist_id])
-        return None
+        return "actions" in ytm.unsubscribe_artists(channelIds=[prov_artist_id])
 
     return await asyncio.to_thread(_library_add_remove_artist)
 
 
 async def library_add_remove_album(
     headers: dict[str, str], prov_item_id: str, add: bool = True, user: str | None = None
-) -> bool:
+) -> dict[str, Any]:
     """Add or remove an album or playlist to the user's library."""
     album = await get_album(headers=headers, prov_album_id=prov_item_id, user=user)
 
-    def _library_add_remove_album():
+    def _library_add_remove_album() -> dict[str, Any]:
         ytm = ytmusicapi.YTMusic(auth=headers, user=user)
         playlist_id = album["audioPlaylistId"]
         if add:
-            return ytm.rate_playlist(playlist_id, "LIKE")
-        if not add:
-            return ytm.rate_playlist(playlist_id, "INDIFFERENT")
-        return None
+            return ytm.rate_playlist(playlist_id, LikeStatus.LIKE)
+        return ytm.rate_playlist(playlist_id, LikeStatus.INDIFFERENT)
 
     return await asyncio.to_thread(_library_add_remove_album)
 
@@ -267,13 +266,11 @@ async def library_add_remove_playlist(
 ) -> bool:
     """Add or remove an album or playlist to the user's library."""
 
-    def _library_add_remove_playlist():
+    def _library_add_remove_playlist() -> bool:
         ytm = ytmusicapi.YTMusic(auth=headers, user=user)
         if add:
-            return "actions" in ytm.rate_playlist(prov_item_id, "LIKE")
-        if not add:
-            return "actions" in ytm.rate_playlist(prov_item_id, "INDIFFERENT")
-        return None
+            return "actions" in ytm.rate_playlist(prov_item_id, LikeStatus.LIKE)
+        return "actions" in ytm.rate_playlist(prov_item_id, LikeStatus.INDIFFERENT)
 
     return await asyncio.to_thread(_library_add_remove_playlist)
 
@@ -281,41 +278,41 @@ async def library_add_remove_playlist(
 async def add_remove_playlist_tracks(
     headers: dict[str, str],
     prov_playlist_id: str,
-    prov_track_ids: list[str],
+    prov_track_ids: list[Any],
     add: bool,
     user: str | None = None,
-) -> bool:
+) -> str | dict[str, Any]:
     """Async wrapper around adding/removing tracks to a playlist."""
 
-    def _add_playlist_tracks():
+    def _add_playlist_tracks() -> str | dict[str, Any]:
         ytm = ytmusicapi.YTMusic(auth=headers, user=user)
         if add:
             return ytm.add_playlist_items(playlistId=prov_playlist_id, videoIds=prov_track_ids)
-        if not add:
-            return ytm.remove_playlist_items(playlistId=prov_playlist_id, videos=prov_track_ids)
-        return None
+        return ytm.remove_playlist_items(playlistId=prov_playlist_id, videos=prov_track_ids)
 
     return await asyncio.to_thread(_add_playlist_tracks)
 
 
 async def get_song_radio_tracks(
-    headers: dict[str, str], prov_item_id: str, limit=25, user: str | None = None
-) -> dict[str, str]:
+    headers: dict[str, str], prov_item_id: str, limit: int = 25, user: str | None = None
+) -> dict[str, Any]:
     """Async wrapper around the ytmusicapi radio function."""
 
-    def _get_song_radio_tracks():
+    def _get_song_radio_tracks() -> dict[str, Any]:
         ytm = ytmusicapi.YTMusic(auth=headers, user=user)
         playlist_id = f"RDAMVM{prov_item_id}"
         result = ytm.get_watch_playlist(
             videoId=prov_item_id, playlistId=playlist_id, limit=limit, radio=True
         )
         # Replace inconsistensies for easier parsing
-        for track in result["tracks"]:
-            if track.get("thumbnail"):
-                track["thumbnails"] = track["thumbnail"]
-                del track["thumbnail"]
-            if track.get("length"):
-                track["duration"] = get_sec(track["length"])
+        tracks = result.get("tracks")
+        if isinstance(tracks, list):
+            for track in tracks:
+                if track.get("thumbnail"):
+                    track["thumbnails"] = track["thumbnail"]
+                    del track["thumbnail"]
+                if track.get("length"):
+                    track["duration"] = get_sec(track["length"])
         return result
 
     return await asyncio.to_thread(_get_song_radio_tracks)
@@ -323,10 +320,10 @@ async def get_song_radio_tracks(
 
 async def search(
     query: str, ytm_filter: str | None = None, limit: int = 20, language: str = "en"
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Async wrapper around the ytmusicapi search function."""
 
-    def _search():
+    def _search() -> list[dict[str, Any]]:
         ytm = ytmusicapi.YTMusic(language=language)
         results = ytm.search(query=query, filter=ytm_filter, limit=limit)
         # Sync result properties with uniformal objects
@@ -353,11 +350,11 @@ async def search(
     return await asyncio.to_thread(_search)
 
 
-def get_playlist_checksum(playlist_obj: dict) -> str:
+def get_playlist_checksum(playlist_obj: dict[str, Any]) -> str:
     """Try to calculate a checksum so we can detect changes in a playlist."""
     for key in ("duration_seconds", "trackCount", "count"):
         if key in playlist_obj:
-            return playlist_obj[key]
+            return str(playlist_obj[key])
     return str(int(time()))
 
 
@@ -366,7 +363,7 @@ def is_brand_account(username: str) -> bool:
     return len(username) == 21 and username.isdigit()
 
 
-def get_sec(time_str):
+def get_sec(time_str: str) -> int:
     """Get seconds from time."""
     parts = time_str.split(":")
     if len(parts) == 3:
@@ -389,10 +386,10 @@ def convert_to_netscape(raw_cookie_str: str, domain: str) -> str:
 
 async def get_home(
     headers: dict[str, str], language: str = "en", user: str | None = None, limit: int = 3
-) -> dict[str, str]:
+) -> list[dict[str, Any]]:
     """Get the recommendations from the home page."""
 
-    def _get_home():
+    def _get_home() -> list[dict[str, Any]]:
         ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
         return ytm.get_home(limit=limit)
 

@@ -26,6 +26,7 @@ class PlexGDMAdvertiser:
         name: str = "Music Assistant",
         product: str = "Music Assistant",
         version: str = "1.0.0",
+        device_class: str = "speaker",
     ) -> None:
         """Initialize GDM advertiser.
 
@@ -35,12 +36,14 @@ class PlexGDMAdvertiser:
         :param name: Display name for the device.
         :param product: Product name.
         :param version: Version string.
+        :param device_class: Device class advertised to Plex (pc, speaker, phone, etc.).
         """
         self.instance_id = instance_id
         self.port = port
         self.name = name
         self.product = product
         self.version = version
+        self.device_class = device_class
         self._running = False
         self._broadcast_task: asyncio.Task[None] | None = None
         self._listener_task: asyncio.Task[None] | None = None
@@ -67,7 +70,7 @@ class PlexGDMAdvertiser:
             "Protocol: plex",
             "Protocol-Version: 1",
             "Protocol-Capabilities: timeline,playback,navigation,playqueues",
-            "Device-Class: pc",
+            f"Device-Class: {self.device_class}",
             f"Resource-Identifier: {self.instance_id}",
             "Content-Type: plex/media-player",
             "Provides: client,player,pubsub-player",
@@ -85,7 +88,7 @@ class PlexGDMAdvertiser:
             "Protocol: plex",
             "Protocol-Version: 1",
             "Protocol-Capabilities: timeline,playback,navigation,playqueues",
-            "Device-Class: pc",
+            f"Device-Class: {self.device_class}",
             f"Resource-Identifier: {self.instance_id}",
             "Content-Type: plex/media-player",
             "Provides: client,player,pubsub-player",

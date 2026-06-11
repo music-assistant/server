@@ -61,8 +61,10 @@ VARIOUS_ARTISTS_MBID: Final[str] = "89ad4ac3-39f7-470e-963a-56509c546377"
 RESOURCES_DIR: Final[pathlib.Path] = (
     pathlib.Path(__file__).parent.resolve().joinpath("helpers/resources")
 )
-GENRE_ICONS_DIR: Final[pathlib.Path] = RESOURCES_DIR.joinpath("genres")
-GENRE_MAPPING_FILE: Final[pathlib.Path] = GENRE_ICONS_DIR.joinpath("genre_mapping.json")
+GENRE_ICONS_DIR_NAME: Final[str] = "genres"
+GENRE_MAPPING_FILE: Final[pathlib.Path] = RESOURCES_DIR.joinpath(
+    GENRE_ICONS_DIR_NAME, "genre_mapping.json"
+)
 
 ANNOUNCE_ALERT_FILE: Final[str] = str(RESOURCES_DIR.joinpath("announce.mp3"))
 SILENCE_FILE: Final[str] = str(RESOURCES_DIR.joinpath("silence.mp3"))
@@ -184,6 +186,9 @@ DB_TABLE_AUDIO_ANALYSIS: Final[str] = "audio_analysis"
 DB_TABLE_GENRES: Final[str] = "genres"
 DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
 DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION: Final[str] = "genre_media_item_exclusion"
+
+# Min fraction of a database file reclaimable before a startup VACUUM is worth running.
+VACUUM_MIN_RECLAIM_RATIO: Final[float] = 0.2
 
 # Loudness measurements at or below this value are considered unreliable:
 # ebur128 reports ~-70 LUFS when it receives near-silence or very little
@@ -737,6 +742,16 @@ CONF_ENTRY_WARN_PREVIEW = ConfigEntry(
     required=False,
 )
 
+CONF_ENTRY_UNOFFICIAL_PROVIDER = ConfigEntry(
+    key="unofficial_provider_note",
+    type=ConfigEntryType.ALERT,
+    label="This is an unofficial integration that is not affiliated with, supported by, "
+    "or endorsed by the music service. It relies on interfaces that are not officially "
+    "supported and may stop working at any time. Use of this provider may also be subject "
+    "to the service's terms of use.",
+    required=False,
+)
+
 CONF_ENTRY_MANUAL_DISCOVERY_IPS = ConfigEntry(
     key="manual_discovery_ip_addresses",
     type=ConfigEntryType.STRING,
@@ -1090,8 +1105,10 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool, Callable[[], bool]]]] = {
     ("sonos", True, lambda: True),
     ("bluesound", True, lambda: True),
     ("heos", True, lambda: True),
+    ("wiim", True, lambda: True),
     ("party", False, lambda: True),
     ("smart_fades", False, lambda: (os.cpu_count() or 1) > 1),
+    ("lastfm_recommendations", False, lambda: True),
 }
 
 EXTERNAL_SOURCES: Final[set[str]] = {
