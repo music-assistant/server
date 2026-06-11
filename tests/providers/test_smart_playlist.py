@@ -1386,14 +1386,38 @@ async def test_enrich_tracks_with_db_genres_handles_duplicate_item_ids() -> None
     config.get_value.return_value = "GLOBAL"
     plugin = SmartPlaylistProvider(mass, manifest, config, set())
 
-    # Create two different Track objects with the same item_id
-    track1 = MagicMock()
-    track1.item_id = "123"
-    track1.metadata = None
+    # Create two different Track objects with the same library item_id
+    mapping1 = ProviderMapping(
+        item_id="123",
+        provider_domain="library",
+        provider_instance="library",
+        available=True,
+    )
+    track1 = Track(
+        item_id="spotify:track:abc",
+        provider="spotify",
+        name="Track 1",
+        uri="spotify://track/abc",
+        provider_mappings={mapping1},
+    )
+    track1.metadata = MediaItemMetadata()
+    track1.metadata.genres = None
 
-    track2 = MagicMock()
-    track2.item_id = "123"
-    track2.metadata = None
+    mapping2 = ProviderMapping(
+        item_id="123",
+        provider_domain="library",
+        provider_instance="library",
+        available=True,
+    )
+    track2 = Track(
+        item_id="spotify:track:def",
+        provider="spotify",
+        name="Track 2",
+        uri="spotify://track/def",
+        provider_mappings={mapping2},
+    )
+    track2.metadata = MediaItemMetadata()
+    track2.metadata.genres = None
 
     # Mock DB response
     mass.music.database.get_rows_from_query = AsyncMock(

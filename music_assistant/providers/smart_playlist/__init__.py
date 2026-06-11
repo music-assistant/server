@@ -841,24 +841,31 @@ class SmartPlaylistProvider(PluginProvider):
             return
 
         # Collect library track IDs that don't already have genre metadata
-        # (item_id must be a digit string for library tracks)
-        library_track_ids_set: set[int] = {
-            int(t.item_id)
-            for t in tracks
-            if t.item_id and str(t.item_id).isdigit() and (not t.metadata or not t.metadata.genres)
-        }
+        # Check provider_mappings for library presence (tracks from Spotify/etc may also be in library)
+        library_track_ids_set: set[int] = set()
+        for t in tracks:
+            if t.metadata and t.metadata.genres:
+                continue
+            for mapping in t.provider_mappings:
+                if mapping.provider_domain == "library" and str(mapping.item_id).isdigit():
+                    library_track_ids_set.add(int(mapping.item_id))
+                    break
         if not library_track_ids_set:
             return
 
-        # Build a map of track_id -> list of track objects for fast lookup
+        # Build a map of library_track_id -> list of track objects for fast lookup
         # (multiple Track objects can share the same item_id before deduplication)
         track_id_to_tracks: dict[int, list[Track]] = {}
         for t in tracks:
-            if t.item_id and str(t.item_id).isdigit() and (not t.metadata or not t.metadata.genres):
-                track_id = int(t.item_id)
-                if track_id not in track_id_to_tracks:
-                    track_id_to_tracks[track_id] = []
-                track_id_to_tracks[track_id].append(t)
+            if t.metadata and t.metadata.genres:
+                continue
+            for mapping in t.provider_mappings:
+                if mapping.provider_domain == "library" and str(mapping.item_id).isdigit():
+                    track_id = int(mapping.item_id)
+                    if track_id not in track_id_to_tracks:
+                        track_id_to_tracks[track_id] = []
+                    track_id_to_tracks[track_id].append(t)
+                    break
 
         track_ids_str = ",".join(str(tid) for tid in library_track_ids_set)
         query = f"""
@@ -880,6 +887,8 @@ class SmartPlaylistProvider(PluginProvider):
             except (ValueError, TypeError):
                 continue
             genre_name = row["name"]
+            if not genre_name:
+                continue
             if tracks_list := track_id_to_tracks.get(track_id):
                 for track in tracks_list:
                     if not track.metadata:
