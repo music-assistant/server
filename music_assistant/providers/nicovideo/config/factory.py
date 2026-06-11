@@ -8,6 +8,8 @@ from typing import overload
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
+
 from .descriptor import ConfigDescriptor
 
 # Global registry for all config entries
@@ -195,4 +197,4 @@ class ConfigFactory:
 async def get_config_entries_impl() -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     # Combine entries from logical categories
-    return tuple(_registry)
+    return (CONF_ENTRY_UNOFFICIAL_PROVIDER, *_registry)

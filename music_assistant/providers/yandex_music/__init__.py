@@ -9,6 +9,8 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
+
 from .auth import perform_device_auth, perform_qr_auth
 from .constants import (
     CONF_ACTION_AUTH_DEVICE,
@@ -334,6 +336,7 @@ async def get_config_entries(
         label_text = "Authenticated to Yandex Music."
 
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         # Status label
         ConfigEntry(
             key="label_text",

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from copy import deepcopy
 from time import time
 from typing import TYPE_CHECKING, cast
 
-from aiohttp import web
+from aiohttp import HttpVersion11, web
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.constants import PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
@@ -580,6 +581,21 @@ class UniversalGroupPlayer(Player):
         }
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
         http_profile = cast("str", self.config.get_value(CONF_HTTP_PROFILE, "chunked"))
+        # prefer the child (protocol) player configuration
+        if child_player_id:
+            # player_id may be stale/invalid; fall back to the group profile
+            with contextlib.suppress(KeyError):
+                http_profile = await self.mass.config.get_player_config_value(
+                    child_player_id, CONF_HTTP_PROFILE, default=http_profile, return_type=str
+                )
+        if http_profile == "chunked" and request.version < HttpVersion11:
+            # chunked encoding is not allowed on HTTP/1.0; fall back to
+            # connection-close streaming to avoid raising in resp.prepare()
+            self.logger.debug(
+                "Disabling chunked encoding for UGP stream to HTTP/1.0 client %s",
+                child_player_id or request.remote,
+            )
+            http_profile = "no_content_length"
         if http_profile == "forced_content_length":
             # some clients (notably older Chromecast firmware) refuse to play unless
             # they see a Content-Length header up front

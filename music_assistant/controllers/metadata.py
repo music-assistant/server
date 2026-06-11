@@ -71,11 +71,11 @@ from music_assistant.controllers.tasks.context import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings
-from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.images import (
     cleanup_thumb_cache,
     create_collage,
     create_thumb_hash,
+    detect_image_content_format,
     get_image_data,
     get_image_thumb,
 )
@@ -219,9 +219,9 @@ REFRESH_INTERVAL = 60 * 60 * 24 * 90  # 90 days
 CONF_ENABLE_ONLINE_METADATA = "enable_online_metadata"
 CONF_PREFER_LOCAL_GENRES = "prefer_local_genres"
 CONF_ENABLE_RADIO_METADATA_LOOKUP = "enable_radio_metadata_lookup"
-MISSING_ARTIST_METADATA_SCAN_TASK_ID = "metadata_missing_artist_metadata_scan"
-PLAYLIST_METADATA_SCAN_TASK_ID = "metadata_playlist_metadata_scan"
-THUMB_CACHE_CLEANUP_TASK_ID = "metadata_thumb_cache_cleanup"
+MISSING_ARTIST_METADATA_SCAN_TASK_ID = "metadata_missing_artist_metadata_scan_v2"
+PLAYLIST_METADATA_SCAN_TASK_ID = "metadata_playlist_metadata_scan_v2"
+THUMB_CACHE_CLEANUP_TASK_ID = "metadata_thumb_cache_cleanup_v2"
 METADATA_LOOKUP_TASK_ID_PREFIX = "metadata_lookup"
 METADATA_SCAN_BATCH_SIZE = 5
 CONF_THUMB_CACHE_MAX_SIZE = "thumb_cache_max_size"
@@ -655,30 +655,17 @@ class MetaDataController(CoreController):
         size: int | None = None,
         base64: bool = False,
         image_format: str | None = None,
+        flatten_transparency: bool = False,
     ) -> bytes | str:
         """Get/create thumbnail image for path (image url or local path)."""
-        if not self.mass.get_provider(provider) and not path.startswith("http"):
-            raise ProviderUnavailableError
         if image_format is None:
             image_format = _detect_image_format(path)
-        if provider == "builtin" and path.startswith("/collage/"):
-            # special case for collage images
-            collage_rel = path.rsplit("/collage/", maxsplit=1)[-1]
-            if not is_safe_path(collage_rel):
-                raise FileNotFoundError("Invalid collage path")
-            path = os.path.join(self._collage_images_dir, collage_rel)
-        if image_format == "svg":
-            svg_bytes = await get_image_data(self.mass, path, provider)
-            if base64:
-                enc_image = b64encode(svg_bytes).decode()
-                return f"data:image/svg+xml;base64,{enc_image}"
-            return svg_bytes
-        thumbnail_bytes = await get_image_thumb(
-            self.mass, path, size=size, provider=provider, image_format=image_format
+        thumbnail_bytes, content_format = await self._resolve_thumbnail(
+            path, provider, size, image_format, flatten_transparency
         )
         if base64:
             enc_image = b64encode(thumbnail_bytes).decode()
-            return f"data:image/{image_format};base64,{enc_image}"
+            return f"data:{_IMAGEPROXY_CONTENT_TYPES[content_format]};base64,{enc_image}"
         return thumbnail_bytes
 
     async def handle_imageproxy(self, request: web.Request) -> web.Response:
@@ -755,13 +742,59 @@ class MetaDataController(CoreController):
             return web.Response(status=404)
         return await self._serve_thumbnail(path, provider, size, image_format)
 
+    async def _resolve_thumbnail(
+        self,
+        path: str,
+        provider: str,
+        size: int | None,
+        image_format: str,
+        flatten_transparency: bool,
+    ) -> tuple[bytes, str]:
+        """
+        Fetch image bytes and return them with their resolved content format.
+
+        The served format can differ from the requested one (SVG is passed
+        through unchanged and transparent sources may be kept as PNG), so the
+        actual format is determined once here and reused by every caller.
+
+        :param path: Image url or local path.
+        :param provider: Provider identifier for the image source.
+        :param size: Target thumbnail size (square), or None for original.
+        :param image_format: Requested output format (jpg/jpeg/png/svg).
+        :param flatten_transparency: Composite alpha onto white and keep JPEG when True.
+        """
+        if not self.mass.get_provider(provider) and not path.startswith("http"):
+            raise ProviderUnavailableError
+        if provider == "builtin" and path.startswith("/collage/"):
+            # special case for collage images
+            collage_rel = path.rsplit("/collage/", maxsplit=1)[-1]
+            if not is_safe_path(collage_rel):
+                raise FileNotFoundError("Invalid collage path")
+            path = os.path.join(self._collage_images_dir, collage_rel)
+        if image_format == "svg":
+            return await get_image_data(self.mass, path, provider), "svg"
+        thumbnail_bytes = await get_image_thumb(
+            self.mass,
+            path,
+            size=size,
+            provider=provider,
+            image_format=image_format,
+            flatten_transparency=flatten_transparency,
+        )
+        return thumbnail_bytes, detect_image_content_format(thumbnail_bytes) or image_format
+
     async def _serve_thumbnail(
         self, path: str, provider: str, size: int, image_format: str
     ) -> web.Response:
         """Fetch (or render+cache) the thumbnail and produce an HTTP response."""
+        # `fmt=jpeg` is the explicit player-media request: players are sent a
+        # JPEG for maximum compatibility, and since JPEG has no alpha channel we
+        # composite transparency onto white. The auto-detected `fmt=jpg`/`png`
+        # default (app/UI) instead keeps transparency as PNG.
+        flatten_transparency = image_format == "jpeg"
         try:
-            image_data = await self.get_thumbnail(
-                path, size=size, provider=provider, image_format=image_format
+            image_data, content_format = await self._resolve_thumbnail(
+                path, provider, size, image_format, flatten_transparency
             )
         except Exception as err:
             # broadly catch all exceptions here to ensure we dont crash the request handler
@@ -775,10 +808,21 @@ class MetaDataController(CoreController):
                     exc_info=err if self.logger.isEnabledFor(10) else None,
                 )
             return web.Response(status=404)
+        response_headers = {
+            "Cache-Control": "max-age=31536000",
+            "Access-Control-Allow-Origin": "*",
+        }
+        if content_format == "svg":
+            # Sniffed SVGs from attacker-influenceable sources (radio favicons) are
+            # served same-origin; without a CSP an embedded <script> would run.
+            response_headers["Content-Security-Policy"] = (
+                "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+            )
+            response_headers["X-Content-Type-Options"] = "nosniff"
         return web.Response(
             body=image_data,
-            headers={"Cache-Control": "max-age=31536000", "Access-Control-Allow-Origin": "*"},
-            content_type=_IMAGEPROXY_CONTENT_TYPES[image_format],
+            headers=response_headers,
+            content_type=_IMAGEPROXY_CONTENT_TYPES[content_format],
         )
 
     def _maybe_log_legacy_imageproxy(self, request: web.Request) -> None:
@@ -1909,12 +1953,11 @@ class MetaDataController(CoreController):
                     return mb_artist.id
 
         # start lookup of musicbrainz id using artist name, albums and tracks
-        ref_albums = await self.mass.music.artists.albums(
-            artist.item_id, artist.provider, in_library_only=False
-        )
-        ref_tracks = await self.mass.music.artists.tracks(
-            artist.item_id, artist.provider, in_library_only=False
-        )
+        ref_albums = await self.mass.music.artists.albums(artist.item_id, artist.provider)
+        # prefer the (widely supported) top tracks listing, falling back to all tracks
+        ref_tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
+        if not ref_tracks:
+            ref_tracks = await self.mass.music.artists.tracks(artist.item_id, artist.provider)
         # try with (strict) ref track(s), using recording id
         for ref_track in ref_tracks:
             if mb_artist := await musicbrainz.get_artist_details_by_track(artist.name, ref_track):
@@ -1948,7 +1991,8 @@ class MetaDataController(CoreController):
 
     def _register_maintenance_tasks(self) -> None:
         """Register the recurring metadata maintenance background tasks."""
-        utc_hour, utc_minute = local_clock_time_to_utc(4, 0)
+        # Spread across the full day so instances don't all hit the shared MusicBrainz mirror at once
+        utc_hour, utc_minute = divmod(random.randint(0, 24 * 60 - 1), 60)
         desired_schedule = TaskSchedule.daily(hour=utc_hour, minute=utc_minute)
         self.mass.tasks.register_scheduled_task(
             task_id=MISSING_ARTIST_METADATA_SCAN_TASK_ID,

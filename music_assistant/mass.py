@@ -125,6 +125,9 @@ class MusicAssistant:
         self._state = CoreState.STARTING
         self.storage_path = storage_path
         self.cache_path = cache_path
+        # Sqlite spills temp files (sort scratch, the VACUUM rebuild copy) to /tmp by
+        # default, which is a RAM-backed tmpfs on HAOS - redirect to the data volume.
+        os.environ.setdefault("SQLITE_TMPDIR", storage_path)
         self.safe_mode = safe_mode
         # we dynamically register command handlers which can be consumed by the apis
         self.command_handlers: dict[str, APICommandHandler] = {}

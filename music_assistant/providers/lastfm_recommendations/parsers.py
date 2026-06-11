@@ -13,6 +13,7 @@ from music_assistant_models.media_items import Album, Artist, ItemMapping, Track
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.providers.lastfm_recommendations.constants import (
+    MB_ISRC_CONCURRENCY_LIMIT,
     PROVIDER_SEARCH_LIMIT,
     SEARCH_CONCURRENCY_LIMIT,
 )
@@ -28,6 +29,10 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.lastfm_recommendations")
 
 # Limit concurrent provider searches to avoid overwhelming their APIs.
 _SEARCH_SEMAPHORE = asyncio.Semaphore(SEARCH_CONCURRENCY_LIMIT)
+
+# Cap concurrent MusicBrainz ISRC lookups so a single artist's top-track fan-out
+# doesn't dump dozens of requests onto the shared MusicBrainz rate-limit budget at once.
+_MB_ISRC_SEMAPHORE = asyncio.Semaphore(MB_ISRC_CONCURRENCY_LIMIT)
 
 
 def _has_matching_external_ids(
@@ -339,7 +344,8 @@ async def parse_track(
         mb_provider = mass.get_provider("musicbrainz")
         if mb_provider:
             LOGGER.debug("Resolving MBID %s to ISRCs via MusicBrainz", mbid)
-            isrcs = await cast("MusicbrainzProvider", mb_provider).get_isrcs_for_recording(mbid)
+            async with _MB_ISRC_SEMAPHORE:
+                isrcs = await cast("MusicbrainzProvider", mb_provider).get_isrcs_for_recording(mbid)
             if isrcs:
                 LOGGER.debug("Found %d ISRCs for MBID %s: %s", len(isrcs), mbid, isrcs)
                 for isrc in isrcs:

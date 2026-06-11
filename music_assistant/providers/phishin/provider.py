@@ -199,44 +199,56 @@ class PhishInProvider(MusicProvider):
         if prov_artist_id != PHISH_ARTIST_ID:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
 
-        try:
-            all_tracks: list[Track] = []
-            page = 1
-            per_page = 500
-            max_pages = 5  # 2500 tracks max for UI performance
+        # single ranked page, mirroring Phish.in's own top-tracks page
+        tracks_data = await api_request(
+            self,
+            ENDPOINTS["tracks"],
+            params={
+                "page": 1,
+                "per_page": 50,
+                "sort": "likes_count:desc",
+                "audio_status": "complete_or_partial",
+            },
+        )
+        return [track_to_ma_track(self, track_data) for track_data in tracks_data.get("tracks", [])]
 
-            while page <= max_pages:
-                tracks_data = await api_request(
-                    self,
-                    ENDPOINTS["tracks"],
-                    params={
-                        "page": page,
-                        "per_page": per_page,
-                        "sort": "likes_count:desc",
-                        "audio_status": "complete_or_partial",
-                    },
-                )
+    @use_cache(expiration=86400)  # 24 hours - new performances can be added as shows are uploaded
+    async def get_artist_tracks(self, prov_artist_id: str) -> list[Track]:
+        """Get a list of all tracks for the given artist."""
+        if prov_artist_id != PHISH_ARTIST_ID:
+            raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
 
-                tracks_on_page = tracks_data.get("tracks", [])
-                if not tracks_on_page:
-                    break
+        all_tracks: list[Track] = []
+        page = 1
+        per_page = 500
+        max_pages = 5  # cap at 2500 tracks for UI performance
 
-                for track_data in tracks_on_page:
-                    all_tracks.append(track_to_ma_track(self, track_data))
+        while page <= max_pages:
+            tracks_data = await api_request(
+                self,
+                ENDPOINTS["tracks"],
+                params={
+                    "page": page,
+                    "per_page": per_page,
+                    "sort": "likes_count:desc",
+                    "audio_status": "complete_or_partial",
+                },
+            )
 
-                # a short page means we've reached the end
-                if len(tracks_on_page) < per_page:
-                    break
+            tracks_on_page = tracks_data.get("tracks", [])
+            if not tracks_on_page:
+                break
 
-                page += 1
+            for track_data in tracks_on_page:
+                all_tracks.append(track_to_ma_track(self, track_data))
 
-            return all_tracks
+            # short page means the last page was reached
+            if len(tracks_on_page) < per_page:
+                break
 
-        except (MediaNotFoundError, ProviderUnavailableError):
-            raise
-        except Exception as err:
-            self.logger.error("Failed to get artist top tracks: %s", err)
-            raise ProviderUnavailableError(f"Top tracks error: {err}") from err
+            page += 1
+
+        return all_tracks
 
     @use_cache(expiration=2592000)  # 30 days - Show details from specific dates never change
     async def get_album(self, prov_album_id: str) -> Album:

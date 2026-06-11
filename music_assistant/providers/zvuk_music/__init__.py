@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, cast
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
+
 from .constants import (
     CONF_ACTION_CLEAR_AUTH,
     CONF_QUALITY,
@@ -71,6 +73,7 @@ async def get_config_entries(
     is_authenticated = bool(values.get(CONF_TOKEN))
 
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=CONF_TOKEN,
             type=ConfigEntryType.SECURE_STRING,

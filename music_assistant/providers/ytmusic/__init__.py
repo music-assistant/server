@@ -53,7 +53,11 @@ from ytmusicapi.constants import SUPPORTED_LANGUAGES
 from ytmusicapi.exceptions import YTMusicServerError
 from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
 
-from music_assistant.constants import CONF_USERNAME, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    CONF_ENTRY_UNOFFICIAL_PROVIDER,
+    CONF_USERNAME,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.util import infer_album_type, install_package, parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
@@ -167,6 +171,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
         ),
