@@ -416,6 +416,7 @@ class SendspinChromecastBridge:
             fut.set_result(None)
         else:
             fut.set_exception(error)
+            fut.exception()
 
     def on_cast_status_changed(self, app_id: str | None) -> None:
         """Handle Cast app id change / connection loss (called from socket thread).
