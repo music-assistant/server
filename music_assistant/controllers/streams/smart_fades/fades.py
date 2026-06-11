@@ -454,7 +454,8 @@ class SmartCrossFade(SmartFade):
         """
         Compute the effective audio end of the fade-out tail and prepare the filter chain.
 
-        Sets ``self.effective_end``, optionally prepends a ``FadeOutTrimFilter``,
+        Sets ``self.effective_end``, optionally appends a ``FadeOutTrimFilter``
+        (first in the chain, since this runs before any other filter is added),
         and masks ``self.fade_out_beats`` / ``self.fade_out_downbeats`` to the
         audible window.  Raises ``ValueError`` when the tail is too short to be
         useful so the caller can fall back to a standard crossfade.
@@ -727,6 +728,13 @@ class SmartCrossFade(SmartFade):
         :param t: Input-time position (seconds) up to which to integrate savings.
         """
         savings = 0.0
+        # rubberband is initialized at the FIRST step's ratio from t=0, so the
+        # span before the first step already runs stretched (no-op for multi-step
+        # ramps, whose first step has ratio 1.0)
+        if self.tempo_steps and self.tempo_steps[0][0] > 0.0:
+            first_ts, first_ratio = self.tempo_steps[0]
+            span_end = min(first_ts, t)
+            savings += span_end * (1.0 - 1.0 / first_ratio)
         for i, (ts, ratio) in enumerate(self.tempo_steps):
             if ts >= t:
                 break

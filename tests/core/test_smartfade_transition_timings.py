@@ -733,6 +733,21 @@ class TestStretchSavings:
         assert expected < 0.0
         assert fade._stretch_savings_until(45.0) == pytest.approx(expected)
 
+    def test_savings_counts_pre_step_span_at_first_ratio(self) -> None:
+        """The span before the first step runs at the first step's ratio, not 1.0."""
+        # rubberband is initialized at tempo_steps[0][1] from t=0, so a single
+        # step at ts>0 with ratio != 1 stretches the whole stream from the start
+        fade = SmartCrossFade(
+            logger=LOGGER,
+            fade_out_analysis=_analysis(bpm=120.0),
+            fade_in_analysis=_analysis(bpm=120.0),
+        )
+        fade.tempo_steps = [(20.0, 1.004)]
+        assert fade._stretch_savings_until(45.0) == pytest.approx(
+            20.0 * (1.0 - 1.0 / 1.004) + 25.0 * (1.0 - 1.0 / 1.004)
+        )
+        assert fade._stretch_savings_until(10.0) == pytest.approx(10.0 * (1.0 - 1.0 / 1.004))
+
     def test_pre_plus_cf_equals_rendered_tail(self) -> None:
         """PRE + CF equals the rendered tail duration (buffer minus stretch savings)."""
         fade = self._stretched_fade()
