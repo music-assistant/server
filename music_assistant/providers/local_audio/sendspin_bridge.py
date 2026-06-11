@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 import uuid
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
@@ -55,6 +56,23 @@ if TYPE_CHECKING:
     from .provider import LocalAudioProvider
 
 
+# Chunks arriving more than this many microseconds late are dropped rather than
+# played, since writing stale audio would push subsequent chunks further out of
+# sync with the server timeline.
+_LATE_DROP_THRESHOLD_US = 500_000  # 500 ms
+
+
+def _now_us() -> int:
+    """Return current monotonic time in microseconds.
+
+    Uses CLOCK_MONOTONIC_RAW on Linux to match the aiosendspin server clock,
+    which avoids NTP slewing poisoning playback scheduling.
+    """
+    if sys.platform == "linux" and hasattr(time, "CLOCK_MONOTONIC_RAW"):
+        return time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW) // 1_000
+    return time.monotonic_ns() // 1_000
+
+
 def get_device_uuid(device_name: str, hostapi_index: int) -> str:
     """Generate a stable UUID for a local audio device."""
     return str(uuid.uuid5(DEVICE_UUID_NAMESPACE, f"{device_name}:{hostapi_index}"))
@@ -103,7 +121,9 @@ class SendspinLocalAudioBridge:
         self._bridge_role: BridgePlayerRole | None = None
         self._is_streaming = False
         self._logged_chunk_fmt: bool = False
-        self._write_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        # Queue holds (timestamp_us, pcm_bytes) tuples for scheduled playback.
+        # None sentinel signals the writer to stop.
+        self._write_queue: asyncio.Queue[tuple[int, bytes] | None] = asyncio.Queue()
         self._writer_task: asyncio.Task[None] | None = None
         self._output_stream: Any | None = None
         self._lock = asyncio.Lock()
@@ -303,18 +323,25 @@ class SendspinLocalAudioBridge:
         )
 
     def _on_audio_chunk(self, chunk: AudioChunk) -> None:
-        """Handle an incoming audio chunk."""
+        """Enqueue an incoming audio chunk with its playback timestamp."""
         if not self._is_streaming:
             return
         if not self._logged_chunk_fmt:
             self.logger.debug(
-                "First chunk: len=%d  sample_rate=%d bit_depth=%d",
+                "First chunk: len=%d  sample_rate=%d bit_depth=%d timestamp_us=%d",
                 len(chunk.data),
                 self.sample_rate,
                 self.bit_depth,
+                chunk.timestamp_us,
             )
             self._logged_chunk_fmt = True
-        self._write_queue.put_nowait(chunk.data)
+        self._write_queue.put_nowait((chunk.timestamp_us, chunk.data))
+
+    def _static_delay_us(self) -> int:
+        """Return the configured static playback delay in microseconds."""
+        if self._bridge_role is not None:
+            return self._bridge_role.get_static_delay_us()
+        return 0
 
     def _apply_software_volume(self, pcm_data: bytes) -> bytes:
         """Apply software volume scaling and format conversion."""
@@ -349,6 +376,34 @@ class SendspinLocalAudioBridge:
         samples_16 = np.frombuffer(pcm_data, dtype=np.int16).copy()
         scaled = np.clip(samples_16.astype(np.float64) * scale, -32768, 32767)
         return scaled.astype(np.int16).tobytes()
+
+    async def _wait_for_chunk_time(self, timestamp_us: int) -> bool:
+        """Sleep until the scheduled playback time for a chunk.
+
+        :param timestamp_us: Server-domain playback timestamp in microseconds.
+        :returns: True if the chunk should be played, False if it arrived too
+            late and should be dropped.
+
+        The bridge runs in-process with the Sendspin server and both use
+        CLOCK_MONOTONIC_RAW (Linux) or monotonic_ns elsewhere, so
+        chunk.timestamp_us is already in the local clock domain — no NTP-style
+        offset conversion is required.  The static_delay_us configured by the
+        user is subtracted so that playback on this device is advanced relative
+        to other players, compensating for a slower DAC pipeline.
+        """
+        play_at_us = timestamp_us - self._static_delay_us()
+        now = _now_us()
+        wait_us = play_at_us - now
+        if wait_us < -_LATE_DROP_THRESHOLD_US:
+            self.logger.warning(
+                "Dropping late chunk for %s: %d ms behind schedule",
+                self.device_name,
+                -wait_us // 1_000,
+            )
+            return False
+        if wait_us > 0:
+            await asyncio.sleep(wait_us / 1_000_000)
+        return True
 
     async def _audio_writer(self) -> None:
         """Write queued audio to the output device."""
@@ -385,9 +440,12 @@ class SendspinLocalAudioBridge:
             assert stream is not None
 
             while True:
-                data = await self._write_queue.get()
-                if data is None or not self._is_streaming:
+                item = await self._write_queue.get()
+                if item is None or not self._is_streaming:
                     break
+                timestamp_us, data = item
+                if not await self._wait_for_chunk_time(timestamp_us):
+                    continue  # late chunk dropped
                 data = self._apply_software_volume(data)
                 write_future = self.mass.loop.run_in_executor(None, stream.write, data)
                 await write_future
@@ -424,9 +482,12 @@ class SendspinLocalAudioBridge:
             self.logger.debug("sounddevice stream opened for %s", self.device_name)
 
             while True:
-                data = await self._write_queue.get()
-                if data is None or not self._is_streaming:
+                item = await self._write_queue.get()
+                if item is None or not self._is_streaming:
                     break
+                timestamp_us, data = item
+                if not await self._wait_for_chunk_time(timestamp_us):
+                    continue  # late chunk dropped
                 data = self._apply_software_volume(data)
                 try:
                     await self.mass.loop.run_in_executor(None, self._output_stream.write, data)
