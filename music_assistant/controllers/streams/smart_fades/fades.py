@@ -485,6 +485,10 @@ class SmartCrossFade(SmartFade):
         """Apply gradual time stretch in the 10s window before the crossfade."""
         stretch_duration = 10.0
         crossfade_start = self.effective_end - crossfade_duration
+        # A crossfade consuming the whole audible tail leaves no room for a
+        # pre-fade tempo ramp
+        if crossfade_start <= 0:
+            return
         stretch_start = max(0.0, crossfade_start - stretch_duration)
         stretch_end = crossfade_start
 
@@ -531,11 +535,12 @@ class SmartCrossFade(SmartFade):
         seconds_per_beat = 60.0 / self.fade_in_bpm
         musical_duration = crossfade_bars * beats_per_bar * seconds_per_beat
 
-        # Apply buffer constraint
-        actual_duration = min(musical_duration, SMART_CROSSFADE_DURATION)
+        # Cap at the audible fade-out room so crossfade_start never goes negative
+        # downstream (effective_end <= SMART_CROSSFADE_DURATION always)
+        actual_duration = min(musical_duration, SMART_CROSSFADE_DURATION, self.effective_end)
 
         # Log if we had to constrain the duration
-        if musical_duration > SMART_CROSSFADE_DURATION:
+        if musical_duration > actual_duration:
             self.logger.log(
                 VERBOSE_LOG_LEVEL,
                 "Constraining crossfade duration from %.1fs to %.1fs (buffer limit)",

@@ -35,6 +35,7 @@ from music_assistant.controllers.streams.smart_fades.fades import (
 from music_assistant.controllers.streams.smart_fades.filters import (
     CrossfadeFilter,
     FadeOutTrimFilter,
+    GradualTimeStretchFilter,
 )
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
 from music_assistant.controllers.streams.smart_fades.mixer import SmartFadesMixer
@@ -652,3 +653,22 @@ class TestSilenceAwareAnchoring:
         fade = self._build_fade(silent_tail=10.0)
         assert fade.fade_out_beats.min() >= 0.0
         assert fade.fade_out_beats.max() <= fade.effective_end + 0.01
+
+    def test_short_audible_tail_keeps_crossfade_inside_it(self) -> None:
+        """A crossfade longer than the audible tail is capped so no schedule goes negative."""
+        duration = 240.0
+        fade = SmartCrossFade(
+            logger=LOGGER,
+            fade_out_analysis=_analysis(
+                bpm=120.0,
+                duration=duration,
+                rms_energy=_rms_with_silent_tail(duration, 33.0),
+            ),
+            # 115 vs 120 BPM is within the stretch threshold, so the tempo ramp is active
+            fade_in_analysis=_analysis(bpm=115.0, duration=duration),
+        )
+        fade._build(_seconds(45), _seconds(45), PCM_FORMAT)
+        assert fade.timing_info.crossfade_duration <= fade.effective_end + 1e-6
+        for stretch_filter in fade.filters:
+            if isinstance(stretch_filter, GradualTimeStretchFilter):
+                assert all(ts >= 0 for ts, _ in stretch_filter.tempo_steps)
