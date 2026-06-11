@@ -8,6 +8,8 @@ import types
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 SCRIPT_PATH = (
     Path(__file__).parent.parent
     / ".github"
@@ -16,21 +18,18 @@ SCRIPT_PATH = (
     / "generate_notes.py"
 )
 
-# The action script depends on PyGithub and PyYAML, which are installed ad hoc in
-# the GitHub action and not part of the project's (test) dependencies.
-if "github" not in sys.modules:
+
+@pytest.fixture
+def generate_notes(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
+    """Load the action script with its action-only dependencies stubbed."""
+    # The action script depends on PyGithub and PyYAML, which are installed ad hoc
+    # in the GitHub action and not part of the project's (test) dependencies.
     github_stub = types.ModuleType("github")
     github_stub.Github = object  # type: ignore[attr-defined]
     github_stub.GithubException = type("GithubException", (Exception,), {})  # type: ignore[attr-defined]
-    sys.modules["github"] = github_stub
-try:
-    import yaml  # noqa: F401
-except ImportError:
-    sys.modules["yaml"] = types.ModuleType("yaml")
-
-
-def load_generate_notes_module() -> types.ModuleType:
-    """Load the action script as a module."""
+    monkeypatch.setitem(sys.modules, "github", github_stub)
+    if importlib.util.find_spec("yaml") is None:
+        monkeypatch.setitem(sys.modules, "yaml", types.ModuleType("yaml"))
     spec = importlib.util.spec_from_file_location("generate_notes", SCRIPT_PATH)
     assert spec is not None
     assert spec.loader is not None
@@ -115,9 +114,10 @@ class FakeRepo:
         raise KeyError(sha)
 
 
-def test_linear_release_filters_prs_merged_before_previous_tag() -> None:
+def test_linear_release_filters_prs_merged_before_previous_tag(
+    generate_notes: types.ModuleType,
+) -> None:
     """Beta/nightly/patch releases: previous tag is an ancestor of the branch."""
-    generate_notes = load_generate_notes_module()
     tag_commit = FakeCommit("tagsha", "2.9.0b1 release", datetime(2026, 6, 1, tzinfo=UTC))
     comparison = FakeComparison(
         commits=[
@@ -139,7 +139,9 @@ def test_linear_release_filters_prs_merged_before_previous_tag() -> None:
     assert [pr.number for pr in prs] == [200]
 
 
-def test_minor_release_with_diverged_previous_tag() -> None:
+def test_minor_release_with_diverged_previous_tag(
+    generate_notes: types.ModuleType,
+) -> None:
     """
     Generate notes for a minor release whose previous tag diverged.
 
@@ -148,7 +150,6 @@ def test_minor_release_with_diverged_previous_tag() -> None:
     must include everything merged to dev since the branch point, except PRs that
     already shipped in the 2.8.x patch releases.
     """
-    generate_notes = load_generate_notes_module()
     merge_base = FakeCommit("mbsha", "2.8.0 release", datetime(2026, 3, 25, tzinfo=UTC))
     head_comparison = FakeComparison(
         commits=[
