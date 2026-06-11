@@ -14,11 +14,11 @@ from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.types import AudioCodec, PlayerCommand
 
-from music_assistant.constants import CONF_PLAYERS
 from music_assistant_models.enums import IdentifierType, PlayerType
 from music_assistant_models.player import DeviceInfo
 
 from music_assistant.models.player import Player
+from music_assistant.constants import CONF_PLAYERS
 from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_BIT_DEPTH,
     BRIDGE_CHANNELS,
