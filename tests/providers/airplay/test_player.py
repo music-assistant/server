@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from music_assistant.providers.airplay.constants import StreamingProtocol
+from music_assistant.providers.airplay.constants import CONF_IGNORE_VOLUME, StreamingProtocol
 from music_assistant.providers.airplay.player import AirPlayPlayer
 
 
@@ -138,6 +138,13 @@ async def test_start_pairing__pin_decision(flags: bytes, pin_call_expected: bool
         pairing_instance.start_pin_pairing.assert_called_once()
     else:
         pairing_instance.start_pin_pairing.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_config_entries_include_ignore_volume(airplay_player: AirPlayPlayer) -> None:
+    """The ignore_volume setting must be offered in the player config entries."""
+    entries = await airplay_player.get_config_entries()
+    assert any(entry.key == CONF_IGNORE_VOLUME for entry in entries)
 
 
 # --- Volume and Mute tests ---
