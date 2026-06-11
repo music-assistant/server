@@ -1331,6 +1331,87 @@ async def test_enrich_tracks_with_db_genres_handles_empty_list() -> None:
     mass.music.database.get_rows_from_query.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_seed_mode_enriches_genres_when_excluded_genres_present() -> None:
+    """Seed mode should enrich genres when excluded_genre_ids or excluded_genre_names are set."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    # Create a library track without genres
+    track = MagicMock()
+    track.item_id = "123"
+    track.uri = "library://track/123"
+    track.provider = "library"
+    track.available = True
+    track.metadata = MagicMock()
+    track.metadata.genres = None
+    track.metadata.popularity = 50
+
+    # Mock _tracks_from_seeds to return our test track
+    cast("Any", plugin)._tracks_from_seeds = AsyncMock(return_value=[track])
+
+    # Mock _enrich_tracks_with_db_genres to verify it gets called
+    enrich_mock = AsyncMock()
+    cast("Any", plugin)._enrich_tracks_with_db_genres = enrich_mock
+
+    # Mock required methods
+    cast("Any", plugin)._resolve_excluded_genre_names = AsyncMock(return_value={"rock"})
+    cast("Any", plugin)._get_album_ids_for_types = AsyncMock(return_value=[])
+    cast("Any", plugin)._apply_exclusions = MagicMock(return_value=[track])
+    cast("Any", plugin)._deduplicate_tracks = MagicMock(return_value=[track])
+
+    # Test with excluded_genre_names only (no included genres)
+    rules = SmartPlaylistRules(
+        seed_track_uris=["library://track/99"],
+        excluded_genre_names={1: "rock"},
+        limit=10,
+    )
+    await plugin._evaluate_rules(rules)
+
+    # Verify enrichment was called in seed mode
+    enrich_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_enrich_tracks_with_db_genres_handles_duplicate_item_ids() -> None:
+    """Multiple Track objects with the same item_id should all be enriched."""
+    mass = MagicMock()
+    manifest = MagicMock()
+    manifest.domain = "smart_playlist"
+    config = MagicMock()
+    config.get_value.return_value = "GLOBAL"
+    plugin = SmartPlaylistProvider(mass, manifest, config, set())
+
+    # Create two different Track objects with the same item_id
+    track1 = MagicMock()
+    track1.item_id = "123"
+    track1.metadata = None
+
+    track2 = MagicMock()
+    track2.item_id = "123"
+    track2.metadata = None
+
+    # Mock DB response
+    mass.music.database.get_rows_from_query = AsyncMock(
+        return_value=[
+            {"media_id": 123, "name": "Rock"},
+            {"media_id": 123, "name": "Alternative"},
+        ]
+    )
+
+    await plugin._enrich_tracks_with_db_genres([track1, track2])
+
+    # Both tracks should have been enriched
+    assert track1.metadata is not None
+    assert track1.metadata.genres == {"Rock", "Alternative"}
+    assert track2.metadata is not None
+    assert track2.metadata.genres == {"Rock", "Alternative"}
+
+
 # ---------------------------------------------------------------------------
 # AI-generated description tests
 # ---------------------------------------------------------------------------

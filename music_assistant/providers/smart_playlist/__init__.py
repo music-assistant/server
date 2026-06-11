@@ -580,7 +580,9 @@ class SmartPlaylistProvider(PluginProvider):
         user_provider_filter: list[str] | None = None,
     ) -> list[Track]:
         """Evaluate the rules and return a list of matching Track objects."""
-        has_genre_filter = bool(rules.genre_ids)
+        has_genre_filter = bool(
+            rules.genre_ids or rules.excluded_genre_ids or rules.excluded_genre_names
+        )
 
         seed_uris = rules.all_seed_uris()
         if seed_uris:
@@ -619,9 +621,7 @@ class SmartPlaylistProvider(PluginProvider):
                 allowed_album_ids = await self._get_album_ids_for_types(rules.album_types)
                 tracks = self._filter_by_album_ids(tracks, allowed_album_ids)
 
-        # Enrich library tracks with database genres before applying exclusions
-        # (seed mode already enriches genres in _apply_seed_post_filters)
-        if not seed_uris:
+        if not seed_uris and has_genre_filter:
             await self._enrich_tracks_with_db_genres(tracks)
 
         # Apply exclusions and dedup regardless of source mode
@@ -668,7 +668,6 @@ class SmartPlaylistProvider(PluginProvider):
         has_genre_filter: bool,
     ) -> list[Track]:
         """Apply post-filters (popularity, favorites, genre, year) to a seed-derived track list."""
-        # Enrich library tracks with database genres before filtering (only when needed)
         if has_genre_filter:
             await self._enrich_tracks_with_db_genres(tracks)
 
@@ -845,22 +844,25 @@ class SmartPlaylistProvider(PluginProvider):
 
         # Collect library track IDs that don't already have genre metadata
         # (item_id must be a digit string for library tracks)
-        library_track_ids = [
+        library_track_ids_set: set[int] = {
             int(t.item_id)
             for t in tracks
             if t.item_id and str(t.item_id).isdigit() and (not t.metadata or not t.metadata.genres)
-        ]
-        if not library_track_ids:
+        }
+        if not library_track_ids_set:
             return
 
-        # Build a map of track_id -> track object for fast lookup
-        track_id_to_track = {
-            int(t.item_id): t
-            for t in tracks
-            if t.item_id and str(t.item_id).isdigit() and (not t.metadata or not t.metadata.genres)
-        }
+        # Build a map of track_id -> list of track objects for fast lookup
+        # (multiple Track objects can share the same item_id before deduplication)
+        track_id_to_tracks: dict[int, list[Track]] = {}
+        for t in tracks:
+            if t.item_id and str(t.item_id).isdigit() and (not t.metadata or not t.metadata.genres):
+                track_id = int(t.item_id)
+                if track_id not in track_id_to_tracks:
+                    track_id_to_tracks[track_id] = []
+                track_id_to_tracks[track_id].append(t)
 
-        track_ids_str = ",".join(str(tid) for tid in library_track_ids)
+        track_ids_str = ",".join(str(tid) for tid in library_track_ids_set)
         query = f"""
             SELECT gm.media_id, g.name
             FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} gm
@@ -874,14 +876,19 @@ class SmartPlaylistProvider(PluginProvider):
         )
 
         for row in result:
-            track_id = row["media_id"]
+            # DB might return media_id as string or int depending on driver
+            try:
+                track_id = int(row["media_id"])
+            except (ValueError, TypeError):
+                continue
             genre_name = row["name"]
-            if track := track_id_to_track.get(track_id):
-                if not track.metadata:
-                    track.metadata = MediaItemMetadata()
-                if not track.metadata.genres:
-                    track.metadata.genres = set()
-                track.metadata.genres.add(genre_name)
+            if tracks_list := track_id_to_tracks.get(track_id):
+                for track in tracks_list:
+                    if not track.metadata:
+                        track.metadata = MediaItemMetadata()
+                    if not track.metadata.genres:
+                        track.metadata.genres = set()
+                    track.metadata.genres.add(genre_name)
 
     async def _recently_played_keys(self, dedup_hours: int) -> set[tuple[str, str]]:
         """
