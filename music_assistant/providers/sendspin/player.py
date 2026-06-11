@@ -798,6 +798,7 @@ class SendspinPlayer(SendspinBasePlayer):
             await self.api.group.remove_client(member_player.api)
         # Cast-only: reset futures before add so a fatal error on a Cast-bridged
         # member (e.g. AudioContext unsupported) raises PlayerCommandFailed.
+        # Only track readiness while streaming, only then add_client launches the app.
         bridge_manager = self._get_cast_bridge_manager()
         pending_cast: list[tuple[SendspinPlayer, asyncio.Future[None]]] = []
         try:
@@ -805,7 +806,11 @@ class SendspinPlayer(SendspinBasePlayer):
                 member_player = cast(
                     "SendspinPlayer", self.mass.players.get_player(player_id, True)
                 )
-                if bridge_manager and (bridge := bridge_manager.get_bridge_by_client_id(player_id)):
+                if (
+                    self.api.group.has_active_stream
+                    and bridge_manager
+                    and (bridge := bridge_manager.get_bridge_by_client_id(player_id))
+                ):
                     pending_cast.append((member_player, bridge.reset_cast_app_ready()))
                 await self.api.group.add_client(member_player.api)
 
