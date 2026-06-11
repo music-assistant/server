@@ -69,10 +69,15 @@ class SmartFadesMixer:
             )
         if smart_fade is None:
             # standard path — explicit mode AND smart-crossfade fallback land here
-            fade_out_data = align_audio_to_frame_boundary(
-                await strip_silence(fade_out_data, pcm_format=pcm_format, reverse=True),
-                pcm_format,
-            )
+            try:
+                fade_out_data = align_audio_to_frame_boundary(
+                    await strip_silence(fade_out_data, pcm_format=pcm_format, reverse=True),
+                    pcm_format,
+                )
+            except Exception as err:
+                # degrade to the unstripped tail (late-boundary bookkeeping)
+                # rather than killing the stream
+                self.logger.warning("Stripping trailing silence failed: %s", err)
             smart_fade = StandardCrossFade(
                 logger=self.logger,
                 crossfade_duration=standard_crossfade_duration,

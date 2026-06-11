@@ -472,3 +472,53 @@ class TestMixerBuild:
         )
         assert isinstance(smart_fade, StandardCrossFade)
         assert len(mix_data) == _seconds(40)
+
+    @pytest.mark.asyncio
+    async def test_standard_mode_fully_silent_tail(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A fully silent tail strips to nothing — timing collapses to zero, mix input is empty."""
+
+        async def fake_strip(_audio_data: bytes, **_kwargs: object) -> bytes:
+            return b""
+
+        monkeypatch.setattr(mixer_module, "strip_silence", fake_strip)
+        mixer = _make_mixer()
+        smart_fade, mix_data = await mixer.build(
+            fade_in_streamdetails=_streamdetails("b"),
+            fade_out_streamdetails=_streamdetails("a"),
+            pcm_format=PCM,
+            standard_crossfade_duration=10,
+            mode=SmartFadesMode.STANDARD_CROSSFADE,
+            fade_out_data=b"\x00" * _seconds(45),
+            fade_in_bytes_len=_seconds(45),
+        )
+        assert isinstance(smart_fade, StandardCrossFade)
+        assert mix_data == b""
+        timing = smart_fade.timing_info
+        assert timing.pre_crossfade_duration == 0.0
+        assert timing.crossfade_duration == 0.0
+
+    @pytest.mark.asyncio
+    async def test_standard_mode_strip_failure_keeps_unstripped_bytes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A strip_silence failure must not propagate — build degrades to the unstripped tail."""
+
+        async def broken_strip(*_args: object, **_kwargs: object) -> bytes:
+            raise OSError("ffmpeg spawn failed")
+
+        monkeypatch.setattr(mixer_module, "strip_silence", broken_strip)
+        mixer = _make_mixer()
+        fade_out_data = b"\x00" * _seconds(45)
+        smart_fade, mix_data = await mixer.build(
+            fade_in_streamdetails=_streamdetails("b"),
+            fade_out_streamdetails=_streamdetails("a"),
+            pcm_format=PCM,
+            standard_crossfade_duration=10,
+            mode=SmartFadesMode.STANDARD_CROSSFADE,
+            fade_out_data=fade_out_data,
+            fade_in_bytes_len=_seconds(45),
+        )
+        assert isinstance(smart_fade, StandardCrossFade)
+        assert mix_data is fade_out_data
+        timing = smart_fade.timing_info
+        assert timing.pre_crossfade_duration + timing.crossfade_duration == pytest.approx(45.0)

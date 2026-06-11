@@ -1875,6 +1875,9 @@ class StreamsAudio:
             # the remaining buffer is the fade-out tail of the current track
             fade_out_data = bytes(buffer)
             buffer = bytearray()
+            # initialized before the try block — the except handler reads these
+            first_part_written = 0
+            second_part_buf = bytearray()
             try:
                 # wrap the next track's stream in a counting generator that caps
                 # at crossfade_buffer_size and tracks how many bytes were consumed
@@ -1917,8 +1920,6 @@ class StreamsAudio:
                     * pcm_format.pcm_sample_size
                 )
                 fadeout_share_bytes = (fadeout_share_bytes // frame_size) * frame_size
-                first_part_written = 0
-                second_part_buf = bytearray()
                 async for mix_chunk in self.smart_fades_mixer.mix(
                     smart_fade,
                     fade_in_part=_limited_fade_in(),
