@@ -16,6 +16,7 @@ timing in its ``_build``. Smart/standard end-to-end behavior is exercised throug
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
@@ -200,6 +201,42 @@ class TestStandardCrossFadeBuild:
         crossfade_filter = fade.filters[0]
         assert isinstance(crossfade_filter, CrossfadeFilter)
         assert crossfade_filter.crossfade_duration == pytest.approx(6.0)
+
+
+# ---------------------------------------------------------------------------
+# StandardCrossFade.apply — byte slicing must follow the clamped timing
+# ---------------------------------------------------------------------------
+
+
+class TestStandardCrossFadeApplySlicing:
+    """apply() must slice the fade-out buffer by the clamped duration, not the configured one."""
+
+    @pytest.mark.asyncio
+    async def test_apply_slices_with_clamped_duration(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 6s fade-out with a 10s configured CF must hand the base mixer all 6s, no more."""
+        captured: dict[str, bytes] = {}
+        crossfade_marker = b"crossfade-output"
+
+        async def fake_base_apply(
+            _self: SmartFade,
+            fade_out_part: bytes,
+            _fade_in_part: bytes | AsyncGenerator[bytes],
+            _pcm_format: AudioFormat,
+        ) -> AsyncGenerator[bytes]:
+            captured["fade_out"] = fade_out_part
+            yield crossfade_marker
+
+        monkeypatch.setattr(SmartFade, "apply", fake_base_apply)
+        fade = StandardCrossFade(logger=logging.getLogger(), crossfade_duration=10.0)
+        fade._build(_seconds(6), _seconds(45), PCM)
+        chunks = [
+            chunk async for chunk in fade.apply(b"\x00" * _seconds(6), b"\x00" * _seconds(45), PCM)
+        ]
+        assert len(captured["fade_out"]) == _seconds(6)
+        # nothing precedes the crossfade — the 6s buffer is consumed entirely by the overlap
+        assert chunks[0] == crossfade_marker
 
 
 # ---------------------------------------------------------------------------

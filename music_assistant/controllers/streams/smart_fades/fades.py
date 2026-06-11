@@ -682,8 +682,9 @@ class StandardCrossFade(SmartFade):
         crossfade_size = int(pcm_format.pcm_sample_size * self.timing_info.crossfade_duration)
         crossfade_size = (crossfade_size // frame_size) * frame_size
         # Pre-crossfade: outgoing track minus the crossfaded portion
-        pre_crossfade = fade_out_part[:-crossfade_size]
-        adjusted_fade_out_part = fade_out_part[-crossfade_size:]
+        split = len(fade_out_part) - crossfade_size
+        pre_crossfade = fade_out_part[:split]
+        adjusted_fade_out_part = fade_out_part[split:]
 
         # Collect only the crossfade portion from fade_in, keep the rest as a generator
         if isinstance(fade_in_part, bytes):
