@@ -13,6 +13,8 @@ from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.types import AudioCodec, PlayerCommand
+
+from music_assistant.constants import CONF_PLAYERS
 from music_assistant_models.enums import IdentifierType, PlayerType
 from music_assistant_models.player import DeviceInfo
 
@@ -25,8 +27,6 @@ from music_assistant.providers.sendspin.bridge_role import (
     BridgePlayerRole,
 )
 from music_assistant.providers.sendspin.helpers import bridge_client_id_from_uuid
-
-from music_assistant.constants import CONF_PLAYERS
 
 from .constants import (
     AUDIO_BACKEND_ALSA,
@@ -647,3 +647,4 @@ class LocalAudioBridgeManager:
                     await bridge.stop()
             self._bridges.clear()
         self.logger.debug("All local audio bridges stopped")
+        
