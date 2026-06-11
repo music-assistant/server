@@ -596,8 +596,6 @@ class TestMixerBuild:
 
 LOGGER = logging.getLogger(__name__)
 
-PCM_FORMAT = PCM
-
 
 def _rms_with_silent_tail(track_duration: float, silent_tail: float) -> np.ndarray:
     bins = np.full(1800, 0.5, dtype=np.float32)
@@ -621,7 +619,7 @@ class TestSilenceAwareAnchoring:
             ),
             fade_in_analysis=_analysis(bpm=120.0, duration=duration),
         )
-        fade._build(_seconds(45), _seconds(45), PCM_FORMAT)
+        fade._build(_seconds(45), _seconds(45), PCM)
         return fade
 
     def test_silent_tail_moves_the_anchor(self) -> None:
@@ -641,6 +639,12 @@ class TestSilenceAwareAnchoring:
         """Without silence, effective_end equals the full buffer and no trim filter is added."""
         fade = self._build_fade(silent_tail=0.0)
         assert fade.effective_end == pytest.approx(45.0, abs=0.3)
+        assert not any(isinstance(f, FadeOutTrimFilter) for f in fade.filters)
+
+    def test_sub_tolerance_silent_tail_snaps_anchor_to_buffer_end(self) -> None:
+        """A silent tail below the trim tolerance keeps the anchor at the rendered buffer end."""
+        fade = self._build_fade(silent_tail=0.4)
+        assert fade.effective_end == pytest.approx(45.0)
         assert not any(isinstance(f, FadeOutTrimFilter) for f in fade.filters)
 
     def test_mostly_silent_tail_raises_for_fallback(self) -> None:
@@ -667,8 +671,10 @@ class TestSilenceAwareAnchoring:
             # 115 vs 120 BPM is within the stretch threshold, so the tempo ramp is active
             fade_in_analysis=_analysis(bpm=115.0, duration=duration),
         )
-        fade._build(_seconds(45), _seconds(45), PCM_FORMAT)
+        fade._build(_seconds(45), _seconds(45), PCM)
         assert fade.timing_info.crossfade_duration <= fade.effective_end + 1e-6
+        # the capped crossfade consumes the whole audible tail, so the stretch is skipped
+        assert not any(isinstance(f, GradualTimeStretchFilter) for f in fade.filters)
         for stretch_filter in fade.filters:
             if isinstance(stretch_filter, GradualTimeStretchFilter):
                 assert all(ts >= 0 for ts, _ in stretch_filter.tempo_steps)

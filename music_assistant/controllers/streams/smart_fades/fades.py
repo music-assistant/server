@@ -464,10 +464,16 @@ class SmartCrossFade(SmartFade):
                 f"Outgoing tail is mostly silent ({self.effective_end:.1f}s audible) - "
                 "smart crossfade not applicable"
             )
+        # Sub-half-second slack is not worth trimming: RMS bin granularity is
+        # ~0.1-0.2s for typical track lengths, so finer precision is illusory
         if self.effective_end < buffer_duration - 0.5:
             self.filters.append(
                 FadeOutTrimFilter(logger=self.logger, fadeout_end_pos=self.effective_end)
             )
+        else:
+            # Without the trim the rendered stream still ends at buffer_duration,
+            # so the anchor must follow it or every schedule lands early
+            self.effective_end = buffer_duration
 
         # Mask fade-out beats to the audible buffer window; negative timestamps are
         # beats before the buffer, beats past effective_end sit in the silent tail
@@ -537,13 +543,13 @@ class SmartCrossFade(SmartFade):
 
         # Cap at the audible fade-out room so crossfade_start never goes negative
         # downstream (effective_end <= SMART_CROSSFADE_DURATION always)
-        actual_duration = min(musical_duration, SMART_CROSSFADE_DURATION, self.effective_end)
+        actual_duration = min(musical_duration, self.effective_end)
 
         # Log if we had to constrain the duration
         if musical_duration > actual_duration:
             self.logger.log(
                 VERBOSE_LOG_LEVEL,
-                "Constraining crossfade duration from %.1fs to %.1fs (buffer limit)",
+                "Constraining crossfade duration from %.1fs to %.1fs (audible tail limit)",
                 musical_duration,
                 actual_duration,
             )
