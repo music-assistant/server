@@ -835,9 +835,10 @@ class SmartPlaylistProvider(PluginProvider):
         Enrich tracks with genre data from the database for library tracks.
 
         For tracks that are in the library, load their enriched genre names from the
-        genre_media_item_mapping table and merge them into track.metadata.genres.
+        genre_media_item_mapping table and fill missing track.metadata.genres.
         This ensures that genre filters work correctly even when tracks from streaming
         providers don't have detailed genre metadata from the provider itself.
+        Only affects tracks that don't already have genre metadata.
         """
         if not tracks:
             return
