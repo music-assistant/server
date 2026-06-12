@@ -54,7 +54,6 @@ class PodcastsController(MediaControllerBase[Podcast]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
-        username_or_user_id: str | None = None,
         **kwargs: Any,
     ) -> list[Podcast]:
         """Get in-database podcasts.
@@ -66,13 +65,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
         :param order_by: Order by field (e.g. 'sort_name', 'timestamp_added').
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
-        :param username_or_user_id: Get items of this user instead of authenticated user. Needs sufficient permissions.
         """
-        user: User | None = None
-        if username_or_user_id:
-            # below raises if permissions are insufficient
-            user = await self.mass.music.get_requested_user_if_authorized(username_or_user_id)
-
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -80,7 +73,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider, user),
+            provider_filter=self._ensure_provider_filter(provider),
             in_library_only=True,
         )
         if search and len(result) < 25 and not offset:
@@ -97,7 +90,7 @@ class PodcastsController(MediaControllerBase[Podcast]):
                 genre_ids=genre,
                 limit=limit,
                 order_by=order_by,
-                provider_filter=self._ensure_provider_filter(provider, user),
+                provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
                 in_library_only=True,

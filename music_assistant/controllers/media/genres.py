@@ -333,7 +333,6 @@ class GenreController(MediaControllerBase[Genre]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
-        username_or_user_id: str | None = None,
         hide_empty: bool | None = None,
         media_type: MediaType | None = None,
         **kwargs: Any,

@@ -332,7 +332,6 @@ class MusicController(CoreController):
         media_types: list[MediaType] = MediaType.ALL,
         limit: int = 25,
         library_only: bool = False,
-        username_or_user_id: str | None = None,
     ) -> SearchResults:
         """Perform global search for media items on all providers.
 
@@ -341,10 +340,6 @@ class MusicController(CoreController):
         :param limit: number of items to return in the search (per type).
         :param username_or_user_id: Get items of this user instead of authenticated user. Needs sufficient permissions.
         """
-        user: User | None = None
-        if username_or_user_id:
-            # below raises if permissions are insufficient
-            user = await self.get_requested_user_if_authorized(username_or_user_id)
         # use cache to avoid repeated searches
         plugin_search_providers = [
             p.instance_id
@@ -353,7 +348,7 @@ class MusicController(CoreController):
                 priority=(ProviderType.PLUGIN,),
             )
         ]
-        search_providers = sorted(self.get_unique_providers(user) + plugin_search_providers)
+        search_providers = sorted(self.get_unique_providers() + plugin_search_providers)
         cache_provider_key = "library" if library_only else ",".join(search_providers)
         cache_key = f"{search_query}{'-'.join(sorted([mt.value for mt in media_types]))}-{limit}-{library_only}-{cache_provider_key}"
         if cache := await self.mass.cache.get(
@@ -777,12 +772,7 @@ class MusicController(CoreController):
         self, limit: int = 10, all_users: bool = False, username_or_user_id: str | None = None
     ) -> list[ItemMapping]:
         """Return a list of the Audiobooks and PodcastEpisodes that are in progress."""
-        user: User | None = None
-        if username_or_user_id:
-            all_users = False
-            # below will raise if permissions are missing
-            user = await self.get_requested_user_if_authorized(username_or_user_id)
-        available_providers = ("library", *self.get_unique_providers(user))
+        available_providers = ("library", *self.get_unique_providers())
         available_providers_str = "(" + ",".join(f'"{x}"' for x in available_providers) + ")"
 
         # An audiobook can be part of the library, in contrast to podcast episodes.
@@ -802,7 +792,7 @@ class MusicController(CoreController):
             f"EXISTS (SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} m "
             "WHERE m.item_id = p.item_id AND m.media_type = p.media_type "
         )
-        if not all_users and (user or (user := get_current_user())):
+        if not all_users and (user := get_current_user()):
             filter_for_str = available_providers_str
             if user.provider_filter:
                 filter_for_str = "(" + ",".join(f'"{x}"' for x in user.provider_filter) + ")"
@@ -906,9 +896,7 @@ class MusicController(CoreController):
         )
 
     @api_command("music/recommendations")
-    async def recommendations(
-        self, username_or_user_id: str | None = None
-    ) -> list[RecommendationFolder]:
+    async def recommendations(self) -> list[RecommendationFolder]:
         """Get all recommendations.
 
         :param username_or_user_id: Get recommendations for this user instead of authenticated user. Needs sufficient permissions.
@@ -916,13 +904,7 @@ class MusicController(CoreController):
         providers_with_recommendations = self.mass.get_providers_supporting_feature(
             ProviderFeature.RECOMMENDATIONS,
         )
-        user: User | None = None
-        if username_or_user_id:
-            # below raises if insufficient permissions
-            user = await self.get_requested_user_if_authorized(username_or_user_id)
-        recommendation_providers = self._apply_user_provider_filter(
-            providers_with_recommendations, user=user
-        )
+        recommendation_providers = self._apply_user_provider_filter(providers_with_recommendations)
         results_per_provider: list[list[RecommendationFolder]] = await asyncio.gather(
             self._get_default_recommendations(),
             *[
@@ -3727,7 +3709,6 @@ class MusicController(CoreController):
             if media_type and media_type != MediaType.UNKNOWN
             else MediaType.ALL,
             limit=8,
-            username_or_user_id=username_or_user_id,
         )
         for results in (
             search_results.tracks,

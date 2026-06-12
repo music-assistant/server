@@ -35,8 +35,6 @@ from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.auth import User
-
     from music_assistant import MusicAssistant
     from music_assistant.models.metadata_provider import MetadataProvider
 
@@ -86,7 +84,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         order_by: str = "sort_name",
         provider: str | list[str] | None = None,
         genre: int | list[int] | None = None,
-        username_or_user_id: str | None = None,
         album_artists_only: bool = False,
         **kwargs: Any,
     ) -> list[Artist]:
@@ -100,13 +97,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param provider: Filter by provider instance ID (single string or list).
         :param album_artists_only: Only return artists that have albums.
         :param genre: Filter by genre id(s).
-        :param username_or_user_id: Get items of this user instead of authenticated user. Needs sufficient permissions.
         """
-        user: User | None = None
-        if username_or_user_id:
-            # below raises if permissions are insufficient
-            user = await self.mass.music.get_requested_user_if_authorized(username_or_user_id)
-
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
         if album_artists_only:
@@ -121,7 +112,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             limit=limit,
             offset=offset,
             order_by=order_by,
-            provider_filter=self._ensure_provider_filter(provider, user),
+            provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
             in_library_only=True,
