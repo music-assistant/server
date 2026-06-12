@@ -1838,10 +1838,14 @@ class MusicController(CoreController):
             ):
                 query = (
                     f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
-                    f"WHERE media_type = '{ctrl.media_type}' "
-                    f"AND provider_instance = '{provider_instance}'"
+                    "WHERE media_type = :media_type "
+                    "AND provider_instance = :provider_instance"
                 )
-                for db_row in await self.database.get_rows_from_query(query, limit=100000):
+                params = {
+                    "media_type": ctrl.media_type.value,
+                    "provider_instance": provider_instance,
+                }
+                for db_row in await self.database.get_rows_from_query(query, params, limit=100000):
                     try:
                         await ctrl.remove_provider_mappings(db_row["item_id"], provider_instance)
                     except Exception as err:
