@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import MusicAssistantError, SetupFailedError
 from zeroconf import InterfaceChoice, IPVersion
 
 from music_assistant.helpers import uri, util
@@ -393,3 +393,42 @@ def test_get_zeroconf_args_all_interfaces() -> None:
     assert result["ip_version"] == IPVersion.All
     assert isinstance(result["interfaces"], list)
     assert "192.168.1.10" in result["interfaces"]
+
+
+@pytest.mark.parametrize(
+    ("machine", "capability", "should_raise"),
+    [
+        ("x86_64", "DEFAULT", True),
+        ("AMD64", "DEFAULT", True),
+        ("x86_64", "NO AVX", True),
+        ("x86_64", "AVX2", False),
+        ("x86_64", "AVX512", False),
+        # a future torch capability string we don't know about yet must fail open
+        ("x86_64", "AVX10", False),
+    ],
+)
+def test_verify_cpu_supports_ml_inference_x86(
+    machine: str, capability: str, should_raise: bool
+) -> None:
+    """x86 CPUs require AVX2/AVX512 for torch's FBGEMM quantized inference."""
+    with (
+        patch("music_assistant.helpers.util.platform.machine", return_value=machine),
+        patch("torch.backends.cpu.get_cpu_capability", return_value=capability),
+    ):
+        if should_raise:
+            with pytest.raises(SetupFailedError):
+                util.verify_cpu_supports_ml_inference()
+        else:
+            util.verify_cpu_supports_ml_inference()
+
+
+def test_verify_cpu_supports_ml_inference_arm() -> None:
+    """ARM machines pass without consulting torch (QNNPACK backend works there)."""
+    with (
+        patch("music_assistant.helpers.util.platform.machine", return_value="aarch64"),
+        patch(
+            "torch.backends.cpu.get_cpu_capability",
+            side_effect=AssertionError("torch must not be consulted on ARM"),
+        ),
+    ):
+        util.verify_cpu_supports_ml_inference()
