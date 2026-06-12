@@ -599,6 +599,7 @@ class TestMixerBuild:
         monkeypatch.setattr(mixer_module, "strip_silence", fake_strip)
 
         captured: dict[str, bytes] = {}
+        crossfade_marker = b"crossfade-output"
 
         async def fake_base_apply(
             _self: SmartFade,
@@ -607,7 +608,7 @@ class TestMixerBuild:
             _pcm_format: AudioFormat,
         ) -> AsyncGenerator[bytes]:
             captured["fade_out"] = fade_out_part
-            yield b"crossfade-output"
+            yield crossfade_marker
 
         monkeypatch.setattr(SmartFade, "apply", fake_base_apply)
 
@@ -624,8 +625,7 @@ class TestMixerBuild:
         )
         assert isinstance(smart_fade, StandardCrossFade)
 
-        # consume the generator to trigger apply(); chunks not inspected here
-        _ = [
+        chunks = [
             chunk
             async for chunk in smart_fade.apply(
                 fade_out_part=fade_out_data,
@@ -634,12 +634,13 @@ class TestMixerBuild:
             )
         ]
 
-        # The pre-crossfade slice (32s) plus the captured CF slice must equal 42s total.
-        # The CF is clamped to min(10, 42, 45) = 10s, so pre = 42 - 10 = 32s.
-        cf_size = _seconds(10)
-        assert len(captured["fade_out"]) == cf_size
-        total_pre_and_cf = _seconds(42)
-        assert _seconds(32) + cf_size == total_pre_and_cf
+        # The yielded pre-crossfade bytes are where the trim actually lands:
+        # 45s input - 3s measured silence - 10s clamped CF = 32s. Without the
+        # trim apply() would yield 35s here.
+        marker_idx = chunks.index(crossfade_marker)
+        pre_crossfade_bytes = sum(len(chunk) for chunk in chunks[:marker_idx])
+        assert pre_crossfade_bytes == _seconds(32)
+        assert len(captured["fade_out"]) == _seconds(10)
 
 
 # ---------------------------------------------------------------------------

@@ -75,7 +75,7 @@ class SmartFadesMixer:
                     await strip_silence(fade_out_data, pcm_format=pcm_format, reverse=True),
                     pcm_format,
                 )
-                trailing_silence_bytes = len(fade_out_data) - len(stripped)
+                trailing_silence_bytes = max(0, len(fade_out_data) - len(stripped))
             except Exception as err:
                 # a failed measurement degrades to the old late-boundary bookkeeping
                 # instead of killing the stream
