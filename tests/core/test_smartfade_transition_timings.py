@@ -705,6 +705,43 @@ class TestSilenceAwareAnchoring:
         with pytest.raises(ValueError, match="silent"):
             self._build_fade(silent_tail=40.0)
 
+    def test_partial_buffer_keeps_beats_aligned(self) -> None:
+        """
+        The live holdback buffer is rarely exactly 45s.
+
+        Beat coordinates must use the actual buffer length or every downbeat snap
+        is off by the difference.
+        """
+        duration = 240.0
+        fade = SmartCrossFade(
+            logger=LOGGER,
+            fade_out_analysis=_analysis(bpm=120.0, duration=duration),
+            fade_in_analysis=_analysis(bpm=120.0, duration=duration),
+        )
+        # 44.3s buffer: 0.7s short of the constant, like a real partial final chunk
+        partial_bytes = int(PCM.pcm_sample_size * 44.3)
+        frame_size = (PCM.bit_depth // 8) * PCM.channels
+        partial_bytes = (partial_bytes // frame_size) * frame_size
+        fade._build(partial_bytes, _seconds(45), PCM)
+        buffer_duration = partial_bytes / PCM.pcm_sample_size
+        # beats are on a strict 0.5s grid from t=0 in the analysis fixture;
+        # in real buffer coordinates each beat must satisfy
+        # (beat + duration - buffer_duration) % 0.5 == 0
+        offset = duration - buffer_duration
+        for beat in fade.fade_out_beats[:8]:
+            track_pos = beat + offset
+            assert abs(track_pos % 0.5) < 1e-3 or abs(track_pos % 0.5 - 0.5) < 1e-3, (
+                f"beat {beat:.4f} maps to track_pos {track_pos:.4f}, "
+                f"not on 0.5s grid (offset={offset:.4f})"
+            )
+        # the snapped crossfade start must land on a real downbeat (2s grid), not 0.7s off
+        crossfade_start = fade.effective_end - fade.timing_info.crossfade_duration
+        start_track_pos = crossfade_start + offset
+        assert abs(start_track_pos % 2.0) < 0.02 or abs(start_track_pos % 2.0 - 2.0) < 0.02, (
+            f"crossfade start {crossfade_start:.4f} maps to track_pos {start_track_pos:.4f}, "
+            f"not on 2s downbeat grid (offset={offset:.4f})"
+        )
+
     def test_fadeout_beats_are_masked_to_effective_end(self) -> None:
         """Beats in the silent tail are dropped so no downbeat sits beyond effective_end."""
         fade = self._build_fade(silent_tail=10.0)

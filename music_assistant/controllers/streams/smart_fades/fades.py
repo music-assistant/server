@@ -263,11 +263,11 @@ class SmartCrossFade(SmartFade):
             if fade_in_analysis.downbeats is not None
             else fade_in_analysis.beats
         )
-        # Shift fade-out beats from full-track to buffer-local coordinates
-        buffer_offset = max(0.0, (fade_out_analysis.duration or 0.0) - SMART_CROSSFADE_DURATION)
-        self.fade_out_beats: npt.NDArray[np.float32] = fade_out_analysis.beats - buffer_offset
+        # Store raw full-track beat grids; the shift to buffer-local coordinates
+        # happens in _setup_fadeout_window where the actual buffer length is known
+        self.fade_out_beats: npt.NDArray[np.float32] = fade_out_analysis.beats
         self.fade_out_downbeats: npt.NDArray[np.float32] = (
-            fade_out_analysis.downbeats - buffer_offset
+            fade_out_analysis.downbeats
             if fade_out_analysis.downbeats is not None
             else np.array([], dtype=np.float32)
         )
@@ -456,9 +456,11 @@ class SmartCrossFade(SmartFade):
 
         Sets ``self.effective_end``, optionally appends a ``FadeOutTrimFilter``
         (first in the chain, since this runs before any other filter is added),
-        and masks ``self.fade_out_beats`` / ``self.fade_out_downbeats`` to the
-        audible window.  Raises ``ValueError`` when the tail is too short to be
-        useful so the caller can fall back to a standard crossfade.
+        converts ``self.fade_out_beats`` / ``self.fade_out_downbeats`` from
+        full-track to buffer-local coordinates using the actual buffer length,
+        and masks them to the audible window.  Raises ``ValueError`` when the
+        tail is too short to be useful so the caller can fall back to a standard
+        crossfade.
 
         :param fade_out_bytes_len: Raw byte count of the fade-out holdback buffer.
         :param pcm_format: PCM format used to convert bytes to seconds.
@@ -487,6 +489,14 @@ class SmartCrossFade(SmartFade):
             # Without the trim the rendered stream still ends at buffer_duration,
             # so the anchor must follow it or every schedule lands early
             self.effective_end = buffer_duration
+
+        # Shift fade-out beats from full-track to buffer-local coordinates using the
+        # ACTUAL buffer length: the holdback yield loop leaves up to ~1s less than the
+        # constant 45s depending on chunk boundaries, and effective_end above is in real
+        # buffer coordinates — a constant-45 shift would misalign every beat by the difference
+        buffer_offset = max(0.0, (self.fade_out_analysis.duration or 0.0) - buffer_duration)
+        self.fade_out_beats = self.fade_out_beats - buffer_offset
+        self.fade_out_downbeats = self.fade_out_downbeats - buffer_offset
 
         # Mask fade-out beats to the audible buffer window; negative timestamps are
         # beats before the buffer, beats past effective_end sit in the silent tail
