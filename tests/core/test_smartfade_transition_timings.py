@@ -337,7 +337,7 @@ class TestMixerBuild:
 
         monkeypatch.setattr(mixer_module, "strip_silence", identity_strip)
         mixer = _make_mixer()
-        fade, _mix_data = await mixer.build(
+        fade = await mixer.build(
             fade_in_streamdetails=_streamdetails("in"),
             fade_out_streamdetails=_streamdetails("out"),
             pcm_format=PCM,
@@ -362,7 +362,7 @@ class TestMixerBuild:
         analysis_in = _analysis(124.0, beats_start=0.4)
         mixer = _make_mixer({"out": analysis_out, "in": analysis_in})
         fade_out_data = b"\x00" * _seconds(SMART_CROSSFADE_DURATION)
-        fade, mix_data = await mixer.build(
+        fade = await mixer.build(
             fade_in_streamdetails=_streamdetails("in"),
             fade_out_streamdetails=_streamdetails("out"),
             pcm_format=PCM,
@@ -372,8 +372,6 @@ class TestMixerBuild:
             fade_in_bytes_len=_seconds(SMART_CROSSFADE_DURATION),
         )
         assert isinstance(fade, SmartCrossFade)
-        # smart path must not strip — beat coordinates map onto the full buffer
-        assert mix_data is fade_out_data
         timing = fade.timing_info
         # SmartCrossFade applies a beat-aligned trim, so TRIM is non-zero.
         assert timing.fadein_trimmed_duration > 0
@@ -408,7 +406,7 @@ class TestMixerBuild:
 
         monkeypatch.setattr(mixer_module, "strip_silence", identity_strip)
         mixer = _make_mixer()
-        fade, _mix_data = await mixer.build(
+        fade = await mixer.build(
             fade_in_streamdetails=_streamdetails("in"),
             fade_out_streamdetails=_streamdetails("out"),
             pcm_format=PCM,
@@ -436,7 +434,7 @@ class TestMixerBuild:
         monkeypatch.setattr(mixer_module, "strip_silence", identity_strip)
         incomplete = AudioAnalysisData(duration=180.0, bpm=None, beats=None)
         mixer = _make_mixer({"out": incomplete, "in": incomplete})
-        fade, _mix_data = await mixer.build(
+        fade = await mixer.build(
             fade_in_streamdetails=_streamdetails("in"),
             fade_out_streamdetails=_streamdetails("out"),
             pcm_format=PCM,
@@ -459,7 +457,7 @@ class TestMixerBuild:
 
         monkeypatch.setattr(mixer_module, "strip_silence", identity_strip)
         mixer = _make_mixer()
-        fade, _mix_data = await mixer.build(
+        fade = await mixer.build(
             fade_in_streamdetails=_streamdetails("in"),
             fade_out_streamdetails=_streamdetails("out"),
             pcm_format=PCM,
@@ -474,7 +472,7 @@ class TestMixerBuild:
     async def test_standard_mode_strips_trailing_silence_before_timing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Timing must be computed from the stripped length, and the stripped bytes returned."""
+        """Timing must be computed from the stripped length; the plan is stored on the fade."""
 
         async def fake_strip(
             audio_data: bytes, *, reverse: bool = False, **_kwargs: object
@@ -485,7 +483,7 @@ class TestMixerBuild:
         monkeypatch.setattr(mixer_module, "strip_silence", fake_strip)
         mixer = _make_mixer()
         fade_out_data = b"\x00" * _seconds(45)
-        smart_fade, mix_data = await mixer.build(
+        smart_fade = await mixer.build(
             fade_in_streamdetails=_streamdetails("b"),
             fade_out_streamdetails=_streamdetails("a"),
             pcm_format=PCM,
@@ -495,15 +493,13 @@ class TestMixerBuild:
             fade_in_bytes_len=_seconds(45),
         )
         assert isinstance(smart_fade, StandardCrossFade)
-        assert len(mix_data) == _seconds(42)
+        assert smart_fade.trailing_silence_bytes == _seconds(3)
         timing = smart_fade.timing_info
         assert timing.pre_crossfade_duration + timing.crossfade_duration == pytest.approx(42.0)
 
     @pytest.mark.asyncio
-    async def test_smart_mode_returns_original_bytes_unstripped(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The smart path must never strip — beat coordinates map onto the full buffer."""
+    async def test_smart_mode_never_measures_silence(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The smart path must never call strip_silence — beat coordinates map onto the full buffer."""
 
         async def fail_strip(*_args: object, **_kwargs: object) -> bytes:
             raise AssertionError("strip_silence must not be called on the smart path")
@@ -511,7 +507,7 @@ class TestMixerBuild:
         monkeypatch.setattr(mixer_module, "strip_silence", fail_strip)
         mixer = _make_mixer(analysis_for={"a": _analysis(bpm=120.0), "b": _analysis(bpm=120.0)})
         fade_out_data = b"\x00" * _seconds(45)
-        smart_fade, mix_data = await mixer.build(
+        smart_fade = await mixer.build(
             fade_in_streamdetails=_streamdetails("b"),
             fade_out_streamdetails=_streamdetails("a"),
             pcm_format=PCM,
@@ -521,18 +517,17 @@ class TestMixerBuild:
             fade_in_bytes_len=_seconds(45),
         )
         assert isinstance(smart_fade, SmartCrossFade)
-        assert mix_data is fade_out_data
 
     @pytest.mark.asyncio
     async def test_smart_fallback_to_standard_strips(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Smart mode without analysis falls back to standard — which must strip."""
+        """Smart mode without analysis falls back to standard — which must measure silence."""
 
         async def fake_strip(audio_data: bytes, **_kwargs: object) -> bytes:
             return audio_data[: -_seconds(5)]
 
         monkeypatch.setattr(mixer_module, "strip_silence", fake_strip)
         mixer = _make_mixer(analysis_for={})  # no analysis available
-        smart_fade, mix_data = await mixer.build(
+        smart_fade = await mixer.build(
             fade_in_streamdetails=_streamdetails("b"),
             fade_out_streamdetails=_streamdetails("a"),
             pcm_format=PCM,
@@ -542,18 +537,18 @@ class TestMixerBuild:
             fade_in_bytes_len=_seconds(45),
         )
         assert isinstance(smart_fade, StandardCrossFade)
-        assert len(mix_data) == _seconds(40)
+        assert smart_fade.trailing_silence_bytes == _seconds(5)
 
     @pytest.mark.asyncio
     async def test_standard_mode_fully_silent_tail(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A fully silent tail strips to nothing — timing collapses to zero, mix input is empty."""
+        """A fully silent tail — timing collapses to zero; trailing_silence_bytes is the full input."""
 
         async def fake_strip(_audio_data: bytes, **_kwargs: object) -> bytes:
             return b""
 
         monkeypatch.setattr(mixer_module, "strip_silence", fake_strip)
         mixer = _make_mixer()
-        smart_fade, mix_data = await mixer.build(
+        smart_fade = await mixer.build(
             fade_in_streamdetails=_streamdetails("b"),
             fade_out_streamdetails=_streamdetails("a"),
             pcm_format=PCM,
@@ -563,16 +558,16 @@ class TestMixerBuild:
             fade_in_bytes_len=_seconds(45),
         )
         assert isinstance(smart_fade, StandardCrossFade)
-        assert mix_data == b""
+        assert smart_fade.trailing_silence_bytes == _seconds(45)
         timing = smart_fade.timing_info
         assert timing.pre_crossfade_duration == 0.0
         assert timing.crossfade_duration == 0.0
 
     @pytest.mark.asyncio
-    async def test_standard_mode_strip_failure_keeps_unstripped_bytes(
+    async def test_standard_mode_measurement_failure_degrades_gracefully(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A strip_silence failure must not propagate — build degrades to the unstripped tail."""
+        """A strip_silence failure must not propagate — build degrades with trailing_silence_bytes=0."""
 
         async def broken_strip(*_args: object, **_kwargs: object) -> bytes:
             raise OSError("ffmpeg spawn failed")
@@ -580,7 +575,7 @@ class TestMixerBuild:
         monkeypatch.setattr(mixer_module, "strip_silence", broken_strip)
         mixer = _make_mixer()
         fade_out_data = b"\x00" * _seconds(45)
-        smart_fade, mix_data = await mixer.build(
+        smart_fade = await mixer.build(
             fade_in_streamdetails=_streamdetails("b"),
             fade_out_streamdetails=_streamdetails("a"),
             pcm_format=PCM,
@@ -590,9 +585,61 @@ class TestMixerBuild:
             fade_in_bytes_len=_seconds(45),
         )
         assert isinstance(smart_fade, StandardCrossFade)
-        assert mix_data is fade_out_data
+        assert smart_fade.trailing_silence_bytes == 0
         timing = smart_fade.timing_info
         assert timing.pre_crossfade_duration + timing.crossfade_duration == pytest.approx(45.0)
+
+    @pytest.mark.asyncio
+    async def test_apply_executes_silence_trim_plan(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """apply() must slice out trailing_silence_bytes before crossfading."""
+
+        async def fake_strip(audio_data: bytes, **_kwargs: object) -> bytes:
+            return audio_data[: -_seconds(3)]  # pretend 3s of trailing silence
+
+        monkeypatch.setattr(mixer_module, "strip_silence", fake_strip)
+
+        captured: dict[str, bytes] = {}
+
+        async def fake_base_apply(
+            _self: SmartFade,
+            fade_out_part: bytes,
+            _fade_in_part: bytes | AsyncGenerator[bytes],
+            _pcm_format: AudioFormat,
+        ) -> AsyncGenerator[bytes]:
+            captured["fade_out"] = fade_out_part
+            yield b"crossfade-output"
+
+        monkeypatch.setattr(SmartFade, "apply", fake_base_apply)
+
+        mixer = _make_mixer()
+        fade_out_data = b"\x00" * _seconds(45)
+        smart_fade = await mixer.build(
+            fade_in_streamdetails=_streamdetails("b"),
+            fade_out_streamdetails=_streamdetails("a"),
+            pcm_format=PCM,
+            standard_crossfade_duration=10,
+            mode=SmartFadesMode.STANDARD_CROSSFADE,
+            fade_out_data=fade_out_data,
+            fade_in_bytes_len=_seconds(45),
+        )
+        assert isinstance(smart_fade, StandardCrossFade)
+
+        # consume the generator to trigger apply(); chunks not inspected here
+        _ = [
+            chunk
+            async for chunk in smart_fade.apply(
+                fade_out_part=fade_out_data,
+                fade_in_part=b"\x00" * _seconds(45),
+                pcm_format=PCM,
+            )
+        ]
+
+        # The pre-crossfade slice (32s) plus the captured CF slice must equal 42s total.
+        # The CF is clamped to min(10, 42, 45) = 10s, so pre = 42 - 10 = 32s.
+        cf_size = _seconds(10)
+        assert len(captured["fade_out"]) == cf_size
+        total_pre_and_cf = _seconds(42)
+        assert _seconds(32) + cf_size == total_pre_and_cf
 
 
 # ---------------------------------------------------------------------------

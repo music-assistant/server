@@ -1904,7 +1904,7 @@ class StreamsAudio:
                         fade_in_bytes_consumed += len(chunk)
                         yield chunk
 
-                smart_fade, mix_fade_out_data = await self.smart_fades_mixer.build(
+                smart_fade = await self.smart_fades_mixer.build(
                     fade_in_streamdetails=cast("StreamDetails", next_queue_item.streamdetails),
                     fade_out_streamdetails=streamdetails,
                     pcm_format=pcm_format,
@@ -1923,7 +1923,7 @@ class StreamsAudio:
                 async for mix_chunk in self.smart_fades_mixer.mix(
                     smart_fade,
                     fade_in_part=_limited_fade_in(),
-                    fade_out_part=mix_fade_out_data,
+                    fade_out_part=fade_out_data,
                     pcm_format=pcm_format,
                 ):
                     if first_part_written < fadeout_share_bytes:
@@ -2161,14 +2161,13 @@ class StreamsAudio:
             # Build eagerly so seek_position is set before PlayLogEntry is appended —
             # consumer-paced mix() would otherwise let the queue briefly report 0.
             crossfade_smart_fade: SmartFade | None = None
-            mix_fadeout_part: bytes = b""
             if (
                 last_fadeout_part
                 and last_streamdetails
                 and crossfade_buffer_size > 0
                 and smart_fades_mode != SmartFadesMode.DISABLED
             ):
-                crossfade_smart_fade, mix_fadeout_part = await self.smart_fades_mixer.build(
+                crossfade_smart_fade = await self.smart_fades_mixer.build(
                     fade_in_streamdetails=queue_track.streamdetails,
                     fade_out_streamdetails=last_streamdetails,
                     pcm_format=pcm_format,
@@ -2253,7 +2252,7 @@ class StreamsAudio:
                         async for mix_chunk in self.smart_fades_mixer.mix(
                             crossfade_smart_fade,
                             fade_in_part=fadein_part,
-                            fade_out_part=mix_fadeout_part,
+                            fade_out_part=last_fadeout_part,
                             pcm_format=pcm_format,
                         ):
                             yield mix_chunk

@@ -750,6 +750,7 @@ class StandardCrossFade(SmartFade):
         """Initialize StandardCrossFade with crossfade duration."""
         super().__init__(logger)
         self.crossfade_duration = crossfade_duration
+        self.trailing_silence_bytes: int = 0
 
     def _build(
         self,
@@ -783,6 +784,8 @@ class StandardCrossFade(SmartFade):
 
         Only the overlapping portions are crossfaded, not the full buffers.
         """
+        if self.trailing_silence_bytes:
+            fade_out_part = fade_out_part[: len(fade_out_part) - self.trailing_silence_bytes]
         frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
         crossfade_size = int(pcm_format.pcm_sample_size * self.timing_info.crossfade_duration)
         crossfade_size = (crossfade_size // frame_size) * frame_size

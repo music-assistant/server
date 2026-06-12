@@ -39,16 +39,14 @@ class SmartFadesMixer:
         mode: SmartFadesMode,
         fade_out_data: bytes,
         fade_in_bytes_len: int,
-    ) -> tuple[SmartFade, bytes]:
+    ) -> SmartFade:
         """
-        Pick the SmartFade implementation, prime its filters, return it with the mix input.
+        Pick the SmartFade implementation, prime its filters, and return it.
 
-        Returns a tuple of the built SmartFade and the fade-out bytes to feed into
-        ``mix()``. For the standard crossfade path (explicit mode or smart-crossfade
-        fallback) trailing silence is stripped from those bytes BEFORE timing is
-        computed, so ``timing_info`` always describes the audio that will actually be
-        rendered. Callers must keep their original buffer for failure fallbacks and
-        play-log corrections.
+        For the standard crossfade path (explicit mode or smart-crossfade fallback)
+        the trailing silence in ``fade_out_data`` is measured so that ``timing_info``
+        reflects the audio that will actually be rendered.  The trim itself is deferred
+        to ``apply()``, which executes it as a plain slice — no bytes are modified here.
 
         :param fade_in_streamdetails: Stream details for the incoming track.
         :param fade_out_streamdetails: Stream details for the outgoing track.
@@ -68,22 +66,29 @@ class SmartFadesMixer:
                 pcm_format=pcm_format,
             )
         if smart_fade is None:
-            # standard path — explicit mode AND smart-crossfade fallback land here
+            # standard path — explicit mode AND smart-crossfade fallback land here.
+            # Measure the trailing silence here so timing_info reflects the audio that
+            # will actually be rendered; apply() executes the cut as a plain slice.
+            trailing_silence_bytes = 0
             try:
-                fade_out_data = align_audio_to_frame_boundary(
+                stripped = align_audio_to_frame_boundary(
                     await strip_silence(fade_out_data, pcm_format=pcm_format, reverse=True),
                     pcm_format,
                 )
+                trailing_silence_bytes = len(fade_out_data) - len(stripped)
             except Exception as err:
-                # degrade to the unstripped tail (late-boundary bookkeeping)
-                # rather than killing the stream
-                self.logger.warning("Stripping trailing silence failed: %s", err)
+                # a failed measurement degrades to the old late-boundary bookkeeping
+                # instead of killing the stream
+                self.logger.warning("Measuring trailing silence failed: %s", err)
             smart_fade = StandardCrossFade(
                 logger=self.logger,
                 crossfade_duration=standard_crossfade_duration,
             )
-            smart_fade._build(len(fade_out_data), fade_in_bytes_len, pcm_format)
-        return smart_fade, fade_out_data
+            smart_fade.trailing_silence_bytes = trailing_silence_bytes
+            smart_fade._build(
+                len(fade_out_data) - trailing_silence_bytes, fade_in_bytes_len, pcm_format
+            )
+        return smart_fade
 
     async def mix(
         self,
