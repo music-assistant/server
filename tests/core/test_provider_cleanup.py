@@ -195,3 +195,42 @@ async def test_cleanup_suppresses_media_item_updated_events(mass: MusicAssistant
     updated = await artists.get_library_item(db_id)
     assert {pm.provider_instance for pm in updated.provider_mappings} == {STREAM_INSTANCE}
     assert [img.provider for img in (updated.metadata.images or [])] == [STREAM_INSTANCE]
+
+
+async def test_remove_provider_mappings_emits_event_without_image_changes(
+    mass: MusicAssistant,
+) -> None:
+    """Removing mappings emits an update event even when no images were stripped."""
+    artists = mass.music.artists
+    # artist on two providers but without any images, so nothing gets stripped
+    artist = Artist(
+        item_id="fs1",
+        provider=FS_INSTANCE,
+        name="No Image Artist",
+        provider_mappings={
+            ProviderMapping(
+                item_id="fs1", provider_domain="filesystem_local", provider_instance=FS_INSTANCE
+            ),
+            ProviderMapping(
+                item_id="sp1", provider_domain="spotify", provider_instance=STREAM_INSTANCE
+            ),
+        },
+    )
+    db_artist = await artists.add_item_to_library(artist)
+    db_id = int(db_artist.item_id)
+
+    events: list[Artist] = []
+    real_signal_event = mass.signal_event
+
+    def _spy(event: EventType, object_id: str | None = None, data: object = None) -> None:
+        if event == EventType.MEDIA_ITEM_UPDATED and isinstance(data, Artist):
+            events.append(data)
+        real_signal_event(event, object_id, data)
+
+    with patch.object(mass, "signal_event", side_effect=_spy):
+        await artists.remove_provider_mappings(db_id, FS_INSTANCE)
+
+    # the update event fires purely because a provider mapping was removed, and its
+    # payload reflects the removed mapping
+    assert len(events) == 1
+    assert {pm.provider_instance for pm in events[0].provider_mappings} == {STREAM_INSTANCE}

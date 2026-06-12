@@ -824,11 +824,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider_item_id,
                 db_id,
             )
+            # the removed provider mapping is itself a change to the item, so always notify
+            # (unless suppressed during a bulk cleanup); re-fetch first when images were
+            # stripped so the event payload stays accurate
             if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
-                if images_changed:
-                    # re-fetch so the event payload reflects the stripped images
-                    library_item = await self.get_library_item(db_id)
-                self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
+                event_item = await self.get_library_item(db_id) if images_changed else library_item
+                self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, event_item.uri, event_item)
         else:
             # remove item if it has no more providers
             with suppress(AssertionError):
@@ -868,11 +869,12 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 provider_instance_id,
                 db_id,
             )
+            # the removed provider mapping(s) are themselves a change to the item, so
+            # always notify (unless suppressed during a bulk cleanup); re-fetch first when
+            # images were stripped so the event payload stays accurate
             if not SUPPRESS_MEDIA_ITEM_UPDATES.get():
-                if images_changed:
-                    # re-fetch so the event payload reflects the stripped images
-                    library_item = await self.get_library_item(db_id)
-                self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
+                event_item = await self.get_library_item(db_id) if images_changed else library_item
+                self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, event_item.uri, event_item)
         else:
             # remove item if it has no more providers
             with suppress(AssertionError):
