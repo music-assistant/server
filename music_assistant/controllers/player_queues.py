@@ -79,6 +79,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    UseImpersonatedUser,
     get_current_user,
     set_current_user,
 )
@@ -550,10 +551,11 @@ class PlayerQueuesController(CoreController):
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
-        # Lock is acquired by the @handle_play_action decorator on the internal handler
-        await self._handle_play_media(
-            queue_id, media, option, radio_mode, start_item, username, sort_by
-        )
+        async with UseImpersonatedUser(self.mass, username):
+            # Lock is acquired by the @handle_play_action decorator on the internal handler
+            await self._handle_play_media(
+                queue_id, media, option, radio_mode, start_item, username, sort_by
+            )
 
     @api_command("player_queues/move_item")
     def move_item(self, queue_id: str, queue_item_id: str, pos_shift: int = 1) -> None:

@@ -14,7 +14,6 @@ from datetime import datetime
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, Final, cast
 
-from music_assistant_models.auth import UserRole
 from music_assistant_models.background_task import BackgroundTask, TaskMetadata, TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
@@ -26,7 +25,6 @@ from music_assistant_models.enums import (
     TaskStatus,
 )
 from music_assistant_models.errors import (
-    InsufficientPermissions,
     InvalidDataError,
     InvalidProviderID,
     InvalidProviderURI,
@@ -80,7 +78,10 @@ from music_assistant.constants import (
     VACUUM_MIN_RECLAIM_RATIO,
 )
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    UseImpersonatedUser,
+    get_current_user,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings, compare_version, create_safe_string
 from music_assistant.helpers.database import UNSET, DatabaseConnection
@@ -3659,57 +3660,58 @@ class MusicController(CoreController):
         username_or_user_id: str | None = None,
     ) -> MediaItemType | ItemMapping | None:
         """Try to find a media item (such as a playlist) by name."""
-        # Future todo: enhance this method with AI capabilities to allow typos and
-        # natural language.
-        searchname = name.lower()
-        library_functions = [
-            x
-            for x in (
-                self.playlists.library_items,
-                self.radio.library_items,
-                self.tracks.library_items,
-                self.albums.library_items,
-                self.artists.library_items,
-                self.audiobooks.library_items,
-                self.podcasts.library_items,
+        async with UseImpersonatedUser(self.mass, username_or_user_id):
+            # Future todo: enhance this method with AI capabilities to allow typos and
+            # natural language.
+            searchname = name.lower()
+            library_functions = [
+                x
+                for x in (
+                    self.playlists.library_items,
+                    self.radio.library_items,
+                    self.tracks.library_items,
+                    self.albums.library_items,
+                    self.artists.library_items,
+                    self.audiobooks.library_items,
+                    self.podcasts.library_items,
+                )
+                if not media_type or media_type.value.lower() in x.__name__
+            ]
+            # prefer (exact) lookup in the library by name
+            for func in library_functions:
+                result = await func(search=searchname, username_or_user_id=username_or_user_id)
+                for item in result:
+                    # handle optional artist filter
+                    if (
+                        artist
+                        and (artists := getattr(item, "artists", None))
+                        and not any(x for x in artists if x.name.lower() == artist.lower())
+                    ):
+                        continue
+                    # handle optional album filter
+                    if (
+                        album
+                        and (item_album := getattr(item, "album", None))
+                        and item_album.name.lower() != album.lower()
+                    ):
+                        continue
+                    if searchname == item.name.lower():
+                        return item
+            # nothing found in the library, fallback to global search
+            search_name = name
+            if album and artist:
+                search_name = f"{artist} - {album} - {name}"
+            elif album:
+                search_name = f"{album} - {name}"
+            elif artist:
+                search_name = f"{artist} - {name}"
+            search_results = await self.search(
+                search_query=search_name,
+                media_types=[media_type]
+                if media_type and media_type != MediaType.UNKNOWN
+                else MediaType.ALL,
+                limit=8,
             )
-            if not media_type or media_type.value.lower() in x.__name__
-        ]
-        # prefer (exact) lookup in the library by name
-        for func in library_functions:
-            result = await func(search=searchname, username_or_user_id=username_or_user_id)
-            for item in result:
-                # handle optional artist filter
-                if (
-                    artist
-                    and (artists := getattr(item, "artists", None))
-                    and not any(x for x in artists if x.name.lower() == artist.lower())
-                ):
-                    continue
-                # handle optional album filter
-                if (
-                    album
-                    and (item_album := getattr(item, "album", None))
-                    and item_album.name.lower() != album.lower()
-                ):
-                    continue
-                if searchname == item.name.lower():
-                    return item
-        # nothing found in the library, fallback to global search
-        search_name = name
-        if album and artist:
-            search_name = f"{artist} - {album} - {name}"
-        elif album:
-            search_name = f"{album} - {name}"
-        elif artist:
-            search_name = f"{artist} - {name}"
-        search_results = await self.search(
-            search_query=search_name,
-            media_types=[media_type]
-            if media_type and media_type != MediaType.UNKNOWN
-            else MediaType.ALL,
-            limit=8,
-        )
         for results in (
             search_results.tracks,
             search_results.albums,
@@ -3730,81 +3732,46 @@ class MusicController(CoreController):
 
         If username_or_user_id is specified, verifies additionally, if this user may access this item. This requires the requesting (i.e. authorized user) to be able to access this item as well.
         """
-        user: User | None = None
-        if username_or_user_id:
-            # below raises if permissions are insufficient
-            user = await self.mass.music.get_requested_user_if_authorized(username_or_user_id)
+        async with UseImpersonatedUser(self.mass, username_or_user_id):
+            user = get_current_user()
 
-        try:
-            media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
-        except (InvalidProviderURI, InvalidProviderID):
-            return False
+            try:
+                media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
+            except (InvalidProviderURI, InvalidProviderID):
+                return False
 
-        # fast return for a provider uri which is not part of a user with a provider filter
-        if (
-            provider_instance_id_or_domain != "library"
-            and user
-            and user.provider_filter
-            and provider_instance_id_or_domain not in user.provider_filter
-        ):
-            return False
+            # fast return for a provider uri which is not part of a user with a provider filter
+            if (
+                provider_instance_id_or_domain != "library"
+                and user
+                and user.provider_filter
+                and provider_instance_id_or_domain not in user.provider_filter
+            ):
+                return False
 
-        # verify that item itself exists
-        try:
-            item = await self.get_item(
-                media_type=media_type,
-                item_id=item_id,
-                provider_instance_id_or_domain=provider_instance_id_or_domain,
-                allow_update_metadata=False,  # no need trigger more methods
-            )
-        except MediaNotFoundError:
-            return False
+            # verify that item itself exists
+            try:
+                item = await self.get_item(
+                    media_type=media_type,
+                    item_id=item_id,
+                    provider_instance_id_or_domain=provider_instance_id_or_domain,
+                    allow_update_metadata=False,  # no need trigger more methods
+                )
+            except MediaNotFoundError:
+                return False
 
-        # non library item handling for users with no filter, or no user at all
-        if (
-            provider_instance_id_or_domain != "library"
-            or not user
-            or (user and not user.provider_filter)
-            or isinstance(item, BrowseFolder)
-        ):
-            return True
-
-        # library item handling for users with provider filter
-        for provider_mapping in item.provider_mappings:
-            if provider_mapping.provider_instance in user.provider_filter:
+            # non library item handling for users with no filter, or no user at all
+            if (
+                provider_instance_id_or_domain != "library"
+                or not user
+                or (user and not user.provider_filter)
+                or isinstance(item, BrowseFolder)
+            ):
                 return True
 
+            # library item handling for users with provider filter
+            for provider_mapping in item.provider_mappings:
+                if provider_mapping.provider_instance in user.provider_filter:
+                    return True
+
         return False
-
-    async def get_requested_user_if_authorized(self, username_or_user_id: str) -> User:
-        """Return requested user if authenticated user may access all music providers of this user.
-
-        Raises InsufficientPermissions otherwise.
-        """
-        requested_user = await self.mass.webserver.auth.get_user_by_id_or_name(username_or_user_id)
-        if not requested_user:
-            raise InvalidDataError(
-                f"A user with user id or name {username_or_user_id} is not available."
-            )
-
-        authenticated_user = get_current_user()
-        if not authenticated_user:
-            raise InsufficientPermissions("Only an authenticated user may request another user.")
-
-        if requested_user == authenticated_user:
-            return requested_user
-
-        if authenticated_user.role == UserRole.ADMIN or not authenticated_user.provider_filter:
-            # If no provider filter is set, a user is allowed to access any provider.
-            return requested_user
-
-        if not requested_user.provider_filter or not set(requested_user.provider_filter).issubset(
-            authenticated_user.provider_filter
-        ):
-            # Requested user may access any provider, but we excluded that the authenticated user can do the
-            # same already
-            raise InsufficientPermissions(
-                f"The authenticated user {authenticated_user.display_name} lacks permission to access all music providers accessible to {requested_user.display_name}."
-            )
-
-        return requested_user

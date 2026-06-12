@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any, cast
+from types import TracebackType
+from typing import TYPE_CHECKING, Any, Self, cast
 
 from aiohttp import web
 from music_assistant_models.auth import AuthProviderType, User, UserRole
+from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 
@@ -24,6 +26,8 @@ USER_CONTEXT_KEY = "authenticated_user"
 # ContextVar for tracking current user and token across async calls
 current_user: ContextVar[User | None] = ContextVar("current_user", default=None)
 current_token: ContextVar[str | None] = ContextVar("current_token", default=None)
+# ContextVar to impersonate another user as and admin user. Used in HA context.
+impersonated_user: ContextVar[User | None] = ContextVar("impersonated_user", default=None)
 # ContextVar for tracking the sendspin player associated with the current connection
 sendspin_player_id: ContextVar[str | None] = ContextVar("sendspin_player_id", default=None)
 
@@ -162,6 +166,8 @@ def get_current_user() -> User | None:
 
     :return: The current user or None if not authenticated.
     """
+    if impersonated_user := get_impersonated_user():
+        return impersonated_user
     return current_user.get()
 
 
@@ -172,6 +178,24 @@ def set_current_user(user: User | None) -> None:
     :param user: The user to set as current.
     """
     current_user.set(user)
+
+
+def get_impersonated_user() -> User | None:
+    """
+    Get the current impersonated user from context.
+
+    :return: The current impersonated user or None if not existing.
+    """
+    return impersonated_user.get()
+
+
+def set_impersonated_user(user: User | None) -> None:
+    """
+    Set the current impersonated user in context.
+
+    :param user: The user to set as impersonated.
+    """
+    impersonated_user.set(user)
 
 
 def get_current_token() -> str | None:
@@ -278,3 +302,46 @@ async def auth_middleware(request: web.Request, handler: Any) -> web.StreamRespo
     # Let the handler decide if authentication is required
     # The handler will call require_authentication() if needed
     return cast("web.StreamResponse", await handler(request))
+
+
+class UseImpersonatedUser:
+    """Use impersonated user context manager.
+
+    If username_or_user_id is None this class does nothing. Otherwise, only an Admin
+    may impersonate another user. This is used for calls from HA (e.g. play_media on
+    the player queues controller).
+    """
+
+    def __init__(self, mass: MusicAssistant, username_or_user_id: str | None) -> None:
+        """Init."""
+        self.mass = mass
+        self.username_or_user_id = username_or_user_id
+        if (
+            username_or_user_id is not None
+            and (authenticated_user := get_current_user())
+            and authenticated_user.role != UserRole.ADMIN
+        ):
+            raise InsufficientPermissions("Can only impersonate another user as Admin.")
+
+    async def __aenter__(self) -> Self:
+        """Set the impersonated if given."""
+        if self.username_or_user_id is None:
+            return self
+        if impersonated_user := await self.mass.webserver.auth.get_user_by_id_or_name(
+            self.username_or_user_id
+        ):
+            set_impersonated_user(impersonated_user)
+            return self
+        raise InvalidDataError(
+            f"A user with user id or name {self.username_or_user_id} is not available."
+        )
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool | None:
+        """Unset the impersonated user."""
+        set_impersonated_user(None)
+        return None
