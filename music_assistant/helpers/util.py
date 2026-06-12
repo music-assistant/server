@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 import chardet
 import ifaddr
 from music_assistant_models.enums import AlbumType, IdentifierType
+from music_assistant_models.errors import SetupFailedError
 from zeroconf import InterfaceChoice, IPVersion
 
 from music_assistant.constants import (
@@ -127,6 +128,27 @@ def get_total_system_memory() -> float:
         # Fallback if sysconf is not available (e.g., Windows)
         # Return a conservative default to disable buffering by default
         return 0.0
+
+
+def verify_cpu_supports_ml_inference() -> None:
+    """
+    Verify the CPU can run on-device ML (torch) inference.
+
+    :raises SetupFailedError: If this is an x86 CPU without AVX2 support, which
+        torch's FBGEMM quantized backend requires.
+    """
+    if platform.machine().lower() not in ("x86_64", "amd64", "i386", "i686", "x86"):
+        # non-x86 (ARM) machines run quantized inference via QNNPACK instead of FBGEMM
+        return
+    import torch  # noqa: PLC0415
+
+    if torch.backends.cpu.get_cpu_capability() in ("DEFAULT", "NO AVX"):
+        raise SetupFailedError(
+            "On-device audio analysis requires a CPU with AVX2 support "
+            "(Intel Haswell / AMD Zen or newer). This CPU does not support AVX2. "
+            "If you are running in a virtual machine (e.g. Proxmox), changing the "
+            "CPU type to 'host' may expose AVX2 to the guest."
+        )
 
 
 keyword_pattern = re.compile("title=|artist=")

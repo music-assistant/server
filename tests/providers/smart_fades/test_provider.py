@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import numpy as np
 import pytest
 from music_assistant_models.enums import ContentType, MediaType
+from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.models.audio_analysis import AudioAnalysisData
@@ -312,3 +313,20 @@ async def test_finalize_returns_none_on_early_exit(provider: SmartFadesProvider)
         result = await provider._finalize(session_id)
 
     assert result is None
+
+
+async def test_handle_async_init_raises_on_unsupported_cpu(
+    mass_mock: Mock, manifest_mock: Mock, config_mock: Mock
+) -> None:
+    """Setup fails before model initialization when the CPU lacks AVX2."""
+    prov = SmartFadesProvider(mass_mock, manifest_mock, config_mock, set())
+    with (
+        patch(
+            "music_assistant.providers.smart_fades.provider.verify_cpu_supports_ml_inference",
+            side_effect=SetupFailedError("CPU lacks AVX2"),
+        ),
+        patch.object(SmartFadesProvider, "_initialize_models") as init_models_mock,
+        pytest.raises(SetupFailedError),
+    ):
+        await prov.handle_async_init()
+    init_models_mock.assert_not_called()
