@@ -1166,3 +1166,101 @@ class TestSupportedFeaturesPower:
         mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
         sgp = _make_sync_group(mass)
         assert PlayerFeature.POWER in sgp.supported_features
+
+
+def _recording_wait(order: list[str]) -> MagicMock:
+    """
+    Build a wait_for_player_update replacement that records call/enter/exit order.
+
+    The returned mock records ``wait_for:<player_id>:<value>`` when invoked,
+    ``subscribe`` on context enter and ``await`` on context exit, so a test can
+    assert that the playback start was wrapped (subscribe before the command is
+    issued) rather than awaited after the fact.
+    """
+
+    class _RecordingWait:
+        async def __aenter__(self) -> None:
+            order.append("subscribe")
+
+        async def __aexit__(self, *_exc: object) -> bool:
+            order.append("await")
+            return False
+
+    def _wait(player_id: str, **kwargs: Any) -> _RecordingWait:
+        order.append(f"wait_for:{player_id}:{kwargs.get('attribute_value')}")
+        return _RecordingWait()
+
+    return MagicMock(side_effect=_wait)
+
+
+class TestLeaderPlaybackAwaited:
+    """A (re)form must not return until the leader confirms it has started playing."""
+
+    @pytest.mark.asyncio
+    async def test_play_waits_for_leader_before_returning(self) -> None:
+        """play() wraps the resume in a wait so the group lock isn't released early."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", playback_state=PlaybackState.IDLE)
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader"]
+
+        order: list[str] = []
+        mass.players.wait_for_player_update = _recording_wait(order)
+        mass.players.cmd_resume = AsyncMock(side_effect=lambda *_a, **_k: order.append("resume"))
+
+        with patch.object(sgp, "_form_syncgroup", new=AsyncMock()):
+            await sgp.play()
+
+        # subscribe happens before the resume command, and the wait completes
+        # after — i.e. the start is wrapped, not fire-and-forget.
+        assert order == [
+            f"wait_for:leader:{PlaybackState.PLAYING}",
+            "subscribe",
+            "resume",
+            "await",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_play_media_waits_for_leader_before_returning(self) -> None:
+        """play_media() wraps the leader start so a concurrent (un)group can't race it."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader", playback_state=PlaybackState.IDLE)
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader"]
+
+        order: list[str] = []
+        mass.players.wait_for_player_update = _recording_wait(order)
+        mass.players._handle_play_media = AsyncMock(
+            side_effect=lambda *_a, **_k: order.append("play_media")
+        )
+
+        media = MagicMock()
+        media.source_id = "syncgroup_test"
+        with patch.object(sgp, "_form_syncgroup", new=AsyncMock()):
+            await sgp.play_media(media)
+
+        assert order == [
+            f"wait_for:leader:{PlaybackState.PLAYING}",
+            "subscribe",
+            "play_media",
+            "await",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_no_wait_when_group_has_no_leader(self) -> None:
+        """With no leader to wait on, play() resumes without arming a playback wait."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        sgp.sync_leader = None
+
+        mass.players.cmd_resume = AsyncMock()
+
+        with patch.object(sgp, "_form_syncgroup", new=AsyncMock()):
+            await sgp.play()
+
+        mass.players.wait_for_player_update.assert_not_called()
+        mass.players.cmd_resume.assert_awaited_once()
