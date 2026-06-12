@@ -403,6 +403,8 @@ def test_get_zeroconf_args_all_interfaces() -> None:
         ("x86_64", "NO AVX", True),
         ("x86_64", "AVX2", False),
         ("x86_64", "AVX512", False),
+        # a future torch capability string we don't know about yet must fail open
+        ("x86_64", "AVX10", False),
     ],
 )
 def test_verify_cpu_supports_ml_inference_x86(

@@ -142,7 +142,9 @@ def verify_cpu_supports_ml_inference() -> None:
         return
     import torch  # noqa: PLC0415
 
-    if torch.backends.cpu.get_cpu_capability() not in ("AVX2", "AVX512"):
+    # denylist of known-insufficient capabilities so a future torch version
+    # reporting a new, higher capability string fails open instead of closed
+    if torch.backends.cpu.get_cpu_capability() in ("DEFAULT", "NO AVX"):
         raise SetupFailedError(
             "On-device audio analysis requires a CPU with AVX2 support "
             "(Intel Haswell / AMD Zen or newer). This CPU does not support AVX2. "
