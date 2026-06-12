@@ -656,8 +656,8 @@ class MetaDataController(CoreController):
         Get the color palette extracted from an image.
 
         The palette follows the Sendspin color@v1 spec (primary, accent, on_dark,
-        on_light, background_dark and background_light). Palettes are kept in a
-        process-wide memory cache, so repeated requests for the same image are cheap.
+        on_light, background_dark and background_light). Results are cached, so
+        repeated requests for the same image are cheap.
 
         :param image: A MediaItemImage to read colors from, or an image URL (either a
             direct URL or an imageproxy URL as produced by `get_image_url`).

@@ -1670,12 +1670,13 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         if not image_url:
             return
-        # The caller only schedules a current-track fetch when no palette is set yet,
-        # and the task_id dedupes concurrent fetches, so no extra cache probe is needed.
+        # Key the task on the image (not just the player) so a track change always
+        # schedules a fetch for the new image instead of being dropped by an in-flight
+        # fetch for the previous one; repeated schedules for the same image still dedupe.
         slot = "current" if trigger_update else "next"
         self.mass.create_task(
             self._fetch_palette(player_id, image_url, trigger_update=trigger_update),
-            task_id=f"palette_fetch_{player_id}_{slot}",
+            task_id=f"palette_fetch_{player_id}_{slot}_{image_url}",
             abort_existing=False,
         )
 
