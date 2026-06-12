@@ -275,7 +275,10 @@ class MusicBrainzRecording(DataClassDictMixin):
 class MusicbrainzProvider(MetadataProvider):
     """The Musicbrainz Metadata provider."""
 
-    throttler = ThrottlerManager(rate_limit=10, period=10)
+    # the MA-hosted mirror allows 10 req/10s, enforced at the Cloudflare edge
+    # with a sliding-window estimate that over-counts bursts; pace requests
+    # one at a time (same throughput as 8/10s) to stay under it with headroom
+    throttler = ThrottlerManager(rate_limit=1, period=1.25)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

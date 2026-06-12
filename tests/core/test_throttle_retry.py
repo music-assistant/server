@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Generator, Sequence
 from unittest.mock import AsyncMock, patch
 
@@ -26,10 +27,14 @@ class FakeProvider:
     The decorator requires `self.throttler` and `self.logger`.
     """
 
-    throttler = ThrottlerManager(rate_limit=100, period=0.01, retry_attempts=5, initial_backoff=4)
+    throttler: ThrottlerManager
 
     def __init__(self) -> None:
         """Initialize."""
+        # per-instance throttler so state (e.g. cooldown) never leaks between tests
+        self.throttler = ThrottlerManager(
+            rate_limit=100, period=0.01, retry_attempts=5, initial_backoff=4
+        )
         self.logger = logging.getLogger("test.fake_provider")
         self.call_count = 0
         self._side_effects: list[Exception | str] = []
@@ -61,10 +66,26 @@ def provider() -> FakeProvider:
 
 @pytest.fixture
 def mock_sleep() -> Generator[AsyncMock]:
-    """Patch asyncio.sleep to capture sleep times without actually sleeping."""
-    with patch(
-        "music_assistant.helpers.throttle_retry.asyncio.sleep", new_callable=AsyncMock
-    ) as mock:
+    """
+    Patch asyncio.sleep to capture sleep times without actually sleeping.
+
+    Each sleep advances a fake monotonic clock, so time-based behavior in the
+    helper (throttler slots, cooldown expiry) matches real time.
+    """
+    clock = time.monotonic()
+
+    async def fake_sleep(seconds: float) -> None:
+        nonlocal clock
+        clock += seconds
+
+    with (
+        patch(
+            "music_assistant.helpers.throttle_retry.asyncio.sleep",
+            new_callable=AsyncMock,
+            side_effect=fake_sleep,
+        ) as mock,
+        patch("music_assistant.helpers.throttle_retry.time.monotonic", side_effect=lambda: clock),
+    ):
         yield mock
 
 
@@ -194,6 +215,88 @@ class TestRateLimited:
 
         sleep_times = [call.args[0] for call in mock_sleep.call_args_list]
         assert 3600.0 <= sleep_times[0] <= 3960.0
+
+
+class TestPerAttemptThrottling:
+    """Every attempt (including retries) must consume a throttler slot."""
+
+    async def test_each_retry_acquires_slot(
+        self, provider: FakeProvider, mock_sleep: AsyncMock
+    ) -> None:
+        """Retries go through the throttler again instead of firing unthrottled."""
+        with patch.object(
+            provider.throttler.throttler, "acquire", new=AsyncMock(return_value=0.0)
+        ) as acquire_mock:
+            provider.set_side_effects(
+                [
+                    RateLimited("rate limited", backoff_time=1),
+                    ResourceTemporarilyUnavailable("unavailable", backoff_time=1),
+                    "ok",
+                ]
+            )
+            result = await provider.api_call("ok")
+        assert result == "ok"
+        assert acquire_mock.await_count == 3
+
+
+class TestSharedCooldown:
+    """A 429 pauses the whole provider, not just the coroutine that received it."""
+
+    async def test_cooldown_delays_acquire(
+        self, provider: FakeProvider, mock_sleep: AsyncMock
+    ) -> None:
+        """An active cooldown makes acquire() wait out the remainder."""
+        provider.throttler.set_cooldown(42)
+        async with provider.throttler.acquire() as delay:
+            pass
+        assert delay >= 42
+        assert any(call.args[0] == pytest.approx(42) for call in mock_sleep.call_args_list)
+
+    async def test_rate_limited_sets_cooldown(
+        self, provider: FakeProvider, mock_sleep: AsyncMock
+    ) -> None:
+        """A 429 during a decorated call installs a provider-wide cooldown."""
+        with patch.object(
+            provider.throttler, "set_cooldown", wraps=provider.throttler.set_cooldown
+        ) as spy:
+            provider.set_side_effects([RateLimited("rate limited", backoff_time=30), "ok"])
+            await provider.api_call("ok")
+        spy.assert_called_once()
+        # at least the (jittered) Retry-After window
+        assert spy.call_args.args[0] >= 30
+
+    async def test_server_error_does_not_set_cooldown(
+        self, provider: FakeProvider, mock_sleep: AsyncMock
+    ) -> None:
+        """A plain 5xx only backs off the affected coroutine."""
+        with patch.object(
+            provider.throttler, "set_cooldown", wraps=provider.throttler.set_cooldown
+        ) as spy:
+            provider.set_side_effects(
+                [ResourceTemporarilyUnavailable("unavailable", backoff_time=30), "ok"]
+            )
+            await provider.api_call("ok")
+        spy.assert_not_called()
+
+    async def test_cooldown_set_even_when_retries_exhausted(
+        self, provider: FakeProvider, mock_sleep: AsyncMock
+    ) -> None:
+        """A 429 on the final attempt still blocks other callers."""
+        provider.set_side_effects([RateLimited("rate limited", backoff_time=30)] * 5)
+        with pytest.raises(RetriesExhausted):
+            await provider.api_call("test")
+        # the final attempt set a cooldown that has not expired yet
+        assert provider.throttler._cooldown_until > time.monotonic()
+
+    async def test_bypass_skips_cooldown(
+        self, provider: FakeProvider, mock_sleep: AsyncMock
+    ) -> None:
+        """Bypassed (time-critical) calls are not held back by a cooldown."""
+        provider.throttler.set_cooldown(60)
+        async with provider.throttler.bypass(), provider.throttler.acquire() as delay:
+            pass
+        assert delay == 0
+        mock_sleep.assert_not_awaited()
 
 
 class TestExponentialBackoffWithJitter:

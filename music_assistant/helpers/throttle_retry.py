@@ -118,14 +118,29 @@ class ThrottlerManager:
         self.retry_attempts = retry_attempts
         self.initial_backoff = initial_backoff
         self.throttler = Throttler(rate_limit, period)
+        self._cooldown_until: float = 0.0
+
+    def set_cooldown(self, seconds: float) -> None:
+        """
+        Pause all (non-bypassed) acquires, e.g. after a rate-limit response.
+
+        :param seconds: Duration of the pause; never shortens an active cooldown.
+        """
+        self._cooldown_until = max(self._cooldown_until, time.monotonic() + seconds)
 
     @asynccontextmanager
     async def acquire(self) -> AsyncGenerator[float]:
         """Acquire a free slot from the Throttler, returns the throttled time."""
         if BYPASS_THROTTLER.get():
             yield 0
-        else:
-            yield await self.throttler.acquire()
+            return
+        delay = 0.0
+        cooldown = self._cooldown_until - time.monotonic()
+        if cooldown > 0:
+            await asyncio.sleep(cooldown)
+            delay += cooldown
+        delay += await self.throttler.acquire()
+        yield delay
 
     @asynccontextmanager
     async def bypass(self) -> AsyncGenerator[None]:
@@ -157,37 +172,41 @@ def throttle_with_retries[ProviderT: _Throttleable, **P, R](
         """Call async function using the throttler with retries."""
         throttler = self.throttler
         exp_backoff = throttler.initial_backoff
-        async with throttler.acquire() as delay:
-            if delay != 0:
-                self.logger.debug(
-                    "%s was delayed for %.3f secs due to throttling", func.__name__, delay
-                )
-            for attempt in range(throttler.retry_attempts):
+        for attempt in range(throttler.retry_attempts):
+            # acquire a slot for every attempt so retries are paced like any
+            # other request instead of firing unthrottled after the backoff
+            async with throttler.acquire() as delay:
+                if delay != 0:
+                    self.logger.debug(
+                        "%s was delayed for %.3f secs due to throttling", func.__name__, delay
+                    )
                 try:
                     return await func(self, *args, **kwargs)
                 except ResourceTemporarilyUnavailable as e:
                     self.logger.info(
                         f"Attempt {attempt + 1}/{throttler.retry_attempts} failed: {e}"
                     )
+                    server_wait = min(max(float(e.backoff_time), 0.0), MAX_RETRY_AFTER)
+                    if isinstance(e, RateLimited):
+                        # Retry-After is a floor, not a target: escalate above it,
+                        # jittering up only so we never retry sooner than asked
+                        base = max(server_wait, min(exp_backoff, MAX_BACKOFF))
+                        sleep_time = base * random.uniform(1.0, 1.1)
+                        exp_backoff = min(exp_backoff * 2, MAX_BACKOFF)
+                        # hold back all other callers too: requests fired during
+                        # the backoff window keep the rate limiter tripped
+                        throttler.set_cooldown(sleep_time)
+                    elif server_wait:
+                        # Server named a recovery time — respect it, with citizen jitter
+                        sleep_time = server_wait * random.uniform(1.0, 1.1)
+                    else:
+                        # No server guidance — exponential backoff with jitter
+                        sleep_time = min(exp_backoff * random.uniform(0.75, 1.25), MAX_BACKOFF)
+                        exp_backoff = min(exp_backoff * 2, MAX_BACKOFF)
                     if attempt < throttler.retry_attempts - 1:
-                        server_wait = min(max(float(e.backoff_time), 0.0), MAX_RETRY_AFTER)
-                        if isinstance(e, RateLimited):
-                            # Retry-After is a floor, not a target: escalate above it,
-                            # jittering up only so we never retry sooner than asked
-                            base = max(server_wait, min(exp_backoff, MAX_BACKOFF))
-                            sleep_time = base * random.uniform(1.0, 1.1)
-                            exp_backoff = min(exp_backoff * 2, MAX_BACKOFF)
-                        elif server_wait:
-                            # Server named a recovery time — respect it, with citizen jitter
-                            sleep_time = server_wait * random.uniform(1.0, 1.1)
-                        else:
-                            # No server guidance — exponential backoff with jitter
-                            sleep_time = min(exp_backoff * random.uniform(0.75, 1.25), MAX_BACKOFF)
-                            exp_backoff = min(exp_backoff * 2, MAX_BACKOFF)
                         self.logger.info(f"Retrying in {sleep_time:.1f} seconds...")
                         await asyncio.sleep(sleep_time)
-            else:  # noqa: PLW0120
-                msg = f"Retries exhausted, failed after {throttler.retry_attempts} attempts"
-                raise RetriesExhausted(msg)
+        msg = f"Retries exhausted, failed after {throttler.retry_attempts} attempts"
+        raise RetriesExhausted(msg)
 
     return wrapper
