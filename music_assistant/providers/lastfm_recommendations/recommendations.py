@@ -19,6 +19,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import CONF_USERNAME
 from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.providers.lastfm_recommendations.constants import (
     CACHE_CATEGORY_RESOLVED_ITEMS,
     CACHE_EXPIRATION_SECONDS,
@@ -188,21 +189,27 @@ class LastFMRecommendationManager:
                 artist_info if isinstance(artist_info, str) else artist_info.get("name", "")
             )
             if name and artist_name:
-                search_query = f"{artist_name} {name}"
+                # Last.fm track names carry scrobbled version suffixes ("- 2006 Remaster");
+                # strip those so variants of an owned track still match
+                clean_name, _ = parse_title_and_version(name, strip_for_search=True)
+                # "Artist - Title" format so the tracks controller searches both fields
+                search_query = f"{artist_name} - {clean_name}"
                 track_results = await self.mass.music.tracks.library_items(
                     search=search_query, limit=LIBRARY_MATCH_SCAN_LIMIT
                 )
                 # Match both title and artist; a title-only check would treat a same-named
-                # track by a different artist as owned.
+                # track by a different artist as owned. Differing recording MBIDs identify
+                # genuinely different tracks, so those never count as a match.
                 track_match = next(
                     (
                         track
                         for track in track_results
-                        if compare_strings(name, track.name, strict=False)
+                        if compare_strings(clean_name, track.name, strict=False)
                         and any(
                             compare_strings(artist_name, track_artist.name, strict=False)
                             for track_artist in track.artists
                         )
+                        and not (mbid and track.mbid and track.mbid != mbid)
                     ),
                     None,
                 )
