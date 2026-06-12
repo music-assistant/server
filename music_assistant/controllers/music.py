@@ -98,6 +98,7 @@ from music_assistant.models.plugin import PluginProvider
 from .media.albums import AlbumsController
 from .media.artists import ArtistsController
 from .media.audiobooks import AudiobooksController
+from .media.base import SUPPRESS_MEDIA_ITEM_UPDATES
 from .media.genres import GenreController
 from .media.playlists import PlaylistController
 from .media.podcasts import PodcastsController
@@ -1796,16 +1797,6 @@ class MusicController(CoreController):
 
     async def cleanup_provider(self, provider_instance: str) -> None:
         """Cleanup provider records from the database."""
-        if provider_instance.startswith(("filesystem", "jellyfin", "plex", "opensubsonic")):
-            # removal of a local provider can become messy very fast due to the relations
-            # such as images pointing at the files etc. so we just reset the whole db
-            # TODO: Handle this more gracefully in the future where we remove the provider
-            # and traverse the database to also remove all related items.
-            self.logger.warning(
-                "Removal of local provider detected, issuing full database reset..."
-            )
-            await self._reset_database()
-            return
         deleted_providers = self.mass.config.get_raw_core_config_value(
             self.domain, CONF_DELETED_PROVIDERS, []
         )
@@ -1827,38 +1818,48 @@ class MusicController(CoreController):
             provider_instance,
         )
         errors = 0
-        for ctrl in (
-            # order is important here to recursively cleanup bottom up
-            self.mass.music.radio,
-            self.mass.music.playlists,
-            self.mass.music.tracks,
-            self.mass.music.albums,
-            self.mass.music.artists,
-            self.mass.music.podcasts,
-            self.mass.music.audiobooks,
-            # run main controllers twice to rule out relations
-            self.mass.music.tracks,
-            self.mass.music.albums,
-            self.mass.music.artists,
-        ):
-            query = (
-                f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
-                f"WHERE media_type = '{ctrl.media_type}' "
-                f"AND provider_instance = '{provider_instance}'"
-            )
-            for db_row in await self.database.get_rows_from_query(query, limit=100000):
-                try:
-                    await ctrl.remove_provider_mappings(db_row["item_id"], provider_instance)
-                except Exception as err:
-                    # we dont want the whole removal process to stall on one item
-                    # so in case of an unexpected error, we log and move on.
-                    self.logger.warning(
-                        "Error while removing %s: %s",
-                        db_row["item_id"],
-                        str(err),
-                        exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
-                    )
-                    errors += 1
+        # suppress the per-item MEDIA_ITEM_UPDATED events during this bulk removal so we
+        # don't flood subscribers; they refresh once via the PROVIDERS_UPDATED event
+        token = SUPPRESS_MEDIA_ITEM_UPDATES.set(True)
+        try:
+            for ctrl in (
+                # order is important here to recursively cleanup bottom up
+                self.mass.music.radio,
+                self.mass.music.playlists,
+                self.mass.music.tracks,
+                self.mass.music.albums,
+                self.mass.music.artists,
+                self.mass.music.podcasts,
+                self.mass.music.audiobooks,
+                # run main controllers twice to rule out relations
+                self.mass.music.tracks,
+                self.mass.music.albums,
+                self.mass.music.artists,
+            ):
+                query = (
+                    f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+                    "WHERE media_type = :media_type "
+                    "AND provider_instance = :provider_instance"
+                )
+                params = {
+                    "media_type": ctrl.media_type.value,
+                    "provider_instance": provider_instance,
+                }
+                for db_row in await self.database.get_rows_from_query(query, params, limit=100000):
+                    try:
+                        await ctrl.remove_provider_mappings(db_row["item_id"], provider_instance)
+                    except Exception as err:
+                        # we dont want the whole removal process to stall on one item
+                        # so in case of an unexpected error, we log and move on.
+                        self.logger.warning(
+                            "Error while removing %s: %s",
+                            db_row["item_id"],
+                            str(err),
+                            exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                        )
+                        errors += 1
+        finally:
+            SUPPRESS_MEDIA_ITEM_UPDATES.reset(token)
 
         # remove all orphaned items (not in provider mappings table anymore)
         query = (
