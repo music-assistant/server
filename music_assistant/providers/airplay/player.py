@@ -309,6 +309,21 @@ class AirPlayPlayer(Player):
                 advanced=True,
             ),
             ConfigEntry(
+                key=CONF_IGNORE_VOLUME,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                label="Ignore volume reports sent by the device itself",
+                description=(
+                    "The AirPlay protocol allows devices to report their own volume "
+                    "level. \n"
+                    "For some devices this is not reliable and can cause unexpected "
+                    "volume changes. \n"
+                    "Enable this option to ignore these reports."
+                ),
+                category="protocol_generic",
+                advanced=True,
+            ),
+            ConfigEntry(
                 key=CONF_RAOP_LATENCY,
                 type=ConfigEntryType.INTEGER,
                 default_value=AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS,

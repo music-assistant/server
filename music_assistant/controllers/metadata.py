@@ -47,6 +47,7 @@ from music_assistant_models.media_items import (
     ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
+    MediaItemPalette,
     MediaItemType,
     Playlist,
     Podcast,
@@ -70,6 +71,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_text,
 )
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.colors import get_palette, get_palette_for_url
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.images import (
     cleanup_thumb_cache,
@@ -647,6 +649,25 @@ class MetaDataController(CoreController):
             )
             return f"{base_url}/imageproxy/{image_id}?size={size}&fmt={image_format}"
         return image.path
+
+    @api_command("metadata/get_image_palette")
+    async def get_image_palette(self, image: MediaItemImage | str) -> MediaItemPalette | None:
+        """
+        Get the color palette extracted from an image.
+
+        The palette follows the Sendspin color@v1 spec (primary, accent, on_dark,
+        on_light, background_dark and background_light). Results are cached, so
+        repeated requests for the same image are cheap.
+
+        :param image: A MediaItemImage to read colors from, or an image URL (either a
+            direct URL or an imageproxy URL as produced by `get_image_url`).
+        """
+        if not isinstance(image, MediaItemImage):
+            return await get_palette_for_url(self.mass, image)
+        try:
+            return await get_palette(self.mass, image.path, image.provider)
+        except (FileNotFoundError, OSError):
+            return None
 
     async def get_thumbnail(
         self,

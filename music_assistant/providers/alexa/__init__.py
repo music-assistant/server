@@ -423,6 +423,10 @@ class AlexaPlayer(Player):
 
         payload = {
             "streamUrl": stream_url,
+            "title": media.title,
+            "artist": media.artist,
+            "album": media.album,
+            "imageUrl": media.image_url,
         }
 
         await api_request(

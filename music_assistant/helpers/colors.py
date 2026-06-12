@@ -6,14 +6,14 @@ image: a `modern_colorthief` MMCQ quantizer produces image candidates, then `pri
 chosen (and adjusted where needed) so that every spec-mandated contrast pair
 clears the WCAG AA 4.5:1 threshold.
 
-A process-wide in-memory cache keyed on a hash of provider and image path
-avoids redundant extraction while the server is running.
+Extracted palettes are stored in the cache controller (sqlite), keyed on a
+hash of provider and image path, so results persist across restarts and are
+shared process-wide.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections import OrderedDict
 from typing import TYPE_CHECKING
 
 from modern_colorthief import get_palette as _mmcq_palette
@@ -30,7 +30,6 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
-_PALETTE_MEMORY_CACHE_MAX = 256
 _PALETTE_QUANTIZE_COLORS = 5
 _COLORTHIEF_QUALITY = 10
 # Minimum contrast ratio between colors (Sendspin color@v1 requires WCAG AA ≥ 4.5:1).
@@ -44,23 +43,13 @@ _MAX_DARK_PICK_CONTRAST = 17.35
 _BACKGROUND_ADJUST_STEPS = 20
 _SIMILARITY_THRESHOLD = 60  # squared euclidean RGB distance for accent picking
 
+# Cache controller namespace for extracted palettes. Palettes are
+# content-addressed (hash of provider+path) and deterministic, so a long
+# expiration is safe: a palette only changes if the underlying image changes.
+_CACHE_PROVIDER = "palette"
+_CACHE_EXPIRATION = 90 * 24 * 3600  # 90 days
+
 _RGB = tuple[int, int, int]
-
-_palette_memory_cache: OrderedDict[str, MediaItemPalette] = OrderedDict()
-
-
-def _get_from_memory_cache(key: str) -> MediaItemPalette | None:
-    if key in _palette_memory_cache:
-        _palette_memory_cache.move_to_end(key)
-        return _palette_memory_cache[key]
-    return None
-
-
-def _put_in_memory_cache(key: str, palette: MediaItemPalette) -> None:
-    _palette_memory_cache[key] = palette
-    _palette_memory_cache.move_to_end(key)
-    while len(_palette_memory_cache) > _PALETTE_MEMORY_CACHE_MAX:
-        _palette_memory_cache.popitem(last=False)
 
 
 def _relative_luminance(rgb: _RGB) -> float:
@@ -229,14 +218,24 @@ async def _extract_and_cache(
 ) -> MediaItemPalette:
     img_data = await get_image_data(mass, path_or_url, provider)
     palette = await asyncio.to_thread(extract_palette, img_data)
-    _put_in_memory_cache(key, palette)
+    # Only persist a palette that actually yielded colors; an empty result is
+    # usually a transient decode/download failure that should be retried rather
+    # than cached for weeks.
+    if palette.primary is not None:
+        await mass.cache.set(
+            key,
+            palette.to_dict(),
+            provider=_CACHE_PROVIDER,
+            expiration=_CACHE_EXPIRATION,
+        )
     return palette
 
 
 async def get_palette(
     mass: MusicAssistant, path_or_url: str, provider: str
 ) -> MediaItemPalette | None:
-    """Get the color palette for an image, using a process-wide memory cache.
+    """
+    Get the color palette for an image, backed by the cache controller.
 
     :param mass: The MusicAssistant instance.
     :param path_or_url: Image path or URL (same format as get_image_data).
@@ -246,9 +245,13 @@ async def get_palette(
         return None
     key = create_thumb_hash(provider, path_or_url)
 
-    if cached := _get_from_memory_cache(key):
+    cached: MediaItemPalette | None = await mass.cache.get(
+        key, provider=_CACHE_PROVIDER, base_class=MediaItemPalette
+    )
+    if cached is not None:
         return cached
 
+    # Dedupe concurrent extraction (e.g. now-playing + prefetch) for the same image.
     task: asyncio.Task[MediaItemPalette] = mass.create_task(
         _extract_and_cache,
         mass,
@@ -259,27 +262,6 @@ async def get_palette(
         abort_existing=False,
     )
     return await asyncio.shield(task)
-
-
-def peek_palette_for_url(image_url: str | None) -> MediaItemPalette | None:
-    """Return the cached palette for an image URL, or None.
-
-    Memory-only sync lookup. Use to attach a palette to a PlayerMedia without
-    blocking when a prior async fetch has already populated the cache.
-    """
-    if not image_url:
-        return None
-    # /imageproxy/<id>: `image_id` is by construction equal to
-    # `create_thumb_hash(provider, path)` (see MetaDataController.compute_image_id),
-    # which is also the key get_palette() stores under, so we can peek directly.
-    if image_id := _extract_imageproxy_id(image_url):
-        return _get_from_memory_cache(image_id)
-    if extracted := _extract_imageproxy_params(image_url):
-        path, provider = extracted
-    else:
-        path, provider = image_url, "builtin"
-    key = create_thumb_hash(provider, path)
-    return _get_from_memory_cache(key)
 
 
 async def get_palette_for_url(

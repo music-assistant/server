@@ -15,6 +15,12 @@ SGP_PREFIX: Final[str] = "syncgroup_"
 # from the user without disrupting the live sync session.
 IDLE_GRACE_SECONDS: Final[float] = 10.0
 
+# Maximum seconds to wait for the sync leader to confirm it has actually started
+# playing after a (re)form. The group's playback lock is held for the duration so
+# a concurrent (un)group command can't race a start that is still in flight at the
+# device — which would otherwise strand a player playing outside the group.
+PLAYBACK_START_TIMEOUT: Final[float] = 5.0
+
 CONF_ENTRY_SGP_NOTE = ConfigEntry(
     key="sgp_note",
     type=ConfigEntryType.ALERT,
