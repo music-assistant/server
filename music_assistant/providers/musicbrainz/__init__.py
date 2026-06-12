@@ -429,13 +429,23 @@ class MusicbrainzProvider(MetadataProvider):
         msg = "Invalid MusicBrainz recording ID provided"
         raise InvalidDataError(msg)
 
+    @use_cache(86400 * 30)
     async def get_isrcs_for_recording(self, recording_id: str) -> list[str]:
         """
         Get ISRCs for a MusicBrainz Recording ID.
 
-        :param recording_id: MusicBrainz recording ID.
+        :param recording_id: MusicBrainz recording ID, or a track ID as
+            handed out by e.g. Last.fm.
         :return: List of ISRCs, or empty list if not found or on error.
         """
+        # the search response includes the ISRCs, so either ID kind costs one call
+        query = f"rid:{recording_id} OR tid:{recording_id}"
+        if (result := await self.get_data("recording", query=query)) and (
+            recordings := result.get("recordings")
+        ):
+            return recordings[0].get("isrcs") or []
+        # merged (redirected) recording MBIDs are absent from the search
+        # index but still resolve via direct lookup
         with suppress(InvalidDataError):
             recording = await self.get_recording_details(recording_id)
             return recording.isrcs or []
