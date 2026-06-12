@@ -24,11 +24,6 @@ CACHE_EXPIRATION_SECONDS = 60 * 60 * 24 * 90  # 90 days
 # Maximum number of concurrent provider searches to prevent overwhelming APIs
 SEARCH_CONCURRENCY_LIMIT = 5
 
-# Maximum number of concurrent MusicBrainz ISRC lookups. MusicBrainz throttles all
-# callers to a shared global budget, so a wide fan-out just queues behind it while
-# bursting past the mirror's edge limit; cap it to stay within budget with headroom.
-MB_ISRC_CONCURRENCY_LIMIT = 5
-
 # Item counts and limits
 # Target number of items to return in recommendation folders
 TARGET_ITEM_COUNT = 10
@@ -50,7 +45,7 @@ LIBRARY_MATCH_SCAN_LIMIT = 5
 SIMILAR_ITEMS_BUFFER = 12
 
 # Number of similar tracks to resolve before filtering to target count. Larger than the
-# artist buffer to absorb this row's extra attrition: stricter ISRC matching and the
+# artist buffer to absorb this row's extra attrition: artist+title verification and the
 # exclusion of tracks that resolve to the user's own library copy.
 SIMILAR_TRACKS_BUFFER = 15
 

@@ -499,7 +499,7 @@ class LastFMRecommendationManager:
         )
         if genre_artists_raw:
             # Drop items already in the library using a cheap DB lookup, before the
-            # expensive MusicBrainz + provider resolution step.
+            # expensive provider resolution step.
             non_library_artists_raw = [
                 artist_data
                 for artist_data in genre_artists_raw
@@ -801,7 +801,7 @@ class LastFMRecommendationManager:
         unique_similar.sort(key=lambda x: float(x.get("match", 0)), reverse=True)
 
         # Resolve a small buffer beyond the target so resolution failures and owned-copy
-        # exclusion still leave enough to fill the row, while capping MusicBrainz ISRC lookups.
+        # exclusion still leave enough to fill the row, while capping provider searches.
         top_tracks_data = unique_similar[:SIMILAR_TRACKS_BUFFER]
 
         resolved_tracks = await asyncio.gather(
