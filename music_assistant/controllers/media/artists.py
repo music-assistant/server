@@ -145,7 +145,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider_filter: str | None = None,
     ) -> list[Track]:
         """
-        Return the tracks for an artist.
+        Return the tracks for a artist.
 
         For a library item, the in-library tracks are returned, optionally limited to a single
         provider instance with the provider_filter. For a provider item, that provider's
@@ -651,7 +651,20 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
         """Delete record from the database."""
         db_id = int(item_id)  # ensure integer
+        library_item = await self.get_library_item(db_id)
 
+        if library_item.artist_type == ArtistType.SINGER:
+            await self._remove_music_artist_from_library(db_id=db_id, recursive=recursive)
+        elif library_item.artist_type in (ArtistType.AUTHOR, ArtistType.NARRATOR):
+            await self._remove_author_narrator_from_library(db_id=db_id, recursive=recursive)
+        else:
+            raise MusicAssistantError(f"Unknown artist_type {library_item.artist_type}.")
+
+        # delete the artist itself from db
+        # this will raise if the item still has references and recursive is false
+        await super().remove_item_from_library(db_id)
+
+    async def _remove_music_artist_from_library(self, db_id: int, recursive: bool) -> None:
         # recursively also remove artist albums
         for db_row in await self.mass.music.database.get_rows_from_query(
             f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id",
@@ -673,9 +686,17 @@ class ArtistsController(MediaControllerBase[Artist]):
             with contextlib.suppress(MediaNotFoundError):
                 await self.mass.music.tracks.remove_item_from_library(db_row["track_id"])
 
-        # delete the artist itself from db
-        # this will raise if the item still has references and recursive is false
-        await super().remove_item_from_library(db_id)
+    async def _remove_author_narrator_from_library(self, db_id: int, recursive: bool) -> None:
+        # recursively also remove author/ narrator audiobooks
+        for db_row in await self.mass.music.database.get_rows_from_query(
+            f"SELECT audiobook_id FROM {DB_TABLE_AUDIOBOOK_ARTISTS} WHERE artist_id = :artist_id",
+            {"artist_id": db_id},
+            limit=5000,
+        ):
+            if not recursive:
+                raise MusicAssistantError("Artist still has audiobooks linked")
+            with contextlib.suppress(MediaNotFoundError):
+                await self.mass.music.audiobooks.remove_item_from_library(db_row["audiobook_id"])
 
     def _validate_provider_filter(
         self, provider_instance_id_or_domain: str, provider_filter: str | None
@@ -782,6 +803,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param item: The Artist to get base tracks for.
         :param preferred_provider_instances: List of preferred provider instance IDs to use.
         """
+        if item.artist_type != ArtistType.SINGER:
+            raise MusicAssistantError("Radio mode tracks only exists for artists of type ARTIST.")
         # prefer the (top) tracks listing as radio seed, falling back to all tracks
         if result := await self.top_tracks(item.item_id, item.provider):
             return result
