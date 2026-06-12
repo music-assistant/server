@@ -1217,8 +1217,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         provider: str | list[str] | None,
     ) -> list[str] | None:
         """Ensure the provider filter respects the current user's provider filter."""
-        user = get_current_user()
         # Apply user provider filter if needed
+        user = get_current_user()
         user_provider_filter = user.provider_filter if user and user.provider_filter else None
         final_provider_filter: list[str] | None = None
         if user_provider_filter:

@@ -1777,7 +1777,7 @@ class MusicController(CoreController):
             self.mass.get_provider_instances(domain, return_unavailable, ProviderType.MUSIC),
         )
 
-    def get_unique_providers(self, user: User | None = None) -> list[str]:
+    def get_unique_providers(self) -> list[str]:
         """
         Return all unique MusicProvider (instance or domain) ids.
 
@@ -1786,12 +1786,10 @@ class MusicController(CoreController):
 
         Applies user provider filters (for non-admin users).
         """
-        if not user:
-            # get user from context
-            user = get_current_user()
-        # Get user provider filter if set
-        user_provider_filter = user.provider_filter if user and user.provider_filter else None
         processed_domains: set[str] = set()
+        # Get user provider filter if set
+        user = get_current_user()
+        user_provider_filter = user.provider_filter if user and user.provider_filter else None
         result: list[str] = []
         for provider in self.providers:
             if provider.is_streaming_provider and provider.domain in processed_domains:
