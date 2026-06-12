@@ -91,7 +91,7 @@ class FadeOutTrimFilter(Filter):
     output_fadeout_label: str = "fadeout_tailtrim"
     output_fadein_label: str = "fadein_tailtrim"
 
-    def __init__(self, logger: logging.Logger, fadeout_end_pos: float):
+    def __init__(self, logger: logging.Logger, fadeout_end_pos: float, trimmed_seconds: float):
         """
         Initialize fade-out trim filter.
 
@@ -99,8 +99,11 @@ class FadeOutTrimFilter(Filter):
             audible content ends; everything after it is dropped.
             Measured on the untrimmed input timeline, so this filter must precede
             any time-stretching filter in the chain.
+        :param trimmed_seconds: Amount of trailing audio in seconds that the trim
+            drops, for logging/debugging purposes.
         """
         self.fadeout_end_pos = fadeout_end_pos
+        self.trimmed_seconds = trimmed_seconds
         super().__init__(logger)
 
     def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
@@ -113,7 +116,7 @@ class FadeOutTrimFilter(Filter):
 
     def __repr__(self) -> str:
         """Return string representation of FadeOutTrimFilter."""
-        return f"FadeOutTrim(end={self.fadeout_end_pos:.2f}s)"
+        return f"FadeOutTrim(end={self.fadeout_end_pos:.2f}s, trimmed={self.trimmed_seconds:.2f}s)"
 
 
 class FrequencySweepFilter(Filter):

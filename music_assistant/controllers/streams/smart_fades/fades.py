@@ -483,7 +483,11 @@ class SmartCrossFade(SmartFade):
         # ~0.1-0.2s for typical track lengths, so finer precision is illusory
         if self.effective_end < buffer_duration - 0.5:
             self.filters.append(
-                FadeOutTrimFilter(logger=self.logger, fadeout_end_pos=self.effective_end)
+                FadeOutTrimFilter(
+                    logger=self.logger,
+                    fadeout_end_pos=self.effective_end,
+                    trimmed_seconds=buffer_duration - self.effective_end,
+                )
             )
         else:
             # Without the trim the rendered stream still ends at buffer_duration,
