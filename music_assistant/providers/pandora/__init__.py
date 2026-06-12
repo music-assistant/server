@@ -8,7 +8,12 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import SetupFailedError
 
-from music_assistant.constants import CONF_PASSWORD, CONF_SOCKS_URL, CONF_USERNAME
+from music_assistant.constants import (
+    CONF_ENTRY_UNOFFICIAL_PROVIDER,
+    CONF_PASSWORD,
+    CONF_SOCKS_URL,
+    CONF_USERNAME,
+)
 
 from .constants import CONF_QUALITY, CONF_TAKEOVER_ACTION, QUALITY_HIGH, QUALITY_STANDARD
 from .provider import PandoraProvider
@@ -62,6 +67,7 @@ async def get_config_entries(
             await provider.takeover_stream()
 
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,

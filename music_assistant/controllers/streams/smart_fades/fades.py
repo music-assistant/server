@@ -94,9 +94,9 @@ class SmartFade(ABC):
     async def apply(
         self,
         fade_out_part: bytes,
-        fade_in_part: bytes | AsyncGenerator[bytes, None],
+        fade_in_part: bytes | AsyncGenerator[bytes],
         pcm_format: AudioFormat,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Apply the smart fade, yielding PCM audio chunks as they become available.
 
@@ -205,11 +205,16 @@ class SmartFade(ABC):
                     with suppress(TimeoutError, asyncio.CancelledError):
                         await asyncio.wait_for(stderr_task, timeout=2)
 
-            if proc.returncode not in (None, 0) or not got_output:
+            if proc.returncode != 0:
                 stderr_msg = "; ".join(stderr_lines) if stderr_lines else "(no stderr)"
                 raise RuntimeError(
                     f"Smart crossfade FFmpeg failed (rc={proc.returncode}): {stderr_msg}"
                 )
+            if not got_output:
+                msg = "Smart crossfade FFmpeg produced no output"
+                if stderr_lines:
+                    msg += f": {'; '.join(stderr_lines)}"
+                raise RuntimeError(msg)
         finally:
             # Always cleanup temp file, even if ffmpeg fails
             await remove_file(fadeout_filename)
@@ -669,9 +674,9 @@ class StandardCrossFade(SmartFade):
     async def apply(
         self,
         fade_out_part: bytes,
-        fade_in_part: bytes | AsyncGenerator[bytes, None],
+        fade_in_part: bytes | AsyncGenerator[bytes],
         pcm_format: AudioFormat,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Apply standard crossfade, yielding PCM audio chunks.
 
@@ -687,7 +692,7 @@ class StandardCrossFade(SmartFade):
         # Collect only the crossfade portion from fade_in, keep the rest as a generator
         if isinstance(fade_in_part, bytes):
             adjusted_fade_in_part = fade_in_part[:crossfade_size]
-            post_crossfade: bytes | AsyncGenerator[bytes, None] = fade_in_part[crossfade_size:]
+            post_crossfade: bytes | AsyncGenerator[bytes] = fade_in_part[crossfade_size:]
         else:
             # read exactly crossfade_size bytes from the generator
             buf = bytearray()
@@ -699,7 +704,7 @@ class StandardCrossFade(SmartFade):
             # anything beyond crossfade_size plus the remaining generator is post_crossfade
             leftover = bytes(buf[crossfade_size:])
 
-            async def _post_crossfade() -> AsyncGenerator[bytes, None]:
+            async def _post_crossfade() -> AsyncGenerator[bytes]:
                 if leftover:
                     for pcm_slice in iter_pcm_slices(leftover, pcm_format, 1000):
                         yield pcm_slice

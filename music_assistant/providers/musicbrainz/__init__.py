@@ -13,7 +13,11 @@ from typing import TYPE_CHECKING, Any, cast
 from mashumaro import DataClassDictMixin
 from mashumaro.exceptions import MissingField
 from music_assistant_models.enums import ExternalID, LinkType, ProviderFeature
-from music_assistant_models.errors import InvalidDataError, ResourceTemporarilyUnavailable
+from music_assistant_models.errors import (
+    InvalidDataError,
+    RateLimited,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant_models.media_items import MediaItemLink, MediaItemMetadata
 
 from music_assistant.controllers.cache import use_cache
@@ -271,7 +275,7 @@ class MusicBrainzRecording(DataClassDictMixin):
 class MusicbrainzProvider(MetadataProvider):
     """The Musicbrainz Metadata provider."""
 
-    throttler = ThrottlerManager(rate_limit=5, period=1)
+    throttler = ThrottlerManager(rate_limit=10, period=10)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -689,7 +693,7 @@ class MusicbrainzProvider(MetadataProvider):
             # handle rate limiter
             if response.status == 429:
                 backoff_time = int(response.headers.get("Retry-After", 0))
-                raise ResourceTemporarilyUnavailable("Rate Limiter", backoff_time=backoff_time)
+                raise RateLimited("Rate Limiter", backoff_time=backoff_time)
             # handle temporary server error
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)

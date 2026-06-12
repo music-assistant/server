@@ -1,7 +1,7 @@
 {
   "type": "plugin",
   "domain": "yandex_ynison",
-  "stage": "beta",
+  "stage": "stable",
   "name": "Yandex Music Connect (Ynison)",
   "description": "Makes a Music Assistant player appear as a device in the Yandex Music app via the Ynison protocol.",
   "codeowners": ["@TrudenBoy"],

@@ -861,9 +861,7 @@ class LocalFileSystemProvider(MusicProvider):
 
         return result
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get podcast episodes for given podcast id."""
         episodes: list[PodcastEpisode] = []
 
@@ -998,8 +996,16 @@ class LocalFileSystemProvider(MusicProvider):
         This either returns (a generator to get) raw bytes of the image or
         a string with an http(s) URL or local path that is accessible from the server.
         """
-        file_item = await self.resolve(path)
+        # drop the cache-busting suffix appended by _versioned_image_path
+        file_item = await self.resolve(path.split("?cs=", 1)[0])
         return file_item.absolute_path
+
+    @staticmethod
+    def _versioned_image_path(relative_path: str, checksum: str | None) -> str:
+        """Append the file checksum so the image cache busts when the file is replaced."""
+        if checksum:
+            return f"{relative_path}?cs={checksum}"
+        return relative_path
 
     async def _parse_track(
         self, file_item: FileSystemItem, tags: AudioTags, full_album_metadata: bool = False
@@ -1413,7 +1419,7 @@ class LocalFileSystemProvider(MusicProvider):
             audio_book.metadata.add_image(
                 MediaItemImage(
                     type=ImageType.THUMB,
-                    path=file_item.relative_path,
+                    path=self._versioned_image_path(file_item.relative_path, file_item.checksum),
                     provider=self.instance_id,
                     remotely_accessible=False,
                 )
@@ -1443,7 +1449,7 @@ class LocalFileSystemProvider(MusicProvider):
                     audio_book.metadata.add_image(
                         MediaItemImage(
                             type=ImageType.THUMB,
-                            path=_item.relative_path,
+                            path=self._versioned_image_path(_item.relative_path, _item.checksum),
                             provider=self.instance_id,
                             remotely_accessible=False,
                         )

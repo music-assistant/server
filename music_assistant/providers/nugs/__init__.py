@@ -38,7 +38,11 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.constants import (
+    CONF_ENTRY_UNOFFICIAL_PROVIDER,
+    CONF_PASSWORD,
+    CONF_USERNAME,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
@@ -83,6 +87,7 @@ async def get_config_entries(
     """
     # ruff: noqa: ARG001
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
@@ -108,21 +113,21 @@ class NugsProvider(MusicProvider):
         """Handle async initialization of the provider."""
         await self.login()
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from nugs.net."""
         artist_data = await self._get_all_items("stash", "artists/favorite/")
         for item in artist_data:
             if item and item["id"]:
                 yield self._parse_artist(item)
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from the provider."""
         album_data = await self._get_all_items("stash", "releases/favorite")
         for item in album_data:
             if item and item["id"]:
                 yield self._parse_album(item)
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve playlists from the provider."""
         playlist_data = await self._get_all_items("stash", "playlists/")
         for item in playlist_data:

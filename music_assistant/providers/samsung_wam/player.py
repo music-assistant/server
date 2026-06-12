@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from music_assistant_models.enums import IdentifierType, PlaybackState
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 
+from music_assistant.constants import CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
@@ -128,7 +129,7 @@ class WamPlayer(Player):
         :param values: The current configuration values.
         :return: A list of ConfigEntry objects.
         """
-        return [CONF_ENTRY_HTTP_PROFILE_WAM]
+        return [CONF_ENTRY_HTTP_PROFILE_WAM, CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN]
 
     async def on_config_updated(self) -> None:
         """Handle player config updates."""

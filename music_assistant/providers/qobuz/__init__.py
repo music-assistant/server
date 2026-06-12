@@ -26,6 +26,7 @@ from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
 )
 from music_assistant_models.media_items import (
@@ -42,6 +43,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import (
+    CONF_ENTRY_UNOFFICIAL_PROVIDER,
     CONF_PASSWORD,
     CONF_USERNAME,
     VARIOUS_ARTISTS_MBID,
@@ -117,6 +119,7 @@ async def get_config_entries(
     """
     # ruff: noqa: ARG001
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
@@ -221,28 +224,28 @@ class QobuzProvider(MusicProvider):
                 ]
         return result
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Qobuz."""
         endpoint = "favorite/getUserFavorites"
         for item in await self._get_all_items(endpoint, key="artists", type="artists"):
             if item and item["id"]:
                 yield self._parse_artist(item)
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve all library albums from Qobuz."""
         endpoint = "favorite/getUserFavorites"
         for item in await self._get_all_items(endpoint, key="albums", type="albums"):
             if item and item["id"]:
                 yield await self._parse_album(item)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Qobuz."""
         endpoint = "favorite/getUserFavorites"
         for item in await self._get_all_items(endpoint, key="tracks", type="tracks"):
             if item and item["id"]:
                 yield await self._parse_track(item)
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from the provider."""
         endpoint = "playlist/getUserPlaylists"
         for item in await self._get_all_items(endpoint, key="playlists"):
@@ -898,7 +901,7 @@ class QobuzProvider(MusicProvider):
                     endpoint,
                     retry_after or "not provided",
                 )
-                raise ResourceTemporarilyUnavailable("Rate Limiter", backoff_time=backoff_time)
+                raise RateLimited("Rate Limiter", backoff_time=backoff_time)
             # handle temporary server error
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
@@ -950,7 +953,7 @@ class QobuzProvider(MusicProvider):
                     endpoint,
                     retry_after or "not provided",
                 )
-                raise ResourceTemporarilyUnavailable("Rate Limiter", backoff_time=backoff_time)
+                raise RateLimited("Rate Limiter", backoff_time=backoff_time)
             # handle temporary server error
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)

@@ -9,7 +9,9 @@ from unittest.mock import AsyncMock, patch
 import aiofiles
 import pytest
 
+from music_assistant.constants import DB_TABLE_CACHE, VACUUM_MIN_RECLAIM_RATIO
 from music_assistant.controllers.cache import MAX_CACHE_DB_SIZE_MB, CacheController
+from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.mass import MusicAssistant
 
 
@@ -401,3 +403,59 @@ async def test_auto_cleanup_keeps_fresh_entries(cache: CacheController) -> None:
     await cache.set("alive", "data", provider="test", expiration=3600)
     await cache.auto_cleanup()
     assert await cache.get("alive", provider="test") == "data"
+
+
+async def test_auto_cleanup_scans_all_records(cache: CacheController) -> None:
+    """
+    Test that auto_cleanup removes expired entries beyond the row-fetch page size.
+
+    Regression test: cleanup previously fetched rows via the default 500-row limit,
+    so large caches kept most of their expired entries forever.
+    """
+    expired_count = 1200
+    for i in range(expired_count):
+        await cache.set(f"expired_{i}", "data", provider="test", expiration=-1)
+    await cache.set("fresh", "data", provider="test", expiration=3600)
+
+    await cache.auto_cleanup()
+
+    assert cache.database is not None
+    assert await cache.database.get_count(DB_TABLE_CACHE) == 1
+    assert await cache.get("fresh", provider="test") == "data"
+
+
+# --- Startup vacuum ---
+
+
+async def test_setup_skips_vacuum_when_little_reclaimable(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """Test that the startup vacuum is skipped when little space can be reclaimed."""
+    cache = mass_minimal.cache
+    with (
+        patch.object(
+            DatabaseConnection,
+            "get_reclaimable_ratio",
+            AsyncMock(return_value=VACUUM_MIN_RECLAIM_RATIO / 2),
+        ),
+        patch.object(DatabaseConnection, "vacuum", AsyncMock()) as mock_vacuum,
+    ):
+        await cache._setup_database()
+    mock_vacuum.assert_not_called()
+
+
+async def test_setup_runs_vacuum_when_reclaimable(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """Test that the startup vacuum runs when enough space can be reclaimed."""
+    cache = mass_minimal.cache
+    with (
+        patch.object(
+            DatabaseConnection,
+            "get_reclaimable_ratio",
+            AsyncMock(return_value=VACUUM_MIN_RECLAIM_RATIO + 0.1),
+        ),
+        patch.object(DatabaseConnection, "vacuum", AsyncMock()) as mock_vacuum,
+    ):
+        await cache._setup_database()
+    mock_vacuum.assert_awaited_once_with()

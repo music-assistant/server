@@ -6,7 +6,7 @@
   "codeowners": ["@music-assistant"],
   "requirements": ["beat-this==1.1.0", "nnAudio==0.3.3"],
   "credits": ["[Beat This!](https://github.com/CPJKU/beat_this)", "[skey](https://github.com/deezer/skey)"],
-  "documentation": "https://github.com/CPJKU/beat_this",
+  "documentation": "https://music-assistant.io/audio-analysis/smart-fades/",
   "multi_instance": false,
   "builtin": false,
   "icon": "waveform"

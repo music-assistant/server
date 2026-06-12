@@ -91,42 +91,42 @@ class MusicProvider(Provider):
             raise NotImplementedError
         return SearchResults()
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library/subscribed playlists from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Retrieve library/subscribed audiobooks from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library/subscribed podcasts from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
-    async def get_library_genres(self) -> AsyncGenerator[str, None]:
+    async def get_library_genres(self) -> AsyncGenerator[str]:
         """Retrieve library genres from the provider."""
         yield  # type: ignore[misc]
         raise NotImplementedError
@@ -136,66 +136,63 @@ class MusicProvider(Provider):
         raise NotImplementedError
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
-        """Get a list of all albums for the given artist.
+        """
+        Get a list of all albums for the given artist.
 
         Only called if provider supports ProviderFeature.ARTIST_ALBUMS.
         """
         raise NotImplementedError
 
+    async def get_artist_tracks(self, prov_artist_id: str) -> list[Track]:
+        """
+        Get a list of all tracks for the given artist.
+
+        Only called if provider supports ProviderFeature.ARTIST_TRACKS.
+        """
+        raise NotImplementedError
+
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Get a list of most popular tracks for the given artist.
+        """
+        Get a list of most popular tracks for the given artist.
 
         Only called if provider supports ProviderFeature.ARTIST_TOPTRACKS.
         """
         raise NotImplementedError
 
-    async def get_album(self, prov_album_id: str) -> Album:
-        """Get full album details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_ALBUMS.
+    async def get_artist_topalbums(self, prov_artist_id: str) -> list[Album]:
         """
+        Get a list of most popular albums for the given artist.
+
+        Only called if provider supports ProviderFeature.ARTIST_TOPALBUMS.
+        """
+        raise NotImplementedError
+
+    async def get_album(self, prov_album_id: str) -> Album:
+        """Get full album details by id."""
         raise NotImplementedError
 
     async def get_track(self, prov_track_id: str) -> Track:
-        """Get full track details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_TRACKS.
-        """
+        """Get full track details by id."""
         raise NotImplementedError
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
-        """Get full playlist details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_PLAYLISTS.
-        """
+        """Get full playlist details by id."""
         raise NotImplementedError
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
-        """Get full radio details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_RADIOS.
-        """
+        """Get full radio details by id."""
         raise NotImplementedError
 
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
-        """Get full audiobook details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_AUDIOBOOKS.
-        """
+        """Get full audiobook details by id."""
         raise NotImplementedError
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
-        """Get full podcast details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_PODCASTS.
-        """
+        """Get full podcast details by id."""
         raise NotImplementedError
 
     async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
-        """Get (full) podcast episode details by id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_PODCASTS.
-        """
+        """Get (full) podcast episode details by id."""
         raise NotImplementedError
 
     async def get_item_genre_names(self, media_type: MediaType, item_id: str) -> set[str]:
@@ -206,10 +203,7 @@ class MusicProvider(Provider):
         self,
         prov_album_id: str,
     ) -> list[Track]:
-        """Get album tracks for given album id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_ALBUMS.
-        """
+        """Get album tracks for given album id."""
         raise NotImplementedError
 
     async def get_playlist_tracks(
@@ -217,20 +211,14 @@ class MusicProvider(Provider):
         prov_playlist_id: str,
         page: int = 0,
     ) -> Sequence[PlaylistPlayableItem]:
-        """Get all playlist tracks for given playlist id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_PLAYLISTS.
-        """
+        """Get all playlist tracks for given playlist id."""
         raise NotImplementedError
 
     async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
-    ) -> AsyncGenerator[PodcastEpisode, None]:
-        """Get all PodcastEpisodes for given podcast id.
-
-        Only called if provider supports ProviderFeature.LIBRARY_PODCASTS.
-        """
+    ) -> AsyncGenerator[PodcastEpisode]:
+        """Get all PodcastEpisodes for given podcast id."""
         yield  # type: ignore[misc]
         raise NotImplementedError
 
@@ -377,21 +365,24 @@ class MusicProvider(Provider):
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
-        """Remove track(s) from playlist.
+        """
+        Remove track(s) from playlist.
 
         Only called if provider supports ProviderFeature.PLAYLIST_TRACKS_EDIT.
         """
         raise NotImplementedError
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
-        """Create a new playlist on provider with given name and targeting media_types.
+        """
+        Create a new playlist on provider with given name and targeting media_types.
 
         Only called if provider supports ProviderFeature.PLAYLIST_CREATE.
         """
         raise NotImplementedError
 
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
-        """Retrieve a dynamic list of similar tracks based on the provided track.
+        """
+        Retrieve a dynamic list of similar tracks based on the provided track.
 
         Only called if provider supports ProviderFeature.SIMILAR_TRACKS.
         """
@@ -429,7 +420,7 @@ class MusicProvider(Provider):
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Return the (custom) audio stream for the provider item.
 
@@ -857,15 +848,20 @@ class MusicProvider(Provider):
                 self._report_sync_task_failure(MediaType.ARTIST, prov_item.uri, err)
         return cur_db_ids
 
+    def library_sync_album_tracks_enabled(self) -> bool:
+        """Return whether all tracks of an album should be imported into the library."""
+        return bool(
+            self.config.get_value(
+                CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.key,
+                CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.default_value,
+            )
+        )
+
     async def _sync_library_albums(self) -> set[int]:
         """Sync Library Albums to Music Assistant library."""
         self.logger.debug("Start sync of Albums to Music Assistant library.")
         cur_db_ids: set[int] = set()
-        conf_sync_album_tracks = self.config.get_value(
-            CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.key,
-            CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS.default_value,
-        )
-        sync_album_tracks = bool(conf_sync_album_tracks)
+        sync_album_tracks = self.library_sync_album_tracks_enabled()
         item_count = 0
         async for prov_item in self.get_library_albums():
             item_count += 1
@@ -907,7 +903,7 @@ class MusicProvider(Provider):
                 await asyncio.sleep(0)  # yield to eventloop
                 # optionally add album tracks to library
                 if sync_album_tracks:
-                    await self._sync_album_tracks(prov_item)
+                    await self.import_album_tracks(prov_item.item_id, prov_item.name)
             except MusicAssistantError as err:
                 self.logger.warning(
                     "Skipping sync of album %s - error details: %s",
@@ -917,14 +913,19 @@ class MusicProvider(Provider):
                 self._report_sync_task_failure(MediaType.ALBUM, prov_item.uri, err)
         return cur_db_ids
 
-    async def _sync_album_tracks(self, provider_album: Album) -> None:
-        """Sync Album Tracks to Music Assistant library."""
+    async def import_album_tracks(self, prov_album_id: str, album_name: str | None = None) -> None:
+        """
+        Import all tracks of the given (provider) album into the Music Assistant library.
+
+        :param prov_album_id: The provider item id of the album.
+        :param album_name: Optional album name, used for logging/progress only.
+        """
         self.logger.debug(
-            "Start sync of Album Tracks to Music Assistant library for album %s.",
-            provider_album.name,
+            "Importing Album Tracks into the Music Assistant library for album %s.",
+            album_name or prov_album_id,
         )
         for item_count, prov_track in enumerate(
-            await self.get_album_tracks(provider_album.item_id), start=1
+            await self.get_album_tracks(prov_album_id), start=1
         ):
             self._update_sync_task_item_status(MediaType.TRACK, item_count, prov_track.name)
             library_track = await self.mass.music.tracks.get_library_item_by_prov_mappings(
@@ -1319,7 +1320,7 @@ class MusicProvider(Provider):
     async def iter_playlist_tracks(
         self,
         prov_playlist_id: str,
-    ) -> AsyncGenerator[PlaylistPlayableItem, None]:
+    ) -> AsyncGenerator[PlaylistPlayableItem]:
         """Iterate playlist tracks for the given provider playlist id."""
         page = 0
         while True:
@@ -1333,7 +1334,7 @@ class MusicProvider(Provider):
                 yield track
             page += 1
 
-    def _get_library_gen(self, media_type: MediaType) -> AsyncGenerator[MediaItemType, None]:
+    def _get_library_gen(self, media_type: MediaType) -> AsyncGenerator[MediaItemType]:
         """Return library generator for given media_type."""
         if media_type == MediaType.ARTIST:
             return self.get_library_artists()

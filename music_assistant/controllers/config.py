@@ -1427,8 +1427,39 @@ class ConfigController:
                 )
                 changed = True
 
+        # Drop the persisted schedule for the metadata maintenance tasks that were hardcoded
+        # to run at 04:00 local. They are now registered under new ("_v2") task ids with a
+        # randomized full-day schedule (to avoid spiking the shared MusicBrainz mirror), so the
+        # old persisted state is orphaned and can be removed.
+        # TODO: remove after 2.9 release
+        if self._migrate_metadata_maintenance_schedule():
+            changed = True
+
         if changed:
             await self._async_save()
+
+    def _migrate_metadata_maintenance_schedule(self) -> bool:
+        """Remove the orphaned persisted state for the pre-randomization metadata task ids."""
+        core_config = self._data.get(CONF_CORE)
+        if not isinstance(core_config, dict):
+            return False
+        tasks_config = core_config.get("tasks")
+        if not isinstance(tasks_config, dict):
+            return False
+        task_states = tasks_config.get("scheduled_task_states")
+        if not isinstance(task_states, dict):
+            return False
+        legacy_task_ids = (
+            "metadata_missing_artist_metadata_scan",
+            "metadata_playlist_metadata_scan",
+            "metadata_thumb_cache_cleanup",
+        )
+        removed = [task_id for task_id in legacy_task_ids if task_id in task_states]
+        for task_id in removed:
+            del task_states[task_id]
+        if removed:
+            LOGGER.info("Removed orphaned metadata maintenance schedule state for %s", removed)
+        return bool(removed)
 
     def _migrate_fully_kiosk_multi_instance(self) -> bool:
         """Collapse legacy multi-instance Fully Kiosk configs into a single provider instance."""

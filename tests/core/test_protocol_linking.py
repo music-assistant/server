@@ -4446,22 +4446,29 @@ class TestUniversalPlayerMerging:
         # Call merge check
         controller._check_merge_universal_players(up1)
 
-        # up1 should have absorbed up2's protocol links (AirPlay)
-        protocol_domains = {link.protocol_domain for link in up1.linked_output_protocols}
+        # Both UPs have one linked protocol -> equal-count merge falls through to
+        # the deterministic tiebreaker on player_id. "up50411c2f00ee" (up2) is
+        # lex-smaller than "upf15fff97f002" (up1), so up2 absorbs up1.
+
+        # up2 (lex-smaller player_id) should have absorbed up1's DLNA link
+        protocol_domains = {link.protocol_domain for link in up2.linked_output_protocols}
         assert "dlna" in protocol_domains
         assert "airplay" in protocol_domains
 
-        # up2 should have no more protocol links
-        assert len(up2.linked_output_protocols) == 0
+        # up1 should have no more protocol links
+        assert len(up1.linked_output_protocols) == 0
 
-        # AirPlay player should now be linked to up1
-        assert ap_player.protocol_parent_id == "upf15fff97f002"
+        # DLNA player should now be linked to up2 (was on up1 before merge)
+        assert dlna_player.protocol_parent_id == "up50411c2f00ee"
 
-        # up1 should have protocol player IDs from both
-        assert "dlna_uuid_1" in up1._protocol_player_ids
-        assert "ap_1" in up1._protocol_player_ids
+        # AirPlay player should still be linked to up2
+        assert ap_player.protocol_parent_id == "up50411c2f00ee"
 
-        # Unregister should have been called for up2
+        # up2 should have protocol player IDs from both
+        assert "dlna_uuid_1" in up2._protocol_player_ids
+        assert "ap_1" in up2._protocol_player_ids
+
+        # Unregister should have been called for up1
         mock_mass.create_task.assert_called()
 
     def test_no_merge_when_identifiers_dont_match(self, mock_mass: MagicMock) -> None:
@@ -4591,6 +4598,86 @@ class TestUniversalPlayerMerging:
 
         # up1 should have no more links
         assert len(up1.linked_output_protocols) == 0
+
+    def test_merge_deterministic_tiebreaker_on_equal_link_counts(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Test that equal-link-count merges resolve to the lex-smaller player_id."""
+        controller = PlayerController(mock_mass)
+        up_provider = create_mock_universal_provider(mock_mass)
+
+        # up_a: lex-smaller player_id, one protocol link (DLNA)
+        up_a = UniversalPlayer(
+            provider=up_provider,
+            player_id="up_aaa",
+            name="Player A",
+            device_info=DeviceInfo(model="Test", manufacturer="Test"),
+            protocol_player_ids=["dlna_1"],
+        )
+        up_a._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, "AA:BB:CC:DD:EE:FF")
+        up_a._cache.clear()
+        up_a.update_state(signal_event=False)
+        up_a.set_initialized()
+
+        # up_b: lex-larger player_id, one protocol link (AirPlay)
+        up_b = UniversalPlayer(
+            provider=up_provider,
+            player_id="up_bbb",
+            name="Player B",
+            device_info=DeviceInfo(model="Test", manufacturer="Test"),
+            protocol_player_ids=["ap_1"],
+        )
+        up_b._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, "AA:BB:CC:DD:EE:FF")
+        up_b._cache.clear()
+        up_b.update_state(signal_event=False)
+        up_b.set_initialized()
+
+        # Create protocol players
+        dlna_provider = MockProvider("dlna", mass=mock_mass)
+        dlna_player = MockPlayer(
+            dlna_provider,
+            "dlna_1",
+            "DLNA",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        dlna_player.set_initialized()
+
+        airplay_provider = MockProvider("airplay", mass=mock_mass)
+        ap_player = MockPlayer(
+            airplay_provider,
+            "ap_1",
+            "AirPlay",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap_player.set_initialized()
+
+        controller._players = {
+            "up_aaa": up_a,
+            "up_bbb": up_b,
+            "dlna_1": dlna_player,
+            "ap_1": ap_player,
+        }
+
+        controller._add_protocol_link(up_a, dlna_player, "dlna")
+        controller._add_protocol_link(up_b, ap_player, "airplay")
+
+        # Call merge from the lex-larger side. Under the old non-deterministic
+        # behavior the caller (up_b) would have won. With the tiebreaker the
+        # lex-smaller player_id (up_a) wins regardless of which side calls.
+        controller._check_merge_universal_players(up_b)
+
+        # up_a (lex-smaller) should have absorbed up_b's AirPlay link
+        protocol_domains = {link.protocol_domain for link in up_a.linked_output_protocols}
+        assert "dlna" in protocol_domains
+        assert "airplay" in protocol_domains
+
+        # AirPlay player should now point to up_aaa
+        assert ap_player.protocol_parent_id == "up_aaa"
+
+        # up_b should have no more links
+        assert len(up_b.linked_output_protocols) == 0
 
     async def test_merge_preserves_moved_protocols_during_parent_cleanup(
         self, mock_mass: MagicMock
