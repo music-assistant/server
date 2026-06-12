@@ -359,6 +359,8 @@ class PandoraProvider(MusicProvider):
             start = int(len(audio) / streamdetails.duration * seek_position)
         for i in range(start, len(audio), 65536):
             yield audio[i : i + 65536]
+        # clean up cache after streaming
+        del self._audio_cache[track_id]
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
