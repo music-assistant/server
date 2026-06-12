@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlparse
 
 from music_assistant_models.enums import AlbumType, ContentType, ExternalID, ImageType, MediaType
 from music_assistant_models.media_items import (
@@ -23,10 +24,25 @@ from music_assistant.helpers.util import (
     parse_title_and_version,
 )
 
-from .constants import MAX_ARTWORK_DIMENSION, UNKNOWN_PLAYLIST_NAME
+from .constants import BLOBSTORE_DOMAIN, MAX_ARTWORK_DIMENSION, UNKNOWN_PLAYLIST_NAME
+from .helpers.utils import is_library_id
 
 if TYPE_CHECKING:
     from .provider import AppleMusicProvider
+
+
+def is_remotely_accessible_artwork_url(url: str) -> bool:
+    """
+    Check if artwork URL is remotely accessible without caching.
+
+    Blobstore URLs have AWS signatures that expire after 24h, so they must be cached immediately.
+    mzstatic.com URLs are permanent CDN URLs that can be used directly.
+
+    :param url: The artwork URL to check.
+    :return: True if the URL is remotely accessible (permanent), False if it needs caching.
+    """
+    hostname = urlparse(url).hostname or ""
+    return BLOBSTORE_DOMAIN not in hostname
 
 
 def parse_artist(provider: AppleMusicProvider, artist_obj: dict[str, Any]) -> Artist | ItemMapping:
@@ -52,7 +68,7 @@ def parse_artist(provider: AppleMusicProvider, artist_obj: dict[str, Any]) -> Ar
         )
     artist = Artist(
         item_id=artist_id,
-        name=normalize_unicode(attributes.get("name")),
+        name=cast("str", normalize_unicode(attributes.get("name"))),
         provider=provider.domain,
         provider_mappings={
             ProviderMapping(
@@ -75,7 +91,7 @@ def parse_artist(provider: AppleMusicProvider, artist_obj: dict[str, Any]) -> Ar
                 provider=provider.instance_id,
                 type=ImageType.THUMB,
                 path=url,
-                remotely_accessible=True,
+                remotely_accessible=is_remotely_accessible_artwork_url(url),
             )
         )
     if genres := attributes.get("genreNames"):
@@ -108,18 +124,14 @@ def parse_album(
             item_id=album_id,
             name=album_id,
         )
-    is_available_in_catalog = attributes.get("url") is not None
-    if not is_available_in_catalog:
-        provider.logger.debug(
-            "Skipping album %s. Album is not available in the Apple Music catalog.",
-            attributes.get("name"),
-        )
-        return None
     name, version = parse_title_and_version(attributes["name"])
+    # Check availability: library albums owned by user OR catalog items with playParams
+    is_library_album = is_library_id(album_id) and album_obj.get("type") == "library-albums"
+    has_play_params = attributes.get("playParams", {}).get("id") is not None
     album = Album(
         item_id=album_id,
         provider=provider.domain,
-        name=normalize_unicode(name),
+        name=cast("str", normalize_unicode(name)),
         version=version,
         provider_mappings={
             ProviderMapping(
@@ -127,7 +139,7 @@ def parse_album(
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
                 url=attributes.get("url"),
-                available=attributes.get("playParams", {}).get("id") is not None,
+                available=is_library_album or has_play_params,
             )
         },
     )
@@ -160,7 +172,7 @@ def parse_album(
                 provider=provider.instance_id,
                 type=ImageType.THUMB,
                 path=url,
-                remotely_accessible=True,
+                remotely_accessible=is_remotely_accessible_artwork_url(url),
             )
         )
     if album_copyright := attributes.get("copyright"):
@@ -194,6 +206,7 @@ def parse_track(
 ) -> Track:
     """Parse track object to generic layout."""
     relationships = track_obj.get("relationships", {})
+    raw_attributes = track_obj.get("attributes", {})
     if (
         track_obj.get("type") == "library-songs"
         and relationships.get("catalog", {}).get("data", []) != []
@@ -207,10 +220,13 @@ def parse_track(
         track_id = track_obj["id"]
         attributes = {}
     name, version = parse_title_and_version(attributes.get("name", ""))
+    # Check availability: library tracks owned by user OR catalog items with playParams
+    is_library_track = is_library_id(track_id) and track_obj.get("type") == "library-songs"
+    has_play_params = attributes.get("playParams", {}).get("id") is not None
     track = Track(
         item_id=track_id,
         provider=provider.domain,
-        name=normalize_unicode(name),
+        name=cast("str", normalize_unicode(name)),
         version=version,
         duration=attributes.get("durationInMillis", 0) / 1000,
         provider_mappings={
@@ -220,7 +236,7 @@ def parse_track(
                 provider_instance=provider.instance_id,
                 audio_format=AudioFormat(content_type=ContentType.AAC),
                 url=attributes.get("url"),
-                available=attributes.get("playParams", {}).get("id") is not None,
+                available=is_library_track or has_play_params,
             )
         },
     )
@@ -231,19 +247,34 @@ def parse_track(
     # Prefer catalog information over library information for artists.
     if "artists" in relationships:
         artists = relationships["artists"]
-        track.artists = [parse_artist(provider, artist) for artist in artists["data"]]
-    elif artist_name := normalize_unicode(attributes.get("artistName")):
-        track.artists = [
-            ItemMapping(
-                media_type=MediaType.ARTIST,
-                item_id=artist_name,
-                provider=provider.instance_id,
-                name=artist_name,
-            )
-        ]
+        track.artists = UniqueList([parse_artist(provider, artist) for artist in artists["data"]])
+    elif artist_name := normalize_unicode(
+        attributes.get("artistName") or raw_attributes.get("artistName")
+    ):
+        track.artists = UniqueList(
+            [
+                ItemMapping(
+                    media_type=MediaType.ARTIST,
+                    item_id=artist_name,
+                    provider=provider.instance_id,
+                    name=artist_name,
+                )
+            ]
+        )
     if albums := relationships.get("albums"):
         if "data" in albums and len(albums["data"]) > 0:
-            track.album = parse_album(provider, albums["data"][0])
+            parsed_album = parse_album(provider, albums["data"][0])
+            if parsed_album:
+                track.album = parsed_album
+    elif album_name := normalize_unicode(
+        attributes.get("albumName") or raw_attributes.get("albumName")
+    ):
+        track.album = ItemMapping(
+            media_type=MediaType.ALBUM,
+            item_id=album_name,
+            provider=provider.instance_id,
+            name=album_name,
+        )
     if artwork := attributes.get("artwork"):
         url = artwork["url"]
         if artwork["width"] and artwork["height"]:
@@ -256,7 +287,7 @@ def parse_track(
                 provider=provider.instance_id,
                 type=ImageType.THUMB,
                 path=url,
-                remotely_accessible=True,
+                remotely_accessible=is_remotely_accessible_artwork_url(url),
             )
         )
     if genres := attributes.get("genreNames"):
@@ -275,11 +306,20 @@ def parse_playlist(
     provider: AppleMusicProvider,
     playlist_obj: dict[str, Any],
     is_favourite: bool | None = None,
+    can_edit_hint: bool | None = None,
+    library_id_override: str | None = None,
 ) -> Playlist:
     """Parse Apple Music playlist object to generic layout."""
     attributes = playlist_obj["attributes"]
-    playlist_id = attributes["playParams"].get("globalId") or playlist_obj["id"]
-    is_editable = attributes.get("canEdit", False)
+    raw_playlist_id = playlist_obj["id"]
+    play_params = attributes.get("playParams", {})
+    # Prefer write-safe library IDs when available.
+    playlist_id = (
+        library_id_override
+        or (raw_playlist_id if is_library_id(raw_playlist_id) else play_params.get("globalId"))
+        or raw_playlist_id
+    )
+    is_editable = can_edit_hint if can_edit_hint is not None else attributes.get("canEdit", False)
     playlist = Playlist(
         item_id=playlist_id,
         provider=provider.instance_id,

@@ -27,6 +27,7 @@ from music_assistant_models.api import CommandMessage
 from music_assistant_models.auth import UserRole
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 
 from music_assistant.constants import (
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
@@ -273,8 +274,10 @@ class WebserverController(CoreController):
         routes.append(("OPTIONS", "/info", self._handle_cors_preflight))
         # add websocket api
         routes.append(("GET", "/ws", self._handle_ws_client))
-        # also host the image proxy on the webserver
-        routes.append(("GET", "/imageproxy", self.mass.metadata.handle_imageproxy))
+        # legacy /imageproxy?provider=&path= form — deprecated; the canonical
+        # /imageproxy/<image_id> form is registered as a dynamic route on the
+        # webserver by MetaDataController.post_setup()
+        routes.append(("GET", "/imageproxy", self.mass.metadata.handle_legacy_imageproxy))
         # also host the audio preview service
         routes.append(("GET", "/preview", self.serve_preview_stream))
         # add jsonrpc api
@@ -349,7 +352,7 @@ class WebserverController(CoreController):
                 "Webserver available on: %s\n"
                 "\n"
                 "If this address is incorrect, see the documentation on how to configure\n"
-                "the Webserver in Settings --> Core modules --> Webserver\n"
+                "the Webserver in Settings --> System --> Webserver\n"
                 "\n"
                 "################################################################################\n",
                 base_url,
@@ -582,7 +585,13 @@ class WebserverController(CoreController):
                 result = [item async for item in result]
             elif inspect.iscoroutine(result):
                 result = await result
-            return web.json_response(result, dumps=json_dumps)
+            # Set the image-proxy resolver so any MediaItemImage in the result
+            # gets a short opaque proxy_id injected during dict serialization.
+            token = IMAGE_PROXY_ID_RESOLVER.set(self.mass.metadata.compute_image_id)
+            try:
+                return web.json_response(result, dumps=json_dumps)
+            finally:
+                IMAGE_PROXY_ID_RESOLVER.reset(token)
         except Exception as e:
             # Return clean error message without stacktrace
             error_type = type(e).__name__

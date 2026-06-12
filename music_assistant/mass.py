@@ -125,6 +125,9 @@ class MusicAssistant:
         self._state = CoreState.STARTING
         self.storage_path = storage_path
         self.cache_path = cache_path
+        # Sqlite spills temp files (sort scratch, the VACUUM rebuild copy) to /tmp by
+        # default, which is a RAM-backed tmpfs on HAOS - redirect to the data volume.
+        os.environ.setdefault("SQLITE_TMPDIR", storage_path)
         self.safe_mode = safe_mode
         # we dynamically register command handlers which can be consumed by the apis
         self.command_handlers: dict[str, APICommandHandler] = {}
@@ -548,6 +551,9 @@ class MusicAssistant:
             if abort_existing:
                 existing.cancel()
             else:
+                # close any already-constructed coroutine to avoid "never awaited" warning
+                if inspect.iscoroutine(target):
+                    target.close()
                 return existing
         self.verify_event_loop_thread("create_task")
 
@@ -827,6 +833,7 @@ class MusicAssistant:
             self.player_queues,
             self.webserver,
             self.webserver.auth,
+            self.streams.audio_analysis,
         ):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):

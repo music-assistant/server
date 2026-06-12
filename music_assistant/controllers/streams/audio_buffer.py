@@ -176,7 +176,7 @@ class AudioBuffer:
         chunks_ahead = seek_chunk - total_chunks
         return chunks_ahead <= SEEK_WAIT_THRESHOLD
 
-    async def get_raw_stream(self, seek_position_ms: int = 0) -> AsyncGenerator[bytes, None]:
+    async def get_raw_stream(self, seek_position_ms: int = 0) -> AsyncGenerator[bytes]:
         """
         Get raw (unprocessed) PCM audio from the buffer.
 
@@ -210,7 +210,7 @@ class AudioBuffer:
         output_format: AudioFormat,
         seek_position_ms: int = 0,
         filter_params: list[str] | None = None,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Get processed audio from the buffer.
 
@@ -236,7 +236,7 @@ class AudioBuffer:
         ):
             yield chunk
 
-    def fill(self, audio_source: AsyncGenerator[bytes, None], source_name: str = "unknown") -> None:
+    def fill(self, audio_source: AsyncGenerator[bytes], source_name: str = "unknown") -> None:
         """
         Start filling the buffer from an async generator of PCM audio chunks.
 
@@ -432,7 +432,9 @@ class AudioBuffer:
         streamdetails.buffer = audio_buffer
 
         # attach analyze jobs for ahead-of-time processing
-        if seek_position_ms == 0:
+        # skip AudioSource — it's an open-ended live stream so analysis would never finalize
+        # (radio still runs analysis; the analyzer caps it at 10 minutes)
+        if seek_position_ms == 0 and streamdetails.media_type != MediaType.AUDIO_SOURCE:
             # audio analysis providers (loudness, beat tracking, key detection, etc.)
             await mass.streams.audio_analysis.start_analysis(audio_buffer, streamdetails)
 

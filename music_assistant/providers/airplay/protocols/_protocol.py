@@ -71,6 +71,11 @@ class AirPlayProtocol(ABC):
         """Return boolean if this stream is running."""
         return not self._stopped and self._cli_proc is not None and not self._cli_proc.closed
 
+    @property
+    def connected(self) -> bool:
+        """Return boolean if the stream connection has been established."""
+        return self._connected.is_set()
+
     @abstractmethod
     async def start(self, start_ntp: int) -> None:
         """Start the CLI process.

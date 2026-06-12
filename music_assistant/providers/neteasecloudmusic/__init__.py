@@ -48,6 +48,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
@@ -689,7 +690,7 @@ async def get_config_entries(
             await _check_qr_auth(mass, values)
     except ResourceTemporarilyUnavailable as err:
         raise InvalidDataError(str(err)) from err
-    return _build_config_entries(values)
+    return (CONF_ENTRY_UNOFFICIAL_PROVIDER, *_build_config_entries(values))
 
 
 class NeteaseCloudMusicProvider(MusicProvider):
@@ -1339,7 +1340,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
         return self._parse_artist(artist_obj)
 
-    @use_cache(3600 * 24)
+    @use_cache(3600 * 24, allow_expired_cache=True)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get all albums for an artist."""
         limit = 100
@@ -1374,7 +1375,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 break
         return albums
 
-    @use_cache(3600 * 24)
+    @use_cache(3600 * 24, allow_expired_cache=True)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get top tracks for given artist."""
         payload = await self._client.get(
@@ -1415,7 +1416,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Album {prov_album_id} not found")
         return self._parse_album(album_obj)
 
-    @use_cache()
+    @use_cache(allow_expired_cache=True)
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for album id."""
         payload = await self._client.get(
@@ -1574,7 +1575,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
 
         return await self._get_playlist_tracks_cached(prov_playlist_id, page)
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve favorite artists from NCM."""
         limit = 200
         offset = 0
@@ -1598,7 +1599,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             if not has_more and len(artists) < limit:
                 break
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve favorite albums from NCM."""
         limit = 200
         offset = 0
@@ -1622,7 +1623,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             if not has_more and len(albums) < limit:
                 break
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve liked tracks from NCM."""
         payload = await self._client.get(
             "/likelist",
@@ -1642,7 +1643,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 with suppress(InvalidDataError):
                     yield self._parse_track(song_obj)
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve user playlists from NCM."""
         payload = await self._client.get(
             "/user/playlist",

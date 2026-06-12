@@ -1,0 +1,21 @@
+{
+  "queue_id": "lenco",
+  "state": "playing",
+  "active": true,
+  "current_index": 0,
+  "items": 1,
+  "shuffle_enabled": false,
+  "repeat_mode": "off",
+  "available": true,
+  "current_item": {
+    "queue_item_id": "a54db550805244fdb3728f583ef1e554",
+    "name": "Yandex Music Connect (Ynison)",
+    "duration": null,
+    "media_type": "audio_source",
+    "streamdetails": {
+      "provider": "yandex_ynison--PL8BnL7a",
+      "media_type": "audio_source",
+      "stream_metadata": { "title": "Behind Your Walls", "duration": 201 }
+    }
+  }
+}

@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture(autouse=True)
-def skip_grace_sleep() -> Generator[mock.AsyncMock, None, None]:
+def skip_grace_sleep() -> Generator[mock.AsyncMock]:
     """Bypass the post-auth grace ``asyncio.sleep`` so tests run instantly."""
     with mock.patch(
         "music_assistant.providers.yandex_music.auth.asyncio.sleep",
@@ -681,10 +681,10 @@ async def test_validate_x_token_valid() -> None:
     assert result is True
 
 
-async def test_validate_x_token_error_returns_false() -> None:
-    """Any YaPassportError returns False (graceful degradation)."""
+async def test_validate_x_token_invalid_returns_false() -> None:
+    """A terminal credential error returns False (token rejected by Passport)."""
     mock_client = mock.AsyncMock()
-    mock_client.validate_x_token.side_effect = RateLimitedError("429")
+    mock_client.validate_x_token.side_effect = InvalidCredentialsError("token rejected")
 
     with mock.patch(
         "music_assistant.providers.yandex_music.auth.PassportClient.create",
@@ -695,6 +695,30 @@ async def test_validate_x_token_error_returns_false() -> None:
         result = await validate_x_token(SecretStr("some_token"))
 
     assert result is False
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [PassportNetworkError("offline"), RateLimitedError("429")],
+    ids=["network", "rate_limited"],
+)
+async def test_validate_x_token_transient_error_propagates(exc: Exception) -> None:
+    """Transient Passport failures must not masquerade as "token invalid".
+
+    A network blip or 429 should not cause callers to clear the stored
+    credential — re-raise so the caller can distinguish the two.
+    """
+    mock_client = mock.AsyncMock()
+    mock_client.validate_x_token.side_effect = exc
+
+    with mock.patch(
+        "music_assistant.providers.yandex_music.auth.PassportClient.create",
+    ) as mock_create:
+        mock_create.return_value.__aenter__ = mock.AsyncMock(return_value=mock_client)
+        mock_create.return_value.__aexit__ = mock.AsyncMock(return_value=False)
+
+        with pytest.raises((PassportNetworkError, RateLimitedError)):
+            await validate_x_token(SecretStr("some_token"))
 
 
 # -- refresh_credentials_via_passport ------------------------------------------
@@ -763,3 +787,124 @@ async def test_refresh_credentials_via_passport_transient_error_raises_temporari
 
         with pytest.raises(ResourceTemporarilyUnavailable, match="temporarily unavailable"):
             await refresh_credentials_via_passport(SecretStr("x"), SecretStr("refresh"))
+
+
+# -- exception-message redaction ----------------------------------------------
+#
+# These tests guard against leaking the upstream ``ya-passport-auth`` exception
+# payload into our own ``LoginFailed`` / ``ResourceTemporarilyUnavailable``
+# messages. The library may include token fragments, device codes, or raw
+# response bodies in its exception text — none of which should reach MA logs
+# or the frontend.
+
+_SECRET_PAYLOAD = "token=ABC_TOKEN_LEAK&csrf=xyz"
+
+
+async def test_perform_device_auth_error_does_not_leak_library_payload() -> None:
+    """``LoginFailed`` raised from device-flow must not include library str()."""
+    mock_client = mock.AsyncMock()
+    mock_client.start_device_login.side_effect = PassportNetworkError(_SECRET_PAYLOAD)
+    mock_mass = mock.MagicMock()
+    mock_auth_helper = mock.AsyncMock()
+
+    with (
+        mock.patch(
+            "music_assistant.providers.yandex_music.auth.PassportClient.create",
+        ) as mock_create,
+        mock.patch(
+            "music_assistant.providers.yandex_music.auth.AuthenticationHelper",
+            return_value=mock_auth_helper,
+        ),
+    ):
+        mock_create.return_value.__aenter__ = mock.AsyncMock(return_value=mock_client)
+        mock_create.return_value.__aexit__ = mock.AsyncMock(return_value=False)
+
+        with pytest.raises(LoginFailed) as exc_info:
+            await perform_device_auth(mock_mass, "session_1")
+
+    assert _SECRET_PAYLOAD not in str(exc_info.value)
+    assert "ABC_TOKEN_LEAK" not in str(exc_info.value)
+
+
+async def test_perform_qr_auth_error_does_not_leak_library_payload() -> None:
+    """``LoginFailed`` raised from QR flow must not include library str()."""
+    mock_client = mock.AsyncMock()
+    mock_client.start_qr_login.side_effect = PassportNetworkError(_SECRET_PAYLOAD)
+    mock_mass = mock.MagicMock()
+    mock_auth_helper = mock.AsyncMock()
+
+    with (
+        mock.patch(
+            "music_assistant.providers.yandex_music.auth.PassportClient.create",
+        ) as mock_create,
+        mock.patch(
+            "music_assistant.providers.yandex_music.auth.AuthenticationHelper",
+            return_value=mock_auth_helper,
+        ),
+    ):
+        mock_create.return_value.__aenter__ = mock.AsyncMock(return_value=mock_client)
+        mock_create.return_value.__aexit__ = mock.AsyncMock(return_value=False)
+
+        with pytest.raises(LoginFailed) as exc_info:
+            await perform_qr_auth(mock_mass, "session_1")
+
+    assert _SECRET_PAYLOAD not in str(exc_info.value)
+    assert "ABC_TOKEN_LEAK" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected_exc_type"),
+    [
+        (PassportNetworkError(_SECRET_PAYLOAD), ResourceTemporarilyUnavailable),
+        (RateLimitedError(_SECRET_PAYLOAD), ResourceTemporarilyUnavailable),
+        (InvalidCredentialsError(_SECRET_PAYLOAD), LoginFailed),
+    ],
+    ids=["network", "rate_limited", "invalid_credentials"],
+)
+async def test_refresh_music_token_error_does_not_leak_library_payload(
+    exc: Exception, expected_exc_type: type[Exception]
+) -> None:
+    """``refresh_music_token`` exceptions must not include library str()."""
+    mock_client = mock.AsyncMock()
+    mock_client.refresh_music_token.side_effect = exc
+
+    with mock.patch(
+        "music_assistant.providers.yandex_music.auth.PassportClient.create",
+    ) as mock_create:
+        mock_create.return_value.__aenter__ = mock.AsyncMock(return_value=mock_client)
+        mock_create.return_value.__aexit__ = mock.AsyncMock(return_value=False)
+
+        with pytest.raises(expected_exc_type) as exc_info:
+            await refresh_music_token(SecretStr("my_x_token"))
+
+    assert _SECRET_PAYLOAD not in str(exc_info.value)
+    assert "ABC_TOKEN_LEAK" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected_exc_type"),
+    [
+        (PassportNetworkError(_SECRET_PAYLOAD), ResourceTemporarilyUnavailable),
+        (RateLimitedError(_SECRET_PAYLOAD), ResourceTemporarilyUnavailable),
+        (InvalidCredentialsError(_SECRET_PAYLOAD), LoginFailed),
+    ],
+    ids=["network", "rate_limited", "invalid_credentials"],
+)
+async def test_refresh_credentials_via_passport_error_does_not_leak_library_payload(
+    exc: Exception, expected_exc_type: type[Exception]
+) -> None:
+    """``refresh_credentials_via_passport`` exceptions must not include library str()."""
+    mock_client = mock.AsyncMock()
+    mock_client.refresh_credentials.side_effect = exc
+
+    with mock.patch(
+        "music_assistant.providers.yandex_music.auth.PassportClient.create",
+    ) as mock_create:
+        mock_create.return_value.__aenter__ = mock.AsyncMock(return_value=mock_client)
+        mock_create.return_value.__aexit__ = mock.AsyncMock(return_value=False)
+
+        with pytest.raises(expected_exc_type) as exc_info:
+            await refresh_credentials_via_passport(SecretStr("x"), SecretStr("refresh"))
+
+    assert _SECRET_PAYLOAD not in str(exc_info.value)
+    assert "ABC_TOKEN_LEAK" not in str(exc_info.value)

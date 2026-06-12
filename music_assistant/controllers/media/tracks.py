@@ -6,7 +6,7 @@ import urllib.parse
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
+from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature, ProviderType
 from music_assistant_models.errors import (
     InvalidDataError,
     MusicAssistantError,
@@ -418,6 +418,59 @@ class TracksController(MediaControllerBase[Track]):
         await self.mass.music.database.delete(DB_TABLE_TRACK_ARTISTS, {"track_id": db_id})
         # delete the track itself from db
         await super().remove_item_from_library(db_id)
+
+    async def set_identifiers(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        mbid: str | None = None,
+        acoustid: str | None = None,
+        isrcs: list[str] | None = None,
+    ) -> None:
+        """
+        Persist MBID / AcoustID / ISRCs onto the library track row.
+
+        :param item_id: Provider-native track ID.
+        :param provider_instance_id_or_domain: Music provider instance ID or domain.
+        :param mbid: MusicBrainz recording ID.
+        :param acoustid: AcoustID UUID.
+        :param isrcs: ISRC codes.
+        """
+        # MBID is filled only when empty; AcoustID/ISRCs are appended via
+        # external_ids without clobbering tag-sourced values.
+        if not mbid and not acoustid and not isrcs:
+            return
+        try:
+            track = await self.get_library_item_by_prov_id(item_id, provider_instance_id_or_domain)
+        except MusicAssistantError as err:
+            self.logger.debug(
+                "set_identifiers: failed to load library track %s/%s: %s",
+                provider_instance_id_or_domain,
+                item_id,
+                err,
+            )
+            return
+        if track is None:
+            return
+
+        changed = False
+        if mbid and not track.mbid:
+            track.mbid = mbid
+            changed = True
+        if acoustid and not any(
+            ext_id[0] == ExternalID.ACOUSTID and ext_id[1] == acoustid
+            for ext_id in track.external_ids
+        ):
+            track.add_external_id(ExternalID.ACOUSTID, acoustid)
+            changed = True
+        for isrc in isrcs or ():
+            if isrc:
+                track.add_external_id(ExternalID.ISRC, isrc)
+                changed = True
+        if not changed:
+            return
+
+        await self.update_item_in_library(int(track.item_id), track)
 
     async def get_preview_url(self, provider_instance_id_or_domain: str, item_id: str) -> str:
         """Return url to short preview sample."""

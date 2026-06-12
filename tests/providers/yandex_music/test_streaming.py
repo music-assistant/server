@@ -507,6 +507,40 @@ async def test_get_audio_stream_http_error_raises_media_not_found(
             pass
 
 
+async def test_get_audio_stream_http_error_does_not_leak_signed_url(
+    streaming_manager: YandexMusicStreamingManager,
+    streaming_provider_stub: StreamingProviderStub,
+) -> None:
+    """Re-raised stream error must not include the signed CDN URL.
+
+    ``aiohttp``'s ``ClientResponseError.__str__`` embeds the request URL, which
+    for Yandex audio responses carries an expiring signature in the query
+    string. The ``MediaNotFoundError`` we re-raise must not propagate that
+    payload to logs or the frontend.
+    """
+    key = b"\x00" * 32
+    sd = _make_encrypted_stream_details(
+        key.hex(),
+        url="https://cdn.example.com/stream.flac?sign=SECRET_SIGNATURE_TOKEN&ts=999",
+    )
+    error_with_url = RuntimeError(
+        "500 Server Error for url 'https://cdn.example.com/stream.flac"
+        "?sign=SECRET_SIGNATURE_TOKEN&ts=999'"
+    )
+    streaming_provider_stub.mass.http_session = _MockHttpSession(
+        _MockResponse([], status=500, error=error_with_url)
+    )
+
+    with pytest.raises(MediaNotFoundError) as exc_info:
+        async for _ in streaming_manager.get_audio_stream(sd):
+            pass
+
+    message = str(exc_info.value)
+    assert "SECRET_SIGNATURE_TOKEN" not in message
+    assert "?sign=" not in message
+    assert "HTTP 500" in message
+
+
 async def test_get_audio_stream_decrypts_aes_ctr_correctly(
     streaming_manager: YandexMusicStreamingManager,
     streaming_provider_stub: StreamingProviderStub,
@@ -1070,3 +1104,97 @@ async def test_get_audio_stream_encrypted_ignores_seek_position(
 
     assert result == plaintext
     assert session.calls[0]["headers"]["Range"].startswith("bytes=0-")
+
+
+# --- M16: get_stream_details — happy path + fallback + both-fail -----------
+
+
+def _make_track_stub(track_id: str = "track_123", duration: int = 240) -> Any:
+    """Build a minimal track-like object with the attributes get_stream_details reads."""
+    return type(
+        "Track",
+        (),
+        {"id": track_id, "track_id": track_id, "duration": duration},
+    )()
+
+
+def _attach_get_track(
+    manager: YandexMusicStreamingManager,
+    track_stub: Any,
+) -> None:
+    """Bind a ``get_track`` coroutine onto the provider stub."""
+
+    async def _get_track(_item_id: str) -> Any:
+        return track_stub
+
+    manager.provider.get_track = _get_track  # type: ignore[method-assign,assignment]
+
+
+async def test_get_stream_details_happy_path_uses_get_file_info(
+    streaming_manager: YandexMusicStreamingManager,
+) -> None:
+    """When ``get_track_file_info`` returns a URL, build StreamDetails directly.
+
+    The fast path skips the legacy ``download-info`` fallback entirely.
+    """
+    _attach_get_track(streaming_manager, _make_track_stub("999", duration=180))
+    streaming_manager.client = unittest.mock.AsyncMock()
+    streaming_manager.client.get_track_file_info = unittest.mock.AsyncMock(
+        return_value={
+            "url": "https://cdn.example.com/999.flac?sign=signed",
+            "codec": "flac-mp4",
+            "bitrate": 0,
+            "needs_decryption": False,
+            "sample_rate": 44100,
+            "bit_depth": 16,
+        }
+    )
+    # No download-info call expected on the happy path.
+    streaming_manager.client.get_track_download_info = unittest.mock.AsyncMock(
+        side_effect=AssertionError("download-info should not be called on happy path")
+    )
+
+    sd = await streaming_manager.get_stream_details("999")
+
+    assert sd.item_id == "999"
+    assert sd.stream_type == StreamType.CUSTOM
+    assert sd.data["url"] == "https://cdn.example.com/999.flac?sign=signed"
+    assert sd.duration == 180
+
+
+async def test_get_stream_details_falls_back_to_download_info_when_file_info_empty(
+    streaming_manager: YandexMusicStreamingManager,
+) -> None:
+    """When ``get_track_file_info`` returns ``None``, use the download-info path.
+
+    The fallback uses ``StreamType.HTTP`` with the direct CDN link from the
+    legacy ``/tracks/{id}/download-info`` endpoint.
+    """
+    _attach_get_track(streaming_manager, _make_track_stub("888", duration=240))
+    streaming_manager.client = unittest.mock.AsyncMock()
+    streaming_manager.client.get_track_file_info = unittest.mock.AsyncMock(return_value=None)
+    download_info = _make_download_info("mp3", 320, "https://cdn.example.com/888.mp3")
+    streaming_manager.client.get_track_download_info = unittest.mock.AsyncMock(
+        return_value=[download_info]
+    )
+
+    sd = await streaming_manager.get_stream_details("888")
+
+    assert sd.stream_type == StreamType.HTTP
+    assert sd.path == "https://cdn.example.com/888.mp3"
+    assert sd.duration == 240
+    streaming_manager.client.get_track_file_info.assert_awaited_once()
+    streaming_manager.client.get_track_download_info.assert_awaited_once()
+
+
+async def test_get_stream_details_raises_when_both_paths_fail(
+    streaming_manager: YandexMusicStreamingManager,
+) -> None:
+    """When both endpoints come back empty, raise ``MediaNotFoundError``."""
+    _attach_get_track(streaming_manager, _make_track_stub("777"))
+    streaming_manager.client = unittest.mock.AsyncMock()
+    streaming_manager.client.get_track_file_info = unittest.mock.AsyncMock(return_value=None)
+    streaming_manager.client.get_track_download_info = unittest.mock.AsyncMock(return_value=[])
+
+    with pytest.raises(MediaNotFoundError):
+        await streaming_manager.get_stream_details("777")

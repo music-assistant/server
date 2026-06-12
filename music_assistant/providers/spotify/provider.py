@@ -21,6 +21,7 @@ from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
     UnsupportedFeaturedException,
 )
@@ -161,7 +162,7 @@ class SpotifyProvider(MusicProvider):
         return None
 
     ## Library retrieval methods (generators)
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from spotify."""
         endpoint = "me/following"
         while True:
@@ -179,19 +180,19 @@ class SpotifyProvider(MusicProvider):
             else:
                 break
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from the provider."""
         async for item in self._get_all_items("me/albums"):
             if item["album"] and item["album"]["id"]:
                 yield parse_album(item["album"], self)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from the provider."""
         async for item in self._get_all_items("me/tracks"):
             if item and item["track"]["id"]:
                 yield parse_track(item["track"], self)
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library podcasts from spotify."""
         async for item in self._get_all_items("me/shows"):
             if item["show"] and item["show"]["id"]:
@@ -202,7 +203,7 @@ class SpotifyProvider(MusicProvider):
                     continue
                 yield parse_podcast(show_obj, self)
 
-    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Retrieve library audiobooks from spotify."""
         if not self.audiobooks_supported:
             return
@@ -214,7 +215,7 @@ class SpotifyProvider(MusicProvider):
                 await self._add_audiobook_chapters(audiobook)
                 yield audiobook
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve playlists from the provider.
 
         Note: We use the global session here because playlists like "Daily Mix"
@@ -423,9 +424,7 @@ class SpotifyProvider(MusicProvider):
 
         return audiobook
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get all podcast episodes."""
         podcast = await self.get_podcast(prov_podcast_id)
 
@@ -578,7 +577,7 @@ class SpotifyProvider(MusicProvider):
             # The resume position will be automatically updated by MA's internal tracking
             # and will be retrieved via get_audiobook() which combines MA + Spotify positions
 
-    @use_cache(86400 * 365)  # 1 year - album track listings are immutable
+    @use_cache(86400 * 365, allow_expired_cache=True)  # 1 year - album track listings are immutable
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
         return [
@@ -587,7 +586,7 @@ class SpotifyProvider(MusicProvider):
             if item["id"]
         ]
 
-    @use_cache(3600 * 3)  # 3 hours
+    @use_cache(3600 * 3, allow_expired_cache=True)  # 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         is_liked_songs = prov_playlist_id == self._get_liked_songs_playlist_id()
@@ -637,7 +636,7 @@ class SpotifyProvider(MusicProvider):
             result.append(track)
         return result
 
-    @use_cache(86400 * 14)  # 14 days
+    @use_cache(86400 * 14, allow_expired_cache=True)  # 14 days
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         try:
@@ -653,7 +652,7 @@ class SpotifyProvider(MusicProvider):
             self.logger.warning("Unable to fetch albums for artist %s", prov_artist_id)
             return []
 
-    @use_cache(86400 * 14)  # 14 days
+    @use_cache(86400 * 14, allow_expired_cache=True)  # 14 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         try:
@@ -739,7 +738,7 @@ class SpotifyProvider(MusicProvider):
         self._fix_create_playlist_api_bug(new_playlist)
         return parse_playlist(new_playlist, self)
 
-    @use_cache(86400 * 14)  # 14 days
+    @use_cache(86400 * 14, allow_expired_cache=True)  # 14 days
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         # Recommendations endpoint is only available on global session (not developer API)
@@ -793,7 +792,7 @@ class SpotifyProvider(MusicProvider):
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Get audio stream from Spotify via librespot."""
         if streamdetails.media_type == MediaType.AUDIOBOOK and isinstance(streamdetails.data, dict):
             chapter_uris = streamdetails.data.get("chapters", [])
@@ -1142,7 +1141,7 @@ class SpotifyProvider(MusicProvider):
 
     async def _get_all_items(
         self, endpoint: str, key: str = "items", limit: int = 50, **kwargs: Any
-    ) -> AsyncGenerator[dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any]]:
         """Get all items from a paged list."""
         offset = 0
         # single request to fetch the etag (used as cache checksum) and total
@@ -1219,9 +1218,7 @@ class SpotifyProvider(MusicProvider):
             # handle spotify rate limiter
             if response.status == 429:
                 backoff_time = int(response.headers["Retry-After"])
-                raise ResourceTemporarilyUnavailable(
-                    "Spotify Rate Limiter", backoff_time=backoff_time
-                )
+                raise RateLimited("Spotify Rate Limiter", backoff_time=backoff_time)
             # handle temporary server error
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
@@ -1272,9 +1269,7 @@ class SpotifyProvider(MusicProvider):
             # handle spotify rate limiter
             if response.status == 429:
                 backoff_time = int(response.headers["Retry-After"])
-                raise ResourceTemporarilyUnavailable(
-                    "Spotify Rate Limiter", backoff_time=backoff_time
-                )
+                raise RateLimited("Spotify Rate Limiter", backoff_time=backoff_time)
             # handle token expired, raise ResourceTemporarilyUnavailable
             # so it will be retried (and the token refreshed)
             if response.status == 401:
@@ -1302,9 +1297,7 @@ class SpotifyProvider(MusicProvider):
             # handle spotify rate limiter
             if response.status == 429:
                 backoff_time = int(response.headers["Retry-After"])
-                raise ResourceTemporarilyUnavailable(
-                    "Spotify Rate Limiter", backoff_time=backoff_time
-                )
+                raise RateLimited("Spotify Rate Limiter", backoff_time=backoff_time)
             # handle token expired, raise ResourceTemporarilyUnavailable
             # so it will be retried (and the token refreshed)
             if response.status == 401:
@@ -1335,9 +1328,7 @@ class SpotifyProvider(MusicProvider):
             # handle spotify rate limiter
             if response.status == 429:
                 backoff_time = int(response.headers["Retry-After"])
-                raise ResourceTemporarilyUnavailable(
-                    "Spotify Rate Limiter", backoff_time=backoff_time
-                )
+                raise RateLimited("Spotify Rate Limiter", backoff_time=backoff_time)
             # handle token expired, raise ResourceTemporarilyUnavailable
             # so it will be retried (and the token refreshed)
             if response.status == 401:

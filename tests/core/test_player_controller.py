@@ -18,7 +18,6 @@ from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerTyp
 from music_assistant_models.errors import UnsupportedFeaturedException
 
 from music_assistant.controllers.players import PlayerController
-from music_assistant.helpers.throttle_retry import Throttler
 from tests.common import MockPlayer, MockProvider
 
 
@@ -70,10 +69,6 @@ class TestSetMembersValidation:
         member = MockPlayer(provider, "member", "Member")
 
         controller._players = {"leader": leader, "member": member}
-        controller._player_throttlers = {
-            "leader": Throttler(1, 0.05),
-            "member": Throttler(1, 0.05),
-        }
         mock_mass.players = controller
 
         # Should raise exception because leader doesn't support SET_MEMBERS
@@ -93,10 +88,6 @@ class TestSetMembersValidation:
         player_b = MockPlayer(provider_b, "player_b", "Player B")
 
         controller._players = {"player_a": player_a, "player_b": player_b}
-        controller._player_throttlers = {
-            "player_a": Throttler(1, 0.05),
-            "player_b": Throttler(1, 0.05),
-        }
         mock_mass.players = controller
 
         # Should raise exception because players are incompatible
@@ -128,11 +119,6 @@ class TestCacheInvalidationAfterGrouping:
         other._attr_can_group_with = {"test"}
 
         controller._players = {"leader": leader, "member": member, "other": other}
-        controller._player_throttlers = {
-            "leader": Throttler(1, 0.05),
-            "member": Throttler(1, 0.05),
-            "other": Throttler(1, 0.05),
-        }
         mock_mass.players = controller
 
         # Populate caches
@@ -169,10 +155,6 @@ class TestGroupUngroup:
         member._attr_powered = True
 
         controller._players = {"leader": leader, "member": member}
-        controller._player_throttlers = {
-            "leader": Throttler(1, 0.05),
-            "member": Throttler(1, 0.05),
-        }
         mock_mass.players = controller
 
         # Update state after modifying attributes and registering with controller
@@ -227,10 +209,6 @@ class TestPlayerAvailability:
         member._attr_available = False  # Mark as unavailable
 
         controller._players = {"leader": leader, "member": member}
-        controller._player_throttlers = {
-            "leader": Throttler(1, 0.05),
-            "member": Throttler(1, 0.05),
-        }
         mock_mass.players = controller
 
         # Attempting to group with unavailable player should be handled
@@ -252,10 +230,6 @@ class TestStateForwarding:
         child = MockPlayer(provider, "child", "Child")
 
         controller._players = {"leader": leader, "child": child}
-        controller._player_throttlers = {
-            "leader": Throttler(1, 0.05),
-            "child": Throttler(1, 0.05),
-        }
         mock_mass.players = controller
 
         leader._attr_group_members = ["leader", "child"]
@@ -288,10 +262,6 @@ class TestStateForwarding:
         child = MockPlayer(provider, "child", "Child")
 
         controller._players = {"group": group_player, "child": child}
-        controller._player_throttlers = {
-            "group": Throttler(1, 0.05),
-            "child": Throttler(1, 0.05),
-        }
         mock_mass.players = controller
 
         group_player._attr_group_members = ["group", "child"]
@@ -317,19 +287,6 @@ class TestStateForwarding:
 class TestUnregisterCleanup:
     """Test that unregister cleans up leaked internal state."""
 
-    def test_throttler_removed(self, mock_mass: MagicMock) -> None:
-        """Unregistering a player removes its throttler entry."""
-        controller = PlayerController(mock_mass)
-        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
-        player = MockPlayer(provider, "player_1", "Player 1")
-
-        controller._players = {"player_1": player}
-        controller._player_throttlers = {"player_1": Throttler(1, 0.05)}
-
-        asyncio.run(controller.unregister("player_1"))
-
-        assert "player_1" not in controller._player_throttlers
-
     def test_command_locks_removed(self, mock_mass: MagicMock) -> None:
         """Unregistering a player removes its command lock entries."""
         controller = PlayerController(mock_mass)
@@ -337,7 +294,6 @@ class TestUnregisterCleanup:
         player = MockPlayer(provider, "player_1", "Player 1")
 
         controller._players = {"player_1": player}
-        controller._player_throttlers = {"player_1": Throttler(1, 0.05)}
         controller._player_command_locks = {
             "playback_player_1": asyncio.Lock(),
             "volume_player_1": asyncio.Lock(),
@@ -356,10 +312,6 @@ class TestUnregisterCleanup:
         player_b = MockPlayer(provider, "player_b", "Player B")
 
         controller._players = {"player_a": player_a, "player_b": player_b}
-        controller._player_throttlers = {
-            "player_a": Throttler(1, 0.05),
-            "player_b": Throttler(1, 0.05),
-        }
         controller._player_command_locks = {
             "playback_player_a": asyncio.Lock(),
             "playback_player_b": asyncio.Lock(),
@@ -367,9 +319,7 @@ class TestUnregisterCleanup:
 
         asyncio.run(controller.unregister("player_a"))
 
-        assert "player_b" in controller._player_throttlers
         assert "playback_player_b" in controller._player_command_locks
-        assert "player_a" not in controller._player_throttlers
         assert "playback_player_a" not in controller._player_command_locks
 
     def test_suffix_player_id_not_over_matched(self, mock_mass: MagicMock) -> None:
@@ -380,10 +330,6 @@ class TestUnregisterCleanup:
         player_a_b = MockPlayer(provider, "a_b", "Player A_B")
 
         controller._players = {"b": player_b, "a_b": player_a_b}
-        controller._player_throttlers = {
-            "b": Throttler(1, 0.05),
-            "a_b": Throttler(1, 0.05),
-        }
         controller._player_command_locks = {
             "playback_b": asyncio.Lock(),
             "playback_a_b": asyncio.Lock(),
@@ -402,7 +348,6 @@ class TestUnregisterCleanup:
 
         mock_handle = MagicMock()
         controller._players = {"player_1": player}
-        controller._player_throttlers = {"player_1": Throttler(1, 0.05)}
         controller._pending_protocol_evaluations = {"player_1": mock_handle}
 
         asyncio.run(controller.unregister("player_1"))
@@ -413,13 +358,314 @@ class TestUnregisterCleanup:
     def test_unregister_nonexistent_player_is_noop(self, mock_mass: MagicMock) -> None:
         """Unregistering a player that doesn't exist is silently ignored."""
         controller = PlayerController(mock_mass)
-        controller._player_throttlers = {"other": Throttler(1, 0.05)}
         controller._player_command_locks = {"set_members_other": asyncio.Lock()}
 
         asyncio.run(controller.unregister("nonexistent"))
 
-        assert "other" in controller._player_throttlers
         assert "set_members_other" in controller._player_command_locks
+
+
+def _set_play_media_override(mock_mass: MagicMock, value: bool) -> None:
+    """Configure get_raw_player_config_value to return ``value`` for the play-media override key.
+
+    Other keys keep the existing defaults from the shared fixture. Use this in
+    tests for ``play_media`` override behavior so the legacy/new branch is
+    selected deterministically.
+    """
+    original = mock_mass.config.get_raw_player_config_value.side_effect
+
+    def _side_effect(player_id: str, key: str, default: object = None) -> object:
+        if key == "play_media_overrides_group":
+            return value
+        if callable(original):
+            return original(player_id, key, default)
+        return default if default is not None else "auto"
+
+    mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_side_effect)
+
+
+class TestCmdUngroupNewBranches:
+    """Regression tests for the post-refactor cmd_ungroup flow.
+
+    The refactor changed two things:
+
+    - ``cmd_ungroup`` on a group player no longer calls ``cmd_set_members``
+      (which would hit the "Cannot remove static member" guard); instead it
+      stops or powers off the group entirely.
+    - ``cmd_ungroup`` on a static member of a group recurses to ungroup the
+      group, because static members cannot be released individually.
+    """
+
+    @pytest.mark.asyncio
+    async def test_ungroup_group_player_with_power_uses_power_off(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Ungroup on a group with explicit power control routes through cmd_power(False)."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_group", instance_id="test_group", mass=mock_mass)
+        group = MockPlayer(provider, "g1", "Group", player_type=PlayerType.GROUP)
+        group._attr_powered = True
+        group._attr_group_members = ["member"]
+        group._attr_supported_features = {PlayerFeature.POWER}
+
+        # ensure power_control resolves to NATIVE so cmd_ungroup uses the power path
+        def _conf(_player_id: str, key: str, default: object = None) -> object:
+            if key == "power_control":
+                return "native"
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            return default if default is not None else "auto"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+
+        controller._players = {"g1": group}
+        mock_mass.players = controller
+
+        # populate state.type / state.power_control / state.group_members
+        group.set_initialized()
+        group._cache.clear()
+        group.update_state(signal_event=False)
+
+        called: dict[str, bool | str] = {}
+
+        async def _power(
+            player_id: str,
+            powered: bool,
+            skip_auto_play: bool = False,  # noqa: ARG001
+        ) -> None:
+            called["player_id"] = player_id
+            called["powered"] = powered
+
+        controller._handle_cmd_power = _power  # type: ignore[method-assign]
+
+        await controller.cmd_ungroup("g1")
+
+        assert called == {"player_id": "g1", "powered": False}
+
+    @pytest.mark.asyncio
+    async def test_ungroup_powerless_group_calls_stop(self, mock_mass: MagicMock) -> None:
+        """Ungroup on a powerless group falls through to _handle_cmd_stop."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_group", instance_id="test_group", mass=mock_mass)
+        group = MockPlayer(provider, "g1", "Group", player_type=PlayerType.GROUP)
+        group._attr_powered = None  # no power control
+        group._attr_group_members = ["member"]
+        # no POWER feature → power_control auto-selects to NONE
+
+        controller._players = {"g1": group}
+        mock_mass.players = controller
+
+        group.set_initialized()
+        group._cache.clear()
+        group.update_state(signal_event=False)
+
+        stop_called: list[str] = []
+
+        async def _stop(player_id: str) -> None:
+            stop_called.append(player_id)
+
+        controller._handle_cmd_stop = _stop  # type: ignore[method-assign]
+        # also stub power to make sure we did NOT go down that branch
+        power_called: list[str] = []
+
+        async def _power(
+            player_id: str,
+            powered: bool,  # noqa: ARG001
+            skip_auto_play: bool = False,  # noqa: ARG001
+        ) -> None:
+            power_called.append(player_id)
+
+        controller._handle_cmd_power = _power  # type: ignore[method-assign]
+
+        await controller.cmd_ungroup("g1")
+
+        assert stop_called == ["g1"]
+        assert power_called == []  # powerless group → never goes through cmd_power
+
+
+class TestPlayMediaOverride:
+    """Tests for the new CONF_PLAY_MEDIA_OVERRIDES_GROUP behavior.
+
+    When a captured child player receives an explicit play_media command, the
+    default behavior is to *release* it from the active group/sync and play
+    directly on the targeted player. The legacy behavior (forward to the
+    leader) is preserved via the per-player config opt-out.
+    """
+
+    @pytest.mark.asyncio
+    async def test_override_disabled_redirects_to_group(self, mock_mass: MagicMock) -> None:
+        """With override disabled, play_media on a captured child redirects to the group."""
+        controller = PlayerController(mock_mass)
+        group_provider = MockProvider("test_group", instance_id="test_group", mass=mock_mass)
+        member_provider = MockProvider("test", instance_id="test", mass=mock_mass)
+
+        class _SessionedGroup(MockPlayer):
+            @property
+            def is_active_session(self) -> bool:
+                return True
+
+        group = _SessionedGroup(group_provider, "g1", "Group", player_type=PlayerType.GROUP)
+        group._attr_powered = None
+        group._attr_group_members = ["member"]
+
+        member = MockPlayer(member_provider, "member", "Member")
+
+        controller._players = {"g1": group, "member": member}
+        mock_mass.players = controller
+
+        group.set_initialized()
+        member.set_initialized()
+        group.update_state(signal_event=False)
+        member.update_state(signal_event=False)
+        # sanity: the member is captured by the group
+        assert member.state.active_group == "g1"
+
+        _set_play_media_override(mock_mass, False)
+
+        played_on: list[str] = []
+
+        async def _handle_play_media(player_id: str, media: object) -> None:  # noqa: ARG001
+            played_on.append(player_id)
+
+        controller._handle_play_media = _handle_play_media  # type: ignore[method-assign]
+        # the play_media wrapper acquires a playback lock; stub it out
+        controller._player_command_locks = {}
+
+        media = MagicMock(uri="x", source_id="src")
+        await controller.play_media("member", media)
+
+        # legacy behavior: redirected to the group leader
+        assert played_on == ["g1"]
+
+    @pytest.mark.asyncio
+    async def test_override_releases_dynamic_member(self, mock_mass: MagicMock) -> None:
+        """With override enabled, play_media on a dynamic group member releases it first."""
+        controller = PlayerController(mock_mass)
+        group_provider = MockProvider("test_group", instance_id="test_group", mass=mock_mass)
+        member_provider = MockProvider("test", instance_id="test", mass=mock_mass)
+
+        class _SessionedGroup(MockPlayer):
+            @property
+            def is_active_session(self) -> bool:
+                return True
+
+        group = _SessionedGroup(group_provider, "g1", "Group", player_type=PlayerType.GROUP)
+        group._attr_powered = None
+        group._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        group._attr_group_members = ["member"]
+        # NOT a static member ⇒ dynamic — can be removed via set_members
+        group._attr_static_group_members = []
+
+        member = MockPlayer(member_provider, "member", "Member")
+
+        controller._players = {"g1": group, "member": member}
+        mock_mass.players = controller
+
+        group.set_initialized()
+        member.set_initialized()
+        group.update_state(signal_event=False)
+        member.update_state(signal_event=False)
+        assert member.state.active_group == "g1"
+
+        # default: override enabled
+        _set_play_media_override(mock_mass, True)
+
+        set_members_calls: list[dict[str, object]] = []
+
+        async def _cmd_set_members(
+            target_player: str,
+            player_ids_to_add: list[str] | None = None,  # noqa: ARG001
+            player_ids_to_remove: list[str] | None = None,
+        ) -> None:
+            set_members_calls.append(
+                {"player_id": target_player, "remove": player_ids_to_remove or []}
+            )
+
+        controller.cmd_set_members = _cmd_set_members  # type: ignore[method-assign]
+
+        played_on: list[str] = []
+
+        async def _handle_play_media(player_id: str, media: object) -> None:  # noqa: ARG001
+            played_on.append(player_id)
+
+        controller._handle_play_media = _handle_play_media  # type: ignore[method-assign]
+        controller._player_command_locks = {}
+
+        media = MagicMock(uri="x", source_id="src")
+        await controller.play_media("member", media)
+
+        # the member was removed from the group ...
+        assert set_members_calls == [{"player_id": "g1", "remove": ["member"]}]
+        # ... and then play_media was issued directly on the member, NOT on the group
+        assert played_on == ["member"]
+
+    @pytest.mark.asyncio
+    async def test_override_stops_static_group(self, mock_mass: MagicMock) -> None:
+        """With override enabled, play_media on a STATIC group member stops the group."""
+        controller = PlayerController(mock_mass)
+        group_provider = MockProvider("test_group", instance_id="test_group", mass=mock_mass)
+        member_provider = MockProvider("test", instance_id="test", mass=mock_mass)
+
+        class _SessionedGroup(MockPlayer):
+            @property
+            def is_active_session(self) -> bool:
+                return True
+
+        group = _SessionedGroup(group_provider, "g1", "Group", player_type=PlayerType.GROUP)
+        group._attr_powered = None  # no power control ⇒ stop, not power-off
+        group._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        group._attr_group_members = ["member"]
+        # static member - cannot be removed individually
+        group._attr_static_group_members = ["member"]
+
+        member = MockPlayer(member_provider, "member", "Member")
+
+        controller._players = {"g1": group, "member": member}
+        mock_mass.players = controller
+
+        group.set_initialized()
+        member.set_initialized()
+        group.update_state(signal_event=False)
+        member.update_state(signal_event=False)
+        assert member.state.active_group == "g1"
+
+        _set_play_media_override(mock_mass, True)
+
+        stop_calls: list[str] = []
+        power_calls: list[tuple[str, bool]] = []
+
+        async def _stop(player_id: str) -> None:
+            stop_calls.append(player_id)
+
+        async def _power(
+            player_id: str,
+            powered: bool,
+            skip_auto_play: bool = False,  # noqa: ARG001
+        ) -> None:
+            power_calls.append((player_id, powered))
+
+        controller._handle_cmd_stop = _stop  # type: ignore[method-assign]
+        controller._handle_cmd_power = _power  # type: ignore[method-assign]
+
+        played_on: list[str] = []
+
+        async def _handle_play_media(player_id: str, media: object) -> None:  # noqa: ARG001
+            played_on.append(player_id)
+
+        controller._handle_play_media = _handle_play_media  # type: ignore[method-assign]
+        controller._player_command_locks = {}
+
+        media = MagicMock(uri="x", source_id="src")
+        await controller.play_media("member", media)
+
+        # powerless group + static member: we should have stopped the group ...
+        assert stop_calls == ["g1"]
+        # ... not powered it off ...
+        assert power_calls == []
+        # ... and play_media was issued directly on the member
+        assert played_on == ["member"]
 
 
 if __name__ == "__main__":

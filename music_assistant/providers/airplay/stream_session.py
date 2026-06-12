@@ -60,7 +60,7 @@ class AirPlayStreamSession:
         self._pcm_buffer = bytearray()
         self._pcm_buffer_max = pcm_format.pcm_sample_size * 5  # 5 seconds
 
-    async def start(self, audio_source: AsyncGenerator[bytes, None]) -> None:
+    async def start(self, audio_source: AsyncGenerator[bytes]) -> None:
         """Initialize stream session for all players."""
         cur_time = time.time()
         wait_start = max(p.wait_start for p in self.sync_clients)
@@ -276,7 +276,7 @@ class AirPlayStreamSession:
                 )
                 await self.remove_client(airplay_player, reason="late joiner connection timeout")
 
-    async def _audio_streamer(self, audio_source: AsyncGenerator[bytes, None]) -> None:
+    async def _audio_streamer(self, audio_source: AsyncGenerator[bytes]) -> None:
         """Stream audio to all players."""
         stream_error: BaseException | None = None
         try:

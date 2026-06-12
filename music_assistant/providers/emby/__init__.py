@@ -282,7 +282,7 @@ class EmbyProvider(MusicProvider):
             search_results.playlists = playlists.result()
         return search_results
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Yield all artists from the music library."""
         libs = await self._get_music_libraries()
         for lib in libs:
@@ -305,7 +305,7 @@ class EmbyProvider(MusicProvider):
                     yield parse_artist(self.instance_id, self, artist)
                 page += 1
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Yield all albums from the music library."""
         libs = await self._get_music_libraries()
         for lib in libs:
@@ -328,7 +328,7 @@ class EmbyProvider(MusicProvider):
                     yield parse_album(self.instance_id, self, album)
                 page += 1
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Yield all tracks from the music library."""
         libs = await self._get_music_libraries()
         for lib in libs:
@@ -353,7 +353,7 @@ class EmbyProvider(MusicProvider):
                     yield parse_track(self.instance_id, self, track)
                 page += 1
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Yield all playlists from the music library."""
         libs = await self._get_music_libraries()
         for lib in libs:

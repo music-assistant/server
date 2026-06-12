@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, cast
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
+
 from .auth_manager import ManualAuthenticationHelper, TidalAuthManager
 from .constants import (
     CONF_ACTION_CLEAR_AUTH,
@@ -208,6 +210,7 @@ async def get_config_entries(
 
     # return the auth_data config entry
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         *auth_entries,
         ConfigEntry(
             key=CONF_AUTH_TOKEN,

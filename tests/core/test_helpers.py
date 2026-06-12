@@ -59,6 +59,11 @@ def test_version_extract() -> None:
     title, version = util.parse_title_and_version(test_str)
     assert title == "Lovin' You More (That Big Track)"
     assert version == "Mosquito Chillout mix"
+    # Nested parentheses inside the version should be preserved
+    test_str = "Fiji (Oliver Smith Remix (Mixed))"
+    title, version = util.parse_title_and_version(test_str)
+    assert title == "Fiji"
+    assert version == "Oliver Smith Remix (Mixed)"
 
 
 def test_with_handling_in_titles() -> None:
