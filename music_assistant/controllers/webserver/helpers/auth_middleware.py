@@ -26,7 +26,7 @@ USER_CONTEXT_KEY = "authenticated_user"
 # ContextVar for tracking current user and token across async calls
 current_user: ContextVar[User | None] = ContextVar("current_user", default=None)
 current_token: ContextVar[str | None] = ContextVar("current_token", default=None)
-# ContextVar to impersonate another user as and admin user. Used in HA context.
+# ContextVar to impersonate another user. Admin permissions required. Used in HA context.
 impersonated_user: ContextVar[User | None] = ContextVar("impersonated_user", default=None)
 # ContextVar for tracking the sendspin player associated with the current connection
 sendspin_player_id: ContextVar[str | None] = ContextVar("sendspin_player_id", default=None)
