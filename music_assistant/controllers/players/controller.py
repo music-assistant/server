@@ -100,7 +100,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_sendspin_player_id,
 )
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.colors import get_palette_for_url, peek_palette_for_url
+from music_assistant.helpers.colors import get_palette_for_url
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.util import (
     TaskManager,
@@ -1668,8 +1668,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         :param trigger_update: When True, re-emit player state once palette is ready
                                (current track). When False, only warm the cache (prefetch).
         """
-        if not image_url or peek_palette_for_url(image_url) is not None:
+        if not image_url:
             return
+        # The caller only schedules a current-track fetch when no palette is set yet,
+        # and the task_id dedupes concurrent fetches, so no extra cache probe is needed.
         slot = "current" if trigger_update else "next"
         self.mass.create_task(
             self._fetch_palette(player_id, image_url, trigger_update=trigger_update),
@@ -1680,13 +1682,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     async def _fetch_palette(self, player_id: str, image_url: str, *, trigger_update: bool) -> None:
         palette = await get_palette_for_url(self.mass, image_url)
         if palette is None or not trigger_update:
-            return
+            return  # prefetch only warms the cache controller; nothing to attach
         player = self.get_player(player_id)
         if player is None:
             return
         current = player.state.current_media
         if current is None or current.image_url != image_url:
             return  # media changed while fetching
+        # Carry the palette on player state so the (sync) serialization reads it back.
+        player.set_resolved_palette(image_url, palette)
         # Avoid trigger_player_update so a concurrent state-change debounce
         # doesn't cancel our timer via the shared player_update_state task_id.
         self.mass.call_later(
