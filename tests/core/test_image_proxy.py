@@ -76,8 +76,8 @@ async def test_image_id_matches_thumb_and_palette_cache_key(
 
     The thumbnail and color-palette caches both key off
     `create_thumb_hash(provider, path)`. If `compute_image_id` ever diverged
-    from that, `peek_palette_for_url` for /imageproxy/<id> URLs would silently
-    stop hitting and the on-disk thumbnail cache would split into two buckets.
+    from that, palette lookups for /imageproxy/<id> URLs would miss and the
+    on-disk thumbnail cache would split into two buckets.
     """
     image_id = metadata_controller.compute_image_id("filesystem", "/local/cover.jpg")
     assert image_id == create_thumb_hash("filesystem", "/local/cover.jpg")
