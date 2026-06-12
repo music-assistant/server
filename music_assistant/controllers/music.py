@@ -252,11 +252,9 @@ class MusicController(CoreController):
     def _apply_user_provider_filter(
         self,
         providers: Iterable[ProviderInstanceType],
-        user: User | None = None,
     ) -> list[ProviderInstanceType]:
         """Filter providers by the current user's music provider filter."""
-        if user is None:
-            user = get_current_user()
+        user = get_current_user()
         user_provider_filter = user.provider_filter if user else None
         if not user_provider_filter:
             return list(providers)
