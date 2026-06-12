@@ -313,7 +313,7 @@ class UseImpersonatedUser:
     """
 
     def __init__(self, mass: MusicAssistant, username_or_user_id: str | None) -> None:
-        """Init."""
+        """Initialize UseImpersonatedUser."""
         self.mass = mass
         self.username_or_user_id = username_or_user_id
         if (
@@ -324,7 +324,7 @@ class UseImpersonatedUser:
             raise InsufficientPermissions("Can only impersonate another user as Admin.")
 
     async def __aenter__(self) -> Self:
-        """Set the impersonated if given."""
+        """Set the impersonated user if applicable."""
         if self.username_or_user_id is None:
             return self
         if impersonated_user := await self.mass.webserver.auth.get_user_by_id_or_name(
