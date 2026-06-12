@@ -50,8 +50,6 @@ from music_assistant.helpers.util import guard_single_request, parse_optional_bo
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Mapping
 
-    from music_assistant_models.auth import User
-
     from music_assistant import MusicAssistant
     from music_assistant.models.music_provider import MusicProvider
     from music_assistant.models.plugin import PluginProvider
@@ -1217,12 +1215,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     def _ensure_provider_filter(
         self,
         provider: str | list[str] | None,
-        user: User | None = None,
     ) -> list[str] | None:
         """Ensure the provider filter respects the current user's provider filter."""
-        if not user:
-            # get user from web context if possible
-            user = get_current_user()
+        user = get_current_user()
         # Apply user provider filter if needed
         user_provider_filter = user.provider_filter if user and user.provider_filter else None
         final_provider_filter: list[str] | None = None

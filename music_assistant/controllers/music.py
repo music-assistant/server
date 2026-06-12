@@ -339,7 +339,6 @@ class MusicController(CoreController):
         :param search_query: Search query.
         :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
-        :param username_or_user_id: Get items of this user instead of authenticated user. Needs sufficient permissions.
         """
         # use cache to avoid repeated searches
         plugin_search_providers = [
@@ -760,17 +759,13 @@ class MusicController(CoreController):
         return result
 
     @api_command("music/recently_added_tracks")
-    async def recently_added_tracks(
-        self, limit: int = 10, username_or_user_id: str | None = None
-    ) -> list[Track]:
+    async def recently_added_tracks(self, limit: int = 10) -> list[Track]:
         """Return a list of the last added tracks."""
-        return await self.tracks.library_items(
-            limit=limit, order_by="timestamp_added_desc", username_or_user_id=username_or_user_id
-        )
+        return await self.tracks.library_items(limit=limit, order_by="timestamp_added_desc")
 
     @api_command("music/in_progress_items")
     async def in_progress_items(
-        self, limit: int = 10, all_users: bool = False, username_or_user_id: str | None = None
+        self, limit: int = 10, all_users: bool = False
     ) -> list[ItemMapping]:
         """Return a list of the Audiobooks and PodcastEpisodes that are in progress."""
         available_providers = ("library", *self.get_unique_providers())
@@ -898,10 +893,7 @@ class MusicController(CoreController):
 
     @api_command("music/recommendations")
     async def recommendations(self) -> list[RecommendationFolder]:
-        """Get all recommendations.
-
-        :param username_or_user_id: Get recommendations for this user instead of authenticated user. Needs sufficient permissions.
-        """
+        """Get all recommendations."""
         providers_with_recommendations = self.mass.get_providers_supporting_feature(
             ProviderFeature.RECOMMENDATIONS,
         )
