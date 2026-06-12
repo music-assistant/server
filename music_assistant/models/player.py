@@ -1787,8 +1787,11 @@ class Player(ABC):
             active_queue = self.mass.player_queues.get(self.player_id)
         if active_queue and (current_item := active_queue.current_item):
             item_image_url = (
-                # the image format needs to be 512x512 jpeg for maximum compatibility with players
-                self.mass.metadata.get_image_url(current_item.image, size=512, image_format="jpeg")
+                # no forced jpeg here: fmt=jpeg flattens transparency onto a solid
+                # background while this url is also rendered by the frontend/API clients.
+                # Providers forwarding it to a player that needs jpeg must rewrite it
+                # through player_image_url().
+                self.mass.metadata.get_image_url(current_item.image, size=512)
                 if current_item.image
                 else None
             )
@@ -1820,11 +1823,8 @@ class Player(ABC):
                 podcast = getattr(media_item, "podcast", None)
                 metadata = getattr(media_item, "metadata", None)
                 description = getattr(metadata, "description", None) if metadata else None
-                # the image format needs to be 512x512 jpeg for maximum player compatibility
                 image_url = (
-                    self.mass.metadata.get_image_url(
-                        current_item.media_item.image, size=512, image_format="jpeg"
-                    )
+                    self.mass.metadata.get_image_url(current_item.media_item.image, size=512)
                     or item_image_url
                     if current_item.media_item.image
                     else item_image_url
