@@ -302,7 +302,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     """Audio analysis provider running librosa scalars + CLAP zero-shot per track."""
 
     analysis_version: int = 1
-    uses_torch = True
 
     def __init__(
         self,
@@ -331,6 +330,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             min_cpu_cores=MIN_CPU_CORES,
             require_ml_inference=True,
         )
+        # Configure torch thread caps before loading the model (see the controller method).
+        self.mass.streams.audio_analysis.ensure_thread_caps_configured()
         (
             self._clap_model,
             self._clap_text_embeddings,

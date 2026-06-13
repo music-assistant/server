@@ -6,7 +6,7 @@ import asyncio
 import inspect
 from collections.abc import AsyncGenerator, Mapping
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.audio_analysis import AudioAnalysisCoverage
@@ -47,28 +47,13 @@ async def test_distribute_chunk_calls_all_providers() -> None:
     p2.process_pcm_chunk.assert_awaited_once_with(session_key, b"\x00" * 1024)
 
 
-@pytest.mark.asyncio
-async def test_thread_caps_only_configured_for_torch_providers() -> None:
-    """Torch thread caps (and the torch import) run only when an active provider uses torch."""
-    sd, af = MagicMock(), MagicMock()
-
-    # only a non-torch provider active (e.g. builtin loudness_analysis) -> torch never imported
+def test_ensure_thread_caps_configured_is_idempotent() -> None:
+    """Torch thread caps are applied once per controller, however many providers init."""
     controller = _make_controller()
-    controller._ensure_thread_caps_configured = MagicMock()  # type: ignore[method-assign]
-    non_torch = _make_aa_provider("loudness", available=True)
-    non_torch.uses_torch = False
-    non_torch.start_analysis = AsyncMock(return_value=False)
-    await controller._start_analysis_on_providers("k", sd, af, [non_torch])
-    controller._ensure_thread_caps_configured.assert_not_called()
-
-    # a torch-backed provider present -> caps configured
-    controller2 = _make_controller()
-    controller2._ensure_thread_caps_configured = MagicMock()  # type: ignore[method-assign]
-    torch_prov = _make_aa_provider("smart_fades", available=True)
-    torch_prov.uses_torch = True
-    torch_prov.start_analysis = AsyncMock(return_value=False)
-    await controller2._start_analysis_on_providers("k", sd, af, [torch_prov])
-    controller2._ensure_thread_caps_configured.assert_called_once()
+    with patch("torch.set_num_threads") as set_threads, patch("torch.set_num_interop_threads"):
+        controller.ensure_thread_caps_configured()
+        controller.ensure_thread_caps_configured()
+    set_threads.assert_called_once()
 
 
 @pytest.mark.asyncio

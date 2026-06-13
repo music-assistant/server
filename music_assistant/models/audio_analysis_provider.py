@@ -42,12 +42,6 @@ class AudioAnalysisProvider(Provider):
     # the stored version to decide whether to re-analyze a track.
     analysis_version: int = 1
 
-    # Set True by providers that run on-device torch inference. The
-    # AudioAnalysisController only configures torch thread caps (and thus imports
-    # torch) when at least one active provider sets this, so a host running only
-    # non-torch providers (e.g. the builtin loudness_analysis) never imports torch.
-    uses_torch: bool = False
-
     def __init__(
         self,
         mass: MusicAssistant,

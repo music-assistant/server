@@ -162,10 +162,16 @@ class AudioAnalysisController:
         if workers:
             await asyncio.gather(*workers, return_exceptions=True)
 
-    def _ensure_thread_caps_configured(self) -> None:
-        """Cap PyTorch threading (once) so Audio Analysis inference stays around a quarter of cpu_count."""
-        # Import torch lazily and only when analysis actually starts, so an idle server
-        # with no audio analysis provider enabled never imports torch.
+    def ensure_thread_caps_configured(self) -> None:
+        """
+        Cap PyTorch threading for analysis inference (process-wide, applied once).
+
+        Torch-backed analysis providers call this at the start of their handle_async_init,
+        before loading their models.
+        """
+        # Lazy torch import: only torch-backed providers call this, so a host running no
+        # such provider never imports torch. Running before the first model load also lets
+        # set_num_interop_threads take effect (it can only be set before the first torch op).
         if self._thread_caps_configured:
             return
         import torch  # noqa: PLC0415
@@ -962,11 +968,6 @@ class AudioAnalysisController:
         providers: list[AudioAnalysisProvider],
     ) -> set[str]:
         """Call start_analysis on each provider, returning IDs of those that accepted."""
-        # Apply torch thread caps once, but only when a provider that actually runs torch
-        # inference is active — so a host with only non-torch providers (e.g. the builtin
-        # loudness_analysis) never imports torch. Shared by the live and background paths.
-        if any(provider.uses_torch for provider in providers):
-            self._ensure_thread_caps_configured()
         provider_ids: set[str] = set()
         for provider in providers:
             try:
