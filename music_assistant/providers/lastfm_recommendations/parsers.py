@@ -160,6 +160,7 @@ async def _search_providers_concurrent(
             for t in tasks:
                 if not t.done():
                     t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             return result
 
         LOGGER.debug(
