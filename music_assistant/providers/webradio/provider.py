@@ -20,7 +20,6 @@ from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.player import DeviceInfo, PlayerMedia, PlayerSource
 
 from music_assistant.constants import (
-    CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
     CONF_OUTPUT_CODEC,
     DEFAULT_STREAM_HEADERS,
     DLNA_CONTENT_FEATURES_REALTIME,
@@ -38,6 +37,7 @@ from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
     CONF_ENTRY_ENABLE_ICY_METADATA_BASIC,
+    CONF_ENTRY_OUTPUT_CODEC_WEBRADIO,
     CONF_STATIONS,
     CONF_STREAM_URL_LABEL,
     PLAYER_ID_PREFIX,
@@ -324,10 +324,10 @@ class WebRadioProvider(PlayerProvider):
         Return the configured output codec extension for a player.
 
         :param player_id: MA player_id of the virtual station player.
-        :return: Codec value, e.g. ``"mp3"`` or ``"flac"``.
+        :return: Codec value, e.g. ``"mp3"`` or ``"aac"``.
         """
         codec = self.mass.config.get_raw_player_config_value(
-            player_id, CONF_OUTPUT_CODEC, CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3.default_value
+            player_id, CONF_OUTPUT_CODEC, CONF_ENTRY_OUTPUT_CODEC_WEBRADIO.default_value
         )
         return str(codec or "mp3")
 
@@ -872,7 +872,7 @@ class WebRadioPlayer(Player):
         """
         del action, values
         return [
-            CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
+            CONF_ENTRY_OUTPUT_CODEC_WEBRADIO,
             CONF_ENTRY_ENABLE_ICY_METADATA_BASIC,
             ConfigEntry(
                 key=CONF_STREAM_URL_LABEL,
