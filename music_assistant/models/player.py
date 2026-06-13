@@ -1787,6 +1787,7 @@ class Player(ABC):
             active_queue = self.mass.player_queues.get(self.player_id)
         if active_queue and (current_item := active_queue.current_item):
             item_image_url = (
+             # the image format needs to be 512x512 jpeg for maximum compatibility with players
                 self.mass.metadata.get_image_url(current_item.image, size=512)
                 if current_item.image
                 else None
