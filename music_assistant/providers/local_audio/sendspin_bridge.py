@@ -775,6 +775,14 @@ class LocalAudioBridgeManager:
                 existing_names.add(spec.sink_name)
                 loaded_any = True
 
+        if loaded_any:
+            # module-device-restore may restore a persisted per-sink-name
+            # volume asynchronously shortly after sink creation, which can
+            # race with and overwrite _apply_hardware_volume() during
+            # bridge.start(). Give it a moment to settle first so our
+            # cached-volume application (run after re-enumeration) wins.
+            await asyncio.sleep(0.3)
+
         return loaded_any
 
     async def _register_protocol_player(self, device_uuid: str, display_name: str) -> Player:
