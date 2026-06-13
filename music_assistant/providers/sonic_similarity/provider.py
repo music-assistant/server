@@ -113,7 +113,6 @@ class SonicSimilarityPlugin(PluginProvider):
         # CLAP text encoder — lazy: stays None until the first text_search call.
         self._text_encoder: Any = None
         self._text_encoder_lock = asyncio.Lock()
-        self._text_encoder_warm_started = False
         # Per-label last error from fire-and-forget rebuild tasks.
         self._last_rebuild_error: dict[str, str] = {}
         self._last_seen_row_count: int = 0
@@ -818,13 +817,12 @@ class SonicSimilarityPlugin(PluginProvider):
         if self._clap_index is None or len(self._clap_index) == 0:
             return SearchResults()
         # Never hold up the timeout-less global SEARCH gather on the ~500MB encoder load:
-        # kick off a one-time background warm on the first query, and short-circuit until ready.
+        # warm it in the background and short-circuit until it is ready. create_task dedupes
+        # on task_id while a load is in flight, and re-attempts after a previous load failed.
         if self._text_encoder is None:
-            if not self._text_encoder_warm_started:
-                self._text_encoder_warm_started = True
-                self.mass.create_task(
-                    self._get_text_encoder, task_id="sonic_similarity_text_encoder_warm"
-                )
+            self.mass.create_task(
+                self._get_text_encoder, task_id="sonic_similarity_text_encoder_warm"
+            )
             return SearchResults()
         emb_np = await self._embed_text_query(search_query)
         if emb_np is None:

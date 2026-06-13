@@ -168,7 +168,6 @@ class AudioAnalysisController:
         # with no audio analysis provider enabled never imports torch.
         if self._thread_caps_configured:
             return
-        self._thread_caps_configured = True
         import torch  # noqa: PLC0415
 
         budget = self._aa_thread_budget()
@@ -181,6 +180,8 @@ class AudioAnalysisController:
             torch.get_num_threads(),
             torch.get_num_interop_threads(),
         )
+        # Only mark done once configuration actually succeeded, so a failure retries.
+        self._thread_caps_configured = True
 
     @property
     def providers(self) -> list[AudioAnalysisProvider]:
