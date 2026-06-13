@@ -48,22 +48,17 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_API_KEY,
             type=ConfigEntryType.STRING,
-            label="API Key",
             required=True,
-            description="Your Podcast Index API key. Get your free API credentials at https://api.podcastindex.org/",
         ),
         ConfigEntry(
             key=CONF_API_SECRET,
             type=ConfigEntryType.SECURE_STRING,
-            label="API Secret",
             required=True,
-            description="Your Podcast Index API secret",
         ),
         ConfigEntry(
             key=CONF_STORED_PODCASTS,
             type=ConfigEntryType.STRING,
             multi_value=True,
-            label="Subscribed Podcasts",
             default_value=[],
             required=False,
             hidden=True,

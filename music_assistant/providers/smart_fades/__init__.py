@@ -58,12 +58,6 @@ async def get_config_entries(
         ConfigEntry(
             key="single_cpu_warning",
             type=ConfigEntryType.ALERT,
-            label=(
-                "Only 1 CPU core detected on this system. "
-                "Smart Fades analysis typically takes some CPU time during model inference. "
-                "Enabling it on single-CPU hosts may cause performance issues "
-                "and block normal playback. Enable at your own risk."
-            ),
             required=False,
             hidden=(os.cpu_count() or 1) > 1,
         ),

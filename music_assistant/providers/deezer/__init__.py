@@ -180,19 +180,14 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ACCESS_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Access token",
             required=True,
             action=CONF_ACTION_AUTH,
-            description="You need to authenticate on Deezer.",
-            action_label="Authenticate with Deezer",
             value=values.get(CONF_ACCESS_TOKEN) if values else None,
         ),
         ConfigEntry(
             key=CONF_ARL_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Arl token",
             required=True,
-            description="See https://www.dumpmedia.com/deezplus/deezer-arl.html",
             value=values.get(CONF_ARL_TOKEN) if values else None,
         ),
     )

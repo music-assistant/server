@@ -205,10 +205,7 @@ async def get_config_entries(  # noqa: PLR0915
             ConfigEntry(
                 key=CONF_ACTION_GDM,
                 type=ConfigEntryType.ACTION,
-                label="Use Plex GDM to discover local servers",
-                description='Enable "GDM" to discover local Plex servers automatically.',
                 action=CONF_ACTION_GDM,
-                action_label="Use Plex GDM to discover local servers",
             )
         )
 
@@ -217,16 +214,12 @@ async def get_config_entries(  # noqa: PLR0915
         ConfigEntry(
             key=CONF_LOCAL_SERVER_IP,
             type=ConfigEntryType.STRING,
-            label="Local server IP",
-            description="The local server IP (e.g. 192.168.1.77)",
             required=True,
             value=cast("str", values.get(CONF_LOCAL_SERVER_IP)) if values else None,
         ),
         ConfigEntry(
             key=CONF_LOCAL_SERVER_PORT,
             type=ConfigEntryType.INTEGER,
-            label="Local server port",
-            description="The local server port (e.g. 32400)",
             required=True,
             default_value=32400,
             value=cast("int", values.get(CONF_LOCAL_SERVER_PORT)) if values else None,
@@ -234,16 +227,12 @@ async def get_config_entries(  # noqa: PLR0915
         ConfigEntry(
             key=CONF_LOCAL_SERVER_SSL,
             type=ConfigEntryType.BOOLEAN,
-            label="SSL (HTTPS)",
-            description="Connect to the local server using SSL (HTTPS)",
             required=True,
             default_value=False,
         ),
         ConfigEntry(
             key=CONF_LOCAL_SERVER_VERIFY_CERT,
             type=ConfigEntryType.BOOLEAN,
-            label="Verify certificate",
-            description="Verify local server SSL certificate",
             required=True,
             default_value=True,
             depends_on=CONF_LOCAL_SERVER_SSL,
@@ -266,12 +255,9 @@ async def get_config_entries(  # noqa: PLR0915
         conf_libraries = ConfigEntry(
             key=CONF_LIBRARY_ID,
             type=ConfigEntryType.STRING,
-            label="Library",
             required=True,
-            description="The library to connect to (e.g. Music)",
             depends_on=CONF_AUTH_TOKEN,
             action=CONF_ACTION_LIBRARY,
-            action_label="Select Plex Music Library",
         )
         if action in (
             CONF_ACTION_LIBRARY,
@@ -299,10 +285,7 @@ async def get_config_entries(  # noqa: PLR0915
             conf_libraries.options = [
                 # use the same value for both the value and the title
                 # until we find out what plex uses as stable identifiers
-                ConfigValueOption(
-                    title=x,
-                    value=x,
-                )
+                ConfigValueOption(x, title=x)
                 for x in libraries
             ]
             # select first library as (default) value
@@ -316,20 +299,14 @@ async def get_config_entries(  # noqa: PLR0915
             ConfigEntry(
                 key=CONF_ACTION_AUTH_MYPLEX,
                 type=ConfigEntryType.ACTION,
-                label="Authenticate with MyPlex",
-                description="Authenticate with MyPlex to access your library.",
                 action=CONF_ACTION_AUTH_MYPLEX,
-                action_label="Authenticate with MyPlex",
             )
         )
         entries.append(
             ConfigEntry(
                 key=CONF_ACTION_AUTH_LOCAL,
                 type=ConfigEntryType.ACTION,
-                label="Authenticate locally",
-                description="Authenticate locally to access your library.",
                 action=CONF_ACTION_AUTH_LOCAL,
-                action_label="Authenticate locally",
             )
         )
     else:
@@ -337,10 +314,7 @@ async def get_config_entries(  # noqa: PLR0915
             ConfigEntry(
                 key=CONF_ACTION_CLEAR_AUTH,
                 type=ConfigEntryType.ACTION,
-                label="Clear authentication",
-                description="Clear the current authentication details.",
                 action=CONF_ACTION_CLEAR_AUTH,
-                action_label="Clear authentication",
                 required=False,
             )
         )
@@ -350,8 +324,6 @@ async def get_config_entries(  # noqa: PLR0915
         ConfigEntry(
             key=CONF_IMPORT_COLLECTIONS,
             type=ConfigEntryType.BOOLEAN,
-            label="Import Collections",
-            description="Import collections (tracks, albums, or artists) as playlists",
             default_value=False,
             advanced=True,
         )
@@ -360,8 +332,6 @@ async def get_config_entries(  # noqa: PLR0915
         ConfigEntry(
             key=CONF_COLLECTION_PREFIX,
             type=ConfigEntryType.STRING,
-            label="Collection Prefix",
-            description="Prefix to add to collection names when imported as playlists",
             default_value="Collection: ",
             depends_on=CONF_IMPORT_COLLECTIONS,
             advanced=True,
@@ -373,9 +343,6 @@ async def get_config_entries(  # noqa: PLR0915
         ConfigEntry(
             key=CONF_PLEX_LIKE_RATING,
             type=ConfigEntryType.FLOAT,
-            label="Plex rating when liking in Music Assistant",
-            description="When you like a track or album in Music Assistant, "
-            "set this rating value in Plex (0.0 = unrated, 10.0 = 5 stars).",
             default_value=10.0,
             range=(0, 10),
             category="sync_options",
@@ -385,9 +352,6 @@ async def get_config_entries(  # noqa: PLR0915
         ConfigEntry(
             key=CONF_PLEX_FAVORITE_THRESHOLD,
             type=ConfigEntryType.FLOAT,
-            label="Minimum Plex rating to import as favorite",
-            description="Tracks and albums with a Plex rating at or above this threshold "
-            "will be imported as favorites in Music Assistant (0.0 = unrated, 10.0 = 5 stars).",
             default_value=10.0,
             range=(0, 10),
             category="sync_options",
@@ -397,9 +361,6 @@ async def get_config_entries(  # noqa: PLR0915
         ConfigEntry(
             key=CONF_PLEX_UNLIKE_RATING,
             type=ConfigEntryType.FLOAT,
-            label="Plex rating when unliking in Music Assistant",
-            description="When you unlike a track or album in Music Assistant, "
-            "set this rating value in Plex (0.0 = unrated/clear rating, 10.0 = 5 stars).",
             default_value=0.0,
             range=(0, 10),
             category="sync_options",
@@ -411,8 +372,6 @@ async def get_config_entries(  # noqa: PLR0915
         ConfigEntry(
             key=CONF_HUB_ITEMS_LIMIT,
             type=ConfigEntryType.INTEGER,
-            label="Items per hub",
-            description="Maximum number of items to load from each hub (default: 10)",
             default_value=10,
             advanced=True,
             range=(1, 100),

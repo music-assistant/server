@@ -69,6 +69,7 @@
         ]),
         'sort_name': 'test artist',
         'translation_key': None,
+        'translation_params': None,
         'uri': 'tidal_instance://artist/12345',
         'version': '',
       }),
@@ -141,6 +142,7 @@
     ]),
     'sort_name': 'test album',
     'translation_key': None,
+    'translation_params': None,
     'uri': 'tidal_instance://album/67890',
     'version': 'Deluxe Edition',
     'year': 2023,
@@ -213,6 +215,7 @@
     ]),
     'sort_name': 'test artist',
     'translation_key': None,
+    'translation_params': None,
     'uri': 'tidal_instance://artist/12345',
     'version': '',
   })
@@ -289,6 +292,7 @@
       'track',
     ]),
     'translation_key': None,
+    'translation_params': None,
     'uri': 'tidal_instance://playlist/mix_mix_123',
     'version': '',
   })
@@ -365,6 +369,7 @@
       'track',
     ]),
     'translation_key': None,
+    'translation_params': None,
     'uri': 'tidal_instance://playlist/aabbcc-1122-3344-5566',
     'version': '',
   })
@@ -383,6 +388,7 @@
       'provider': 'tidal_instance',
       'sort_name': 'test album',
       'translation_key': None,
+      'translation_params': None,
       'uri': 'tidal_instance://album/67890',
       'version': '',
       'year': None,
@@ -454,6 +460,7 @@
         ]),
         'sort_name': 'test artist',
         'translation_key': None,
+        'translation_params': None,
         'uri': 'tidal_instance://artist/12345',
         'version': '',
       }),
@@ -530,6 +537,7 @@
     'sort_name': 'test track',
     'track_number': 1,
     'translation_key': None,
+    'translation_params': None,
     'uri': 'tidal_instance://track/112233',
     'version': 'Remastered',
   })

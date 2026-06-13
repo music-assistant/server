@@ -1,0 +1,40 @@
+{
+  "config_entries": {
+    "api_key": {
+      "label": "Last.fm API Key",
+      "description": "Optional. Override the built-in API key."
+    },
+    "username": {
+      "label": "Last.fm Username",
+      "description": "Your Last.fm username for genre-based recommendations (optional)"
+    },
+    "enable_personalized": {
+      "label": "Enable Personalized Recommendations",
+      "description": "Provide 'Similar Artists' and 'Similar Tracks' rows based on your listening history"
+    },
+    "enable_global_charts": {
+      "label": "Enable Global Charts",
+      "description": "Provide 'Global Top Artists' and 'Global Top Tracks' rows from Last.fm's worldwide charts"
+    },
+    "enable_genre": {
+      "label": "Enable Genre Recommendations",
+      "description": "Provide 'Top Artists', 'Top Albums' and 'Top Tracks' rows for your most played genre (requires username)"
+    },
+    "enable_geo": {
+      "label": "Enable Geographic Charts",
+      "description": "Provide 'Top Artists' and 'Top Tracks' rows for the selected country"
+    },
+    "geo_country": {
+      "label": "Country for Geographic Charts",
+      "description": "Select country for geography-based top artists and tracks"
+    },
+    "clear_cache": {
+      "label": "Refresh Recommendations",
+      "description": "Rebuild recommendations immediately instead of waiting for the next scheduled refresh.",
+      "action_label": "Refresh Now"
+    }
+  },
+  "manifest": {
+    "description": "Get music recommendations from Last.fm based on your listening history"
+  }
+}
