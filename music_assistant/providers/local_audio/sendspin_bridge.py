@@ -120,10 +120,26 @@ class SendspinLocalAudioBridge:
         self.backend: str = backend
         self.logger = provider.logger.getChild(f"bridge.{self.display_name}")
 
-        # Hardware volume control via shared PAVolumeController, when available.
-        # Falls back to software (numpy) volume scaling otherwise.
+        # The shared PAVolumeController, if connected for the pulse backend.
+        # Used by _reset_sink_volume() (pin-to-100% fallback, via libpulse
+        # instead of a pactl subprocess) for ALL pulse bridges.
+        self._shared_volume_controller: PAVolumeController | None = (
+            volume_controller if backend == "pulse" else None
+        )
+
+        # Hardware per-player volume control is used ONLY for remap sinks.
+        # Each module-remap-sink.c has its own independent PA volume that
+        # doesn't affect its master or siblings (validated empirically).
+        #
+        # The base/master ALSA-card sinks (is_remap=False) are ALSO their own
+        # MA players, but their PA volume multiplies into every remap sink
+        # that feeds through them. If their hardware volume were driven by
+        # *their own* player's volume setting, one player's volume would
+        # silently attenuate every other zone sharing that card. So masters
+        # stay pinned at 100% (via _reset_sink_volume) and use software
+        # (numpy) volume scaling for their own player, same as before.
         self._volume_controller: PAVolumeController | None = (
-            volume_controller if (backend == "pulse" and self.pa_sink_name) else None
+            self._shared_volume_controller if device_info.get("is_remap", False) else None
         )
         self._volume_control_mode = (
             VOLUME_CONTROL_HARDWARE
@@ -245,14 +261,15 @@ class SendspinLocalAudioBridge:
         )
 
         if self._volume_controller is not None:
-            # Apply the restored volume/mute to PA sink hardware so the sink
-            # starts at the user's last level rather than whatever it was left at.
+            # Remap sink: apply the restored volume/mute to PA sink hardware
+            # directly so the sink starts at the user's last level.
             await self._apply_hardware_volume()
         elif self.backend == "pulse":
-            # Fallback path (no hardware volume controller available): reset PA
-            # sink hardware volume to 100% so software scaling has full range.
-            # PulseAudio deferred_volume can apply the stream's initial volume to
-            # the sink hardware volume when pa_simple_new opens — this undoes that.
+            # Master/base sink (or remap sink if PAVolumeController failed to
+            # connect): pin PA sink volume to 100% so it doesn't attenuate
+            # remap sinks feeding through it; volume is controlled in software
+            # for this player. Also undoes any deferred_volume bleed from
+            # stream volume into sink hardware volume on pa_simple_new open.
             await self._reset_sink_volume()
 
     def _get_sendspin_provider(self) -> SendspinProvider | None:
@@ -293,43 +310,39 @@ class SendspinLocalAudioBridge:
         self._is_streaming = False
         self.mass.create_task(self._stop_streaming_locked())
         if self._volume_controller is None and self.backend == "pulse":
-            # Fallback path: reset PA sink hardware volume back to 100% after
-            # playback ends (undoes deferred_volume bleed from stream volume).
+            # Master/base sink (software volume control): re-pin PA sink
+            # volume to 100% after playback ends.
             self.mass.create_task(self._reset_sink_volume())
 
     async def _reset_sink_volume(self) -> None:
-        """Reset PA sink hardware volume to 100% via pactl.
+        """Pin PA sink hardware volume to 100% via the shared PAVolumeController.
 
-        Called at bridge startup and after each playback session to undo any
-        hardware volume changes caused by PulseAudio deferred_volume applying
-        the stream's software volume to the sink hardware volume.
-        No-op on non-PA backends or if pactl is unavailable.
+        Called at bridge startup and after each playback session for:
+          - Master/base ALSA-card sinks (is_remap=False), where volume control
+            is software (per-player) and the underlying PA sink must stay at
+            unity so it doesn't attenuate every remap sink feeding through it.
+          - The fallback path on remap sinks if PAVolumeController itself
+            failed to connect (self._volume_controller is None in that case
+            too, so this also covers undoing any deferred_volume bleed from
+            stream volume into sink hardware volume).
+        No-op on non-PA backends or if PAVolumeController is unavailable.
         """
         if self.backend != "pulse" or not self.pa_sink_name:
             return
-        import os  # noqa: PLC0415
-        import shutil  # noqa: PLC0415
-        import subprocess  # noqa: PLC0415
-
-        pactl = shutil.which("pactl")
-        if not pactl:
+        if self._shared_volume_controller is None:
             return
-        from .pa_simple import _get_pulse_server  # noqa: PLC0415
-
-        env = {**os.environ}
-        if pulse_server := _get_pulse_server():
-            env["PULSE_SERVER"] = pulse_server
         pa_sink_name = self.pa_sink_name
-        await self.mass.loop.run_in_executor(
-            None,
-            lambda: subprocess.run(  # noqa: S603
-                [pactl, "set-sink-volume", pa_sink_name, "100%"],
-                env=env,
-                timeout=3,
-                check=False,
-            ),
-        )
-        self.logger.debug("Reset PA sink hardware volume to 100%% for %s", self.pa_sink_name)
+        controller = self._shared_volume_controller
+        try:
+            ok = await self.mass.loop.run_in_executor(
+                None, controller.set_sink_volume, pa_sink_name, 100
+            )
+            if not ok:
+                self.logger.warning("Failed to pin PA sink volume to 100%% for %s", pa_sink_name)
+            else:
+                self.logger.debug("Pinned PA sink hardware volume to 100%% for %s", pa_sink_name)
+        except OSError as err:
+            self.logger.warning("Hardware volume control error for %s: %s", pa_sink_name, err)
 
     def _on_volume_change(self, volume: int) -> None:
         """Sync volume from Sendspin side to bridge state and persist."""
