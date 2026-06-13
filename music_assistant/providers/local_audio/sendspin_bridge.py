@@ -120,6 +120,13 @@ class SendspinLocalAudioBridge:
         self.pa_sink_name: str | None = device_info.get("pa_sink_name")
         self.sample_rate: int = device_info.get("sample_rate", BRIDGE_SAMPLE_RATE)
         self.bit_depth: int = device_info.get("bit_depth", BRIDGE_BIT_DEPTH)
+        # The PA sink's actual channel count (e.g. 8 for a 7.1 master, 2 for a
+        # remap sink). Used for pa_cvolume_set in PAVolumeController calls —
+        # a mismatch against the sink's real channel_map can leave the
+        # displayed reference_volume updated while soft_volume (real gain)
+        # doesn't change. This is independent of BRIDGE_CHANNELS, which is
+        # the audio *stream's* channel count (always 2).
+        self.pa_channels: int = device_info.get("max_output_channels", BRIDGE_CHANNELS)
         self.device_index: int | None = device_info.get("index")
         self.backend: str = backend
         self.logger = provider.logger.getChild(f"bridge.{self.display_name}")
@@ -344,7 +351,7 @@ class SendspinLocalAudioBridge:
         controller = self._shared_volume_controller
         try:
             ok = await self.mass.loop.run_in_executor(
-                None, controller.set_sink_volume, pa_sink_name, 100
+                None, controller.set_sink_volume, pa_sink_name, 100, self.pa_channels
             )
             if not ok:
                 self.logger.warning("Failed to pin PA sink volume to 100%% for %s", pa_sink_name)
@@ -379,7 +386,7 @@ class SendspinLocalAudioBridge:
         controller = self._volume_controller
         try:
             ok = await self.mass.loop.run_in_executor(
-                None, controller.set_sink_volume, pa_sink_name, target_pct
+                None, controller.set_sink_volume, pa_sink_name, target_pct, self.pa_channels
             )
             if not ok:
                 self.logger.warning(
