@@ -69,7 +69,7 @@ from music_assistant.controllers.streams.constants import (
     CONF_BUFFER_SIZE_DEFAULT,
     CONF_SMART_FADES_LOG_LEVEL,
     DEFAULT_PORT,
-    BufferSize,
+    get_available_buffer_sizes,
 )
 from music_assistant.helpers.audio import (
     calculate_content_length,
@@ -179,11 +179,9 @@ class StreamsController(CoreController):
                 key=CONF_BUFFER_SIZE,
                 type=ConfigEntryType.STRING,
                 default_value=CONF_BUFFER_SIZE_DEFAULT,
-                options=[
-                    ConfigValueOption(BufferSize.MINIMAL.value),
-                    ConfigValueOption(BufferSize.BALANCED.value),
-                    ConfigValueOption(BufferSize.MAXIMUM.value),
-                ],
+                # Only offer presets the host's RAM can sustain (Balanced >= 4GB,
+                # Maximum >= 8GB); see get_available_buffer_sizes.
+                options=[ConfigValueOption(size.value) for size in get_available_buffer_sizes()],
                 required=False,
                 category="playback",
             ),

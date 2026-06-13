@@ -67,7 +67,10 @@ from music_assistant.constants import (
     MASS_LOGGER_NAME,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.controllers.streams.audio_analysis import LOUDNESS_ANALYSIS_DOMAIN
+from music_assistant.controllers.streams.audio_analysis import (
+    LOUDNESS_ANALYSIS_DOMAIN,
+    SMART_FADES_ANALYSIS_DOMAIN,
+)
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.constants import (
     CACHE_CATEGORY_RESOLVED_RADIO_URL,
@@ -2055,10 +2058,11 @@ class StreamsAudio:
             if flow_player
             else []
         )
-        # smart crossfade requires a large buffer for beat analysis
-        if (
-            smart_fades_mode == SmartFadesMode.SMART_CROSSFADE
-            and self.mass.config.get_raw_core_config_value(
+        # smart crossfade needs the smart_fades analysis provider (for beat/key data) and a
+        # non-minimal buffer for beat analysis; fall back to standard crossfade otherwise.
+        if smart_fades_mode == SmartFadesMode.SMART_CROSSFADE and (
+            self.mass.get_provider(SMART_FADES_ANALYSIS_DOMAIN) is None
+            or self.mass.config.get_raw_core_config_value(
                 "streams", CONF_BUFFER_SIZE, CONF_BUFFER_SIZE_DEFAULT
             )
             == BufferSize.MINIMAL
