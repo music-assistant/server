@@ -12,8 +12,10 @@ from music_assistant.providers.sonic_similarity.vectors import (
     FEATURE_GROUPS,
     VECTOR_DIMENSIONS,
     assemble_vector,
+    build_dimension_weights,
     compute_corpus_stats,
     compute_weighted_distance,
+    compute_weighted_distance_vec,
     encode_key_mode,
     normalize_features,
 )
@@ -454,3 +456,24 @@ class TestComputeWeightedDistance:
         b = self._make_vector(1.0)
         all_zero = dict.fromkeys(FEATURE_GROUPS, 0.0)
         assert compute_weighted_distance(a, b, all_zero) == 0.0
+
+    def test_precomputed_weights_match_dict_path(self) -> None:
+        """compute_weighted_distance_vec with a prebuilt vector equals the dict-based path."""
+        rng = np.random.default_rng(7)
+        a = rng.standard_normal(VECTOR_DIMENSIONS)
+        b = rng.standard_normal(VECTOR_DIMENSIONS)
+        weights = {"rhythm": 2.0, "dynamics": 0.0}
+        dim_weights = build_dimension_weights(weights)
+        assert compute_weighted_distance_vec(a, b, dim_weights) == pytest.approx(
+            compute_weighted_distance(a, b, weights)
+        )
+
+    def test_build_dimension_weights_expands_groups(self) -> None:
+        """Each group's weight lands on its dimensions; absent groups default to 1.0."""
+        dim_weights = build_dimension_weights({"timbre": 3.0})
+        assert len(dim_weights) == VECTOR_DIMENSIONS
+        start, end = FEATURE_GROUPS["timbre"]
+        assert list(dim_weights[start:end]) == [3.0] * (end - start)
+        # rhythm was not overridden, so it keeps the 1.0 default
+        r_start, r_end = FEATURE_GROUPS["rhythm"]
+        assert list(dim_weights[r_start:r_end]) == [1.0] * (r_end - r_start)
