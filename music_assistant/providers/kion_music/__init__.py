@@ -148,9 +148,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_BASE_URL,
             type=ConfigEntryType.STRING,
-            description="API endpoint base URL. "
-            "Only change if KION Music changes their API endpoint. "
-            f"Default: {DEFAULT_BASE_URL}",
+            translation_params=[DEFAULT_BASE_URL],
             default_value=DEFAULT_BASE_URL,
             required=False,
             advanced=True,

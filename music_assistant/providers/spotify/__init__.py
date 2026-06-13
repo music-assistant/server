@@ -181,10 +181,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_CLIENT_ID,
             type=ConfigEntryType.SECURE_STRING,
-            description="Enter your own Spotify Developer Client ID to speed up performance "
-            "by avoiding global rate limits. Some features like recommendations and similar "
-            "tracks will continue to use the global session due to Spotify API restrictions.\n\n"
-            f"Use {CALLBACK_REDIRECT_URL} as callback URL in your Spotify Developer app.",
+            translation_params=[CALLBACK_REDIRECT_URL],
             required=False,
             default_value="",
             value=values.get(CONF_CLIENT_ID, "") if values else "",

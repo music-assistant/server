@@ -10,7 +10,8 @@
       "action_label": "Clear authentication"
     },
     "client_id": {
-      "label": "Client ID (optional)"
+      "label": "Client ID (optional)",
+      "description": "Enter your own Spotify Developer Client ID to speed up performance by avoiding global rate limits. Some features like recommendations and similar tracks will continue to use the global session due to Spotify API restrictions.\n\nUse {0} as callback URL in your Spotify Developer app."
     },
     "auth_dev": {
       "label": "Authenticate Developer Session",

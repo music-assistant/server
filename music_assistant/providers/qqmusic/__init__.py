@@ -420,7 +420,7 @@ def _build_config_entries(values: dict[str, ConfigValueType]) -> tuple[ConfigEnt
         ConfigEntry(
             key=CONF_ACTION_CHECK_QR_AUTH,
             type=ConfigEntryType.ACTION,
-            description=f"Manually check whether {qr_login_name} scan confirmation is completed.",
+            translation_params=[qr_login_name],
             action=CONF_ACTION_CHECK_QR_AUTH,
             hidden=not has_qr_pending or is_verified,
         ),

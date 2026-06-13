@@ -21,7 +21,8 @@
       "description": "Generate a WeChat QR code and open the login popup page."
     },
     "check_qr_auth": {
-      "label": "Check QR status"
+      "label": "Check QR status",
+      "description": "Manually check whether {0} scan confirmation is completed."
     },
     "clear_auth": {
       "label": "Reset authentication"
