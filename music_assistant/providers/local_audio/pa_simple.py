@@ -106,6 +106,15 @@ def _get_lib() -> ctypes.CDLL:
 PA_VOLUME_NORM: Final = 65536
 PA_CHANNELS_MAX: Final = 32
 
+# set_sink_volume() is called frequently (on every volume/mute change, and
+# at bridge start for every player). A short timeout limits how long a
+# stuck/unresponsive PA call can occupy an executor thread — under normal
+# conditions PA responds in single-digit milliseconds, so 0.5s is generous
+# while bounding the worst case. load_module()/unload_module() (rare,
+# one-time during topology setup/teardown) keep a longer 2.0s timeout since
+# we'd rather wait than have sink creation/cleanup spuriously fail.
+_SET_VOLUME_TIMEOUT: Final = 0.5
+
 PA_CONTEXT_READY: Final = 4
 PA_CONTEXT_FAILED: Final = 5
 PA_CONTEXT_TERMINATED: Final = 6
@@ -288,7 +297,7 @@ class PAVolumeController:
             displayed reference_volume but may not reliably update the
             soft_volume actually used for sample mixing.
 
-        Blocks (up to ~2s) for PA's success/failure response.
+        Blocks (up to ~0.5s) for PA's success/failure response.
         :returns: True if PA reported success.
         """
         with self._lock:
@@ -322,7 +331,7 @@ class PAVolumeController:
             finally:
                 self._lib.pa_threaded_mainloop_unlock(self._mainloop)
 
-            if not done.wait(timeout=2.0):
+            if not done.wait(timeout=_SET_VOLUME_TIMEOUT):
                 self._lib.pa_operation_unref(op)
                 return False
             self._lib.pa_operation_unref(op)
