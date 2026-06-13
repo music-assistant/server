@@ -2,7 +2,7 @@
   "config_entries": {
     "host": {
       "label": "Server",
-      "description": "The (fqdn) hostname of the SMB/CIFS/DFS server to connect to.For example mynas.local."
+      "description": "The (fqdn) hostname of the SMB/CIFS/DFS server to connect to. For example mynas.local."
     },
     "share": {
       "label": "Share",

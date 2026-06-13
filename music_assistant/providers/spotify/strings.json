@@ -23,7 +23,7 @@
     },
     "sync_podcast_progress": {
       "label": "Sync Podcast Progress from Spotify",
-      "description": "Automatically sync episode played status from Spotify to Music Assistant. Episodes marked as played in Spotify will be marked as played in MA.Only enable this if you use both the Spotify app and Music Assistant for podcast playback."
+      "description": "Automatically sync episode played status from Spotify to Music Assistant. Episodes marked as played in Spotify will be marked as played in MA. Only enable this if you use both the Spotify app and Music Assistant for podcast playback."
     },
     "sync_audiobook_progress": {
       "label": "Sync Audiobook Progress from Spotify",

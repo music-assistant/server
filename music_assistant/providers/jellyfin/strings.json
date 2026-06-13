@@ -6,7 +6,7 @@
     },
     "username": {
       "label": "Username",
-      "description": "The username to authenticate to the remote server.the remote host, For example 'media'."
+      "description": "The username to authenticate to the remote server. For example 'media'."
     },
     "password": {
       "label": "Password",
