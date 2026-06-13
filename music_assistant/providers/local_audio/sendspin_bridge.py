@@ -203,13 +203,16 @@ class SendspinLocalAudioBridge:
                 {IdentifierType.UUID: self._device_uuid},
             )
 
-        # Restore cached volume/mute state from a previous session
+        # Restore cached volume/mute state from a previous session.
+        # Never restore muted=True on startup: a stale cached mute silently
+        # kills audio every boot with no visible indication in the MA UI.
+        # The user can re-mute intentionally; we should never start muted.
         if last_state := await self.mass.cache.get(
             key=self._device_uuid,
             provider=self.provider.instance_id,
             category=CACHE_CATEGORY_PREV_STATE,
         ):
-            self._volume_muted = last_state[0]
+            self._volume_muted = False
             self._volume_level = last_state[1]
 
         # On Linux advertise the sink's native format so MA transcodes correctly.
