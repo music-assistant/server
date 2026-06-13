@@ -141,13 +141,6 @@ def _get_host_memory_gb() -> float:
 
 
 def _get_cgroup_memory_limit_gb() -> float | None:
-    """
-    Read the effective cgroup memory limit in GB, or ``None`` if no limit is set.
-
-    Supports both cgroup v1 (``memory.limit_in_bytes``) and v2 (``memory.max``).
-    Returns ``None`` for the v2 "max" sentinel or v1 sentinel very-large values
-    (i.e. effectively unlimited), so the caller can fall back to host RAM.
-    """
     # cgroup v2 first (modern systems)
     limit = _read_cgroup_v2_limit()
     if limit is not None:
