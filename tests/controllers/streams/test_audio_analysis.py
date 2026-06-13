@@ -48,6 +48,30 @@ async def test_distribute_chunk_calls_all_providers() -> None:
 
 
 @pytest.mark.asyncio
+async def test_thread_caps_only_configured_for_torch_providers() -> None:
+    """Torch thread caps (and the torch import) run only when an active provider uses torch."""
+    sd, af = MagicMock(), MagicMock()
+
+    # only a non-torch provider active (e.g. builtin loudness_analysis) -> torch never imported
+    controller = _make_controller()
+    controller._ensure_thread_caps_configured = MagicMock()  # type: ignore[method-assign]
+    non_torch = _make_aa_provider("loudness", available=True)
+    non_torch.uses_torch = False
+    non_torch.start_analysis = AsyncMock(return_value=False)
+    await controller._start_analysis_on_providers("k", sd, af, [non_torch])
+    controller._ensure_thread_caps_configured.assert_not_called()
+
+    # a torch-backed provider present -> caps configured
+    controller2 = _make_controller()
+    controller2._ensure_thread_caps_configured = MagicMock()  # type: ignore[method-assign]
+    torch_prov = _make_aa_provider("smart_fades", available=True)
+    torch_prov.uses_torch = True
+    torch_prov.start_analysis = AsyncMock(return_value=False)
+    await controller2._start_analysis_on_providers("k", sd, af, [torch_prov])
+    controller2._ensure_thread_caps_configured.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_distribute_chunk_evicts_provider_on_timeout() -> None:
     """A provider whose process_pcm_chunk exceeds max_interval is evicted."""
     controller = _make_controller()

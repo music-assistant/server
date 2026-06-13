@@ -59,6 +59,8 @@ class SmartFadesData:
 class SmartFadesProvider(AudioAnalysisProvider):
     """Smart fades audio analysis provider using Beat This for beat tracking."""
 
+    uses_torch = True
+
     def __init__(
         self,
         mass: MusicAssistant,

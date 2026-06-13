@@ -962,9 +962,11 @@ class AudioAnalysisController:
         providers: list[AudioAnalysisProvider],
     ) -> set[str]:
         """Call start_analysis on each provider, returning IDs of those that accepted."""
-        # Apply torch thread caps now that analysis is actually starting (lazy, once).
-        # This is the shared chokepoint for both the live and background-scan paths.
-        self._ensure_thread_caps_configured()
+        # Apply torch thread caps once, but only when a provider that actually runs torch
+        # inference is active — so a host with only non-torch providers (e.g. the builtin
+        # loudness_analysis) never imports torch. Shared by the live and background paths.
+        if any(provider.uses_torch for provider in providers):
+            self._ensure_thread_caps_configured()
         provider_ids: set[str] = set()
         for provider in providers:
             try:

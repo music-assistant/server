@@ -302,6 +302,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
     """Audio analysis provider running librosa scalars + CLAP zero-shot per track."""
 
     analysis_version: int = 1
+    uses_torch = True
 
     def __init__(
         self,
