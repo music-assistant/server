@@ -473,6 +473,7 @@ def enumerate_alsa_devices() -> list[dict[str, Any]]:
                 "sample_rate": sample_rate,
                 "bit_depth": 16,
                 "is_remap": False,
+                "master_device": None,
                 "index": idx,
                 "hostapi": dev.get("hostapi", 0),
             }
@@ -494,6 +495,9 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
       - max_output_channels: number of channels
       - sample_rate: sink native sample rate in Hz
       - bit_depth: sink native bit depth (16, 24, or 32)
+      - is_remap: True for module-remap-sink.c sinks
+      - master_device: for remap sinks, the underlying master sink's PA name
+        (from the device.master_device property), else None
     """
     import json  # noqa: PLC0415
     import shutil  # noqa: PLC0415
@@ -526,6 +530,10 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
         desc: str = sink.get("description", name)
         spec_str: str = sink.get("sample_specification", "")
         driver: str = sink.get("driver", "")
+        properties: dict[str, str] = sink.get("properties", {})
+        master_device: str | None = (
+            properties.get("device.master_device") if driver == "module-remap-sink.c" else None
+        )
         try:
             parts = spec_str.split()
             fmt = parts[0]  # e.g. 's32le'
@@ -560,6 +568,7 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
                 "sample_rate": sample_rate,
                 "bit_depth": bit_depth,
                 "is_remap": driver == "module-remap-sink.c",
+                "master_device": master_device,
             }
         )
     return sinks

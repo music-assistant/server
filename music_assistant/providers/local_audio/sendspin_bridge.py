@@ -95,6 +95,7 @@ class SendspinLocalAudioBridge:
         sendspin_server: SendspinServer,
         backend: str = "auto",
         volume_controller: PAVolumeController | None = None,
+        has_remap_children: bool = False,
     ) -> None:
         """
         Initialize the bridge.
@@ -106,6 +107,9 @@ class SendspinLocalAudioBridge:
         :param backend: Resolved audio backend: "pulse", "alsa", or "sounddevice".
         :param volume_controller: Shared PAVolumeController for hardware sink volume
             (pulse backend only). If None, falls back to software volume scaling.
+        :param has_remap_children: True if this is a master sink with at least
+            one module-remap-sink.c child in the current enumeration. Ignored
+            for remap sinks themselves.
         """
         self.provider = provider
         self.mass = provider.mass
@@ -127,19 +131,24 @@ class SendspinLocalAudioBridge:
             volume_controller if backend == "pulse" else None
         )
 
-        # Hardware per-player volume control is used ONLY for remap sinks.
-        # Each module-remap-sink.c has its own independent PA volume that
-        # doesn't affect its master or siblings (validated empirically).
+        # Hardware per-player volume control is used for:
+        #  - remap sinks (module-remap-sink.c): each has its own independent
+        #    PA volume that doesn't affect its master or siblings (validated
+        #    empirically), or
+        #  - base/master sinks with NO remap-sink children in the current
+        #    enumeration (e.g. remap addon disabled, or a standalone card):
+        #    nothing shares this sink's master output, so hardware volume is
+        #    safe here too.
         #
-        # The base/master ALSA-card sinks (is_remap=False) are ALSO their own
-        # MA players, but their PA volume multiplies into every remap sink
-        # that feeds through them. If their hardware volume were driven by
-        # *their own* player's volume setting, one player's volume would
-        # silently attenuate every other zone sharing that card. So masters
-        # stay pinned at 100% (via _reset_sink_volume) and use software
-        # (numpy) volume scaling for their own player, same as before.
+        # A master sink that DOES have remap children must NOT use hardware
+        # volume for itself: its PA volume multiplies into every remap sink
+        # feeding through it, so driving it from *this* player's volume
+        # would silently attenuate every other zone sharing the card. Such
+        # masters stay pinned at 100% (via _reset_sink_volume) and use
+        # software (numpy) volume scaling for their own player.
+        is_remap = device_info.get("is_remap", False)
         self._volume_controller: PAVolumeController | None = (
-            self._shared_volume_controller if device_info.get("is_remap", False) else None
+            self._shared_volume_controller if (is_remap or not has_remap_children) else None
         )
         self._volume_control_mode = (
             VOLUME_CONTROL_HARDWARE
@@ -664,6 +673,44 @@ class LocalAudioBridgeManager:
                 err,
             )
 
+    @staticmethod
+    def _remap_master_sinks(devices: list[dict[str, Any]]) -> set[str]:
+        """Return master sink names with at least one remap-sink child.
+
+        Such masters must keep software volume control — their PA volume
+        multiplies into every remap sink feeding through them. Masters with
+        no remap children (e.g. remap addon disabled) can safely use
+        hardware volume control like any standalone sink.
+        """
+        return {d["master_device"] for d in devices if d.get("is_remap") and d.get("master_device")}
+
+    async def _register_protocol_player(self, device_uuid: str, display_name: str) -> Player:
+        """Register the local_audio-owned PROTOCOL attribution-stub player.
+
+        Gives Universal Player a local_audio domain link so the wrapped
+        up_... player is attributed to the Local Audio Out provider filter
+        in the MA UI. Mirrors the pattern used by AirPlay — the bare UUID
+        player_id is what provides this link.
+        """
+        protocol_player = Player(self.provider, device_uuid)
+        protocol_player._attr_type = PlayerType.PROTOCOL
+        protocol_player._attr_name = display_name
+        protocol_player._attr_available = True
+        protocol_player._attr_hidden_by_default = True  # attribution stub — hide from UI
+        protocol_player._attr_supported_features = set()  # no direct playback capability
+        protocol_player._attr_device_info = DeviceInfo(
+            model=display_name, manufacturer="Local Audio"
+        )
+        await self.mass.players.register_or_update(protocol_player)
+        # Force-enable the attribution stub — if a user previously disabled it MA
+        # will skip registration on next startup, causing the player to disappear
+        # from the Local Audio Out provider filter. Re-enable via raw config store.
+        if raw := self.mass.config.get(f"{CONF_PLAYERS}/{device_uuid}"):
+            if not raw.get("enabled", True):
+                self.logger.debug("Re-enabling disabled attribution stub for %s", display_name)
+                raw["enabled"] = True
+        return protocol_player
+
     async def discover_and_register(self) -> None:
         """Enumerate output devices and register Sendspin bridges."""
         sendspin_server = self.sendspin_server
@@ -695,6 +742,7 @@ class LocalAudioBridgeManager:
             return
 
         await self._ensure_volume_controller(resolved_backend)
+        remap_masters = self._remap_master_sinks(devices)
 
         async with self._lock:
             for device in devices:
@@ -708,32 +756,7 @@ class LocalAudioBridgeManager:
                     self.logger.debug("Bridge already exists for %s", display_name)
                     continue
 
-                # Register a minimal local_audio-owned PROTOCOL player so that
-                # Universal Player attributes the wrapped up... player to the
-                # Local Audio Out provider filter in the MA UI.
-                # This mirrors the pattern used by AirPlay — the bare UUID player_id
-                # is what gives Universal Player a local_audio domain link.
-                protocol_player = Player(self.provider, device_uuid)
-                protocol_player._attr_type = PlayerType.PROTOCOL
-                protocol_player._attr_name = display_name
-                protocol_player._attr_available = True
-                protocol_player._attr_hidden_by_default = True  # attribution stub — hide from UI
-                protocol_player._attr_supported_features = set()  # no direct playback capability
-                protocol_player._attr_device_info = DeviceInfo(
-                    model=display_name,
-                    manufacturer="Local Audio",
-                )
-                await self.mass.players.register_or_update(protocol_player)
-                # Force-enable the attribution stub — if a user previously disabled it
-                # MA will skip registration on next startup, causing the player to
-                # disappear from the Local Audio Out provider filter.
-                # Use the raw config store to re-enable it directly.
-                if raw := self.mass.config.get(f"{CONF_PLAYERS}/{device_uuid}"):
-                    if not raw.get("enabled", True):
-                        self.logger.debug(
-                            "Re-enabling disabled attribution stub for %s", display_name
-                        )
-                        raw["enabled"] = True
+                protocol_player = await self._register_protocol_player(device_uuid, display_name)
 
                 bridge = SendspinLocalAudioBridge(
                     self.provider,
@@ -741,6 +764,7 @@ class LocalAudioBridgeManager:
                     sendspin_server,
                     backend=resolved_backend,
                     volume_controller=self._volume_controller,
+                    has_remap_children=device_name in remap_masters,
                 )
                 try:
                     await bridge.start()
