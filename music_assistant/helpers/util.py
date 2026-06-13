@@ -168,26 +168,105 @@ def _get_cgroup_memory_limit_gb() -> float | None:
     return _read_cgroup_v1_limit()
 
 
+@lru_cache(maxsize=1)
+def _get_self_cgroup_path_v2() -> str | None:
+    """
+    Return the cgroup v2 path of the current process relative to the cgroup
+    mount root, or ``None`` if it cannot be determined.
+
+    Reads ``/proc/self/cgroup`` which contains lines of the form
+    ``0::<path>`` for v2 and resolves the path by walking up to the cgroup
+    mount root (the ancestor that owns its own cgroup directory).
+    """
+    try:
+        with open("/proc/self/cgroup") as fh:
+            for line in fh:
+                parts = line.strip().split(":", 2)
+                if len(parts) != 3:
+                    continue
+                # v2 unified hierarchy: id "0" with empty controllers list
+                if parts[0] == "0" and parts[1] == "":
+                    return parts[2] or "/"
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+    return None
+
+
+@lru_cache(maxsize=1)
+def _get_cgroup_v1_memory_mounts() -> tuple[str, ...]:
+    """
+    Return the memory cgroup mountpoints visible to the current process, in
+    preference order, parsed from ``/proc/self/mountinfo``.
+
+    The cgroup v1 memory controller may be mounted at a custom path (e.g.
+    ``/sys/fs/cgroup/memory``, ``/sys/fs/cgroup/memory/<slice>`` or a fully
+    separate hierarchy), so we cannot assume a fixed location.
+    """
+    mounts: list[str] = []
+    seen: set[str] = set()
+    try:
+        with open("/proc/self/mountinfo") as fh:
+            for line in fh:
+                # mountinfo format:
+                # mount_id parent_id major:minor root mountpoint options -
+                # fstype source super_options
+                fields = line.split()
+                if len(fields) < 10:
+                    continue
+                if fields[-3] != "cgroup":
+                    continue
+                # The list of controllers a v1 cgroup mount provides lives in
+                # the super_options field (the last field) of mountinfo.
+                super_opts = fields[-1].split(",")
+                if "memory" not in super_opts:
+                    continue
+                mountpoint = fields[4]
+                if mountpoint and mountpoint not in seen:
+                    seen.add(mountpoint)
+                    mounts.append(mountpoint)
+    except (FileNotFoundError, PermissionError, OSError):
+        pass
+    return tuple(mounts)
+
+
 def _read_cgroup_v2_limit() -> float | None:
     """
     Read cgroup v2 ``memory.max`` and return the limit in GB, or ``None`` when
     the file is missing, unreadable, or set to the "unlimited" sentinel "max".
+
+    The v2 unified hierarchy is mounted at a single root (typically
+    ``/sys/fs/cgroup``), and the process's effective cgroup is given by the
+    path reported in ``/proc/self/cgroup``; the limit file is read relative
+    to that path so sub-cgroup limits are honored.
     """
-    path = "/sys/fs/cgroup/memory.max"
-    try:
-        with open(path) as fh:
-            raw = fh.read().strip()
-    except (FileNotFoundError, PermissionError, OSError):
+    rel = _get_self_cgroup_path_v2()
+    if rel is None:
         return None
-    if not raw or raw == "max":
-        return None
-    try:
-        limit_bytes = int(raw)
-    except ValueError:
-        return None
-    if limit_bytes <= 0 or limit_bytes >= _CGROUP_UNLIMITED_THRESHOLD:
-        return None
-    return limit_bytes / (1024**3)
+    if rel == "/":
+        rel_path = "memory.max"
+        candidates = ("/sys/fs/cgroup/memory.max",)
+    else:
+        rel_path = f"{rel.lstrip('/')}/memory.max"
+        candidates = (
+            f"/sys/fs/cgroup/{rel_path}",
+            "/sys/fs/cgroup/memory.max",  # fall back to the root cgroup's limit
+        )
+    for path in candidates:
+        try:
+            with open(path) as fh:
+                raw = fh.read().strip()
+        except (FileNotFoundError, PermissionError, OSError):
+            continue
+        if not raw or raw == "max":
+            return None
+        try:
+            limit_bytes = int(raw)
+        except ValueError:
+            return None
+        if limit_bytes <= 0 or limit_bytes >= _CGROUP_UNLIMITED_THRESHOLD:
+            return None
+        return limit_bytes / (1024**3)
+    return None
 
 
 def _read_cgroup_v1_limit() -> float | None:
@@ -196,12 +275,26 @@ def _read_cgroup_v1_limit() -> float | None:
     ``None`` when the file is missing, unreadable, or set to a sentinel
     "unlimited" value (a very large number that the kernel writes when no
     limit is configured).
+
+    The v1 memory controller may be mounted at various locations; the
+    mountpoints are discovered from ``/proc/self/mountinfo`` and the
+    process's cgroup path is read from ``/proc/self/cgroup`` so sub-cgroup
+    limits (e.g. systemd slices, Kubernetes pods) are honored.
     """
-    # the cgroup v1 hierarchy may live in a custom mount; check the canonical
-    # location first, then fall back to a global memory cgroup path.
-    for path in ("/sys/fs/cgroup/memory/memory.limit_in_bytes",):
+    mounts = _get_cgroup_v1_memory_mounts()
+    if not mounts:
+        return None
+    rel = _get_self_cgroup_v1_path("memory")
+    if rel is None:
+        return None
+    rel = rel.lstrip("/")
+    for mountpoint in mounts:
+        if rel:
+            candidate = os.path.join(mountpoint, rel, "memory.limit_in_bytes")
+        else:
+            candidate = os.path.join(mountpoint, "memory.limit_in_bytes")
         try:
-            with open(path) as fh:
+            with open(candidate) as fh:
                 raw = fh.read().strip()
         except (FileNotFoundError, PermissionError, OSError):
             continue
@@ -214,6 +307,27 @@ def _read_cgroup_v1_limit() -> float | None:
         if limit_bytes <= 0 or limit_bytes >= _CGROUP_UNLIMITED_THRESHOLD:
             return None
         return limit_bytes / (1024**3)
+    return None
+
+
+@lru_cache(maxsize=8)
+def _get_self_cgroup_v1_path(controller: str) -> str | None:
+    """
+    Return the cgroup path of the current process for the given v1 controller
+    (e.g. ``"memory"``), relative to the controller's cgroupfs root, or
+    ``None`` if not found.
+    """
+    try:
+        with open("/proc/self/cgroup") as fh:
+            for line in fh:
+                parts = line.strip().split(":", 2)
+                if len(parts) != 3:
+                    continue
+                controllers = parts[1]
+                if controller in controllers.split(","):
+                    return parts[2] or ""
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
     return None
 
 
