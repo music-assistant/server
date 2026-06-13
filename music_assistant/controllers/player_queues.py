@@ -530,7 +530,7 @@ class PlayerQueuesController(CoreController):
         option: QueueOption | None = None,
         radio_mode: bool = False,
         start_item: PlayableMediaItemType | str | None = None,
-        username_or_user_id: str | None = None,
+        username: str | None = None,
         sort_by: str | None = None,
     ) -> None:
         """
@@ -541,8 +541,8 @@ class PlayerQueuesController(CoreController):
         :param option: Which enqueue mode to use.
         :param radio_mode: Enable radio mode for the given item(s).
         :param start_item: Optional item to start the playlist or album from.
-        :param username_or_user_id: The username or id of the user requesting the playback.
-            This setting allows for overriding the logged-in user
+        :param username: The username of the user requesting the playback.
+            Setting the username allows for overriding the logged-in user
             to account for playback history per user when the play_media is
             called from a shared context (like a web hook or automation).
         :param sort_by: Optional sort key to order tracks before applying start_item.
@@ -551,7 +551,7 @@ class PlayerQueuesController(CoreController):
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         # Lock is acquired by the @handle_play_action decorator on the internal handler
-        async with OptionalImpersonatedUser(self.mass, username_or_user_id):
+        async with OptionalImpersonatedUser(self.mass, username):
             await self._handle_play_media(queue_id, media, option, radio_mode, start_item, sort_by)
 
     @api_command("player_queues/move_item")

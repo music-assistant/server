@@ -1034,7 +1034,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 
             try:
                 await self.provider.mass.player_queues.play_media(
-                    player_id, uri, username_or_user_id=await self.provider.get_owner_username()
+                    player_id, uri, username=await self.provider.get_owner_username()
                 )
             finally:
                 if from_playlist:
@@ -2042,7 +2042,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             return web.json_response({"error": "Unknown MSX player"}, status=404)
 
         await self.provider.mass.player_queues.play_media(
-            player_id, track_uri, username_or_user_id=await self.provider.get_owner_username()
+            player_id, track_uri, username=await self.provider.get_owner_username()
         )
         return web.json_response({"status": "ok"})
 
