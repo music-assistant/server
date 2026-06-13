@@ -387,6 +387,13 @@ class SendspinLocalAudioBridge:
         if self._volume_controller is None or not self.pa_sink_name:
             return
         target_pct = 0 if self._volume_muted else self._volume_level
+        self.logger.debug(
+            "apply_hardware_volume %s: target=%d%% (level=%d muted=%s)",
+            self.pa_sink_name,
+            target_pct,
+            self._volume_level,
+            self._volume_muted,
+        )
         pa_sink_name = self.pa_sink_name
         controller = self._volume_controller
         try:
