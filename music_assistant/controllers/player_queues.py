@@ -1350,7 +1350,9 @@ class PlayerQueuesController(CoreController):
         # save the user requesting the playback
         if playback_user := get_current_user():
             queue.userid = playback_user.user_id
-            self.logger.debug("User %s requested playback.", playback_user.display_name)
+            self.logger.debug(
+                "User %s requested playback.", playback_user.display_name or playback_user.username
+            )
 
         # a single item or list of items may be provided
         media_list = media if isinstance(media, list) else [media]
