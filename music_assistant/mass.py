@@ -745,7 +745,10 @@ class MusicAssistant:
                     prov_conf.name or prov_conf.instance_id,
                     exc,
                 )
-                await self.config.remove_provider_config(instance_id)
+                # The provider never loaded, so just drop its auto-created config key.
+                # (remove_provider_config refuses builtin providers and runs loaded-provider
+                # cleanup we don't need here; a direct remove persists and is guard-free.)
+                self.config.remove(f"{CONF_PROVIDERS}/{instance_id}")
                 return
             prov_conf.last_error = str(exc)
             self.config.set(f"{CONF_PROVIDERS}/{instance_id}/last_error", str(exc))
