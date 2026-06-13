@@ -41,8 +41,8 @@ from music_assistant.providers.lastfm_recommendations.constants import (
     TARGET_ITEM_COUNT,
     TOP_ARTISTS_LIMIT,
     TOP_GENRES_CACHE_EXPIRATION_SECONDS,
+    TOP_GENRES_LIMIT,
     TOP_ITEMS_TO_TAKE,
-    TOP_TAGS_LIMIT,
     TOP_TRACKS_LIMIT,
 )
 from music_assistant.providers.lastfm_recommendations.parsers import (
@@ -654,7 +654,7 @@ class LastFMRecommendationManager:
                 display_names.setdefault(key, name)
 
         ranked = sorted(scores, key=lambda key: scores[key], reverse=True)
-        top_genres = [display_names[key] for key in ranked[:TOP_TAGS_LIMIT]]
+        top_genres = [display_names[key] for key in ranked[:TOP_GENRES_LIMIT]]
 
         if top_genres:
             await self.mass.cache.set(

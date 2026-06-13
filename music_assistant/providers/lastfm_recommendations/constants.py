@@ -74,7 +74,7 @@ RECENT_TRACKS_SCAN_LIMIT = 200
 TOP_TRACKS_LIMIT = 10
 
 # Number of derived genres; the genre rows cycle through them daily
-TOP_TAGS_LIMIT = 3
+TOP_GENRES_LIMIT = 3
 
 # Genres are derived from the community tags of the user's most played artists. Last.fm has no
 # genre data of its own, so an artist's top tags stand in for its genre.
