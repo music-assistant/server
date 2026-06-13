@@ -113,7 +113,7 @@ def apply_mmr(
     if weights is not None:
 
         def _similarity(a: np.ndarray, b: np.ndarray) -> float:
-            d = compute_weighted_distance(a.tolist(), b.tolist(), weights)
+            d = compute_weighted_distance(a, b, weights)
             return 1.0 / (1.0 + d)
 
         relevance: dict[str, float] = {

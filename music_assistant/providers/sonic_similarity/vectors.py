@@ -175,27 +175,27 @@ def compute_group_distances(
 
 
 def compute_weighted_distance(
-    sig_a: list[float],
-    sig_b: list[float],
+    sig_a: list[float] | np.ndarray,
+    sig_b: list[float] | np.ndarray,
     weights: dict[str, float],
 ) -> float:
     """Compute per-group weighted Euclidean distance between two feature vectors.
 
-    :param sig_a: First feature vector.
-    :param sig_b: Second feature vector.
+    :param sig_a: First feature vector (list or numpy array).
+    :param sig_b: Second feature vector (list or numpy array).
     :param weights: Per-group weight overrides keyed by FEATURE_GROUPS name.
     :returns: Weighted normalized distance as a float.
     """
-    group_dists = compute_group_distances(sig_a, sig_b)
-    weighted_sq_sum = 0.0
-    total_weighted_dims = 0.0
-    for group, (start, end) in FEATURE_GROUPS.items():
-        w = weights.get(group, 1.0)
-        dim_count = end - start
-        weighted_sq_sum += w * (group_dists[group] ** 2) * dim_count
-        total_weighted_dims += w * dim_count
+    # np.asarray is a no-op when the caller already holds a float64 array (the
+    # MMR hot path), avoiding the list round-trip the previous version forced.
+    a = np.asarray(sig_a, dtype=np.float64)
+    b = np.asarray(sig_b, dtype=np.float64)
+    dim_weights = _expand_group_weights(weights)
+    total_weighted_dims = float(dim_weights.sum())
     if total_weighted_dims == 0.0:
         return 0.0
+    diff = a - b
+    weighted_sq_sum = float(np.dot(dim_weights, diff * diff))
     return math.sqrt(weighted_sq_sum / total_weighted_dims)
 
 
@@ -222,3 +222,18 @@ def build_debug_breakdown(
             for k, v in compute_group_distances(seed_normalized, cand_normalized).items()
         },
     }
+
+
+def _expand_group_weights(weights: dict[str, float]) -> np.ndarray:
+    """
+    Expand per-group weights into a per-dimension weight vector.
+
+    :param weights: Per-group weight overrides keyed by FEATURE_GROUPS name. Groups
+        absent from the dict default to weight 1.0.
+    :returns: Float64 weight array of length VECTOR_DIMENSIONS.
+    """
+    dim_weights = np.ones(VECTOR_DIMENSIONS, dtype=np.float64)
+    for group, (start, end) in FEATURE_GROUPS.items():
+        if group in weights:
+            dim_weights[start:end] = weights[group]
+    return dim_weights
