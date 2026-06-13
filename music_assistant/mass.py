@@ -150,7 +150,8 @@ class MusicAssistant:
     async def start(self) -> None:
         """Start running the Music Assistant server."""
         self.loop = asyncio.get_running_loop()
-        self.loop_thread_id = getattr(self.loop, "_thread_id")  # noqa: B009
+        # start() runs on the event loop thread, so this is the loop's thread id.
+        self.loop_thread_id = threading.get_ident()
         self.running_as_hass_addon = await is_hass_supervisor()
         self.version = await get_package_version("music_assistant") or "0.0.0"
         # setup config controller first and fetch important config values
