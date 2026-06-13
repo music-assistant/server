@@ -182,7 +182,8 @@ def _extract_imageproxy_id(url: str) -> str | None:
 
 
 def player_image_url(mass: MusicAssistant, url: str | None) -> str | None:
-    """Rewrite a public-webserver imageproxy URL to the internal streams server.
+    """
+    Rewrite an imageproxy URL for consumption by a (physical) player.
 
     :param mass: The MusicAssistant instance.
     :param url: Image URL as produced for frontend/API consumers.
@@ -191,7 +192,14 @@ def player_image_url(mass: MusicAssistant, url: str | None) -> str | None:
         return url
     webserver_base = mass.webserver.base_url
     if webserver_base and url.startswith(f"{webserver_base}/imageproxy"):
-        return mass.streams.base_url + url[len(webserver_base) :]
+        # players may not be able to reach the webserver, so serve from the streams
+        # server, and force jpeg (= flatten transparency) as players such as legacy
+        # AirPlay receivers cannot be assumed to handle PNG alpha
+        url = mass.streams.base_url + url[len(webserver_base) :]
+        parsed = urllib.parse.urlparse(url)
+        query = urllib.parse.parse_qs(parsed.query)
+        query["fmt"] = ["jpeg"]
+        return parsed._replace(query=urllib.parse.urlencode(query, doseq=True)).geturl()
     return url
 
 
