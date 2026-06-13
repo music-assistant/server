@@ -30,6 +30,7 @@ from music_assistant.controllers.streams.smart_fades.fades import (
     CrossfadeTimingInfo,
     SmartCrossFade,
     SmartFade,
+    SmartFadeNotApplicable,
     StandardCrossFade,
 )
 from music_assistant.controllers.streams.smart_fades.filters import (
@@ -256,6 +257,38 @@ class TestStandardCrossFadeApplySlicing:
         assert len(captured["fade_out"]) == _seconds(6)
         # nothing precedes the crossfade — the 6s buffer is consumed entirely by the overlap
         assert chunks[0] == crossfade_marker
+
+    @pytest.mark.asyncio
+    async def test_zero_crossfade_skips_ffmpeg(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When crossfade_duration == 0, apply() must concatenate without calling ffmpeg."""
+        base_apply_invoked: list[bool] = []
+
+        async def _base_apply_sentinel(
+            _self: SmartFade,
+            _fade_out_part: bytes,
+            _fade_in_part: bytes | AsyncGenerator[bytes],
+            _pcm_format: AudioFormat,
+        ) -> AsyncGenerator[bytes]:
+            base_apply_invoked.append(True)
+            yield b""
+
+        monkeypatch.setattr(SmartFade, "apply", _base_apply_sentinel)
+
+        fade = StandardCrossFade(logger=logging.getLogger(), crossfade_duration=10.0)
+        # fade_out_bytes_len=0 → effective_cf = min(10, 0, 45) = 0 → crossfade_duration == 0
+        fade._build(0, _seconds(45), PCM)
+        assert fade.timing_info.crossfade_duration == 0.0
+
+        fade_out_data = b"\x00" * _seconds(5)
+        fade_in_data = b"\x11" * _seconds(5)
+        chunks = [chunk async for chunk in fade.apply(fade_out_data, fade_in_data, PCM)]
+        combined = b"".join(chunks)
+        assert len(combined) == _seconds(10), f"Expected {_seconds(10)} bytes, got {len(combined)}"
+        assert combined[0:1] == b"\x00", "fade_out bytes should come first"
+        assert combined[-1:] == b"\x11", "fade_in bytes should come last"
+        assert not base_apply_invoked, (
+            "SmartFade.apply (ffmpeg path) must not be called for zero-length crossfade"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -701,8 +734,8 @@ class TestSilenceAwareAnchoring:
         assert not any(isinstance(f, FadeOutTrimFilter) for f in fade.filters)
 
     def test_mostly_silent_tail_raises_for_fallback(self) -> None:
-        """A tail with only ~5s of audible content raises ValueError so the caller falls back."""
-        with pytest.raises(ValueError, match="silent"):
+        """A tail with only ~5s of audible content raises SmartFadeNotApplicable so the caller falls back."""
+        with pytest.raises(SmartFadeNotApplicable, match="silent"):
             self._build_fade(silent_tail=40.0)
 
     def test_partial_buffer_keeps_beats_aligned(self) -> None:

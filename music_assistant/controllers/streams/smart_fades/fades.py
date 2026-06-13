@@ -41,6 +41,10 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
 
 
+class SmartFadeNotApplicable(Exception):
+    """Raised when the tracks cannot yield a smart crossfade and the caller should fall back."""
+
+
 @dataclass(slots=True)
 class CrossfadeTimingInfo:
     """Timing breakdown of a crossfade mix output: PRE | CF | POST."""
@@ -475,9 +479,8 @@ class SmartCrossFade(SmartFade):
             buffer_duration,
         )
         if self.effective_end < MIN_EFFECTIVE_FADE_BUFFER:
-            raise ValueError(
-                f"Outgoing tail is mostly silent ({self.effective_end:.1f}s audible) - "
-                "smart crossfade not applicable"
+            raise SmartFadeNotApplicable(
+                f"outgoing tail is mostly silent ({self.effective_end:.1f}s audible)"
             )
         # Sub-half-second slack is not worth trimming: RMS bin granularity is
         # ~0.1-0.2s for typical track lengths, so finer precision is illusory
@@ -803,6 +806,18 @@ class StandardCrossFade(SmartFade):
         frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
         crossfade_size = int(pcm_format.pcm_sample_size * self.timing_info.crossfade_duration)
         crossfade_size = (crossfade_size // frame_size) * frame_size
+        if crossfade_size == 0:
+            # nothing to blend — concatenate without spawning ffmpeg
+            for pcm_slice in iter_pcm_slices(fade_out_part, pcm_format, 1000):
+                yield pcm_slice
+            if isinstance(fade_in_part, bytes):
+                for pcm_slice in iter_pcm_slices(fade_in_part, pcm_format, 1000):
+                    yield pcm_slice
+            else:
+                async for chunk in fade_in_part:
+                    for pcm_slice in iter_pcm_slices(chunk, pcm_format, 1000):
+                        yield pcm_slice
+            return
         # Pre-crossfade: outgoing track minus the crossfaded portion
         split = len(fade_out_part) - crossfade_size
         pre_crossfade = fade_out_part[:split]

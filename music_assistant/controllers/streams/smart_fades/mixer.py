@@ -9,6 +9,7 @@ from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALY
 from music_assistant.controllers.streams.smart_fades.fades import (
     SmartCrossFade,
     SmartFade,
+    SmartFadeNotApplicable,
     StandardCrossFade,
 )
 from music_assistant.helpers.audio import align_audio_to_frame_boundary, strip_silence
@@ -140,6 +141,9 @@ class SmartFadesMixer:
                 fade_in_analysis=fade_in_analysis,
             )
             smart_fade._build(fade_out_bytes_len, fade_in_bytes_len, pcm_format)
+        except SmartFadeNotApplicable as e:
+            self.logger.debug("Smart crossfade not applicable: %s - using standard crossfade", e)
+            return None
         except Exception as e:
             self.logger.warning(
                 "Smart crossfade build failed: %s, falling back to standard crossfade", e
