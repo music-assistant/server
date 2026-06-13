@@ -23,6 +23,7 @@ from music_assistant.helpers.images import (
     create_thumb_hash,
     detect_image_content_format,
     is_svg_data,
+    player_image_url,
 )
 from music_assistant.mass import MusicAssistant
 
@@ -349,3 +350,20 @@ async def test_serve_thumbnail_sets_csp_for_svg(
     jpg_resp = await metadata_controller._serve_thumbnail("p", "builtin", 256, "jpeg")
     assert "Content-Security-Policy" not in jpg_resp.headers
     assert "X-Content-Type-Options" not in jpg_resp.headers
+
+
+def test_player_image_url_forces_jpeg_on_imageproxy_urls() -> None:
+    """Player-bound imageproxy URLs move to the streams server and force fmt=jpeg."""
+    mass = MagicMock()
+    mass.webserver.base_url = "http://192.168.1.2:8095"
+    mass.streams.base_url = "http://192.168.1.2:8097"
+    image_id = "a" * 64
+
+    url = f"http://192.168.1.2:8095/imageproxy/{image_id}?size=512&fmt=png"
+    result = player_image_url(mass, url)
+    assert result == f"http://192.168.1.2:8097/imageproxy/{image_id}?size=512&fmt=jpeg"
+
+    # non-imageproxy urls (e.g. remote radio artwork) pass through unchanged
+    remote = "https://example.com/art.png"
+    assert player_image_url(mass, remote) == remote
+    assert player_image_url(mass, None) is None
