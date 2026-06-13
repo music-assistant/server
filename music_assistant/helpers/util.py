@@ -119,19 +119,7 @@ async def warn_if_missing_x86_64_v2(logger: logging.Logger) -> None:
 
 
 def get_total_system_memory() -> float:
-    """
-    Get total usable memory in GB.
-
-    On Linux containers (Docker, Podman, systemd-nspawn, LXC, Kubernetes...) the
-    host's physical RAM is usually not what the process can actually use: the
-    cgroup memory limit is the real ceiling. This function reads the cgroup
-    limit when present and returns the smaller of the host RAM and the cgroup
-    limit, so auto-sizing of buffers/connectors tracks the *effective* memory
-    budget of the process rather than the host's.
-
-    Falls back to host RAM (sysconf) on non-Linux or when cgroup files are
-    absent/unreadable, and to ``0.0`` if even sysconf is unavailable.
-    """
+    """Get total system memory in GB."""
     host_gb = _get_host_memory_gb()
     if host_gb <= 0:
         return 0.0
@@ -170,14 +158,6 @@ def _get_cgroup_memory_limit_gb() -> float | None:
 
 @lru_cache(maxsize=1)
 def _get_self_cgroup_path_v2() -> str | None:
-    """
-    Return the cgroup v2 path of the current process relative to the cgroup
-    mount root, or ``None`` if it cannot be determined.
-
-    Reads ``/proc/self/cgroup`` which contains lines of the form
-    ``0::<path>`` for v2 and resolves the path by walking up to the cgroup
-    mount root (the ancestor that owns its own cgroup directory).
-    """
     try:
         with open("/proc/self/cgroup") as fh:
             for line in fh:
@@ -194,14 +174,6 @@ def _get_self_cgroup_path_v2() -> str | None:
 
 @lru_cache(maxsize=1)
 def _get_cgroup_v1_memory_mounts() -> tuple[str, ...]:
-    """
-    Return the memory cgroup mountpoints visible to the current process, in
-    preference order, parsed from ``/proc/self/mountinfo``.
-
-    The cgroup v1 memory controller may be mounted at a custom path (e.g.
-    ``/sys/fs/cgroup/memory``, ``/sys/fs/cgroup/memory/<slice>`` or a fully
-    separate hierarchy), so we cannot assume a fixed location.
-    """
     mounts: list[str] = []
     seen: set[str] = set()
     try:
@@ -230,15 +202,6 @@ def _get_cgroup_v1_memory_mounts() -> tuple[str, ...]:
 
 
 def _read_cgroup_v2_limit() -> float | None:
-    """
-    Read cgroup v2 ``memory.max`` and return the limit in GB, or ``None`` when
-    the file is missing, unreadable, or set to the "unlimited" sentinel "max".
-
-    The v2 unified hierarchy is mounted at a single root (typically
-    ``/sys/fs/cgroup``), and the process's effective cgroup is given by the
-    path reported in ``/proc/self/cgroup``; the limit file is read relative
-    to that path so sub-cgroup limits are honored.
-    """
     rel = _get_self_cgroup_path_v2()
     if rel is None:
         return None
@@ -270,17 +233,6 @@ def _read_cgroup_v2_limit() -> float | None:
 
 
 def _read_cgroup_v1_limit() -> float | None:
-    """
-    Read cgroup v1 ``memory.limit_in_bytes`` and return the limit in GB, or
-    ``None`` when the file is missing, unreadable, or set to a sentinel
-    "unlimited" value (a very large number that the kernel writes when no
-    limit is configured).
-
-    The v1 memory controller may be mounted at various locations; the
-    mountpoints are discovered from ``/proc/self/mountinfo`` and the
-    process's cgroup path is read from ``/proc/self/cgroup`` so sub-cgroup
-    limits (e.g. systemd slices, Kubernetes pods) are honored.
-    """
     mounts = _get_cgroup_v1_memory_mounts()
     if not mounts:
         return None
@@ -312,11 +264,6 @@ def _read_cgroup_v1_limit() -> float | None:
 
 @lru_cache(maxsize=8)
 def _get_self_cgroup_v1_path(controller: str) -> str | None:
-    """
-    Return the cgroup path of the current process for the given v1 controller
-    (e.g. ``"memory"``), relative to the controller's cgroupfs root, or
-    ``None`` if not found.
-    """
     try:
         with open("/proc/self/cgroup") as fh:
             for line in fh:
