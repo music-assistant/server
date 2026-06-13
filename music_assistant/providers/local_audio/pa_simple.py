@@ -249,7 +249,18 @@ class PAVolumeController:
             raise OSError("Timed out connecting to PulseAudio for volume control")
 
     def set_sink_volume(self, sink_name: str, volume_pct: int) -> bool:
-        """Set hardware volume on a PA sink by name (0-100%).
+        """Set hardware volume on a PA sink by name.
+
+        :param volume_pct: MA player volume, 0-100, on a *linear amplitude*
+            scale — i.e. volume_pct=50 should sound the same as the previous
+            software (numpy) scaling path's amplitude *= 0.5 (~-6dB).
+
+            PulseAudio's own volume percentage represents amplitude**3 (a
+            perceptual/cubic curve — pactl reports 10% as -60dB, since
+            20*log10(0.10**3) == -60). Passing volume_pct straight through
+            would make low MA volumes far too quiet (4% -> -84dB, silence).
+            A cube root converts so the same slider position produces the
+            same loudness regardless of which volume-control mode is active.
 
         Blocks (up to ~2s) for PA's success/failure response.
         :returns: True if PA reported success.
@@ -257,7 +268,8 @@ class PAVolumeController:
         with self._lock:
             if self._failed.is_set():
                 return False
-            pa_vol = int(PA_VOLUME_NORM * max(0, min(volume_pct, 100)) / 100)
+            amplitude = max(0, min(volume_pct, 100)) / 100.0
+            pa_vol = round(PA_VOLUME_NORM * amplitude ** (1.0 / 3.0))
             cvol = _PACVolume()
             self._lib.pa_cvolume_set(ctypes.byref(cvol), 1, pa_vol)
 
