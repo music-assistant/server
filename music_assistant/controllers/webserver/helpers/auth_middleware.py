@@ -304,8 +304,8 @@ async def auth_middleware(request: web.Request, handler: Any) -> web.StreamRespo
     return cast("web.StreamResponse", await handler(request))
 
 
-class UseImpersonatedUser:
-    """Use impersonated user context manager.
+class OptionalImpersonatedUser:
+    """Optional impersonated user context manager.
 
     If username_or_user_id is None this class does nothing. Otherwise, only an Admin
     may impersonate another user. This is used for calls from HA (e.g. play_media on

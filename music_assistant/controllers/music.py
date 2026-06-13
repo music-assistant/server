@@ -79,7 +79,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
-    UseImpersonatedUser,
+    OptionalImpersonatedUser,
     get_current_user,
 )
 from music_assistant.helpers.api import api_command
@@ -3648,7 +3648,7 @@ class MusicController(CoreController):
         username_or_user_id: str | None = None,
     ) -> MediaItemType | ItemMapping | None:
         """Try to find a media item (such as a playlist) by name."""
-        async with UseImpersonatedUser(self.mass, username_or_user_id):
+        async with OptionalImpersonatedUser(self.mass, username_or_user_id):
             # Future todo: enhance this method with AI capabilities to allow typos and
             # natural language.
             searchname = name.lower()
@@ -3720,7 +3720,7 @@ class MusicController(CoreController):
 
         If username_or_user_id is specified, verifies additionally, if this user may access this item. This requires the requesting (i.e. authorized user) to be able to access this item as well.
         """
-        async with UseImpersonatedUser(self.mass, username_or_user_id):
+        async with OptionalImpersonatedUser(self.mass, username_or_user_id):
             user = get_current_user()
 
             try:
