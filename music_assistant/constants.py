@@ -3,7 +3,6 @@
 import json
 import os
 import pathlib
-from collections.abc import Callable
 from copy import deepcopy
 from typing import Any, Final, cast
 
@@ -1094,21 +1093,22 @@ ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
 }
 
 PLAYER_CONTROL_PROTOCOL: Final[str] = "follow_protocol"
-DEFAULT_PROVIDERS: Final[set[tuple[str, bool, Callable[[], bool]]]] = {
+DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     # list of providers that are setup by default once
     # (and they can be removed/disabled by the user if they want to)
     # the boolean value indicates whether it needs to be discovered on mdns
-    # the callable is a precondition that must return True for the provider to be setup
-    ("airplay", False, lambda: True),
-    ("chromecast", False, lambda: True),
-    ("dlna", False, lambda: True),
-    ("sonos", True, lambda: True),
-    ("bluesound", True, lambda: True),
-    ("heos", True, lambda: True),
-    ("wiim", True, lambda: True),
-    ("party", False, lambda: True),
-    ("smart_fades", False, lambda: (os.cpu_count() or 1) > 1),
-    ("lastfm_recommendations", False, lambda: True),
+    ("airplay", False),
+    ("chromecast", False),
+    ("dlna", False),
+    ("sonos", True),
+    ("bluesound", True),
+    ("heos", True),
+    ("wiim", True),
+    ("party", False),
+    # smart_fades gates on system requirements (RAM/CPU) in its own setup(); an
+    # under-spec host has the auto-created config removed again at load time.
+    ("smart_fades", False),
+    ("lastfm_recommendations", False),
 }
 
 EXTERNAL_SOURCES: Final[set[str]] = {
