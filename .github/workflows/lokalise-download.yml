@@ -15,6 +15,11 @@ on:
     - cron: "0 3 * * 2" # every Tuesday at 03:00 UTC
   workflow_dispatch:
 
+# Pushes a branch and opens the translations PR, so it needs write + PR scope.
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   download:
     runs-on: ubuntu-latest

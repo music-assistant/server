@@ -116,11 +116,13 @@ def _entry_dump(mass: MusicAssistant, entry: ConfigEntry, current: Any) -> Confi
     base = entry.translation_key or f"config_entries.{entry.key}"
     label = (
         entry.label
-        or mass.translations.get_translation(f"{base}.label", owner=entry.translation_owner)
+        or mass.translations.get_translation(
+            f"{base}.label", owner=entry.translation_owner, params=entry.translation_params
+        )
         or entry.key
     )
     description = entry.description or mass.translations.get_translation(
-        f"{base}.description", owner=entry.translation_owner
+        f"{base}.description", owner=entry.translation_owner, params=entry.translation_params
     )
     return ConfigEntryDump(
         key=entry.key,

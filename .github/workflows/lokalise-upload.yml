@@ -21,6 +21,10 @@ on:
     - cron: "0 1 * * 2" # weekly safety net, before the Tuesday download run
   workflow_dispatch:
 
+# Only checks out the repo and pushes to Lokalise (via the Lokalise token), so read-only.
+permissions:
+  contents: read
+
 jobs:
   upload:
     runs-on: ubuntu-latest
