@@ -546,6 +546,19 @@ class SendspinLocalAudioBridge:
             self.logger.debug("PA stream opened for %s", self.pa_sink_name)
             assert stream is not None
 
+            if self._volume_controller is not None:
+                # module-device-restore may restore a persisted per-sink-name
+                # volume when the sink transitions to RUNNING (i.e. now, as
+                # the first stream connects) — which can happen *after*
+                # _apply_hardware_volume() already ran during start() while
+                # the sink was idle, silently reverting it. Re-apply once the
+                # stream is active so our cached volume wins.
+                async def _reapply_hardware_volume_once_active() -> None:
+                    await asyncio.sleep(0.5)
+                    await self._apply_hardware_volume()
+
+                self.mass.create_task(_reapply_hardware_volume_once_active())
+
             while True:
                 item = await self._write_queue.get()
                 if item is None or not self._is_streaming:
