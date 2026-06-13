@@ -431,6 +431,11 @@ class SpotifyConnectProvider(PluginProvider):
         """Sync the Spotify app's volume slider with the player's new volume."""
         if source_id != AUDIO_SOURCE_ID:
             return
+        # Syncing the slider needs the Web API, which is only available with a
+        # matching Spotify music provider. Without one there is nothing to sync,
+        # so bail out instead of raising and breaking the player's volume change.
+        if not self._spotify_provider:
+            return
         if not self._librespot_playing and not self._spotify_session_active:
             raise AudioError(NOT_ACTIVE_DEVICE_MESSAGE)
         await self._on_volume(volume)
