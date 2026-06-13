@@ -1009,6 +1009,11 @@ class LocalAudioBridgeManager:
                 with suppress(Exception):
                     await bridge.stop()
             self._bridges.clear()
+        if self._loaded_remap_modules:
+            # Give PA a moment to release active streams on the remap sinks
+            # before unloading their modules — unload-module fails if a stream
+            # is still open on the sink at the time of the call.
+            await asyncio.sleep(0.5)
         if self._volume_controller is not None:
             controller = self._volume_controller
             for sink_name, module_index in self._loaded_remap_modules.items():
