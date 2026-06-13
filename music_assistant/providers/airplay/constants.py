@@ -39,7 +39,10 @@ DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 # Time allowance for MA processing and OS spawning of the binary. Helps reduce initial audio loss.
 AIRPLAY_DEFAULT_SESSION_DELAY_MS: Final[int] = 900
 # Read ahead buffer for cliraop. Default output buffer duration.
-AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS: Final[int] = 1000
+AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS: Final[int] = 1500
+# RAOP buffer settings
+RAOP_OUTPUT_BUFFER_MIN_DURATION_MS: Final[int] = 250
+RAOP_OUTPUT_BUFFER_MAX_DURATION_MS: Final[int] = 5000
 # Default session establishment latency i.e. expected duration to pair with AirPlay device and negotiate session
 AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_DEFAULT_MS: Final[int] = 500
 AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MIN_MS: Final[int] = (
@@ -54,7 +57,9 @@ RAOP_CONNECT_TIME_MS: Final[int] = 1500  # Time in ms to allow RAOP device to co
 # Per-protocol credential storage keys
 CONF_RAOP_CREDENTIALS: Final[str] = "raop_credentials"
 CONF_AIRPLAY_CREDENTIALS: Final[str] = "airplay_credentials"
-CONF_AIRPLAY_LATENCY: Final[str] = "airplay_latency"
+
+# Some RAOP models require a higher than default 1000ms buffer to prevent stuttering
+CONF_RAOP_LATENCY: Final[str] = "airplay_latency"
 
 # Legacy credential key (for migration)
 CONF_AP_CREDENTIALS: Final[str] = "ap_credentials"

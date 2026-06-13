@@ -46,7 +46,7 @@ from music_assistant.mass import MusicAssistant
 
 
 @pytest.fixture(scope="class")
-async def mass(tmp_path_factory: pytest.TempPathFactory) -> AsyncGenerator[MusicAssistant, None]:
+async def mass(tmp_path_factory: pytest.TempPathFactory) -> AsyncGenerator[MusicAssistant]:
     """Class-scoped MusicAssistant instance (one per test class)."""
     tmp_path = tmp_path_factory.mktemp("genre_tests")
     storage_path = tmp_path / "data"

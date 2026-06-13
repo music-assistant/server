@@ -35,7 +35,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 @pytest.fixture
-async def connection() -> AsyncGenerator[Connection, None]:
+async def connection() -> AsyncGenerator[Connection]:
     """Spin up a dummy connection."""
     async with aiohttp.ClientSession() as session:
         session_config = SessionConfiguration(

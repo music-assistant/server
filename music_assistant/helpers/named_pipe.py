@@ -126,7 +126,7 @@ class AsyncNamedPipeWriter:
 async def read_named_pipe(
     pipe_path: str,
     chunk_size: int = 4096,
-) -> AsyncGenerator[bytes, None]:
+) -> AsyncGenerator[bytes]:
     """
     Read raw bytes from a named pipe (FIFO) as an async generator.
 

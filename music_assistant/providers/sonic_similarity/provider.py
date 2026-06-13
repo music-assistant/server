@@ -24,6 +24,7 @@ from music_assistant_models.media_items import Album, RecommendationFolder, Sear
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import DB_TABLE_AUDIO_ANALYSIS
+from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.sonic_similarity.clap_index import ClapIndex
@@ -690,6 +691,7 @@ class SonicSimilarityPlugin(PluginProvider):
                     return pm.item_id, None
         return None, None
 
+    @use_cache(60, base_class=RecommendationFolder, allow_expired_cache=True)
     async def recommendations(self) -> list[RecommendationFolder]:
         """Yield an 'Inspired by recently played' folder for the discover page.
 

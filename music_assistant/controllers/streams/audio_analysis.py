@@ -598,7 +598,9 @@ class AudioAnalysisController:
             raise ProviderUnavailableError(f"{aa_domain} is not available")
 
         analyzed = await self.get_audio_analysis_count(aa_domain)
-        pending = await self._count_candidates_missing_analysis(aa_domain)
+        pending = await self._count_candidates_missing_analysis(
+            aa_domain, provider.analysis_version
+        )
         # NULL analysis_version (pre-versioning rows) is treated as stale: SQLite
         # evaluates `NULL < N` as NULL (falsy), so it must be matched explicitly.
         stale_query = (
@@ -628,8 +630,8 @@ class AudioAnalysisController:
         if not providers:
             return
 
-        domains = [p.domain for p in providers]
-        candidates = await self._find_candidates_missing_analysis(domains, limit=0)
+        provider_versions = {p.domain: p.analysis_version for p in providers}
+        candidates = await self._find_candidates_missing_analysis(provider_versions, limit=0)
         if not candidates:
             return
 
@@ -836,27 +838,48 @@ class AudioAnalysisController:
 
     async def _find_candidates_missing_analysis(
         self,
-        aa_provider_domains: list[str],
+        aa_provider_versions: Mapping[str, int],
         limit: int,
     ) -> list[dict[str, Any]]:
-        """Return rows {item_id, provider_instance, missing_domains} for tracks lacking analysis."""
-        if not aa_provider_domains:
+        """
+        Return tracks that need (re)analysis for one or more AA providers.
+
+        A track is a candidate for a given AA provider domain when it has no
+        analysis row for that domain, or when its stored row predates the
+        provider's current analysis_version (a NULL stored version, from
+        pre-versioning rows, is also treated as stale). This mirrors the
+        per-track version gate in AudioAnalysisProvider.start_analysis so a
+        provider bumping its analysis_version triggers a background re-scan.
+
+        :param aa_provider_versions: Mapping of AA provider domain to the
+            provider's current analysis_version.
+        :param limit: Maximum number of candidate rows to return (0 for no limit).
+        :returns: Rows {item_id, provider_instance, missing_domains} where
+            missing_domains lists the AA provider domains needing analysis.
+        """
+        if not aa_provider_versions:
             return []
 
         filesystem_domains = self._available_filesystem_domains()
         if not filesystem_domains:
             return []
 
-        # CROSS JOIN (track x possible domain), keep pairs with no analysis row,
-        # GROUP_CONCAT the missing domains per track.
+        # CROSS JOIN (track x possible domain), keep pairs with no up-to-date analysis
+        # row, GROUP_CONCAT the missing domains per track.
+        aa_domains = list(aa_provider_versions)
         fs_inline = ", ".join(f"'{d}'" for d in filesystem_domains)
         aa_select_terms = " UNION ALL ".join(
-            f"SELECT :aa_{i} AS aa_provider_domain" for i in range(len(aa_provider_domains))
+            f"SELECT :aa_{i} AS aa_provider_domain, :ver_{i} AS current_version"
+            for i in range(len(aa_domains))
         )
         params: dict[str, Any] = {
             "media_type": MediaType.TRACK.value,
-            **{f"aa_{i}": d for i, d in enumerate(aa_provider_domains)},
+            **{f"aa_{i}": d for i, d in enumerate(aa_domains)},
+            **{f"ver_{i}": aa_provider_versions[d] for i, d in enumerate(aa_domains)},
         }
+        # The NOT EXISTS gate only counts an analysis row as up-to-date when its
+        # analysis_version is non-NULL and >= the provider's current version, so
+        # missing rows and stale-version rows both surface as candidates.
         query = (
             f"SELECT pm.provider_item_id AS item_id, "
             f"       pm.provider_instance AS provider_instance, "
@@ -870,7 +893,9 @@ class AudioAnalysisController:
             f"    WHERE aa.item_id = pm.provider_item_id "
             f"      AND aa.provider = pm.provider_instance "
             f"      AND aa.aa_provider_domain = possible.aa_provider_domain "
-            f"      AND aa.media_type = :media_type"
+            f"      AND aa.media_type = :media_type "
+            f"      AND aa.analysis_version IS NOT NULL "
+            f"      AND aa.analysis_version >= possible.current_version"
             f"  ) "
             f"GROUP BY pm.provider_item_id, pm.provider_instance"
         )
@@ -889,8 +914,12 @@ class AudioAnalysisController:
             )
         return results
 
-    async def _count_candidates_missing_analysis(self, aa_domain: str) -> int:
-        """Count filesystem candidate tracks with no analysis row for aa_domain."""
+    async def _count_candidates_missing_analysis(self, aa_domain: str, current_version: int) -> int:
+        """Count filesystem candidate tracks needing (re)analysis for aa_domain.
+
+        A track is counted when it has no analysis row for the domain, or when
+        its stored analysis_version is NULL or less than current_version.
+        """
         filesystem_domains = self._available_filesystem_domains()
         if not filesystem_domains:
             return 0
@@ -904,12 +933,18 @@ class AudioAnalysisController:
             f"    WHERE aa.item_id = pm.provider_item_id "
             f"      AND aa.provider = pm.provider_instance "
             f"      AND aa.aa_provider_domain = :aa_domain "
-            f"      AND aa.media_type = :media_type"
+            f"      AND aa.media_type = :media_type "
+            f"      AND aa.analysis_version IS NOT NULL "
+            f"      AND aa.analysis_version >= :current_version"
             f"  )"
         )
         return await self.mass.music.database.get_count_from_query(
             query,
-            {"media_type": MediaType.TRACK.value, "aa_domain": aa_domain},
+            {
+                "media_type": MediaType.TRACK.value,
+                "aa_domain": aa_domain,
+                "current_version": current_version,
+            },
         )
 
     async def _start_analysis_on_providers(

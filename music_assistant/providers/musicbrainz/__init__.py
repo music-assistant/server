@@ -275,7 +275,7 @@ class MusicBrainzRecording(DataClassDictMixin):
 class MusicbrainzProvider(MetadataProvider):
     """The Musicbrainz Metadata provider."""
 
-    throttler = ThrottlerManager(rate_limit=5, period=1)
+    throttler = ThrottlerManager(rate_limit=10, period=10)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

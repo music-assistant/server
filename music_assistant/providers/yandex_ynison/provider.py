@@ -390,7 +390,7 @@ class YandexYnisonProvider(PluginProvider):
 
     async def get_audio_stream(  # noqa: PLR0915
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Return continuous audio stream following Ynison track changes.
 
         Streams the current track, then waits for track changes and streams
@@ -578,7 +578,7 @@ class YandexYnisonProvider(PluginProvider):
         track_id: str,
         seek_ms: int = 0,
         session_params: dict[str, Any] | None = None,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Stream a single track, normalizing to fixed PCM via per-track ffmpeg.
 
         Every track is decoded through its own ffmpeg process to produce a

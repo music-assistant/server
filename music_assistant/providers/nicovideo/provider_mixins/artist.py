@@ -33,7 +33,7 @@ class NicovideoMusicProviderArtistMixin(NicovideoMusicProviderMixinBase):
     @override
     async def get_library_artists(
         self,
-    ) -> AsyncGenerator[Artist, None]:
+    ) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
         # Include followed artists if user is logged in
         following_artists = await self.service_manager.user.get_own_followings()

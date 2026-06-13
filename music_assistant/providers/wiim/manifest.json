@@ -1,7 +1,7 @@
 {
   "type": "player",
   "domain": "wiim",
-  "stage": "beta",
+  "stage": "stable",
   "name": "WiiM",
   "description": "Stream music to WiiM devices.",
   "codeowners": ["@davidanthoff", "@music-assistant"],

@@ -76,7 +76,7 @@ class FFMpeg(AsyncProcess):
 
     def __init__(
         self,
-        audio_input: AsyncGenerator[bytes, None] | str | int,
+        audio_input: AsyncGenerator[bytes] | str | int,
         input_format: AudioFormat,
         output_format: AudioFormat,
         filter_params: list[str] | None = None,
@@ -353,7 +353,7 @@ def parse_ffmpeg_duration(line: str) -> int | None:
 
 
 async def get_ffmpeg_stream(
-    audio_input: AsyncGenerator[bytes, None] | str,
+    audio_input: AsyncGenerator[bytes] | str,
     input_format: AudioFormat,
     output_format: AudioFormat,
     filter_params: list[str] | None = None,
@@ -361,7 +361,7 @@ async def get_ffmpeg_stream(
     chunk_size: int | None = None,
     extra_input_args: list[str] | None = None,
     extra_output_args: list[str] | None = None,
-) -> AsyncGenerator[bytes, None]:
+) -> AsyncGenerator[bytes]:
     """
     Get the ffmpeg audio stream as async generator.
 

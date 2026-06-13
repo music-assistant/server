@@ -861,9 +861,7 @@ class LocalFileSystemProvider(MusicProvider):
 
         return result
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get podcast episodes for given podcast id."""
         episodes: list[PodcastEpisode] = []
 
@@ -1304,7 +1302,7 @@ class LocalFileSystemProvider(MusicProvider):
         )
         if mbid:
             artist.mbid = mbid
-        if not artist_path:
+        if not artist_path or not await self.exists(artist_path):
             return artist
 
         # grab additional metadata within the Artist's folder

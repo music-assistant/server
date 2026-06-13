@@ -42,7 +42,7 @@ class FakeProvider:
         self._side_effects = list(effects)
         self.call_count = 0
 
-    @throttle_with_retries  # type: ignore[type-var]
+    @throttle_with_retries
     async def api_call(self, value: str) -> str:
         """Simulate an API call."""
         self.call_count += 1
@@ -60,7 +60,7 @@ def provider() -> FakeProvider:
 
 
 @pytest.fixture
-def mock_sleep() -> Generator[AsyncMock, None, None]:
+def mock_sleep() -> Generator[AsyncMock]:
     """Patch asyncio.sleep to capture sleep times without actually sleeping."""
     with patch(
         "music_assistant.helpers.throttle_retry.asyncio.sleep", new_callable=AsyncMock

@@ -11,10 +11,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from hue_entertainment import HueEntertainmentAPI
 from zeroconf import ServiceStateChange
 
 from music_assistant.models.plugin import PluginProvider
-from music_assistant.providers.hue_entertainment.hue_sendspin_bridge import HueEntertainmentAPI
 
 from .bridge import HueEntertainmentBridgeManager
 from .constants import (

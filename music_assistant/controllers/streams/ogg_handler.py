@@ -408,7 +408,7 @@ async def get_chained_ogg_stream(
     mass: MusicAssistant,
     url: str,
     metadata_callback: Callable[[dict[str, str]], Any] | None = None,
-) -> AsyncGenerator[bytes, None]:
+) -> AsyncGenerator[bytes]:
     """
     Yield continuous OGG data from a chained stream, stitching chain boundaries.
 

@@ -48,6 +48,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
@@ -689,7 +690,7 @@ async def get_config_entries(
             await _check_qr_auth(mass, values)
     except ResourceTemporarilyUnavailable as err:
         raise InvalidDataError(str(err)) from err
-    return _build_config_entries(values)
+    return (CONF_ENTRY_UNOFFICIAL_PROVIDER, *_build_config_entries(values))
 
 
 class NeteaseCloudMusicProvider(MusicProvider):
@@ -1574,7 +1575,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
 
         return await self._get_playlist_tracks_cached(prov_playlist_id, page)
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve favorite artists from NCM."""
         limit = 200
         offset = 0
@@ -1598,7 +1599,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             if not has_more and len(artists) < limit:
                 break
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve favorite albums from NCM."""
         limit = 200
         offset = 0
@@ -1622,7 +1623,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             if not has_more and len(albums) < limit:
                 break
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve liked tracks from NCM."""
         payload = await self._client.get(
             "/likelist",
@@ -1642,7 +1643,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
                 with suppress(InvalidDataError):
                     yield self._parse_track(song_obj)
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve user playlists from NCM."""
         payload = await self._client.get(
             "/user/playlist",

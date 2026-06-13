@@ -8,6 +8,7 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, LoginFailed
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
 
 from .constants import (
@@ -137,6 +138,7 @@ async def get_config_entries(
         )
 
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         # Global authentication section
         ConfigEntry(
             key="label_text",

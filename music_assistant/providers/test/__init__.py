@@ -150,7 +150,7 @@ class TestProvider(MusicProvider):
         """Return True if the provider is a streaming provider."""
         return False
 
-    async def get_library_genres(self) -> AsyncGenerator[str, None]:
+    async def get_library_genres(self) -> AsyncGenerator[str]:
         """Retrieve library genres from the provider."""
         for genre in DEFAULT_GENRES:
             yield genre
@@ -283,14 +283,14 @@ class TestProvider(MusicProvider):
             duration=60,
         )
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
         num_artists = self.config.get_value(CONF_KEY_NUM_ARTISTS)
         assert isinstance(num_artists, int)
         for artist_idx in range(num_artists):
             yield await self.get_artist(str(artist_idx))
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from the provider."""
         num_artists = self.config.get_value(CONF_KEY_NUM_ARTISTS) or 5
         assert isinstance(num_artists, int)
@@ -301,7 +301,7 @@ class TestProvider(MusicProvider):
                 album_item_id = f"{artist_idx}_{album_idx}"
                 yield await self.get_album(album_item_id)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from the provider."""
         num_artists = self.config.get_value(CONF_KEY_NUM_ARTISTS) or 5
         assert isinstance(num_artists, int)
@@ -315,14 +315,14 @@ class TestProvider(MusicProvider):
                     track_item_id = f"{artist_idx}_{album_idx}_{track_idx}"
                     yield await self.get_track(track_item_id)
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library tracks from the provider."""
         num_podcasts = self.config.get_value(CONF_KEY_NUM_PODCASTS)
         assert isinstance(num_podcasts, int)
         for podcast_idx in range(num_podcasts):
             yield await self.get_podcast(str(podcast_idx))
 
-    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Retrieve library audiobooks from the provider."""
         num_audiobooks = self.config.get_value(CONF_KEY_NUM_AUDIOBOOKS)
         assert isinstance(num_audiobooks, int)
@@ -332,7 +332,7 @@ class TestProvider(MusicProvider):
     async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    ) -> AsyncGenerator[PodcastEpisode]:
         """Get all PodcastEpisodes for given podcast id."""
         num_episodes = 25
         for episode_idx in range(num_episodes):
