@@ -57,6 +57,9 @@ class SmartFadesMixer:
         :param fade_out_data: PCM buffer of the outgoing track's tail.
         :param fade_in_bytes_len: Expected length in bytes of the fade-in input.
         """
+        # Degradation chain: a richer mode degrades to the next-best fade when it
+        # cannot apply. Today that is smart-crossfade → standard. A future DJ mode
+        # adds its own planned-fade builder at the head (DJ → smart → standard → none).
         smart_fade: SmartFade | None = None
         if mode == SmartFadesMode.SMART_CROSSFADE:
             smart_fade = await self._build_smart_crossfade(
@@ -67,27 +70,11 @@ class SmartFadesMixer:
                 pcm_format=pcm_format,
             )
         if smart_fade is None:
-            # standard path — explicit mode AND smart-crossfade fallback land here.
-            # Measure the trailing silence here so timing_info reflects the audio that
-            # will actually be rendered; apply() executes the cut as a plain slice.
-            trailing_silence_bytes = 0
-            try:
-                stripped = align_audio_to_frame_boundary(
-                    await strip_silence(fade_out_data, pcm_format=pcm_format, reverse=True),
-                    pcm_format,
-                )
-                trailing_silence_bytes = max(0, len(fade_out_data) - len(stripped))
-            except Exception as err:
-                # a failed measurement degrades to the old late-boundary bookkeeping
-                # instead of killing the stream
-                self.logger.warning("Measuring trailing silence failed: %s", err)
-            smart_fade = StandardCrossFade(
-                logger=self.logger,
-                crossfade_duration=standard_crossfade_duration,
-            )
-            smart_fade.trailing_silence_bytes = trailing_silence_bytes
-            smart_fade._build(
-                len(fade_out_data) - trailing_silence_bytes, fade_in_bytes_len, pcm_format
+            smart_fade = await self._build_standard_crossfade(
+                fade_out_data=fade_out_data,
+                fade_in_bytes_len=fade_in_bytes_len,
+                pcm_format=pcm_format,
+                standard_crossfade_duration=standard_crossfade_duration,
             )
         return smart_fade
 
@@ -102,6 +89,40 @@ class SmartFadesMixer:
         async for chunk in smart_fade.apply(fade_out_part, fade_in_part, pcm_format):
             yield chunk
 
+    async def _build_standard_crossfade(
+        self,
+        fade_out_data: bytes,
+        fade_in_bytes_len: int,
+        pcm_format: AudioFormat,
+        standard_crossfade_duration: int,
+    ) -> StandardCrossFade:
+        """
+        Build a StandardCrossFade — the tail of the degradation chain, never fails.
+
+        Measures the trailing silence here so timing_info reflects the audio that
+        will actually be rendered; apply() executes the cut as a plain slice.
+        """
+        trailing_silence_bytes = 0
+        try:
+            stripped = align_audio_to_frame_boundary(
+                await strip_silence(fade_out_data, pcm_format=pcm_format, reverse=True),
+                pcm_format,
+            )
+            trailing_silence_bytes = max(0, len(fade_out_data) - len(stripped))
+        except Exception as err:
+            # a failed measurement degrades to the old late-boundary bookkeeping
+            # instead of killing the stream
+            self.logger.warning("Measuring trailing silence failed: %s", err)
+        smart_fade = StandardCrossFade(
+            logger=self.logger,
+            crossfade_duration=standard_crossfade_duration,
+        )
+        smart_fade.trailing_silence_bytes = trailing_silence_bytes
+        smart_fade._build(
+            len(fade_out_data) - trailing_silence_bytes, fade_in_bytes_len, pcm_format
+        )
+        return smart_fade
+
     async def _build_smart_crossfade(
         self,
         fade_in_streamdetails: StreamDetails,
@@ -111,29 +132,10 @@ class SmartFadesMixer:
         pcm_format: AudioFormat,
     ) -> SmartFade | None:
         """Attempt to build a SmartCrossFade. Returns None when fallback is needed."""
-        fade_out_analysis: (
-            AudioAnalysisData | None
-        ) = await self.streams.audio_analysis.get_audio_analysis(
-            fade_out_streamdetails.item_id,
-            fade_out_streamdetails.provider,
-            priority=(SMART_FADES_ANALYSIS_DOMAIN,),
-        )
-        fade_in_analysis: (
-            AudioAnalysisData | None
-        ) = await self.streams.audio_analysis.get_audio_analysis(
-            fade_in_streamdetails.item_id,
-            fade_in_streamdetails.provider,
-            priority=(SMART_FADES_ANALYSIS_DOMAIN,),
-        )
-        if not (
-            fade_out_analysis
-            and fade_in_analysis
-            and fade_out_analysis.bpm
-            and fade_in_analysis.bpm
-            and fade_out_analysis.beats is not None
-            and fade_in_analysis.beats is not None
-        ):
+        analyses = await self._load_analyses(fade_out_streamdetails, fade_in_streamdetails)
+        if analyses is None:
             return None
+        fade_out_analysis, fade_in_analysis = analyses
         try:
             smart_fade = SmartCrossFade(
                 logger=self.logger,
@@ -150,3 +152,35 @@ class SmartFadesMixer:
             )
             return None
         return smart_fade
+
+    async def _load_analyses(
+        self,
+        fade_out_streamdetails: StreamDetails,
+        fade_in_streamdetails: StreamDetails,
+    ) -> tuple[AudioAnalysisData, AudioAnalysisData] | None:
+        """
+        Load both tracks' analysis rows for a planned fade.
+
+        Returns None when either row is missing the rhythm data every planner
+        needs (bpm + beats). Shared by all planned-fade builders.
+        """
+        fade_out_analysis = await self.streams.audio_analysis.get_audio_analysis(
+            fade_out_streamdetails.item_id,
+            fade_out_streamdetails.provider,
+            priority=(SMART_FADES_ANALYSIS_DOMAIN,),
+        )
+        fade_in_analysis = await self.streams.audio_analysis.get_audio_analysis(
+            fade_in_streamdetails.item_id,
+            fade_in_streamdetails.provider,
+            priority=(SMART_FADES_ANALYSIS_DOMAIN,),
+        )
+        if not (
+            fade_out_analysis
+            and fade_in_analysis
+            and fade_out_analysis.bpm
+            and fade_in_analysis.bpm
+            and fade_out_analysis.beats is not None
+            and fade_in_analysis.beats is not None
+        ):
+            return None
+        return fade_out_analysis, fade_in_analysis
