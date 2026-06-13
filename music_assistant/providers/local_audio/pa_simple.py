@@ -248,7 +248,7 @@ class PAVolumeController:
             self.close()
             raise OSError("Timed out connecting to PulseAudio for volume control")
 
-    def set_sink_volume(self, sink_name: str, volume_pct: int) -> bool:
+    def set_sink_volume(self, sink_name: str, volume_pct: int, channels: int = 2) -> bool:
         """Set hardware volume on a PA sink by name.
 
         :param volume_pct: MA player volume, 0-100, on a *linear amplitude*
@@ -262,6 +262,13 @@ class PAVolumeController:
             A cube root converts so the same slider position produces the
             same loudness regardless of which volume-control mode is active.
 
+        :param channels: Number of channels to set in the pa_cvolume, all to
+            the same value. Defaults to 2 (BRIDGE_CHANNELS — all local_audio
+            sinks are stereo). Matching the sink's actual channel count
+            avoids PA's channel-count-mismatch remap path, which updates the
+            displayed reference_volume but may not reliably update the
+            soft_volume actually used for sample mixing.
+
         Blocks (up to ~2s) for PA's success/failure response.
         :returns: True if PA reported success.
         """
@@ -271,7 +278,7 @@ class PAVolumeController:
             amplitude = max(0, min(volume_pct, 100)) / 100.0
             pa_vol = round(PA_VOLUME_NORM * amplitude ** (1.0 / 3.0))
             cvol = _PACVolume()
-            self._lib.pa_cvolume_set(ctypes.byref(cvol), 1, pa_vol)
+            self._lib.pa_cvolume_set(ctypes.byref(cvol), channels, pa_vol)
 
             done = threading.Event()
             result: dict[str, int] = {}
