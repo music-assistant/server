@@ -439,7 +439,8 @@ class MusicbrainzProvider(MetadataProvider):
         :return: List of ISRCs, or empty list if not found or on error.
         """
         # the search response includes the ISRCs, so either ID kind costs one call
-        query = f"rid:{recording_id} OR tid:{recording_id}"
+        safe_id = re.sub(LUCENE_SPECIAL, r"\\\1", recording_id)
+        query = f"rid:{safe_id} OR tid:{safe_id}"
         if (result := await self.get_data("recording", query=query)) and (
             recordings := result.get("recordings")
         ):
