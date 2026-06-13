@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from music_assistant.controllers.streams.smart_fades.plan import TempoPlan
+from music_assistant.controllers.streams.smart_fades.models import TempoPlan
 
 
 class TestTempoPlan:

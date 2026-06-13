@@ -15,7 +15,7 @@ import shortuuid
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.smart_fades.filters import CrossfadeFilter, Filter
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
-from music_assistant.controllers.streams.smart_fades.plan import (
+from music_assistant.controllers.streams.smart_fades.models import (
     CrossfadeTimingInfo,
     SmartFadeNotApplicable,
     TempoPlan,

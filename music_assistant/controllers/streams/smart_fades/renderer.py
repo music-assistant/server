@@ -19,7 +19,7 @@ from music_assistant.controllers.streams.smart_fades.filters import (
     FrequencySweepFilter,
     GradualTimeStretchFilter,
 )
-from music_assistant.controllers.streams.smart_fades.plan import (
+from music_assistant.controllers.streams.smart_fades.models import (
     CrossfadeTimingInfo,
     SweepSpec,
     TransitionPlan,

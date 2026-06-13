@@ -24,7 +24,7 @@ from music_assistant.controllers.streams.smart_fades.helpers import (
     extrapolate_downbeats,
     generate_synthetic_timestamps,
 )
-from music_assistant.controllers.streams.smart_fades.plan import (
+from music_assistant.controllers.streams.smart_fades.models import (
     EqPlan,
     FadeOutTrim,
     SmartFadeNotApplicable,

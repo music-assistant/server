@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
-from music_assistant.controllers.streams.smart_fades.plan import (
+from music_assistant.controllers.streams.smart_fades.models import (
     SmartFadeNotApplicable,
     TransitionPlan,
     TransitionStyle,
