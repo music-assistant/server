@@ -119,15 +119,108 @@ async def warn_if_missing_x86_64_v2(logger: logging.Logger) -> None:
 
 
 def get_total_system_memory() -> float:
-    """Get total system memory in GB."""
-    try:
-        # Works on Linux and macOS
-        total_memory_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-        return total_memory_bytes / (1024**3)  # Convert to GB
-    except (AttributeError, ValueError):
-        # Fallback if sysconf is not available (e.g., Windows)
-        # Return a conservative default to disable buffering by default
+    """
+    Get total usable memory in GB.
+
+    On Linux containers (Docker, Podman, systemd-nspawn, LXC, Kubernetes...) the
+    host's physical RAM is usually not what the process can actually use: the
+    cgroup memory limit is the real ceiling. This function reads the cgroup
+    limit when present and returns the smaller of the host RAM and the cgroup
+    limit, so auto-sizing of buffers/connectors tracks the *effective* memory
+    budget of the process rather than the host's.
+
+    Falls back to host RAM (sysconf) on non-Linux or when cgroup files are
+    absent/unreadable, and to ``0.0`` if even sysconf is unavailable.
+    """
+    host_gb = _get_host_memory_gb()
+    if host_gb <= 0:
         return 0.0
+    if sys.platform != "linux":
+        return host_gb
+    cgroup_gb = _get_cgroup_memory_limit_gb()
+    if cgroup_gb is None or cgroup_gb <= 0:
+        return host_gb
+    return min(host_gb, cgroup_gb)
+
+
+def _get_host_memory_gb() -> float:
+    """Get host physical RAM in GB via sysconf, or 0.0 if unavailable."""
+    try:
+        total_memory_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        return total_memory_bytes / (1024**3)
+    except (AttributeError, ValueError, OSError):
+        return 0.0
+
+
+def _get_cgroup_memory_limit_gb() -> float | None:
+    """
+    Read the effective cgroup memory limit in GB, or ``None`` if no limit is set.
+
+    Supports both cgroup v1 (``memory.limit_in_bytes``) and v2 (``memory.max``).
+    Returns ``None`` for the v2 "max" sentinel or v1 sentinel very-large values
+    (i.e. effectively unlimited), so the caller can fall back to host RAM.
+    """
+    # cgroup v2 first (modern systems)
+    limit = _read_cgroup_v2_limit()
+    if limit is not None:
+        return limit
+    # cgroup v1 fallback
+    return _read_cgroup_v1_limit()
+
+
+def _read_cgroup_v2_limit() -> float | None:
+    """
+    Read cgroup v2 ``memory.max`` and return the limit in GB, or ``None`` when
+    the file is missing, unreadable, or set to the "unlimited" sentinel "max".
+    """
+    path = "/sys/fs/cgroup/memory.max"
+    try:
+        with open(path) as fh:
+            raw = fh.read().strip()
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+    if not raw or raw == "max":
+        return None
+    try:
+        limit_bytes = int(raw)
+    except ValueError:
+        return None
+    if limit_bytes <= 0 or limit_bytes >= _CGROUP_UNLIMITED_THRESHOLD:
+        return None
+    return limit_bytes / (1024**3)
+
+
+def _read_cgroup_v1_limit() -> float | None:
+    """
+    Read cgroup v1 ``memory.limit_in_bytes`` and return the limit in GB, or
+    ``None`` when the file is missing, unreadable, or set to a sentinel
+    "unlimited" value (a very large number that the kernel writes when no
+    limit is configured).
+    """
+    # the cgroup v1 hierarchy may live in a custom mount; check the canonical
+    # location first, then fall back to a global memory cgroup path.
+    for path in ("/sys/fs/cgroup/memory/memory.limit_in_bytes",):
+        try:
+            with open(path) as fh:
+                raw = fh.read().strip()
+        except (FileNotFoundError, PermissionError, OSError):
+            continue
+        if not raw:
+            continue
+        try:
+            limit_bytes = int(raw)
+        except ValueError:
+            continue
+        if limit_bytes <= 0 or limit_bytes >= _CGROUP_UNLIMITED_THRESHOLD:
+            return None
+        return limit_bytes / (1024**3)
+    return None
+
+
+# cgroup v1 writes a very large number (PAGE_SIZE * LONG_MAX on most kernels)
+# to memory.limit_in_bytes when no limit is configured. Treat anything above
+# this threshold as "unlimited" rather than a real cap.
+_CGROUP_UNLIMITED_THRESHOLD: int = 1 << 62
 
 
 def verify_cpu_supports_ml_inference() -> None:
