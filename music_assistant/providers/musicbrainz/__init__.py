@@ -436,7 +436,7 @@ class MusicbrainzProvider(MetadataProvider):
 
         :param recording_id: MusicBrainz recording ID, or a track ID as
             handed out by e.g. Last.fm.
-        :return: List of ISRCs, or empty list if not found or on error.
+        :return: List of ISRCs, or empty list if not found.
         """
         # the search response includes the ISRCs, so either ID kind costs one call
         safe_id = re.sub(LUCENE_SPECIAL, r"\\\1", recording_id)
