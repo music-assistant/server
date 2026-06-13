@@ -113,6 +113,9 @@ PA_CONTEXT_NOAUTOSPAWN: Final = 1
 
 _CONTEXT_NOTIFY_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
 _CONTEXT_SUCCESS_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p)
+_CONTEXT_INDEX_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p)
+
+PA_INVALID_INDEX: Final = 0xFFFFFFFF
 
 
 class _PACVolume(ctypes.Structure):
@@ -172,6 +175,22 @@ def _load_full_lib() -> ctypes.CDLL:
         ctypes.c_void_p,
     ]
     lib.pa_operation_unref.argtypes = [ctypes.c_void_p]
+
+    lib.pa_context_load_module.restype = ctypes.c_void_p
+    lib.pa_context_load_module.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        _CONTEXT_INDEX_CB,
+        ctypes.c_void_p,
+    ]
+    lib.pa_context_unload_module.restype = ctypes.c_void_p
+    lib.pa_context_unload_module.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_uint32,
+        _CONTEXT_SUCCESS_CB,
+        ctypes.c_void_p,
+    ]
     return lib
 
 
@@ -297,6 +316,86 @@ class PAVolumeController:
                     ctypes.byref(cvol),
                     success_cb,
                     None,
+                )
+                if not op:
+                    return False
+            finally:
+                self._lib.pa_threaded_mainloop_unlock(self._mainloop)
+
+            if not done.wait(timeout=2.0):
+                self._lib.pa_operation_unref(op)
+                return False
+            self._lib.pa_operation_unref(op)
+            return bool(result.get("success", 0))
+
+    def load_module(self, module_name: str, argument: str) -> int | None:
+        """Load a PulseAudio module (e.g. module-remap-sink) via libpulse.
+
+        :param module_name: PA module name, e.g. "module-remap-sink".
+        :param argument: Module argument string, e.g.
+            "sink_name=Foo master=bar channels=2 master_channel_map=...
+            channel_map=front-left,front-right remix=no".
+
+        Blocks (up to ~2s) for PA's response.
+        :returns: The loaded module's index, or None on failure/timeout.
+        """
+        with self._lock:
+            if self._failed.is_set():
+                return None
+
+            done = threading.Event()
+            result: dict[str, int] = {}
+
+            def _index_cb_impl(_ctx: int, idx: int, _userdata: int) -> None:
+                result["index"] = idx
+                done.set()
+
+            index_cb = _CONTEXT_INDEX_CB(_index_cb_impl)
+
+            self._lib.pa_threaded_mainloop_lock(self._mainloop)
+            try:
+                op = self._lib.pa_context_load_module(
+                    self._context,
+                    module_name.encode(),
+                    argument.encode(),
+                    index_cb,
+                    None,
+                )
+                if not op:
+                    return None
+            finally:
+                self._lib.pa_threaded_mainloop_unlock(self._mainloop)
+
+            if not done.wait(timeout=2.0):
+                self._lib.pa_operation_unref(op)
+                return None
+            self._lib.pa_operation_unref(op)
+            idx = result.get("index", PA_INVALID_INDEX)
+            return None if idx == PA_INVALID_INDEX else idx
+
+    def unload_module(self, module_index: int) -> bool:
+        """Unload a previously-loaded PulseAudio module by index.
+
+        Blocks (up to ~2s) for PA's response.
+        :returns: True if PA reported success.
+        """
+        with self._lock:
+            if self._failed.is_set():
+                return False
+
+            done = threading.Event()
+            result: dict[str, int] = {}
+
+            def _success_cb_impl(_ctx: int, success: int, _userdata: int) -> None:
+                result["success"] = success
+                done.set()
+
+            success_cb = _CONTEXT_SUCCESS_CB(_success_cb_impl)
+
+            self._lib.pa_threaded_mainloop_lock(self._mainloop)
+            try:
+                op = self._lib.pa_context_unload_module(
+                    self._context, module_index, success_cb, None
                 )
                 if not op:
                     return False
@@ -498,6 +597,13 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
       - is_remap: True for module-remap-sink.c sinks
       - master_device: for remap sinks, the underlying master sink's PA name
         (from the device.master_device property), else None
+      - driver: PA driver string, e.g. "module-alsa-card.c" or
+        "module-remap-sink.c"
+      - channel_map: list of PA channel position names, e.g.
+        ["front-left", "front-right", "rear-left", "rear-right",
+        "front-center", "lfe", "side-left", "side-right"]
+      - alsa_card_name: the alsa.card_name property (e.g. "Creative X-Fi"),
+        or None if not an ALSA-backed sink
     """
     import json  # noqa: PLC0415
     import shutil  # noqa: PLC0415
@@ -534,6 +640,11 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
         master_device: str | None = (
             properties.get("device.master_device") if driver == "module-remap-sink.c" else None
         )
+        alsa_card_name: str | None = properties.get("alsa.card_name")
+        # pactl --format=json represents channel_map as a comma-separated
+        # string (e.g. "front-left,front-right,rear-left,rear-right,...").
+        channel_map_str: str = sink.get("channel_map", "")
+        channel_map: list[str] = [c for c in channel_map_str.split(",") if c]
         try:
             parts = spec_str.split()
             fmt = parts[0]  # e.g. 's32le'
@@ -569,6 +680,9 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
                 "bit_depth": bit_depth,
                 "is_remap": driver == "module-remap-sink.c",
                 "master_device": master_device,
+                "driver": driver,
+                "channel_map": channel_map,
+                "alsa_card_name": alsa_card_name,
             }
         )
     return sinks

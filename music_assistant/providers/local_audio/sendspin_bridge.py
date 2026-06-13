@@ -48,6 +48,11 @@ if sys.platform == "linux":
         enumerate_alsa_devices,
         enumerate_pa_sinks,
     )
+    from .remap_topology import (
+        build_remap_sink_argument,
+        compute_remap_topology,
+        normalize_card_name,
+    )
 
 if TYPE_CHECKING:
     import sounddevice as sd  # noqa: F401
@@ -655,6 +660,9 @@ class LocalAudioBridgeManager:
         self._bridges: dict[str, SendspinLocalAudioBridge] = {}
         self._lock = asyncio.Lock()
         self._volume_controller: PAVolumeController | None = None
+        # sink_name -> PA module index, for sinks local_audio created via
+        # _ensure_remap_topology(). Unloaded on stop_all().
+        self._loaded_remap_modules: dict[str, int] = {}
 
     @property
     def sendspin_server(self) -> SendspinServer | None:
@@ -691,6 +699,84 @@ class LocalAudioBridgeManager:
         """
         return {d["master_device"] for d in devices if d.get("is_remap") and d.get("master_device")}
 
+    @staticmethod
+    def _remap_masters_with_passthrough(devices: list[dict[str, Any]]) -> set[str]:
+        """Return master sink names with a full-passthrough remap-sink child.
+
+        A passthrough child has the same channel count as its master (a 1:1
+        remap, e.g. the "_surround" sink from compute_remap_topology). Such
+        masters are fully covered by their remap-sink topology (per-zone
+        sinks plus the passthrough for "play to all outputs") and should not
+        also be registered as their own player.
+        """
+        master_channels = {
+            d["name"]: d.get("max_output_channels", 0) for d in devices if not d.get("is_remap")
+        }
+        result: set[str] = set()
+        for d in devices:
+            master = d.get("master_device")
+            if (
+                d.get("is_remap")
+                and master
+                and master_channels.get(master) == d.get("max_output_channels")
+            ):
+                result.add(master)
+        return result
+
+    async def _ensure_remap_topology(self, devices: list[dict[str, Any]]) -> bool:
+        """Create any missing per-zone/passthrough remap sinks for multi-channel cards.
+
+        For each ALSA-card master sink with more than 2 channels, computes
+        the expected remap-sink topology (see remap_topology module) and
+        loads module-remap-sink.c for any sink not already present by name.
+        Idempotent: sinks that already exist (created by a previous run, or
+        matching this naming convention) are left untouched.
+
+        :param devices: Current enumerate_pa_sinks() result.
+        :returns: True if any new modules were loaded (caller should
+            re-enumerate to pick up the new sinks).
+        """
+        if self._volume_controller is None:
+            return False
+        controller = self._volume_controller
+        existing_names = {d["name"] for d in devices}
+        loaded_any = False
+
+        for device in devices:
+            if device.get("driver") != "module-alsa-card.c":
+                continue
+            channels: int = device.get("max_output_channels", 0)
+            if channels <= 2:
+                continue
+            alsa_card_name = device.get("alsa_card_name")
+            channel_map: list[str] = device.get("channel_map", [])
+            if not alsa_card_name or not channel_map:
+                continue
+
+            card_name = normalize_card_name(alsa_card_name)
+            master_sink_name: str = device["name"]
+            for spec in compute_remap_topology(card_name, channel_map, channels):
+                if spec.sink_name in existing_names:
+                    continue
+                argument = build_remap_sink_argument(spec, master_sink_name)
+                module_index = await self.mass.loop.run_in_executor(
+                    None, controller.load_module, "module-remap-sink", argument
+                )
+                if module_index is None:
+                    self.logger.warning("Failed to create remap sink %s", spec.sink_name)
+                    continue
+                self.logger.info(
+                    "Created remap sink %s (master=%s, module=%d)",
+                    spec.sink_name,
+                    master_sink_name,
+                    module_index,
+                )
+                self._loaded_remap_modules[spec.sink_name] = module_index
+                existing_names.add(spec.sink_name)
+                loaded_any = True
+
+        return loaded_any
+
     async def _register_protocol_player(self, device_uuid: str, display_name: str) -> Player:
         """Register the local_audio-owned PROTOCOL attribution-stub player.
 
@@ -717,6 +803,26 @@ class LocalAudioBridgeManager:
                 self.logger.debug("Re-enabling disabled attribution stub for %s", display_name)
                 raw["enabled"] = True
         return protocol_player
+
+    async def _refresh_after_remap_topology(
+        self, devices: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Create missing remap sinks and re-enumerate if any were added.
+
+        :returns: The original devices list, or a freshly re-enumerated list
+            if _ensure_remap_topology() loaded any new modules.
+        """
+        if not await self._ensure_remap_topology(devices):
+            return devices
+        try:
+            new_devices = await self.mass.loop.run_in_executor(None, enumerate_pa_sinks)
+        except (FileNotFoundError, RuntimeError) as err:
+            self.logger.warning("Failed to re-enumerate after creating remap sinks: %s", err)
+            return devices
+        self.logger.info(
+            "Found %d local audio output device(s) after creating remap sinks", len(new_devices)
+        )
+        return new_devices
 
     async def discover_and_register(self) -> None:
         """Enumerate output devices and register Sendspin bridges."""
@@ -749,7 +855,11 @@ class LocalAudioBridgeManager:
             return
 
         await self._ensure_volume_controller(resolved_backend)
+        if resolved_backend == "pulse":
+            devices = await self._refresh_after_remap_topology(devices)
+
         remap_masters = self._remap_master_sinks(devices)
+        passthrough_masters = self._remap_masters_with_passthrough(devices)
 
         async with self._lock:
             for device in devices:
@@ -761,6 +871,17 @@ class LocalAudioBridgeManager:
 
                 if client_id in self._bridges:
                     self.logger.debug("Bridge already exists for %s", display_name)
+                    continue
+
+                # A master sink fully covered by its own remap-sink topology
+                # (per-zone sinks plus a full-passthrough "_surround" sink)
+                # isn't registered as its own player — the passthrough sink
+                # already provides "play to all outputs" with independent
+                # hardware volume control.
+                if not device.get("is_remap", False) and device_name in passthrough_masters:
+                    self.logger.debug(
+                        "Skipping %s — covered by its remap-sink topology", display_name
+                    )
                     continue
 
                 protocol_player = await self._register_protocol_player(device_uuid, display_name)
@@ -844,13 +965,22 @@ class LocalAudioBridgeManager:
         return "alsa", enumerate_alsa_devices()
 
     async def stop_all(self) -> None:
-        """Stop all Sendspin bridges."""
+        """Stop all Sendspin bridges and unload any remap sinks we created."""
         async with self._lock:
             for bridge in list(self._bridges.values()):
                 with suppress(Exception):
                     await bridge.stop()
             self._bridges.clear()
         if self._volume_controller is not None:
+            controller = self._volume_controller
+            for sink_name, module_index in self._loaded_remap_modules.items():
+                with suppress(Exception):
+                    ok = await self.mass.loop.run_in_executor(
+                        None, controller.unload_module, module_index
+                    )
+                    if not ok:
+                        self.logger.warning("Failed to unload remap sink %s", sink_name)
+            self._loaded_remap_modules.clear()
             with suppress(Exception):
                 await self.mass.loop.run_in_executor(None, self._volume_controller.close)
             self._volume_controller = None
