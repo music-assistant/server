@@ -1,4 +1,4 @@
-"""Pure numpy DBN postprocessor for beat/downbeat tracking."""
+"""DBN postprocessor for beat/downbeat tracking (numpy core, optional numba decode)."""
 
 from __future__ import annotations
 
@@ -8,6 +8,92 @@ import numpy as np
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
+
+try:
+    # numba is always present in practice: it is a hard dependency of librosa, which is a
+    # core Music Assistant requirement. The fallback below keeps the tracker working if a
+    # platform ever fails to import or compile it.
+    from numba import njit
+except ImportError:  # pragma: no cover - numba ships transitively via a core dependency
+    njit = None
+
+
+if njit is not None:
+
+    @njit(nogil=True, fastmath=False)  # type: ignore[untyped-decorator]
+    def _viterbi_numba(
+        log_densities: NDArray[np.float32],
+        om_pointers: NDArray[np.int32],
+        tm_states: NDArray[np.int32],
+        tm_pointers: NDArray[np.int32],
+        tm_log_probs: NDArray[np.float32],
+        num_states: int,
+        multi_lookup: NDArray[np.int32],
+        single_sources: NDArray[np.int32],
+        num_multi: int,
+    ) -> tuple[NDArray[np.int32], float]:
+        """
+        Viterbi decode compiled with numba; bit-identical to :meth:`DBNDownBeatTracker._viterbi`.
+
+        The transition model is consumed directly in CSR form. ``nogil=True`` lets the
+        decode run without holding the GIL so the event loop stays responsive while a
+        track is analysed in a worker thread. ``fastmath=False`` preserves IEEE float32
+        semantics so results match the numpy path exactly.
+        """
+        num_frames = log_densities.shape[0]
+        neg_inf = np.float32(-np.inf)
+        prev_v = np.empty(num_states, dtype=np.float32)
+        cur_v = np.empty(num_states, dtype=np.float32)
+        init = np.float32(-np.log(num_states))
+        for s in range(num_states):
+            prev_v[s] = init
+
+        # Backpointers are only needed for beat-boundary (multi-predecessor) states; the
+        # within-beat predecessor is deterministic and recovered from single_sources.
+        bt = np.empty((num_frames, num_multi), dtype=np.int32)
+
+        for t in range(num_frames):
+            ld0 = log_densities[t, 0]
+            ld1 = log_densities[t, 1]
+            ld2 = log_densities[t, 2]
+            for s in range(num_states):
+                start = tm_pointers[s]
+                end = tm_pointers[s + 1]
+                cls = om_pointers[s]
+                obs = ld0 if cls == 0 else (ld1 if cls == 1 else ld2)
+                if end - start == 1:
+                    # within-beat: single predecessor, transition log_prob is 0
+                    cur_v[s] = prev_v[tm_states[start]] + obs
+                else:
+                    # beat boundary: max over tempo predecessors (first max wins on ties)
+                    best = neg_inf
+                    best_src = tm_states[start] if end > start else 0
+                    for k in range(start, end):
+                        score = prev_v[tm_states[k]] + tm_log_probs[k]
+                        if score > best:
+                            best = score
+                            best_src = tm_states[k]
+                    cur_v[s] = best + obs
+                    bt[t, multi_lookup[s]] = best_src
+            prev_v, cur_v = cur_v, prev_v
+
+        path = np.empty(num_frames, dtype=np.int32)
+        best_state = 0
+        best_val = prev_v[0]
+        for s in range(1, num_states):
+            if prev_v[s] > best_val:
+                best_val = prev_v[s]
+                best_state = s
+
+        for t in range(num_frames - 1, -1, -1):
+            path[t] = best_state
+            mi = multi_lookup[best_state]
+            best_state = bt[t, mi] if mi >= 0 else single_sources[best_state]
+
+        return path, np.float64(best_val)
+
+else:  # pragma: no cover - exercised only when numba is unavailable
+    _viterbi_numba = None
 
 
 class DBNDownBeatTracker:
@@ -56,6 +142,7 @@ class DBNDownBeatTracker:
                 positions, intervals, num_beats, transition_lambda
             )
             om_pointers = self._build_observation_model(positions, observation_lambda)
+            plan = self._build_decode_plan(om_pointers, tm_states, tm_pointers, tm_log_probs)
             self._hmms.append(
                 {
                     "num_beats": num_beats,
@@ -64,8 +151,35 @@ class DBNDownBeatTracker:
                     "tm_states": tm_states,
                     "tm_pointers": tm_pointers,
                     "tm_log_probs": tm_log_probs,
+                    "plan": plan,
                 }
             )
+
+        # Compile the numba decoder up-front (off the per-track hot path) and fall back to
+        # the numpy implementation if it is unavailable or fails to compile on this platform.
+        self._use_numba = _viterbi_numba is not None
+        if self._use_numba:
+            try:
+                self._warmup_numba()
+            except Exception:
+                self._use_numba = False
+
+    def _warmup_numba(self) -> None:
+        """Trigger numba compilation with a tiny decode so the first track is not penalized."""
+        hmm = self._hmms[0]
+        plan = hmm["plan"]
+        dummy = np.zeros((2, 3), dtype=np.float32)
+        _viterbi_numba(
+            dummy,
+            hmm["om_pointers"],
+            hmm["tm_states"],
+            hmm["tm_pointers"],
+            hmm["tm_log_probs"],
+            plan["num_states"],
+            plan["multi_lookup"],
+            plan["single_sources"],
+            len(plan["multi_states"]),
+        )
 
     @staticmethod
     def _build_bar_state_space(
@@ -256,13 +370,7 @@ class DBNDownBeatTracker:
         best_hmm = self._hmms[0]
 
         for hmm in self._hmms:
-            path, log_prob = self._viterbi(
-                log_dens,
-                hmm["om_pointers"],
-                hmm["tm_states"],
-                hmm["tm_pointers"],
-                hmm["tm_log_probs"],
-            )
+            path, log_prob = self._decode(log_dens, hmm)
             if log_prob > best_log_prob:
                 best_log_prob = log_prob
                 best_path = path
@@ -308,49 +416,123 @@ class DBNDownBeatTracker:
         return log_dens
 
     @staticmethod
-    def _viterbi(
-        log_densities: NDArray[np.float32],
+    def _build_decode_plan(
         om_pointers: NDArray[np.int32],
         tm_states: NDArray[np.int32],
         tm_pointers: NDArray[np.int32],
         tm_log_probs: NDArray[np.float32],
-    ) -> tuple[NDArray[np.int32], float]:
-        """Run Viterbi decoding on the HMM.
+    ) -> dict[str, Any]:
+        """Precompute the frame-independent arrays the Viterbi decoder reuses.
 
-        :param log_densities: Shape (T, 3), per-frame log observation densities.
+        The transition model is fixed for the lifetime of a tracker, so all the
+        state classification and padded-predecessor arrays are built once here
+        instead of being rederived for every track.
+
         :param om_pointers: Shape (S,), observation class per state.
         :param tm_states: CSR source states for transitions.
         :param tm_pointers: CSR pointer array for transitions.
         :param tm_log_probs: CSR log probabilities for transitions.
-        :return: Tuple of (path, log_probability).
-            path: shape (T,) int32 array of state indices.
-            log_probability: float, log prob of best path.
+        :return: A plan dict consumed by :meth:`_viterbi`.
         """
-        num_frames = len(log_densities)
         num_states = len(om_pointers)
 
         # Classify states: single-predecessor (within-beat) vs multi-predecessor (beat boundary)
         num_preds = np.diff(tm_pointers)
-        single_mask = num_preds == 1
-        multi_mask = ~single_mask
-        single_states = np.nonzero(single_mask)[0]
-        multi_states = np.nonzero(multi_mask)[0]
+        single_states = np.nonzero(num_preds == 1)[0]
+        multi_states = np.nonzero(num_preds != 1)[0]
 
         # For single-predecessor states, precompute the single source
         single_sources = np.empty(num_states, dtype=np.int32)
         single_sources[single_states] = tm_states[tm_pointers[single_states]]
 
+        # Within-beat states advance deterministically (predecessor = state - 1), so the
+        # forward pass handles them as a vectorized shift. Any single-predecessor state
+        # whose source is not state - 1 (a beat boundary that kept a single tempo) is
+        # corrected separately, matching the original per-state assignment exactly.
+        single_src = single_sources[single_states]
+        special_mask = single_src != (single_states - 1)
+        special_states = single_states[special_mask].astype(np.int32)
+        special_src = single_src[special_mask].astype(np.int32)
+
         # For multi-predecessor states, build padded arrays for vectorized max
-        if len(multi_states) > 0:
-            max_preds = num_preds[multi_states].max()
-            multi_source_pad = np.zeros((len(multi_states), max_preds), dtype=np.int32)
-            multi_logprob_pad = np.full((len(multi_states), max_preds), -np.inf, dtype=np.float32)
-            for i, s in enumerate(multi_states):
-                start = tm_pointers[s]
-                end = tm_pointers[s + 1]
-                n = end - start
-                multi_source_pad[i, :n] = tm_states[start:end]
-                multi_logprob_pad[i, :n] = tm_log_probs[start:end]
+        num_multi = len(multi_states)
+        max_preds = int(num_preds[multi_states].max()) if num_multi > 0 else 0
+        multi_source_pad = np.zeros((num_multi, max_preds), dtype=np.int32)
+        multi_logprob_pad = np.full((num_multi, max_preds), -np.inf, dtype=np.float32)
+        for i, s in enumerate(multi_states):
+            start = tm_pointers[s]
+            end = tm_pointers[s + 1]
+            n = end - start
+            multi_source_pad[i, :n] = tm_states[start:end]
+            multi_logprob_pad[i, :n] = tm_log_probs[start:end]
+
+        # O(1) backtrack lookup: state index -> row in the multi arrays (-1 if single)
+        multi_lookup = np.full(num_states, -1, dtype=np.int32)
+        multi_lookup[multi_states] = np.arange(num_multi, dtype=np.int32)
+
+        return {
+            "num_states": num_states,
+            "om_pointers": om_pointers,
+            "single_sources": single_sources,
+            "has_special": len(special_states) > 0,
+            "special_states": special_states,
+            "special_src": special_src,
+            "has_multi": num_multi > 0,
+            "multi_states": multi_states.astype(np.int32),
+            "multi_source_pad": multi_source_pad,
+            "multi_logprob_pad": multi_logprob_pad,
+            "arange_multi": np.arange(num_multi),
+            "multi_lookup": multi_lookup,
+        }
+
+    def _decode(
+        self,
+        log_densities: NDArray[np.float32],
+        hmm: dict[str, Any],
+    ) -> tuple[NDArray[np.int32], float]:
+        """Run Viterbi decoding for one meter hypothesis via numba, falling back to numpy."""
+        plan = hmm["plan"]
+        if self._use_numba:
+            # _viterbi_numba is untyped (numba ships no type info); unpack so the return
+            # is a concrete tuple rather than Any.
+            path, log_prob = _viterbi_numba(
+                log_densities,
+                hmm["om_pointers"],
+                hmm["tm_states"],
+                hmm["tm_pointers"],
+                hmm["tm_log_probs"],
+                plan["num_states"],
+                plan["multi_lookup"],
+                plan["single_sources"],
+                len(plan["multi_states"]),
+            )
+            return path, log_prob
+        return self._viterbi(log_densities, plan)
+
+    @staticmethod
+    def _viterbi(
+        log_densities: NDArray[np.float32],
+        plan: dict[str, Any],
+    ) -> tuple[NDArray[np.int32], float]:
+        """Run Viterbi decoding on the HMM.
+
+        :param log_densities: Shape (T, 3), per-frame log observation densities.
+        :param plan: Precomputed decode plan from :meth:`_build_decode_plan`.
+        :return: Tuple of (path, log_probability).
+            path: shape (T,) int32 array of state indices.
+            log_probability: float, log prob of best path.
+        """
+        num_frames = len(log_densities)
+        num_states = plan["num_states"]
+        om_pointers = plan["om_pointers"]
+        has_multi = plan["has_multi"]
+        multi_states = plan["multi_states"]
+        multi_source_pad = plan["multi_source_pad"]
+        multi_logprob_pad = plan["multi_logprob_pad"]
+        arange_multi = plan["arange_multi"]
+        has_special = plan["has_special"]
+        special_states = plan["special_states"]
+        special_src = plan["special_src"]
 
         # Initialize: uniform over all states, ping-pong buffers
         buf_a = np.empty(num_states, dtype=np.float32)
@@ -359,32 +541,32 @@ class DBNDownBeatTracker:
         prev_v[:] = np.float32(-np.log(num_states))
         bt = np.empty((num_frames, len(multi_states)), dtype=np.int32)
 
-        # Pre-compute constant index arrays used every frame
-        single_src_idx = single_sources[single_states]
-        has_multi = len(multi_states) > 0
-        if has_multi:
-            arange_multi = np.arange(len(multi_states))
-
         for t in range(num_frames):
             cur_v = buf_b if prev_v is buf_a else buf_a
-            cur_v[:] = -np.inf
-            obs = log_densities[t, om_pointers]
+            obs = log_densities[t][om_pointers]
 
-            # Single-predecessor states: direct assignment (log_prob = 0)
-            cur_v[single_states] = prev_v[single_src_idx] + obs[single_states]
+            # Within-beat states: predecessor is state - 1 with log_prob 0, so the whole
+            # block reduces to a single shifted add. This also writes (garbage) into the
+            # beat-boundary slots, which the multi/special blocks below overwrite.
+            np.add(prev_v[:-1], obs[1:], out=cur_v[1:])
 
-            # Multi-predecessor states: max over predecessors
+            # Multi-predecessor (beat-boundary) states: max over tempo predecessors
             if has_multi:
-                scores = prev_v[multi_source_pad] + multi_logprob_pad
+                scores = prev_v[multi_source_pad]
+                scores += multi_logprob_pad
                 best_idx = scores.argmax(axis=1)
                 cur_v[multi_states] = scores[arange_multi, best_idx] + obs[multi_states]
                 bt[t] = best_idx
 
+            # Beat-boundary states that collapsed to a single tempo predecessor
+            if has_special:
+                cur_v[special_states] = prev_v[special_src] + obs[special_states]
+
             prev_v = cur_v
 
-        # Backtrack — O(1) lookup instead of searchsorted
-        multi_lookup = np.full(num_states, -1, dtype=np.int32)
-        multi_lookup[multi_states] = np.arange(len(multi_states), dtype=np.int32)
+        # Backtrack
+        multi_lookup = plan["multi_lookup"]
+        single_sources = plan["single_sources"]
 
         path = np.empty(num_frames, dtype=np.int32)
         best_state = int(np.argmax(prev_v))
