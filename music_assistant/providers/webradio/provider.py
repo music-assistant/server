@@ -539,9 +539,6 @@ class WebRadioProvider(PlayerProvider):
             ),
             input_format=flow_pcm_format,
             output_format=output_format,
-            filter_params=self.mass.streams.audio.get_player_filter_params(
-                station.player.player_id, flow_pcm_format, output_format
-            ),
             # 1.0x avoids long-broadcast drift (core uses 1.1 which clients
             # absorb past TCP backpressure). 2s burst per restart cushions
             # listeners across the producer-restart gap on skip; bigger
