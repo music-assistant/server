@@ -307,17 +307,17 @@ async def auth_middleware(request: web.Request, handler: Any) -> web.StreamRespo
 class OptionalImpersonatedUser:
     """Optional impersonated user context manager.
 
-    If username_or_user_id is None this class does nothing. Otherwise, only an Admin
+    If username is None this class does nothing. Otherwise, only an Admin
     may impersonate another user. This is used for calls from HA (e.g. play_media on
     the player queues controller).
     """
 
-    def __init__(self, mass: MusicAssistant, username_or_user_id: str | None) -> None:
+    def __init__(self, mass: MusicAssistant, username: str | None) -> None:
         """Initialize UseImpersonatedUser."""
         self.mass = mass
-        self.username_or_user_id = username_or_user_id
+        self.username = username
         if (
-            username_or_user_id is not None
+            username is not None
             and (authenticated_user := get_current_user())
             and authenticated_user.role != UserRole.ADMIN
         ):
@@ -325,16 +325,12 @@ class OptionalImpersonatedUser:
 
     async def __aenter__(self) -> Self:
         """Set the impersonated user if applicable."""
-        if self.username_or_user_id is None:
+        if self.username is None:
             return self
-        if impersonated_user := await self.mass.webserver.auth.get_user_by_id_or_name(
-            self.username_or_user_id
-        ):
+        if impersonated_user := await self.mass.webserver.auth.get_user_by_username(self.username):
             set_impersonated_user(impersonated_user)
             return self
-        raise InvalidDataError(
-            f"A user with user id or name {self.username_or_user_id} is not available."
-        )
+        raise InvalidDataError(f"A user with user id or name {self.username} is not available.")
 
     async def __aexit__(
         self,

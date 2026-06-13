@@ -3645,10 +3645,10 @@ class MusicController(CoreController):
         artist: str | None = None,
         album: str | None = None,
         media_type: MediaType | None = None,
-        username_or_user_id: str | None = None,
+        username: str | None = None,
     ) -> MediaItemType | ItemMapping | None:
         """Try to find a media item (such as a playlist) by name."""
-        async with OptionalImpersonatedUser(self.mass, username_or_user_id):
+        async with OptionalImpersonatedUser(self.mass, username):
             return await self._handle_item_by_name(name, artist, album, media_type)
 
     async def _handle_item_by_name(
@@ -3725,12 +3725,12 @@ class MusicController(CoreController):
         return None
 
     @api_command("music/verify_item_uri")
-    async def verify_item_uri(self, uri: str, username_or_user_id: str | None = None) -> bool:
+    async def verify_item_uri(self, uri: str, username: str | None = None) -> bool:
         """Verify, if a uri specifies a valid item.
 
         If username_or_user_id is specified, verifies additionally, if this user may access this item. This requires the requesting (i.e. authorized user) to be able to access this item as well.
         """
-        async with OptionalImpersonatedUser(self.mass, username_or_user_id):
+        async with OptionalImpersonatedUser(self.mass, username):
             return await self._handle_verify_item_uri(uri)
 
     async def _handle_verify_item_uri(self, uri: str) -> bool:
