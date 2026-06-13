@@ -49,6 +49,7 @@ from music_assistant.helpers.api import APICommandHandler, api_command
 from music_assistant.helpers.images import get_icon_string
 from music_assistant.helpers.util import (
     TaskManager,
+    UnsupportedSystemError,
     get_package_version,
     is_hass_supervisor,
     load_provider_module,
@@ -713,6 +714,7 @@ class MusicAssistant:
         self,
         instance_id: str,
         allow_retry: bool = False,
+        remove_if_unsupported: bool = False,
     ) -> None:
         """Try to load a provider and catch errors."""
         try:
@@ -732,6 +734,27 @@ class MusicAssistant:
 
         try:
             await self.load_provider_config(prov_conf)
+        except UnsupportedSystemError as exc:
+            # The host does not meet this provider's hardware requirements. This is a
+            # permanent condition, so we never retry. For a provider that was just
+            # auto-set-up as a default, drop the config again so it does not linger as a
+            # broken provider (it stays marked done so it is not auto-created again).
+            if remove_if_unsupported:
+                LOGGER.info(
+                    "Not enabling default provider %s: %s",
+                    prov_conf.name or prov_conf.instance_id,
+                    exc,
+                )
+                await self.config.remove_provider_config(instance_id)
+                return
+            prov_conf.last_error = str(exc)
+            self.config.set(f"{CONF_PROVIDERS}/{instance_id}/last_error", str(exc))
+            LOGGER.warning(
+                "Provider(instance) %s can not run on this system: %s",
+                prov_conf.name or prov_conf.instance_id,
+                exc,
+            )
+            return
         except Exception as exc:
             # if loading failed, we store the error in the config object
             # so we can show something useful to the user
@@ -895,6 +918,7 @@ class MusicAssistant:
         self.config.set_default(CONF_DEFAULT_PROVIDERS_SETUP, set())
         default_providers_setup = set(self.config.get(CONF_DEFAULT_PROVIDERS_SETUP))
         changes_made = False
+        newly_created_defaults: set[str] = set()
         for default_provider, require_mdns, precondition in DEFAULT_PROVIDERS:
             if default_provider in default_providers_setup:
                 # already processed/setup before, skip
@@ -915,6 +939,7 @@ class MusicAssistant:
                     continue
             await self.config.create_builtin_provider_config(manifest.domain)
             changes_made = True
+            newly_created_defaults.add(manifest.domain)
             # TEMP: migration - to be removed after 2.8 release
             # enable all existing players of the default providers if they are not already enabled
             # due to the linked protocol feature we introduced
@@ -944,7 +969,15 @@ class MusicAssistant:
             for prov_conf in other_configs:
                 # Use a task so we can load multiple providers at once.
                 # If a provider fails, that will not block the loading of other providers.
-                tg.create_task(self.load_provider(prov_conf.instance_id, allow_retry=True))
+                # For providers just auto-set-up as a default, drop the config again if the
+                # host does not meet their requirements (rather than retry a broken provider).
+                tg.create_task(
+                    self.load_provider(
+                        prov_conf.instance_id,
+                        allow_retry=True,
+                        remove_if_unsupported=prov_conf.domain in newly_created_defaults,
+                    )
+                )
 
     async def _load_provider(self, conf: ProviderConfig) -> None:
         """Load (or reload) a provider."""

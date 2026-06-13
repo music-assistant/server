@@ -1107,7 +1107,9 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool, Callable[[], bool]]]] = {
     ("heos", True, lambda: True),
     ("wiim", True, lambda: True),
     ("party", False, lambda: True),
-    ("smart_fades", False, lambda: (os.cpu_count() or 1) > 1),
+    # smart_fades gates on system requirements (RAM/CPU) in its own setup(); an
+    # under-spec host has the auto-created config removed again at load time.
+    ("smart_fades", False, lambda: True),
     ("lastfm_recommendations", False, lambda: True),
 }
 

@@ -12,7 +12,6 @@ from collections.abc import AsyncGenerator, Iterable, Mapping
 from math import inf
 from typing import TYPE_CHECKING, Any
 
-import torch
 from music_assistant_models.audio_analysis import AudioAnalysisCoverage
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
@@ -137,10 +136,10 @@ class AudioAnalysisController:
         self.logger = self.mass.logger.getChild("audio_analysis")
         self._active_sessions: dict[str, set[str]] = {}
         self._workers: dict[str, asyncio.Task[None]] = {}
+        self._thread_caps_configured = False
 
     def setup(self) -> None:
-        """Register the nightly background scan task and apply CPU caps."""
-        self._configure_thread_caps()
+        """Register the nightly background scan task."""
         utc_hour, utc_minute = local_clock_time_to_utc(0, 0)
         self.mass.tasks.register_scheduled_task(
             task_id=BACKGROUND_SCAN_TASK_ID,
@@ -163,8 +162,15 @@ class AudioAnalysisController:
         if workers:
             await asyncio.gather(*workers, return_exceptions=True)
 
-    def _configure_thread_caps(self) -> None:
-        """Cap PyTorch threading so Audio Analysis inference stays around a quarter of cpu_count."""
+    def _ensure_thread_caps_configured(self) -> None:
+        """Cap PyTorch threading (once) so Audio Analysis inference stays around a quarter of cpu_count."""
+        # Import torch lazily and only when analysis actually starts, so an idle server
+        # with no audio analysis provider enabled never imports torch.
+        if self._thread_caps_configured:
+            return
+        self._thread_caps_configured = True
+        import torch  # noqa: PLC0415
+
         budget = self._aa_thread_budget()
         torch.set_num_threads(budget)
         with contextlib.suppress(RuntimeError):
@@ -955,6 +961,9 @@ class AudioAnalysisController:
         providers: list[AudioAnalysisProvider],
     ) -> set[str]:
         """Call start_analysis on each provider, returning IDs of those that accepted."""
+        # Apply torch thread caps now that analysis is actually starting (lazy, once).
+        # This is the shared chokepoint for both the live and background-scan paths.
+        self._ensure_thread_caps_configured()
         provider_ids: set[str] = set()
         for provider in providers:
             try:

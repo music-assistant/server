@@ -13,7 +13,10 @@ import soxr
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ContentType
 
-from music_assistant.helpers.util import verify_cpu_supports_ml_inference
+from music_assistant.helpers.util import (
+    verify_cpu_supports_ml_inference,
+    verify_system_meets_requirements,
+)
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import (
     AnalysisSessionData,
@@ -65,6 +68,10 @@ CLAP_WINDOW_COUNTS: dict[str, int] = {
 }
 
 CONF_CLAP_SAMPLING: str = "clap_sampling"
+
+# Sonic Analysis runs on-device CLAP inference; gate it to capable hardware.
+MIN_RAM_GB: float = 8.0
+MIN_CPU_CORES: int = 4
 
 
 @dataclass
@@ -320,6 +327,9 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         available=False, which the AudioAnalysisController already honors when
         scheduling work.
         """
+        verify_system_meets_requirements(
+            feature_name="Sonic Analysis", min_memory_gb=MIN_RAM_GB, min_cpu_cores=MIN_CPU_CORES
+        )
         verify_cpu_supports_ml_inference()
         (
             self._clap_model,
