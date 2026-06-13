@@ -1,0 +1,12 @@
+{
+  "type": "metadata",
+  "domain": "playlist_art",
+  "stage": "experimental",
+  "name": "Playlist Art",
+  "description": "Generates custom artwork for playlists using artist images, with configurable layout templates.",
+  "codeowners": ["@dmoo500"],
+  "multi_instance": false,
+  "builtin": true,
+  "allow_disable": false,
+  "requirements": []
+}

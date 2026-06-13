@@ -1109,6 +1109,7 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool, Callable[[], bool]]]] = {
     ("party", False, lambda: True),
     ("smart_fades", False, lambda: (os.cpu_count() or 1) > 1),
     ("lastfm_recommendations", False, lambda: True),
+    ("playlist_art", False, lambda: True),
 }
 
 EXTERNAL_SOURCES: Final[set[str]] = {

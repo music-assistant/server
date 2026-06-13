@@ -26,7 +26,6 @@ from music_assistant_models.enums import (
     AlbumType,
     ConfigEntryType,
     EventType,
-    ImageType,
     MediaType,
     ProviderFeature,
 )
@@ -34,13 +33,11 @@ from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     BrowseFolder,
     ItemMapping,
-    MediaItemImage,
     MediaItemType,
     Playlist,
     ProviderMapping,
     RecommendationFolder,
     Track,
-    UniqueList,
 )
 from music_assistant_models.media_items.metadata import MediaItemMetadata
 
@@ -227,6 +224,13 @@ class SmartPlaylistProvider(PluginProvider):
         if rules is None:
             msg = f"Smart playlist {prov_playlist_id} not found"
             raise MediaNotFoundError(msg)
+
+        library_item = await self.mass.music.playlists.get_library_item_by_prov_id(
+            resolved_id, self.instance_id
+        )
+        if library_item:
+            return library_item
+
         return self._build_playlist(resolved_id, rules)
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
@@ -439,6 +443,8 @@ class SmartPlaylistProvider(PluginProvider):
             await self._update_playlist_description(
                 library_item.item_id, self._description_for(prov_id, parsed_rules)
             )
+            # Trigger metadata refresh to regenerate artwork based on new rules
+            self.mass.metadata.schedule_update_metadata(library_item)
         self._schedule_ai_description_refresh(prov_id)
 
     async def list_smart_playlists(self) -> list[dict[str, Any]]:
@@ -546,16 +552,6 @@ class SmartPlaylistProvider(PluginProvider):
         playlist.is_dynamic = rules.is_dynamic
         playlist.metadata = MediaItemMetadata(
             description=self._description_for(playlist_id, rules),
-            images=UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path="icon.svg",
-                        provider=self.instance_id,
-                        remotely_accessible=False,
-                    )
-                ]
-            ),
         )
         return playlist
 
