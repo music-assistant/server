@@ -20,7 +20,14 @@ AUDIO_BACKEND_AUTO = "auto"
 AUDIO_BACKEND_PULSEAUDIO = "pulseaudio"
 AUDIO_BACKEND_ALSA = "alsa"
 
-# Volume control — software only
+# Volume control mode.
+# HARDWARE: PA sink hardware volume via PAVolumeController (libpulse direct
+#   calls, no subprocess) — used automatically for the PulseAudio/PipeWire
+#   backend, including module-remap-sink.c sinks (each has an independent
+#   hardware volume that does not affect its master sink or siblings).
+# SOFTWARE: numpy-based PCM scaling — used for the ALSA/sounddevice backend,
+#   and as an automatic fallback if PAVolumeController fails to connect.
+VOLUME_CONTROL_HARDWARE = "hardware"
 VOLUME_CONTROL_SOFTWARE = "software"
 
 # Defaults

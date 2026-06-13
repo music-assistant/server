@@ -37,10 +37,17 @@ from .constants import (
     DEFAULT_BUFFER_FRAMES,
     DEFAULT_PLAYER_VOLUME,
     DEVICE_UUID_NAMESPACE,
+    VOLUME_CONTROL_HARDWARE,
+    VOLUME_CONTROL_SOFTWARE,
 )
 
 if sys.platform == "linux":
-    from .pa_simple import PASimpleStream, enumerate_alsa_devices, enumerate_pa_sinks
+    from .pa_simple import (
+        PASimpleStream,
+        PAVolumeController,
+        enumerate_alsa_devices,
+        enumerate_pa_sinks,
+    )
 
 if TYPE_CHECKING:
     import sounddevice as sd  # noqa: F401
@@ -87,6 +94,7 @@ class SendspinLocalAudioBridge:
         device_info: dict[str, Any],
         sendspin_server: SendspinServer,
         backend: str = "auto",
+        volume_controller: PAVolumeController | None = None,
     ) -> None:
         """
         Initialize the bridge.
@@ -96,6 +104,8 @@ class SendspinLocalAudioBridge:
             on Linux ALSA or Darwin: from sounddevice.query_devices() with 'index' added.
         :param sendspin_server: The Sendspin server to register with.
         :param backend: Resolved audio backend: "pulse", "alsa", or "sounddevice".
+        :param volume_controller: Shared PAVolumeController for hardware sink volume
+            (pulse backend only). If None, falls back to software volume scaling.
         """
         self.provider = provider
         self.mass = provider.mass
@@ -109,6 +119,17 @@ class SendspinLocalAudioBridge:
         self.device_index: int | None = device_info.get("index")
         self.backend: str = backend
         self.logger = provider.logger.getChild(f"bridge.{self.display_name}")
+
+        # Hardware volume control via shared PAVolumeController, when available.
+        # Falls back to software (numpy) volume scaling otherwise.
+        self._volume_controller: PAVolumeController | None = (
+            volume_controller if (backend == "pulse" and self.pa_sink_name) else None
+        )
+        self._volume_control_mode = (
+            VOLUME_CONTROL_HARDWARE
+            if self._volume_controller is not None
+            else VOLUME_CONTROL_SOFTWARE
+        )
 
         # Volume/mute state — owned by the bridge; persisted to MA cache
         self._volume_level: int = DEFAULT_PLAYER_VOLUME
@@ -217,15 +238,22 @@ class SendspinLocalAudioBridge:
         )
 
         self.logger.info(
-            "Sendspin bridge registered for %s (client_id=%s)",
+            "Sendspin bridge registered for %s (client_id=%s, volume_control=%s)",
             self.device_name,
             self._bridge_client_id,
+            self._volume_control_mode,
         )
 
-        # Reset PA sink hardware volume to 100% so software scaling has full range.
-        # PulseAudio deferred_volume can apply the stream's initial volume to the
-        # sink hardware volume when pa_simple_new opens — this undoes that.
-        await self._reset_sink_volume()
+        if self._volume_controller is not None:
+            # Apply the restored volume/mute to PA sink hardware so the sink
+            # starts at the user's last level rather than whatever it was left at.
+            await self._apply_hardware_volume()
+        elif self.backend == "pulse":
+            # Fallback path (no hardware volume controller available): reset PA
+            # sink hardware volume to 100% so software scaling has full range.
+            # PulseAudio deferred_volume can apply the stream's initial volume to
+            # the sink hardware volume when pa_simple_new opens — this undoes that.
+            await self._reset_sink_volume()
 
     def _get_sendspin_provider(self) -> SendspinProvider | None:
         """Get the Sendspin provider if available."""
@@ -264,8 +292,10 @@ class SendspinLocalAudioBridge:
         """Stop streaming when the stream ends."""
         self._is_streaming = False
         self.mass.create_task(self._stop_streaming_locked())
-        # Reset PA sink hardware volume back to 100% after playback ends.
-        self.mass.create_task(self._reset_sink_volume())
+        if self._volume_controller is None and self.backend == "pulse":
+            # Fallback path: reset PA sink hardware volume back to 100% after
+            # playback ends (undoes deferred_volume bleed from stream volume).
+            self.mass.create_task(self._reset_sink_volume())
 
     async def _reset_sink_volume(self) -> None:
         """Reset PA sink hardware volume to 100% via pactl.
@@ -305,11 +335,36 @@ class SendspinLocalAudioBridge:
         """Sync volume from Sendspin side to bridge state and persist."""
         self._volume_level = volume
         self.mass.create_task(self._save_state())
+        if self._volume_controller is not None:
+            self.mass.create_task(self._apply_hardware_volume())
 
     def _on_mute_change(self, muted: bool) -> None:
         """Sync mute from Sendspin side to bridge state and persist."""
         self._volume_muted = muted
         self.mass.create_task(self._save_state())
+        if self._volume_controller is not None:
+            self.mass.create_task(self._apply_hardware_volume())
+
+    async def _apply_hardware_volume(self) -> None:
+        """Apply the current volume/mute state to PA sink hardware volume.
+
+        No-op if no PAVolumeController is available (software fallback path).
+        """
+        if self._volume_controller is None or not self.pa_sink_name:
+            return
+        target_pct = 0 if self._volume_muted else self._volume_level
+        pa_sink_name = self.pa_sink_name
+        controller = self._volume_controller
+        try:
+            ok = await self.mass.loop.run_in_executor(
+                None, controller.set_sink_volume, pa_sink_name, target_pct
+            )
+            if not ok:
+                self.logger.warning(
+                    "Failed to set hardware volume to %d%% for %s", target_pct, pa_sink_name
+                )
+        except OSError as err:
+            self.logger.warning("Hardware volume control error for %s: %s", pa_sink_name, err)
 
     async def _save_state(self) -> None:
         """Persist current volume/mute state to MA cache."""
@@ -343,8 +398,26 @@ class SendspinLocalAudioBridge:
             return self._bridge_role.get_static_delay_us()
         return 0
 
+    def _apply_format_conversion(self, pcm_data: bytes) -> bytes:
+        """Apply PA format conversion only — no volume scaling.
+
+        Used on the hardware-volume-control path, where mute and volume are
+        handled by PAVolumeController directly on the PA sink. Only the
+        24-bit -> packed s24le repack is still needed here, since PA expects
+        3 bytes/sample but MA delivers 24-bit audio left-justified in 32-bit
+        containers.
+        """
+        if self.bit_depth != 24:
+            return pcm_data
+        samples = np.frombuffer(pcm_data, dtype=np.int32)
+        return samples.view(np.uint8).reshape(-1, 4)[:, 1:].tobytes()
+
     def _apply_software_volume(self, pcm_data: bytes) -> bytes:
-        """Apply software volume scaling and format conversion."""
+        """Apply software volume scaling and format conversion.
+
+        Fallback path used when no PAVolumeController is available (or for
+        the ALSA/sounddevice backend, which has no PA hardware volume path).
+        """
         if self._volume_muted:
             if self.bit_depth == 24:
                 # PA expects packed s24le: 3 bytes/sample, not 4
@@ -446,7 +519,10 @@ class SendspinLocalAudioBridge:
                 timestamp_us, data = item
                 if not await self._wait_for_chunk_time(timestamp_us):
                     continue  # late chunk dropped
-                data = self._apply_software_volume(data)
+                if self._volume_controller is not None:
+                    data = self._apply_format_conversion(data)
+                else:
+                    data = self._apply_software_volume(data)
                 write_future = self.mass.loop.run_in_executor(None, stream.write, data)
                 await write_future
                 write_future = None
@@ -549,6 +625,7 @@ class LocalAudioBridgeManager:
         self.logger = provider.logger.getChild("bridge_manager")
         self._bridges: dict[str, SendspinLocalAudioBridge] = {}
         self._lock = asyncio.Lock()
+        self._volume_controller: PAVolumeController | None = None
 
     @property
     def sendspin_server(self) -> SendspinServer | None:
@@ -556,6 +633,23 @@ class LocalAudioBridgeManager:
         if provider := cast("SendspinProvider | None", self.mass.get_provider("sendspin")):
             return provider.server_api
         return None
+
+    async def _ensure_volume_controller(self, resolved_backend: str) -> None:
+        """Lazily connect the shared PAVolumeController for hardware sink volume.
+
+        No-op if not the pulse backend or already connected. Logs and leaves
+        it as None on failure — bridges fall back to software volume scaling.
+        """
+        if resolved_backend != "pulse" or self._volume_controller is not None:
+            return
+        try:
+            self._volume_controller = await self.mass.loop.run_in_executor(None, PAVolumeController)
+            self.logger.debug("Hardware volume control connected (PAVolumeController)")
+        except OSError as err:
+            self.logger.warning(
+                "Hardware volume control unavailable, falling back to software volume scaling: %s",
+                err,
+            )
 
     async def discover_and_register(self) -> None:
         """Enumerate output devices and register Sendspin bridges."""
@@ -586,6 +680,8 @@ class LocalAudioBridgeManager:
         if not devices:
             self.logger.info("No local audio output devices found")
             return
+
+        await self._ensure_volume_controller(resolved_backend)
 
         async with self._lock:
             for device in devices:
@@ -627,7 +723,11 @@ class LocalAudioBridgeManager:
                         raw["enabled"] = True
 
                 bridge = SendspinLocalAudioBridge(
-                    self.provider, device, sendspin_server, backend=resolved_backend
+                    self.provider,
+                    device,
+                    sendspin_server,
+                    backend=resolved_backend,
+                    volume_controller=self._volume_controller,
                 )
                 try:
                     await bridge.start()
@@ -706,4 +806,8 @@ class LocalAudioBridgeManager:
                 with suppress(Exception):
                     await bridge.stop()
             self._bridges.clear()
+        if self._volume_controller is not None:
+            with suppress(Exception):
+                await self.mass.loop.run_in_executor(None, self._volume_controller.close)
+            self._volume_controller = None
         self.logger.debug("All local audio bridges stopped")

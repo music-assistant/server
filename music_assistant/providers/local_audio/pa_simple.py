@@ -101,6 +101,208 @@ def _get_lib() -> ctypes.CDLL:
     return _lib
 
 
+# --- Hardware sink volume control (full libpulse, async) ----------------------
+
+PA_VOLUME_NORM: Final = 65536
+PA_CHANNELS_MAX: Final = 32
+
+PA_CONTEXT_READY: Final = 4
+PA_CONTEXT_FAILED: Final = 5
+PA_CONTEXT_TERMINATED: Final = 6
+PA_CONTEXT_NOAUTOSPAWN: Final = 1
+
+_CONTEXT_NOTIFY_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
+_CONTEXT_SUCCESS_CB = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p)
+
+
+class _PACVolume(ctypes.Structure):
+    _fields_: ClassVar = [
+        ("channels", ctypes.c_uint8),
+        ("values", ctypes.c_uint32 * PA_CHANNELS_MAX),
+    ]
+
+
+def _load_full_lib() -> ctypes.CDLL:
+    """Load full libpulse (not -simple) for the async context API.
+
+    Required for pa_context_set_sink_volume_by_name(), which has no
+    equivalent in libpulse-simple. libpulse.so.0 is a transitive dependency
+    of libpulse-simple.so.0, so it is present anywhere PASimpleStream works.
+    """
+    lib = ctypes.CDLL("libpulse.so.0")
+
+    lib.pa_threaded_mainloop_new.restype = ctypes.c_void_p
+    lib.pa_threaded_mainloop_get_api.restype = ctypes.c_void_p
+    lib.pa_threaded_mainloop_get_api.argtypes = [ctypes.c_void_p]
+    lib.pa_threaded_mainloop_start.restype = ctypes.c_int
+    lib.pa_threaded_mainloop_start.argtypes = [ctypes.c_void_p]
+    lib.pa_threaded_mainloop_stop.argtypes = [ctypes.c_void_p]
+    lib.pa_threaded_mainloop_free.argtypes = [ctypes.c_void_p]
+    lib.pa_threaded_mainloop_lock.argtypes = [ctypes.c_void_p]
+    lib.pa_threaded_mainloop_unlock.argtypes = [ctypes.c_void_p]
+
+    lib.pa_context_new.restype = ctypes.c_void_p
+    lib.pa_context_new.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    lib.pa_context_set_state_callback.argtypes = [
+        ctypes.c_void_p,
+        _CONTEXT_NOTIFY_CB,
+        ctypes.c_void_p,
+    ]
+    lib.pa_context_connect.restype = ctypes.c_int
+    lib.pa_context_connect.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_void_p,
+    ]
+    lib.pa_context_get_state.restype = ctypes.c_int
+    lib.pa_context_get_state.argtypes = [ctypes.c_void_p]
+    lib.pa_context_disconnect.argtypes = [ctypes.c_void_p]
+    lib.pa_context_unref.argtypes = [ctypes.c_void_p]
+
+    lib.pa_cvolume_set.restype = ctypes.c_void_p
+    lib.pa_cvolume_set.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint32]
+
+    lib.pa_context_set_sink_volume_by_name.restype = ctypes.c_void_p
+    lib.pa_context_set_sink_volume_by_name.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_char_p,
+        ctypes.c_void_p,
+        _CONTEXT_SUCCESS_CB,
+        ctypes.c_void_p,
+    ]
+    lib.pa_operation_unref.argtypes = [ctypes.c_void_p]
+    return lib
+
+
+_full_lib: ctypes.CDLL | None = None
+
+
+def _get_full_lib() -> ctypes.CDLL:
+    global _full_lib  # noqa: PLW0603
+    if _full_lib is None:
+        _full_lib = _load_full_lib()
+    return _full_lib
+
+
+class PAVolumeController:
+    """Shared async libpulse connection for hardware PA sink volume control.
+
+    One instance is shared across all PA sink bridges. Connects once via a
+    threaded mainloop; set_sink_volume() calls are then direct function calls
+    into the existing connection — no subprocess, no fork/exec per change.
+
+    A pa_cvolume with channels=1 is used for all sinks regardless of their
+    actual channel count: PA remaps a single-channel volume uniformly across
+    the sink's full channel map (same behavior as `pactl set-sink-volume
+    <sink> N%`), so no per-sink channel-count detection is needed. This also
+    works correctly for module-remap-sink.c sinks — each remap sink has an
+    independent volume that does not affect its master sink or siblings.
+
+    All calls are blocking (bounded by short timeouts) and must be invoked
+    via run_in_executor from async code.
+    """
+
+    def __init__(self) -> None:
+        """Connect to PulseAudio and start the threaded mainloop."""
+        self._lib = _get_full_lib()
+        self._lock = threading.Lock()
+        self._mainloop = self._lib.pa_threaded_mainloop_new()
+        if not self._mainloop:
+            raise OSError("pa_threaded_mainloop_new returned NULL")
+
+        api = self._lib.pa_threaded_mainloop_get_api(self._mainloop)
+        self._context = self._lib.pa_context_new(api, b"music-assistant-volume")
+        if not self._context:
+            self._lib.pa_threaded_mainloop_free(self._mainloop)
+            self._mainloop = None
+            raise OSError("pa_context_new returned NULL")
+
+        self._ready = threading.Event()
+        self._failed = threading.Event()
+
+        def _state_cb_impl(_ctx: int, _userdata: int) -> None:
+            state = self._lib.pa_context_get_state(self._context)
+            if state == PA_CONTEXT_READY:
+                self._ready.set()
+            elif state in (PA_CONTEXT_FAILED, PA_CONTEXT_TERMINATED):
+                self._failed.set()
+
+        self._state_cb = _CONTEXT_NOTIFY_CB(_state_cb_impl)  # keep reference alive — GC
+        self._lib.pa_context_set_state_callback(self._context, self._state_cb, None)
+
+        pulse_server = _get_pulse_server()
+        ret = self._lib.pa_context_connect(
+            self._context,
+            pulse_server.encode() if pulse_server else None,
+            PA_CONTEXT_NOAUTOSPAWN,
+            None,
+        )
+        if ret < 0:
+            self.close()
+            raise OSError(f"pa_context_connect failed (ret={ret})")
+
+        self._lib.pa_threaded_mainloop_start(self._mainloop)
+
+        if not self._ready.wait(timeout=5.0):
+            self.close()
+            raise OSError("Timed out connecting to PulseAudio for volume control")
+
+    def set_sink_volume(self, sink_name: str, volume_pct: int) -> bool:
+        """Set hardware volume on a PA sink by name (0-100%).
+
+        Blocks (up to ~2s) for PA's success/failure response.
+        :returns: True if PA reported success.
+        """
+        with self._lock:
+            if self._failed.is_set():
+                return False
+            pa_vol = int(PA_VOLUME_NORM * max(0, min(volume_pct, 100)) / 100)
+            cvol = _PACVolume()
+            self._lib.pa_cvolume_set(ctypes.byref(cvol), 1, pa_vol)
+
+            done = threading.Event()
+            result: dict[str, int] = {}
+
+            def _success_cb_impl(_ctx: int, success: int, _userdata: int) -> None:
+                result["success"] = success
+                done.set()
+
+            success_cb = _CONTEXT_SUCCESS_CB(_success_cb_impl)
+
+            self._lib.pa_threaded_mainloop_lock(self._mainloop)
+            try:
+                op = self._lib.pa_context_set_sink_volume_by_name(
+                    self._context,
+                    sink_name.encode(),
+                    ctypes.byref(cvol),
+                    success_cb,
+                    None,
+                )
+                if not op:
+                    return False
+            finally:
+                self._lib.pa_threaded_mainloop_unlock(self._mainloop)
+
+            if not done.wait(timeout=2.0):
+                self._lib.pa_operation_unref(op)
+                return False
+            self._lib.pa_operation_unref(op)
+            return bool(result.get("success", 0))
+
+    def close(self) -> None:
+        """Disconnect and tear down the mainloop."""
+        with self._lock:
+            if self._context:
+                self._lib.pa_context_disconnect(self._context)
+                self._lib.pa_context_unref(self._context)
+                self._context = None
+            if self._mainloop:
+                self._lib.pa_threaded_mainloop_stop(self._mainloop)
+                self._lib.pa_threaded_mainloop_free(self._mainloop)
+                self._mainloop = None
+
+
 class PASimpleStream:
     """Synchronous PCM playback stream to a named PulseAudio sink.
 
