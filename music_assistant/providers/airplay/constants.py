@@ -103,11 +103,6 @@ BROKEN_AIRPLAY_WARN = ConfigEntry(
     type=ConfigEntryType.ALERT,
     default_value=None,
     required=False,
-    label="This player is known to have broken AirPlay support. "
-    "Playback may fail or simply be silent. "
-    "There is no workaround for this issue at the moment. \n"
-    "If you already enforced AirPlay 2 on the player and it remains silent, "
-    "this is one of the known broken models. Only remedy is to nag the manufacturer for a fix.",
 )
 
 BASE_PLAYER_FEATURES: Final[set[PlayerFeature]] = {

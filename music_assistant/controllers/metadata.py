@@ -293,7 +293,7 @@ class MetaDataController(CoreController):
                 description="Preferred language for metadata.\n\n"
                 "Note that English will always be used as fallback when content "
                 "in your preferred language is not available.",
-                options=[ConfigValueOption(value, key) for key, value in LOCALES.items()],
+                options=[ConfigValueOption(key, title=value) for key, value in LOCALES.items()],
             ),
             ConfigEntry(
                 key=CONF_ENABLE_ONLINE_METADATA,

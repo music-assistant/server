@@ -42,6 +42,7 @@ from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.tasks import TasksController
+from music_assistant.controllers.translations import TranslationController
 from music_assistant.controllers.webserver import WebserverController
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.aiohttp_client import create_clientsession
@@ -119,6 +120,7 @@ class MusicAssistant:
     player_queues: PlayerQueuesController
     discovery: DiscoveryController
     streams: StreamsController
+    translations: TranslationController
 
     def __init__(self, storage_path: str, cache_path: str, safe_mode: bool = False) -> None:
         """Initialize the MusicAssistant Server."""
@@ -178,6 +180,7 @@ class MusicAssistant:
         self.players = PlayerController(self)
         self.player_queues = PlayerQueuesController(self)
         self.streams = StreamsController(self)
+        self.translations = TranslationController(self)
         # add manifests for core controllers
         for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
             controller: CoreController = getattr(self, controller_name)
@@ -187,6 +190,9 @@ class MusicAssistant:
         async def setup_controller(controller: CoreController) -> None:
             await controller.setup(await self.config.get_core_config(controller.domain))
             controller.initialized.set()
+
+        # set up the translations catalog first so it is ready before any object is serialized
+        await setup_controller(self.translations)
 
         async with asyncio.TaskGroup() as tg:
             tg.create_task(setup_controller(self.cache))
@@ -245,6 +251,7 @@ class MusicAssistant:
         await self.music.close()
         await self.player_queues.close()
         await self.players.close()
+        await self.translations.close()
         # cleanup cache and config
         await self.config.close()
         await self.cache.close()
@@ -831,6 +838,7 @@ class MusicAssistant:
             self.music,
             self.players,
             self.player_queues,
+            self.translations,
             self.webserver,
             self.webserver.auth,
             self.streams.audio_analysis,

@@ -100,10 +100,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_AI_DESCRIPTIONS,
             type=ConfigEntryType.BOOLEAN,
-            label="Generate descriptions with AI",
-            description="When a provider with AI support is available, use it to write a "
-            "natural-language description for each smart playlist. Falls back to a plain "
-            "rules summary when no AI provider is available.",
             required=False,
             default_value=True,
         ),

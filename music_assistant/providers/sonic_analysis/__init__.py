@@ -117,19 +117,11 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_CLAP_SAMPLING,
             type=ConfigEntryType.STRING,
-            label="CLAP quality (windows per track)",
-            description=(
-                "Number of 7-second windows CLAP analyzes per track. "
-                "More windows produce more representative scalars at "
-                "linear CPU cost. Thorough is most useful for "
-                "instrumentalness, where vocals can be missed by a "
-                "single window."
-            ),
             default_value=CLAP_SAMPLING_FAST,
             options=[
-                ConfigValueOption("Fast (1 window)", CLAP_SAMPLING_FAST),
-                ConfigValueOption("Balanced (3 windows, 2.4x CPU)", CLAP_SAMPLING_BALANCED),
-                ConfigValueOption("Thorough (8 windows, 6.6x CPU)", CLAP_SAMPLING_THOROUGH),
+                ConfigValueOption(CLAP_SAMPLING_FAST),
+                ConfigValueOption(CLAP_SAMPLING_BALANCED),
+                ConfigValueOption(CLAP_SAMPLING_THOROUGH),
             ],
             required=False,
         ),

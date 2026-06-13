@@ -190,12 +190,10 @@ class UniversalGroupPlayer(Player):
                 key=CONF_GROUP_MEMBERS,
                 type=ConfigEntryType.STRING,
                 multi_value=True,
-                label="Group members",
                 default_value=[],
-                description="Select all players you want to be part of this group",
                 required=False,  # needed for dynamic members (which allows empty members list)
                 options=[
-                    ConfigValueOption(x.display_name, x.player_id)
+                    ConfigValueOption(x.player_id, title=x.display_name)
                     for x in self.mass.players.all_players(True, False)
                     if x.type != PlayerType.GROUP
                 ],
@@ -203,8 +201,6 @@ class UniversalGroupPlayer(Player):
             ConfigEntry(
                 key=CONF_DYNAMIC_GROUP_MEMBERS,
                 type=ConfigEntryType.BOOLEAN,
-                label="Enable dynamic members",
-                description="Allow members to (temporary) join/leave the group dynamically.",
                 default_value=False,
                 required=False,
             ),

@@ -1,0 +1,15 @@
+{
+  "config_entries": {
+    "yousee_quality": {
+      "label": "Stream Quality",
+      "description": "The streaming quality to use for playback",
+      "options": {
+        "320": "\"High\" - MP4 320kbps",
+        "192": "\"Normal\" - MP4 192kbps"
+      }
+    }
+  },
+  "manifest": {
+    "description": "YouSee Musik, a Danish music streaming service."
+  }
+}

@@ -171,64 +171,44 @@ async def get_config_entries(
         ConfigEntry(
             key="label",
             type=ConfigEntryType.LABEL,
-            label="Please provide the address of your Audiobookshelf instance. To authenticate "
-            "you have two options: "
-            "a) Provide username AND password. Leave the API key empty. "
-            "b) Provide ONLY an API key.",
         ),
         ConfigEntry(
             key=CONF_URL,
             type=ConfigEntryType.STRING,
-            label="Server",
             required=True,
-            description="The URL of the Audiobookshelf server to connect to. For example "
-            "https://abs.domain.tld/ or http://192.168.1.4:13378/",
         ),
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Username",
             required=False,
-            description="The username to authenticate to the remote server.",
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=False,
-            description="The password to authenticate to the remote server.",
         ),
         ConfigEntry(
             key=CONF_API_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="API key _instead_ of user/ password. (ABS version >= 2.26)",
             required=False,
-            description="Instead of using a username and password, "
-            "you may provide an API key (ABS version >= 2.26). "
-            "Please consult the docs.",
         ),
         ConfigEntry(
             key=CONF_OLD_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="old token",
             required=False,
             hidden=True,
         ),
         ConfigEntry(
             key=CONF_VERIFY_SSL,
             type=ConfigEntryType.BOOLEAN,
-            label="Verify SSL",
             required=False,
-            description="Whether or not to verify the certificate of SSL/TLS connections.",
             advanced=True,
             default_value=True,
         ),
         ConfigEntry(
             key=CONF_HIDE_EMPTY_PODCASTS,
             type=ConfigEntryType.BOOLEAN,
-            label="Hide empty podcasts.",
             required=False,
-            description="This will skip podcasts with no episodes associated.",
             advanced=True,
             default_value=False,
         ),
