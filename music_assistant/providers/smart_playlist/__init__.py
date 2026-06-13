@@ -604,12 +604,12 @@ class SmartPlaylistProvider(PluginProvider):
                     and t.metadata.popularity >= rules.min_popularity
                 ]
 
-            if rules.explicit_only is True:
+            if rules.explicit is True:
                 # Only include tracks explicitly marked as explicit
                 tracks = [
                     t for t in tracks if t.metadata is not None and t.metadata.explicit is True
                 ]
-            elif rules.explicit_only is False:
+            elif rules.explicit is False:
                 # Exclude tracks explicitly marked as explicit; pass through unknown
                 tracks = [
                     t for t in tracks if t.metadata is None or t.metadata.explicit is not True
@@ -685,9 +685,9 @@ class SmartPlaylistProvider(PluginProvider):
             ]
         if rules.favorites_only:
             tracks = [t for t in tracks if t.favorite]
-        if rules.explicit_only is True:
+        if rules.explicit is True:
             tracks = [t for t in tracks if t.metadata is not None and t.metadata.explicit is True]
-        elif rules.explicit_only is False:
+        elif rules.explicit is False:
             tracks = [t for t in tracks if t.metadata is None or t.metadata.explicit is not True]
         if has_genre_filter and rules.logic == LOGIC_AND:
             # Best-effort genre filter: resolve names then match against track genre metadata.

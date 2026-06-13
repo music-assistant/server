@@ -117,7 +117,7 @@ class SmartPlaylistRules:
     dedup_hours: int | None = None
     album_types: list[str] = field(default_factory=list)
     excluded_album_types: list[str] = field(default_factory=list)
-    explicit_only: bool | None = None
+    explicit: bool | None = None
 
     def all_seed_uris(self) -> list[str]:
         """Return every seed URI across the four seed lists, deduplicated, original order."""
@@ -165,7 +165,7 @@ class SmartPlaylistRules:
             "dedup_hours": self.dedup_hours,
             "album_types": self.album_types,
             "excluded_album_types": self.excluded_album_types,
-            "explicit_only": self.explicit_only,
+            "explicit": self.explicit,
         }
 
     @classmethod
@@ -218,7 +218,7 @@ class SmartPlaylistRules:
             excluded_album_types=_coerce_str_list(
                 data.get("excluded_album_types"), "excluded_album_types"
             ),
-            explicit_only=data.get("explicit_only"),
+            explicit=data.get("explicit"),
         )
 
     def human_readable(self) -> str:
@@ -226,9 +226,9 @@ class SmartPlaylistRules:
         parts: list[str] = []
         if self.favorites_only:
             parts.append("Favorites only")
-        if self.explicit_only is True:
+        if self.explicit is True:
             parts.append("Explicit only")
-        elif self.explicit_only is False:
+        elif self.explicit is False:
             parts.append("No explicit content")
         if self.genre_ids:
             names = [self.genre_names.get(gid, str(gid)) for gid in self.genre_ids]
