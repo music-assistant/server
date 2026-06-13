@@ -145,6 +145,7 @@ def verify_system_meets_requirements(
     feature_name: str,
     min_memory_gb: float = 0.0,
     min_cpu_cores: int = 0,
+    require_ml_inference: bool = False,
 ) -> None:
     """
     Verify the host meets the minimum CPU/RAM requirements for a heavy provider.
@@ -152,6 +153,8 @@ def verify_system_meets_requirements(
     :param feature_name: Human-readable provider name used in the error message.
     :param min_memory_gb: Minimum total system RAM in GB (0 disables the check).
     :param min_cpu_cores: Minimum CPU core count (0 disables the check).
+    :param require_ml_inference: When True, also verify the CPU can run on-device
+        torch inference (AVX2 on x86). Checked last, as it imports torch.
     :raises UnsupportedSystemError: If the system does not meet the requirements.
     """
     cpu_cores = os.process_cpu_count() or os.cpu_count() or 1
@@ -169,6 +172,8 @@ def verify_system_meets_requirements(
             f"at least {min_memory_gb:.0f}GB of RAM is required "
             f"({total_memory_gb:.1f}GB detected)."
         )
+    if require_ml_inference:
+        verify_cpu_supports_ml_inference()
 
 
 def verify_cpu_supports_ml_inference() -> None:

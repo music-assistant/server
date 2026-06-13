@@ -488,3 +488,19 @@ def test_verify_system_meets_requirements_memory(
                 util.verify_system_meets_requirements(feature_name="X", min_memory_gb=min_memory_gb)
         else:
             util.verify_system_meets_requirements(feature_name="X", min_memory_gb=min_memory_gb)
+
+
+def test_verify_system_meets_requirements_ml_inference() -> None:
+    """require_ml_inference adds the AVX2 capability check after the RAM/CPU checks."""
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=16),
+        patch("music_assistant.helpers.util.get_total_system_memory", return_value=64.0),
+        patch("music_assistant.helpers.util.platform.machine", return_value="x86_64"),
+        patch("torch.backends.cpu.get_cpu_capability", return_value="DEFAULT"),
+    ):
+        # capable RAM/CPU but no AVX2: only raises when the ML inference check is requested
+        with pytest.raises(util.UnsupportedSystemError):
+            util.verify_system_meets_requirements(
+                feature_name="X", min_cpu_cores=4, min_memory_gb=8.0, require_ml_inference=True
+            )
+        util.verify_system_meets_requirements(feature_name="X", min_cpu_cores=4, min_memory_gb=8.0)
