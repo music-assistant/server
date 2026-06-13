@@ -935,15 +935,15 @@ class StreamsController(CoreController):
                 continue
 
             # if icy metadata is enabled, send the icy metadata after the chunk
-            # use the current (not buffered) item so the title stays aligned with audio
-            current_item = queue.current_item
             if (
-                current_item
+                # use current item here and not buffered item, otherwise
+                # the icy metadata will be too much ahead
+                (current_item := queue.current_item)
                 and current_item.streamdetails
                 and current_item.streamdetails.stream_title
             ):
                 title = current_item.streamdetails.stream_title
-            elif current_item and current_item.name:
+            elif queue and current_item and current_item.name:
                 title = current_item.name
             else:
                 title = "Music Assistant"
