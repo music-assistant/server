@@ -223,8 +223,9 @@ def _candidate_keys(key: str, owner_prefix: str | None = None) -> list[str]:
 
     A fully-qualified key (starting with ``provider.``/``core.``/``common.``) is tried
     as-is plus a ``common.`` rewrite that drops the owner segment. A relative key is tried
-    under the owner prefix (if any), then ``common.``, then bare. Any candidate ending in
-    ``.name`` also gets a bare fallback (dropping ``.name``).
+    under the owner prefix (if any), then ``common.``, then bare. Multi-instance providers carry
+    an ``<domain>--<id>`` instance id, so the domain-only prefix is also tried before ``common.``.
+    Any candidate ending in ``.name`` also gets a bare fallback (dropping ``.name``).
     """
     roots = ("provider.", "core.", "common.")
     base_candidates: list[str] = []
@@ -239,6 +240,10 @@ def _candidate_keys(key: str, owner_prefix: str | None = None) -> list[str]:
     else:
         if owner_prefix:
             base_candidates.append(f"{owner_prefix}.{key}")
+            # a multi-instance owner is "provider.<domain>--<id>"; also try the bare domain
+            domain_prefix = owner_prefix.split("--", 1)[0]
+            if domain_prefix != owner_prefix:
+                base_candidates.append(f"{domain_prefix}.{key}")
         base_candidates.append(f"common.{key}")
         base_candidates.append(key)
     candidates: list[str] = []

@@ -85,6 +85,20 @@ def test_candidate_keys_name_fallback() -> None:
     ]
 
 
+def test_candidate_keys_multi_instance_domain_fallback() -> None:
+    """A multi-instance owner (<domain>--<id>) also tries the bare-domain prefix."""
+    assert _candidate_keys("media.folder.blah.name", "provider.spotify--ab12cd") == [
+        "provider.spotify--ab12cd.media.folder.blah.name",
+        "provider.spotify--ab12cd.media.folder.blah",
+        "provider.spotify.media.folder.blah.name",
+        "provider.spotify.media.folder.blah",
+        "common.media.folder.blah.name",
+        "common.media.folder.blah",
+        "media.folder.blah.name",
+        "media.folder.blah",
+    ]
+
+
 def test_locale_candidates() -> None:
     """Locale collapses to its base language and normalizes separators."""
     assert _locale_candidates("nl") == ["nl"]
