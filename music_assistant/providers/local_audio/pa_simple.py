@@ -7,6 +7,8 @@ import os
 import threading
 from typing import Any, ClassVar, Final
 
+from .constants import volume_pct_to_amplitude
+
 PA_STREAM_PLAYBACK: Final = 1
 
 PA_SAMPLE_S16LE: Final = 3
@@ -105,6 +107,7 @@ def _get_lib() -> ctypes.CDLL:
 
 PA_VOLUME_NORM: Final = 65536
 PA_CHANNELS_MAX: Final = 32
+
 
 # set_sink_volume() is called frequently (on every volume/mute change, and
 # at bridge start for every player). A short timeout limits how long a
@@ -279,16 +282,20 @@ class PAVolumeController:
     def set_sink_volume(self, sink_name: str, volume_pct: int, channels: int = 2) -> bool:
         """Set hardware volume on a PA sink by name.
 
-        :param volume_pct: MA player volume, 0-100, on a *linear amplitude*
-            scale — i.e. volume_pct=50 should sound the same as the previous
-            software (numpy) scaling path's amplitude *= 0.5 (~-6dB).
+        :param volume_pct: MA player volume, 0-100. Mapped to an amplitude
+            scale factor via a dr-lex 60dB exponential audio taper
+            (_volume_pct_to_amplitude) — constant dB change per slider step,
+            with true silence at volume_pct=0. See
+            https://www.dr-lex.be/info-stuff/volumecontrols.html
 
             PulseAudio's own volume percentage represents amplitude**3 (a
             perceptual/cubic curve — pactl reports 10% as -60dB, since
-            20*log10(0.10**3) == -60). Passing volume_pct straight through
-            would make low MA volumes far too quiet (4% -> -84dB, silence).
-            A cube root converts so the same slider position produces the
-            same loudness regardless of which volume-control mode is active.
+            20*log10(0.10**3) == -60). Passing the target amplitude straight
+            through as a PA percentage would apply PA's cubic curve on top
+            of the taper already applied here, over-attenuating the signal.
+            A cube root converts the target amplitude to the PA volume
+            percentage that produces it once PA's own cubic curve is
+            applied.
 
         :param channels: Number of channels to set in the pa_cvolume, all to
             the same value. Defaults to 2 (BRIDGE_CHANNELS — all local_audio
@@ -303,7 +310,7 @@ class PAVolumeController:
         with self._lock:
             if self._failed.is_set():
                 return False
-            amplitude = max(0, min(volume_pct, 100)) / 100.0
+            amplitude = volume_pct_to_amplitude(volume_pct)
             pa_vol = round(PA_VOLUME_NORM * amplitude ** (1.0 / 3.0))
             cvol = _PACVolume()
             self._lib.pa_cvolume_set(ctypes.byref(cvol), channels, pa_vol)

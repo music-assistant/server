@@ -39,6 +39,7 @@ from .constants import (
     DEVICE_UUID_NAMESPACE,
     VOLUME_CONTROL_HARDWARE,
     VOLUME_CONTROL_SOFTWARE,
+    volume_pct_to_amplitude,
 )
 
 if sys.platform == "linux":
@@ -468,7 +469,9 @@ class SendspinLocalAudioBridge:
                 return b"\x00" * (len(pcm_data) * 3 // 4)
             return b"\x00" * len(pcm_data)
         volume = self._volume_level
-        scale = volume / 100.0 if (volume is not None and volume < 100) else None
+        scale = volume_pct_to_amplitude(volume) if volume is not None else None
+        if scale is not None and scale >= 1.0:
+            scale = None  # 1.0 == no-op; skip the scaling pass entirely
 
         if self.bit_depth == 32:
             if scale is None:
