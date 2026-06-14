@@ -31,6 +31,32 @@
       "description": "This will skip podcasts with no episodes associated."
     }
   },
+  "browse": {
+    "authors": {
+      "name": "Authors"
+    },
+    "narrators": {
+      "name": "Narrators"
+    },
+    "series_plural": {
+      "name": "Series"
+    },
+    "collections": {
+      "name": "Collections"
+    }
+  },
+  "recommendations": {
+    "listen_again": { "name": "Listen again" },
+    "in_progress_series": { "name": "Continue series..." },
+    "recommended": { "name": "Recommended" },
+    "recently_added": { "name": "Recently added" },
+    "recent_series": { "name": "Recent series" },
+    "newest_authors": { "name": "Newest authors" },
+    "newest_episodes": { "name": "Newest episodes" },
+    "discover": { "name": "Discover" },
+    "libraries": { "name": "Libraries" },
+    "library": { "name": "Library" }
+  },
   "manifest": {
     "description": "Stream audiobooks and podcasts from your personal Audiobookshelf server."
   }
