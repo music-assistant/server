@@ -87,6 +87,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -181,6 +182,7 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
           'description_language': None,
@@ -246,6 +248,7 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -325,6 +328,7 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
           'description_language': None,
@@ -390,6 +394,7 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'Download the full release here (creative commons). These cripsy beats are ripe with thumping funk and techno influences, sample wizardry and daring shuffles. Composed with the help of unique sound plugins which were especially programmed to measure Comfort Fit’s needs and wishes, we think the chances aren’t bad that you’ll fall for the unique sound signature, bounce and elegance of this unusual Hip Hop production. Ltj bukem / Good looking Rec., UK: "Really love this music." Velanche / XLR8R, UK: "Awesome job he\'s done... overall production is dope." Kwesi / BBE Music, UK: "Wooooooowwwww... WHAT THE FUCK! THIS IS WHAT',
       'description_language': None,
@@ -530,6 +535,7 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -663,6 +669,7 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'Download the full release here (creative commons). These cripsy beats are ripe with thumping funk and techno influences, sample wizardry and daring shuffles. Composed with the help of unique sound plugins which were especially programmed to measure Comfort Fit’s needs and wishes, we think the chances aren’t bad that you’ll fall for the unique sound signature, bounce and elegance of this unusual Hip Hop production. Ltj bukem / Good looking Rec., UK: "Really love this music." Velanche / XLR8R, UK: "Awesome job he\'s done... overall production is dope." Kwesi / BBE Music, UK: "Wooooooowwwww... WHAT THE FUCK! THIS IS WHAT',
       'description_language': None,
@@ -803,6 +810,7 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -936,6 +944,7 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'Download the full release here (creative commons). These cripsy beats are ripe with thumping funk and techno influences, sample wizardry and daring shuffles. Composed with the help of unique sound plugins which were especially programmed to measure Comfort Fit’s needs and wishes, we think the chances aren’t bad that you’ll fall for the unique sound signature, bounce and elegance of this unusual Hip Hop production. Ltj bukem / Good looking Rec., UK: "Really love this music." Velanche / XLR8R, UK: "Awesome job he\'s done... overall production is dope." Kwesi / BBE Music, UK: "Wooooooowwwww... WHAT THE FUCK! THIS IS WHAT',
       'description_language': None,
@@ -1023,6 +1032,7 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -1106,6 +1116,7 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'Empty biography',
       'description_language': None,
@@ -1196,6 +1207,7 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -1279,6 +1291,7 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'Empty biography',
       'description_language': None,
@@ -1365,6 +1378,7 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -1437,6 +1451,7 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'Empty biography',
       'description_language': None,
@@ -1517,6 +1532,7 @@
     'media_type': 'podcast_episode',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'The history of The History of Rome...Why the Western Empire Fell when it did...Some thoughts on the future...Thank you, goodnight.',
       'description_language': None,
@@ -1557,6 +1573,7 @@
       'media_type': 'podcast',
       'metadata': dict({
         'chapters': None,
+        'collections': None,
         'copyright': None,
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
         'description_language': None,
@@ -1662,6 +1679,7 @@
     'media_type': 'podcast_episode',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'The history of The History of Rome...Why the Western Empire Fell when it did...Some thoughts on the future...Thank you, goodnight.',
       'description_language': None,
@@ -1702,6 +1720,7 @@
       'media_type': 'podcast',
       'metadata': dict({
         'chapters': None,
+        'collections': None,
         'copyright': None,
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
         'description_language': None,
@@ -1807,6 +1826,7 @@
     'media_type': 'podcast_episode',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'The history of The History of Rome...Why the Western Empire Fell when it did...Some thoughts on the future...Thank you, goodnight.',
       'description_language': None,
@@ -1847,6 +1867,7 @@
       'media_type': 'podcast',
       'metadata': dict({
         'chapters': None,
+        'collections': None,
         'copyright': None,
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
         'description_language': None,
@@ -1952,6 +1973,7 @@
     'media_type': 'playlist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -2027,6 +2049,7 @@
     'media_type': 'podcast',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
       'description_language': None,
@@ -2100,6 +2123,7 @@
     'media_type': 'podcast',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
       'description_language': None,
@@ -2193,6 +2217,7 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
           'description_language': None,
@@ -2261,6 +2286,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -2391,6 +2417,7 @@
       'media_type': 'album',
       'metadata': dict({
         'chapters': None,
+        'collections': None,
         'copyright': None,
         'description': None,
         'description_language': None,
@@ -2466,6 +2493,7 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
           'description_language': None,
@@ -2534,6 +2562,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -2625,6 +2654,7 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
           'description_language': None,
@@ -2693,6 +2723,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -2823,6 +2854,7 @@
       'media_type': 'album',
       'metadata': dict({
         'chapters': None,
+        'collections': None,
         'copyright': None,
         'description': None,
         'description_language': None,
@@ -2898,6 +2930,7 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
           'description_language': None,
@@ -2966,6 +2999,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -3114,6 +3148,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -3244,6 +3279,7 @@
       'media_type': 'album',
       'metadata': dict({
         'chapters': None,
+        'collections': None,
         'copyright': None,
         'description': None,
         'description_language': None,
@@ -3376,6 +3412,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -3524,6 +3561,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -3654,6 +3692,7 @@
       'media_type': 'album',
       'metadata': dict({
         'chapters': None,
+        'collections': None,
         'copyright': None,
         'description': None,
         'description_language': None,
@@ -3786,6 +3825,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,

@@ -6,6 +6,7 @@ import logging
 from contextlib import contextmanager
 from functools import partial
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
@@ -81,6 +82,20 @@ def test_candidate_keys_name_fallback() -> None:
         "provider.ytmusic.media.mixes",
         "common.media.mixes.name",
         "common.media.mixes",
+    ]
+
+
+def test_candidate_keys_multi_instance_domain_fallback() -> None:
+    """A multi-instance owner (<domain>--<id>) also tries the bare-domain prefix."""
+    assert _candidate_keys("media.folder.blah.name", "provider.spotify--ab12cd") == [
+        "provider.spotify--ab12cd.media.folder.blah.name",
+        "provider.spotify--ab12cd.media.folder.blah",
+        "provider.spotify.media.folder.blah.name",
+        "provider.spotify.media.folder.blah",
+        "common.media.folder.blah.name",
+        "common.media.folder.blah",
+        "media.folder.blah.name",
+        "media.folder.blah",
     ]
 
 
@@ -181,8 +196,11 @@ def _nl_controller() -> TranslationController:
         "provider.spotify.config_entries.api_key.label": "API key",
         "provider.demo.manifest.name": "Demo Music Provider",
         "provider.demo.manifest.description": "A demo provider.",
-        "common.media.recently_played.name": "Recently played",
-        "common.media.recently_played.subtitle": "Pick up where you left off",
+        # recommendation folders key under media.recommendations.*
+        "common.media.recommendations.recently_played.name": "Recently played",
+        "common.media.recommendations.recently_played.subtitle": "Pick up where you left off",
+        # a genre name (searchable, so used by the reverse-lookup test)
+        "common.media.genre.classical.name": "Classical",
     }
     ctrl._locales = {
         "nl": {
@@ -191,8 +209,9 @@ def _nl_controller() -> TranslationController:
             "provider.spotify.config_entries.api_key.label": "API-sleutel",
             "provider.demo.manifest.name": "Demo-muziekprovider",
             "provider.demo.manifest.description": "Een demoprovider.",
-            "common.media.recently_played.name": "Onlangs afgespeeld",
-            "common.media.recently_played.subtitle": "Ga verder waar je gebleven was",
+            "common.media.recommendations.recently_played.name": "Onlangs afgespeeld",
+            "common.media.recommendations.recently_played.subtitle": "Ga verder waar je gebleven was",
+            "common.media.genre.classical.name": "Klassiek",
         }
     }
     ctrl._available_locales = {"en", "nl"}
@@ -329,3 +348,37 @@ async def test_build_translations_matches_runtime_source() -> None:
     ctrl = _make_controller()
     await ctrl.setup(None)  # type: ignore[arg-type]  # scans the real repo authoring files
     assert ctrl._source == build_translations_source()
+
+
+def test_media_names_are_keyed_by_media_type() -> None:
+    """Media names live under media.<media_type>.*; folders/recommendations are namespaced apart."""
+    source = build_translations_source()
+    assert source["common.media.genre.jazz.name"] == "Jazz"
+    assert source["common.media.playlist.random_album.name"]  # built-in playlists -> playlist.*
+    assert source["common.media.folder.albums.name"] == "Albums"  # browse-folder titles
+    assert source["common.media.recommendations.made_for_you.name"] == "Made for you"
+    # the old flat keys are gone (would silently break localization if left behind)
+    for stale in (
+        "common.media.jazz.name",  # genre was flat
+        "common.media.albums.name",  # browse noun was flat
+        "common.media.recently_played.name",  # loose recommendation key was flat
+        "common.media.builtin_playlist.random_album.name",  # built-in playlist sub-dict
+    ):
+        assert stale not in source
+
+
+async def test_reverse_lookup_media_names() -> None:
+    """A localized media name maps back to its canonical English name for the search fallback."""
+    ctrl = _nl_controller()
+    ctrl.mass = MagicMock()
+    # reverse lookups always use the metadata controller's configured language
+    ctrl.mass.metadata.locale = "nl"
+    # a localized (nl) genre name resolves back to its canonical English name
+    assert await ctrl.reverse_lookup_media_names("klassiek") == {"Classical"}
+    # recommendation/folder names are NOT searchable, so a localized one yields nothing
+    assert await ctrl.reverse_lookup_media_names("onlangs afgespeeld") == set()
+    # a non-matching query yields nothing
+    assert await ctrl.reverse_lookup_media_names("zzznomatch") == set()
+    # English (source) locale: nothing to reverse-translate (literal search already covers it)
+    ctrl.mass.metadata.locale = "en"
+    assert await ctrl.reverse_lookup_media_names("klassiek") == set()

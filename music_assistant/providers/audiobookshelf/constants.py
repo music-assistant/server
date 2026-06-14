@@ -88,11 +88,11 @@ ABS_SHELF_ID_ICONS: dict[str, str] = {
 # note: recommendation keys are in a subdict
 ABS_SHELF_ID_TRANSLATION_KEY: dict[str, str] = {
     AbsShelfId.LISTEN_AGAIN: "listen_again",
-    AbsShelfId.CONTINUE_LISTENING: "common.media.in_progress_items",
+    AbsShelfId.CONTINUE_LISTENING: "in_progress_items",
     AbsShelfId.CONTINUE_SERIES: "in_progress_series",
     AbsShelfId.RECOMMENDED: "recommended",
     AbsShelfId.RECENTLY_ADDED: "recently_added",
-    AbsShelfId.EPISODES_RECENTLY_ADDED: "common.media.episodes_recently_added",
+    AbsShelfId.EPISODES_RECENTLY_ADDED: "episodes_recently_added",
     AbsShelfId.RECENT_SERIES: "recent_series",
     AbsShelfId.NEWEST_AUTHORS: "newest_authors",
     AbsShelfId.NEWEST_EPISODES: "newest_episodes",
