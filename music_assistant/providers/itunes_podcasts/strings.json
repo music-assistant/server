@@ -12,6 +12,9 @@
       "description": "Whether or not to include explicit content results in search."
     }
   },
+  "recommendations": {
+    "trending_podcasts": { "name": "Trending podcasts" }
+  },
   "manifest": {
     "description": "Search and play podcasts indexed via Apple’s iTunes feed / podcast directory."
   }
