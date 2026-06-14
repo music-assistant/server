@@ -328,28 +328,46 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             and not items
             and self.media_type in (MediaType.GENRE, MediaType.PLAYLIST)
         ):
-            return await self._localized_search_fallback(search, limit)
+            return await self._localized_search_fallback(
+                search,
+                limit=limit,
+                offset=offset,
+                favorite=favorite,
+                order_by=order_by,
+                provider=provider,
+                genre=genre,
+            )
         return items
 
-    async def _localized_search_fallback(self, search_query: str, limit: int) -> list[ItemCls]:
+    async def _localized_search_fallback(
+        self, search_query: str, limit: int, offset: int = 0, **call_kwargs: Any
+    ) -> list[ItemCls]:
         """
         Retry a library search using the canonical names behind a localized query.
 
         For genre/playlist searches that return nothing literally, reverse-resolve the query to the
         canonical (English) names of matching localized items and search those, so an item is
-        findable by the localized name the user sees. See
+        findable by the localized name the user sees. The caller's other filters (favorite,
+        order_by, provider and any controller-specific kwargs) are forwarded unchanged so the retry
+        behaves like the literal search; results are merged, de-duplicated and paginated here. See
         ``TranslationController.reverse_lookup_media_names``.
         """
         seen: set[Any] = set()
         merged: list[ItemCls] = []
-        for name in await self.mass.translations.reverse_lookup_media_names(search_query):
+        # iterate the canonical names in a stable order, and fetch each from the start so the
+        # offset/limit window can be applied to the merged, de-duplicated result set
+        for name in sorted(await self.mass.translations.reverse_lookup_media_names(search_query)):
             for item in await self.library_items(
-                search=name, limit=limit, _localized_fallback=False
+                search=name,
+                limit=limit + offset,
+                offset=0,
+                _localized_fallback=False,
+                **call_kwargs,
             ):
                 if item.item_id not in seen:
                     seen.add(item.item_id)
                     merged.append(item)
-        return merged[:limit]
+        return merged[offset : offset + limit]
 
     async def iter_library_items(
         self,

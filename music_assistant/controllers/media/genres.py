@@ -388,7 +388,15 @@ class GenreController(MediaControllerBase[Genre]):
         if kwargs.get("_localized_fallback", True) and search and not items:
             # retry with the canonical name behind a localized query, so genres are findable
             # by the name shown in the user's language (see _localized_search_fallback)
-            return await self._localized_search_fallback(search, limit)
+            return await self._localized_search_fallback(
+                search,
+                limit=limit,
+                offset=offset,
+                favorite=favorite,
+                order_by=order_by,
+                hide_empty=hide_empty,
+                media_type=media_type,
+            )
         return items
 
     async def radio_mode_base_tracks(
