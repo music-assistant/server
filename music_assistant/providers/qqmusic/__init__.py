@@ -517,7 +517,7 @@ class QQMusicProvider(MusicProvider):
             if not credential or not credential.musicid or not credential.musickey:
                 credential = Credential.model_validate(
                     {
-                        "musicid": int(config_musicid),
+                        "musicid": int(str(config_musicid).strip()),
                         "musickey": str(config_musickey),
                         "loginType": login_type,
                     }
@@ -1149,11 +1149,10 @@ class QQMusicProvider(MusicProvider):
             )
         )
         response_obj = self._to_dict(response)
-        songs = [
-            item.get("songInfo")
-            for item in response_obj.get("songList", [])
-            if isinstance(item, dict) and isinstance(item.get("songInfo"), dict)
-        ]
+        songs: list[dict[str, Any]] = []
+        for item in response_obj.get("songList", []):
+            if isinstance(item, dict) and isinstance(song_info := item.get("songInfo"), dict):
+                songs.append(song_info)
         if not songs:
             songs = extract_items(response_obj, ("song_list", "songs", "list"))
         return [self._parse_track(item) for item in songs if item.get("mid")]
@@ -1208,11 +1207,10 @@ class QQMusicProvider(MusicProvider):
             self._qq_album.get_song(album_value, num=300, page=1)
         )
         response_obj = self._to_dict(response)
-        songs = [
-            item.get("songInfo")
-            for item in response_obj.get("songList", [])
-            if isinstance(item, dict) and isinstance(item.get("songInfo"), dict)
-        ]
+        songs: list[dict[str, Any]] = []
+        for item in response_obj.get("songList", []):
+            if isinstance(item, dict) and isinstance(song_info := item.get("songInfo"), dict):
+                songs.append(song_info)
         if not songs:
             songs = self._response_items(response, ("song_list", "songs", "list"))
         return [self._parse_track(item) for item in songs if item.get("mid")]
@@ -1646,7 +1644,7 @@ class QQMusicProvider(MusicProvider):
         song_id = await self._resolve_song_id(prov_track_id)
         response = await self._run_with_session(self._qq_song.get_similar_song(song_id))
         response_obj = self._to_dict(response)
-        response_items = response if isinstance(response, list) else []
+        response_items: Any = response if isinstance(response, list) else []
         if not response_items:
             response_items = response_obj.get("song") or response_obj.get("songlist") or []
         if not isinstance(response_items, list):
