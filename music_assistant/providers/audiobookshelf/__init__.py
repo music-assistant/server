@@ -1600,6 +1600,7 @@ for more details.
         book_ids = {x.id_ for x in abs_author.library_items}
         series_book_ids = set()
 
+        _prefix = f"provider.{DOMAIN}.browse"
         for series in abs_author.series:
             series_book_ids.update([x.id_ for x in series.items])
             path = f"{current_path}/{series.id_}"
@@ -1608,7 +1609,7 @@ for more details.
                     item_id=series.id_,
                     # frontend does <name>: <translation>
                     name=series.name,
-                    translation_key="series_singular",
+                    translation_key=f"{_prefix}.series_singular",
                     provider=self.instance_id,
                     path=path,
                 )

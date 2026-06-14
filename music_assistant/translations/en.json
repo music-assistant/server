@@ -487,6 +487,7 @@
   "provider.audiobookshelf.browse.collections.name": "Collections",
   "provider.audiobookshelf.browse.narrators.name": "Narrators",
   "provider.audiobookshelf.browse.series_plural.name": "Series",
+  "provider.audiobookshelf.browse.series_singular.name": "Series",
   "provider.audiobookshelf.config_entries.api_token.description": "Instead of using a username and password, you may provide an API key (ABS version >= 2.26). Please consult the docs.",
   "provider.audiobookshelf.config_entries.api_token.label": "API key _instead_ of user/ password. (ABS version >= 2.26)",
   "provider.audiobookshelf.config_entries.hide_empty_podcasts.description": "This will skip podcasts with no episodes associated.",

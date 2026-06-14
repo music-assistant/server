@@ -41,6 +41,9 @@
     "series_plural": {
       "name": "Series"
     },
+    "series_singular": {
+      "name": "Series"
+    },
     "collections": {
       "name": "Collections"
     }
