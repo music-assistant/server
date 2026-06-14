@@ -196,10 +196,7 @@ def _nl_controller() -> TranslationController:
         "provider.spotify.config_entries.api_key.label": "API key",
         "provider.demo.manifest.name": "Demo Music Provider",
         "provider.demo.manifest.description": "A demo provider.",
-        "common.media.recently_played.name": "Recently played",
-        "common.media.recently_played.subtitle": "Pick up where you left off",
-        # recommendation folders key under media.recommendations.* (models >= the media-type
-        # namespace change); both are kept so the fixture works across the models pin bump
+        # recommendation folders key under media.recommendations.*
         "common.media.recommendations.recently_played.name": "Recently played",
         "common.media.recommendations.recently_played.subtitle": "Pick up where you left off",
         # a genre name (searchable, so used by the reverse-lookup test)
@@ -212,8 +209,6 @@ def _nl_controller() -> TranslationController:
             "provider.spotify.config_entries.api_key.label": "API-sleutel",
             "provider.demo.manifest.name": "Demo-muziekprovider",
             "provider.demo.manifest.description": "Een demoprovider.",
-            "common.media.recently_played.name": "Onlangs afgespeeld",
-            "common.media.recently_played.subtitle": "Ga verder waar je gebleven was",
             "common.media.recommendations.recently_played.name": "Onlangs afgespeeld",
             "common.media.recommendations.recently_played.subtitle": "Ga verder waar je gebleven was",
             "common.media.genre.classical.name": "Klassiek",
