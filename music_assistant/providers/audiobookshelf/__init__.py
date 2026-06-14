@@ -121,7 +121,6 @@ from .constants import (
     CONF_URL,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
-    DOMAIN,
     AbsBrowseItemsBookTranslationKey,
     AbsBrowseItemsPodcastTranslationKey,
     AbsBrowsePaths,
@@ -1035,11 +1034,10 @@ for more details.
         # from _browse_lib_audiobooks, i.e. Authors, Narrators etc.
         # Podcast libs do not have filter folders, so always the root folders.
         browse_items: list[MediaItemType | BrowseFolder] = []
-        _prefix = f"provider.{DOMAIN}.recommendations"
-        translation_key = f"{_prefix}.libraries"
+        translation_key = "libraries"
         if len(self.libraries.audiobooks) <= 1:
             if len(self.libraries.podcasts) == 0:
-                translation_key = f"{_prefix}.library"
+                translation_key = "library"
 
             # audiobooklibs are first, and we have at max 1 audiobook lib
             _browse_root = self._browse_root(append_mediatype_suffix=False)
@@ -1600,7 +1598,6 @@ for more details.
         book_ids = {x.id_ for x in abs_author.library_items}
         series_book_ids = set()
 
-        _prefix = f"provider.{DOMAIN}.browse"
         for series in abs_author.series:
             series_book_ids.update([x.id_ for x in series.items])
             path = f"{current_path}/{series.id_}"
@@ -1609,7 +1606,7 @@ for more details.
                     item_id=series.id_,
                     # frontend does <name>: <translation>
                     name=series.name,
-                    translation_key=f"{_prefix}.series_singular",
+                    translation_key="series_singular",
                     provider=self.instance_id,
                     path=path,
                 )

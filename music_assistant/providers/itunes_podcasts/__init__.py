@@ -324,7 +324,7 @@ class ITunesPodcastsProvider(MusicProvider):
                 item_id="itunes-top-podcasts",
                 name="Trending Podcasts",
                 icon="mdi-trending-up",
-                translation_key="provider.itunes_podcasts.recommendations.trending_podcasts",
+                translation_key="trending_podcasts",
                 items=UniqueList(podcast_list),
                 provider=self.instance_id,
             )

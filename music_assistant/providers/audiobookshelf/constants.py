@@ -5,8 +5,6 @@ from enum import StrEnum
 from aioaudiobookshelf.schema.shelf import ShelfId as AbsShelfId
 from aiohttp.client import ClientTimeout
 
-DOMAIN = "audiobookshelf"
-
 # AIOHTTP
 # we use twice the default values
 AIOHTTP_TIMEOUT = ClientTimeout(total=10 * 60, sock_connect=60)
@@ -41,16 +39,13 @@ class AbsBrowsePaths(StrEnum):
     PLAYLISTS = "pl"
 
 
-_prefix = f"provider.{DOMAIN}.browse"
-
-
 class AbsBrowseItemsBookTranslationKey(StrEnum):
     """translation keys in browse view for books."""
 
-    AUTHORS = f"{_prefix}.authors"
-    NARRATORS = f"{_prefix}.narrators"
-    SERIES = f"{_prefix}.series_plural"
-    COLLECTIONS = f"{_prefix}.collections"
+    AUTHORS = "authors"
+    NARRATORS = "narrators"
+    SERIES = "series_plural"
+    COLLECTIONS = "collections"
     PLAYLISTS = "playlists"  # not abs specific
     AUDIOBOOKS = "audiobooks"  # not abs specific
 
@@ -91,16 +86,15 @@ ABS_SHELF_ID_ICONS: dict[str, str] = {
 
 # for some keys there already is a good MA variant
 # note: recommendation keys are in a subdict
-_prefix = f"provider.{DOMAIN}.recommendations"
 ABS_SHELF_ID_TRANSLATION_KEY: dict[str, str] = {
-    AbsShelfId.LISTEN_AGAIN: f"{_prefix}.listen_again",
+    AbsShelfId.LISTEN_AGAIN: "listen_again",
     AbsShelfId.CONTINUE_LISTENING: "common.media.in_progress_items",
-    AbsShelfId.CONTINUE_SERIES: f"{_prefix}.in_progress_series",
-    AbsShelfId.RECOMMENDED: f"{_prefix}.recommended",
-    AbsShelfId.RECENTLY_ADDED: f"{_prefix}.recently_added",
+    AbsShelfId.CONTINUE_SERIES: "in_progress_series",
+    AbsShelfId.RECOMMENDED: "recommended",
+    AbsShelfId.RECENTLY_ADDED: "recently_added",
     AbsShelfId.EPISODES_RECENTLY_ADDED: "common.media.episodes_recently_added",
-    AbsShelfId.RECENT_SERIES: f"{_prefix}.recent_series",
-    AbsShelfId.NEWEST_AUTHORS: f"{_prefix}.newest_authors",
-    AbsShelfId.NEWEST_EPISODES: f"{_prefix}.newest_episodes",
-    AbsShelfId.DISCOVER: f"{_prefix}.discover",
+    AbsShelfId.RECENT_SERIES: "recent_series",
+    AbsShelfId.NEWEST_AUTHORS: "newest_authors",
+    AbsShelfId.NEWEST_EPISODES: "newest_episodes",
+    AbsShelfId.DISCOVER: "discover",
 }
