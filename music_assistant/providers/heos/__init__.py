@@ -49,11 +49,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_IP_ADDRESS,
             type=ConfigEntryType.STRING,
-            label="Main controller hostname or IP address.",
             required=False,
-            description="Hostname or IP address of the HEOS device "
-            "to be used as the main controller. It is recommended to use a "
-            "wired device as the main controller.",
             advanced=True,
             requires_reload=True,
         ),
@@ -61,13 +57,9 @@ async def get_config_entries(
             key=CONF_TIMEOUT,
             type=ConfigEntryType.INTEGER,
             default_value=DEFAULT_TIMEOUT,
-            label="Command timeout value",
             required=False,
             range=(10, 60),
             requires_reload=True,
-            description="Set the timeout value to use when sending commands to the HEOS system. "
-            "Some devices could reply slower to commands, if you are seeing Command timeout logs, "
-            "try increasing this value.",
             advanced=True,
         ),
     )

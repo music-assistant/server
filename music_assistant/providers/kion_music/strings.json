@@ -1,0 +1,49 @@
+{
+  "config_entries": {
+    "token": {
+      "label": "KION Music Token",
+      "description": "Enter your KION Music OAuth token. See the documentation for how to obtain it."
+    },
+    "clear_auth": {
+      "label": "Reset authentication",
+      "description": "Clear the current authentication details."
+    },
+    "quality": {
+      "label": "Audio quality",
+      "description": "Select preferred audio quality.",
+      "options": {
+        "efficient": "Efficient (AAC ~64kbps)",
+        "balanced": "Balanced (AAC ~192kbps)",
+        "high": "High (MP3 ~320kbps)",
+        "superb": "Superb (FLAC Lossless)"
+      }
+    },
+    "my_wave_max_tracks": {
+      "label": "My Mix maximum tracks",
+      "description": "Maximum number of tracks to fetch for My Mix playlist. Lower values load faster but provide fewer tracks. Default: 150."
+    },
+    "liked_tracks_max_tracks": {
+      "label": "Liked Tracks maximum tracks",
+      "description": "Maximum number of tracks to show in Liked Tracks virtual playlist. Higher values may significantly increase load time. Lower values load faster. Default: 500."
+    },
+    "transport": {
+      "label": "Streaming transport",
+      "description": "Transport mode for audio streaming. 'raw' — direct unencrypted stream (default). 'encraw' — AES-CTR encrypted stream (fallback).",
+      "options": {
+        "raw": "Raw (unencrypted)",
+        "encraw": "Encrypted (AES-CTR)"
+      }
+    },
+    "codecs": {
+      "label": "Codecs override",
+      "description": "Comma-separated codec list to override quality-based defaults. Leave empty to use defaults. Example: 'flac-mp4,flac,aac-mp4,aac,mp3'."
+    },
+    "base_url": {
+      "label": "API Base URL",
+      "description": "API endpoint base URL. Only change if KION Music changes their API endpoint. Default: {0}"
+    }
+  },
+  "manifest": {
+    "description": "Stream music, personalized recommendations, and lossless FLAC from KION Music — including My Wave radio and library sync."
+  }
+}

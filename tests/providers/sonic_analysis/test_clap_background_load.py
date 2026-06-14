@@ -223,13 +223,13 @@ async def test_start_analysis_returns_false_without_duration(
     assert any("duration missing or zero" in c for c in debug_msgs)
 
 
-async def test_handle_async_init_raises_on_unsupported_cpu() -> None:
-    """Setup fails before any model load when the CPU lacks AVX2."""
+async def test_handle_async_init_raises_when_requirements_not_met() -> None:
+    """Setup fails before any model load when the system does not meet requirements."""
     provider = _make_provider()
     with (
         patch(
-            "music_assistant.providers.sonic_analysis.verify_cpu_supports_ml_inference",
-            side_effect=SetupFailedError("CPU lacks AVX2"),
+            "music_assistant.providers.sonic_analysis.verify_system_meets_requirements",
+            side_effect=SetupFailedError("unsupported system"),
         ),
         patch.object(SonicAnalysisProvider, "_load_clap") as load_clap_mock,
         pytest.raises(SetupFailedError),

@@ -1,0 +1,11 @@
+{
+  "config_entries": {
+    "clear_cache": {
+      "label": "Clear cache",
+      "description": "Reset/clear all items in the cache. "
+    },
+    "clear_cache_result": {
+      "label": "The cache has been cleared"
+    }
+  }
+}

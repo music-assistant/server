@@ -1,0 +1,34 @@
+{
+  "config_entries": {
+    "qr_page_url": {
+      "label": "QR login page URL"
+    },
+    "quality": {
+      "label": "Preferred quality",
+      "options": {
+        "mp3_128": "MP3 128kbps (most compatible)",
+        "mp3_320": "MP3 320kbps",
+        "flac": "FLAC (fallback to MP3)",
+        "hi_res": "Hi-Res (Master, fallback to FLAC/MP3)"
+      }
+    },
+    "start_qq_qr_auth": {
+      "label": "QQ Login",
+      "description": "Generate a QQ QR code and open the login popup page."
+    },
+    "start_wx_qr_auth": {
+      "label": "WeChat Login",
+      "description": "Generate a WeChat QR code and open the login popup page."
+    },
+    "check_qr_auth": {
+      "label": "Check QR status",
+      "description": "Manually check whether {0} scan confirmation is completed."
+    },
+    "clear_auth": {
+      "label": "Reset authentication"
+    }
+  },
+  "manifest": {
+    "description": "Stream QQ Music catalog, playlists, lyrics, and personalized recommendations."
+  }
+}

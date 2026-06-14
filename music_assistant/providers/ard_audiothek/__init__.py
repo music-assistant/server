@@ -167,44 +167,34 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_EMAIL,
             type=ConfigEntryType.STRING,
-            label="E-Mail",
             required=False,
-            description="E-Mail address of ARD account.",
             hidden=authenticated,
             value=values.get(CONF_EMAIL),
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=False,
-            description="Password of ARD account.",
             hidden=authenticated,
             value=values.get(CONF_PASSWORD),
         ),
         ConfigEntry(
             key=CONF_MAX_BITRATE,
             type=ConfigEntryType.INTEGER,
-            label="Maximum bitrate for streams (0 for unlimited)",
             required=False,
-            description="Maximum bitrate for streams. Use 0 for unlimited",
             default_value=0,
             value=values.get(CONF_MAX_BITRATE),
         ),
         ConfigEntry(
             key=CONF_PODCAST_FINISHED,
             type=ConfigEntryType.INTEGER,
-            label="Percentage required before podcast episode is marked as fully played",
             required=False,
-            description="This setting defines how much of a podcast must be listened to before an "
-            "episode is marked as fully played",
             default_value=95,
             value=values.get(CONF_PODCAST_FINISHED),
         ),
         ConfigEntry(
             key=CONF_TOKEN_BEARER,
             type=ConfigEntryType.SECURE_STRING,
-            label="token",
             hidden=True,
             required=False,
             value=values.get(CONF_TOKEN_BEARER),
@@ -212,7 +202,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_USERID,
             type=ConfigEntryType.SECURE_STRING,
-            label="uid",
             hidden=True,
             required=False,
             value=values.get(CONF_USERID),
@@ -220,7 +209,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_EXPIRY_TIME,
             type=ConfigEntryType.SECURE_STRING,
-            label="token_expiry",
             hidden=True,
             required=False,
             default_value=0,
@@ -229,7 +217,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_DISPLAY_NAME,
             type=ConfigEntryType.STRING,
-            label="username",
             hidden=True,
             required=False,
             value=values.get(CONF_DISPLAY_NAME),

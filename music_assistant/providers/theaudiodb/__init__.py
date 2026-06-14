@@ -128,25 +128,21 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ENABLE_ARTIST_METADATA,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable retrieval of artist metadata.",
             default_value=True,
         ),
         ConfigEntry(
             key=CONF_ENABLE_ALBUM_METADATA,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable retrieval of album metadata.",
             default_value=True,
         ),
         ConfigEntry(
             key=CONF_ENABLE_TRACK_METADATA,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable retrieval of track metadata.",
             default_value=False,
         ),
         ConfigEntry(
             key=CONF_ENABLE_IMAGES,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable retrieval of artist/album/track images",
             default_value=True,
         ),
     )

@@ -6,7 +6,7 @@ import asyncio
 import inspect
 from collections.abc import AsyncGenerator, Mapping
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.audio_analysis import AudioAnalysisCoverage
@@ -45,6 +45,15 @@ async def test_distribute_chunk_calls_all_providers() -> None:
 
     p1.process_pcm_chunk.assert_awaited_once_with(session_key, b"\x00" * 1024)
     p2.process_pcm_chunk.assert_awaited_once_with(session_key, b"\x00" * 1024)
+
+
+def test_ensure_thread_caps_configured_is_idempotent() -> None:
+    """Torch thread caps are applied once per controller, however many providers init."""
+    controller = _make_controller()
+    with patch("torch.set_num_threads") as set_threads, patch("torch.set_num_interop_threads"):
+        controller.ensure_thread_caps_configured()
+        controller.ensure_thread_caps_configured()
+    set_threads.assert_called_once()
 
 
 @pytest.mark.asyncio

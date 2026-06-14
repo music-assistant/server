@@ -110,33 +110,23 @@ class FullyKioskPlayer(Player):
             ConfigEntry(
                 key=CONF_PASSWORD,
                 type=ConfigEntryType.SECURE_STRING,
-                label="Password",
-                description="Password to use to connect to the Fully Kiosk API.",
                 required=True,
             ),
             ConfigEntry(
                 key=CONF_USE_SSL,
                 type=ConfigEntryType.BOOLEAN,
-                label="Use HTTPS when connecting to the Fully Kiosk API.",
                 default_value=False,
                 advanced=True,
             ),
             ConfigEntry(
                 key=CONF_VERIFY_SSL,
                 type=ConfigEntryType.BOOLEAN,
-                label="Verify HTTPS certificates (recommended).",
                 default_value=True,
-                description="Disabling verification trusts any certificate (no validation).",
                 advanced=True,
             ),
             ConfigEntry(
                 key=CONF_SSL_FINGERPRINT,
                 type=ConfigEntryType.STRING,
-                label="TLS certificate fingerprint",
-                description=(
-                    "Optional SHA-256 hex fingerprint. When provided it must "
-                    "match the device certificate and overrides the verify setting."
-                ),
                 required=False,
                 advanced=True,
             ),

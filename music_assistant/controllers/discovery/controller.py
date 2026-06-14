@@ -107,10 +107,7 @@ class DiscoveryController(CoreController):
             ConfigEntry(
                 key=CONF_UPNP_NETWORK_SCAN,
                 type=ConfigEntryType.BOOLEAN,
-                label="Allow network scan for UPnP discovery",
                 default_value=False,
-                description="Enable additional broadcast-based SSDP discovery. "
-                "Use this if some UPnP/DLNA devices do not answer regular discovery.",
                 requires_reload=False,
             ),
         )

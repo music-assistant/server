@@ -13,7 +13,7 @@ import soxr
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ContentType
 
-from music_assistant.helpers.util import verify_cpu_supports_ml_inference
+from music_assistant.helpers.util import verify_system_meets_requirements
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import (
     AnalysisSessionData,
@@ -66,6 +66,10 @@ CLAP_WINDOW_COUNTS: dict[str, int] = {
 
 CONF_CLAP_SAMPLING: str = "clap_sampling"
 
+# Sonic Analysis runs on-device CLAP inference; gate it to capable hardware.
+MIN_RAM_GB: float = 8.0
+MIN_CPU_CORES: int = 4
+
 
 @dataclass
 class SonicSessionData(AnalysisSessionData):
@@ -117,19 +121,11 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_CLAP_SAMPLING,
             type=ConfigEntryType.STRING,
-            label="CLAP quality (windows per track)",
-            description=(
-                "Number of 7-second windows CLAP analyzes per track. "
-                "More windows produce more representative scalars at "
-                "linear CPU cost. Thorough is most useful for "
-                "instrumentalness, where vocals can be missed by a "
-                "single window."
-            ),
             default_value=CLAP_SAMPLING_FAST,
             options=[
-                ConfigValueOption("Fast (1 window)", CLAP_SAMPLING_FAST),
-                ConfigValueOption("Balanced (3 windows, 2.4x CPU)", CLAP_SAMPLING_BALANCED),
-                ConfigValueOption("Thorough (8 windows, 6.6x CPU)", CLAP_SAMPLING_THOROUGH),
+                ConfigValueOption(CLAP_SAMPLING_FAST),
+                ConfigValueOption(CLAP_SAMPLING_BALANCED),
+                ConfigValueOption(CLAP_SAMPLING_THOROUGH),
             ],
             required=False,
         ),
@@ -320,7 +316,14 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         available=False, which the AudioAnalysisController already honors when
         scheduling work.
         """
-        verify_cpu_supports_ml_inference()
+        verify_system_meets_requirements(
+            feature_name="Sonic Analysis",
+            min_memory_gb=MIN_RAM_GB,
+            min_cpu_cores=MIN_CPU_CORES,
+            require_ml_inference=True,
+        )
+        # Configure torch thread caps before loading the model (see the controller method).
+        self.mass.streams.audio_analysis.ensure_thread_caps_configured()
         (
             self._clap_model,
             self._clap_text_embeddings,

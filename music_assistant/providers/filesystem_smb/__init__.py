@@ -78,79 +78,57 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_HOST,
             type=ConfigEntryType.STRING,
-            label="Server",
             required=True,
-            description="The (fqdn) hostname of the SMB/CIFS/DFS server to connect to."
-            "For example mynas.local.",
         ),
         ConfigEntry(
             key=CONF_SHARE,
             type=ConfigEntryType.STRING,
-            label="Share",
             required=True,
-            description="The name of the share/service you'd like to connect to on "
-            "the remote host, For example 'media'.",
         ),
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Username",
             required=False,
             default_value="guest",
-            description="The username to authenticate to the remote server. "
-            "Leave as 'guest' or empty for anonymous access.",
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=False,
             default_value=None,
-            description="The password to authenticate to the remote server. "
-            "Leave empty for anonymous/guest access.",
         ),
         ConfigEntry(
             key=CONF_SUBFOLDER,
             type=ConfigEntryType.STRING,
-            label="Subfolder",
             required=False,
             default_value="",
-            description="[optional] Use if your music is stored in a sublevel of the share. "
-            "E.g. 'collections' or 'albums/A-K'.",
         ),
         ConfigEntry(
             key=CONF_SMB_VERSION,
             type=ConfigEntryType.STRING,
-            label="SMB Version",
             required=False,
             advanced=True,
             default_value="3.0",
             options=[
-                ConfigValueOption("Auto", ""),
-                ConfigValueOption("SMB 1.0", "1.0"),
-                ConfigValueOption("SMB 2.0", "2.0"),
-                ConfigValueOption("SMB 2.1", "2.1"),
-                ConfigValueOption("SMB 3.0", "3.0"),
-                ConfigValueOption("SMB 3.1.1", "3.1.1"),
+                ConfigValueOption(""),
+                ConfigValueOption("1.0"),
+                ConfigValueOption("2.0"),
+                ConfigValueOption("2.1"),
+                ConfigValueOption("3.0"),
+                ConfigValueOption("3.1.1"),
             ],
-            description="The SMB protocol version to use. SMB 3.0 or higher is recommended for "
-            "better performance and security. Use Auto to let the system negotiate.",
         ),
         ConfigEntry(
             key=CONF_CACHE_MODE,
             type=ConfigEntryType.STRING,
-            label="Cache Mode",
             required=False,
             advanced=True,
             default_value="loose",
             options=[
-                ConfigValueOption("Strict", "strict"),
-                ConfigValueOption("Loose (Recommended)", "loose"),
-                ConfigValueOption("None", "none"),
+                ConfigValueOption("strict"),
+                ConfigValueOption("loose"),
+                ConfigValueOption("none"),
             ],
-            description="Cache mode affects performance and consistency. "
-            "'Loose' provides better performance for read-heavy workloads "
-            "and is recommended for music libraries.",
         ),
         CONF_ENTRY_MISSING_ALBUM_ARTIST,
         CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
