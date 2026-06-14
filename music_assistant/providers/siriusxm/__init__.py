@@ -85,13 +85,11 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_SXM_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Username",
             required=True,
         ),
         ConfigEntry(
             key=CONF_SXM_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=True,
         ),
         ConfigEntry(
@@ -99,10 +97,9 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             default_value="US",
             options=[
-                ConfigValueOption(title="United States", value="US"),
-                ConfigValueOption(title="Canada", value="CA"),
+                ConfigValueOption("US"),
+                ConfigValueOption("CA"),
             ],
-            label="Region",
             required=True,
         ),
     )

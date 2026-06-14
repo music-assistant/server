@@ -164,18 +164,14 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_USER_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="User Token",
             required=True,
             value=values.get(CONF_USER_TOKEN) if values else None,
         ),
         ConfigEntry(
             key=CONF_API_BASE_URL,
             type=ConfigEntryType.STRING,
-            label="Base URL",
             required=False,
             value=values.get(CONF_API_BASE_URL) if values else None,
-            description="URL for listenbrainz endpoint. Leave blank to default "
-            "to the public listenbrainz API.",
             advanced=True,
         ),
     )

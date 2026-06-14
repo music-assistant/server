@@ -17,17 +17,19 @@ REFRESH_TASK_ID: Final[str] = "lastfm_recommendations_refresh"
 # Cache category for resolved Artist/Album/Track objects
 CACHE_CATEGORY_RESOLVED_ITEMS = 1
 
+# Cache category for the user's derived top genres
+CACHE_CATEGORY_TOP_GENRES = 2
+
 # Expiration time for cached resolved items (in seconds)
 CACHE_EXPIRATION_SECONDS = 60 * 60 * 24 * 90  # 90 days
+
+# Expiration for the derived top genres; genre identity is stable and the genre rows only
+# rotate daily, so a daily recompute is plenty and keeps the per-artist tag fan-out cheap.
+TOP_GENRES_CACHE_EXPIRATION_SECONDS = 60 * 60 * 24  # 1 day
 
 # Concurrency limits
 # Maximum number of concurrent provider searches to prevent overwhelming APIs
 SEARCH_CONCURRENCY_LIMIT = 5
-
-# Maximum number of concurrent MusicBrainz ISRC lookups. MusicBrainz throttles all
-# callers to a shared global budget, so a wide fan-out just queues behind it while
-# bursting past the mirror's edge limit; cap it to stay within budget with headroom.
-MB_ISRC_CONCURRENCY_LIMIT = 5
 
 # Item counts and limits
 # Target number of items to return in recommendation folders
@@ -50,7 +52,7 @@ LIBRARY_MATCH_SCAN_LIMIT = 5
 SIMILAR_ITEMS_BUFFER = 12
 
 # Number of similar tracks to resolve before filtering to target count. Larger than the
-# artist buffer to absorb this row's extra attrition: stricter ISRC matching and the
+# artist buffer to absorb this row's extra attrition: artist+title verification and the
 # exclusion of tracks that resolve to the user's own library copy.
 SIMILAR_TRACKS_BUFFER = 15
 
@@ -66,8 +68,18 @@ RECENT_TRACKS_SCAN_LIMIT = 200
 # Number of top tracks fetched as seeds; over-fetched so enough are recognised by Last.fm
 TOP_TRACKS_LIMIT = 10
 
-# Number of top genre tags fetched; the genre rows cycle through them daily
-TOP_TAGS_LIMIT = 3
+# Number of derived genres; the genre rows cycle through them daily
+TOP_GENRES_LIMIT = 3
+
+# Genres are derived from the community tags of the user's most played artists. Last.fm has no
+# genre data of its own, so an artist's top tags stand in for its genre.
+# Number of the user's top artists to analyse, and the time span to rank them over.
+GENRE_ARTISTS_LIMIT = 25
+GENRE_ARTISTS_PERIOD = "overall"
+
+# Number of top tags to take from each artist. Kept small because an artist's leading tags are
+# almost always its genre; folksonomy noise ("seen live", "favourites") sits further down.
+TAGS_PER_ARTIST = 5
 
 # API search settings
 # Search limit for provider API calls (workaround for Spotify API bug with limit=1)

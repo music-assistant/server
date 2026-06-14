@@ -1,0 +1,16 @@
+{
+  "config_entries": {
+    "clap_sampling": {
+      "label": "CLAP quality (windows per track)",
+      "description": "Number of 7-second windows CLAP analyzes per track. More windows produce more representative scalars at linear CPU cost. Thorough is most useful for instrumentalness, where vocals can be missed by a single window.",
+      "options": {
+        "fast": "Fast (1 window)",
+        "balanced": "Balanced (3 windows, 2.4x CPU)",
+        "thorough": "Thorough (8 windows, 6.6x CPU)"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Analyses how each track sounds to power similarity, mood-based playlists, and other audio-aware features."
+  }
+}

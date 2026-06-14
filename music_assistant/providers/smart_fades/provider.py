@@ -73,6 +73,8 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        # Configure torch thread caps before loading any model (see the controller method).
+        self.mass.streams.audio_analysis.ensure_thread_caps_configured()
         (
             self._beat_this_model,
             self._beat_this_post_processor,

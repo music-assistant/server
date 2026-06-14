@@ -172,27 +172,17 @@ async def get_config_entries(
     """
     return (
         CONF_ENTRY_UNOFFICIAL_PROVIDER,
-        ConfigEntry(
-            key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
-        ),
+        ConfigEntry(key=CONF_USERNAME, type=ConfigEntryType.STRING, required=True),
         ConfigEntry(
             key=CONF_COOKIE,
             type=ConfigEntryType.SECURE_STRING,
-            label="Login Cookie",
             required=True,
-            description="The Login cookie you grabbed from an existing session, "
-            "see the documentation.",
         ),
         ConfigEntry(
             key=CONF_PO_TOKEN_SERVER_URL,
             type=ConfigEntryType.STRING,
             default_value=DEFAULT_PO_TOKEN_SERVER_URL,
-            label="PO Token Server URL",
             required=True,
-            description="The URL to the PO Token server. "
-            "Can be left as default for most people. \n\n"
-            "**Note that this does require you to have the "
-            "'YT Music PO Token Generator' addon installed!**",
         ),
     )
 
