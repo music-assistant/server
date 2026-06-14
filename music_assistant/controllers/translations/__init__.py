@@ -139,7 +139,9 @@ class TranslationController(CoreController):
 
         Lets localized item names be found by the name the user sees: a text search that returns
         nothing literally can be retried against these canonical names (which equal the items'
-        stored ``search_name``). Only ``common.media.*.name`` entries are considered.
+        stored ``search_name``). Only genre and playlist names (``common.media.genre.*`` /
+        ``common.media.playlist.*``) are considered — the searchable library media types; browse
+        and recommendation folder titles are display-only and never library items.
 
         The reverse-translation always uses the metadata controller's configured language
         (``CONF_LANGUAGE``), which doubles as the fallback search locale; an English, unknown or
@@ -157,7 +159,9 @@ class TranslationController(CoreController):
             return set()
         matches: set[str] = set()
         for key, value in bundle.items():
-            if not (key.startswith("common.media.") and key.endswith(".name")):
+            if not key.endswith(".name"):
+                continue
+            if not key.startswith(("common.media.genre.", "common.media.playlist.")):
                 continue
             if normalized in create_safe_string(value, True, True):
                 if english := self._source.get(key):
