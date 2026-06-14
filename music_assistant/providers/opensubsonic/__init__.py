@@ -21,12 +21,6 @@ from .sonic_provider import (
     CONF_RAW_FILE,
     CONF_RECO_FAVES,
     CONF_RECO_SIZE,
-    CONF_SYNC_INTERVAL_ALBUMS,
-    CONF_SYNC_INTERVAL_ARTISTS,
-    CONF_SYNC_INTERVAL_PLAYLISTS,
-    CONF_SYNC_INTERVAL_PODCASTS,
-    CONF_SYNC_INTERVAL_RADIOS,
-    CONF_SYNC_INTERVAL_TRACKS,
     OpenSonicProvider,
 )
 
@@ -111,50 +105,6 @@ async def get_config_entries(
             type=ConfigEntryType.BOOLEAN,
             required=True,
             default_value=True,
-        ),
-        # Per-media-type library sync interval (hours). Blank = MA default
-        # (12h). Range floor is 1h (TaskSchedule is integer-hours).
-        ConfigEntry(
-            key=CONF_SYNC_INTERVAL_ARTISTS,
-            type=ConfigEntryType.INTEGER,
-            required=False,
-            range=(1, 168),
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_SYNC_INTERVAL_ALBUMS,
-            type=ConfigEntryType.INTEGER,
-            required=False,
-            range=(1, 168),
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_SYNC_INTERVAL_TRACKS,
-            type=ConfigEntryType.INTEGER,
-            required=False,
-            range=(1, 168),
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_SYNC_INTERVAL_PLAYLISTS,
-            type=ConfigEntryType.INTEGER,
-            required=False,
-            range=(1, 168),
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_SYNC_INTERVAL_PODCASTS,
-            type=ConfigEntryType.INTEGER,
-            required=False,
-            range=(1, 168),
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_SYNC_INTERVAL_RADIOS,
-            type=ConfigEntryType.INTEGER,
-            required=False,
-            range=(1, 168),
-            advanced=True,
         ),
         ConfigEntry(
             key=CONF_ENABLE_LEGACY_AUTH,

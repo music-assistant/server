@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from libopensonic.media.media_types import InternetRadioStation
-from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import Radio
@@ -18,7 +17,6 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.providers.opensubsonic import SUPPORTED_FEATURES
 from music_assistant.providers.opensubsonic.sonic_provider import (
     CONF_ENABLE_RADIOS,
-    SYNC_INTERVAL_CONF_KEYS,
     OpenSonicProvider,
 )
 
@@ -41,28 +39,23 @@ _STATIONS = [
 ]
 
 
-def _make_provider(
-    *, enable_radios: bool = True, sync_intervals: dict[str, int] | None = None
-) -> OpenSonicProvider:
+def _make_provider(*, enable_radios: bool = True) -> OpenSonicProvider:
     """Build an OpenSonicProvider with a mocked connection (no network).
 
     The base provider reads config values at construction (notably log_level),
     so config.get_value must return real values, not bare Mocks. enable_radios
-    drives the CONF_ENABLE_RADIOS toggle; sync_intervals supplies per-type
-    sync_interval_<type>s values (maps conf-key -> hours) for the
-    get_default_library_sync_schedule override tests.
+    drives the CONF_ENABLE_RADIOS toggle (mirrors the podcasts _enable_podcasts
+    config-time gate).
     """
     mass = Mock()
-    # the base get_default_library_sync_schedule guards on library_supported;
-    # our provider supports the synced types, so make it truthy.
-    mass.music.library_supported.return_value = True
     manifest = Mock()
     manifest.domain = "opensubsonic"
     config = Mock()
     config.instance_id = "xx-instance-id-xx"
-    values: dict[str, object] = {"log_level": "INFO", "enable_radios": enable_radios}
-    values.update(sync_intervals or {})
-    config.get_value.side_effect = lambda key, default=None: values.get(key, default)
+    config.get_value.side_effect = lambda key, default=None: {
+        "log_level": "INFO",
+        "enable_radios": enable_radios,
+    }.get(key, default)
     prov = OpenSonicProvider(mass, manifest, config, SUPPORTED_FEATURES)
     # instance_id is a read-only property derived from config (set above).
     prov.conn = Mock()
@@ -95,65 +88,6 @@ def test_radio_config_key_wired() -> None:
     CONF_ENABLE_PODCASTS == "enable_podcasts".
     """
     assert CONF_ENABLE_RADIOS == "enable_radios"
-
-
-# --- per-media-type sync interval override ----------------------------------
-
-
-def test_sync_interval_conf_keys_cover_syncable_types() -> None:
-    """Pin the SYNC_INTERVAL_CONF_KEYS map (6 syncable types, key-string contract).
-
-    Maps exactly the 6 media types opensubsonic syncs (artist/album/track/
-    playlist/podcast/radio); key strings follow the sync_interval_<type>s
-    convention shared by the config UI and the override read. Pinning this
-    catches a wrong key string or a missing type.
-    """
-    assert SYNC_INTERVAL_CONF_KEYS == {
-        MediaType.ARTIST: "sync_interval_artists",
-        MediaType.ALBUM: "sync_interval_albums",
-        MediaType.TRACK: "sync_interval_tracks",
-        MediaType.PLAYLIST: "sync_interval_playlists",
-        MediaType.PODCAST: "sync_interval_podcasts",
-        MediaType.RADIO: "sync_interval_radios",
-    }
-
-
-def test_sync_schedule_override_when_set() -> None:
-    """A set per-type interval overrides the schedule to hourly(every=N)."""
-    prov = _make_provider(sync_intervals={"sync_interval_radios": 1})
-    sched = prov.get_default_library_sync_schedule(MediaType.RADIO)
-    assert isinstance(sched, TaskSchedule)
-    assert sched.every == 1
-    # discriminating: the base default is every=12, so every==1 proves OUR
-    # override ran, not the inherited default.
-    assert sched.every != 12
-
-
-def test_sync_schedule_falls_through_when_blank() -> None:
-    """Blank per-type interval falls through to the base default (every=12).
-
-    Blank means 'use MA's default', not 'every=0'.
-    """
-    prov = _make_provider()  # no sync_intervals
-    sched = prov.get_default_library_sync_schedule(MediaType.RADIO)
-    assert sched.every == 12  # the inherited base default
-
-
-def test_sync_schedule_per_type_independent() -> None:
-    """Each type reads its OWN interval key (radios doesn't affect albums)."""
-    prov = _make_provider(sync_intervals={"sync_interval_radios": 2})
-    assert prov.get_default_library_sync_schedule(MediaType.RADIO).every == 2
-    # albums has no override set -> base default
-    assert prov.get_default_library_sync_schedule(MediaType.ALBUM).every == 12
-
-
-def test_sync_schedule_zero_or_invalid_falls_through() -> None:
-    """A 0/falsy interval is treated as 'not set' -> base default.
-
-    Never every=0 (TaskSchedule requires every > 0, which would raise).
-    """
-    prov = _make_provider(sync_intervals={"sync_interval_radios": 0})
-    assert prov.get_default_library_sync_schedule(MediaType.RADIO).every == 12
 
 
 # --- get_library_radios -----------------------------------------------------
