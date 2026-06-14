@@ -30,7 +30,7 @@ bidict==0.23.1
 certifi==2025.11.12
 chardet>=5.2.0
 colorlog==6.10.1
-cryptography==46.0.7
+cryptography==47.0.0
 deezer-python-async==0.3.0
 defusedxml==0.7.1
 deno==2.7.12
@@ -76,7 +76,7 @@ pytz==2025.2
 pywam==0.2.0
 pywidevine==1.9.0
 PyYAML==6.0.3
-qqmusic-api-python==0.4.1
+qqmusic-api-python==0.6.6
 radios==0.3.2
 rokuecp==0.19.5
 shortuuid==1.0.13
