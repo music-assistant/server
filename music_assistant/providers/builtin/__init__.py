@@ -256,7 +256,7 @@ class BuiltinProvider(MusicProvider):
                 item_id=prov_playlist_id,
                 provider=self.instance_id,
                 name=BUILTIN_PLAYLISTS[prov_playlist_id],
-                translation_key=f"builtin_playlist.{prov_playlist_id}",
+                translation_key=prov_playlist_id,
                 provider_mappings={
                     ProviderMapping(
                         item_id=prov_playlist_id,
