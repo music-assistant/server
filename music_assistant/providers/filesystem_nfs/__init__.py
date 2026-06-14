@@ -74,44 +74,32 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_HOST,
             type=ConfigEntryType.STRING,
-            label="Server",
             required=True,
-            description="The hostname or IP address of the NFS server to connect to. "
-            "For example mynas.local or 192.168.1.100.",
         ),
         ConfigEntry(
             key=CONF_EXPORT_PATH,
             type=ConfigEntryType.STRING,
-            label="Export path",
             required=True,
-            description="The NFS export path on the remote server. "
-            "For example /volume1/music or /exports/media.",
         ),
         ConfigEntry(
             key=CONF_SUBFOLDER,
             type=ConfigEntryType.STRING,
-            label="Subfolder",
             required=False,
             default_value="",
-            description="[optional] Use if your music is stored in a sublevel of the export. "
-            "E.g. 'collections' or 'albums/A-K'.",
         ),
         ConfigEntry(
             key=CONF_NFS_VERSION,
             type=ConfigEntryType.STRING,
-            label="NFS Version",
             required=False,
             advanced=True,
             default_value="",
             options=[
-                ConfigValueOption("Auto", ""),
-                ConfigValueOption("NFS 3", "3"),
-                ConfigValueOption("NFS 4", "4"),
-                ConfigValueOption("NFS 4.1", "4.1"),
-                ConfigValueOption("NFS 4.2", "4.2"),
+                ConfigValueOption(""),
+                ConfigValueOption("3"),
+                ConfigValueOption("4"),
+                ConfigValueOption("4.1"),
+                ConfigValueOption("4.2"),
             ],
-            description="The NFS protocol version to use. "
-            "Use Auto to let the system negotiate the best available version.",
         ),
         CONF_ENTRY_MISSING_ALBUM_ARTIST,
         CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,

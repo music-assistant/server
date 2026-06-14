@@ -11,6 +11,7 @@ from music_assistant_models.enums import (
     ContentType,
     ImageType,
 )
+from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -24,38 +25,65 @@ from music_assistant_models.media_items import (
 
 from music_assistant.helpers.util import parse_title_and_version
 
-from .constants import IMAGE_SIZE_LARGE
+from .constants import (
+    IMAGE_SIZE_LARGE,
+    KION_SYSTEM_OWNER_NAMES,
+    PROVIDER_DISPLAY_NAME_EN,
+    PROVIDER_DISPLAY_NAME_RU,
+    WEB_BASE_URL,
+)
 
 if TYPE_CHECKING:
-    from yandex_music import Album as YandexAlbum
-    from yandex_music import Artist as YandexArtist
-    from yandex_music import Playlist as YandexPlaylist
-    from yandex_music import Track as YandexTrack
+    from yandex_music import Album as KionAlbum
+    from yandex_music import Artist as KionArtist
+    from yandex_music import Playlist as KionPlaylist
+    from yandex_music import Track as KionTrack
 
     from .provider import KionMusicProvider
 
 
-def _get_image_url(cover_uri: str | None, size: str = IMAGE_SIZE_LARGE) -> str | None:
-    """Convert cover URI to full URL.
+def get_canonical_provider_name(provider: KionMusicProvider) -> str:
+    """Return the locale-aware canonical display name for the KION Music system account.
 
-    :param cover_uri: Cover URI template.
+    :param provider: The KION Music provider instance.
+    :return: Localized provider display name.
+    """
+    with suppress(Exception):
+        locale = (provider.mass.metadata.locale or "en_US").lower()
+        if locale.startswith("ru"):
+            return PROVIDER_DISPLAY_NAME_RU
+    return PROVIDER_DISPLAY_NAME_EN
+
+
+def _get_image_url(cover_uri: str | None, size: str = IMAGE_SIZE_LARGE) -> str | None:
+    """Convert Kion cover URI to full URL.
+
+    :param cover_uri: Kion cover URI template.
     :param size: Image size (e.g., '1000x1000').
     :return: Full image URL or None.
     """
     if not cover_uri:
         return None
-    # Cover URIs come in format "avatars.yandex.net/get-music-content/xxx/yyy/%%"
+    # Cover URIs come in format "avatars.kion.net/get-music-content/xxx/yyy/%%"
     # Replace %% with the desired size
     return f"https://{cover_uri.replace('%%', size)}"
 
 
-def parse_artist(provider: KionMusicProvider, artist_obj: YandexArtist) -> Artist:
-    """Parse a KION Music artist object to MA Artist model.
+def parse_artist(
+    provider: KionMusicProvider,
+    artist_obj: KionArtist,
+    *,
+    about: object | None = None,
+) -> Artist:
+    """Parse Kion artist object to MA Artist model.
 
     :param provider: The KION Music provider instance.
-    :param artist_obj: API artist object.
+    :param artist_obj: Kion artist object.
+    :param about: Optional ArtistAbout enrichment (description + listener stats).
     :return: Music Assistant Artist model.
     """
+    if artist_obj.id is None:
+        raise InvalidDataError("Kion artist missing id")
     artist_id = str(artist_obj.id)
     artist = Artist(
         item_id=artist_id,
@@ -66,7 +94,7 @@ def parse_artist(provider: KionMusicProvider, artist_obj: YandexArtist) -> Artis
                 item_id=artist_id,
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
-                url=f"https://music.mts.ru/artist/{artist_id}",
+                url=f"{WEB_BASE_URL}/artist/{artist_id}",
             )
         },
     )
@@ -99,16 +127,27 @@ def parse_artist(provider: KionMusicProvider, artist_obj: YandexArtist) -> Artis
                 ]
             )
 
+    if about is not None:
+        description = getattr(about, "description", None)
+        if description:
+            artist.metadata.description = description
+        stats = getattr(about, "stats", None)
+        monthly = getattr(stats, "last_month_listeners", None) if stats else None
+        if monthly:
+            artist.metadata.popularity = max(0, min(100, monthly // 10000))
+
     return artist
 
 
-def parse_album(provider: KionMusicProvider, album_obj: YandexAlbum) -> Album:
-    """Parse a KION Music album object to MA Album model.
+def parse_album(provider: KionMusicProvider, album_obj: KionAlbum) -> Album:
+    """Parse Kion album object to MA Album model.
 
     :param provider: The KION Music provider instance.
-    :param album_obj: API album object.
+    :param album_obj: Kion album object.
     :return: Music Assistant Album model.
     """
+    if album_obj.id is None:
+        raise InvalidDataError("Kion album missing id")
     name, version = parse_title_and_version(
         album_obj.title or "Unknown Album",
         album_obj.version or None,
@@ -131,7 +170,7 @@ def parse_album(provider: KionMusicProvider, album_obj: YandexAlbum) -> Album:
                 audio_format=AudioFormat(
                     content_type=ContentType.UNKNOWN,
                 ),
-                url=f"https://music.mts.ru/album/{album_id}",
+                url=f"{WEB_BASE_URL}/album/{album_id}",
                 available=available,
             )
         },
@@ -196,13 +235,22 @@ def parse_album(provider: KionMusicProvider, album_obj: YandexAlbum) -> Album:
     return album
 
 
-def parse_track(provider: KionMusicProvider, track_obj: YandexTrack) -> Track:
-    """Parse a KION Music track object to MA Track model.
+def parse_track(
+    provider: KionMusicProvider,
+    track_obj: KionTrack,
+    lyrics: str | None = None,
+    lyrics_synced: bool = False,
+) -> Track:
+    """Parse Kion track object to MA Track model.
 
     :param provider: The KION Music provider instance.
-    :param track_obj: API track object.
+    :param track_obj: Kion track object.
+    :param lyrics: Optional lyrics text.
+    :param lyrics_synced: Whether lyrics are in synced LRC format.
     :return: Music Assistant Track model.
     """
+    if track_obj.id is None:
+        raise InvalidDataError("Kion track missing id")
     name, version = parse_title_and_version(
         track_obj.title or "Unknown Track",
         track_obj.version or None,
@@ -212,7 +260,7 @@ def parse_track(provider: KionMusicProvider, track_obj: YandexTrack) -> Track:
     # Determine availability
     available = track_obj.available or False
 
-    # Duration is in milliseconds in KION API
+    # Duration is in milliseconds in Kion API
     duration = (track_obj.duration_ms or 0) // 1000
 
     track = Track(
@@ -229,7 +277,7 @@ def parse_track(provider: KionMusicProvider, track_obj: YandexTrack) -> Track:
                 audio_format=AudioFormat(
                     content_type=ContentType.UNKNOWN,
                 ),
-                url=f"https://music.mts.ru/track/{track_id}",
+                url=f"{WEB_BASE_URL}/track/{track_id}",
                 available=available,
             )
         },
@@ -269,20 +317,30 @@ def parse_track(provider: KionMusicProvider, track_obj: YandexTrack) -> Track:
     if track_obj.content_warning:
         track.metadata.explicit = track_obj.content_warning == "explicit"
 
+    # Lyrics
+    # Core metadata controller checks `metadata.lyrics` first when picking
+    # the provider's own lyrics, so always populate `.lyrics` — otherwise
+    # synced-only LRC would be skipped and replaced by fallback metadata
+    # providers (lrclib/genius).
+    if lyrics:
+        track.metadata.lyrics = lyrics
+        if lyrics_synced:
+            track.metadata.lrc_lyrics = lyrics
+
     return track
 
 
 def parse_playlist(
-    provider: KionMusicProvider, playlist_obj: YandexPlaylist, owner_name: str | None = None
+    provider: KionMusicProvider, playlist_obj: KionPlaylist, owner_name: str | None = None
 ) -> Playlist:
-    """Parse a KION Music playlist object to MA Playlist model.
+    """Parse Kion playlist object to MA Playlist model.
 
     :param provider: The KION Music provider instance.
-    :param playlist_obj: API playlist object.
+    :param playlist_obj: Kion playlist object.
     :param owner_name: Optional owner name override.
     :return: Music Assistant Playlist model.
     """
-    # Playlist ID is a combination of owner uid and playlist kind
+    # Playlist ID in Kion is a combination of owner uid and playlist kind
     owner_id = str(playlist_obj.owner.uid) if playlist_obj.owner else str(provider.client.user_id)
     playlist_kind = str(playlist_obj.kind)
     playlist_id = f"{owner_id}:{playlist_kind}"
@@ -297,7 +355,11 @@ def parse_playlist(
         elif is_editable:
             owner_name = "Me"
         else:
-            owner_name = "KION Music"
+            owner_name = get_canonical_provider_name(provider)
+
+    # Normalize all known system account name variants to locale-aware canonical form
+    if owner_name and owner_name.lower() in KION_SYSTEM_OWNER_NAMES:
+        owner_name = get_canonical_provider_name(provider)
 
     playlist = Playlist(
         item_id=playlist_id,
@@ -309,7 +371,7 @@ def parse_playlist(
                 item_id=playlist_id,
                 provider_domain=provider.domain,
                 provider_instance=provider.instance_id,
-                url=f"https://music.mts.ru/users/{owner_id}/playlists/{playlist_kind}",
+                url=f"{WEB_BASE_URL}/users/{owner_id}/playlists/{playlist_kind}",
                 is_unique=is_editable,
             )
         },

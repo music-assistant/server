@@ -33,12 +33,18 @@ class DLNANotifyServer(UpnpNotifyServer):  # type: ignore[misc,unused-ignore]
         if request.method != "NOTIFY":
             return Response(status=405)
 
+        # Some DLNA devices (e.g. Denon HEOS) send NOTIFY bodies that are not
+        # valid UTF-8 when track metadata contains non-ASCII characters in the
+        # device's native encoding. Decode leniently so we don't drop the event.
+        body_bytes = await request.read()
+        body = body_bytes.decode("utf-8", errors="replace")
+
         # transform aiohttp request to async_upnp_client request
         http_request = HttpRequest(
             method=request.method,
             url=str(request.url),
             headers=request.headers,
-            body=await request.text(),
+            body=body,
         )
 
         try:

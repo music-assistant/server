@@ -1,4 +1,5 @@
-"""ORF Radiothek / ORF Sound provider for Music Assistant.
+"""
+ORF Radiothek / ORF Sound provider for Music Assistant.
 
 Features:
 - Live radios (ORF stations + privates) from ORF bundle.json
@@ -126,55 +127,39 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_STREAM_PROTO,
             type=ConfigEntryType.STRING,
-            label="Preferred ORF protocol",
             required=False,
             default_value="hls",
-            description=(
-                "Used for ORF stations (template-based). "
-                "Privates use explicit URLs from bundle.json."
-            ),
             value=values.get(CONF_STREAM_PROTO),
             advanced=True,
         ),
         ConfigEntry(
             key=CONF_STREAM_QUALITY,
             type=ConfigEntryType.STRING,
-            label="ORF quality",
             required=False,
             default_value="qxa",
-            description="For ORF HLS: q1a/q2a/q3a/q4a/qxa. For shoutcast: q1a/q2a.",
             value=values.get(CONF_STREAM_QUALITY),
             advanced=True,
         ),
         ConfigEntry(
             key=CONF_INCLUDE_HIDDEN,
             type=ConfigEntryType.BOOLEAN,
-            label="Include hidden stations",
             required=False,
             default_value=False,
-            description="Include stations with hideFromStations=true.",
             value=values.get(CONF_INCLUDE_HIDDEN),
             advanced=True,
         ),
         ConfigEntry(
             key=CONF_CATCHUP_PROTO,
             type=ConfigEntryType.STRING,
-            label="Catch-up stream type",
             required=False,
             default_value="progressive",
-            description="Use 'progressive' (mp3) or 'hls' (m3u8) URLs from the broadcast detail.",
             value=values.get(CONF_CATCHUP_PROTO),
         ),
         ConfigEntry(
             key=CONF_CATCHUP_STATIONS,
             type=ConfigEntryType.STRING,
-            label="Catch-up stations (optional)",
             required=False,
             default_value="",
-            description=(
-                "Comma-separated station ids (e.g. 'stm,wie,oe1'). "
-                "Empty = all ORF stations from bundle."
-            ),
             value=values.get(CONF_CATCHUP_STATIONS),
         ),
     )
@@ -620,9 +605,9 @@ class RadiothekProvider(MusicProvider):
     # MA API: Radios
     # ----------------------------
 
-    @use_cache(3600 * 24)  # Cache for 24 hours
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse this provider's radio stations and podcasts.
+        """
+        Browse this provider's radio stations and podcasts.
 
         :param path: The path to browse, (e.g. provider_id://artists).
         """
@@ -729,9 +714,7 @@ class RadiothekProvider(MusicProvider):
 
         raise MediaNotFoundError("Podcast not found.")
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get episodes of a specific podcast."""
         bundle = await self._get_bundle()
 

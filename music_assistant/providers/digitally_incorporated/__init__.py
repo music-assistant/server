@@ -138,15 +138,13 @@ async def get_config_entries(
         ConfigEntry(
             key="listen_key",
             type=ConfigEntryType.STRING,
-            label="Listen Key",
-            description="Your premium listen key. Get this from your account settings.",
             required=True,
         )
     )
 
     # Network selection - multi-select instead of individual booleans
     network_options = [
-        ConfigValueOption(network_info["display_name"], network_key)
+        ConfigValueOption(network_key, title=network_info["display_name"])
         for network_key, network_info in NETWORKS.items()
     ]
 
@@ -154,8 +152,6 @@ async def get_config_entries(
         ConfigEntry(
             key="enabled_networks",
             type=ConfigEntryType.STRING,
-            label="Enabled Networks",
-            description="Select which networks to enable",
             default_value=list(NETWORKS.keys()),  # Enable all by default
             required=True,
             options=network_options,
@@ -271,7 +267,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
         results.radio = radios
         return results
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Retrieve all radio stations from active networks."""
         for network_key in self._get_active_networks():
             try:

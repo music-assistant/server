@@ -1,0 +1,21 @@
+{
+  "config_entries": {
+    "cast_audio_unsupported": {
+      "label": "Sendspin isn't supported on this Cast device. Use the standard Cast protocol instead."
+    },
+    "sendspin_static_delay": {
+      "label": "Static playback delay (ms)",
+      "description": "Offset in milliseconds to keep this player in sync with other players. Increase if audio plays too late, for example to compensate for latency from an amp, active speakers, or the OS."
+    },
+    "preferred_sendspin_format": {
+      "label": "Preferred audio format",
+      "description": "Select the audio format to use for playback on this player.",
+      "options": {
+        "automatic": "Automatic (let client decide)"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Sendspin is an audio playback, control and synchronization protocol developed by the Open Home Foundation and is the native playback protocol built into Music Assistant, used for playback to supported clients like the Music Assistant Web interface, supported (mobile) clients and supported hardware"
+  }
+}

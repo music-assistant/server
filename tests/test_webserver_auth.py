@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import logging
 import pathlib
+import threading
 from collections.abc import AsyncGenerator
 from datetime import timedelta
 from sqlite3 import IntegrityError
@@ -26,7 +27,7 @@ from music_assistant.mass import MusicAssistant
 
 
 @pytest.fixture
-async def mass_minimal(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant, None]:
+async def mass_minimal(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
     """Create a minimal Music Assistant instance for auth testing without starting the webserver.
 
     :param tmp_path: Temporary directory for test data.
@@ -43,12 +44,8 @@ async def mass_minimal(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant,
 
     # Initialize the minimum required for auth testing
     mass_instance.loop = asyncio.get_running_loop()
-    # Use id() as fallback since _thread_id is a private attribute that may not exist
-    mass_instance.loop_thread_id = (
-        getattr(mass_instance.loop, "_thread_id", None)
-        if hasattr(mass_instance.loop, "_thread_id")
-        else id(mass_instance.loop)
-    )
+    # fixture runs on the event loop thread, like MusicAssistant.start()
+    mass_instance.loop_thread_id = threading.get_ident()
 
     # Create config controller
     mass_instance.config = ConfigController(mass_instance)

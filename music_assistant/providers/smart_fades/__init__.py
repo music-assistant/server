@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 
-from .provider import SmartFadesProvider
+from music_assistant.helpers.util import verify_system_meets_requirements
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -17,7 +17,14 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
 
+    from .provider import SmartFadesProvider
+
 SUPPORTED_FEATURES: set[ProviderFeature] = set()
+
+# Smart Fades runs on-device ML (torch) inference; gate it to capable hardware.
+# 4GB matches the Balanced buffer threshold, the minimum buffer smart crossfade needs.
+MIN_RAM_GB = 4.0
+MIN_CPU_CORES = 4
 
 
 async def setup(
@@ -26,6 +33,16 @@ async def setup(
     config: ProviderConfig,
 ) -> SmartFadesProvider:
     """Set up the Smart Fades provider."""
+    # Gate before importing the provider module so the heavy torch/beat_this stack is
+    # never imported on a host that does not meet the minimal requirements.
+    verify_system_meets_requirements(
+        feature_name="Smart Fades",
+        min_memory_gb=MIN_RAM_GB,
+        min_cpu_cores=MIN_CPU_CORES,
+        require_ml_inference=True,
+    )
+    from .provider import SmartFadesProvider  # noqa: PLC0415
+
     return SmartFadesProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
@@ -41,12 +58,6 @@ async def get_config_entries(
         ConfigEntry(
             key="single_cpu_warning",
             type=ConfigEntryType.ALERT,
-            label=(
-                "Only 1 CPU core detected on this system. "
-                "Smart Fades analysis typically takes some CPU time during model inference. "
-                "Enabling it on single-CPU hosts may cause performance issues "
-                "and block normal playback. Enable at your own risk."
-            ),
             required=False,
             hidden=(os.cpu_count() or 1) > 1,
         ),

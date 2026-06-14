@@ -21,7 +21,6 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
-    ImageType,
     MediaType,
     ProviderFeature,
     StreamType,
@@ -38,21 +37,19 @@ from music_assistant_models.media_items import (
     AudioFormat,
     ItemMapping,
     MediaItem,
-    MediaItemImage,
     Playlist,
     ProviderMapping,
     RecommendationFolder,
     SearchResults,
     Track,
-    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 from plexapi.audio import Album as PlexAlbum
 from plexapi.audio import Artist as PlexArtist
-from plexapi.audio import Playlist as PlexPlaylist
 from plexapi.audio import Track as PlexTrack
 from plexapi.base import PlexObject
 from plexapi.myplex import MyPlexAccount, MyPlexPinLogin
+from plexapi.playlist import Playlist as PlexPlaylist
 from plexapi.server import PlexServer
 
 from music_assistant.constants import UNKNOWN_ARTIST
@@ -61,7 +58,44 @@ from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.plex.helpers import discover_local_servers, get_libraries
+from music_assistant.providers.plex.constants import (
+    AUTH_TOKEN_UNAUTH,
+    COLLECTION_ID_PREFIX,
+    CONF_ACTION_AUTH_LOCAL,
+    CONF_ACTION_AUTH_MYPLEX,
+    CONF_ACTION_CLEAR_AUTH,
+    CONF_ACTION_GDM,
+    CONF_ACTION_LIBRARY,
+    CONF_AUTH_TOKEN,
+    CONF_COLLECTION_PREFIX,
+    CONF_HUB_ITEMS_LIMIT,
+    CONF_IMPORT_COLLECTIONS,
+    CONF_LIBRARY_ID,
+    CONF_LOCAL_SERVER_IP,
+    CONF_LOCAL_SERVER_PORT,
+    CONF_LOCAL_SERVER_SSL,
+    CONF_LOCAL_SERVER_VERIFY_CERT,
+    CONF_PLEX_FAVORITE_THRESHOLD,
+    CONF_PLEX_LIKE_RATING,
+    CONF_PLEX_UNLIKE_RATING,
+    ERR_ARTIST_INVALID_ID,
+    ERR_ARTIST_NOT_FOUND,
+    ERR_AUTH_FAILED,
+    ERR_INVALID_CREDENTIALS,
+    ERR_ITEM_NOT_FOUND,
+    ERR_MYPLEX_AUTH_FAILED,
+    ERR_MYPLEX_TOKEN_NOT_RECEIVED,
+    ERR_NO_ARTIST_FOR_TRACK,
+    ERR_NO_LIBRARIES,
+    ERR_TRACK_NOT_FOUND,
+    FAKE_ARTIST_PREFIX,
+)
+from music_assistant.providers.plex.helpers import (
+    discover_local_servers,
+    get_favorite_from_rating,
+    get_libraries,
+    get_thumbnail_images,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Coroutine
@@ -75,29 +109,6 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
-
-CONF_ACTION_AUTH_MYPLEX = "auth_myplex"
-CONF_ACTION_AUTH_LOCAL = "auth_local"
-CONF_ACTION_CLEAR_AUTH = "auth"
-CONF_ACTION_LIBRARY = "library"
-CONF_ACTION_GDM = "gdm"
-
-CONF_AUTH_TOKEN = "token"
-CONF_LIBRARY_ID = "library_id"
-CONF_LOCAL_SERVER_IP = "local_server_ip"
-CONF_LOCAL_SERVER_PORT = "local_server_port"
-CONF_LOCAL_SERVER_SSL = "local_server_ssl"
-CONF_LOCAL_SERVER_VERIFY_CERT = "local_server_verify_cert"
-CONF_IMPORT_COLLECTIONS = "import_collections"
-CONF_COLLECTION_PREFIX = "collection_prefix"
-CONF_PLEX_LIKE_RATING = "plex_like_rating"
-CONF_PLEX_FAVORITE_THRESHOLD = "plex_favorite_threshold"
-CONF_PLEX_UNLIKE_RATING = "plex_unlike_rating"
-CONF_HUB_ITEMS_LIMIT = "hub_items_limit"
-
-FAKE_ARTIST_PREFIX = "_fake://"
-
-AUTH_TOKEN_UNAUTH = "local_auth"
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -120,8 +131,7 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     if not config.get_value(CONF_AUTH_TOKEN):
-        msg = "Invalid login credentials"
-        raise LoginFailed(msg)
+        raise LoginFailed(ERR_INVALID_CREDENTIALS)
 
     return PlexProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
@@ -183,11 +193,9 @@ async def get_config_entries(  # noqa: PLR0915
                 await asyncio.sleep(0.1 * (2**attempt))
             else:
                 # token still not available
-                msg = "Authentication to MyPlex failed: token not received"
-                raise LoginFailed(msg)
+                raise LoginFailed(ERR_MYPLEX_TOKEN_NOT_RECEIVED)
             if not plex_auth.token:
-                msg = "Authentication to MyPlex failed"
-                raise LoginFailed(msg)
+                raise LoginFailed(ERR_MYPLEX_AUTH_FAILED)
             # set the retrieved token on the values object to pass along
             values[CONF_AUTH_TOKEN] = plex_auth.token
 
@@ -205,10 +213,7 @@ async def get_config_entries(  # noqa: PLR0915
             ConfigEntry(
                 key=CONF_ACTION_GDM,
                 type=ConfigEntryType.ACTION,
-                label="Use Plex GDM to discover local servers",
-                description='Enable "GDM" to discover local Plex servers automatically.',
                 action=CONF_ACTION_GDM,
-                action_label="Use Plex GDM to discover local servers",
             )
         )
 
@@ -217,16 +222,12 @@ async def get_config_entries(  # noqa: PLR0915
         ConfigEntry(
             key=CONF_LOCAL_SERVER_IP,
             type=ConfigEntryType.STRING,
-            label="Local server IP",
-            description="The local server IP (e.g. 192.168.1.77)",
             required=True,
             value=cast("str", values.get(CONF_LOCAL_SERVER_IP)) if values else None,
         ),
         ConfigEntry(
             key=CONF_LOCAL_SERVER_PORT,
             type=ConfigEntryType.INTEGER,
-            label="Local server port",
-            description="The local server port (e.g. 32400)",
             required=True,
             default_value=32400,
             value=cast("int", values.get(CONF_LOCAL_SERVER_PORT)) if values else None,
@@ -234,16 +235,12 @@ async def get_config_entries(  # noqa: PLR0915
         ConfigEntry(
             key=CONF_LOCAL_SERVER_SSL,
             type=ConfigEntryType.BOOLEAN,
-            label="SSL (HTTPS)",
-            description="Connect to the local server using SSL (HTTPS)",
             required=True,
             default_value=False,
         ),
         ConfigEntry(
             key=CONF_LOCAL_SERVER_VERIFY_CERT,
             type=ConfigEntryType.BOOLEAN,
-            label="Verify certificate",
-            description="Verify local server SSL certificate",
             required=True,
             default_value=True,
             depends_on=CONF_LOCAL_SERVER_SSL,
@@ -266,12 +263,9 @@ async def get_config_entries(  # noqa: PLR0915
         conf_libraries = ConfigEntry(
             key=CONF_LIBRARY_ID,
             type=ConfigEntryType.STRING,
-            label="Library",
             required=True,
-            description="The library to connect to (e.g. Music)",
             depends_on=CONF_AUTH_TOKEN,
             action=CONF_ACTION_LIBRARY,
-            action_label="Select Plex Music Library",
         )
         if action in (
             CONF_ACTION_LIBRARY,
@@ -294,15 +288,11 @@ async def get_config_entries(  # noqa: PLR0915
                     instance_id,
                 )
             ):
-                msg = "Unable to retrieve Servers and/or Music Libraries"
-                raise LoginFailed(msg)
+                raise LoginFailed(ERR_NO_LIBRARIES)
             conf_libraries.options = [
                 # use the same value for both the value and the title
                 # until we find out what plex uses as stable identifiers
-                ConfigValueOption(
-                    title=x,
-                    value=x,
-                )
+                ConfigValueOption(x, title=x)
                 for x in libraries
             ]
             # select first library as (default) value
@@ -316,20 +306,14 @@ async def get_config_entries(  # noqa: PLR0915
             ConfigEntry(
                 key=CONF_ACTION_AUTH_MYPLEX,
                 type=ConfigEntryType.ACTION,
-                label="Authenticate with MyPlex",
-                description="Authenticate with MyPlex to access your library.",
                 action=CONF_ACTION_AUTH_MYPLEX,
-                action_label="Authenticate with MyPlex",
             )
         )
         entries.append(
             ConfigEntry(
                 key=CONF_ACTION_AUTH_LOCAL,
                 type=ConfigEntryType.ACTION,
-                label="Authenticate locally",
-                description="Authenticate locally to access your library.",
                 action=CONF_ACTION_AUTH_LOCAL,
-                action_label="Authenticate locally",
             )
         )
     else:
@@ -337,10 +321,7 @@ async def get_config_entries(  # noqa: PLR0915
             ConfigEntry(
                 key=CONF_ACTION_CLEAR_AUTH,
                 type=ConfigEntryType.ACTION,
-                label="Clear authentication",
-                description="Clear the current authentication details.",
                 action=CONF_ACTION_CLEAR_AUTH,
-                action_label="Clear authentication",
                 required=False,
             )
         )
@@ -350,8 +331,6 @@ async def get_config_entries(  # noqa: PLR0915
         ConfigEntry(
             key=CONF_IMPORT_COLLECTIONS,
             type=ConfigEntryType.BOOLEAN,
-            label="Import Collections",
-            description="Import collections (tracks, albums, or artists) as playlists",
             default_value=False,
             advanced=True,
         )
@@ -360,8 +339,6 @@ async def get_config_entries(  # noqa: PLR0915
         ConfigEntry(
             key=CONF_COLLECTION_PREFIX,
             type=ConfigEntryType.STRING,
-            label="Collection Prefix",
-            description="Prefix to add to collection names when imported as playlists",
             default_value="Collection: ",
             depends_on=CONF_IMPORT_COLLECTIONS,
             advanced=True,
@@ -373,9 +350,6 @@ async def get_config_entries(  # noqa: PLR0915
         ConfigEntry(
             key=CONF_PLEX_LIKE_RATING,
             type=ConfigEntryType.FLOAT,
-            label="Plex rating when liking in Music Assistant",
-            description="When you like a track or album in Music Assistant, "
-            "set this rating value in Plex (0.0 = unrated, 10.0 = 5 stars).",
             default_value=10.0,
             range=(0, 10),
             category="sync_options",
@@ -385,9 +359,6 @@ async def get_config_entries(  # noqa: PLR0915
         ConfigEntry(
             key=CONF_PLEX_FAVORITE_THRESHOLD,
             type=ConfigEntryType.FLOAT,
-            label="Minimum Plex rating to import as favorite",
-            description="Tracks and albums with a Plex rating at or above this threshold "
-            "will be imported as favorites in Music Assistant (0.0 = unrated, 10.0 = 5 stars).",
             default_value=10.0,
             range=(0, 10),
             category="sync_options",
@@ -397,9 +368,6 @@ async def get_config_entries(  # noqa: PLR0915
         ConfigEntry(
             key=CONF_PLEX_UNLIKE_RATING,
             type=ConfigEntryType.FLOAT,
-            label="Plex rating when unliking in Music Assistant",
-            description="When you unlike a track or album in Music Assistant, "
-            "set this rating value in Plex (0.0 = unrated/clear rating, 10.0 = 5 stars).",
             default_value=0.0,
             range=(0, 10),
             category="sync_options",
@@ -411,8 +379,6 @@ async def get_config_entries(  # noqa: PLR0915
         ConfigEntry(
             key=CONF_HUB_ITEMS_LIMIT,
             type=ConfigEntryType.INTEGER,
-            label="Items per hub",
-            description="Maximum number of items to load from each hub (default: 10)",
             default_value=10,
             advanced=True,
             range=(1, 100),
@@ -447,7 +413,7 @@ class PlexProvider(MusicProvider):
             try:
                 session = requests.Session()
                 session.verify = (
-                    self.config.get_value(CONF_LOCAL_SERVER_VERIFY_CERT)
+                    bool(self.config.get_value(CONF_LOCAL_SERVER_VERIFY_CERT))
                     if self.config.get_value(CONF_LOCAL_SERVER_SSL)
                     else False
                 )
@@ -495,8 +461,7 @@ class PlexProvider(MusicProvider):
                             self.instance_id, CONF_AUTH_TOKEN
                         ),
                     )
-                    msg = "Authentication failed"
-                    raise LoginFailed(msg)
+                    raise LoginFailed(ERR_AUTH_FAILED)
                 raise LoginFailed from err
             return plex_server
 
@@ -536,8 +501,11 @@ class PlexProvider(MusicProvider):
         await self.get_myplex_account_and_refresh_token(str(self.config.get_value(CONF_AUTH_TOKEN)))
         return await asyncio.to_thread(call, *args, **kwargs)
 
-    async def _get_data(self, key: str, cls: type[PlexObjectT]) -> PlexObjectT:
-        results = await self._run_async(self._plex_library.fetchItem, key, cls)
+    async def _get_data(self, key: str, cls: type[PlexObjectT] | None = None) -> PlexObjectT:
+        try:
+            results = await self._run_async(self._plex_library.fetchItem, key, cls)
+        except plexapi.exceptions.NotFound as err:
+            raise MediaNotFoundError(ERR_ITEM_NOT_FOUND.format(item_id=key)) from err
         return cast("PlexObjectT", results)
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
@@ -602,7 +570,7 @@ class PlexProvider(MusicProvider):
             return await self._parse_playlist(plex_media)
         return None
 
-    async def _search_track(self, search_query: str | None, limit: int) -> list[PlexTrack]:
+    async def _search_track(self, search_query: str, limit: int) -> list[PlexTrack]:
         return cast(
             "list[PlexTrack]",
             await self._run_async(self._plex_library.searchTracks, title=search_query, limit=limit),
@@ -626,30 +594,6 @@ class PlexProvider(MusicProvider):
         return cast(
             "list[PlexPlaylist]",
             await self._run_async(self._plex_library.playlists, title=search_query, limit=limit),
-        )
-
-    async def _search_track_advanced(self, limit: int, **kwargs: Any) -> list[PlexTrack]:
-        return cast(
-            "list[PlexPlaylist]",
-            await self._run_async(self._plex_library.searchTracks, filters=kwargs, limit=limit),
-        )
-
-    async def _search_album_advanced(self, limit: int, **kwargs: Any) -> list[PlexAlbum]:
-        return cast(
-            "list[PlexPlaylist]",
-            await self._run_async(self._plex_library.searchAlbums, filters=kwargs, limit=limit),
-        )
-
-    async def _search_artist_advanced(self, limit: int, **kwargs: Any) -> list[PlexArtist]:
-        return cast(
-            "list[PlexPlaylist]",
-            await self._run_async(self._plex_library.searchArtists, filters=kwargs, limit=limit),
-        )
-
-    async def _search_playlist_advanced(self, limit: int, **kwargs: Any) -> list[PlexPlaylist]:
-        return cast(
-            "list[PlexPlaylist]",
-            await self._run_async(self._plex_library.playlists, filters=kwargs, limit=limit),
         )
 
     async def _search_and_parse(
@@ -686,23 +630,13 @@ class PlexProvider(MusicProvider):
         )
         # Check if album rating meets the configured threshold for favorites
         favorite_threshold = cast("float", self.config.get_value(CONF_PLEX_FAVORITE_THRESHOLD))
-        # Try to get the user rating - Plex stores ratings as 0.0-10.0
-        if hasattr(plex_album, "userRating") and plex_album.userRating is not None:
-            album.favorite = float(plex_album.userRating) >= favorite_threshold
+        if (favorite := get_favorite_from_rating(plex_album, favorite_threshold)) is not None:
+            album.favorite = favorite
 
         if plex_album.year:
             album.year = plex_album.year
-        if thumb := plex_album.firstAttr("thumb", "parentThumb", "grandparentThumb"):
-            album.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=thumb,
-                        provider=self.instance_id,
-                        remotely_accessible=False,
-                    )
-                ]
-            )
+        if images := get_thumbnail_images(plex_album, self.instance_id):
+            album.metadata.images = images
         if plex_album.summary:
             album.metadata.description = plex_album.summary
 
@@ -719,8 +653,7 @@ class PlexProvider(MusicProvider):
         """Parse a Plex Artist response to Artist model object."""
         artist_id = plex_artist.key
         if not artist_id:
-            msg = "Artist does not have a valid ID"
-            raise InvalidDataError(msg)
+            raise InvalidDataError(ERR_ARTIST_INVALID_ID)
         artist = Artist(
             item_id=artist_id,
             name=plex_artist.title or UNKNOWN_ARTIST,
@@ -736,17 +669,8 @@ class PlexProvider(MusicProvider):
         )
         if plex_artist.summary:
             artist.metadata.description = plex_artist.summary
-        if thumb := plex_artist.firstAttr("thumb", "parentThumb", "grandparentThumb"):
-            artist.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=thumb,
-                        provider=self.instance_id,
-                        remotely_accessible=False,
-                    )
-                ]
-            )
+        if images := get_thumbnail_images(plex_artist, self.instance_id):
+            artist.metadata.images = images
         return artist
 
     async def _parse_playlist(self, plex_playlist: PlexPlaylist) -> Playlist:
@@ -766,17 +690,8 @@ class PlexProvider(MusicProvider):
         )
         if plex_playlist.summary:
             playlist.metadata.description = plex_playlist.summary
-        if thumb := plex_playlist.firstAttr("thumb", "parentThumb", "grandparentThumb"):
-            playlist.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=thumb,
-                        provider=self.instance_id,
-                        remotely_accessible=False,
-                    )
-                ]
-            )
+        if images := get_thumbnail_images(plex_playlist, self.instance_id):
+            playlist.metadata.images = images
         playlist.is_editable = not plex_playlist.smart
         return playlist
 
@@ -787,44 +702,29 @@ class PlexProvider(MusicProvider):
 
         # Collections are imported as playlists with the configured prefix
         playlist = Playlist(
-            item_id=f"collection:{plex_collection.key}",
+            item_id=f"{COLLECTION_ID_PREFIX}{plex_collection.key}",
             provider=self.instance_id,
             name=f"{collection_prefix}{plex_collection.title}",
             provider_mappings={
                 ProviderMapping(
-                    item_id=f"collection:{plex_collection.key}",
+                    item_id=f"{COLLECTION_ID_PREFIX}{plex_collection.key}",
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                 )
             },
         )
         # Add collection poster/thumbnail if available
-        if thumb := plex_collection.firstAttr("thumb", "composite"):
-            playlist.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=thumb,
-                        provider=self.instance_id,
-                        remotely_accessible=False,
-                    )
-                ]
-            )
+        if images := get_thumbnail_images(
+            plex_collection, self.instance_id, ("thumb", "composite")
+        ):
+            playlist.metadata.images = images
         # Collections are not editable in Music Assistant
         playlist.is_editable = False
         return playlist
 
     async def _parse_track(self, plex_track: PlexTrack) -> Track:
         """Parse a Plex Track response to a Track model object."""
-        if plex_track.media:
-            available = True
-            content = plex_track.media[0].container
-        else:
-            # For Plex (local library provider), assume tracks are available by default
-            # even if media attribute is not populated in the initial response.
-            # This prevents tracks from being skipped during library sync.
-            available = True
-            content = None
+        content = plex_track.media[0].container if plex_track.media else None
         track = Track(
             item_id=plex_track.key,
             provider=self.instance_id,
@@ -834,7 +734,10 @@ class PlexProvider(MusicProvider):
                     item_id=plex_track.key,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    available=available,
+                    # For Plex (local library provider), assume tracks are available by default
+                    # even if media attribute is not populated in the initial response.
+                    # This prevents tracks from being skipped during library sync.
+                    available=True,
                     audio_format=AudioFormat(
                         content_type=(
                             ContentType.try_parse(content) if content else ContentType.UNKNOWN
@@ -848,9 +751,8 @@ class PlexProvider(MusicProvider):
         )
         # Check if track rating meets the configured threshold for favorites
         favorite_threshold = cast("float", self.config.get_value(CONF_PLEX_FAVORITE_THRESHOLD))
-        # Try to get the user rating - Plex stores ratings as 0.0-10.0
-        if hasattr(plex_track, "userRating") and plex_track.userRating is not None:
-            track.favorite = float(plex_track.userRating) >= favorite_threshold
+        if (favorite := get_favorite_from_rating(plex_track, favorite_threshold)) is not None:
+            track.favorite = favorite
 
         if plex_track.originalTitle and plex_track.originalTitle != plex_track.grandparentTitle:
             # The artist of the track if different from the album's artist.
@@ -868,28 +770,16 @@ class PlexProvider(MusicProvider):
                 )
             )
         else:
-            msg = "No artist was found for track"
-            raise InvalidDataError(msg)
+            raise InvalidDataError(ERR_NO_ARTIST_FOR_TRACK)
 
-        if thumb := plex_track.firstAttr("thumb", "parentThumb", "grandparentThumb"):
-            track.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=thumb,
-                        provider=self.instance_id,
-                        remotely_accessible=False,
-                    )
-                ]
-            )
+        if images := get_thumbnail_images(plex_track, self.instance_id):
+            track.metadata.images = images
         if plex_track.parentKey:
             track.album = self._get_item_mapping(
                 MediaType.ALBUM, plex_track.parentKey, plex_track.parentTitle
             )
         if plex_track.duration:
             track.duration = int(plex_track.duration / 1000)
-        if plex_track.chapters:
-            pass  # TODO!
 
         return track
 
@@ -957,19 +847,19 @@ class PlexProvider(MusicProvider):
 
         return search_results
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Plex Music."""
         artists_obj = await self._run_async(self._plex_library.all)
         for artist in artists_obj:
             yield await self._parse_artist(artist)
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve all library albums from Plex Music."""
         albums_obj = await self._run_async(self._plex_library.albums)
         for album in albums_obj:
             yield await self._parse_album(album)
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from the provider."""
         playlists_obj = await self._run_async(self._plex_library.playlists)
         for playlist in playlists_obj:
@@ -981,7 +871,7 @@ class PlexProvider(MusicProvider):
             for collection in collections_obj:
                 yield await self._parse_collection(collection)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Plex Music."""
         page_size = 500
         offset = 0
@@ -1004,10 +894,8 @@ class PlexProvider(MusicProvider):
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
-        if plex_album := await self._get_data(prov_album_id, PlexAlbum):
-            return await self._parse_album(plex_album)
-        msg = f"Item {prov_album_id} not found"
-        raise MediaNotFoundError(msg)
+        plex_album = await self._get_data(prov_album_id, PlexAlbum)
+        return await self._parse_album(plex_album)
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
@@ -1031,41 +919,28 @@ class PlexProvider(MusicProvider):
                 prov_artist_id, self.instance_id
             ):
                 return db_artist
-            msg = f"Artist not found: {prov_artist_id}"
-            raise MediaNotFoundError(msg)
+            raise MediaNotFoundError(ERR_ARTIST_NOT_FOUND.format(item_id=prov_artist_id))
 
-        if plex_artist := await self._get_data(prov_artist_id, PlexArtist):
-            return await self._parse_artist(plex_artist)
-        msg = f"Item {prov_artist_id} not found"
-        raise MediaNotFoundError(msg)
+        plex_artist = await self._get_data(prov_artist_id, PlexArtist)
+        return await self._parse_artist(plex_artist)
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        if plex_track := await self._get_data(prov_track_id, PlexTrack):
-            return await self._parse_track(plex_track)
-        msg = f"Item {prov_track_id} not found"
-        raise MediaNotFoundError(msg)
+        plex_track = await self._get_data(prov_track_id, PlexTrack)
+        return await self._parse_track(plex_track)
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         # Check if this is a collection (collections have the format "collection:<key>")
-        if prov_playlist_id.startswith("collection:"):
-            # Extract the collection key
-            collection_key = prov_playlist_id.replace("collection:", "")
-            # Fetch the collection
-            if plex_collection := await self._run_async(
-                self._plex_library.fetchItem, collection_key
-            ):
-                return await self._parse_collection(plex_collection)
-            msg = f"Collection {prov_playlist_id} not found"
-            raise MediaNotFoundError(msg)
+        if prov_playlist_id.startswith(COLLECTION_ID_PREFIX):
+            collection_key = prov_playlist_id.removeprefix(COLLECTION_ID_PREFIX)
+            plex_collection: PlexObject = await self._get_data(collection_key)
+            return await self._parse_collection(plex_collection)
 
-        if plex_playlist := await self._get_data(prov_playlist_id, PlexPlaylist):
-            return await self._parse_playlist(plex_playlist)
-        msg = f"Item {prov_playlist_id} not found"
-        raise MediaNotFoundError(msg)
+        plex_playlist = await self._get_data(prov_playlist_id, PlexPlaylist)
+        return await self._parse_playlist(plex_playlist)
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
@@ -1076,14 +951,9 @@ class PlexProvider(MusicProvider):
             return []
 
         # Check if this is a collection (collections have the format "collection:<key>")
-        if prov_playlist_id.startswith("collection:"):
-            # Extract the collection key
-            collection_key = prov_playlist_id.replace("collection:", "")
-            # Fetch the collection
-            plex_collection = await self._run_async(self._plex_library.fetchItem, collection_key)
-            if not plex_collection:
-                msg = f"Collection {prov_playlist_id} not found"
-                raise MediaNotFoundError(msg)
+        if prov_playlist_id.startswith(COLLECTION_ID_PREFIX):
+            collection_key = prov_playlist_id.removeprefix(COLLECTION_ID_PREFIX)
+            plex_collection: PlexObject = await self._get_data(collection_key)
             if not (collection_items := await self._run_async(plex_collection.items)):
                 return result
             # Collections can contain tracks, albums, or artists - we only want tracks
@@ -1221,17 +1091,7 @@ class PlexProvider(MusicProvider):
                             )
                             continue
 
-                        # Parse item based on its type
-                        if item.type == "track":
-                            folder.items.append(await self._parse_track(item))
-                        elif item.type == "album":
-                            folder.items.append(await self._parse_album(item))
-                        elif item.type == "artist":
-                            folder.items.append(await self._parse_artist(item))
-                        elif item.type == "playlist":
-                            folder.items.append(await self._parse_playlist(item))
-                        # Try to parse other types generically
-                        elif parsed_item := await self._parse(item):
+                        if parsed_item := await self._parse(item):
                             folder.items.append(parsed_item)  # type: ignore[arg-type]
                         else:
                             self.logger.debug(
@@ -1274,9 +1134,8 @@ class PlexProvider(MusicProvider):
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a track."""
         plex_track = await self._get_data(item_id, PlexTrack)
-        if not plex_track or not plex_track.media:
-            msg = f"track {item_id} not found"
-            raise MediaNotFoundError(msg)
+        if not plex_track.media:
+            raise MediaNotFoundError(ERR_TRACK_NOT_FOUND.format(item_id=item_id))
 
         media: PlexMedia = plex_track.media[0]
 
@@ -1295,7 +1154,8 @@ class PlexProvider(MusicProvider):
                 channels=media.audioChannels,
             ),
             stream_type=StreamType.HTTP,
-            duration=plex_track.duration,
+            # plex reports duration in milliseconds, streamdetails expect seconds
+            duration=int(plex_track.duration / 1000) if plex_track.duration else None,
             data=plex_track,
             can_seek=True,
             allow_seek=True,
@@ -1344,20 +1204,16 @@ class PlexProvider(MusicProvider):
             rating = cast("float", self.config.get_value(CONF_PLEX_UNLIKE_RATING))
 
         if media_type == MediaType.TRACK:
-            plex_track = await self._get_data(prov_item_id, PlexTrack)
-            await self._run_async(plex_track.rate, rating)
-            self.logger.debug(
-                "Set Plex rating to %s for track with ID %s (ratingKey: %s)",
-                rating,
-                prov_item_id,
-                plex_track.ratingKey,
-            )
+            plex_item: PlexTrack | PlexAlbum = await self._get_data(prov_item_id, PlexTrack)
         elif media_type == MediaType.ALBUM:
-            plex_album = await self._get_data(prov_item_id, PlexAlbum)
-            await self._run_async(plex_album.rate, rating)
-            self.logger.debug(
-                "Set Plex rating to %s for album with ID %s (ratingKey: %s)",
-                rating,
-                prov_item_id,
-                plex_album.ratingKey,
-            )
+            plex_item = await self._get_data(prov_item_id, PlexAlbum)
+        else:
+            return
+        await self._run_async(plex_item.rate, rating)
+        self.logger.debug(
+            "Set Plex rating to %s for %s with ID %s (ratingKey: %s)",
+            rating,
+            media_type.value,
+            prov_item_id,
+            plex_item.ratingKey,
+        )

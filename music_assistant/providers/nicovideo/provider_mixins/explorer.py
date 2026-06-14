@@ -38,7 +38,9 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
             search_result.tracks = tracks
 
         # Search for both playlists and albums in a single API call for efficiency
-        list_media_types = [mt for mt in media_types if mt in (MediaType.PLAYLIST, MediaType.ALBUM)]
+        list_media_types: list[MediaType] = [
+            mt for mt in media_types if mt in (MediaType.PLAYLIST, MediaType.ALBUM)
+        ]
 
         if list_media_types:
             await self.service_manager.search.search_playlists_and_albums_by_keyword(
@@ -117,7 +119,7 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         return recommendation_folders
 
     @override
-    @use_cache(3600 * 6)  # Cache for 6 hours
+    @use_cache(3600 * 6, allow_expired_cache=True)  # Cache for 6 hours
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of similar tracks based on the provided track."""
         return await self.service_manager.user.get_similar_tracks(prov_track_id, limit)

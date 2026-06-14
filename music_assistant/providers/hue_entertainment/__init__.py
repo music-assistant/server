@@ -14,21 +14,24 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from hue_entertainment import HueEntertainmentAPI
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, SetupFailedError
 
-from music_assistant.providers.hue_entertainment.hue_sendspin_bridge import HueEntertainmentAPI
-
 from .constants import (
+    COLOR_MODES,
     CONF_ACTION_PAIR,
     CONF_BRIDGE_HOST,
     CONF_BRIDGE_ID,
     CONF_BRIGHTNESS,
     CONF_CLIENTKEY,
     CONF_COLOR_MODE,
-    CONF_INTENSITY,
+    CONF_HUE_LATENCY_MS,
     CONF_USERNAME,
+    DEFAULT_COLOR_MODE,
+    DEFAULT_HUE_LATENCY_MS,
+    HUE_DEVICE_TYPE,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -68,7 +71,7 @@ async def _handle_pair_action(values: dict[str, ConfigValueType]) -> None:
     LOGGER.info("Starting Hue bridge pairing with %s ...", host)
     api = HueEntertainmentAPI(host)
     try:
-        credentials = await api.pair()
+        credentials = await api.pair(device_type=HUE_DEVICE_TYPE)
         values[CONF_USERNAME] = credentials["username"]
         values[CONF_CLIENTKEY] = credentials["clientkey"]
         # Fetch and store bridge ID for mDNS IP tracking
@@ -124,15 +127,12 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_BRIDGE_HOST,
             type=ConfigEntryType.STRING,
-            label="Bridge IP Address",
-            description="IP address of the Philips Hue bridge.",
             required=True,
             value=values.get(CONF_BRIDGE_HOST) if values else None,
         ),
         ConfigEntry(
             key=CONF_BRIDGE_ID,
             type=ConfigEntryType.STRING,
-            label="Bridge ID",
             required=False,
             hidden=True,
             value=values.get(CONF_BRIDGE_ID) if values else None,
@@ -147,7 +147,6 @@ async def get_config_entries(
             key=CONF_ACTION_PAIR,
             type=ConfigEntryType.ACTION,
             label="(Re)Pair with Hue Bridge" if paired else "Pair with Hue Bridge",
-            description="Connects to the bridge and retrieves the API credentials.",
             action=CONF_ACTION_PAIR,
             depends_on=CONF_BRIDGE_HOST,
             required=False,
@@ -156,7 +155,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.SECURE_STRING,
-            label="Hue API Username",
             hidden=True,
             required=False,
             default_value="",
@@ -165,7 +163,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_CLIENTKEY,
             type=ConfigEntryType.SECURE_STRING,
-            label="Hue Client Key",
             hidden=True,
             required=False,
             default_value="",
@@ -174,33 +171,23 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_BRIGHTNESS,
             type=ConfigEntryType.INTEGER,
-            label="Brightness",
-            description="Overall light brightness (0-100).",
             default_value=100,
-            range=(0, 100),
-            category="settings",
-        ),
-        ConfigEntry(
-            key=CONF_INTENSITY,
-            type=ConfigEntryType.INTEGER,
-            label="Intensity",
-            description="Reactivity to the music (0-100). "
-            "Higher values make lights react faster to changes.",
-            default_value=70,
             range=(0, 100),
             category="settings",
         ),
         ConfigEntry(
             key=CONF_COLOR_MODE,
             type=ConfigEntryType.STRING,
-            label="Color Mode",
-            description="How colors are mapped to the music.",
-            default_value="spectrum",
-            options=[
-                ConfigValueOption("Spectrum", "spectrum"),
-                ConfigValueOption("Bass Boost", "bass_boost"),
-                ConfigValueOption("Ambient", "ambient"),
-            ],
+            default_value=DEFAULT_COLOR_MODE,
+            options=[ConfigValueOption(mode, title=mode.capitalize()) for mode in COLOR_MODES],
+            category="settings",
+        ),
+        ConfigEntry(
+            key=CONF_HUE_LATENCY_MS,
+            type=ConfigEntryType.INTEGER,
+            default_value=DEFAULT_HUE_LATENCY_MS,
+            range=(0, 3000),
+            immediate_apply=True,
             category="settings",
         ),
     )

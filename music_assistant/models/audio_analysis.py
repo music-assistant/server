@@ -1,4 +1,10 @@
-"""Data model for audio analysis results stored by Audio Analysis providers."""
+"""Data model for audio analysis results stored by Audio Analysis providers.
+
+Stays server-local: the numpy.ndarray fields below would force numpy as an
+upstream dep on every consumer of music_assistant_models if this module moved.
+The lightweight AudioAnalysisCoverage shape lives upstream at
+music_assistant_models.audio_analysis instead.
+"""
 
 from __future__ import annotations
 
@@ -24,6 +30,8 @@ class AudioAnalysisData(DataClassDictMixin):
 
     # EBU R128 integrated loudness in LUFS (typical range: -70.0 to 0.0).
     loudness_integrated: float | None = None
+    # EBU R128 integrated album loudness in LUFS, from provider metadata/tags.
+    loudness_album: float | None = None
     # EBU R128 loudness range in LU (typical range: 1.0 to 30.0).
     loudness_range: float | None = None
     # ITU-R BS.1770-4 true peak in dBTP (typical range: -20.0 to +3.0).

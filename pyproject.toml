@@ -13,7 +13,7 @@ dependencies = [
   "pycares==4.11.0",
   "aiohttp_asyncmdnsresolver==0.1.1",
   "Brotli>=1.0.9",
-  "aiohttp==3.13.5",
+  "aiohttp==3.14.0",
   "aiohttp-fast-zlib==0.3.0",
   "aiohttp-socks==0.11.0",
   "aiofiles==24.1.0",
@@ -21,13 +21,14 @@ dependencies = [
   "awesomeversion>=24.6.0",
   "certifi==2025.11.12",
   "colorlog==6.10.1",
+  "modern_colorthief==0.2.1",
   "cryptography==46.0.7",
   "chardet>=5.2.0",
   "ifaddr==0.2.0",
   "getmac==0.9.5",
   "mashumaro==3.20",
-  "music-assistant-frontend==2.17.149",
-  "music-assistant-models==1.1.115",
+  "music-assistant-models==1.1.132",
+  "music-assistant-frontend==2.17.188",
   "mutagen==1.47.0",
   "orjson==3.11.6",
   "pillow==12.2.0",
@@ -37,7 +38,7 @@ dependencies = [
   "unidecode==1.4.0",
   "xmltodict==1.0.4",
   "shortuuid==1.0.13",
-  "zeroconf==0.148.0",
+  "zeroconf==0.149.12",
   "uv>=0.8.0",
   "librosa==0.11.0",
   "numpy==2.3.5",  # numpy 2.4.0+ uses X86_V2 CPU baseline (requires SSE4.2) which breaks older CPUs https://github.com/music-assistant/support/issues/5005#issuecomment-3972476728
@@ -55,15 +56,15 @@ version = "0.0.0"
 
 [project.optional-dependencies]
 test = [
-  "codespell==2.4.1",
-  "mypy==1.19.1",
+  "codespell==2.4.2",
+  "mypy==2.1.0",
   "pre-commit==4.5.1",
   "pre-commit-hooks==6.0.0",
-  "pytest==9.0.2",
+  "pytest==9.0.3",
   "pytest-aiohttp==1.1.0",
   "pytest-cov==7.0.0",
-  "syrupy==5.1.0",
-  "tomli==2.3.0",
+  "syrupy==5.2.0",
+  "tomli==2.4.1",
   "ruff==0.15.6",
 ]
 
@@ -73,10 +74,14 @@ mass = "music_assistant.__main__:main"
 [tool.codespell]
 # explicit is misspelled in the iTunes API
 # "additionals" is a fixed field name from the Nicovideo API fixtures
-ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,"
+# "connexion" is a French word in the MusicMe login URL path
+# translations/*.json are machine-translated locale files (Lokalise); foreign words aren't typos
+ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,connexion,"
 skip = """*.js,*.svg,\
 music_assistant/providers/itunes_podcasts/itunes_country_codes.json,\
 music_assistant/helpers/resources/genres/genre_mapping.json,\
+music_assistant/providers/sonic_analysis/vendored_clap/**,\
+music_assistant/translations/*.json,\
 NOTICE,\
 """
 
@@ -145,11 +150,8 @@ enable_error_code = [
   "truthy-iterable",
 ]
 exclude = [
-  '^music_assistant/controllers/music.py$',
   '^music_assistant/helpers/app_vars.py',
-  '^music_assistant/providers/apple_music/.*$',
-  '^music_assistant/providers/bluesound/.*$',
-  '^music_assistant/providers/ytmusic/.*$',
+  '^music_assistant/providers/sonic_analysis/vendored_clap/.*$',
 ]
 extra_checks = false
 local_partial_types = true
@@ -169,6 +171,13 @@ warn_return_any = true
 warn_unreachable = true
 warn_unused_configs = true
 warn_unused_ignores = true
+
+# plexapi ships a py.typed marker but its annotations are incomplete (unannotated
+# methods, attributes declared as None and only set dynamically). Treat it as an
+# untyped dependency rather than trusting its type info.
+[[tool.mypy.overrides]]
+module = ["plexapi", "plexapi.*"]
+follow_imports = "skip"
 
 [tool.ruff.format]
 # Force Linux/macOS line endings
@@ -214,7 +223,6 @@ ignore = [
   "PLW0108", # Just annoying, not really useful
   "FURB110", # Just annoying, not really useful
   # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
-  "UP043", # AsyncGenerator[X, None] → AsyncGenerator[X]; to enable later before 2.9 release
   "BLE001",
   "FBT001",
   "FBT002",
@@ -234,8 +242,6 @@ ignore = [
   "PTH123",
   "PYI034",
   "G004",
-  "PGH003",
-  "DTZ005",
   "S104",
   "S105",
   "S106",
@@ -250,7 +256,6 @@ ignore = [
   "B904",
   "TRY401",
   "S324",
-  "DTZ006",
   "ERA001",
   "PTH206",
   "C901",

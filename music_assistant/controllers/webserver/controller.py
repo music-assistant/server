@@ -27,6 +27,8 @@ from music_assistant_models.api import CommandMessage
 from music_assistant_models.auth import UserRole
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
+from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.constants import (
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
@@ -73,6 +75,22 @@ CONF_SSL_PRIVATE_KEY = "ssl_private_key"
 CONF_ACTION_VERIFY_SSL = "verify_ssl"
 MAX_PENDING_MSG = 512
 CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
+
+
+def _locale_from_request(request: web.Request) -> str | None:
+    """
+    Determine the UI locale for an HTTP request from the standard ``Accept-Language`` header.
+
+    Returns None when the header is absent, so the server falls back to the English source.
+
+    :param request: The aiohttp request.
+    """
+    header = request.headers.get("Accept-Language")
+    if not header:
+        return None
+    # take the first/highest-priority tag, dropping any quality factor ("nl-NL,nl;q=0.9" -> "nl-NL")
+    locale = header.split(",", 1)[0].split(";", 1)[0].strip()
+    return locale or None
 
 
 class WebserverController(CoreController):
@@ -133,8 +151,6 @@ class WebserverController(CoreController):
                 key=CONF_AUTH_ALLOW_SELF_REGISTRATION,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
-                label="Allow User Self-Registration",
-                description="Allow users to create accounts via Home Assistant OAuth.",
                 hidden=not any(provider.domain == "hass" for provider in self.mass.providers),
                 requires_reload=False,
             ),
@@ -142,29 +158,17 @@ class WebserverController(CoreController):
                 key=CONF_BASE_URL,
                 type=ConfigEntryType.STRING,
                 default_value=default_base_url,
-                label="Base URL",
-                description="The (base) URL to reach this webserver in the network. \n"
-                "Override this in advanced scenarios where for example you're running "
-                "the webserver behind a reverse proxy.",
                 requires_reload=False,
             ),
             ConfigEntry(
                 key=CONF_BIND_PORT,
                 type=ConfigEntryType.INTEGER,
                 default_value=DEFAULT_SERVER_PORT,
-                label="TCP Port",
-                description="The TCP port to run the webserver.",
                 requires_reload=True,
             ),
             ConfigEntry(
                 key="webserver_warn",
                 type=ConfigEntryType.ALERT,
-                label="Please note that the webserver is by default unencrypted. "
-                "Never ever expose the webserver directly to the internet! \n\n"
-                "Enable SSL below or use a reverse proxy or VPN to secure access. \n\n"
-                "As an alternative, consider using the Remote Access feature which "
-                "secures access to your Music Assistant instance without the need to "
-                "expose your webserver directly.",
                 required=False,
                 depends_on=CONF_ENABLE_SSL,
                 depends_on_value=False,
@@ -174,20 +178,11 @@ class WebserverController(CoreController):
                 key=CONF_ENABLE_SSL,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
-                label="Enable SSL/TLS",
-                description="Enable HTTPS by providing an SSL certificate and private key. \n"
-                "This encrypts all communication with the webserver.",
                 requires_reload=True,
             ),
             ConfigEntry(
                 key=CONF_SSL_CERTIFICATE,
                 type=ConfigEntryType.STRING,
-                label="SSL Certificate",
-                description="Provide your SSL certificate in PEM format. You can either:\n"
-                "- Paste the full contents of your certificate file, or\n"
-                "- Enter an absolute file path (e.g., /ssl/fullchain.pem)\n\n"
-                "This should include the full certificate chain if applicable.\n"
-                "Both RSA and ECDSA certificates are supported.",
                 required=False,
                 depends_on=CONF_ENABLE_SSL,
                 requires_reload=True,
@@ -195,12 +190,6 @@ class WebserverController(CoreController):
             ConfigEntry(
                 key=CONF_SSL_PRIVATE_KEY,
                 type=ConfigEntryType.SECURE_STRING,
-                label="SSL Private Key",
-                description="Provide your SSL private key in PEM format. You can either:\n"
-                "- Paste the full contents of your private key file, or\n"
-                "- Enter an absolute file path (e.g., /ssl/privkey.pem)\n\n"
-                "Both RSA and ECDSA keys are supported. The key must be unencrypted.\n"
-                "This is securely encrypted and stored.",
                 required=False,
                 depends_on=CONF_ENABLE_SSL,
                 requires_reload=True,
@@ -208,11 +197,7 @@ class WebserverController(CoreController):
             ConfigEntry(
                 key=CONF_ACTION_VERIFY_SSL,
                 type=ConfigEntryType.ACTION,
-                label="Verify SSL Certificate",
-                description="Test your certificate and private key to verify they are valid "
-                "and match each other.",
                 action=CONF_ACTION_VERIFY_SSL,
-                action_label="Verify",
                 depends_on=CONF_ENABLE_SSL,
                 required=False,
             ),
@@ -228,15 +213,7 @@ class WebserverController(CoreController):
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
                 default_value="0.0.0.0",
-                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", *ip_addresses}],
-                label="Bind to IP/interface",
-                description="Bind the (web)server to this specific interface. \n"
-                "Use 0.0.0.0 to bind to all interfaces (both IPv4 and IPv6). \n"
-                "Set this address for example to a docker-internal network, "
-                "when you are running a reverse proxy to enhance security and "
-                "protect outside access to the webinterface and API. \n\n"
-                "This is an advanced setting that should normally "
-                "not be adjusted in regular setups.",
+                options=[ConfigValueOption(x, title=x) for x in {"0.0.0.0", *ip_addresses}],
                 category="generic",
                 advanced=True,
                 requires_reload=True,
@@ -273,8 +250,10 @@ class WebserverController(CoreController):
         routes.append(("OPTIONS", "/info", self._handle_cors_preflight))
         # add websocket api
         routes.append(("GET", "/ws", self._handle_ws_client))
-        # also host the image proxy on the webserver
-        routes.append(("GET", "/imageproxy", self.mass.metadata.handle_imageproxy))
+        # legacy /imageproxy?provider=&path= form — deprecated; the canonical
+        # /imageproxy/<image_id> form is registered as a dynamic route on the
+        # webserver by MetaDataController.post_setup()
+        routes.append(("GET", "/imageproxy", self.mass.metadata.handle_legacy_imageproxy))
         # also host the audio preview service
         routes.append(("GET", "/preview", self.serve_preview_stream))
         # add jsonrpc api
@@ -349,7 +328,7 @@ class WebserverController(CoreController):
                 "Webserver available on: %s\n"
                 "\n"
                 "If this address is incorrect, see the documentation on how to configure\n"
-                "the Webserver in Settings --> Core modules --> Webserver\n"
+                "the Webserver in Settings --> System --> Webserver\n"
                 "\n"
                 "################################################################################\n",
                 base_url,
@@ -582,7 +561,11 @@ class WebserverController(CoreController):
                 result = [item async for item in result]
             elif inspect.iscoroutine(result):
                 result = await result
-            return web.json_response(result, dumps=json_dumps)
+            # Determine the UI locale for this request from the HTTP headers and warm it up
+            # so localized strings can be injected during dict serialization without disk I/O.
+            locale = _locale_from_request(request)
+            await self.mass.translations.ensure_locale_loaded(locale)
+            return self._localized_json_response(result, locale)
         except Exception as e:
             # Return clean error message without stacktrace
             error_type = type(e).__name__
@@ -590,6 +573,24 @@ class WebserverController(CoreController):
             error = f"{error_type}: {error_msg}"
             self.logger.exception("Error executing command %s: %s", command_msg.command, error)
             return web.Response(status=500, text="Internal server error")
+
+    def _localized_json_response(self, result: Any, locale: str | None) -> web.Response:
+        """
+        Serialize a command result to a JSON response with the per-request resolvers bound.
+
+        Sets the image-proxy resolver (for ``proxy_id`` injection) and the translation
+        resolver (to localize human-readable fields) for the given locale during dict
+        serialization, then resets them.
+        """
+        token = IMAGE_PROXY_ID_RESOLVER.set(self.mass.metadata.compute_image_id)
+        token_loc = TRANSLATION_RESOLVER.set(
+            partial(self.mass.translations.get_translation, locale=locale)
+        )
+        try:
+            return web.json_response(result, dumps=json_dumps)
+        finally:
+            IMAGE_PROXY_ID_RESOLVER.reset(token)
+            TRANSLATION_RESOLVER.reset(token_loc)
 
     async def _handle_api_intro(self, request: web.Request) -> web.Response:
         """Handle request for API introduction/documentation page."""

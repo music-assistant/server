@@ -24,6 +24,7 @@ class StreamingProtocol(IntEnum):
 CONF_ENCRYPTION: Final[str] = "encryption"
 CONF_ALAC_ENCODE: Final[str] = "alac_encode"
 CONF_VOLUME_START: Final[str] = "volume_start"
+CONF_SESSION_ESTABLISHMENT_LATENCY: Final[str] = "session_establishment_latency"
 CONF_PASSWORD: Final[str] = "password"
 CONF_AP2PASSWORD: Final[str] = "ap2password"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
@@ -35,20 +36,30 @@ AIRPLAY_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
+# Time allowance for MA processing and OS spawning of the binary. Helps reduce initial audio loss.
+AIRPLAY_DEFAULT_SESSION_DELAY_MS: Final[int] = 900
 # Read ahead buffer for cliraop. Default output buffer duration.
-AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS: Final[int] = 1000
-# Minimum output buffer duration permitted.
-AIRPLAY_OUTPUT_BUFFER_MIN_DURATION_MS: Final[int] = 500
-# Maximum output buffer duration permitted.
-AIRPLAY_OUTPUT_BUFFER_MAX_DURATION_MS: Final[int] = 5000
+AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS: Final[int] = 1500
+# RAOP buffer settings
+RAOP_OUTPUT_BUFFER_MIN_DURATION_MS: Final[int] = 250
+RAOP_OUTPUT_BUFFER_MAX_DURATION_MS: Final[int] = 5000
+# Default session establishment latency i.e. expected duration to pair with AirPlay device and negotiate session
+AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_DEFAULT_MS: Final[int] = 500
+AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MIN_MS: Final[int] = (
+    150  # Minimum session establishment latency permitted
+)
+AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MAX_MS: Final[int] = (
+    4000  # Maximum session establishment latency permitted
+)
 AIRPLAY2_MIN_LOG_LEVEL: Final[int] = 3  # Min loglevel to ensure stderr output contains what we need
-AIRPLAY2_CONNECT_TIME_MS: Final[int] = 4000  # Time in ms to allow AirPlay2 device to connect
 RAOP_CONNECT_TIME_MS: Final[int] = 1500  # Time in ms to allow RAOP device to connect
 
 # Per-protocol credential storage keys
 CONF_RAOP_CREDENTIALS: Final[str] = "raop_credentials"
 CONF_AIRPLAY_CREDENTIALS: Final[str] = "airplay_credentials"
-CONF_AIRPLAY_LATENCY: Final[str] = "airplay_latency"
+
+# Some RAOP models require a higher than default 1000ms buffer to prevent stuttering
+CONF_RAOP_LATENCY: Final[str] = "airplay_latency"
 
 # Legacy credential key (for migration)
 CONF_AP_CREDENTIALS: Final[str] = "ap_credentials"
@@ -76,6 +87,7 @@ AIRPLAY_PCM_FORMAT = AudioFormat(
 
 BROKEN_AIRPLAY_MODELS = (
     # Samsung has been repeatedly being reported as having issues with AirPlay (raop and AP2)
+    # Samsung will work with AirPlay2 once PTP timing is implemented for the MA build
     ("Samsung", "*"),
 )
 
@@ -91,11 +103,6 @@ BROKEN_AIRPLAY_WARN = ConfigEntry(
     type=ConfigEntryType.ALERT,
     default_value=None,
     required=False,
-    label="This player is known to have broken AirPlay support. "
-    "Playback may fail or simply be silent. "
-    "There is no workaround for this issue at the moment. \n"
-    "If you already enforced AirPlay 2 on the player and it remains silent, "
-    "this is one of the known broken models. Only remedy is to nag the manufacturer for a fix.",
 )
 
 BASE_PLAYER_FEATURES: Final[set[PlayerFeature]] = {

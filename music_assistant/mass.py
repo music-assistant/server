@@ -42,6 +42,7 @@ from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.streams import StreamsController
 from music_assistant.controllers.tasks import TasksController
+from music_assistant.controllers.translations import TranslationController
 from music_assistant.controllers.webserver import WebserverController
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.aiohttp_client import create_clientsession
@@ -49,6 +50,7 @@ from music_assistant.helpers.api import APICommandHandler, api_command
 from music_assistant.helpers.images import get_icon_string
 from music_assistant.helpers.util import (
     TaskManager,
+    UnsupportedSystemError,
     get_package_version,
     is_hass_supervisor,
     load_provider_module,
@@ -58,7 +60,6 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player_provider import PlayerProvider
-from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -120,12 +121,16 @@ class MusicAssistant:
     player_queues: PlayerQueuesController
     discovery: DiscoveryController
     streams: StreamsController
+    translations: TranslationController
 
     def __init__(self, storage_path: str, cache_path: str, safe_mode: bool = False) -> None:
         """Initialize the MusicAssistant Server."""
         self._state = CoreState.STARTING
         self.storage_path = storage_path
         self.cache_path = cache_path
+        # Sqlite spills temp files (sort scratch, the VACUUM rebuild copy) to /tmp by
+        # default, which is a RAM-backed tmpfs on HAOS - redirect to the data volume.
+        os.environ.setdefault("SQLITE_TMPDIR", storage_path)
         self.safe_mode = safe_mode
         # we dynamically register command handlers which can be consumed by the apis
         self.command_handlers: dict[str, APICommandHandler] = {}
@@ -148,7 +153,8 @@ class MusicAssistant:
     async def start(self) -> None:
         """Start running the Music Assistant server."""
         self.loop = asyncio.get_running_loop()
-        self.loop_thread_id = getattr(self.loop, "_thread_id")  # noqa: B009
+        # start() runs on the event loop thread, so this is the loop's thread id.
+        self.loop_thread_id = threading.get_ident()
         self.running_as_hass_addon = await is_hass_supervisor()
         self.version = await get_package_version("music_assistant") or "0.0.0"
         # setup config controller first and fetch important config values
@@ -176,6 +182,7 @@ class MusicAssistant:
         self.players = PlayerController(self)
         self.player_queues = PlayerQueuesController(self)
         self.streams = StreamsController(self)
+        self.translations = TranslationController(self)
         # add manifests for core controllers
         for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
             controller: CoreController = getattr(self, controller_name)
@@ -185,6 +192,9 @@ class MusicAssistant:
         async def setup_controller(controller: CoreController) -> None:
             await controller.setup(await self.config.get_core_config(controller.domain))
             controller.initialized.set()
+
+        # set up the translations catalog first so it is ready before any object is serialized
+        await setup_controller(self.translations)
 
         async with asyncio.TaskGroup() as tg:
             tg.create_task(setup_controller(self.cache))
@@ -243,6 +253,7 @@ class MusicAssistant:
         await self.music.close()
         await self.player_queues.close()
         await self.players.close()
+        await self.translations.close()
         # cleanup cache and config
         await self.config.close()
         await self.cache.close()
@@ -432,18 +443,39 @@ class MusicAssistant:
             and (return_unavailable or prov.available)
         ]
 
-    def get_plugins_by_feature(self, feature: ProviderFeature) -> list[PluginProvider]:
-        """Return all available PluginProvider instances that support the given feature."""
-        return cast(
-            "list[PluginProvider]",
-            [
-                prov
-                for prov in list(self._providers.values())
-                if prov.available
-                and isinstance(prov, PluginProvider)
-                and feature in prov.supported_features
-            ],
-        )
+    def get_providers_supporting_feature(
+        self,
+        feature: ProviderFeature,
+        priority: tuple[ProviderType, ...] = (
+            ProviderType.MUSIC,
+            ProviderType.METADATA,
+            ProviderType.PLUGIN,
+        ),
+    ) -> list[ProviderInstanceType]:
+        """
+        Return all available providers that support the given feature.
+
+        Results are grouped by provider type in the order given by ``priority``,
+        and sorted within each tier by the provider's ``priority`` attribute
+        (lower value = higher priority).
+
+        :param feature: The ProviderFeature to query for.
+        :param priority: Ordered tuple of ProviderType values indicating tier order.
+            Types omitted from this tuple are excluded from the results.
+        """
+        by_tier: dict[ProviderType, list[ProviderInstanceType]] = {ptype: [] for ptype in priority}
+        for prov in self.get_providers():
+            if not prov.available:
+                continue
+            if prov.type not in by_tier:
+                continue
+            if feature not in prov.supported_features:
+                continue
+            by_tier[prov.type].append(prov)
+        result: list[ProviderInstanceType] = []
+        for ptype in priority:
+            result.extend(sorted(by_tier[ptype], key=lambda p: getattr(p, "priority", 50)))
+        return result
 
     def signal_event(
         self,
@@ -528,6 +560,9 @@ class MusicAssistant:
             if abort_existing:
                 existing.cancel()
             else:
+                # close any already-constructed coroutine to avoid "never awaited" warning
+                if inspect.iscoroutine(target):
+                    target.close()
                 return existing
         self.verify_event_loop_thread("create_task")
 
@@ -687,6 +722,7 @@ class MusicAssistant:
         self,
         instance_id: str,
         allow_retry: bool = False,
+        remove_if_unsupported: bool = False,
     ) -> None:
         """Try to load a provider and catch errors."""
         try:
@@ -706,6 +742,30 @@ class MusicAssistant:
 
         try:
             await self.load_provider_config(prov_conf)
+        except UnsupportedSystemError as exc:
+            # The host does not meet this provider's hardware requirements. This is a
+            # permanent condition, so we never retry. For a provider that was just
+            # auto-set-up as a default, drop the config again so it does not linger as a
+            # broken provider (it stays marked done so it is not auto-created again).
+            if remove_if_unsupported:
+                LOGGER.info(
+                    "Not enabling default provider %s: %s",
+                    prov_conf.name or prov_conf.instance_id,
+                    exc,
+                )
+                # The provider never loaded, so just drop its auto-created config key.
+                # (remove_provider_config refuses builtin providers and runs loaded-provider
+                # cleanup we don't need here; a direct remove persists and is guard-free.)
+                self.config.remove(f"{CONF_PROVIDERS}/{instance_id}")
+                return
+            prov_conf.last_error = str(exc)
+            self.config.set(f"{CONF_PROVIDERS}/{instance_id}/last_error", str(exc))
+            LOGGER.warning(
+                "Provider(instance) %s can not run on this system: %s",
+                prov_conf.name or prov_conf.instance_id,
+                exc,
+            )
+            return
         except Exception as exc:
             # if loading failed, we store the error in the config object
             # so we can show something useful to the user
@@ -805,8 +865,10 @@ class MusicAssistant:
             self.music,
             self.players,
             self.player_queues,
+            self.translations,
             self.webserver,
             self.webserver.auth,
+            self.streams.audio_analysis,
         ):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):
@@ -868,13 +930,12 @@ class MusicAssistant:
         self.config.set_default(CONF_DEFAULT_PROVIDERS_SETUP, set())
         default_providers_setup = set(self.config.get(CONF_DEFAULT_PROVIDERS_SETUP))
         changes_made = False
-        for default_provider, require_mdns, precondition in DEFAULT_PROVIDERS:
+        newly_created_defaults: set[str] = set()
+        for default_provider, require_mdns in DEFAULT_PROVIDERS:
             if default_provider in default_providers_setup:
                 # already processed/setup before, skip
                 continue
             if not (manifest := self._provider_manifests.get(default_provider)):
-                continue
-            if not precondition():
                 continue
             if require_mdns:
                 # if mdns discovery is required, check if we have seen any mdns entries
@@ -888,6 +949,7 @@ class MusicAssistant:
                     continue
             await self.config.create_builtin_provider_config(manifest.domain)
             changes_made = True
+            newly_created_defaults.add(manifest.domain)
             # TEMP: migration - to be removed after 2.8 release
             # enable all existing players of the default providers if they are not already enabled
             # due to the linked protocol feature we introduced
@@ -917,7 +979,15 @@ class MusicAssistant:
             for prov_conf in other_configs:
                 # Use a task so we can load multiple providers at once.
                 # If a provider fails, that will not block the loading of other providers.
-                tg.create_task(self.load_provider(prov_conf.instance_id, allow_retry=True))
+                # For providers just auto-set-up as a default, drop the config again if the
+                # host does not meet their requirements (rather than retry a broken provider).
+                tg.create_task(
+                    self.load_provider(
+                        prov_conf.instance_id,
+                        allow_retry=True,
+                        remove_if_unsupported=prov_conf.domain in newly_created_defaults,
+                    )
+                )
 
     async def _load_provider(self, conf: ProviderConfig) -> None:
         """Load (or reload) a provider."""

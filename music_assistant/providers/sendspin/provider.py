@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from copy import deepcopy
+from ipaddress import ip_address
 from typing import TYPE_CHECKING, cast
+from urllib.parse import urlsplit
 
+from aiosendspin.models.types import PlayerCommand
 from aiosendspin.server import (
     ClientAddedEvent,
     ClientRemovedEvent,
@@ -14,13 +17,23 @@ from aiosendspin.server import (
     SendspinEvent,
     SendspinServer,
 )
-from music_assistant_models.enums import IdentifierType, PlayerType, ProviderFeature
+from music_assistant_models.enums import (
+    IdentifierType,
+    PlayerFeature,
+    PlayerType,
+    ProviderFeature,
+)
 from music_assistant_models.errors import AlreadyRegisteredError
 
-from music_assistant.constants import CONF_ENABLED
+from music_assistant.constants import (
+    CONF_ENABLED,
+    CONF_ENTRY_MANUAL_DISCOVERY_IPS,
+)
+from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
+from music_assistant.providers.sendspin.constants import CONF_SENDSPIN_STATIC_DELAY
 from music_assistant.providers.sendspin.player import (
     SendspinBasePlayer,
     SendspinPlayer,
@@ -36,6 +49,40 @@ if TYPE_CHECKING:
     from music_assistant.providers.hass import HomeAssistantProvider
 
 
+DEFAULT_SENDSPIN_CLIENT_PORT = 8928
+DEFAULT_SENDSPIN_CLIENT_PATH = "/sendspin"
+
+
+def _manual_client_url(address: str) -> str:
+    """Convert a manually configured Sendspin host/IP to a client WebSocket URL."""
+    stripped_address = address.strip()
+    if not stripped_address:
+        raise ValueError("Address is empty")
+
+    if "://" in stripped_address:
+        return stripped_address
+
+    try:
+        parsed_ip = ip_address(stripped_address)
+    except ValueError:
+        pass
+    else:
+        return (
+            f"ws://{format_ip_for_url(str(parsed_ip))}:"
+            f"{DEFAULT_SENDSPIN_CLIENT_PORT}{DEFAULT_SENDSPIN_CLIENT_PATH}"
+        )
+
+    parsed_address = urlsplit(f"//{stripped_address}")
+    if parsed_address.hostname is None:
+        raise ValueError("Address does not contain a host")
+
+    return (
+        f"ws://{format_ip_for_url(parsed_address.hostname)}:"
+        f"{parsed_address.port or DEFAULT_SENDSPIN_CLIENT_PORT}"
+        f"{parsed_address.path or DEFAULT_SENDSPIN_CLIENT_PATH}"
+    )
+
+
 class SendspinProvider(PlayerProvider):
     """Player Provider for Sendspin."""
 
@@ -43,8 +90,10 @@ class SendspinProvider(PlayerProvider):
     unregister_cbs: list[Callable[[], None]]
     _pending_unregisters: dict[str, asyncio.Event]
     _bridge_identifiers: dict[str, dict[IdentifierType, str]]
+    _bridge_static_delay_defaults: dict[str, int]
     _client_event_versions: dict[str, int]
     _client_event_task_counts: dict[str, int]
+    _manual_ip_config: tuple[str, ...]
     _unloading: bool
 
     def __init__(
@@ -52,11 +101,19 @@ class SendspinProvider(PlayerProvider):
     ) -> None:
         """Initialize a new Sendspin player provider."""
         super().__init__(mass, manifest, config)
+        # Handle config option for manual IP's
+        manual_ip_config = cast("list[str]", config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key))
+        self._manual_ip_config = tuple(address for address in manual_ip_config if address.strip())
         self.server_api = SendspinServer(
             self.mass.loop, mass.server_id, "Music Assistant", self.mass.http_session
         )
+        # Pitch (YINFFT) is the heaviest visualizer DSP and result quality is
+        # still very mixed, needs more testing. Disable it globally for now to
+        # spare low-power hosts.
+        self.server_api.set_visualizer_pitch_enabled(enabled=False)
         self._pending_unregisters = {}
         self._bridge_identifiers = {}
+        self._bridge_static_delay_defaults = {}
         self._bridge_player_types: dict[str, PlayerType] = {}
         self._client_event_versions = {}
         self._client_event_task_counts = {}
@@ -116,6 +173,28 @@ class SendspinProvider(PlayerProvider):
         """
         self._bridge_identifiers[client_id] = identifiers
 
+    def register_bridge_static_delay_default(self, client_id: str, default_ms: int) -> None:
+        """Register a protocol-specific default static delay for a bridge client.
+
+        If the SendspinPlayer already exists, the default is applied immediately;
+        otherwise it is stashed and picked up when the player is created.
+
+        :param client_id: The bridge client_id for which the default applies.
+        :param default_ms: Model-specific default static delay in milliseconds.
+        """
+        existing = self.mass.players.get_player(client_id)
+        if isinstance(existing, SendspinPlayer):
+            existing.static_delay_default_ms = default_ms
+            # If no user-set value exists, push the new default to the device now
+            # so already-connected clients pick it up without a config edit.
+            if (
+                self.mass.config.get_raw_player_config_value(client_id, CONF_SENDSPIN_STATIC_DELAY)
+                is None
+            ):
+                self.mass.create_task(existing._apply_static_delay())
+            return
+        self._bridge_static_delay_defaults[client_id] = default_ms
+
     def register_bridge_player_type(self, client_id: str, player_type: PlayerType) -> None:
         """
         Pre-register a PlayerType override for a bridge client.
@@ -124,6 +203,62 @@ class SendspinProvider(PlayerProvider):
         player (e.g. PlayerType.LIGHT for Hue Entertainment bridges).
         """
         self._bridge_player_types[client_id] = player_type
+
+    async def apply_bridge_claim(
+        self,
+        client_id: str,
+        identifiers: dict[IdentifierType, str],
+        bridge_hello: ClientHelloPayload,
+    ) -> bool:
+        """
+        Post-claim an already-registered SendspinPlayer as a bridge client.
+
+        Used when a bridge manager reaches setup_bridge AFTER the external client
+        has already connected on its own (e.g. a JS Cast receiver reconnecting to
+        the server before the Chromecast bridge could register). Attaches the
+        bridge's protocol-specific identifiers so cross-protocol matching can
+        link the SendspinPlayer to its native peer, and replays the bridge
+        hello's supported_commands restriction on the player features.
+
+        :param client_id: The Sendspin client_id whose player should be claimed.
+        :param identifiers: Protocol-specific identifiers (e.g. CAST_UUID) to
+            attach to the player for cross-protocol matching.
+        :param bridge_hello: The bridge's intended ClientHelloPayload. Its
+            player_support.supported_commands gates which volume/mute features
+            the player is allowed to expose.
+        :return: True if a matching SendspinPlayer was found and updated.
+        """
+        player = self.mass.players.get_player(client_id)
+        if not isinstance(player, SendspinPlayer):
+            return False
+        for id_type, id_value in identifiers.items():
+            player.device_info.add_identifier(id_type, id_value)
+        bridge_supported_commands: list[PlayerCommand] = []
+        if bridge_hello.player_support:
+            bridge_supported_commands = list(bridge_hello.player_support.supported_commands)
+        if PlayerCommand.VOLUME in bridge_supported_commands:
+            player._attr_supported_features.add(PlayerFeature.VOLUME_SET)
+        else:
+            player._attr_supported_features.discard(PlayerFeature.VOLUME_SET)
+        if PlayerCommand.MUTE in bridge_supported_commands:
+            player._attr_supported_features.add(PlayerFeature.VOLUME_MUTE)
+        else:
+            player._attr_supported_features.discard(PlayerFeature.VOLUME_MUTE)
+        # Expose the claimed player as a protocol bridge, not a standalone web
+        # player. A JS Cast receiver advertises product_name="Web Browser" and
+        # would otherwise be classified as is_web_player → PlayerType.PLAYER
+        # (hidden). Restore protocol semantics so UI links it under its native peer.
+        player.is_web_player = False
+        player._attr_hidden_by_default = False
+        player._attr_expose_to_ha_by_default = True
+        player._attr_type = PlayerType.PROTOCOL
+        self.logger.info(
+            "Bridge claim applied to existing SendspinPlayer %s (client_id=%s)",
+            player.display_name,
+            client_id,
+        )
+        await self.mass.players.register_or_update(player)
+        return True
 
     async def _apply_hass_name_override(self, player: SendspinBasePlayer, client_id: str) -> None:
         """Apply Home Assistant display name for ESPHome-backed Sendspin players."""
@@ -150,6 +285,9 @@ class SendspinProvider(PlayerProvider):
         """
         extra_ids = self._bridge_identifiers.pop(client_id, None)
         bridge_player_type = self._bridge_player_types.pop(client_id, None)
+        static_delay_default_ms = self._bridge_static_delay_defaults.pop(client_id, None)
+        if static_delay_default_ms is None and isinstance(existing_player, SendspinPlayer):
+            static_delay_default_ms = existing_player.static_delay_default_ms
 
         has_player_role = bool(sendspin_client.roles_by_family("player"))
         has_metadata_role = bool(sendspin_client.roles_by_family("metadata"))
@@ -174,6 +312,8 @@ class SendspinProvider(PlayerProvider):
         if extra_ids:
             for id_type, id_value in extra_ids.items():
                 player.device_info.add_identifier(id_type, id_value)
+        if static_delay_default_ms is not None and isinstance(player, SendspinPlayer):
+            player.static_delay_default_ms = static_delay_default_ms
         return player
 
     async def _handle_client_added(self, client_id: str, event_version: int) -> None:
@@ -324,6 +464,20 @@ class SendspinProvider(PlayerProvider):
             host=self.mass.streams.bind_ip,
             advertise_addresses=[cast("str", self.mass.streams.publish_ip)],
         )
+        for address in self._manual_ip_config:
+            try:
+                url = _manual_client_url(address)
+            except ValueError as err:
+                self.logger.warning(
+                    "Ignoring invalid manual Sendspin client address %s: %s", address, err
+                )
+                continue
+            self.logger.debug("Connecting to manually configured Sendspin client at %s", url)
+            self.server_api.connect_to_client(
+                url,
+                retry_initial_connection=True,
+                retry_indefinitely=True,
+            )
 
     async def unload(self, is_removed: bool = False) -> None:
         """

@@ -64,27 +64,20 @@ async def get_config_entries(
             if not entity_entry or entity_entry.get("platform") != DASHIE_HA_DOMAIN:
                 continue
             name = f"{state['attributes']['friendly_name']} ({state['entity_id']})"
-            player_entities.append(ConfigValueOption(name, state["entity_id"]))
+            player_entities.append(ConfigValueOption(state["entity_id"], title=name))
     return (
         ConfigEntry(
             key=CONF_PLAYERS,
             type=ConfigEntryType.STRING,
             multi_value=True,
-            label="Dashie Kiosk devices (via Home Assistant)",
             required=False,
             options=player_entities,
-            description="Select Dashie Kiosk tablets discovered through the "
-            "Dashie HA integration. Requires the Home Assistant Plugin.",
         ),
         ConfigEntry(
             key=CONF_MANUAL_PLAYERS,
             type=ConfigEntryType.STRING,
             multi_value=True,
-            label="Manual Dashie Kiosk addresses",
             required=False,
-            description="Manually add Dashie Kiosk tablets by IP address and port "
-            "(e.g. 192.168.1.100:2323). Use this if you don't have the "
-            "Dashie HA integration installed.",
             advanced=True,
         ),
     )

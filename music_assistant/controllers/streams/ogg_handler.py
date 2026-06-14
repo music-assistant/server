@@ -137,8 +137,8 @@ def parse_ogg_page(data: bytes | bytearray, offset: int = 0) -> tuple[OggPage, i
     if len(data) < offset + total_page_size:
         return None
 
-    segment_data = data[offset + header_size : offset + total_page_size]
-    raw_data = data[offset : offset + total_page_size]
+    segment_data = bytes(data[offset + header_size : offset + total_page_size])
+    raw_data = bytes(data[offset : offset + total_page_size])
 
     page = OggPage(
         raw_data=raw_data,
@@ -408,7 +408,7 @@ async def get_chained_ogg_stream(
     mass: MusicAssistant,
     url: str,
     metadata_callback: Callable[[dict[str, str]], Any] | None = None,
-) -> AsyncGenerator[bytes, None]:
+) -> AsyncGenerator[bytes]:
     """
     Yield continuous OGG data from a chained stream, stitching chain boundaries.
 

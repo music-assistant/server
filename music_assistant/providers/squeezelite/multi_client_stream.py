@@ -18,7 +18,7 @@ class MultiClientStream:
 
     def __init__(
         self,
-        audio_source: AsyncGenerator[bytes, None],
+        audio_source: AsyncGenerator[bytes],
         audio_format: AudioFormat,
         expected_clients: int = 0,
     ) -> None:
@@ -48,7 +48,7 @@ class MultiClientStream:
         self,
         output_format: AudioFormat,
         filter_params: list[str] | None = None,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Get (client specific encoded) ffmpeg stream."""
         async for chunk in get_ffmpeg_stream(
             audio_input=self.subscribe_raw(),
@@ -58,7 +58,7 @@ class MultiClientStream:
         ):
             yield chunk
 
-    async def subscribe_raw(self) -> AsyncGenerator[bytes, None]:
+    async def subscribe_raw(self) -> AsyncGenerator[bytes]:
         """Subscribe to the raw/unaltered audio stream."""
         queue: asyncio.Queue[bytes] = asyncio.Queue(2)
         try:

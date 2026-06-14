@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
@@ -77,6 +78,7 @@ class ChromecastPlayer(Player):
         self.status_listener: CastStatusListener | None
         self.cast_info = cast_info
         self.mz_controller: MultizoneController | None = None
+        self.on_app_status_changed: Callable[[str | None], None] | None = None
         self.last_poll = 0.0
         self.flow_meta_checksum: str | None = None
         # set static variables
@@ -303,7 +305,7 @@ class ChromecastPlayer(Player):
             or current_media.media_type
             in (
                 MediaType.RADIO,
-                MediaType.PLUGIN_SOURCE,
+                MediaType.AUDIO_SOURCE,
             )
         ):
             # only update metadata for streams without known duration
@@ -450,6 +452,11 @@ class ChromecastPlayer(Player):
         self._attr_volume_level = round(status.volume_level * 100)
         self._attr_volume_muted = status.volume_muted
         self.update_state()
+        if self.on_app_status_changed is not None:
+            try:
+                self.on_app_status_changed(status.app_id)
+            except Exception:
+                self.logger.exception("Error in app status callback for %s", self.display_name)
 
     def on_new_media_status(self, status: MediaStatus) -> None:
         """Handle updated MediaStatus (called from pychromecast socket thread)."""
@@ -572,6 +579,11 @@ class ChromecastPlayer(Player):
         if status.status == CONNECTION_STATUS_DISCONNECTED:
             self._attr_available = False
             self.update_state()
+            if self.on_app_status_changed is not None:
+                try:
+                    self.on_app_status_changed(None)
+                except Exception:
+                    self.logger.exception("Error in app status callback for %s", self.display_name)
             return
 
         new_available = status.status == CONNECTION_STATUS_CONNECTED

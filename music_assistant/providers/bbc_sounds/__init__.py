@@ -41,7 +41,11 @@ from music_assistant_models.streamdetails import StreamMetadata
 from music_assistant_models.unique_list import UniqueList
 
 import music_assistant.helpers.datetime as dt
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.constants import (
+    CONF_ENTRY_UNOFFICIAL_PROVIDER,
+    CONF_PASSWORD,
+    CONF_USERNAME,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import LOCAL_TIMEZONE
 from music_assistant.models.music_provider import MusicProvider
@@ -106,6 +110,7 @@ async def get_config_entries(
     # ruff: noqa: ARG001
 
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=_Constants.CONF_INTRO,
             type=ConfigEntryType.LABEL,
@@ -115,13 +120,11 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Email or username",
             required=False,
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=False,
         ),
         ConfigEntry(
@@ -137,14 +140,8 @@ async def get_config_entries(
             label="Preferred stream format",
             type=ConfigEntryType.STRING,
             options=[
-                ConfigValueOption(
-                    "HLS",
-                    _Constants.CONF_STREAM_FORMAT_HLS,
-                ),
-                ConfigValueOption(
-                    "MPEG-DASH",
-                    _Constants.CONF_STREAM_FORMAT_DASH,
-                ),
+                ConfigValueOption(_Constants.CONF_STREAM_FORMAT_HLS, title="HLS"),
+                ConfigValueOption(_Constants.CONF_STREAM_FORMAT_DASH, title="MPEG-DASH"),
             ],
             default_value=_Constants.CONF_STREAM_FORMAT_HLS,
         ),
@@ -418,12 +415,12 @@ class BBCSoundsProvider(MusicProvider):
         """Get list of stations as Radios."""
         radio_list: list[Radio] = []
         for station in await self.client.stations.get_stations(include_local=include_local):
-            if station and station.item_id:
+            if station and station.id:
                 station_info = await self._station_programme_display(station=station)
                 description = station_info.title if station_info else None
                 radio_list.append(
                     Radio(
-                        item_id=station.item_id,
+                        item_id=station.id,
                         name=(
                             station.network.short_title
                             if station.network and station.network.short_title
@@ -449,7 +446,7 @@ class BBCSoundsProvider(MusicProvider):
                         ),
                         provider_mappings={
                             ProviderMapping(
-                                item_id=station.item_id,
+                                item_id=station.id,
                                 provider_domain=self.domain,
                                 provider_instance=self.instance_id,
                             )
@@ -514,6 +511,7 @@ class BBCSoundsProvider(MusicProvider):
                 item_id="stations",
                 provider=self.domain,
                 name="Schedule and Programmes",
+                translation_key="provider.bbc_sounds.schedule_programmes",
                 path=f"{self.domain}://stations",
                 image=MediaItemImage(
                     path="https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid/latest.png",
@@ -533,6 +531,7 @@ class BBCSoundsProvider(MusicProvider):
                 item_id="listen_live",
                 provider=self.domain,
                 name="Listen Live",
+                translation_key="provider.bbc_sounds.listen_live",
                 path=f"{self.domain}://listen_live",
                 image=MediaItemImage(
                     path="https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid/listen_live.png",
@@ -544,7 +543,8 @@ class BBCSoundsProvider(MusicProvider):
             BrowseFolder(
                 item_id="stations",
                 provider=self.domain,
-                name="Schedules and Programmes",
+                name="Schedule and Programmes",
+                translation_key="provider.bbc_sounds.schedule_programmes",
                 path=f"{self.domain}://stations",
                 image=MediaItemImage(
                     path="https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid/latest.png",
@@ -634,12 +634,14 @@ class BBCSoundsProvider(MusicProvider):
                 BrowseFolder(
                     item_id="today",
                     name="Today",
+                    translation_key="provider.bbc_sounds.today",
                     provider=self.domain,
                     path="/".join([*path_parts, dt.now().strftime("%Y-%m-%d")]),
                 ),
                 BrowseFolder(
                     item_id="yesterday",
                     name="Yesterday",
+                    translation_key="provider.bbc_sounds.yesterday",
                     provider=self.domain,
                     path="/".join(
                         [
@@ -753,7 +755,7 @@ class BBCSoundsProvider(MusicProvider):
     async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    ) -> AsyncGenerator[PodcastEpisode]:
         """Get all PodcastEpisodes for given podcast id."""
         podcast_episodes = await self.client.streaming.get_podcast_episodes(prov_podcast_id)
 

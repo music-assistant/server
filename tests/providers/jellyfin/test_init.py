@@ -12,7 +12,7 @@ from tests.common import get_fixtures_dir, wait_for_sync_completion
 
 
 @pytest.fixture
-async def jellyfin_provider(mass: MusicAssistant) -> AsyncGenerator[ProviderConfig, None]:
+async def jellyfin_provider(mass: MusicAssistant) -> AsyncGenerator[ProviderConfig]:
     """Configure an aiojellyfin test fixture, and add a provider to mass that uses it."""
     f = FixtureBuilder()
     async for _, artist in get_fixtures_dir("artists", "jellyfin"):

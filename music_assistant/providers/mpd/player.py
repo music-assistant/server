@@ -118,8 +118,6 @@ class MPDPlayer(Player):
             ConfigEntry(
                 key=CONF_PASSWORD,
                 type=ConfigEntryType.SECURE_STRING,
-                label="MPD Server Password",
-                description="MPD password, if required by the server.",
                 required=False,
             ),
             CONF_ENTRY_OUTPUT_CODEC_MPD,
