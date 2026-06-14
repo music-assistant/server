@@ -133,7 +133,7 @@ class TranslationController(CoreController):
                     continue
                 self._locales[candidate] = await self._load_flat(self._locale_files[candidate])
 
-    async def reverse_lookup_media_names(self, query: str, locale: str | None = None) -> set[str]:
+    async def reverse_lookup_media_names(self, query: str) -> set[str]:
         """
         Return the canonical (English) media names whose localized value matches ``query``.
 
@@ -141,14 +141,13 @@ class TranslationController(CoreController):
         nothing literally can be retried against these canonical names (which equal the items'
         stored ``search_name``). Only ``common.media.*.name`` entries are considered.
 
-        The locale defaults to the metadata controller's configured language (``CONF_LANGUAGE``),
-        which doubles as the fallback search locale; an English/unknown/untranslatable locale
-        yields an empty set (the literal search already covers English).
+        The reverse-translation always uses the metadata controller's configured language
+        (``CONF_LANGUAGE``), which doubles as the fallback search locale; an English, unknown or
+        untranslatable language yields an empty set (the literal search already covers English).
 
         :param query: The (possibly localized) search query.
-        :param locale: Locale to reverse-translate from; defaults to the configured metadata language.
         """
-        locale = locale or self.mass.metadata.locale
+        locale = self.mass.metadata.locale
         normalized = create_safe_string(query, True, True)
         if not normalized or not locale or locale.split("_")[0] == SOURCE_LANGUAGE:
             return set()

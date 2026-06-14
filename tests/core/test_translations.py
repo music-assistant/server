@@ -6,6 +6,7 @@ import logging
 from contextlib import contextmanager
 from functools import partial
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
@@ -334,11 +335,13 @@ async def test_build_translations_matches_runtime_source() -> None:
 async def test_reverse_lookup_media_names() -> None:
     """A localized media name maps back to its canonical English name for the search fallback."""
     ctrl = _nl_controller()
+    ctrl.mass = MagicMock()
+    # reverse lookups always use the metadata controller's configured language
+    ctrl.mass.metadata.locale = "nl"
     # a localized (nl) query resolves to the canonical English name
-    assert await ctrl.reverse_lookup_media_names("onlangs afgespeeld", locale="nl") == {
-        "Recently played"
-    }
+    assert await ctrl.reverse_lookup_media_names("onlangs afgespeeld") == {"Recently played"}
     # a non-matching query yields nothing
-    assert await ctrl.reverse_lookup_media_names("zzznomatch", locale="nl") == set()
+    assert await ctrl.reverse_lookup_media_names("zzznomatch") == set()
     # English (source) locale: nothing to reverse-translate (literal search already covers it)
-    assert await ctrl.reverse_lookup_media_names("recently played", locale="en") == set()
+    ctrl.mass.metadata.locale = "en"
+    assert await ctrl.reverse_lookup_media_names("recently played") == set()
