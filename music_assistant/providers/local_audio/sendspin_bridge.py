@@ -734,8 +734,8 @@ class LocalAudioBridgeManager:
         """Return master sink names with a full-passthrough remap-sink child.
 
         A passthrough child has the same channel count as its master (a 1:1
-        remap, e.g. the "_surround" sink from compute_remap_topology). Such
-        masters are fully covered by their remap-sink topology (per-zone
+        remap, e.g. the "_multichannel_stereo" sink from
+        compute_remap_topology). Such masters are fully covered by their remap-sink topology (per-zone
         sinks plus the passthrough for "play to all outputs") and should not
         also be registered as their own player.
         """
@@ -912,10 +912,10 @@ class LocalAudioBridgeManager:
                     continue
 
                 # A master sink fully covered by its own remap-sink topology
-                # (per-zone sinks plus a full-passthrough "_surround" sink)
-                # isn't registered as its own player — the passthrough sink
-                # already provides "play to all outputs" with independent
-                # hardware volume control.
+                # (per-zone sinks plus a full-passthrough
+                # "_multichannel_stereo" sink) isn't registered as its own
+                # player — the passthrough sink already provides "play to
+                # all outputs" with independent hardware volume control.
                 if not device.get("is_remap", False) and device_name in passthrough_masters:
                     self.logger.debug(
                         "Skipping %s — covered by its remap-sink topology", display_name

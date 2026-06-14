@@ -32,7 +32,9 @@ STEREO_PAIRS: Final[dict[str, tuple[str, str]]] = {
     "center_sub": ("front-center", "lfe"),
 }
 
-# Minimum master channel count for a full-passthrough "surround" sink.
+# Minimum master channel count for a full-passthrough "multichannel stereo"
+# sink (named after the AVR "Multi Channel Stereo" / "All Channel Stereo"
+# mode — plays the same content to all output pairs).
 SURROUND_PASSTHROUGH_MIN_CHANNELS: Final = 6
 
 ZONE_CHANNEL_MAP: Final[tuple[str, str]] = ("front-left", "front-right")
@@ -91,7 +93,7 @@ def compute_remap_topology(
     if max_output_channels >= SURROUND_PASSTHROUGH_MIN_CHANNELS:
         specs.append(
             RemapSinkSpec(
-                sink_name=f"{card_name}_surround",
+                sink_name=f"{card_name}_multichannel_stereo",
                 master_channel_map=tuple(channel_map),
                 channel_map=tuple(channel_map),
                 channels=max_output_channels,
