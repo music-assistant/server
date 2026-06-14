@@ -54,14 +54,23 @@ async def get_album(
     """Async wrapper around the ytmusicapi get_album function."""
 
     def _get_album() -> dict[str, Any]:
+        private = False
         if prov_album_id.startswith("FEmusic_library_privately_owned_release"):
+            private = True
             ytm = ytmusicapi.YTMusic(auth=headers, language=language, user=user)
             album = ytm.get_library_upload_album(browseId=prov_album_id)
+
+            for album_track in album.get("tracks", []):
+                # note: side-effect of the album/playlist videoId xreference below is
+                # to default these values if not present, so I'm reproducing that here
+                # given we don't need to (and can't) do the query that wraps it
+                album_track["isAvailable"] = album_track.get("isAvailable", True)
+                album_track["likeStatus"] = album_track.get("likeStatus", "INDIFFERENT")
+
         else:
             ytm = ytmusicapi.YTMusic(language=language)
             album = ytm.get_album(browseId=prov_album_id)
-
-        if "audioPlaylistId" in album:
+        if "audioPlaylistId" in album and not private:
             # Track id's from album tracks do not match with actual album tracks. E.g. a track
             # points to the videoId of the original version, while we want the album version
             try:
