@@ -376,7 +376,7 @@ class GenreController(MediaControllerBase[Genre]):
             extra_parts.append(
                 f"EXISTS(SELECT 1 FROM {gm} gm WHERE gm.genre_id = {self.db_table}.item_id)"
             )
-        return await self.get_library_items_by_query(
+        items = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
             limit=limit,
@@ -385,6 +385,11 @@ class GenreController(MediaControllerBase[Genre]):
             extra_query_params=extra_params,
             extra_query_parts=extra_parts,
         )
+        if kwargs.get("_localized_fallback", True) and search and not items:
+            # retry with the canonical name behind a localized query, so genres are findable
+            # by the name shown in the user's language (see _localized_search_fallback)
+            return await self._localized_search_fallback(search, limit)
+        return items
 
     async def radio_mode_base_tracks(
         self,

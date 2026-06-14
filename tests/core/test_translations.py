@@ -329,3 +329,16 @@ async def test_build_translations_matches_runtime_source() -> None:
     ctrl = _make_controller()
     await ctrl.setup(None)  # type: ignore[arg-type]  # scans the real repo authoring files
     assert ctrl._source == build_translations_source()
+
+
+async def test_reverse_lookup_media_names() -> None:
+    """A localized media name maps back to its canonical English name for the search fallback."""
+    ctrl = _nl_controller()
+    # a localized (nl) query resolves to the canonical English name
+    assert await ctrl.reverse_lookup_media_names("onlangs afgespeeld", locale="nl") == {
+        "Recently played"
+    }
+    # a non-matching query yields nothing
+    assert await ctrl.reverse_lookup_media_names("zzznomatch", locale="nl") == set()
+    # English (source) locale: nothing to reverse-translate (literal search already covers it)
+    assert await ctrl.reverse_lookup_media_names("recently played", locale="en") == set()

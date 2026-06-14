@@ -291,6 +291,9 @@ class MetaDataController(CoreController):
                 required=False,
                 default_value=DEFAULT_LANGUAGE,
                 description="Preferred language for metadata.\n\n"
+                "This language is also used as the fallback locale for text-based searches, so "
+                "localized item names (e.g. genres and built-in playlists) can be found by the "
+                "name shown in this language.\n\n"
                 "Note that English will always be used as fallback when content "
                 "in your preferred language is not available.",
                 options=[ConfigValueOption(key, title=value) for key, value in LOCALES.items()],

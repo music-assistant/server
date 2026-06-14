@@ -18,6 +18,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.json import load_json_dict
 from music_assistant.models.core_controller import CoreController
 
@@ -131,6 +132,38 @@ class TranslationController(CoreController):
                 if candidate in self._locales:
                     continue
                 self._locales[candidate] = await self._load_flat(self._locale_files[candidate])
+
+    async def reverse_lookup_media_names(self, query: str, locale: str | None = None) -> set[str]:
+        """
+        Return the canonical (English) media names whose localized value matches ``query``.
+
+        Lets localized item names be found by the name the user sees: a text search that returns
+        nothing literally can be retried against these canonical names (which equal the items'
+        stored ``search_name``). Only ``common.media.*.name`` entries are considered.
+
+        The locale defaults to the metadata controller's configured language (``CONF_LANGUAGE``),
+        which doubles as the fallback search locale; an English/unknown/untranslatable locale
+        yields an empty set (the literal search already covers English).
+
+        :param query: The (possibly localized) search query.
+        :param locale: Locale to reverse-translate from; defaults to the configured metadata language.
+        """
+        locale = locale or self.mass.metadata.locale
+        normalized = create_safe_string(query, True, True)
+        if not normalized or not locale or locale.split("_")[0] == SOURCE_LANGUAGE:
+            return set()
+        await self.ensure_locale_loaded(locale)
+        bundle = self._locales.get(locale) or self._locales.get(locale.split("_")[0])
+        if not bundle:
+            return set()
+        matches: set[str] = set()
+        for key, value in bundle.items():
+            if not (key.startswith("common.media.") and key.endswith(".name")):
+                continue
+            if normalized in create_safe_string(value, True, True):
+                if english := self._source.get(key):
+                    matches.add(english)
+        return matches
 
     def _lookup(self, key: str, locale: str | None) -> str | None:
         """Look up a single candidate key, locale bundle first then English source."""

@@ -312,7 +312,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         :param provider: Filter by provider instance ID (single string or list).
         :param genre: Filter by genre id(s).
         """
-        return await self.get_library_items_by_query(
+        items = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
             limit=limit,
@@ -322,6 +322,34 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             genre_ids=genre,
             in_library_only=True,
         )
+        if (
+            kwargs.get("_localized_fallback", True)
+            and search
+            and not items
+            and self.media_type in (MediaType.GENRE, MediaType.PLAYLIST)
+        ):
+            return await self._localized_search_fallback(search, limit)
+        return items
+
+    async def _localized_search_fallback(self, search_query: str, limit: int) -> list[ItemCls]:
+        """
+        Retry a library search using the canonical names behind a localized query.
+
+        For genre/playlist searches that return nothing literally, reverse-resolve the query to the
+        canonical (English) names of matching localized items and search those, so an item is
+        findable by the localized name the user sees. See
+        ``TranslationController.reverse_lookup_media_names``.
+        """
+        seen: set[Any] = set()
+        merged: list[ItemCls] = []
+        for name in await self.mass.translations.reverse_lookup_media_names(search_query):
+            for item in await self.library_items(
+                search=name, limit=limit, _localized_fallback=False
+            ):
+                if item.item_id not in seen:
+                    seen.add(item.item_id)
+                    merged.append(item)
+        return merged[:limit]
 
     async def iter_library_items(
         self,
