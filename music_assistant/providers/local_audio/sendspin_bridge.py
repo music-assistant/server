@@ -469,9 +469,9 @@ class SendspinLocalAudioBridge:
                 return b"\x00" * (len(pcm_data) * 3 // 4)
             return b"\x00" * len(pcm_data)
         volume = self._volume_level
-        scale = volume_pct_to_amplitude(volume) if volume is not None else None
-        if scale is not None and scale >= 1.0:
-            scale = None  # 1.0 == no-op; skip the scaling pass entirely
+        amplitude = volume_pct_to_amplitude(volume)
+        # 1.0 == no-op; skip the scaling pass entirely
+        scale: float | None = None if amplitude >= 1.0 else amplitude
 
         if self.bit_depth == 32:
             if scale is None:
