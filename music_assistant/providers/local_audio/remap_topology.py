@@ -114,4 +114,3 @@ def build_remap_sink_argument(spec: RemapSinkSpec, master_sink_name: str) -> str
         f"channel_map={','.join(spec.channel_map)} "
         f"remix=no"
     )
-    
