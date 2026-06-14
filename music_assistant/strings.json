@@ -437,109 +437,186 @@
     "settings": "Settings"
   },
   "media": {
-    "recently_played": {
-      "name": "Recently played",
-      "subtitle": "Pick up where you left off"
+    "genre": {
+      "afrobeats": {
+        "name": "Afrobeats (West African Urban/Pop Music)"
+      },
+      "ambient": {
+        "name": "Ambient"
+      },
+      "anime_and_video_game_music": {
+        "name": "Anime & Video Game Music"
+      },
+      "asian_music": {
+        "name": "Asian Music"
+      },
+      "bluegrass": {
+        "name": "Bluegrass"
+      },
+      "blues": {
+        "name": "Blues"
+      },
+      "brazilian_music": {
+        "name": "Brazilian Music"
+      },
+      "chanson": {
+        "name": "Chanson"
+      },
+      "childrens_music": {
+        "name": "Children's Music"
+      },
+      "christmas_music": {
+        "name": "Christmas Music"
+      },
+      "church_music": {
+        "name": "Church Music"
+      },
+      "classical": {
+        "name": "Classical"
+      },
+      "comedy": {
+        "name": "Comedy"
+      },
+      "country": {
+        "name": "Country"
+      },
+      "dance": {
+        "name": "Dance"
+      },
+      "dark_ambient": {
+        "name": "Dark Ambient"
+      },
+      "dark_wave": {
+        "name": "Dark Wave"
+      },
+      "disco": {
+        "name": "Disco"
+      },
+      "electronic": {
+        "name": "Electronic"
+      },
+      "experimental": {
+        "name": "Experimental"
+      },
+      "field_recording": {
+        "name": "Field Recording"
+      },
+      "folk": {
+        "name": "Folk"
+      },
+      "funk": {
+        "name": "Funk"
+      },
+      "gangsta_rap": {
+        "name": "Gangsta Rap"
+      },
+      "gospel": {
+        "name": "Gospel"
+      },
+      "hip_hop": {
+        "name": "Hip Hop"
+      },
+      "indian_classical": {
+        "name": "Indian Classical"
+      },
+      "industrial": {
+        "name": "Industrial"
+      },
+      "jazz": {
+        "name": "Jazz"
+      },
+      "klezmer": {
+        "name": "Klezmer"
+      },
+      "latin": {
+        "name": "Latin"
+      },
+      "marching_band": {
+        "name": "Marching Band"
+      },
+      "metal": {
+        "name": "Metal"
+      },
+      "middle_eastern_music": {
+        "name": "Middle Eastern Music"
+      },
+      "musical": {
+        "name": "Musical"
+      },
+      "new_age": {
+        "name": "New Age"
+      },
+      "poetry": {
+        "name": "Poetry"
+      },
+      "polka": {
+        "name": "Polka"
+      },
+      "pop": {
+        "name": "Pop"
+      },
+      "psychedelic": {
+        "name": "Psychedelic"
+      },
+      "punk": {
+        "name": "Punk"
+      },
+      "r_b": {
+        "name": "R&b"
+      },
+      "ragtime": {
+        "name": "Ragtime"
+      },
+      "rai": {
+        "name": "Raï"
+      },
+      "reggae": {
+        "name": "Reggae"
+      },
+      "reggaeton": {
+        "name": "Reggaeton"
+      },
+      "rock": {
+        "name": "Rock"
+      },
+      "salsa": {
+        "name": "Salsa"
+      },
+      "singer_songwriter": {
+        "name": "Singer-Songwriter"
+      },
+      "ska": {
+        "name": "Ska"
+      },
+      "soul": {
+        "name": "Soul"
+      },
+      "sound_effects": {
+        "name": "Sound Effects"
+      },
+      "soundtrack": {
+        "name": "Soundtrack"
+      },
+      "spoken_word": {
+        "name": "Spoken Word"
+      },
+      "swing": {
+        "name": "Swing"
+      },
+      "tango": {
+        "name": "Tango"
+      },
+      "trap": {
+        "name": "Trap"
+      },
+      "waltz": {
+        "name": "Waltz"
+      },
+      "wellness": {
+        "name": "Wellness"
+      }
     },
-    "recently_added_tracks": {
-      "name": "Recently added tracks"
-    },
-    "random_artists": {
-      "name": "Random artists"
-    },
-    "recommended_tracks": {
-      "name": "Recommended tracks"
-    },
-    "recommended_new_tracks": {
-      "name": "Recommended new tracks"
-    },
-    "recommended_playlists": {
-      "name": "Recommended playlists"
-    },
-    "trending_stations": {
-      "name": "Trending"
-    },
-    "recommendations.made_for_you": {
-      "name": "Made for you"
-    },
-    "recommendations.recommended_albums": {
-      "name": "Recommended albums"
-    },
-    "recommendations.recommended_artists": {
-      "name": "Recommended artists"
-    },
-    "inspired_by_recently_played": {
-      "name": "Inspired by recently played"
-    },
-    "trending_podcasts": {
-      "name": "Trending Podcasts"
-    },
-    "recommendations.episodes_recently_added": {
-      "name": "Newest Podcast Episodes"
-    },
-    "recommendations.recently_added_albums": {
-      "name": "New Albums"
-    },
-    "recommendations.most_played_albums": {
-      "name": "Most Played Albums"
-    },
-    "recommendations.discover_similar_artists": {
-      "name": "Discover Similar Artists"
-    },
-    "recommendations.discover_similar_tracks": {
-      "name": "Discover Similar Tracks"
-    },
-    "recommendations.global_top_artists": {
-      "name": "Global Top Artists",
-      "subtitle": "Most popular artists worldwide"
-    },
-    "recommendations.global_top_tracks": {
-      "name": "Global Top Tracks",
-      "subtitle": "Most popular tracks worldwide"
-    },
-    "in_progress_items": {
-      "name": "In progress"
-    },
-    "recently_added_albums": {
-      "name": "Recently added albums"
-    },
-    "random_albums": {
-      "name": "Random albums"
-    },
-    "recent_favorite_tracks": {
-      "name": "Recently favorited tracks"
-    },
-    "favorite_playlists": {
-      "name": "Favorite playlists"
-    },
-    "favorite_radio_stations": {
-      "name": "Favorite Radio stations"
-    },
-    "artists": {
-      "name": "Artists"
-    },
-    "albums": {
-      "name": "Albums"
-    },
-    "tracks": {
-      "name": "Tracks"
-    },
-    "playlists": {
-      "name": "Playlists"
-    },
-    "radios": {
-      "name": "Radio"
-    },
-    "audiobooks": {
-      "name": "Audiobooks"
-    },
-    "podcasts": {
-      "name": "Podcasts"
-    },
-    "recommendations": {
-      "name": "Recommendations"
-    },
-    "builtin_playlist": {
+    "playlist": {
       "all_favorite_tracks": {
         "name": "All favorited tracks"
       },
@@ -565,188 +642,135 @@
         "name": "Infinite Mix (favorites)"
       }
     },
-    "afrobeats": {
-      "name": "Afrobeats (West African Urban/Pop Music)"
+    "folder": {
+      "artists": {
+        "name": "Artists"
+      },
+      "albums": {
+        "name": "Albums"
+      },
+      "tracks": {
+        "name": "Tracks"
+      },
+      "playlists": {
+        "name": "Playlists"
+      },
+      "radios": {
+        "name": "Radio"
+      },
+      "audiobooks": {
+        "name": "Audiobooks"
+      },
+      "podcasts": {
+        "name": "Podcasts"
+      },
+      "library": {
+        "name": "Library"
+      },
+      "libraries": {
+        "name": "Libraries"
+      },
+      "recommendations": {
+        "name": "Recommendations"
+      }
     },
-    "ambient": {
-      "name": "Ambient"
-    },
-    "anime_and_video_game_music": {
-      "name": "Anime & Video Game Music"
-    },
-    "asian_music": {
-      "name": "Asian Music"
-    },
-    "bluegrass": {
-      "name": "Bluegrass"
-    },
-    "blues": {
-      "name": "Blues"
-    },
-    "brazilian_music": {
-      "name": "Brazilian Music"
-    },
-    "chanson": {
-      "name": "Chanson"
-    },
-    "childrens_music": {
-      "name": "Children's Music"
-    },
-    "christmas_music": {
-      "name": "Christmas Music"
-    },
-    "church_music": {
-      "name": "Church Music"
-    },
-    "classical": {
-      "name": "Classical"
-    },
-    "comedy": {
-      "name": "Comedy"
-    },
-    "country": {
-      "name": "Country"
-    },
-    "dance": {
-      "name": "Dance"
-    },
-    "dark_ambient": {
-      "name": "Dark Ambient"
-    },
-    "dark_wave": {
-      "name": "Dark Wave"
-    },
-    "disco": {
-      "name": "Disco"
-    },
-    "electronic": {
-      "name": "Electronic"
-    },
-    "experimental": {
-      "name": "Experimental"
-    },
-    "field_recording": {
-      "name": "Field Recording"
-    },
-    "folk": {
-      "name": "Folk"
-    },
-    "funk": {
-      "name": "Funk"
-    },
-    "gangsta_rap": {
-      "name": "Gangsta Rap"
-    },
-    "gospel": {
-      "name": "Gospel"
-    },
-    "hip_hop": {
-      "name": "Hip Hop"
-    },
-    "indian_classical": {
-      "name": "Indian Classical"
-    },
-    "industrial": {
-      "name": "Industrial"
-    },
-    "jazz": {
-      "name": "Jazz"
-    },
-    "klezmer": {
-      "name": "Klezmer"
-    },
-    "latin": {
-      "name": "Latin"
-    },
-    "marching_band": {
-      "name": "Marching Band"
-    },
-    "metal": {
-      "name": "Metal"
-    },
-    "middle_eastern_music": {
-      "name": "Middle Eastern Music"
-    },
-    "musical": {
-      "name": "Musical"
-    },
-    "new_age": {
-      "name": "New Age"
-    },
-    "poetry": {
-      "name": "Poetry"
-    },
-    "polka": {
-      "name": "Polka"
-    },
-    "pop": {
-      "name": "Pop"
-    },
-    "psychedelic": {
-      "name": "Psychedelic"
-    },
-    "punk": {
-      "name": "Punk"
-    },
-    "r_b": {
-      "name": "R&b"
-    },
-    "ragtime": {
-      "name": "Ragtime"
-    },
-    "rai": {
-      "name": "Raï"
-    },
-    "reggae": {
-      "name": "Reggae"
-    },
-    "reggaeton": {
-      "name": "Reggaeton"
-    },
-    "rock": {
-      "name": "Rock"
-    },
-    "salsa": {
-      "name": "Salsa"
-    },
-    "singer_songwriter": {
-      "name": "Singer-Songwriter"
-    },
-    "ska": {
-      "name": "Ska"
-    },
-    "soul": {
-      "name": "Soul"
-    },
-    "sound_effects": {
-      "name": "Sound Effects"
-    },
-    "soundtrack": {
-      "name": "Soundtrack"
-    },
-    "spoken_word": {
-      "name": "Spoken Word"
-    },
-    "swing": {
-      "name": "Swing"
-    },
-    "tango": {
-      "name": "Tango"
-    },
-    "trap": {
-      "name": "Trap"
-    },
-    "waltz": {
-      "name": "Waltz"
-    },
-    "wellness": {
-      "name": "Wellness"
-    },
-    "libraries": {
-      "name": "Libraries"
-    },
-    "library": {
-      "name": "Library"
+    "recommendations": {
+      "artists": {
+        "name": "Artists"
+      },
+      "albums": {
+        "name": "Albums"
+      },
+      "tracks": {
+        "name": "Tracks"
+      },
+      "playlists": {
+        "name": "Playlists"
+      },
+      "radios": {
+        "name": "Radio"
+      },
+      "podcasts": {
+        "name": "Podcasts"
+      },
+      "audiobooks": {
+        "name": "Audiobooks"
+      },
+      "made_for_you": {
+        "name": "Made for you"
+      },
+      "recommended_albums": {
+        "name": "Recommended albums"
+      },
+      "recommended_artists": {
+        "name": "Recommended artists"
+      },
+      "episodes_recently_added": {
+        "name": "Newest Podcast Episodes"
+      },
+      "recently_added_albums": {
+        "name": "Recently added albums"
+      },
+      "most_played_albums": {
+        "name": "Most Played Albums"
+      },
+      "discover_similar_artists": {
+        "name": "Discover Similar Artists"
+      },
+      "discover_similar_tracks": {
+        "name": "Discover Similar Tracks"
+      },
+      "global_top_artists": {
+        "name": "Global Top Artists",
+        "subtitle": "Most popular artists worldwide"
+      },
+      "global_top_tracks": {
+        "name": "Global Top Tracks",
+        "subtitle": "Most popular tracks worldwide"
+      },
+      "recently_played": {
+        "name": "Recently played",
+        "subtitle": "Pick up where you left off"
+      },
+      "recently_added_tracks": {
+        "name": "Recently added tracks"
+      },
+      "random_artists": {
+        "name": "Random artists"
+      },
+      "recommended_tracks": {
+        "name": "Recommended tracks"
+      },
+      "recommended_new_tracks": {
+        "name": "Recommended new tracks"
+      },
+      "recommended_playlists": {
+        "name": "Recommended playlists"
+      },
+      "trending_stations": {
+        "name": "Trending"
+      },
+      "inspired_by_recently_played": {
+        "name": "Inspired by recently played"
+      },
+      "trending_podcasts": {
+        "name": "Trending Podcasts"
+      },
+      "in_progress_items": {
+        "name": "In progress"
+      },
+      "random_albums": {
+        "name": "Random albums"
+      },
+      "recent_favorite_tracks": {
+        "name": "Recently favorited tracks"
+      },
+      "favorite_playlists": {
+        "name": "Favorite playlists"
+      },
+      "favorite_radio_stations": {
+        "name": "Favorite Radio stations"
+      }
     }
   },
   "background_task": {
