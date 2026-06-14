@@ -64,19 +64,19 @@ class TestSetupConditionalSearch:
         assert ProviderFeature.SEARCH not in plugin.supported_features
 
 
-class TestLoadedInMassWarmsTextEncoder:
-    """loaded_in_mass schedules the GPT2 text encoder warm off the request path.
+class TestTextEncoderWarmsLazily:
+    """The GPT2 text encoder is not warmed at load; the first search() warms it lazily.
 
-    The global SEARCH dispatcher gathers across all providers without a
-    per-provider timeout, so warming the ~500MB encoder via mass.create_task
-    prevents the first cold search() call from blocking the entire gather.
+    Warming the ~500MB encoder eagerly at startup defeats the point of an opt-in
+    feature, so loaded_in_mass leaves it cold and the first cold search() kicks off
+    a one-time background warm (see TestSearch.test_schedules_warm_when_encoder_cold).
     """
 
     @pytest.mark.asyncio
-    async def test_schedules_warm_task_when_text_search_enabled(
+    async def test_no_warm_task_at_load_when_text_search_enabled(
         self, mock_mass: MagicMock, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """text_search_enabled → mass.create_task called with the warm coroutine + task_id."""
+        """text_search_enabled → loaded_in_mass does NOT warm the encoder (it loads on first query)."""
 
         async def _noop_load(_self: Any) -> None:
             return None
@@ -88,9 +88,7 @@ class TestLoadedInMassWarmsTextEncoder:
         assert isinstance(plugin, SonicSimilarityPlugin)
         await plugin.loaded_in_mass()
 
-        mock_mass.create_task.assert_called_once_with(
-            plugin._get_text_encoder, task_id="sonic_similarity_text_encoder_warm"
-        )
+        mock_mass.create_task.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_warm_task_when_text_search_disabled(self, mock_mass: MagicMock) -> None:
@@ -156,23 +154,28 @@ class TestSearch:
         plugin._clap_index.search.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_returns_empty_when_encoder_cold(self, make_plugin: Callable[..., Any]) -> None:
-        """A cold _text_encoder short-circuits without attempting a lazy load.
+    async def test_schedules_warm_when_encoder_cold(self, make_plugin: Callable[..., Any]) -> None:
+        """A cold encoder short-circuits to empty but kicks off a one-time background warm.
 
-        The lazy load happens off the request path (loaded_in_mass schedules it
-        as a background task) so the global SEARCH dispatcher never blocks on
-        the ~500MB GPT2 download.
+        The encoder loads on first query rather than at startup, but the load runs off
+        the request path (via mass.create_task) so the global SEARCH dispatcher never
+        blocks on the ~500MB GPT2 download.
         """
         plugin = make_plugin(clap_enabled=True)
         plugin._clap_index.__len__ = MagicMock(return_value=5)
-        # Sentinel: if search() reached the lazy-load path, this would fire.
-        plugin._load_text_encoder = MagicMock(side_effect=RuntimeError("must not load"))
+        # Sentinel: search() must not load the encoder synchronously on the request path.
+        plugin._load_text_encoder = MagicMock(
+            side_effect=RuntimeError("must not load synchronously")
+        )
 
         result = await plugin.search("disco", [MediaType.TRACK])
 
         assert list(result.tracks) == []
         plugin._load_text_encoder.assert_not_called()
         plugin._clap_index.search.assert_not_called()
+        plugin.mass.create_task.assert_called_once_with(
+            plugin._get_text_encoder, task_id="sonic_similarity_text_encoder_warm"
+        )
 
     @pytest.mark.asyncio
     async def test_happy_path_returns_resolved_tracks(

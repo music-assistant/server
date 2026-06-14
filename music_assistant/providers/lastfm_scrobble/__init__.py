@@ -240,12 +240,10 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_PROVIDER,
             type=ConfigEntryType.STRING,
-            label="Provider",
             required=True,
-            description="The endpoint to use, defaults to Last.fm",
             options=[
-                ConfigValueOption(title="Last.FM", value=_NetworkType.LASTFM.value),
-                ConfigValueOption(title="LibreFM", value=_NetworkType.LIBREFM.value),
+                ConfigValueOption(_NetworkType.LASTFM.value, title="Last.FM"),
+                ConfigValueOption(_NetworkType.LIBREFM.value, title="LibreFM"),
             ],
             default_value=network_type.value,
             value=network_type.value,
@@ -253,18 +251,14 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_API_KEY,
             type=ConfigEntryType.SECURE_STRING,
-            label="API Key",
             required=network_type != _NetworkType.LASTFM,
-            description="Override the built-in Last.fm API key. Required for Libre.fm.",
             value=values.get(CONF_API_KEY) if values else None,
             advanced=True,
         ),
         ConfigEntry(
             key=CONF_API_SECRET,
             type=ConfigEntryType.SECURE_STRING,
-            label="Shared secret",
             required=network_type != _NetworkType.LASTFM,
-            description="Override the built-in Last.fm shared secret. Required for Libre.fm.",
             value=values.get(CONF_API_SECRET) if values else None,
             advanced=True,
         ),
@@ -327,14 +321,12 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Logged in user",
             hidden=True,
             value=values.get(CONF_USERNAME) if values else None,
         ),
         ConfigEntry(
             key=CONF_SESSION_KEY,
             type=ConfigEntryType.SECURE_STRING,
-            label="Session key",
             hidden=True,
             required=False,
             value=values.get(CONF_SESSION_KEY) if values else None,

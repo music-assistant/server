@@ -1,0 +1,18 @@
+{
+  "config_entries": {
+    "api_key": {
+      "label": "API Key",
+      "description": "Your Podcast Index API key. Get your free API credentials at https://api.podcastindex.org/"
+    },
+    "api_secret": {
+      "label": "API Secret",
+      "description": "Your Podcast Index API secret"
+    },
+    "stored_podcasts": {
+      "label": "Subscribed Podcasts"
+    }
+  },
+  "manifest": {
+    "description": "Discover and play podcasts using the open Podcast Index."
+  }
+}

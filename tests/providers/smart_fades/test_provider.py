@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import numpy as np
 import pytest
 from music_assistant_models.enums import ContentType, MediaType
+from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.models.audio_analysis import AudioAnalysisData
@@ -312,3 +313,19 @@ async def test_finalize_returns_none_on_early_exit(provider: SmartFadesProvider)
         result = await provider._finalize(session_id)
 
     assert result is None
+
+
+async def test_setup_raises_when_requirements_not_met(
+    mass_mock: Mock, manifest_mock: Mock, config_mock: Mock
+) -> None:
+    """setup() fails (before importing the heavy provider module) when requirements aren't met."""
+    from music_assistant.providers import smart_fades  # noqa: PLC0415
+
+    with (
+        patch(
+            "music_assistant.providers.smart_fades.verify_system_meets_requirements",
+            side_effect=SetupFailedError("unsupported system"),
+        ),
+        pytest.raises(SetupFailedError),
+    ):
+        await smart_fades.setup(mass_mock, manifest_mock, config_mock)

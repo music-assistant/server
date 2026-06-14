@@ -77,9 +77,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Zvuk Music Token",
-            description="Enter your Zvuk Music X-Auth-Token. "
-            "See the documentation for how to obtain it.",
             required=True,
             hidden=is_authenticated,
             value=cast("str", values.get(CONF_TOKEN)) if values else None,
@@ -87,19 +84,15 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ACTION_CLEAR_AUTH,
             type=ConfigEntryType.ACTION,
-            label="Reset authentication",
-            description="Clear the current authentication details.",
             action=CONF_ACTION_CLEAR_AUTH,
             hidden=not is_authenticated,
         ),
         ConfigEntry(
             key=CONF_QUALITY,
             type=ConfigEntryType.STRING,
-            label="Audio quality",
-            description="Select preferred audio quality.",
             options=[
-                ConfigValueOption("High (320 kbps)", QUALITY_HIGH),
-                ConfigValueOption("Lossless (FLAC)", QUALITY_LOSSLESS),
+                ConfigValueOption(QUALITY_HIGH),
+                ConfigValueOption(QUALITY_LOSSLESS),
             ],
             default_value=QUALITY_HIGH,
         ),
