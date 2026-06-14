@@ -36,35 +36,20 @@ async def get_config_entries(
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
-    # ruff: noqa: ARG001
-    entries: list[ConfigEntry] = [
-        ConfigEntry(
-            key=CONF_VOLUME_CONTROL,
-            type=ConfigEntryType.STRING,
-            options=[
-                ConfigValueOption(VOLUME_CONTROL_HARDWARE),
-                ConfigValueOption(VOLUME_CONTROL_SOFTWARE),
-                ConfigValueOption(VOLUME_CONTROL_DISABLED),
-            ],
-            default_value=VOLUME_CONTROL_HARDWARE,
-        ),
-    ]
+    entries: list[ConfigEntry] = []
 
     if sys.platform == "linux":
         entries.append(
             ConfigEntry(
-                key=CONF_HARDWARE_VOLUME_CEILING,
-                type=ConfigEntryType.INTEGER,
-                label="Hardware volume ceiling",
-                description=(
-                    "Sets the PulseAudio sink volume to this level on every startup. "
-                    "This attenuates the maximum output level of the hardware. "
-                    "Day-to-day volume control uses software scaling within this ceiling. "
-                    "Range: 0-100. Default: 50."
-                ),
-                default_value=DEFAULT_HARDWARE_VOLUME_CEILING,
-                required=False,
-            ),
+                key=CONF_AUDIO_BACKEND,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(AUDIO_BACKEND_AUTO),
+                    ConfigValueOption(AUDIO_BACKEND_PULSEAUDIO),
+                    ConfigValueOption(AUDIO_BACKEND_ALSA),
+                ],
+                default_value=AUDIO_BACKEND_AUTO,
+            )
         )
 
     return tuple(entries)
