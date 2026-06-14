@@ -32,6 +32,7 @@ from music_assistant_models.media_items import (
     Podcast,
     PodcastEpisode,
     ProviderMapping,
+    Radio,
     RecommendationFolder,
     SearchResults,
     Track,
@@ -57,6 +58,7 @@ from .parsers import (
     parse_epsiode,
     parse_playlist,
     parse_podcast,
+    parse_radio,
     parse_structured_lyrics,
     parse_track,
 )
@@ -73,9 +75,16 @@ if TYPE_CHECKING:
     from libopensonic.media import Playlist as SonicPlaylist
     from libopensonic.media import PodcastEpisode as SonicEpisode
 
+    # InternetRadioStation is not re-exported from libopensonic.media top-level
+    # in py-opensonic 10.0.0 (unlike its siblings) - import from the submodule.
+    from libopensonic.media.media_types import (
+        InternetRadioStation as SonicInternetRadioStation,
+    )
+
 
 CONF_BASE_URL = "baseURL"
 CONF_ENABLE_PODCASTS = "enable_podcasts"
+CONF_ENABLE_RADIOS = "enable_radios"
 CONF_ENABLE_LEGACY_AUTH = "enable_legacy_auth"
 CONF_OVERRIDE_OFFSET = "override_transcode_offest"
 CONF_RECO_FAVES = "recommend_favorites"
@@ -97,6 +106,7 @@ class OpenSonicProvider(MusicProvider):
 
     conn: SonicConnection
     _enable_podcasts: bool = True
+    _enable_radios: bool = True
     _seek_support: bool = False
     _ignore_offset: bool = False
     _show_faves: bool = True
@@ -133,6 +143,7 @@ class OpenSonicProvider(MusicProvider):
             )
             raise LoginFailed(msg) from e
         self._enable_podcasts = bool(self.config.get_value(CONF_ENABLE_PODCASTS))
+        self._enable_radios = bool(self.config.get_value(CONF_ENABLE_RADIOS))
         self._ignore_offset = bool(self.config.get_value(CONF_OVERRIDE_OFFSET))
         try:
             extensions: list[OpenSubsonicExtension] = await self.conn.get_open_subsonic_extensions()
@@ -523,6 +534,34 @@ class OpenSonicProvider(MusicProvider):
             for channel in channels:
                 yield parse_podcast(self.instance_id, channel)
 
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
+        """Retrieve internet radio stations from the provider.
+
+        Gated by the enable_radios config toggle (mirrors enable_podcasts). The
+        OpenSubsonic getInternetRadioStations endpoint returns the full list in
+        one call (no pagination), so there is no offset loop here.
+        """
+        if self._enable_radios:
+            for station in await self.conn.get_internet_radio_stations():
+                yield parse_radio(self.instance_id, station)
+
+    async def _find_radio_station(self, prov_radio_id: str) -> SonicInternetRadioStation:
+        """Resolve a single station by id.
+
+        libopensonic exposes no get-by-id for radio, so we fetch the full list
+        (the only available call) and filter. Raises MediaNotFoundError if the
+        id is not present.
+        """
+        for station in await self.conn.get_internet_radio_stations():
+            if station.id == prov_radio_id:
+                return station
+        msg = f"Radio station {prov_radio_id} not found"
+        raise MediaNotFoundError(msg)
+
+    async def get_radio(self, prov_radio_id: str) -> Radio:
+        """Return the requested internet radio station."""
+        return parse_radio(self.instance_id, await self._find_radio_station(prov_radio_id))
+
     @use_cache(3600 * 3)  # cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
@@ -663,6 +702,21 @@ class OpenSonicProvider(MusicProvider):
                 "Fetching stream details for podcast episode '%s' with format '%s'",
                 item.id,
                 item.content_type,
+            )
+        elif media_type == MediaType.RADIO:
+            # An internet radio station is an unbounded live stream: emit a
+            # direct HTTP stream to its streamUrl, no seeking, no proxying.
+            # ffmpeg autodetects the container, so content type is unknown.
+            station = await self._find_radio_station(item_id)
+            return StreamDetails(
+                item_id=station.id,
+                provider=self.instance_id,
+                media_type=MediaType.RADIO,
+                audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
+                stream_type=StreamType.HTTP,
+                path=station.stream_url,
+                allow_seek=False,
+                can_seek=False,
             )
         else:
             msg = f"Unsupported media type encountered '{media_type}'"

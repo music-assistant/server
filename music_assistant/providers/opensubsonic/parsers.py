@@ -19,6 +19,7 @@ from music_assistant_models.media_items import (
     Podcast,
     PodcastEpisode,
     ProviderMapping,
+    Radio,
     Track,
 )
 
@@ -35,6 +36,12 @@ if TYPE_CHECKING:
     from libopensonic.media import PodcastChannel as SonicPodcast
     from libopensonic.media import PodcastEpisode as SonicEpisode
     from libopensonic.media import StructuredLyrics
+
+    # InternetRadioStation is not re-exported from libopensonic.media top-level
+    # in py-opensonic 10.0.0 (unlike its siblings) - import from the submodule.
+    from libopensonic.media.media_types import (
+        InternetRadioStation as SonicInternetRadioStation,
+    )
 
 
 UNKNOWN_ARTIST_ID = "fake_artist_unknown"
@@ -283,6 +290,42 @@ def parse_artist(
         artist.mbid = sonic_artist.music_brainz_id
 
     return artist
+
+
+def parse_radio(instance_id: str, sonic_radio: SonicInternetRadioStation) -> Radio:
+    """Parse an InternetRadioStation into a Music Assistant Radio.
+
+    The station's streamUrl is carried in the single ProviderMapping's `details`
+    (the convention other radio providers use, e.g. tunein) - get_stream_details
+    reads it to build the StreamType.HTTP path.
+    """
+    metadata: MediaItemMetadata = MediaItemMetadata()
+
+    if sonic_radio.cover_art:
+        metadata.add_image(
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=sonic_radio.cover_art,
+                provider=instance_id,
+                remotely_accessible=False,
+            )
+        )
+
+    return Radio(
+        item_id=sonic_radio.id,
+        name=sonic_radio.name,
+        provider=SUBSONIC_DOMAIN,
+        metadata=metadata,
+        provider_mappings={
+            ProviderMapping(
+                item_id=sonic_radio.id,
+                provider_domain=SUBSONIC_DOMAIN,
+                provider_instance=instance_id,
+                audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
+                details=sonic_radio.stream_url,
+            )
+        },
+    )
 
 
 def parse_album(

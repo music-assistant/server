@@ -24,6 +24,10 @@
       "label": "Enable Podcasts",
       "description": "Should the provider query for podcasts as well as music?"
     },
+    "enable_radios": {
+      "label": "Enable Internet Radio",
+      "description": "Should the provider query for internet radio stations as well as music?"
+    },
     "enable_legacy_auth": {
       "label": "Enable Legacy Auth",
       "description": "Enable OpenSubsonic \"legacy\" auth support"

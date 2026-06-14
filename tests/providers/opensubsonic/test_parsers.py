@@ -17,6 +17,10 @@ from libopensonic.media import (
     PodcastEpisode,
     StructuredLyrics,
 )
+
+# InternetRadioStation is NOT re-exported from libopensonic.media top-level in
+# py-opensonic==10.0.0 (unlike its siblings above); import from the submodule.
+from libopensonic.media.media_types import InternetRadioStation
 from syrupy.assertion import SnapshotAssertion
 
 from music_assistant.providers.opensubsonic.parsers import (
@@ -25,6 +29,7 @@ from music_assistant.providers.opensubsonic.parsers import (
     parse_epsiode,
     parse_playlist,
     parse_podcast,
+    parse_radio,
     parse_structured_lyrics,
     parse_track,
 )
@@ -36,6 +41,7 @@ PLAYLIST_FIXTURES = list(FIXTURES_DIR.glob("playlists/*.playlist.json"))
 PODCAST_FIXTURES = list(FIXTURES_DIR.glob("podcasts/*.podcast.json"))
 EPISODE_FIXTURES = list(FIXTURES_DIR.glob("episodes/*.episode.json"))
 TRACK_FIXTURES = list(FIXTURES_DIR.glob("tracks/*.track.json"))
+RADIO_FIXTURES = list(FIXTURES_DIR.glob("radios/*.radio.json"))
 LYRICS_FIXTURES = list(FIXTURES_DIR.glob("lyrics/*.lyrics.json"))
 STRUCTURED_LYRICS_FIXTURES = list(FIXTURES_DIR.glob("structured-lyrics/*.structured-lyrics.json"))
 
@@ -62,6 +68,28 @@ async def test_parse_artists(example: pathlib.Path, snapshot: SnapshotAssertion)
     # sort external Ids to ensure they are always in the same order for snapshot testing
     parsed["external_ids"].sort()
     assert snapshot == parsed
+
+
+@pytest.mark.parametrize("example", RADIO_FIXTURES, ids=lambda val: str(val.stem))
+async def test_parse_radio(example: pathlib.Path, snapshot: SnapshotAssertion) -> None:
+    """Test we can parse internet radio stations."""
+    async with aiofiles.open(example) as fp:
+        station = InternetRadioStation.from_json(await fp.read())
+
+    radio = parse_radio("xx-instance-id-xx", station)
+    parsed = radio.to_dict()
+    parsed["external_ids"].sort()
+    assert snapshot == parsed
+
+    # Load-bearing invariant: the stream URL must round-trip into the single
+    # provider mapping's `details` field — that is what get_stream_details reads
+    # to build the StreamType.HTTP path. A snapshot alone wouldn't flag a silent
+    # move of this field, so assert it explicitly.
+    assert len(radio.provider_mappings) == 1
+    mapping = next(iter(radio.provider_mappings))
+    assert mapping.details == station.stream_url
+    assert radio.item_id == station.id
+    assert radio.name == station.name
 
 
 @pytest.mark.parametrize("example", ALBUM_FIXTURES, ids=lambda val: str(val.stem))

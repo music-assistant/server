@@ -13,6 +13,7 @@ from .sonic_provider import (
     CONF_BASE_URL,
     CONF_ENABLE_LEGACY_AUTH,
     CONF_ENABLE_PODCASTS,
+    CONF_ENABLE_RADIOS,
     CONF_NEW_ALBUMS,
     CONF_OVERRIDE_OFFSET,
     CONF_PAGE_SIZE,
@@ -45,6 +46,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.PLAYLIST_CREATE,
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.LIBRARY_PODCASTS_EDIT,
+    ProviderFeature.LIBRARY_RADIOS,
     ProviderFeature.FAVORITE_ALBUMS_EDIT,
     ProviderFeature.FAVORITE_ARTISTS_EDIT,
     ProviderFeature.FAVORITE_TRACKS_EDIT,
@@ -94,6 +96,12 @@ async def get_config_entries(
         ),
         ConfigEntry(
             key=CONF_ENABLE_PODCASTS,
+            type=ConfigEntryType.BOOLEAN,
+            required=True,
+            default_value=True,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_RADIOS,
             type=ConfigEntryType.BOOLEAN,
             required=True,
             default_value=True,
