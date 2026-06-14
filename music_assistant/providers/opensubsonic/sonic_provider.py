@@ -15,6 +15,7 @@ from libopensonic.errors import (
     SonicError,
 )
 from libopensonic.media import PodcastChannel
+from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.errors import (
     ActionUnavailable,
@@ -85,6 +86,16 @@ if TYPE_CHECKING:
 CONF_BASE_URL = "baseURL"
 CONF_ENABLE_PODCASTS = "enable_podcasts"
 CONF_ENABLE_RADIOS = "enable_radios"
+
+# Per-media-type library sync interval (hours) config keys. Blank/0 = use MA's
+# default schedule; a positive value overrides get_default_library_sync_schedule
+# to hourly(every=N). Covers exactly the media types this provider syncs.
+CONF_SYNC_INTERVAL_ARTISTS = "sync_interval_artists"
+CONF_SYNC_INTERVAL_ALBUMS = "sync_interval_albums"
+CONF_SYNC_INTERVAL_TRACKS = "sync_interval_tracks"
+CONF_SYNC_INTERVAL_PLAYLISTS = "sync_interval_playlists"
+CONF_SYNC_INTERVAL_PODCASTS = "sync_interval_podcasts"
+CONF_SYNC_INTERVAL_RADIOS = "sync_interval_radios"
 CONF_ENABLE_LEGACY_AUTH = "enable_legacy_auth"
 CONF_OVERRIDE_OFFSET = "override_transcode_offest"
 CONF_RECO_FAVES = "recommend_favorites"
@@ -96,6 +107,18 @@ CONF_RAW_FILE = "request_raw_file"
 
 CACHE_CATEGORY_PODCAST_CHANNEL = 1
 CACHE_CATEGORY_PODCAST_EPISODES = 2
+
+# MediaType -> its sync-interval config key, for the 6 media types this provider
+# syncs. get_default_library_sync_schedule reads the per-type value to override
+# the default schedule; a type absent here (or a blank/0 value) uses MA's default.
+SYNC_INTERVAL_CONF_KEYS: dict[MediaType, str] = {
+    MediaType.ARTIST: CONF_SYNC_INTERVAL_ARTISTS,
+    MediaType.ALBUM: CONF_SYNC_INTERVAL_ALBUMS,
+    MediaType.TRACK: CONF_SYNC_INTERVAL_TRACKS,
+    MediaType.PLAYLIST: CONF_SYNC_INTERVAL_PLAYLISTS,
+    MediaType.PODCAST: CONF_SYNC_INTERVAL_PODCASTS,
+    MediaType.RADIO: CONF_SYNC_INTERVAL_RADIOS,
+}
 
 Param = ParamSpec("Param")
 RetType = TypeVar("RetType")
@@ -166,6 +189,23 @@ class OpenSonicProvider(MusicProvider):
         """Unload the provider."""
         await super().unload(is_removed)
         await self.conn.cleanup()
+
+    def get_default_library_sync_schedule(self, media_type: MediaType) -> TaskSchedule:
+        """Return the sync schedule for the given media type.
+
+        Honors a per-type `sync_interval_<type>s` config (hours): a positive
+        value overrides the default to hourly(every=N); a blank/0/missing value
+        falls through to MA's default schedule. Useful e.g. to refresh internet
+        radio stations more often than the 12h default. TaskSchedule is
+        integer-hours (minimum 1), so sub-hour intervals are not expressible.
+        """
+        conf_key = SYNC_INTERVAL_CONF_KEYS.get(media_type)
+        if conf_key is not None:
+            raw = self.config.get_value(conf_key)
+            # the entry is INTEGER-typed, so a set value is an int; blank is None.
+            if isinstance(raw, int) and raw > 0:
+                return TaskSchedule.hourly(every=raw)
+        return super().get_default_library_sync_schedule(media_type)
 
     @property
     def is_streaming_provider(self) -> bool:
