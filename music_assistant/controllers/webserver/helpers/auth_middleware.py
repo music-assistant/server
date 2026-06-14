@@ -308,9 +308,19 @@ class OptionalImpersonatedUser:
     """
     Optional impersonated user context manager.
 
-    If username is None this class does nothing. Otherwise, only an Admin
-    may impersonate another user. This is used for calls from HA (e.g. play_media on
-    the player queues controller).
+    Nested use possible.
+    Case A:
+        calling user's role: Admin or User
+        username: username of calling user or None
+        -> impersonated user set to calling user (i.e. no change, nested use)
+    Case B:
+        calling user's role: User
+        username: username of another user
+        -> raises InsufficientPermissions
+    Case C:
+        calling user's role: Admin
+        username: username of another user
+        -> impersonated user set to requested user
     """
 
     def __init__(self, mass: MusicAssistant, username: str | None) -> None:
@@ -319,15 +329,22 @@ class OptionalImpersonatedUser:
         self.username = username
         self.previous_impersonated_user = impersonated_user.get()
         authenticated_user = current_user.get()
-        if username is not None and (
-            authenticated_user is None or authenticated_user.role != UserRole.ADMIN
-        ):
-            raise InsufficientPermissions("Can only impersonate another user as Admin.")
+        if authenticated_user is None:
+            raise InsufficientPermissions(
+                "Authentication is necessary to use OptionalImpersonatedUser."
+            )
+        if username is not None:
+            if (
+                authenticated_user.role != UserRole.ADMIN
+                and authenticated_user.username != self.username
+            ):
+                raise InsufficientPermissions("Can only impersonate another user as Admin.")
+        else:
+            self.username = authenticated_user.username
 
     async def __aenter__(self) -> Self:
         """Set the impersonated user if applicable."""
-        if self.username is None:
-            return self
+        assert self.username is not None  # for type checking
         if impersonated_user := await self.mass.webserver.auth.get_user_by_username(self.username):
             set_impersonated_user(impersonated_user)
             return self
@@ -340,7 +357,5 @@ class OptionalImpersonatedUser:
         exc_tb: TracebackType | None,
     ) -> bool | None:
         """Unset the impersonated user."""
-        if self.username is None:
-            return None
         set_impersonated_user(self.previous_impersonated_user)
         return None
