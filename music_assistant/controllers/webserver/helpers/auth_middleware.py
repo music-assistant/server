@@ -316,10 +316,10 @@ class OptionalImpersonatedUser:
         """Initialize UseImpersonatedUser."""
         self.mass = mass
         self.username = username
-        if (
-            username is not None
-            and (authenticated_user := get_current_user())
-            and authenticated_user.role != UserRole.ADMIN
+        self.previous_impersonated_user = impersonated_user.get()
+        authenticated_user = current_user.get()
+        if username is not None and (
+            authenticated_user is None or authenticated_user.role != UserRole.ADMIN
         ):
             raise InsufficientPermissions("Can only impersonate another user as Admin.")
 
@@ -339,5 +339,7 @@ class OptionalImpersonatedUser:
         exc_tb: TracebackType | None,
     ) -> bool | None:
         """Unset the impersonated user."""
-        set_impersonated_user(None)
+        if self.username is None:
+            return None
+        set_impersonated_user(self.previous_impersonated_user)
         return None

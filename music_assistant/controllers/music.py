@@ -3662,18 +3662,24 @@ class MusicController(CoreController):
         # Future todo: enhance this method with AI capabilities to allow typos and
         # natural language.
         searchname = name.lower()
-        library_functions = [
-            x
-            for x in (
-                self.playlists.library_items,
-                self.radio.library_items,
-                self.tracks.library_items,
-                self.albums.library_items,
-                self.artists.library_items,
-                self.audiobooks.library_items,
-                self.podcasts.library_items,
+        allowed_media_types = [
+            MediaType.PLAYLIST,
+            MediaType.RADIO,
+            MediaType.TRACK,
+            MediaType.ALBUM,
+            MediaType.ARTIST,
+            MediaType.AUDIOBOOK,
+            MediaType.PODCAST,
+        ]
+        if media_type not in allowed_media_types:
+            raise InvalidDataError(
+                "%s is not a supported media_type. Supported media_types are %s",
+                media_type,
+                allowed_media_types,
             )
-            if not media_type or media_type.value.lower() in x.__name__
+        media_types = allowed_media_types if media_type is None else [media_type]
+        library_functions = [
+            self.get_controller(media_type).library_items for media_type in media_types
         ]
         # prefer (exact) lookup in the library by name
         for func in library_functions:
