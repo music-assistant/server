@@ -201,6 +201,8 @@ def _nl_controller() -> TranslationController:
         "common.media.recommendations.recently_played.subtitle": "Pick up where you left off",
         # a genre name (searchable, so used by the reverse-lookup test)
         "common.media.genre.classical.name": "Classical",
+        # a genre description (resolved into a Genre's nested metadata.description)
+        "common.media.genre.classical.description": "Classical music is art music.",
     }
     ctrl._locales = {
         "nl": {
@@ -212,6 +214,7 @@ def _nl_controller() -> TranslationController:
             "common.media.recommendations.recently_played.name": "Onlangs afgespeeld",
             "common.media.recommendations.recently_played.subtitle": "Ga verder waar je gebleven was",
             "common.media.genre.classical.name": "Klassiek",
+            "common.media.genre.classical.description": "Klassieke muziek is kunstmuziek.",
         }
     }
     ctrl._available_locales = {"en", "nl"}
@@ -365,6 +368,46 @@ def test_media_names_are_keyed_by_media_type() -> None:
         "common.media.builtin_playlist.random_album.name",  # built-in playlist sub-dict
     ):
         assert stale not in source
+
+
+def test_genre_descriptions_are_authored() -> None:
+    """Genre descriptions are authored centrally under common.media.genre.<slug>.description.
+
+    Migrated from the frontend's genre_descriptions.* keys; the model resolver fills them into
+    a Genre's nested metadata.description, the same way names fill the top-level name field.
+    """
+    source = build_translations_source()
+    assert source["common.media.genre.jazz.description"].startswith("Jazz")
+    # every authored genre name carries a paired description (parity with the migrated set)
+    name_slugs = {
+        key[len("common.media.genre.") : -len(".name")]
+        for key in source
+        if key.startswith("common.media.genre.") and key.endswith(".name")
+    }
+    description_slugs = {
+        key[len("common.media.genre.") : -len(".description")]
+        for key in source
+        if key.startswith("common.media.genre.") and key.endswith(".description")
+    }
+    assert name_slugs == description_slugs
+
+
+def test_genre_description_resolves_via_controller() -> None:
+    """The resolver maps a genre's media.genre.<slug>.description key to the common entry.
+
+    Mirrors how the model's _resolve_translation looks up a genre's nested metadata.description:
+    a relative key plus the item's provider as owner, resolved via the common.* rewrite.
+    """
+    ctrl = _nl_controller()
+    assert (
+        ctrl.get_translation("media.genre.classical.description", "nl", owner="library")
+        == "Klassieke muziek is kunstmuziek."
+    )
+    # a locale without a translation falls back to the English source
+    assert (
+        ctrl.get_translation("media.genre.classical.description", "fr", owner="library")
+        == "Classical music is art music."
+    )
 
 
 async def test_reverse_lookup_media_names() -> None:
