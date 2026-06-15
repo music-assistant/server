@@ -584,11 +584,11 @@
       },
       "poetry": {
         "name": "Poetry",
-        "description": "Poetry as a musical genre merges spoken-word or recited verse with musical accompaniment, creating a hybrid form focused on emotional expression, storytelling, and rhythm. Often featuring acoustic instruments (piano, guitar) or experimental soundscapes, this genre blurs the line between literature and song,, highlighting the inherent melody and cadence in spoken words."
+        "description": "Poetry as a musical genre merges spoken-word or recited verse with musical accompaniment, creating a hybrid form focused on emotional expression, storytelling, and rhythm. Often featuring acoustic instruments (piano, guitar) or experimental soundscapes, this genre blurs the line between literature and song, highlighting the inherent melody and cadence in spoken words."
       },
       "polka": {
         "name": "Polka",
-        "description": "Polka is a dance style and genre of dance music in 24 originating in nineteenth-century Bohemia, now part of the Czech Republic. Though generally associated with Czech and Central European culture, polka is popular throughout Europe and the Americas."
+        "description": "Polka is a dance style and genre of dance music in 2/4 time, originating in nineteenth-century Bohemia, now part of the Czech Republic. Though generally associated with Czech and Central European culture, polka is popular throughout Europe and the Americas."
       },
       "pop": {
         "name": "Pop",
@@ -660,7 +660,7 @@
       },
       "tango": {
         "name": "Tango",
-        "description": "Tango is a style of music in 24 or 44 time that originated in Uruguay and Argentina among European immigrants in the late 19th and early 20th centuries. It has mainly Spanish, Italian, Gaucho, African, and French cultural roots. It is traditionally played on a solo guitar, guitar duo, or an ensemble, known as the orquesta típica, which includes at least two violins, flute, piano, double bass, and at least two bandoneóns. Sometimes guitars and a clarinet join the ensemble. Tango may be purely instrumental or may include a vocalist. Tango music and dance have become popular throughout the world."
+        "description": "Tango is a style of music in 2/4 or 4/4 time that originated in Uruguay and Argentina among European immigrants in the late 19th and early 20th centuries. It has mainly Spanish, Italian, Gaucho, African, and French cultural roots. It is traditionally played on a solo guitar, guitar duo, or an ensemble, known as the orquesta típica, which includes at least two violins, flute, piano, double bass, and at least two bandoneóns. Sometimes guitars and a clarinet join the ensemble. Tango may be purely instrumental or may include a vocalist. Tango music and dance have become popular throughout the world."
       },
       "trap": {
         "name": "Trap",
@@ -668,7 +668,7 @@
       },
       "waltz": {
         "name": "Waltz",
-        "description": "A waltz, probably deriving from German Ländler, is dance music in triple metre, often written in 34 time. A waltz typically sounds one chord per measure, and the accompaniment style particularly associated with the waltz is to play the root of the chord on the first beat, the upper notes on the second and third beats."
+        "description": "A waltz, probably deriving from German Ländler, is dance music in triple metre, often written in 3/4 time. A waltz typically sounds one chord per measure, and the accompaniment style particularly associated with the waltz is to play the root of the chord on the first beat, the upper notes on the second and third beats."
       },
       "wellness": {
         "name": "Wellness",
