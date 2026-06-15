@@ -163,6 +163,19 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             )
             return False
 
+        # Chromaprint only fingerprints mono/stereo audio. Feeding it multichannel
+        # (e.g. 5.1) trips a C-level assertion in its AudioProcessor that aborts the
+        # whole process rather than raising, so it cannot be caught and logged — the
+        # only safe option is to skip the file. See acoustid/chromaprint#90.
+        if audio_format.channels > 2:
+            self.logger.warning(
+                "AcoustID can only scan mono/stereo files; skipping multichannel "
+                "(%d-channel) file: %s",
+                audio_format.channels,
+                streamdetails.path or streamdetails.uri,
+            )
+            return False
+
         fingerprinter = self._create_fingerprinter(audio_format.sample_rate, audio_format.channels)
         if fingerprinter is None:
             return False
