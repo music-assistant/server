@@ -195,6 +195,7 @@ class TestAutoCreateEntries:
         )
         status = _find(list(entries), "label_auto_create_status")
         assert status is not None
+        assert status.label is not None
         assert "401" in status.label
 
 

@@ -1005,7 +1005,7 @@ class MusicCastPlayer(Player):
                 source_name,
             ) in self.zone_device.source_mapping.items():
                 if source_id in allowed_sources:
-                    source_options.append(ConfigValueOption(title=source_name, value=source_id))
+                    source_options.append(ConfigValueOption(source_id, title=source_name))
             if len(source_options) == 0:
                 # this should never happen
                 self.logger.error(
@@ -1019,42 +1019,25 @@ class MusicCastPlayer(Player):
                     ConfigEntry(
                         key=CONF_PLAYER_HANDLE_SOURCE_DISABLED,
                         type=ConfigEntryType.BOOLEAN,
-                        label="Disable zone handling completely.",
                         default_value=False,
-                        description="This disables zone handling completely. Other options "
-                        "will be ignored. Enable should you encounter playback issues while "
-                        "e.g. playing to main. You can also hide the player from the UI "
-                        "by taking advantage of 'Hide the player in the user interface' "
-                        "dropdown.",
                     ),
                     ConfigEntry(
                         key=CONF_PLAYER_SWITCH_SOURCE_NON_NET,
-                        label="Switch to this non-net source when leaving a group.",
                         type=ConfigEntryType.STRING,
                         options=source_options,
                         default_value=source_options[0].value,
-                        description="The zone will switch to this source when leaving a  group."
-                        " It must be an input which doesn't require network connectivity.",
                     ),
                     ConfigEntry(
                         key=CONF_PLAYER_TURN_OFF_ON_LEAVE,
                         type=ConfigEntryType.BOOLEAN,
-                        label="Turn off the zone when it leaves a group.",
                         default_value=False,
-                        description="Turn off the zone when it leaves a group.",
                     ),
                 ]
 
         auto_advance_entry = ConfigEntry(
             key=CONF_PLAYER_AUTO_ADVANCE,
             type=ConfigEntryType.BOOLEAN,
-            label="Auto-advance queue when the device stops at end of track",
             default_value=True,
-            description="Yamaha receivers occasionally drop the queued next track and "
-            "stop playback. With this enabled, MA detects the stop and advances the "
-            "queue. As a side effect, a user-initiated stop within the last 4 seconds "
-            "of a track will also advance to the next item; disable if you prefer the "
-            "device's stop behaviour to always be respected.",
         )
 
         return base_entries + zone_entries + [auto_advance_entry] + PLAYER_CONFIG_ENTRIES

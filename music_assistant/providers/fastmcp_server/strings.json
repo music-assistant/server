@@ -1,0 +1,39 @@
+{
+  "config_entries": {
+    "open_connect": {
+      "label": "Open Connect Wizard",
+      "description": "One-click setup for Claude Desktop, Claude Code, Cursor, Windsurf, VSCode, ChatGPT and other MCP clients. Mints a per-client token labelled `MCP — <Client>` (revocable in Profile → Long-lived access tokens) and copies the ready-to-paste snippet for you."
+    },
+    "require_auth": {
+      "label": "Require authentication",
+      "description": "Reject unauthenticated MCP clients. Strongly recommended — with auth disabled, every MCP client on the network can drive playback."
+    },
+    "mount_path": {
+      "label": "Mount path",
+      "description": "HTTP path prefix where the MCP server is mounted on MA's webserver. Change only if it conflicts with another route."
+    },
+    "require_confirmation": {
+      "label": "Confirm destructive operations",
+      "description": "Ask the MCP client to confirm before running destructive tools (clear_queue, remove_tracks, remove_from_library, remove_from_favorites). If the client doesn't support elicitation, the call falls through to the permission flag."
+    },
+    "enforce_audience": {
+      "label": "Enforce token audience (RFC 8707)",
+      "description": "Reject Bearer tokens whose `aud` claim does not match this MCP server's canonical URI. Mitigates the OAuth confused-deputy attack where a token issued for one MA endpoint is replayed against another. Requires upstream Music Assistant support for writing `aud` into JWTs (in progress) — until then enabling this rejects all existing tokens. Leave off unless your MA build issues audience-bound tokens."
+    },
+    "extra_allowed_origins": {
+      "label": "Additional allowed Origins (CSV)",
+      "description": "Comma-separated list of additional `Origin` headers to accept (e.g. `https://ha.example.com` for Home Assistant ingress, or a reverse-proxy hostname). By default the server only accepts `localhost`, `127.0.0.1`, the MA `base_url` host, and `publish_ip`. Mismatching Origins are rejected with 403 to mitigate DNS rebinding."
+    },
+    "connect_external_url": {
+      "label": "Connect Wizard external URL (fallback)",
+      "description": "Optional explicit base URL the Connect Wizard should open at (e.g. `https://ha.example.com/<addon-slug>` for Home Assistant add-on ingress). Used only when the wizard cannot auto-detect the external URL from the active client connection — set it if your reverse proxy strips the `X-Forwarded-Host` / `X-Ingress-Path` headers."
+    },
+    "debug_event_buffer_capacity": {
+      "label": "Debug: event buffer capacity",
+      "description": "Maximum number of recent events kept in memory when `Debug: read recent MA events` is enabled. Older events are dropped FIFO. Has no effect when events are off."
+    }
+  },
+  "manifest": {
+    "description": "Exposes Music Assistant as a Model Context Protocol (MCP) server for Claude, Codex, and other MCP-aware LLM clients."
+  }
+}

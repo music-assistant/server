@@ -1,0 +1,10 @@
+{
+  "config_entries": {
+    "single_cpu_warning": {
+      "label": "Only 1 CPU core detected on this system. Smart Fades analysis typically takes some CPU time during model inference. Enabling it on single-CPU hosts may cause performance issues and block normal playback. Enable at your own risk."
+    }
+  },
+  "manifest": {
+    "description": "Smart fades analyzes beat and downbeat detection, energy and musical key for smart crossfades."
+  }
+}

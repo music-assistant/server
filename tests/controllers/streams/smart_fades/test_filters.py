@@ -14,6 +14,7 @@ import pytest
 
 from music_assistant.controllers.streams.smart_fades.filters import (
     CrossfadeFilter,
+    FadeOutTrimFilter,
     FrequencySweepFilter,
 )
 
@@ -175,6 +176,24 @@ def test_sweep_instances_are_unique_per_stream_type() -> None:
     assert out_match is not None
     assert in_match is not None
     assert out_match.group(2) != in_match.group(2)
+
+
+def test_fadeout_trim_trims_fadeout_and_passes_fadein_through() -> None:
+    """The fadeout stream is end-trimmed; the fadein stream is untouched."""
+    fadeout_trim = FadeOutTrimFilter(logger=LOGGER, fadeout_end_pos=35.0, trimmed_seconds=10.0)
+    filter_strings = fadeout_trim.apply("[fadein]", "[fadeout]")
+    assert len(filter_strings) == 2
+    assert repr(fadeout_trim) == "FadeOutTrim(end=35.00s, trimmed=10.00s)"
+
+    trim_chain = next(f for f in filter_strings if "atrim" in f)
+    assert trim_chain.startswith("[fadeout]")
+    assert "atrim=end=35.000" in trim_chain
+    assert "asetpts=PTS-STARTPTS" in trim_chain
+    assert trim_chain.endswith(f"[{fadeout_trim.output_fadeout_label}]")
+
+    passthrough = next(f for f in filter_strings if "anull" in f)  # codespell:ignore anull
+    assert passthrough.startswith("[fadein]")
+    assert passthrough.endswith(f"[{fadeout_trim.output_fadein_label}]")
 
 
 def test_crossfade_uses_equal_power_curves() -> None:

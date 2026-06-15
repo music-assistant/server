@@ -1,0 +1,25 @@
+{
+  "config_entries": {
+    "username": {
+      "label": "Email or username"
+    },
+    "password": {
+      "label": "Password"
+    }
+  },
+  "schedule_programmes": {
+    "name": "Schedule and Programmes"
+  },
+  "listen_live": {
+    "name": "Listen Live"
+  },
+  "today": {
+    "name": "Today"
+  },
+  "yesterday": {
+    "name": "Yesterday"
+  },
+  "manifest": {
+    "description": "Stream live BBC radio shows, podcast series and on-demand audio."
+  }
+}

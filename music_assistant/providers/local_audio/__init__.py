@@ -40,16 +40,12 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_VOLUME_CONTROL,
             type=ConfigEntryType.STRING,
-            label="Volume control mode",
             options=[
-                ConfigValueOption(title="Hardware (preferred)", value=VOLUME_CONTROL_HARDWARE),
-                ConfigValueOption(title="Software", value=VOLUME_CONTROL_SOFTWARE),
-                ConfigValueOption(title="Disabled", value=VOLUME_CONTROL_DISABLED),
+                ConfigValueOption(VOLUME_CONTROL_HARDWARE),
+                ConfigValueOption(VOLUME_CONTROL_SOFTWARE),
+                ConfigValueOption(VOLUME_CONTROL_DISABLED),
             ],
             default_value=VOLUME_CONTROL_HARDWARE,
-            description="Hardware uses OS/ALSA-level volume control. "
-            "Software applies volume scaling to PCM audio data. "
-            "Disabled passes audio at full volume.",
         ),
     )
 

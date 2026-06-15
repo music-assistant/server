@@ -127,15 +127,12 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_BRIDGE_HOST,
             type=ConfigEntryType.STRING,
-            label="Bridge IP Address",
-            description="IP address of the Philips Hue bridge.",
             required=True,
             value=values.get(CONF_BRIDGE_HOST) if values else None,
         ),
         ConfigEntry(
             key=CONF_BRIDGE_ID,
             type=ConfigEntryType.STRING,
-            label="Bridge ID",
             required=False,
             hidden=True,
             value=values.get(CONF_BRIDGE_ID) if values else None,
@@ -150,7 +147,6 @@ async def get_config_entries(
             key=CONF_ACTION_PAIR,
             type=ConfigEntryType.ACTION,
             label="(Re)Pair with Hue Bridge" if paired else "Pair with Hue Bridge",
-            description="Connects to the bridge and retrieves the API credentials.",
             action=CONF_ACTION_PAIR,
             depends_on=CONF_BRIDGE_HOST,
             required=False,
@@ -159,7 +155,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.SECURE_STRING,
-            label="Hue API Username",
             hidden=True,
             required=False,
             default_value="",
@@ -168,7 +163,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_CLIENTKEY,
             type=ConfigEntryType.SECURE_STRING,
-            label="Hue Client Key",
             hidden=True,
             required=False,
             default_value="",
@@ -177,8 +171,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_BRIGHTNESS,
             type=ConfigEntryType.INTEGER,
-            label="Brightness",
-            description="Overall light brightness (0-100).",
             default_value=100,
             range=(0, 100),
             category="settings",
@@ -186,28 +178,13 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_COLOR_MODE,
             type=ConfigEntryType.STRING,
-            label="Mode",
-            description=(
-                "Visualization style. "
-                "Smooth (default): spectrum-driven brightness with a slowly "
-                "drifting palette. "
-                "Ambient: colour cycling only, no brightness modulation. "
-                "Flashing: brightness pulse on every beat, stronger on downbeats. "
-                "Energetic: large brightness swings on hits plus fast palette rotation."
-            ),
             default_value=DEFAULT_COLOR_MODE,
-            options=[ConfigValueOption(mode.capitalize(), mode) for mode in COLOR_MODES],
+            options=[ConfigValueOption(mode, title=mode.capitalize()) for mode in COLOR_MODES],
             category="settings",
         ),
         ConfigEntry(
             key=CONF_HUE_LATENCY_MS,
             type=ConfigEntryType.INTEGER,
-            label="Light latency (ms)",
-            description=(
-                "Milliseconds to render light updates ahead of the audio, to "
-                "offset the Hue bridge and DTLS delay. Increase if the lights "
-                "lag the music, decrease if they run ahead of it."
-            ),
             default_value=DEFAULT_HUE_LATENCY_MS,
             range=(0, 3000),
             immediate_apply=True,

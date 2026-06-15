@@ -1,0 +1,19 @@
+{
+  "config_entries": {
+    "access_token": {
+      "label": "Access token",
+      "description": "You need to authenticate on Deezer.",
+      "action_label": "Authenticate with Deezer"
+    },
+    "arl_token": {
+      "label": "Arl token",
+      "description": "See https://www.dumpmedia.com/deezplus/deezer-arl.html"
+    }
+  },
+  "radios": {
+    "name": "Deezer Radios"
+  },
+  "manifest": {
+    "description": "Stream Deezer’s full music catalogue in CD-quality (FLAC) audio."
+  }
+}
