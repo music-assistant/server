@@ -39,14 +39,16 @@ class AmpliPiPlayerProvider(PlayerProvider):
     _ma_streams: dict[int, int]
     # last-polled AmpliPi streams (native streams + RCA inputs), used to build source lists
     _streams: list[AmpliPiStream]
-    # serializes ensure_stream so concurrent callers cannot create duplicate streams
-    _stream_lock: asyncio.Lock
+    # per-source locks for ensure_stream: concurrent callers for the same source cannot
+    # create duplicate streams, while different sources still proceed in parallel
+    _stream_locks: dict[int, asyncio.Lock]
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._players = {}
         self._ma_streams = {}
         self._streams = []
+        self._stream_locks = {}
         host = cast("str", self.config.get_value(CONF_HOST))
         if host.startswith(("http://", "https://")):
             # a full URL is used as-is, but a schemed host with no path (e.g.
@@ -56,7 +58,6 @@ class AmpliPiPlayerProvider(PlayerProvider):
                 endpoint = f"{endpoint}/api"
         else:
             endpoint = f"http://{host}/api"
-        self._stream_lock = asyncio.Lock()
         self.api = AmpliPi(
             endpoint=endpoint,
             timeout=10,
@@ -106,9 +107,10 @@ class AmpliPiPlayerProvider(PlayerProvider):
         :param source_id: The AmpliPi source id the stream is bound to.
         :param url: The Music Assistant stream URL the AmpliPi stream should play.
         """
-        # serialize so two concurrent callers for the same source cannot each miss the
-        # cache and create duplicate streams
-        async with self._stream_lock:
+        # serialize per source so two concurrent callers for the same source cannot each
+        # miss the cache and create duplicate streams; other sources are unaffected
+        lock = self._stream_locks.setdefault(source_id, asyncio.Lock())
+        async with lock:
             if (stream_id := self._ma_streams.get(source_id)) is not None:
                 await self.api.set_stream(stream_id, StreamUpdate(url=url))
                 return stream_id
