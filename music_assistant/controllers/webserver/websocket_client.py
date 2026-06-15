@@ -257,7 +257,17 @@ class WebsocketClientHandler:
             # Log at warning level since these are normal error responses, not crashes.
             self._logger.warning("%s: %s", msg.command, err)
             err_msg = str(err) or err.__class__.__name__
-            await self._send_message(ErrorResultMessage(msg.message_id, err.error_code, err_msg))
+            # err_msg is the English fallback; the translation_key (per-type default or a
+            # provider override) localizes `details` to the connection locale at serialization.
+            await self._send_message(
+                ErrorResultMessage(
+                    msg.message_id,
+                    err.error_code,
+                    err_msg,
+                    translation_key=err.translation_key,
+                    translation_args=err.translation_args,
+                )
+            )
         except Exception as err:
             if self._logger.isEnabledFor(logging.DEBUG):
                 self._logger.exception("Error handling message: %s", msg)
