@@ -13,6 +13,7 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -78,6 +79,7 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -142,6 +144,7 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -215,6 +218,7 @@
     'media_type': 'playlist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -284,6 +288,7 @@
     'media_type': 'playlist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'A shared playlist',
       'description_language': None,
@@ -357,6 +362,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -425,6 +431,7 @@
       'media_type': 'album',
       'metadata': dict({
         'chapters': None,
+        'collections': None,
         'copyright': None,
         'description': None,
         'description_language': None,
@@ -497,6 +504,7 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
           'description_language': None,
@@ -561,6 +569,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
