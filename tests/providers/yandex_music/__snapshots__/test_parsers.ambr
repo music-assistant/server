@@ -13,6 +13,7 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -60,6 +61,7 @@
     ]),
     'sort_name': 'test album',
     'translation_key': None,
+    'translation_params': None,
     'uri': 'yandex_music_instance://album/300',
     'version': '',
     'year': 2020,
@@ -77,6 +79,7 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -124,6 +127,7 @@
     ]),
     'sort_name': 'test artist',
     'translation_key': None,
+    'translation_params': None,
     'uri': 'yandex_music_instance://artist/100',
     'version': '',
   })
@@ -140,6 +144,7 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -195,6 +200,7 @@
     ]),
     'sort_name': 'artist with cover',
     'translation_key': None,
+    'translation_params': None,
     'uri': 'yandex_music_instance://artist/200',
     'version': '',
   })
@@ -212,6 +218,7 @@
     'media_type': 'playlist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -263,6 +270,7 @@
       'track',
     ]),
     'translation_key': None,
+    'translation_params': None,
     'uri': 'yandex_music_instance://playlist/12345:3',
     'version': '',
   })
@@ -280,6 +288,7 @@
     'media_type': 'playlist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'A shared playlist',
       'description_language': None,
@@ -331,6 +340,7 @@
       'track',
     ]),
     'translation_key': None,
+    'translation_params': None,
     'uri': 'yandex_music_instance://playlist/99999:1',
     'version': '',
   })
@@ -352,6 +362,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -400,6 +411,7 @@
     'sort_name': 'test track',
     'track_number': 0,
     'translation_key': None,
+    'translation_params': None,
     'uri': 'yandex_music_instance://track/400',
     'version': '',
   })
@@ -419,6 +431,7 @@
       'media_type': 'album',
       'metadata': dict({
         'chapters': None,
+        'collections': None,
         'copyright': None,
         'description': None,
         'description_language': None,
@@ -474,6 +487,7 @@
       ]),
       'sort_name': 'track album',
       'translation_key': None,
+      'translation_params': None,
       'uri': 'yandex_music_instance://album/20',
       'version': '',
       'year': None,
@@ -490,6 +504,7 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
           'description_language': None,
@@ -537,6 +552,7 @@
         ]),
         'sort_name': 'track artist',
         'translation_key': None,
+        'translation_params': None,
         'uri': 'yandex_music_instance://artist/10',
         'version': '',
       }),
@@ -553,6 +569,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -609,6 +626,7 @@
     'sort_name': 'track with album',
     'track_number': 0,
     'translation_key': None,
+    'translation_params': None,
     'uri': 'yandex_music_instance://track/500',
     'version': '',
   })

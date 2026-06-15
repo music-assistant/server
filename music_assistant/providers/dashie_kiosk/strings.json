@@ -1,0 +1,15 @@
+{
+  "config_entries": {
+    "players": {
+      "label": "Dashie Kiosk devices (via Home Assistant)",
+      "description": "Select Dashie Kiosk tablets discovered through the Dashie HA integration. Requires the Home Assistant Plugin."
+    },
+    "manual_players": {
+      "label": "Manual Dashie Kiosk addresses",
+      "description": "Manually add Dashie Kiosk tablets by IP address and port (e.g. 192.168.1.100:2323). Use this if you don't have the Dashie HA integration installed."
+    }
+  },
+  "manifest": {
+    "description": "Play audio directly on Dashie Kiosk Android tablets via their REST API."
+  }
+}

@@ -58,17 +58,17 @@ class GradualTimeStretchFilter(Filter):
         return f"GradualTimeStretch(steps={n}, {start:.4f}->{end:.4f})"
 
 
-class TrimFilter(Filter):
+class FadeInTrimFilter(Filter):
     """Filter that trims incoming track to align with downbeats."""
 
     output_fadeout_label: str = "fadeout_beatalign"
     output_fadein_label: str = "fadein_beatalign"
 
     def __init__(self, logger: logging.Logger, fadein_start_pos: float):
-        """Initialize beat align filter.
+        """
+        Initialize beat align filter.
 
-        Args:
-            fadein_start_pos: Position in seconds to trim the incoming track to
+        :param fadein_start_pos: Position in seconds to trim the incoming track to.
         """
         self.fadein_start_pos = fadein_start_pos
         super().__init__(logger)
@@ -81,8 +81,42 @@ class TrimFilter(Filter):
         ]
 
     def __repr__(self) -> str:
-        """Return string representation of TrimFilter."""
-        return f"Trim(trim={self.fadein_start_pos:.2f}s)"
+        """Return string representation of FadeInTrimFilter."""
+        return f"FadeInTrim(start={self.fadein_start_pos:.2f}s)"
+
+
+class FadeOutTrimFilter(Filter):
+    """Filter that trims trailing (silent) audio off the outgoing track's tail."""
+
+    output_fadeout_label: str = "fadeout_tailtrim"
+    output_fadein_label: str = "fadein_tailtrim"
+
+    def __init__(self, logger: logging.Logger, fadeout_end_pos: float, trimmed_seconds: float):
+        """
+        Initialize fade-out trim filter.
+
+        :param fadeout_end_pos: Position in seconds where the outgoing track's
+            audible content ends; everything after it is dropped.
+            Measured on the untrimmed input timeline, so this filter must precede
+            any time-stretching filter in the chain.
+        :param trimmed_seconds: Amount of trailing audio in seconds that the trim
+            drops, for logging/debugging purposes.
+        """
+        self.fadeout_end_pos = fadeout_end_pos
+        self.trimmed_seconds = trimmed_seconds
+        super().__init__(logger)
+
+    def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
+        """Trim the outgoing track's tail at the effective audio end."""
+        return [
+            f"{input_fadeout_label}atrim=end={self.fadeout_end_pos:.3f},"
+            f"asetpts=PTS-STARTPTS[{self.output_fadeout_label}]",
+            f"{input_fadein_label}anull[{self.output_fadein_label}]",  # codespell:ignore anull
+        ]
+
+    def __repr__(self) -> str:
+        """Return string representation of FadeOutTrimFilter."""
+        return f"FadeOutTrim(end={self.fadeout_end_pos:.2f}s, trimmed={self.trimmed_seconds:.2f}s)"
 
 
 class FrequencySweepFilter(Filter):

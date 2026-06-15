@@ -101,7 +101,7 @@ def _values_from_raw(raw: dict[str, Any]) -> tuple[list[ConfigValueDump], bool]:
     return out, truncated
 
 
-def _entry_dump(entry: ConfigEntry, current: Any) -> ConfigEntryDump:
+def _entry_dump(mass: MusicAssistant, entry: ConfigEntry, current: Any) -> ConfigEntryDump:
     """Map a ConfigEntry + current value to ConfigEntryDump."""
     opts = [o.value for o in entry.options] if entry.options else None
     # Mask secrets: _resolve_entries reads raw ConfigEntry.value, bypassing
@@ -111,13 +111,26 @@ def _entry_dump(entry: ConfigEntry, current: Any) -> ConfigEntryDump:
         if entry.type == ConfigEntryType.SECURE_STRING and current is not None
         else current
     )
+    # label/description are no longer hardcoded on the entry; resolve them from the
+    # translations the same way __post_serialize__ does (bypassed here, see above).
+    base = entry.translation_key or f"config_entries.{entry.key}"
+    label = (
+        entry.label
+        or mass.translations.get_translation(
+            f"{base}.label", owner=entry.translation_owner, params=entry.translation_params
+        )
+        or entry.key
+    )
+    description = entry.description or mass.translations.get_translation(
+        f"{base}.description", owner=entry.translation_owner, params=entry.translation_params
+    )
     return ConfigEntryDump(
         key=entry.key,
         type=entry.type.value,
-        label=entry.label,
+        label=label,
         default_value=entry.default_value,
         required=entry.required,
-        description=entry.description,
+        description=description,
         options=opts,
         range=entry.range,
         advanced=getattr(entry, "advanced", False),
@@ -523,7 +536,7 @@ def _register_read_tools(sub: FastMCP, mass: MusicAssistant) -> None:
         :param action: Optional action key to activate dynamic entries.
         """
         entries, current = await _resolve_entries(mass, target_type, target_id, action)
-        dumps = [_entry_dump(e, current.get(e.key)) for e in entries]
+        dumps = [_entry_dump(mass, e, current.get(e.key)) for e in entries]
         return ConfigEntryList(
             target_type=target_type, target_id=target_id, entries=dumps, truncated=False
         )
@@ -676,7 +689,7 @@ def _register_provider_write_tools(
         return ActionResult(
             instance_id=instance_id,
             action_key=action_key,
-            new_entries=[_entry_dump(e, getattr(e, "value", None)) for e in entries],
+            new_entries=[_entry_dump(mass, e, getattr(e, "value", None)) for e in entries],
             extra_data={},
             audit_log_id=audit,
         )

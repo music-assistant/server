@@ -67,7 +67,10 @@ from music_assistant.constants import (
     MASS_LOGGER_NAME,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.controllers.streams.audio_analysis import LOUDNESS_ANALYSIS_DOMAIN
+from music_assistant.controllers.streams.audio_analysis import (
+    LOUDNESS_ANALYSIS_DOMAIN,
+    SMART_FADES_ANALYSIS_DOMAIN,
+)
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.constants import (
     CACHE_CATEGORY_RESOLVED_RADIO_URL,
@@ -1876,6 +1879,9 @@ class StreamsAudio:
             # the remaining buffer is the fade-out tail of the current track
             fade_out_data = bytes(buffer)
             buffer = bytearray()
+            # initialized before the try block — the except handler reads these
+            first_part_written = 0
+            second_part_buf = bytearray()
             try:
                 # wrap the next track's stream in a counting generator that caps
                 # at crossfade_buffer_size and tracks how many bytes were consumed
@@ -1908,7 +1914,7 @@ class StreamsAudio:
                     pcm_format=pcm_format,
                     standard_crossfade_duration=standard_crossfade_duration,
                     mode=smart_fades_mode,
-                    fade_out_bytes_len=len(fade_out_data),
+                    fade_out_data=fade_out_data,
                     fade_in_bytes_len=crossfade_buffer_size,
                 )
                 crossfade_timing = smart_fade.timing_info
@@ -1918,8 +1924,6 @@ class StreamsAudio:
                     * pcm_format.pcm_sample_size
                 )
                 fadeout_share_bytes = (fadeout_share_bytes // frame_size) * frame_size
-                first_part_written = 0
-                second_part_buf = bytearray()
                 async for mix_chunk in self.smart_fades_mixer.mix(
                     smart_fade,
                     fade_in_part=_limited_fade_in(),
@@ -2054,10 +2058,11 @@ class StreamsAudio:
             if flow_player
             else []
         )
-        # smart crossfade requires a large buffer for beat analysis
-        if (
-            smart_fades_mode == SmartFadesMode.SMART_CROSSFADE
-            and self.mass.config.get_raw_core_config_value(
+        # smart crossfade needs the smart_fades analysis provider (for beat/key data) and a
+        # non-minimal buffer for beat analysis; fall back to standard crossfade otherwise.
+        if smart_fades_mode == SmartFadesMode.SMART_CROSSFADE and (
+            self.mass.get_provider(SMART_FADES_ANALYSIS_DOMAIN) is None
+            or self.mass.config.get_raw_core_config_value(
                 "streams", CONF_BUFFER_SIZE, CONF_BUFFER_SIZE_DEFAULT
             )
             == BufferSize.MINIMAL
@@ -2177,7 +2182,7 @@ class StreamsAudio:
                     pcm_format=pcm_format,
                     standard_crossfade_duration=standard_crossfade_duration,
                     mode=smart_fades_mode,
-                    fade_out_bytes_len=len(last_fadeout_part),
+                    fade_out_data=last_fadeout_part,
                     fade_in_bytes_len=crossfade_buffer_size,
                 )
                 timing_info = crossfade_smart_fade.timing_info

@@ -50,15 +50,11 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Email",
             required=True,
-            description="Your MusicMe account email address.",
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=True,
-            description="Your MusicMe account password.",
         ),
     )

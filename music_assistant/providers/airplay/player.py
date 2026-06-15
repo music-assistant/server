@@ -242,24 +242,18 @@ class AirPlayPlayer(Player):
                 key=CONF_AIRPLAY_PROTOCOL,
                 type=ConfigEntryType.INTEGER,
                 required=False,
-                label="AirPlay protocol version to use for streaming",
-                description="AirPlay version 1 protocol uses RAOP.\n"
-                "AirPlay version 2 is an extension of RAOP.\n"
-                "Some newer devices do not fully support RAOP and "
-                "will only work with AirPlay version 2, "
-                "while older devices may only support RAOP.\n\n"
-                "In most cases the default automatic selection will work fine.\n\n"
-                "NOTE: AirPlay 2 currently does not support audio synchronization. "
-                "Grouping/syncing with other players is only available when "
-                "using AirPlay 1 (RAOP).",
                 options=[
                     opt
                     for opt in (
-                        ConfigValueOption("Automatically select", 0),
-                        ConfigValueOption("Prefer AirPlay 1 (RAOP)", StreamingProtocol.RAOP.value)
+                        ConfigValueOption(0, title="Automatically select"),
+                        ConfigValueOption(
+                            StreamingProtocol.RAOP.value, title="Prefer AirPlay 1 (RAOP)"
+                        )
                         if self.raop_discovery_info
                         else None,
-                        ConfigValueOption("Prefer AirPlay 2", StreamingProtocol.AIRPLAY2.value)
+                        ConfigValueOption(
+                            StreamingProtocol.AIRPLAY2.value, title="Prefer AirPlay 2"
+                        )
                         if self.airplay_discovery_info
                         else None,
                     )
@@ -272,9 +266,6 @@ class AirPlayPlayer(Player):
                 key=CONF_ENCRYPTION,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
-                label="Enable encryption",
-                description="Enable encrypted communication with the player, "
-                "some (3rd party) players require this to be disabled.",
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
                 hidden=not is_raop,
@@ -285,9 +276,6 @@ class AirPlayPlayer(Player):
                 key=CONF_ALAC_ENCODE,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
-                label="Enable compression",
-                description="Save some network bandwidth by sending the audio as "
-                "(lossless) ALAC at the cost of a bit of CPU.",
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
                 hidden=not is_raop,
@@ -300,8 +288,6 @@ class AirPlayPlayer(Player):
                 type=ConfigEntryType.SECURE_STRING,
                 default_value=None,
                 required=False,
-                label="Device password",
-                description="Some devices require a password to connect/play.",
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
                 hidden=not is_raop,
@@ -312,14 +298,6 @@ class AirPlayPlayer(Player):
                 key=CONF_IGNORE_VOLUME,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
-                label="Ignore volume reports sent by the device itself",
-                description=(
-                    "The AirPlay protocol allows devices to report their own volume "
-                    "level. \n"
-                    "For some devices this is not reliable and can cause unexpected "
-                    "volume changes. \n"
-                    "Enable this option to ignore these reports."
-                ),
                 category="protocol_generic",
                 advanced=True,
             ),
@@ -330,13 +308,6 @@ class AirPlayPlayer(Player):
                 range=(
                     RAOP_OUTPUT_BUFFER_MIN_DURATION_MS,
                     RAOP_OUTPUT_BUFFER_MAX_DURATION_MS,
-                ),
-                label="Milliseconds of data to buffer",
-                description=(
-                    "The number of milliseconds of data to buffer\n"
-                    "NOTE: This adds to the latency experienced for commencement "
-                    "of playback. \n"
-                    "Try increasing value if playback is unreliable."
                 ),
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
@@ -352,9 +323,6 @@ class AirPlayPlayer(Player):
                     AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MIN_MS,
                     AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MAX_MS,
                 ),
-                label="Expected milliseconds to establish streaming session with the AirPlay device.",
-                description="Adjust this value only if playback is out of sync or does not work.\n"
-                "The log will contain a WARNING entry showing a recommendation.",
                 hidden=is_raop,
                 category="protocol_generic",
                 advanced=True,
@@ -375,11 +343,6 @@ class AirPlayPlayer(Player):
                             type=ConfigEntryType.ALERT,
                             default_value=None,
                             required=False,
-                            label="Music Assistant support for the AirPlay2 protocol "
-                            "does support audio synchronisation, but it is fragile. "
-                            "If playback or synchronisation does not work, try adjusting the "
-                            "session establishment latency. This is an interim advanced configuration "
-                            "setting. It will be removed when a robust synchronisation method is implemented.",
                         ),
                     )
                     break
@@ -478,7 +441,6 @@ class AirPlayPlayer(Player):
                         ConfigEntry(
                             key=CONF_PAIRING_PIN,
                             type=ConfigEntryType.STRING,
-                            label="Enter the 4-digit PIN shown on the device",
                             required=True,
                             category="protocol_generic",
                         )
@@ -499,7 +461,6 @@ class AirPlayPlayer(Player):
                             key=CONF_PAIRING_PASSWORD,
                             type=ConfigEntryType.SECURE_STRING,
                             required=True,
-                            label="Enter the device password",
                             category="protocol_generic",
                         )
                     )

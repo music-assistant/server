@@ -12,7 +12,6 @@ from collections.abc import AsyncGenerator, Iterable, Mapping
 from math import inf
 from typing import TYPE_CHECKING, Any
 
-import torch
 from music_assistant_models.audio_analysis import AudioAnalysisCoverage
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
@@ -137,10 +136,10 @@ class AudioAnalysisController:
         self.logger = self.mass.logger.getChild("audio_analysis")
         self._active_sessions: dict[str, set[str]] = {}
         self._workers: dict[str, asyncio.Task[None]] = {}
+        self._thread_caps_configured = False
 
     def setup(self) -> None:
-        """Register the nightly background scan task and apply CPU caps."""
-        self._configure_thread_caps()
+        """Register the nightly background scan task."""
         utc_hour, utc_minute = local_clock_time_to_utc(0, 0)
         self.mass.tasks.register_scheduled_task(
             task_id=BACKGROUND_SCAN_TASK_ID,
@@ -163,8 +162,20 @@ class AudioAnalysisController:
         if workers:
             await asyncio.gather(*workers, return_exceptions=True)
 
-    def _configure_thread_caps(self) -> None:
-        """Cap PyTorch threading so Audio Analysis inference stays around a quarter of cpu_count."""
+    def ensure_thread_caps_configured(self) -> None:
+        """
+        Cap PyTorch threading for analysis inference (process-wide, applied once).
+
+        Torch-backed analysis providers call this at the start of their handle_async_init,
+        before loading their models.
+        """
+        # Lazy torch import: only torch-backed providers call this, so a host running no
+        # such provider never imports torch. Running before the first model load also lets
+        # set_num_interop_threads take effect (it can only be set before the first torch op).
+        if self._thread_caps_configured:
+            return
+        import torch  # noqa: PLC0415
+
         budget = self._aa_thread_budget()
         torch.set_num_threads(budget)
         with contextlib.suppress(RuntimeError):
@@ -175,6 +186,8 @@ class AudioAnalysisController:
             torch.get_num_threads(),
             torch.get_num_interop_threads(),
         )
+        # Only mark done once configuration actually succeeded, so a failure retries.
+        self._thread_caps_configured = True
 
     @property
     def providers(self) -> list[AudioAnalysisProvider]:

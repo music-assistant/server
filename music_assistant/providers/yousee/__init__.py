@@ -76,24 +76,20 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Username",
             required=True,
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=True,
         ),
         ConfigEntry(
             key=CONF_QUALITY,
             type=ConfigEntryType.INTEGER,
-            label="Stream Quality",
-            description="The streaming quality to use for playback",
             default_value=320,
             options=[
-                ConfigValueOption('"High" - MP4 320kbps', 320),
-                ConfigValueOption('"Normal" - MP4 192kbps', 192),
+                ConfigValueOption(320),
+                ConfigValueOption(192),
             ],
         ),
     )
