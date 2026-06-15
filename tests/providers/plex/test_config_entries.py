@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Any
+import tempfile
+from typing import Any, cast
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
-from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.enums import ProviderType
 
+import music_assistant.providers.plex as plex_module
+from music_assistant.constants import (
+    CONF_ENTRY_LIBRARY_SYNC_ARTISTS,
+    CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+    CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+    CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+)
+from music_assistant.controllers.config import ConfigController
+from music_assistant.models import ProviderModuleType
 from music_assistant.providers.plex import CONF_LIBRARY_ID, get_config_entries
 from music_assistant.providers.plex.helpers import (
     CONF_LIBRARY_TYPE,
@@ -170,43 +180,45 @@ async def test_get_config_entries_default_type_progress_tracking() -> None:
     assert type_entry.default_value == LIBRARY_TYPE_PODCASTS
 
 
-async def test_get_config_entries_includes_sync_hint_when_authenticated() -> None:
-    """When authenticated, a sync-hint label is shown below the library type options."""
-    raw_config: dict[str, Any] = {}
+def _plex_sync_option_keys(library_type: str) -> set[str]:
+    """Resolve the sync ConfigEntry keys the config page shows for a Plex provider.
 
-    sections = [
-        PlexSectionInfo(
-            display_name="Server / Music",
-            section_title="Music",
-            server_name="Server",
-            section_type="artist",
-            is_tracking_progress=False,
-        ),
-    ]
+    Mirrors how ConfigController.get_provider_config_entries builds the sync options:
+    it resolves the provider's features from the in-progress library_type (via Plex's
+    module-level get_supported_features) and turns them into 'Sync ...' entries.
+    """
+    mass = MagicMock()
+    mass.storage_path = tempfile.gettempdir()
+    config = ConfigController(mass)
+    features, provider = config._resolve_supported_features(
+        cast("ProviderModuleType", plex_module), None, {CONF_LIBRARY_TYPE: library_type}
+    )
+    manifest = MagicMock()
+    manifest.type = ProviderType.MUSIC
+    return {entry.key for entry in config._build_sync_entries(manifest, features, provider)}
 
-    mass = _make_mock_mass(raw_config, sections)
 
-    with mock.patch(
-        "music_assistant.providers.plex.get_section_info",
-        new_callable=AsyncMock,
-        return_value=sections,
-    ):
-        entries = await get_config_entries(
-            mass,
-            values={
-                "token": "encrypted",
-                "local_server_ip": "10.0.4.33",
-                "local_server_port": 32400,
-                "local_server_ssl": False,
-                "local_server_verify_cert": True,
-            },
-        )
+def test_sync_options_follow_selected_library_type() -> None:
+    """Sync options on the provider page reflect the selected library_type.
 
-    by_key = {e.key: e for e in entries}
-    assert "library_type_sync_hint" in by_key
-    hint_entry = by_key["library_type_sync_hint"]
-    assert hint_entry.label is not None
-    assert hint_entry.type == ConfigEntryType.LABEL
+    Regression guard: the config controller reads Plex's module-level
+    get_supported_features(values), so choosing music / audiobooks / podcasts shows
+    only the matching 'Sync ...' option(s) without needing a save + reload.
+    """
+    music_keys = _plex_sync_option_keys(LIBRARY_TYPE_MUSIC)
+    assert CONF_ENTRY_LIBRARY_SYNC_ARTISTS.key in music_keys
+    assert CONF_ENTRY_LIBRARY_SYNC_TRACKS.key in music_keys
+    assert CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS.key not in music_keys
+    assert CONF_ENTRY_LIBRARY_SYNC_PODCASTS.key not in music_keys
+
+    audiobook_keys = _plex_sync_option_keys(LIBRARY_TYPE_AUDIOBOOKS)
+    assert CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS.key in audiobook_keys
+    assert CONF_ENTRY_LIBRARY_SYNC_ARTISTS.key not in audiobook_keys
+    assert CONF_ENTRY_LIBRARY_SYNC_TRACKS.key not in audiobook_keys
+
+    podcast_keys = _plex_sync_option_keys(LIBRARY_TYPE_PODCASTS)
+    assert CONF_ENTRY_LIBRARY_SYNC_PODCASTS.key in podcast_keys
+    assert CONF_ENTRY_LIBRARY_SYNC_ARTISTS.key not in podcast_keys
 
 
 async def test_get_config_entries_preserves_user_library_choice() -> None:

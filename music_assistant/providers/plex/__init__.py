@@ -402,18 +402,6 @@ async def get_config_entries(  # noqa: PLR0915
         entries.append(conf_libraries)
         entries.append(conf_library_type)
 
-        # Inform the user when sync options may need a page refresh to update.
-        entries.append(
-            ConfigEntry(
-                key="library_type_sync_hint",
-                type=ConfigEntryType.LABEL,
-                label="Library sync options (e.g. Sync Artists / Tracks) are shown after you select a Library Type and click Save.",
-                description="Changing the library type reloads the provider. After it reloads, return to this page and the correct sync options for the chosen type will be visible.",
-                hidden=False,
-                required=False,
-            )
-        )
-
     # show authentication options
     if values is None or not values.get(CONF_AUTH_TOKEN):
         entries.append(
