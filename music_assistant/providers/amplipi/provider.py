@@ -111,13 +111,19 @@ class AmpliPiPlayerProvider(PlayerProvider):
         # miss the cache and create duplicate streams; other sources are unaffected
         lock = self._stream_locks.setdefault(source_id, asyncio.Lock())
         async with lock:
-            if (stream_id := self._ma_streams.get(source_id)) is not None:
-                await self.api.set_stream(stream_id, StreamUpdate(url=url))
-                return stream_id
-            name = f"{MA_STREAM_NAME} {source_id}"
-            await self.api.create_stream(Stream(name=name, type=MA_STREAM_TYPE, url=url))
-            # create_stream's response is not a reliable carrier of the new id, so look it up
-            streams = await self.api.get_streams()
+            try:
+                if (stream_id := self._ma_streams.get(source_id)) is not None:
+                    await self.api.set_stream(stream_id, StreamUpdate(url=url))
+                    return stream_id
+                name = f"{MA_STREAM_NAME} {source_id}"
+                await self.api.create_stream(Stream(name=name, type=MA_STREAM_TYPE, url=url))
+                # create_stream's response is not a reliable carrier of the new id, so look it up
+                streams = await self.api.get_streams()
+            except AMPLIPI_API_ERRORS as err:
+                # surface a clean MA error instead of leaking the transport-layer exception
+                raise PlayerCommandFailed(
+                    f"AmpliPi stream operation failed for source {source_id}: {err}"
+                ) from err
             new_stream_id: int | None = next(
                 (s.id for s in streams if s.name == name and s.id is not None), None
             )

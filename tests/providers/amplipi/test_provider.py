@@ -34,7 +34,7 @@ def _provider() -> AmpliPiPlayerProvider:
     prov._players = {}
     prov._ma_streams = {}
     prov._streams = []
-    prov._stream_lock = asyncio.Lock()
+    prov._stream_locks = {}
     return prov
 
 
