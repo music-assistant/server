@@ -1521,12 +1521,20 @@ class PlayerQueuesController(CoreController):
             return
         # handle add: add/append item(s) to the remaining queue items
         if option == QueueOption.ADD:
+            # When shuffling, mix the new items into the not-yet-played tail. While playing,
+            # keep the item right after the buffered one in place: it has already been enqueued
+            # to the player (and prepared for crossfade), so reshuffling it would swap the
+            # upcoming track underneath the player and cause an abrupt, non-crossfaded switch.
+            if not queue.shuffle_enabled:
+                add_at_index = len(self._queue_items[queue_id]) + 1
+            elif queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+                add_at_index = insert_at_index + 1
+            else:
+                add_at_index = insert_at_index
             await self.load(
                 queue_id=queue_id,
                 queue_items=queue_items,
-                insert_at_index=insert_at_index
-                if queue.shuffle_enabled
-                else len(self._queue_items[queue_id]) + 1,
+                insert_at_index=add_at_index,
                 shuffle=queue.shuffle_enabled,
             )
             # handle edgecase, queue is empty and items are only added (not played)

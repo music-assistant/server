@@ -71,7 +71,7 @@ class SonosQueue:
     """Simple representation of a Sonos (cloud) Queue."""
 
     items: list[PlayerMedia] = field(default_factory=list)
-    last_updated: float = time.time()
+    last_updated: float = field(default_factory=time.time)
     includes_beginning: bool = False
     includes_end: bool = False
 
@@ -783,6 +783,10 @@ class SonosPlayer(Player):
 
     async def _set_sonos_queue_from_mass_queue(self, queue_id: str) -> None:
         """Set the SonosQueue items from the given MA PlayerQueue."""
+        # Stamp a fresh queue version so Sonos detects the rewritten window and refetches it.
+        # Without this the advertised queueVersion never changes, so Sonos keeps playing from a
+        # stale cached window after a reorder/enqueue, causing abrupt (non-crossfaded) switches.
+        self.sonos_queue.last_updated = time.time()
         items: list[PlayerMedia] = []
         queue = self.mass.player_queues.get(queue_id)
         if not queue:
