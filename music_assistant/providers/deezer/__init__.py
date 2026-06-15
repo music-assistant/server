@@ -439,7 +439,6 @@ class DeezerProvider(MusicProvider):
             self.parse_track(
                 track=deezer_track,
                 user_country=self.gw_client.user_country,
-                # TODO: doesn't Deezer have disc and track number in the api ?
                 position=0,
             )
             for deezer_track in await album.get_tracks()
