@@ -783,16 +783,13 @@ class SonosPlayer(Player):
 
     async def _set_sonos_queue_from_mass_queue(self, queue_id: str) -> None:
         """Set the SonosQueue items from the given MA PlayerQueue."""
-        # Stamp a fresh queue version so Sonos detects the rewritten window and refetches it.
-        # Without this the advertised queueVersion never changes, so Sonos keeps playing from a
-        # stale cached window after a reorder/enqueue, causing abrupt (non-crossfaded) switches.
-        self.sonos_queue.last_updated = time.time()
         items: list[PlayerMedia] = []
         queue = self.mass.player_queues.get(queue_id)
         if not queue:
             self.sonos_queue.items.clear()
             self.sonos_queue.includes_beginning = False
             self.sonos_queue.includes_end = False
+            self._bump_queue_version()
             return
         current_index = queue.current_index or 0
         current_index = (
@@ -836,6 +833,9 @@ class SonosPlayer(Player):
         self.sonos_queue.items = items
         self.sonos_queue.includes_beginning = offset == 0
         self.sonos_queue.includes_end = includes_end
+        # bump only after the new window is assigned (no await in between) so Sonos never sees a
+        # new version while itemWindow still serves the previous items
+        self._bump_queue_version()
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Set Sonos queue items from MA queue %s on player %s: %s",
@@ -870,3 +870,13 @@ class SonosPlayer(Player):
 
         # Format as XX:XX:XX:XX:XX:XX
         return ":".join(mac_hex[i : i + 2].upper() for i in range(0, 12, 2))
+
+    def _bump_queue_version(self) -> None:
+        """
+        Advance the Sonos cloud-queue version to the current time.
+
+        The version is exposed as the queueVersion in the cloud-queue endpoints; advancing it on
+        every window rebuild is what makes Sonos refetch the window instead of replaying a stale
+        cached one.
+        """
+        self.sonos_queue.last_updated = time.time()
