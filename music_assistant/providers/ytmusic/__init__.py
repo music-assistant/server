@@ -625,9 +625,13 @@ class YoutubeMusicProvider(MusicProvider):
     @use_cache(3600 * 24, allow_expired_cache=True)  # Cache for 1 day
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
-        result = await get_song_radio_tracks(
-            headers=self._headers, prov_item_id=prov_track_id, limit=limit, user=self._yt_user
-        )
+        try:
+            result = await get_song_radio_tracks(
+                headers=self._headers, prov_item_id=prov_track_id, limit=limit, user=self._yt_user
+            )
+        except Exception as err:
+            self.logger.warning("Failed to get similar/radio tracks from YT Music: %s", err)
+            return []
         if "tracks" in result:
             tracks = []
             for track in result["tracks"]:
