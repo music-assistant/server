@@ -1535,7 +1535,8 @@ class PlayerQueuesController(CoreController):
                 queue_id=queue_id,
                 queue_items=queue_items,
                 insert_at_index=add_at_index,
-                shuffle=queue.shuffle_enabled,
+                # radio tracks are already ordered in a pattern we want to keep
+                shuffle=queue.shuffle_enabled and not radio_mode,
             )
             # handle edgecase, queue is empty and items are only added (not played)
             # mark first item as new index
