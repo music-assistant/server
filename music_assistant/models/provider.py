@@ -172,13 +172,11 @@ class Provider:
             "type": self.type.value,
             "domain": self.domain,
             "name": self.name,
-            "default_name": self.default_name,
-            "instance_name_postfix": self.instance_name_postfix,
             "instance_id": self.instance_id,
-            "lookup_key": self.instance_id,  # include for backwards compatibility
             "supported_features": [x.value for x in self.supported_features],
             "available": self.available,
             "is_streaming_provider": getattr(self, "is_streaming_provider", None),
+            "lookup_key": self.instance_id,  # include for backwards compatibility
         }
 
     def supports_feature(self, feature: ProviderFeature) -> bool:
