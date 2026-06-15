@@ -159,30 +159,35 @@ class DeezerBrowseManager:
                         provider=self.instance_id,
                         path=f"{base}{BROWSE_MADE_FOR_YOU}",
                         name=BROWSE_MADE_FOR_YOU,
+                        translation_key="made_for_me",
                     ),
                     BrowseFolder(
                         item_id="explore",
                         provider=self.instance_id,
                         path=f"{base}{BROWSE_EXPLORE}",
                         name=BROWSE_EXPLORE,
+                        translation_key="explore",
                     ),
                     BrowseFolder(
                         item_id="recently_played",
                         provider=self.instance_id,
                         path=f"{base}{BROWSE_RECENTLY_PLAYED}",
                         name=BROWSE_RECENTLY_PLAYED,
+                        translation_key="recently_played",
                     ),
                     BrowseFolder(
                         item_id="shaker",
                         provider=self.instance_id,
                         path=f"{base}{BROWSE_SHAKER}",
                         name=BROWSE_SHAKER,
+                        translation_key="shaker",
                     ),
                     BrowseFolder(
                         item_id="discover_audiobooks",
                         provider=self.instance_id,
                         path=f"{base}{BROWSE_AUDIOBOOKS}",
                         name=BROWSE_AUDIOBOOKS,
+                        translation_key="discover_audiobooks",
                     ),
                     create_virtual_playlist(
                         self.provider, PERSONAL_SONGS_PLAYLIST_ID, "My Uploads"
@@ -223,12 +228,14 @@ class DeezerBrowseManager:
                 provider=self.instance_id,
                 path=f"{base}{BROWSE_MOODS}",
                 name=BROWSE_MOODS,
+                translation_key="moods",
             ),
             BrowseFolder(
                 item_id="genres",
                 provider=self.instance_id,
                 path=f"{base}{BROWSE_GENRES}",
                 name=BROWSE_GENRES,
+                translation_key="genres",
             ),
             create_virtual_playlist(self.provider, USER_TOP_TRACKS_PLAYLIST_ID, "Your Top Tracks"),
             create_virtual_playlist(self.provider, RECOMMENDED_TRACKS_PLAYLIST_ID, "Hot Tracks"),
@@ -237,30 +244,35 @@ class DeezerBrowseManager:
                 provider=self.instance_id,
                 path=f"{base}{BROWSE_YOUR_TOP_ARTISTS}",
                 name=BROWSE_YOUR_TOP_ARTISTS,
+                translation_key="your_top_artists",
             ),
             BrowseFolder(
                 item_id="your_top_albums",
                 provider=self.instance_id,
                 path=f"{base}{BROWSE_YOUR_TOP_ALBUMS}",
                 name=BROWSE_YOUR_TOP_ALBUMS,
+                translation_key="your_top_albums",
             ),
             BrowseFolder(
                 item_id="mixes",
                 provider=self.instance_id,
                 path=f"{base}{BROWSE_PERSONALIZED_PLAYLISTS}",
                 name=BROWSE_PERSONALIZED_PLAYLISTS,
+                translation_key="mixes",
             ),
             BrowseFolder(
                 item_id="recommended_playlists",
                 provider=self.instance_id,
                 path=f"{base}{BROWSE_RECOMMENDED_PLAYLISTS}",
                 name=BROWSE_RECOMMENDED_PLAYLISTS,
+                translation_key="recommended_playlists",
             ),
             BrowseFolder(
                 item_id="recommended_artist_playlists",
                 provider=self.instance_id,
                 path=f"{base}{BROWSE_RECOMMENDED_ARTIST_PLAYLISTS}",
                 name=BROWSE_RECOMMENDED_ARTIST_PLAYLISTS,
+                translation_key="recommended_artist_playlists",
             ),
         ]
         return items
@@ -389,24 +401,28 @@ class DeezerBrowseManager:
                 provider=self.instance_id,
                 path=f"{base}{BROWSE_TOP_ALBUMS}",
                 name=BROWSE_TOP_ALBUMS,
+                translation_key="top_albums",
             ),
             BrowseFolder(
                 item_id="top_artists",
                 provider=self.instance_id,
                 path=f"{base}{BROWSE_TOP_ARTISTS}",
                 name=BROWSE_TOP_ARTISTS,
+                translation_key="top_artists",
             ),
             BrowseFolder(
                 item_id="top_playlists",
                 provider=self.instance_id,
                 path=f"{base}{BROWSE_TOP_PLAYLISTS}",
                 name=BROWSE_TOP_PLAYLISTS,
+                translation_key="top_playlists",
             ),
             BrowseFolder(
                 item_id="all_flows",
                 provider=self.instance_id,
                 path=f"{base}{BROWSE_ALL_FLOWS}",
                 name=BROWSE_ALL_FLOWS,
+                translation_key="all_flows",
             ),
         ]
 
@@ -610,6 +626,7 @@ class DeezerBrowseManager:
                     item_id="recently_played",
                     provider=self.instance_id,
                     name=BROWSE_RECENTLY_PLAYED,
+                    translation_key="recently_played",
                     items=UniqueList(recently_played),
                 )
             )
@@ -639,6 +656,7 @@ class DeezerBrowseManager:
                     item_id="made_for_you",
                     provider=self.instance_id,
                     name=BROWSE_MADE_FOR_YOU,
+                    translation_key="made_for_you",
                     items=UniqueList(made_for_me_items),
                 )
             )
@@ -658,6 +676,7 @@ class DeezerBrowseManager:
                     item_id="recommended_tracks",
                     provider=self.instance_id,
                     name="Hot Tracks",
+                    translation_key="recommended_tracks",
                     items=UniqueList(track_items),
                 )
             )
@@ -681,6 +700,7 @@ class DeezerBrowseManager:
                     item_id="recommended_playlists",
                     provider=self.instance_id,
                     name=BROWSE_RECOMMENDED_PLAYLISTS,
+                    translation_key="recommended_playlists",
                     items=UniqueList(items),
                 )
             )
@@ -704,6 +724,7 @@ class DeezerBrowseManager:
                     item_id="recommended_artist_playlists",
                     provider=self.instance_id,
                     name=BROWSE_RECOMMENDED_ARTIST_PLAYLISTS,
+                    translation_key="recommended_artist_playlists",
                     items=UniqueList(items),
                 )
             )
@@ -727,6 +748,7 @@ class DeezerBrowseManager:
                     item_id="new_releases",
                     provider=self.instance_id,
                     name="New Releases",
+                    translation_key="new_releases",
                     items=UniqueList(new_release_items),
                 )
             )
@@ -750,6 +772,7 @@ class DeezerBrowseManager:
                         item_id=folder_id,
                         provider=self.instance_id,
                         name=folder_name,
+                        translation_key=folder_id,
                         items=UniqueList(playlists),
                     )
                 )

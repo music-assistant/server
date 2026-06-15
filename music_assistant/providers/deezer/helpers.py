@@ -47,18 +47,25 @@ class VirtualPlaylistMeta:
 
     name: str
     is_dynamic: bool = False
+    # translation_key for localizing the (fixed) display name; only set for exact-id
+    # entries whose name is stable. Prefix-based entries carry dynamic names and stay None.
+    translation_key: str | None = None
 
 
 # Registry of virtual playlist types with their canonical name and is_dynamic flag.
 # Keyed by exact playlist ID for fixed IDs, and by prefix for parameterized IDs.
 VIRTUAL_PLAYLIST_TYPES: dict[str, VirtualPlaylistMeta] = {
-    FLOW_PLAYLIST_ID: VirtualPlaylistMeta("Flow", is_dynamic=True),
+    FLOW_PLAYLIST_ID: VirtualPlaylistMeta("Flow", is_dynamic=True, translation_key="flow"),
     FLOW_CONFIG_PREFIX: VirtualPlaylistMeta("Flow", is_dynamic=True),
     SMART_TRACKLIST_PREFIX: VirtualPlaylistMeta("Mix"),
-    RECOMMENDED_TRACKS_PLAYLIST_ID: VirtualPlaylistMeta("Hot Tracks"),
-    TOP_CHARTS_PLAYLIST_ID: VirtualPlaylistMeta("Top Charts"),
-    USER_TOP_TRACKS_PLAYLIST_ID: VirtualPlaylistMeta("Your Top Tracks"),
-    PERSONAL_SONGS_PLAYLIST_ID: VirtualPlaylistMeta("My Uploads"),
+    RECOMMENDED_TRACKS_PLAYLIST_ID: VirtualPlaylistMeta(
+        "Hot Tracks", translation_key="recommended_tracks"
+    ),
+    TOP_CHARTS_PLAYLIST_ID: VirtualPlaylistMeta("Top Charts", translation_key="top_charts"),
+    USER_TOP_TRACKS_PLAYLIST_ID: VirtualPlaylistMeta(
+        "Your Top Tracks", translation_key="user_top_tracks"
+    ),
+    PERSONAL_SONGS_PLAYLIST_ID: VirtualPlaylistMeta("My Uploads", translation_key="personal_songs"),
     SHAKER_PREFIX: VirtualPlaylistMeta("Mix", is_dynamic=True),
     SHAKER_CURATED_PREFIX: VirtualPlaylistMeta("Playlist"),
 }
@@ -102,6 +109,10 @@ def create_virtual_playlist(
     if is_dynamic is None:
         meta = get_virtual_playlist_meta(item_id)
         is_dynamic = meta.is_dynamic if meta else False
+    # Only exact-id (fixed-name) virtual playlists are localizable; prefix-based ones
+    # (flow configs, shaker groups, smart tracklists) carry dynamic names from the caller.
+    exact_meta = VIRTUAL_PLAYLIST_TYPES.get(item_id)
+    translation_key = exact_meta.translation_key if exact_meta else None
     images: UniqueList[MediaItemImage] = UniqueList()
     if image_url:
         images.append(
@@ -127,6 +138,7 @@ def create_virtual_playlist(
         metadata=MediaItemMetadata(images=images) if images else MediaItemMetadata(),
         is_editable=False,
         is_dynamic=is_dynamic,
+        translation_key=translation_key,
         owner="Deezer",
     )
 

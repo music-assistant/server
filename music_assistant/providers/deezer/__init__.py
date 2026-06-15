@@ -40,10 +40,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ARL_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="ARL token",
             required=True,
-            description="Your Deezer ARL cookie token. "
-            "See https://www.dumpmedia.com/deezplus/deezer-arl.html",
             value=values.get(CONF_ARL_TOKEN) if values else None,
         ),
     )
