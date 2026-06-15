@@ -833,6 +833,13 @@
     }
   },
   "background_task": {
+    "sync_provider_artists": "Sync Artists for {0}",
+    "sync_provider_albums": "Sync Albums for {0}",
+    "sync_provider_tracks": "Sync Tracks for {0}",
+    "sync_provider_playlists": "Sync Playlists for {0}",
+    "sync_provider_radios": "Sync Radios for {0}",
+    "sync_provider_audiobooks": "Sync Audiobooks for {0}",
+    "sync_provider_podcasts": "Sync Podcasts for {0}",
     "cache_database_cleanup": "Cache database cleanup",
     "cleanup_thumbnail_cache": "Cleanup thumbnail cache",
     "correct_provider_mappings": "Correct provider mappings",

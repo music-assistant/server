@@ -9,14 +9,16 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
+from music_assistant_models.background_task import BackgroundTask
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
-from music_assistant_models.enums import ConfigEntryType, ProviderType
+from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderType
 from music_assistant_models.media_items.media_item import BrowseFolder, RecommendationFolder
 from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.controllers import translations as translations_module
 from music_assistant.controllers.config import _with_translation_owner
+from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.translations import (
     SOURCE_LANGUAGE,
     TranslationController,
@@ -331,6 +333,40 @@ def test_recommendation_folder_localized_serialization() -> None:
         localized = rec.to_dict()
     assert localized["name"] == "Onlangs afgespeeld"
     assert localized["subtitle"] == "Ga verder waar je gebleven was"
+
+
+def test_provider_sync_task_localized_serialization() -> None:
+    """Provider-sync BackgroundTasks resolve their name from the built catalog with the provider name.
+
+    Guards that every key returned by MusicController._get_sync_task_translation_key has a matching
+    common.background_task.* entry authored in strings.json, that the provider name fills the {0}
+    placeholder, and that the translation machinery is stripped from the wire under a resolver.
+    """
+    ctrl = _make_controller()
+    ctrl._source = build_translations_source()
+    expected = {
+        MediaType.ARTIST: "Sync Artists for Spotify",
+        MediaType.ALBUM: "Sync Albums for Spotify",
+        MediaType.TRACK: "Sync Tracks for Spotify",
+        MediaType.PLAYLIST: "Sync Playlists for Spotify",
+        MediaType.RADIO: "Sync Radios for Spotify",
+        MediaType.AUDIOBOOK: "Sync Audiobooks for Spotify",
+        MediaType.PODCAST: "Sync Podcasts for Spotify",
+    }
+    # the method does not use self, so call it on the class without instantiating the controller
+    get_key = MusicController._get_sync_task_translation_key
+    with _active_resolver(ctrl, None):
+        for media_type, name in expected.items():
+            key = get_key(None, media_type)  # type: ignore[arg-type]
+            task = BackgroundTask(
+                name=f"Sync Spotify {media_type.value}s",  # in-code English fallback
+                translation_key=key,
+                translation_args=["Spotify"],
+            )
+            serialized = task.to_dict()
+            assert serialized["name"] == name
+            assert "translation_key" not in serialized
+            assert "translation_args" not in serialized
 
 
 def test_media_item_without_translation_key_is_untouched() -> None:
