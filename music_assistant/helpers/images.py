@@ -17,9 +17,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import aiofiles
-from aiohttp.client_exceptions import ClientError
+from aiohttp.client_exceptions import ClientError, ClientResponseError
 from PIL import Image, UnidentifiedImageError
 
+from music_assistant.constants import APPLICATION_NAME
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.models.metadata_provider import MetadataProvider
@@ -259,8 +260,7 @@ async def get_image_data(
             msg = f"Invalid imageproxy URL (missing path): {path_or_url}"
             raise FileNotFoundError(msg)
         try:
-            async with mass.http_session_no_ssl.get(path_or_url, raise_for_status=True) as resp:
-                return await resp.read()
+            return await _fetch_remote_image(mass, path_or_url)
         except ClientError as err:
             msg = f"Failed to fetch image from {path_or_url}: {err}"
             raise FileNotFoundError(msg) from err
@@ -279,6 +279,30 @@ async def get_image_data(
         return img_data
     msg = f"Image not found: {path_or_url}"
     raise FileNotFoundError(msg)
+
+
+async def _fetch_remote_image(mass: MusicAssistant, url: str) -> bytes:
+    """
+    Fetch raw image bytes over HTTP.
+
+    :param mass: The MusicAssistant instance.
+    :param url: The (http/https) image URL to fetch.
+    """
+    try:
+        async with mass.http_session_no_ssl.get(url, raise_for_status=True) as resp:
+            return await resp.read()
+    except ClientResponseError as err:
+        # Some CDNs (e.g. Akamai) 403 our default User-Agent; retry once with
+        # a UA they allowlist before giving up.
+        if err.status not in (401, 403):
+            raise
+        fallback_ua = (
+            f"{APPLICATION_NAME}/{mass.version} (Wget/1.24.5; +https://music-assistant.io)"
+        )
+        async with mass.http_session_no_ssl.get(
+            url, raise_for_status=True, headers={"User-Agent": fallback_ua}
+        ) as resp:
+            return await resp.read()
 
 
 async def get_image_thumb(
