@@ -5,7 +5,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MusicAssistantError, SetupFailedError
+from music_assistant_models.errors import (
+    MusicAssistantError,
+    SetupFailedError,
+    UnsupportedSystemError,
+)
 from zeroconf import InterfaceChoice, IPVersion
 
 from music_assistant.helpers import uri, util
@@ -436,7 +440,7 @@ def test_verify_cpu_supports_ml_inference_arm() -> None:
 
 def test_unsupported_system_error_is_setup_failed() -> None:
     """UnsupportedSystemError must subclass SetupFailedError so existing handling applies."""
-    assert issubclass(util.UnsupportedSystemError, SetupFailedError)
+    assert issubclass(UnsupportedSystemError, SetupFailedError)
 
 
 @pytest.mark.parametrize(
@@ -458,7 +462,7 @@ def test_verify_system_meets_requirements_cpu(
         patch("music_assistant.helpers.util.get_total_system_memory", return_value=64.0),
     ):
         if should_raise:
-            with pytest.raises(util.UnsupportedSystemError):
+            with pytest.raises(UnsupportedSystemError):
                 util.verify_system_meets_requirements(feature_name="X", min_cpu_cores=min_cpu_cores)
         else:
             util.verify_system_meets_requirements(feature_name="X", min_cpu_cores=min_cpu_cores)
@@ -484,7 +488,7 @@ def test_verify_system_meets_requirements_memory(
         patch("music_assistant.helpers.util.get_total_system_memory", return_value=total_gb),
     ):
         if should_raise:
-            with pytest.raises(util.UnsupportedSystemError):
+            with pytest.raises(UnsupportedSystemError):
                 util.verify_system_meets_requirements(feature_name="X", min_memory_gb=min_memory_gb)
         else:
             util.verify_system_meets_requirements(feature_name="X", min_memory_gb=min_memory_gb)
@@ -499,7 +503,7 @@ def test_verify_system_meets_requirements_ml_inference() -> None:
         patch("torch.backends.cpu.get_cpu_capability", return_value="DEFAULT"),
     ):
         # capable RAM/CPU but no AVX2: only raises when the ML inference check is requested
-        with pytest.raises(util.UnsupportedSystemError):
+        with pytest.raises(UnsupportedSystemError):
             util.verify_system_meets_requirements(
                 feature_name="X", min_cpu_cores=4, min_memory_gb=8.0, require_ml_inference=True
             )
