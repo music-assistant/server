@@ -209,6 +209,8 @@ def _nl_controller() -> TranslationController:
         "common.media.genre.classical.description": "Classical music is art music.",
         # error messages: a shared default (common.errors.*) + a provider-specific override
         "common.errors.provider_unavailable": "The provider is currently unavailable.",
+        "common.errors.setup_required": "Music Assistant is not set up yet.",
+        "common.errors.insufficient_permissions": "You do not have permission to perform this action.",
         "provider.spotify.errors.token_expired": "Your Spotify session expired.",
     }
     ctrl._locales = {
@@ -223,6 +225,8 @@ def _nl_controller() -> TranslationController:
             "common.media.genre.classical.name": "Klassiek",
             "common.media.genre.classical.description": "Klassieke muziek is kunstmuziek.",
             "common.errors.provider_unavailable": "De provider is niet beschikbaar.",
+            "common.errors.setup_required": "Music Assistant is nog niet ingesteld.",
+            "common.errors.insufficient_permissions": "Je hebt geen toestemming voor deze actie.",
             "provider.spotify.errors.token_expired": "Je Spotify-sessie is verlopen.",
         }
     }
@@ -438,6 +442,22 @@ def test_error_result_message_unresolved_key_keeps_details() -> None:
         out = untyped.to_dict()
     assert out["details"] == "boom"
     assert out["error_code"] == 999
+
+
+def test_error_result_message_protocol_error_localization() -> None:
+    """The hard-coded auth/command error responses localize via their translation_key too."""
+    ctrl = _nl_controller()
+    # the new connection-time setup_required key resolves under nl
+    setup = ErrorResultMessage(
+        "connection", 503, "Setup required", translation_key="errors.setup_required"
+    )
+    # a reused generic key for the admin/role error
+    admin = ErrorResultMessage(
+        "m", 22, "Admin access required", translation_key="errors.insufficient_permissions"
+    )
+    with _active_resolver(ctrl, "nl"):
+        assert setup.to_dict()["details"] == "Music Assistant is nog niet ingesteld."
+        assert admin.to_dict()["details"] == "Je hebt geen toestemming voor deze actie."
 
 
 def test_media_item_without_translation_key_is_untouched() -> None:
