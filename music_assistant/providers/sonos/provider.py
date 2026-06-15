@@ -175,7 +175,7 @@ class SonosPlayerProvider(PlayerProvider):
         https://docs.sonos.com/reference/itemwindow
         """
         context_version = request.query.get("contextVersion", "1")
-        queue_version = request.query.get("queueVersion", str(int(player.sonos_queue.last_updated)))
+        queue_version = request.query.get("queueVersion", str(player.sonos_queue.last_updated))
         # because Sonos does not show our queue in the app anyways,
         # we just return the previous, current and next item in the queue.
         # the beginning/end flags must be honest though: signalling end-of-queue
@@ -201,9 +201,11 @@ class SonosPlayerProvider(PlayerProvider):
         https://docs.sonos.com/reference/version
         """
         context_version = request.query.get("contextVersion") or "1"
+        # keep sub-second resolution: the window can be rebuilt several times within the same
+        # second and Sonos treats an unchanged queueVersion as "nothing changed" (stale window).
         result = {
             "contextVersion": context_version,
-            "queueVersion": str(int(player.sonos_queue.last_updated)),
+            "queueVersion": str(player.sonos_queue.last_updated),
         }
         return web.json_response(result)
 
@@ -217,7 +219,7 @@ class SonosPlayerProvider(PlayerProvider):
         """
         result = {
             "contextVersion": "1",
-            "queueVersion": str(int(player.sonos_queue.last_updated)),
+            "queueVersion": str(player.sonos_queue.last_updated),
             "container": {
                 "type": "trackList",
                 "name": "Music Assistant",
