@@ -3221,6 +3221,19 @@ class PlayerQueuesController(CoreController):
             # gets reported with 0 elapsed seconds after a new item starts playing
             return
 
+        if (
+            prev_state.get("state") != PlaybackState.PLAYING.value
+            and not duration < PLAYBACK_REPORT_INTERVAL_SECONDS
+        ):
+            # Do not report when resuming from idle or paused.
+            # (unless track has less seconds than PLAYBACK_REPORT_INTERVAL_SECONDS).
+            # Handles edge case: Queue still holds an audiobook/ podcast, and is paused/ idle.
+            # Audiobook is continued outside of MA. Then playback of another media item is
+            # started in MA on that queue. This triggers a progress report with the old position
+            # overwriting the newest one.
+            # We still want to report when transitioning to pause or idle.
+            return
+
         # determine if item is fully played
         # for podcasts and audiobooks we account for the last 60 seconds
         percentage_played = percentage(seconds_played, duration)
