@@ -260,7 +260,8 @@ class PlayerQueuesController(CoreController):
         return self._queues.get(queue_id)
 
     def _check_player_permission(self, queue_id: str) -> None:
-        """Check if the current user has permission to control this player/queue.
+        """
+        Check if the current user has permission to control this player/queue.
 
         :param queue_id: The queue/player ID to check access for.
         :raises InsufficientPermissions: If the user lacks access.
@@ -551,7 +552,8 @@ class PlayerQueuesController(CoreController):
 
     @api_command("player_queues/save_as_playlist")
     async def save_as_playlist(self, queue_id: str, name: str) -> BackgroundTask:
-        """Save the current queue items as a new playlist.
+        """
+        Save the current queue items as a new playlist.
 
         :param queue_id: The queue_id of the queue to save.
         :param name: The name for the new playlist.
@@ -613,7 +615,8 @@ class PlayerQueuesController(CoreController):
 
     @api_command("player_queues/pause")
     async def pause(self, queue_id: str) -> None:
-        """Handle PAUSE command for given queue.
+        """
+        Handle PAUSE command for given queue.
 
         - queue_id: queue_id of the playerqueue to handle the command.
         """
@@ -657,7 +660,8 @@ class PlayerQueuesController(CoreController):
 
     @api_command("player_queues/play_pause")
     async def play_pause(self, queue_id: str) -> None:
-        """Toggle play/pause on given playerqueue.
+        """
+        Toggle play/pause on given playerqueue.
 
         - queue_id: queue_id of the queue to handle the command.
         """
@@ -747,7 +751,8 @@ class PlayerQueuesController(CoreController):
 
     @api_command("player_queues/skip")
     async def skip(self, queue_id: str, seconds: int = 10) -> None:
-        """Handle SKIP command for given queue.
+        """
+        Handle SKIP command for given queue.
 
         - queue_id: queue_id of the queue to handle the command.
         - seconds: number of seconds to skip in track. Use negative value to skip back.
@@ -758,7 +763,8 @@ class PlayerQueuesController(CoreController):
 
     @api_command("player_queues/seek")
     async def seek(self, queue_id: str, position: int = 10) -> None:
-        """Handle SEEK command for given queue.
+        """
+        Handle SEEK command for given queue.
 
         - queue_id: queue_id of the queue to handle the command.
         - position: position in seconds to seek to in the current playing item.
@@ -782,7 +788,8 @@ class PlayerQueuesController(CoreController):
     @api_command("player_queues/resume")
     @handle_play_action
     async def resume(self, queue_id: str, fade_in: bool | None = None) -> None:
-        """Handle RESUME command for given queue.
+        """
+        Handle RESUME command for given queue.
 
         - queue_id: queue_id of the queue to handle the command.
         """
@@ -1634,7 +1641,8 @@ class PlayerQueuesController(CoreController):
             self.mass.create_task(self._cleanup_stale_queue_buffers(queue_id, current_index))
 
     def queue_buffer_completed(self, queue_id: str) -> None:
-        """Call when the flow stream has finished generating all audio data for a queue.
+        """
+        Call when the flow stream has finished generating all audio data for a queue.
 
         At this point all audio data for the queue has been passed to the encoding pipeline.
         The player will go idle once it finishes playing the remaining buffered audio.
@@ -1694,7 +1702,8 @@ class PlayerQueuesController(CoreController):
         keep_played: bool = True,
         shuffle: bool = False,
     ) -> None:
-        """Load new items at index.
+        """
+        Load new items at index.
 
         - queue_id: id of the queue to process this request.
         - queue_items: a list of QueueItems
@@ -1961,7 +1970,8 @@ class PlayerQueuesController(CoreController):
         return result
 
     async def get_genre_tracks(self, genre: Genre, start_item: str | None) -> list[Track]:
-        """Return tracks for given genre, based on alias mappings.
+        """
+        Return tracks for given genre, based on alias mappings.
 
         Limits results to avoid loading thousands of tracks for broad genres.
         Directly mapped tracks are fetched with random ordering, then supplemented
@@ -2461,7 +2471,8 @@ class PlayerQueuesController(CoreController):
         return [cast("MediaItemType", media_item)]
 
     async def _try_resume_from_playlog(self, queue: PlayerQueue) -> bool:
-        """Try to resume playback from playlog when queue is empty.
+        """
+        Try to resume playback from playlog when queue is empty.
 
         Attempts to find user-initiated recently played items in the following order:
         1. By userid AND queue_id
@@ -2575,7 +2586,8 @@ class PlayerQueuesController(CoreController):
         return tracks
 
     def _update_current_index_from_player(self, queue: PlayerQueue, player: Player) -> bool:
-        """Update the current item/index/elapsed time on the queue from the player state.
+        """
+        Update the current item/index/elapsed time on the queue from the player state.
 
         Returns True if the update was successful, False if the caller should return early.
         """
@@ -2830,7 +2842,8 @@ class PlayerQueuesController(CoreController):
     def _get_flow_queue_stream_index(
         self, queue: PlayerQueue, player: Player
     ) -> tuple[int | None, float]:
-        """Calculate current queue index and current track elapsed time when flow mode is active.
+        """
+        Calculate current queue index and current track elapsed time when flow mode is active.
 
         The player reports cumulative stream-time (post-atempo). The returned
         track elapsed time is in media-time, scaled by the current item's
@@ -3289,7 +3302,8 @@ class PlayerQueuesController(CoreController):
         )
 
     async def _cleanup_stale_queue_buffers(self, queue_id: str, current_index: int) -> None:
-        """Clean up audio buffers for queue items that are no longer needed.
+        """
+        Clean up audio buffers for queue items that are no longer needed.
 
         This clears buffers for items at index <= current_index - 2, keeping only:
         - The previous track (current_index - 1)
@@ -3330,7 +3344,8 @@ class PlayerQueuesController(CoreController):
             )
 
     async def _cleanup_queue_audio_data(self, queue_id: str) -> None:
-        """Clean up all audio-related data for a queue when it is stopped or cleared.
+        """
+        Clean up all audio-related data for a queue when it is stopped or cleared.
 
         This clears:
         - All audio buffers attached to queue item streamdetails

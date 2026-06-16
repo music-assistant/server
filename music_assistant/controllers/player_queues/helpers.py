@@ -25,7 +25,8 @@ _SortableT = TypeVar("_SortableT", bound=PlaylistPlayableItem)
 
 
 class CompareState(TypedDict):
-    """Simple object where we store the (previous) state of a queue.
+    """
+    Simple object where we store the (previous) state of a queue.
 
     Used for compare actions.
     """
@@ -97,7 +98,8 @@ def is_radio_source_dynamic(radio_source: list[MediaItemType]) -> bool:
 
 
 async def smart_shuffle(items: list[QueueItem]) -> list[QueueItem]:
-    """Shuffle queue items, avoiding identical tracks next to each other.
+    """
+    Shuffle queue items, avoiding identical tracks next to each other.
 
     Best-effort approach to prevent the same track from appearing adjacent.
     Does a random shuffle first, then makes a limited number of passes to
