@@ -18,5 +18,9 @@
   },
   "manifest": {
     "description": "Create (permanent) sync groups to group speakers of compatible protocols/ecosystems to play audio in sync."
+  },
+  "errors": {
+    "not_dynamic": "Group {0} does not allow dynamically adding or removing members.",
+    "remove_self": "Cannot remove {0} from itself as a member."
   }
 }

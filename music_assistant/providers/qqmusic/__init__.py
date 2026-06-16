@@ -41,6 +41,7 @@ from music_assistant_models.media_items import (
     Track,
 )
 from music_assistant_models.streamdetails import StreamDetails
+from pydantic import ValidationError
 from qqmusic_api import (
     CgiApiException,
     Credential,
@@ -192,7 +193,7 @@ def _is_verified(values: dict[str, ConfigValueType]) -> bool:
     credential_json = str(values.get(CONF_CREDENTIAL_JSON) or "").strip()
     if not credential_json:
         return False
-    with suppress(Exception):
+    with suppress(ValidationError, ValueError):
         credential = Credential.model_validate_json(credential_json)
         return bool(credential.musicid and credential.musickey and credential.encrypt_uin)
     return False
@@ -280,12 +281,17 @@ async def _start_qr_auth(
             return
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
-            try:
-                await _check_qr_auth(values, client=client, qr=qr)
+            result = await client.login.check_qrcode(qr)
+            if result.event == QRCodeLoginEvents.DONE and result.credential:
+                _store_credential(values, result.credential)
                 return
-            except InvalidDataError as err:
-                if "expired" in str(err).lower() or "rejected" in str(err).lower():
-                    raise
+            if result.event == QRCodeLoginEvents.TIMEOUT:
+                values[CONF_QR_IDENTIFIER] = None
+                values[CONF_QR_TYPE] = None
+                values[CONF_QR_PAGE_URL] = None
+                raise InvalidDataError("QR code expired, please generate a new one")
+            if result.event == QRCodeLoginEvents.REFUSE:
+                raise InvalidDataError(f"Login was rejected in {_get_qr_login_name(values)} app")
             await asyncio.sleep(1.0)
         if values.get(CONF_QR_IDENTIFIER):
             raise InvalidDataError("Waiting for QR scan confirmation timed out, please try again")
@@ -677,8 +683,10 @@ class QQMusicProvider(MusicProvider):
         for key in ("lyric", "trans", "roma"):
             value = str(lyric_obj.get(key) or "").strip()
             if value and _HEX_LYRIC_PATTERN.fullmatch(value):
-                with suppress(Exception):
+                try:
                     lyric_obj[key] = qrc_decrypt(value)
+                except (TypeError, ValueError) as err:
+                    self.logger.debug("Failed to decrypt QQ Music %s lyric payload: %s", key, err)
         return lyric_obj
 
     def _response_items(self, data: Any, keys: tuple[str, ...]) -> list[dict[str, Any]]:
@@ -786,13 +794,11 @@ class QQMusicProvider(MusicProvider):
         url_items = response.get("midurlinfo") or response.get("data") or []
         if not isinstance(url_items, list):
             return ""
-        cdn_base = str(
-            getattr(
-                self._qq_song,
-                "_SONG_URL_FALLBACK_DOMAIN",
-                "https://isure.stream.qqmusic.qq.com/",
-            )
-        )
+        cdn_base = getattr(self._qq_song, "_SONG_URL_FALLBACK_DOMAIN", None)
+        if not cdn_base:
+            self.logger.debug("QQ Music API did not expose stream URL fallback domain")
+            cdn_base = "https://isure.stream.qqmusic.qq.com/"
+        cdn_base = str(cdn_base)
         for item in url_items:
             if not isinstance(item, dict):
                 continue

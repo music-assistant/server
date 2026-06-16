@@ -52,5 +52,8 @@
   },
   "manifest": {
     "description": "Stream audiobooks and podcasts from your personal Audiobookshelf server."
+  },
+  "errors": {
+    "login_failed": "Login to the Audiobookshelf server at {0} failed."
   }
 }

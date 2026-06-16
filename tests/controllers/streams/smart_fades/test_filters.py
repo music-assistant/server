@@ -201,3 +201,24 @@ def test_crossfade_uses_equal_power_curves() -> None:
     crossfade = CrossfadeFilter(logger=LOGGER, crossfade_duration=12.5)
     filter_strings = crossfade.apply("[fadein]", "[fadeout]")
     assert filter_strings == ["[fadeout][fadein]acrossfade=d=12.5:c1=qsin:c2=qsin"]
+
+
+def test_crossfade_sample_count_uses_ns() -> None:
+    """
+    A sample-count crossfade must emit ``acrossfade=ns=`` rather than ``d=``.
+
+    ffmpeg's ``acrossfade`` silently produces no output when its requested length
+    overruns the buffer it is fed; an integer sample count matches a frame-aligned
+    buffer exactly, where a fractional ``d`` can round just past it.
+    """
+    crossfade = CrossfadeFilter(logger=LOGGER, crossfade_samples=441000)
+    filter_strings = crossfade.apply("[fadein]", "[fadeout]")
+    assert filter_strings == ["[fadeout][fadein]acrossfade=ns=441000:c1=qsin:c2=qsin"]
+
+
+def test_crossfade_requires_exactly_one_length() -> None:
+    """CrossfadeFilter must reject ambiguous or missing length specifications."""
+    with pytest.raises(ValueError, match="exactly one"):
+        CrossfadeFilter(logger=LOGGER)
+    with pytest.raises(ValueError, match="exactly one"):
+        CrossfadeFilter(logger=LOGGER, crossfade_duration=5.0, crossfade_samples=220500)

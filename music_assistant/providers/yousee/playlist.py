@@ -48,7 +48,11 @@ class YouSeePlaylistManager:
         if not result or not result.get("data", {}).get("playlists", {}).get("create", {}).get(
             "playlist"
         ):
-            raise MediaNotFoundError(f"Could not create playlist {name}")
+            raise MediaNotFoundError(
+                f"Could not create playlist {name}",
+                translation_key="provider.yousee.errors.playlist_create_failed",
+                translation_args=[name],
+            )
 
         return await parse_playlist(
             self.provider, result["data"]["playlists"]["create"]["playlist"]

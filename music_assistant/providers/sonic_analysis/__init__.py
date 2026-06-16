@@ -338,8 +338,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             min_cpu_cores=MIN_CPU_CORES,
             require_ml_inference=True,
         )
-        # Configure torch thread caps before loading the model (see the controller method).
-        self.mass.streams.audio_analysis.ensure_thread_caps_configured()
+        # Configure the inference runtime before loading the model (see the controller method).
+        self.mass.streams.audio_analysis.ensure_inference_runtime_configured()
         (
             self._clap_model,
             self._clap_text_embeddings,
