@@ -349,7 +349,7 @@ class PandoraProvider(MusicProvider):
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Return bytes of track from local _audio_cache."""
         track_id = streamdetails.item_id.split("_")[-1]
         if not (audio := self._audio_cache.get(track_id)):
@@ -507,7 +507,7 @@ class PandoraProvider(MusicProvider):
             await self.close()
             raise
 
-    async def _get_stations(self) -> AsyncGenerator[Playlist, None]:
+    async def _get_stations(self) -> AsyncGenerator[Playlist]:
         """Retrieve library/subscribed radio stations from the provider."""
         response = await self._api_request(
             "POST",
