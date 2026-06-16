@@ -289,7 +289,7 @@ class MetaDataController(
             task_id=task_id,
             name=f"Update metadata for {item.name}",
             handler=lambda: self.update_metadata(_item),
-            translation_key="background_task.update_metadata",
+            translation_key="core.metadata.background_task.update_metadata",
             translation_args=[item.name],
             metadata={
                 "task_domain": "metadata_lookup",
@@ -344,7 +344,7 @@ class MetaDataController(
             name="Scan missing artist metadata",
             handler=self._scan_missing_artist_metadata,
             schedule=desired_schedule,
-            translation_key="background_task.scan_missing_artist_metadata",
+            translation_key="core.metadata.background_task.scan_missing_artist_metadata",
             metadata={"task_domain": "metadata_missing_artist_metadata_scan"},
             allow_retry=True,
         )
@@ -353,7 +353,7 @@ class MetaDataController(
             name="Refresh playlist metadata",
             handler=self._refresh_playlist_metadata_batch,
             schedule=desired_schedule,
-            translation_key="background_task.refresh_playlist_metadata",
+            translation_key="core.metadata.background_task.refresh_playlist_metadata",
             metadata={"task_domain": "metadata_playlist_metadata_scan"},
             allow_retry=True,
         )
@@ -362,7 +362,7 @@ class MetaDataController(
             name="Cleanup thumbnail cache",
             handler=self._cleanup_thumb_cache,
             schedule=desired_schedule,
-            translation_key="background_task.cleanup_thumbnail_cache",
+            translation_key="core.metadata.background_task.cleanup_thumbnail_cache",
             metadata={"task_domain": "metadata_thumb_cache_cleanup"},
             allow_retry=True,
         )

@@ -455,10 +455,16 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     assert provider_mapping_task.metadata == {"task_domain": "music_provider_mapping_correction"}
     assert genre_scan_task.schedule == maintenance_schedule
 
-    assert artist_scan_task.translation_key == "background_task.scan_missing_artist_metadata"
+    assert (
+        artist_scan_task.translation_key
+        == "core.metadata.background_task.scan_missing_artist_metadata"
+    )
     assert artist_scan_task.metadata == {"task_domain": "metadata_missing_artist_metadata_scan"}
 
-    assert playlist_scan_task.translation_key == "background_task.refresh_playlist_metadata"
+    assert (
+        playlist_scan_task.translation_key
+        == "core.metadata.background_task.refresh_playlist_metadata"
+    )
     assert playlist_scan_task.metadata == {"task_domain": "metadata_playlist_metadata_scan"}
 
     # Metadata maintenance tasks pick a random time spread across the full day
@@ -589,7 +595,7 @@ async def test_schedule_update_metadata_uses_managed_background_task(
     await lookup_started.wait()
 
     task = tasks_controller.get_task(task_id)
-    assert task.translation_key == "background_task.update_metadata"
+    assert task.translation_key == "core.metadata.background_task.update_metadata"
     assert task.metadata == {
         "task_domain": "metadata_lookup",
         "item_uri": resolved_item.uri,

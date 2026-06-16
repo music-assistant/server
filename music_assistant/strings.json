@@ -742,17 +742,13 @@
     "sync_provider_audiobooks": "Sync Audiobooks for {0}",
     "sync_provider_podcasts": "Sync Podcasts for {0}",
     "cache_database_cleanup": "Cache database cleanup",
-    "cleanup_thumbnail_cache": "Cleanup thumbnail cache",
     "correct_provider_mappings": "Correct provider mappings",
     "database_cleanup": "Database cleanup",
     "refresh_lastfm_recommendations": "Refresh Last.fm recommendations",
-    "refresh_playlist_metadata": "Refresh playlist metadata",
     "scan_genre_mappings": "Scan genre mappings",
-    "scan_missing_artist_metadata": "Scan missing artist metadata",
     "add_playlist_tracks": "Add items to playlist {0}",
     "remove_playlist_tracks": "Remove items from playlist {0}",
-    "import_playlist_matching": "Import playlist {0}",
-    "update_metadata": "Update metadata for {0}"
+    "import_playlist_matching": "Import playlist {0}"
   },
   "player_options": {
     "adaptive_drc": {
