@@ -1,0 +1,6 @@
+{
+  "manifest": {
+    "name": "Player Queues",
+    "description": "Configuration of the core player queue management module"
+  }
+}
