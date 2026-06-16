@@ -72,7 +72,7 @@ async def warn_if_missing_x86_64_v2(logger: logging.Logger) -> None:
     def _check() -> bool | None:
         try:
             cpuinfo = Path("/proc/cpuinfo").read_text()
-        except (FileNotFoundError, PermissionError):
+        except FileNotFoundError, PermissionError:
             return None
 
         flags: set[str] = set()
@@ -124,7 +124,7 @@ def get_total_system_memory() -> float:
         # Works on Linux and macOS
         total_memory_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
         return total_memory_bytes / (1024**3)  # Convert to GB
-    except (AttributeError, ValueError):
+    except AttributeError, ValueError:
         # Fallback if sysconf is not available (e.g., Windows)
         # Return a conservative default to disable buffering by default
         return 0.0
@@ -296,7 +296,7 @@ def try_parse_int(possible_int: Any, default: int | None = 0) -> int | None:
     """Try to parse an int."""
     try:
         return int(float(possible_int))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -304,7 +304,7 @@ def try_parse_float(possible_float: Any, default: float | None = 0.0) -> float |
     """Try to parse a float."""
     try:
         return float(possible_float)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -772,7 +772,7 @@ def empty_queue[T](q: asyncio.Queue[T]) -> None:
         try:
             q.get_nowait()
             q.task_done()
-        except (asyncio.QueueEmpty, ValueError):
+        except asyncio.QueueEmpty, ValueError:
             pass
 
 
@@ -863,7 +863,7 @@ async def has_tmpfs_mount() -> bool:
                 for line in file:
                     if "tmpfs /tmp tmpfs rw" in line:
                         return True
-        except (FileNotFoundError, OSError, PermissionError):
+        except FileNotFoundError, OSError, PermissionError:
             pass
         return False
 
@@ -878,7 +878,7 @@ async def get_free_space(folder: str) -> float:
         try:
             res = shutil.disk_usage(folder)
             return res.free / float(1 << 30)
-        except (FileNotFoundError, OSError, PermissionError):
+        except FileNotFoundError, OSError, PermissionError:
             return 0.0
 
     return await asyncio.to_thread(_get_free_space, folder)
@@ -892,7 +892,7 @@ async def get_free_space_percentage(folder: str) -> float:
         try:
             res = shutil.disk_usage(folder)
             return res.free / res.total * 100
-        except (FileNotFoundError, OSError, PermissionError):
+        except FileNotFoundError, OSError, PermissionError:
             return 0.0
 
     return await asyncio.to_thread(_get_free_space, folder)

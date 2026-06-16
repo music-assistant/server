@@ -669,7 +669,7 @@ class MetaDataController(CoreController):
             return await get_palette_for_url(self.mass, image)
         try:
             return await get_palette(self.mass, image.path, image.provider)
-        except (FileNotFoundError, OSError):
+        except FileNotFoundError, OSError:
             return None
 
     async def get_thumbnail(
@@ -1473,7 +1473,7 @@ class MetaDataController(CoreController):
                     expiration=CACHE_EXPIRATION_RADIO_ARTWORK_MISS,
                     category=CACHE_CATEGORY_RADIO_ARTWORK,
                 )
-        except (ProviderUnavailableError, ResourceTemporarilyUnavailable, InvalidDataError):
+        except ProviderUnavailableError, ResourceTemporarilyUnavailable, InvalidDataError:
             pass
 
         return image_url or fallback_image_url, corrected_artist, corrected_track

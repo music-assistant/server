@@ -2,6 +2,7 @@
 
 from contextlib import suppress
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from aioaudiobookshelf.schema.library import (
     LibraryItemExpandedBook as AbsLibraryItemExpandedBook,
@@ -18,8 +19,6 @@ from aioaudiobookshelf.schema.library import (
 from aioaudiobookshelf.schema.library import (
     LibraryItemPodcast as AbsLibraryItemPodcast,
 )
-from aioaudiobookshelf.schema.media_progress import MediaProgress as AbsMediaProgress
-from aioaudiobookshelf.schema.playlist import PlaylistExpanded as AbsPlaylistExpanded
 from aioaudiobookshelf.schema.podcast import PodcastEpisode as AbsPodcastEpisode
 from aioaudiobookshelf.schema.podcast import (
     PodcastEpisodeExpanded as AbsPodcastEpisodeExpanded,
@@ -39,6 +38,10 @@ from music_assistant_models.media_items import Podcast as MassPodcast
 from music_assistant_models.media_items import PodcastEpisode as MassPodcastEpisode
 
 from music_assistant.helpers.datetime import from_utc_timestamp
+
+if TYPE_CHECKING:
+    from aioaudiobookshelf.schema.media_progress import MediaProgress as AbsMediaProgress
+    from aioaudiobookshelf.schema.playlist import PlaylistExpanded as AbsPlaylistExpanded
 
 
 def _build_cover_url(*, base_url: str, item_id: str, token: str, version: int | None = None) -> str:

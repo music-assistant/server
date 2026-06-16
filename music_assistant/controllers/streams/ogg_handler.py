@@ -235,7 +235,7 @@ def parse_vorbis_comments(data: bytes) -> dict[str, str]:
                     comments[key.lower()] = value
             except UnicodeDecodeError:
                 continue
-    except (struct.error, IndexError):
+    except struct.error, IndexError:
         pass
     return comments
 

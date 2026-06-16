@@ -644,7 +644,7 @@ class LastFMRecommendationManager:
         for artist, tags in zip(top_artists, tag_lists, strict=True):
             try:
                 artist_weight = float(artist.get("playcount", 0))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
             if artist_weight <= 0:
                 continue
@@ -654,7 +654,7 @@ class LastFMRecommendationManager:
                     continue
                 try:
                     tag_count = float(tag.get("count", 0))
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     continue
                 key = name.lower()
                 scores[key] = scores.get(key, 0.0) + artist_weight * tag_count / 100

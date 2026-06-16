@@ -5,7 +5,7 @@ import enum
 import logging
 import time
 from collections.abc import Callable, Mapping
-from typing import Final, cast
+from typing import TYPE_CHECKING, Final, cast
 
 import pylast
 from music_assistant_models.config_entries import (
@@ -17,8 +17,6 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
 from music_assistant_models.enums import ConfigEntryType, EventType, MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, SetupFailedError
-from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
-from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
@@ -27,6 +25,10 @@ from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
+
+if TYPE_CHECKING:
+    from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
+    from music_assistant_models.provider import ProviderManifest
 
 # Built-in Last.fm API credentials (not available for Libre.fm)
 _DEFAULT_API_KEY: str = app_var(12)

@@ -16,14 +16,14 @@ if TYPE_CHECKING:
 class YouSeePlaylistManager:
     """Manages YouSee Musik playlist operations."""
 
-    def __init__(self, provider: "YouSeeMusikProvider"):
+    def __init__(self, provider: YouSeeMusikProvider):
         """Initialize playlist manager."""
         self.provider = provider
         self.api = provider.api
         self.auth = provider.auth
         self.logger = provider.logger
 
-    async def create(self, name: str) -> "Playlist":
+    async def create(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
         query = """
             mutation createPlaylist($title: String!, $imageSize: Int = 512) {

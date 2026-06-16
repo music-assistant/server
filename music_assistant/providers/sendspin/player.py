@@ -110,7 +110,7 @@ def option_value_to_format(value: str) -> tuple[AudioCodec, SendspinAudioFormat]
             channels=int(channels_str),
         )
         return (codec, audio_format)
-    except (ValueError, KeyError):
+    except ValueError, KeyError:
         return None
 
 

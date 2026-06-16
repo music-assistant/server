@@ -272,5 +272,5 @@ def _format(template: str, params: list[str] | None) -> str:
         return template
     try:
         return template.format(*params)
-    except (IndexError, KeyError, ValueError):
+    except IndexError, KeyError, ValueError:
         return template

@@ -2,9 +2,12 @@
 
 import time
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-from aioaudiobookshelf.schema.media_progress import MediaProgress
 from mashumaro.mixins.dict import DataClassDictMixin
+
+if TYPE_CHECKING:
+    from aioaudiobookshelf.schema.media_progress import MediaProgress
 
 
 @dataclass(kw_only=True)

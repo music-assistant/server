@@ -623,7 +623,7 @@ class UniversalGroupPlayer(Player):
         ):
             try:
                 await resp.write(chunk)
-            except (ConnectionError, ConnectionResetError):
+            except ConnectionError, ConnectionResetError:
                 break
 
         return resp

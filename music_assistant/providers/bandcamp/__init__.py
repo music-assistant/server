@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from contextlib import asynccontextmanager, suppress
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from bandcamp_async_api import (
     BandcampAPIClient,
@@ -52,7 +52,6 @@ from music_assistant_models.media_items import (
     Track,
     UniqueList,
 )
-from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
@@ -78,6 +77,9 @@ from .constants import (
     SUPPORTED_FEATURES,
 )
 from .converters import BandcampConverters
+
+if TYPE_CHECKING:
+    from music_assistant_models.provider import ProviderManifest
 
 
 async def setup(
@@ -760,7 +762,7 @@ class BandcampProvider(MusicProvider):
         if cached is not None:
             try:
                 return [self._deserialize_content_item(item) for item in cached]
-            except (LookupError, ValueError, UnserializableDataError, InvalidDataError):
+            except LookupError, ValueError, UnserializableDataError, InvalidDataError:
                 self.logger.warning("Stale cache for %s, fetching fresh", cache_key)
         results: list[Album | Track] = []
         context = f"Failed to get {collection_type.value} for person {person_id}"
