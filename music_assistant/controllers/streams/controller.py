@@ -180,7 +180,7 @@ class StreamsController(CoreController):
                 type=ConfigEntryType.STRING,
                 default_value=CONF_BUFFER_SIZE_DEFAULT,
                 # Only offer presets the host's RAM can sustain (Balanced >= 4GB,
-                # Maximum >= 8GB); see get_available_buffer_sizes.
+                # Maximum >= 7GB); see get_available_buffer_sizes.
                 options=[ConfigValueOption(size.value) for size in get_available_buffer_sizes()],
                 required=False,
                 category="playback",
