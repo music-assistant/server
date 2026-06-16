@@ -891,7 +891,7 @@ class StreamsController(CoreController):
         ):
             try:
                 await resp.write(chunk)
-            except (BrokenPipeError, ConnectionResetError, ConnectionError):
+            except BrokenPipeError, ConnectionResetError, ConnectionError:
                 # race condition
                 break
 
@@ -990,7 +990,7 @@ class StreamsController(CoreController):
         ):
             try:
                 await resp.write(chunk)
-            except (BrokenPipeError, ConnectionResetError):
+            except BrokenPipeError, ConnectionResetError:
                 break
 
         self.logger.debug(

@@ -1053,7 +1053,7 @@ class QQMusicProvider(MusicProvider):
             )
             if isinstance(tab_albums, list):
                 raw_albums = [item for item in tab_albums if isinstance(item, dict)]
-        except (MediaNotFoundError, InvalidDataError, TypeError, ValueError):
+        except MediaNotFoundError, InvalidDataError, TypeError, ValueError:
             raw_albums = []
 
         if not raw_albums:
@@ -1207,7 +1207,7 @@ class QQMusicProvider(MusicProvider):
                 try:
                     yield self._parse_artist(artist_obj)
                     total_yielded += 1
-                except (InvalidDataError, TypeError, ValueError):
+                except InvalidDataError, TypeError, ValueError:
                     continue
             if len(artists) < num:
                 break
@@ -1234,7 +1234,7 @@ class QQMusicProvider(MusicProvider):
                 try:
                     yield self._parse_track(song)
                     yielded += 1
-                except (InvalidDataError, TypeError, ValueError):
+                except InvalidDataError, TypeError, ValueError:
                     continue
             if total and yielded >= total:
                 break
@@ -1268,7 +1268,7 @@ class QQMusicProvider(MusicProvider):
                 try:
                     yield self._parse_album(album_obj)
                     total_yielded += 1
-                except (InvalidDataError, TypeError, ValueError):
+                except InvalidDataError, TypeError, ValueError:
                     continue
             if len(albums) < num:
                 break
@@ -1284,7 +1284,7 @@ class QQMusicProvider(MusicProvider):
         for playlist_obj in created or []:
             try:
                 yield self._parse_playlist(playlist_obj)
-            except (InvalidDataError, TypeError, ValueError):
+            except InvalidDataError, TypeError, ValueError:
                 continue
 
         page = 1
@@ -1304,7 +1304,7 @@ class QQMusicProvider(MusicProvider):
             for playlist_obj in fav_playlists:
                 try:
                     yield self._parse_playlist(playlist_obj)
-                except (InvalidDataError, TypeError, ValueError):
+                except InvalidDataError, TypeError, ValueError:
                     continue
             if len(fav_playlists) < num:
                 break
@@ -1354,7 +1354,7 @@ class QQMusicProvider(MusicProvider):
                 track = self._parse_track(song)
                 track.position = index
                 results.append(track)
-            except (InvalidDataError, TypeError, ValueError):
+            except InvalidDataError, TypeError, ValueError:
                 continue
         return results
 

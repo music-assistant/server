@@ -2507,7 +2507,7 @@ class KionMusicProvider(MusicProvider):
                 r = int(bg_clean[0:2], 16)
                 g = int(bg_clean[2:4], 16)
                 b = int(bg_clean[4:6], 16)
-            except (ValueError, IndexError):
+            except ValueError, IndexError:
                 return raw
             fg = PilImage.open(BytesIO(raw)).convert("RGBA")
             bg = PilImage.new("RGBA", fg.size, (r, g, b, 255))

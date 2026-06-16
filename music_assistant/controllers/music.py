@@ -1051,7 +1051,7 @@ class MusicController(CoreController):
             # instead of bubbling MediaNotFoundError from get_item_by_uri.
             try:
                 uri_media_type, _, _ = await parse_uri(item)
-            except (InvalidProviderURI, InvalidProviderID):
+            except InvalidProviderURI, InvalidProviderID:
                 uri_media_type = None
             if uri_media_type == MediaType.AUDIO_SOURCE:
                 raise UnsupportedFeaturedException("AudioSource items can not be favorites")
@@ -1159,7 +1159,7 @@ class MusicController(CoreController):
             # Mirrors the same guard in add_item_to_favorites.
             try:
                 uri_media_type, _, _ = await parse_uri(item)
-            except (InvalidProviderURI, InvalidProviderID):
+            except InvalidProviderURI, InvalidProviderID:
                 uri_media_type = None
             if uri_media_type == MediaType.AUDIO_SOURCE:
                 raise UnsupportedFeaturedException("AudioSource items can not be library items")
@@ -2374,7 +2374,7 @@ class MusicController(CoreController):
                 prev_version = int(db_row["value"])
             else:
                 prev_version = 0
-        except (KeyError, ValueError):
+        except KeyError, ValueError:
             prev_version = 0
 
         if prev_version not in (0, DB_SCHEMA_VERSION):
@@ -2490,7 +2490,7 @@ class MusicController(CoreController):
                     metadata = json_loads(db_row["metadata"])
                     try:
                         datetime.fromisoformat(metadata["release_date"])
-                    except (KeyError, ValueError):
+                    except KeyError, ValueError:
                         # this is not a valid date, so we set it to None
                         metadata["release_date"] = None
                         await self.database.update(

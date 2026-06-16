@@ -504,7 +504,7 @@ class GenreController(MediaControllerBase[Genre]):
         """
         try:
             media_id_int = int(media_id)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return []
         gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
         query = (
@@ -531,7 +531,7 @@ class GenreController(MediaControllerBase[Genre]):
         """
         try:
             media_id_int = int(media_id)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return []
         excl = DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION
         query = (
@@ -556,7 +556,7 @@ class GenreController(MediaControllerBase[Genre]):
         """
         try:
             media_id_int = int(media_id)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return False
         row = await self.mass.music.database.get_row(
             DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,

@@ -737,7 +737,7 @@ class LocalFileSystemProvider(MusicProvider):
             return cached[0] if cached else None
         try:
             folder_files = await self._scandir(file_item.relative_parent_path)
-        except (OSError, MusicAssistantError):
+        except OSError, MusicAssistantError:
             return None
         target = file_item.name.lower()
         result: MediaItemImage | None = None

@@ -901,7 +901,7 @@ class MusicAssistant:
                     continue
                 try:
                     obj = getattr(cls, attr_name)
-                except (AttributeError, RuntimeError):
+                except AttributeError, RuntimeError:
                     # Skip attributes that fail during initialization
                     continue
                 if hasattr(obj, "api_cmd"):
