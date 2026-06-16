@@ -18,6 +18,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.json import load_json_dict
 from music_assistant.models.core_controller import CoreController
 
@@ -132,6 +133,41 @@ class TranslationController(CoreController):
                     continue
                 self._locales[candidate] = await self._load_flat(self._locale_files[candidate])
 
+    async def reverse_lookup_media_names(self, query: str) -> set[str]:
+        """
+        Return the canonical (English) media names whose localized value matches ``query``.
+
+        Lets localized item names be found by the name the user sees: a text search that returns
+        nothing literally can be retried against these canonical names (which equal the items'
+        stored ``search_name``). Only genre and playlist names (``common.media.genre.*`` /
+        ``common.media.playlist.*``) are considered — the searchable library media types; browse
+        and recommendation folder titles are display-only and never library items.
+
+        The reverse-translation always uses the metadata controller's configured language
+        (``CONF_LANGUAGE``), which doubles as the fallback search locale; an English, unknown or
+        untranslatable language yields an empty set (the literal search already covers English).
+
+        :param query: The (possibly localized) search query.
+        """
+        locale = self.mass.metadata.locale
+        normalized = create_safe_string(query, True, True)
+        if not normalized or not locale or locale.split("_")[0] == SOURCE_LANGUAGE:
+            return set()
+        await self.ensure_locale_loaded(locale)
+        bundle = self._locales.get(locale) or self._locales.get(locale.split("_")[0])
+        if not bundle:
+            return set()
+        matches: set[str] = set()
+        for key, value in bundle.items():
+            if not key.endswith(".name"):
+                continue
+            if not key.startswith(("common.media.genre.", "common.media.playlist.")):
+                continue
+            if normalized in create_safe_string(value, True, True):
+                if english := self._source.get(key):
+                    matches.add(english)
+        return matches
+
     def _lookup(self, key: str, locale: str | None) -> str | None:
         """Look up a single candidate key, locale bundle first then English source."""
         if locale:
@@ -187,8 +223,9 @@ def _candidate_keys(key: str, owner_prefix: str | None = None) -> list[str]:
 
     A fully-qualified key (starting with ``provider.``/``core.``/``common.``) is tried
     as-is plus a ``common.`` rewrite that drops the owner segment. A relative key is tried
-    under the owner prefix (if any), then ``common.``, then bare. Any candidate ending in
-    ``.name`` also gets a bare fallback (dropping ``.name``).
+    under the owner prefix (if any), then ``common.``, then bare. Multi-instance providers carry
+    an ``<domain>--<id>`` instance id, so the domain-only prefix is also tried before ``common.``.
+    Any candidate ending in ``.name`` also gets a bare fallback (dropping ``.name``).
     """
     roots = ("provider.", "core.", "common.")
     base_candidates: list[str] = []
@@ -203,6 +240,10 @@ def _candidate_keys(key: str, owner_prefix: str | None = None) -> list[str]:
     else:
         if owner_prefix:
             base_candidates.append(f"{owner_prefix}.{key}")
+            # a multi-instance owner is "provider.<domain>--<id>"; also try the bare domain
+            domain_prefix = owner_prefix.split("--", 1)[0]
+            if domain_prefix != owner_prefix:
+                base_candidates.append(f"{domain_prefix}.{key}")
         base_candidates.append(f"common.{key}")
         base_candidates.append(key)
     candidates: list[str] = []

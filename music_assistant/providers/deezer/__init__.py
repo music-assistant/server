@@ -439,7 +439,6 @@ class DeezerProvider(MusicProvider):
             self.parse_track(
                 track=deezer_track,
                 user_country=self.gw_client.user_country,
-                # TODO: doesn't Deezer have disc and track number in the api ?
                 position=0,
             )
             for deezer_track in await album.get_tracks()
@@ -616,7 +615,7 @@ class DeezerProvider(MusicProvider):
                 item_id="made_for_you",
                 provider=self.instance_id,
                 name="Made for you",
-                translation_key="recommendations.made_for_you",
+                translation_key="made_for_you",
                 items=UniqueList(made_for_you_items),
             )
         )
@@ -630,7 +629,7 @@ class DeezerProvider(MusicProvider):
                         item_id="recommended_albums",
                         provider=self.instance_id,
                         name="Recommended albums",
-                        translation_key="recommendations.recommended_albums",
+                        translation_key="recommended_albums",
                         items=UniqueList(
                             [self.parse_album(album=album) for album in recommended_albums]
                         ),
@@ -648,7 +647,7 @@ class DeezerProvider(MusicProvider):
                         item_id="recommended_artists",
                         provider=self.instance_id,
                         name="Recommended artists",
-                        translation_key="recommendations.recommended_artists",
+                        translation_key="recommended_artists",
                         items=UniqueList(
                             [self.parse_artist(artist=artist) for artist in recommended_artists]
                         ),

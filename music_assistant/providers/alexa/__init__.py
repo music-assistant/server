@@ -252,6 +252,31 @@ async def delete_cookie(cookiefile: str) -> None:
         _LOGGER.debug("Cookie file %s does not exist, nothing to delete.", cookiefile)
 
 
+async def load_cookie(login: AlexaLogin) -> dict[str, str] | None:
+    """
+    Restore a previously saved Alexa session into the login's aiohttp session.
+
+    :param login: The AlexaLogin whose session cookie jar should be populated.
+    """
+    cookiefile = login._cookiefile[0] if login._cookiefile else None
+    if not cookiefile or not await asyncio.to_thread(os.path.exists, cookiefile):
+        return None
+    if login._session is None:
+        login._create_session()
+    # aiohttp 3.14 saves the cookie jar as JSON, which alexapy's own load_cookie()
+    # cannot parse. Load it with aiohttp's loader into the session jar (preserving
+    # the cookie domains required for auth) and return the cookies for login().
+    cookie_jar = login._session.cookie_jar
+    assert isinstance(cookie_jar, aiohttp.CookieJar)
+    try:
+        await asyncio.to_thread(cookie_jar.load, cookiefile)
+    except (OSError, EOFError, TypeError, ValueError, AttributeError) as ex:
+        _LOGGER.debug("Error loading cookie from %s: %s", cookiefile, ex)
+        return None
+    cookies = login._get_cookies_from_session()
+    return cast("dict[str, str]", cookies) if cookies else None
+
+
 async def _request_with_session(
     session: aiohttp.ClientSession,
     method: str,
@@ -526,7 +551,7 @@ class AlexaProvider(PlayerProvider):
         )
         self.login._cookiefile = [self.login._outputpath(cookie_path)]
 
-        await self.login.login(cookies=await self.login.load_cookie())
+        await self.login.login(cookies=await load_cookie(self.login))
 
         devices = await AlexaAPI.get_devices(self.login)
 
