@@ -3599,12 +3599,7 @@ class MusicController(CoreController):
         queue_id: str | None,
         skip_ids: set[str],
     ) -> None:
-        """Credit each (library-resolvable) artist with a play, skipping skip_ids.
-
-        An artist credited this way is a side-effect of a track or album play, so its
-        playlog row is recorded as not user-initiated. An existing user-initiated flag
-        (set when the artist itself was explicitly played) is preserved, never downgraded.
-        """
+        """Credit each (library-resolvable) artist with a play, skipping skip_ids."""
         # ON CONFLICT keeps an explicit user-initiated artist play sticky across the
         # repeated side-effect credits its tracks generate.
         upsert_query = (
@@ -3648,4 +3643,3 @@ class MusicController(CoreController):
             for user_id in user_ids:
                 playlog_entry["userid"] = user_id
                 await self.database.execute(upsert_query, playlog_entry)
-        await self.database.commit()

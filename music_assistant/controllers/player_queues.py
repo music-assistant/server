@@ -3376,13 +3376,7 @@ class PlayerQueuesController(CoreController):
         return enqueued
 
     def _is_user_initiated_play(self, queue: PlayerQueue, media_item: MediaItemType) -> bool:
-        """Return whether a played item was explicitly chosen by the user.
-
-        True only when the item itself was directly enqueued (e.g. a single track the
-        user pressed play on). A track that plays as part of an enqueued album or
-        playlist, or as radio fill, is not user-initiated -- its container is recorded
-        separately.
-        """
+        """Return whether a played item was explicitly chosen by the user."""
         return media_item in queue.enqueued_media_items
 
     async def _mark_album_played(

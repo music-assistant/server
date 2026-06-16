@@ -131,11 +131,7 @@ async def test_album_play_credits_album_artists_with_dedup(mass: MusicAssistant)
 
 
 async def test_track_credit_does_not_flag_artist_user_initiated(mass: MusicAssistant) -> None:
-    """A track play credits its artist as a side-effect, never as user-initiated.
-
-    Even when the track itself is user-initiated, the artist is only a consequence
-    of that play, so its playlog row must stay user_initiated=0.
-    """
+    """A track play credits its artist as a side-effect, never as user-initiated."""
     user = await mass.webserver.auth.create_user("trackcreditui")
     artist = await _add_artist(mass, "Sideeffect")
     track = await _add_track(mass, "A Song", [artist])
@@ -148,11 +144,7 @@ async def test_track_credit_does_not_flag_artist_user_initiated(mass: MusicAssis
 
 
 async def test_explicit_artist_play_survives_track_credit(mass: MusicAssistant) -> None:
-    """An explicit artist play stays user-initiated after later side-effect credits.
-
-    Playing the artist marks it user_initiated=1; a subsequent (non-user-initiated)
-    play of one of its tracks must not downgrade that flag.
-    """
+    """An explicit artist play stays user-initiated after later side-effect credits."""
     user = await mass.webserver.auth.create_user("artiststicky")
     artist = await _add_artist(mass, "Chosen")
     track = await _add_track(mass, "Their Song", [artist])
