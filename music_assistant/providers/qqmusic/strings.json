@@ -30,5 +30,9 @@
   },
   "manifest": {
     "description": "Stream QQ Music catalog, playlists, lyrics, and personalized recommendations."
+  },
+  "errors": {
+    "login_rejected": "Login was rejected in the {0} app.",
+    "confirm_login_in_app": "QR code scanned. Please confirm the login in the {0} app."
   }
 }

@@ -131,7 +131,7 @@ def parse_album(provider: TidalProvider, album_obj: dict[str, Any]) -> Album:
     if release_date := album_obj_data.get("releaseDate", ""):
         try:
             album.year = int(release_date.split("-")[0])
-        except (ValueError, IndexError):
+        except ValueError, IndexError:
             provider.logger.debug("Invalid release date format: %s", release_date)
         with suppress(ValueError):
             album.metadata.release_date = datetime.fromisoformat(release_date)

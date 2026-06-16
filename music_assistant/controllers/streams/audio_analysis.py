@@ -278,7 +278,7 @@ class AudioAnalysisController:
                 await asyncio.wait_for(
                     queue.put(pcm_data), timeout=REAL_TIME_PACE_INTERVAL_SECONDS_CEILING
                 )
-            except (TimeoutError, asyncio.QueueFull):
+            except TimeoutError, asyncio.QueueFull:
                 return
 
         async def _finalize_session() -> None:
@@ -461,7 +461,7 @@ class AudioAnalysisController:
         for row in rows:
             try:
                 data = json_loads(row["analysis_data"])
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 continue
             if not isinstance(data, dict):
                 continue

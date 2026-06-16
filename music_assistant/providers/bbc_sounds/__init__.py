@@ -198,7 +198,7 @@ class BBCSoundsProvider(MusicProvider):
                 try:
                     await self.client.personal.get_experience_menu()
                     return
-                except (exceptions.UnauthorisedError, exceptions.APIResponseError):
+                except exceptions.UnauthorisedError, exceptions.APIResponseError:
                     await self.client.auth.renew_session()
 
             try:

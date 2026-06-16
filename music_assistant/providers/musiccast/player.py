@@ -127,7 +127,7 @@ class MusicCastPlayer(Player):
 
     def __init__(
         self,
-        provider: "MusicCastProvider",
+        provider: MusicCastProvider,
         player_id: str,
         physical_device: MusicCastPhysicalDevice,
         zone_device: MusicCastZoneDevice,
@@ -740,7 +740,7 @@ class MusicCastPlayer(Player):
             _was_unavailable = not self._attr_available
             try:
                 await self.physical_device.fetch()
-            except (MusicCastConnectionException, MusicCastGroupException):
+            except MusicCastConnectionException, MusicCastGroupException:
                 await self._set_player_unavailable()
                 return
             except ClientError:

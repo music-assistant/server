@@ -53,7 +53,7 @@ def _int_param(query: MultiMapping[str], name: str, default: int, max_val: int =
     """Parse an integer query parameter safely, clamping to [0, max_val]."""
     try:
         return max(0, min(int(query.get(name, str(default))), max_val))
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return default
 
 
@@ -1274,7 +1274,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             async for chunk in shared_stream.subscribe(player_id):
                 await response.write(chunk)
                 total_bytes += len(chunk)
-        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+        except ConnectionResetError, BrokenPipeError, ConnectionAbortedError:
             logger.debug(
                 "[SharedStream] Client %s disconnected after %d bytes",
                 player_id,
@@ -1386,7 +1386,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                     break
                 await response.write(chunk)
                 total_bytes += len(chunk)
-        except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+        except ConnectionResetError, BrokenPipeError, ConnectionAbortedError:
             logger.debug("Client disconnected from stream %s", player_id)
         except asyncio.CancelledError:
             logger.debug("Stream cancelled for player %s", player_id)
@@ -1716,7 +1716,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         """Process an inbound WebSocket message from MSX."""
         try:
             msg = json.loads(data)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             logger.debug("Invalid WS message from %s: %s", player_id, data)
             return
 

@@ -586,12 +586,12 @@ class AudibleHelper:
         """Parse chapter data into MediaItemChapter object."""
         try:
             start = int(chapter_data.get("start_offset_sec", 0))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             start = 0
 
         try:
             length = int(chapter_data.get("length_ms", 0)) / 1000
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             length = 0
 
         raw_title = chapter_data.get("title")
@@ -1096,7 +1096,7 @@ class AudibleHelper:
                     sequence = s.get("sequence")
                     try:
                         seq_num = float(sequence) if sequence else 999
-                    except (ValueError, TypeError):
+                    except ValueError, TypeError:
                         seq_num = 999
                     audiobooks.append((seq_num, self._parse_audiobook(item)))
                     break

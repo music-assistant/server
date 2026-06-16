@@ -84,7 +84,7 @@ def load_artifacts(raw: str | None) -> SkillCreationArtifacts:
         return SkillCreationArtifacts()
     try:
         data = json.loads(raw)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         _LOGGER.warning("auto-skill artifacts corrupt, resetting")
         return SkillCreationArtifacts()
     if not isinstance(data, dict):

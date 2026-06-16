@@ -1255,7 +1255,7 @@ class PlayerQueuesController(CoreController):
                 # we're all set, this is our next item
                 next_item = queue_item
                 break
-            except (MediaNotFoundError, AudioError):
+            except MediaNotFoundError, AudioError:
                 # No stream details found, skip this QueueItem
                 self.logger.warning(
                     "Skipping unplayable item %s (%s)", queue_item.name, queue_item.uri
