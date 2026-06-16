@@ -290,13 +290,16 @@ class AlbumsController(MediaControllerBase[Album]):
             album_tracks = await self._get_provider_album_tracks(
                 item_id, provider_instance_id_or_domain
             )
-            if album_tracks and not album_tracks[0].image:
-                # set album image from provider album if not present on tracks
+            # some album-track listings omit the parent album and its image; backfill both
+            # from the provider album so the queue shows the album name and artwork.
+            if album_tracks and (not album_tracks[0].album or not album_tracks[0].image):
                 prov_album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-                if prov_album.image:
-                    for track in album_tracks:
-                        if not track.image:
-                            track.metadata.add_image(prov_album.image)
+                album_mapping = ItemMapping.from_item(prov_album)
+                for track in album_tracks:
+                    if prov_album.image and not track.image:
+                        track.metadata.add_image(prov_album.image)
+                    if track.album is None:
+                        track.album = album_mapping
             return album_tracks
 
         db_items = await self.get_library_album_tracks(library_album.item_id)
