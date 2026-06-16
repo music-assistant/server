@@ -128,6 +128,14 @@ async def get_config_entries(
         ConfigEntry(
             key="resource_warning",
             type=ConfigEntryType.ALERT,
+            label=(
+                "Sonic Analysis is powerful but resource-intensive: it loads a machine-learning "
+                "model (CLAP) into memory to analyze how your music sounds. The minimum "
+                "requirements are 4 GB of RAM, 2 CPU cores and (on Intel/AMD CPUs) AVX2 support. "
+                "For the best experience we recommend 6 GB or more of RAM and 4 CPU cores. On "
+                "systems near the minimum, or under heavy load, you may still run into "
+                "out-of-memory situations."
+            ),
             required=False,
             hidden=system_meets_requirements(
                 min_memory_gb=RECOMMENDED_RAM_GB,
