@@ -210,11 +210,9 @@ class SmartFade(ABC):
 
             if proc.returncode != 0:
                 stderr_msg = "; ".join(stderr_lines) if stderr_lines else "(no stderr)"
-                raise RuntimeError(
-                    f"Smart crossfade FFmpeg failed (rc={proc.returncode}): {stderr_msg}"
-                )
+                raise RuntimeError(f"Crossfade FFmpeg failed (rc={proc.returncode}): {stderr_msg}")
             if not got_output:
-                msg = "Smart crossfade FFmpeg produced no output"
+                msg = "Crossfade FFmpeg produced no output"
                 if stderr_lines:
                     msg += f": {'; '.join(stderr_lines)}"
                 raise RuntimeError(msg)
@@ -768,6 +766,7 @@ class StandardCrossFade(SmartFade):
         super().__init__(logger)
         self.crossfade_duration = crossfade_duration
         self.trailing_silence_bytes: int = 0
+        self.crossfade_size: int = 0
 
     def _build(
         self,
@@ -780,6 +779,16 @@ class StandardCrossFade(SmartFade):
         fade_in_seconds = fade_in_bytes_len / pcm_format.pcm_sample_size
         # clamp CF to fit shorter inputs (defensive — normally full buffers)
         effective_cf = min(self.crossfade_duration, fade_out_seconds, fade_in_seconds)
+        # Quantize the overlap to a whole number of PCM frames and drive both the
+        # byte slice (in apply) and the acrossfade length from this one integer.
+        # apply slices the buffers on frame boundaries, so a fractional effective_cf
+        # leaves the rendered buffer a fraction of a sample short of the acrossfade
+        # duration — and acrossfade then silently produces no output at all.
+        frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
+        crossfade_bytes = int(pcm_format.pcm_sample_size * effective_cf)
+        self.crossfade_size = crossfade_bytes // frame_size * frame_size
+        crossfade_samples = self.crossfade_size // frame_size
+        effective_cf = self.crossfade_size / pcm_format.pcm_sample_size
         self.timing_info = CrossfadeTimingInfo(
             pre_crossfade_duration=max(0.0, fade_out_seconds - effective_cf),
             crossfade_duration=effective_cf,
@@ -787,7 +796,7 @@ class StandardCrossFade(SmartFade):
             post_crossfade_duration=max(0.0, fade_in_seconds - effective_cf),
         )
         self.filters = [
-            CrossfadeFilter(logger=self.logger, crossfade_duration=effective_cf),
+            CrossfadeFilter(logger=self.logger, crossfade_samples=crossfade_samples),
         ]
 
     async def apply(
@@ -801,11 +810,16 @@ class StandardCrossFade(SmartFade):
 
         Only the overlapping portions are crossfaded, not the full buffers.
         """
+        # crossfade_size legitimately ends up 0 for a silent/tiny buffer, so guard on
+        # the filter chain (set in _build) to still fail fast on apply-before-build,
+        # consistent with SmartFade._get_ffmpeg_filters()
+        if not self.filters:
+            raise RuntimeError("SmartFade not built — call Mixer.build() first")
         if self.trailing_silence_bytes:
             fade_out_part = fade_out_part[: len(fade_out_part) - self.trailing_silence_bytes]
-        frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
-        crossfade_size = int(pcm_format.pcm_sample_size * self.timing_info.crossfade_duration)
-        crossfade_size = (crossfade_size // frame_size) * frame_size
+        # frame-aligned overlap computed once in _build, so it exactly matches the
+        # acrossfade `ns=` length the filter was built with
+        crossfade_size = self.crossfade_size
         if crossfade_size == 0:
             # nothing to blend — concatenate without spawning ffmpeg
             for pcm_slice in iter_pcm_slices(fade_out_part, pcm_format, 1000):
