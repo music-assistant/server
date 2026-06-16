@@ -1,6 +1,7 @@
 """Tests for utility/helper functions."""
 
 from ipaddress import IPv4Address, IPv6Address
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -573,3 +574,97 @@ def test_is_arm(machine: str, expected: bool) -> None:
     """is_arm recognizes 32/64-bit ARM and rejects x86."""
     with patch("music_assistant.helpers.util.platform.machine", return_value=machine):
         assert util.is_arm() is expected
+
+
+# 4/8/2 GiB expressed in bytes, for cgroup fixture files.
+_GIB = 1024**3
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (str(4 * _GIB), 4.0),
+        (str(8 * _GIB), 8.0),
+        ("max", None),  # v2 unlimited sentinel
+        ("", None),  # empty file
+        (str(1 << 62), None),  # v1 unlimited sentinel
+        ("0", None),  # zero is not a real limit
+        ("-1", None),  # negative is not a real limit
+        ("not-a-number", None),
+    ],
+)
+def test_read_cgroup_limit_file(tmp_path: Path, raw: str, expected: float | None) -> None:
+    """A cgroup limit file parses to GB, treating max/sentinel/garbage as no limit."""
+    limit_file = tmp_path / "memory.max"
+    limit_file.write_text(raw)
+    assert util._read_cgroup_limit_file(str(limit_file)) == expected
+
+
+def test_read_cgroup_limit_file_missing(tmp_path: Path) -> None:
+    """A missing cgroup limit file yields None rather than raising."""
+    assert util._read_cgroup_limit_file(str(tmp_path / "absent")) is None
+
+
+def test_cgroup_limit_v2(tmp_path: Path) -> None:
+    """Cgroup v2 memory.max at the mount root is read (namespaced container case)."""
+    (tmp_path / "memory.max").write_text(str(4 * _GIB))
+    # proc file absent -> rel is None -> falls back to the mount root.
+    limit = util._get_cgroup_memory_limit_gb(
+        cgroup_root=str(tmp_path), proc_cgroup=str(tmp_path / "absent")
+    )
+    assert limit == 4.0
+
+
+def test_cgroup_limit_v2_prefers_leaf(tmp_path: Path) -> None:
+    """When /proc/self/cgroup names a sub-cgroup, its memory.max wins over the root."""
+    (tmp_path / "memory.max").write_text(str(8 * _GIB))
+    leaf = tmp_path / "leaf"
+    leaf.mkdir()
+    (leaf / "memory.max").write_text(str(2 * _GIB))
+    proc = tmp_path / "proc_cgroup"
+    proc.write_text("0::/leaf\n")
+    limit = util._get_cgroup_memory_limit_gb(cgroup_root=str(tmp_path), proc_cgroup=str(proc))
+    assert limit == 2.0
+
+
+def test_cgroup_limit_v1_fallback(tmp_path: Path) -> None:
+    """With no v2 file, the v1 memory controller limit is used."""
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    (mem / "memory.limit_in_bytes").write_text(str(4 * _GIB))
+    proc = tmp_path / "proc_cgroup"
+    proc.write_text("3:memory:/\n")
+    limit = util._get_cgroup_memory_limit_gb(cgroup_root=str(tmp_path), proc_cgroup=str(proc))
+    assert limit == 4.0
+
+
+def test_cgroup_limit_none_when_unset(tmp_path: Path) -> None:
+    """No cgroup files present -> no limit detected."""
+    assert (
+        util._get_cgroup_memory_limit_gb(
+            cgroup_root=str(tmp_path), proc_cgroup=str(tmp_path / "absent")
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("host_gb", "cgroup_gb", "platform", "expected"),
+    [
+        (16.0, 4.0, "linux", 4.0),  # container limit below host -> use the limit
+        (8.0, 16.0, "linux", 8.0),  # limit above host -> host wins
+        (8.0, None, "linux", 8.0),  # no limit -> host RAM
+        (0.0, 4.0, "linux", 0.0),  # host unknown -> unknown (fail open)
+        (8.0, 4.0, "darwin", 8.0),  # non-linux never consults cgroups
+    ],
+)
+def test_get_total_system_memory(
+    host_gb: float, cgroup_gb: float | None, platform: str, expected: float
+) -> None:
+    """Total memory is min(host RAM, cgroup limit) on Linux; host RAM elsewhere."""
+    with (
+        patch("music_assistant.helpers.util._get_host_memory_gb", return_value=host_gb),
+        patch("music_assistant.helpers.util._get_cgroup_memory_limit_gb", return_value=cgroup_gb),
+        patch("music_assistant.helpers.util.sys.platform", platform),
+    ):
+        assert util.get_total_system_memory() == expected
