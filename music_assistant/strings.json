@@ -853,6 +853,89 @@
     "import_playlist_matching": "Import playlist {0}",
     "update_metadata": "Update metadata for {0}"
   },
+  "player_options": {
+    "adaptive_drc": {
+      "name": "Adaptive DRC"
+    },
+    "bass": {
+      "name": "Bass"
+    },
+    "bass_extension": {
+      "name": "Bass extension"
+    },
+    "clear_voice": {
+      "name": "Clear voice"
+    },
+    "dialogue_level": {
+      "name": "Dialogue level"
+    },
+    "dialogue_lift": {
+      "name": "Dialogue lift"
+    },
+    "dimmer": {
+      "name": "Dimmer"
+    },
+    "dts_dialogue_control": {
+      "name": "DTS Dialogue Control"
+    },
+    "enhancer": {
+      "name": "Enhancer"
+    },
+    "equalizer_high": {
+      "name": "Equalizer high"
+    },
+    "equalizer_low": {
+      "name": "Equalizer low"
+    },
+    "equalizer_mid": {
+      "name": "Equalizer mid"
+    },
+    "equalizer_mode": {
+      "name": "Equalizer mode"
+    },
+    "extra_bass": {
+      "name": "Extra bass"
+    },
+    "link_audio_delay": {
+      "name": "Link audio delay"
+    },
+    "link_audio_quality": {
+      "name": "Link audio quality"
+    },
+    "link_control": {
+      "name": "Link control"
+    },
+    "party_mode": {
+      "name": "Party mode"
+    },
+    "pure_direct": {
+      "name": "Pure direct"
+    },
+    "sleep": {
+      "name": "Sleep timer"
+    },
+    "speaker_a": {
+      "name": "Speaker A"
+    },
+    "speaker_b": {
+      "name": "Speaker B"
+    },
+    "subwoofer_volume": {
+      "name": "Subwoofer Volume"
+    },
+    "surround_3d": {
+      "name": "Surround 3D"
+    },
+    "surround_decoder_type": {
+      "name": "Surround decoder type"
+    },
+    "tone_control_mode": {
+      "name": "Tone control mode"
+    },
+    "treble": {
+      "name": "Treble"
+    }
+  },
   "errors": {
     "setup_required": "Music Assistant is not set up yet.",
     "provider_unavailable": "The provider is currently unavailable.",
