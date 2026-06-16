@@ -30,7 +30,7 @@ bidict==0.23.1
 certifi==2025.11.12
 chardet>=5.2.0
 colorlog==6.10.1
-cryptography==46.0.7
+cryptography==49.0.0
 deezer-python-async==0.3.0
 defusedxml==0.7.1
 deno==2.7.12
@@ -49,7 +49,7 @@ lyricsgenius==3.12.2
 mashumaro==3.20
 modern_colorthief==0.2.1
 music-assistant-frontend==2.17.189
-music-assistant-models==1.1.132
+music-assistant-models==1.1.133
 mutagen==1.47.0
 niconico.py-ma==2.1.0.post2
 nnAudio==0.3.3

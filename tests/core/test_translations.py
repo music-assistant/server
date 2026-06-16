@@ -9,14 +9,16 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
+from music_assistant_models.background_task import BackgroundTask
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
-from music_assistant_models.enums import ConfigEntryType, ProviderType
+from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderType
 from music_assistant_models.media_items.media_item import BrowseFolder, RecommendationFolder
 from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.controllers import translations as translations_module
 from music_assistant.controllers.config import _with_translation_owner
+from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.translations import (
     SOURCE_LANGUAGE,
     TranslationController,
@@ -201,6 +203,8 @@ def _nl_controller() -> TranslationController:
         "common.media.recommendations.recently_played.subtitle": "Pick up where you left off",
         # a genre name (searchable, so used by the reverse-lookup test)
         "common.media.genre.classical.name": "Classical",
+        # a genre description (resolved into a Genre's nested metadata.description)
+        "common.media.genre.classical.description": "Classical music is art music.",
     }
     ctrl._locales = {
         "nl": {
@@ -212,6 +216,7 @@ def _nl_controller() -> TranslationController:
             "common.media.recommendations.recently_played.name": "Onlangs afgespeeld",
             "common.media.recommendations.recently_played.subtitle": "Ga verder waar je gebleven was",
             "common.media.genre.classical.name": "Klassiek",
+            "common.media.genre.classical.description": "Klassieke muziek is kunstmuziek.",
         }
     }
     ctrl._available_locales = {"en", "nl"}
@@ -330,6 +335,40 @@ def test_recommendation_folder_localized_serialization() -> None:
     assert localized["subtitle"] == "Ga verder waar je gebleven was"
 
 
+def test_provider_sync_task_localized_serialization() -> None:
+    """Provider-sync BackgroundTasks resolve their name from the built catalog with the provider name.
+
+    Guards that every key returned by MusicController._get_sync_task_translation_key has a matching
+    common.background_task.* entry authored in strings.json, that the provider name fills the {0}
+    placeholder, and that the translation machinery is stripped from the wire under a resolver.
+    """
+    ctrl = _make_controller()
+    ctrl._source = build_translations_source()
+    expected = {
+        MediaType.ARTIST: "Sync Artists for Spotify",
+        MediaType.ALBUM: "Sync Albums for Spotify",
+        MediaType.TRACK: "Sync Tracks for Spotify",
+        MediaType.PLAYLIST: "Sync Playlists for Spotify",
+        MediaType.RADIO: "Sync Radios for Spotify",
+        MediaType.AUDIOBOOK: "Sync Audiobooks for Spotify",
+        MediaType.PODCAST: "Sync Podcasts for Spotify",
+    }
+    # the method does not use self, so call it on the class without instantiating the controller
+    get_key = MusicController._get_sync_task_translation_key
+    with _active_resolver(ctrl, None):
+        for media_type, name in expected.items():
+            key = get_key(None, media_type)  # type: ignore[arg-type]
+            task = BackgroundTask(
+                name=f"Sync Spotify {media_type.value}s",  # in-code English fallback
+                translation_key=key,
+                translation_args=["Spotify"],
+            )
+            serialized = task.to_dict()
+            assert serialized["name"] == name
+            assert "translation_key" not in serialized
+            assert "translation_args" not in serialized
+
+
 def test_media_item_without_translation_key_is_untouched() -> None:
     """A media item with no translation_key keeps its in-code name even under a resolver."""
     ctrl = _nl_controller()
@@ -365,6 +404,46 @@ def test_media_names_are_keyed_by_media_type() -> None:
         "common.media.builtin_playlist.random_album.name",  # built-in playlist sub-dict
     ):
         assert stale not in source
+
+
+def test_genre_descriptions_are_authored() -> None:
+    """Genre descriptions are authored centrally under common.media.genre.<slug>.description.
+
+    Migrated from the frontend's genre_descriptions.* keys; the model resolver fills them into
+    a Genre's nested metadata.description, the same way names fill the top-level name field.
+    """
+    source = build_translations_source()
+    assert source["common.media.genre.jazz.description"].startswith("Jazz")
+    # every authored genre name carries a paired description (parity with the migrated set)
+    name_slugs = {
+        key[len("common.media.genre.") : -len(".name")]
+        for key in source
+        if key.startswith("common.media.genre.") and key.endswith(".name")
+    }
+    description_slugs = {
+        key[len("common.media.genre.") : -len(".description")]
+        for key in source
+        if key.startswith("common.media.genre.") and key.endswith(".description")
+    }
+    assert name_slugs == description_slugs
+
+
+def test_genre_description_resolves_via_controller() -> None:
+    """The resolver maps a genre's media.genre.<slug>.description key to the common entry.
+
+    Mirrors how the model's _resolve_translation looks up a genre's nested metadata.description:
+    a relative key plus the item's provider as owner, resolved via the common.* rewrite.
+    """
+    ctrl = _nl_controller()
+    assert (
+        ctrl.get_translation("media.genre.classical.description", "nl", owner="library")
+        == "Klassieke muziek is kunstmuziek."
+    )
+    # a locale without a translation falls back to the English source
+    assert (
+        ctrl.get_translation("media.genre.classical.description", "fr", owner="library")
+        == "Classical music is art music."
+    )
 
 
 async def test_reverse_lookup_media_names() -> None:

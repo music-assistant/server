@@ -439,181 +439,240 @@
   "media": {
     "genre": {
       "afrobeats": {
-        "name": "Afrobeats (West African Urban/Pop Music)"
+        "name": "Afrobeats (West African Urban/Pop Music)",
+        "description": "Afrobeats, not to be confused with Afrobeat or Afroswing, is an umbrella term to describe popular music from West Africa and the diaspora that initially developed in Nigeria, Ghana, and the UK in the 2000s and 2010s. Afrobeats is less of a style per se, and more of a descriptor for the fusion of sounds flowing out of Nigeria and Ghana. Genres such as hiplife, jùjú music, highlife, azonto music, and naija beats, among others, were amalgamated under the \"Afrobeats\" umbrella."
       },
       "ambient": {
-        "name": "Ambient"
+        "name": "Ambient",
+        "description": "Ambient music is a genre of music that emphasizes tone and atmosphere over traditional musical structure or rhythm. Often \"peaceful\" sounding and lacking composition, beat, and/or structured melody, ambient music uses textural layers of sound that can reward both passive and active listening, and encourage a sense of calm or contemplation. The genre evokes an \"atmospheric\", \"visual\", or \"unobtrusive\" quality. Nature soundscapes may be included, and some works use sustained or repeated notes, as in drone music. Bearing elements associated with new-age music, instruments such as the piano, strings and flute may be emulated through a synthesizer."
       },
       "anime_and_video_game_music": {
-        "name": "Anime & Video Game Music"
+        "name": "Anime & Video Game Music",
+        "description": "Video game music (VGM) is the soundtrack that accompanies video games. Early video game music was once limited to sounds of early sound chips, such as programmable sound generators (PSG) or FM synthesis chips. These limitations have led to the style of music known as chiptune, which became the sound of the early video games."
       },
       "asian_music": {
-        "name": "Asian Music"
+        "name": "Asian Music",
+        "description": "Asian music encompasses numerous musical styles, diverse cultural and religious traditions, and forms originating on the Asian continent."
       },
       "bluegrass": {
-        "name": "Bluegrass"
+        "name": "Bluegrass",
+        "description": "Bluegrass music is a genre of American roots music that developed in the 1940s in the Appalachian region of the United States. The genre derives its name from the band Bill Monroe and the Blue Grass Boys. Bluegrass has roots in African American genres like blues and jazz and North European genres, such as Irish ballads and dance tunes. Unlike country, it is traditionally played exclusively on acoustic instruments such as the fiddle, mandolin, banjo, guitar and upright bass. It was further developed by musicians who played with Monroe, including 5-string banjo player Earl Scruggs and guitarist Lester Flatt. Bill Monroe once described bluegrass music as, \"It's a part of Methodist, Holiness and Baptist traditions. It's blues and jazz, and it has a high lonesome sound.\""
       },
       "blues": {
-        "name": "Blues"
+        "name": "Blues",
+        "description": "Blues is a music genre and musical form that originated among African Americans in the Deep South of the United States around the 1860s. Blues has incorporated spirituals, work songs, field hollers, shouts, chants, and rhymed simple narrative ballads from the African-American culture. The blues form is ubiquitous in jazz, rhythm and blues, and rock and roll, and is characterized by the call-and-response pattern, the blues scale, and specific chord progressions, of which the twelve-bar blues is the most common. Blue notes, usually thirds, fifths or sevenths flattened in pitch, are also an essential part of the sound. Blues shuffles or walking bass reinforce the trance-like rhythm and form a repetitive effect known as the groove."
       },
       "brazilian_music": {
-        "name": "Brazilian Music"
+        "name": "Brazilian Music",
+        "description": "The music of Brazil encompasses various regional musical styles influenced by European, American, African and Amerindian forms. Brazilian music developed some unique and original styles such as forró, repente, coco de roda, axé, sertanejo, samba, bossa nova, MPB, gaucho music, pagode, tropicália, choro, maracatu, embolada, frevo, brega, modinha and Brazilian versions of foreign musical styles, such as rock, pop music, soul, hip-hop, disco music, country music, ambient, industrial and psychedelic music, rap, classical music, fado, and gospel."
       },
       "chanson": {
-        "name": "Chanson"
+        "name": "Chanson",
+        "description": "A chanson is generally any lyric-driven French song. The term is most commonly used in English to refer either to the secular polyphonic French songs of late medieval and Renaissance music or to a specific style of French pop music which emerged in the 1950s and 1960s. The genre had origins in the monophonic songs of troubadours and trouvères, though the only polyphonic precedents were 16 works by Adam de la Halle and one by Jehan de Lescurel. Not until the ars nova composer Guillaume de Machaut did any composer write a significant number of polyphonic chansons."
       },
       "childrens_music": {
-        "name": "Children's Music"
+        "name": "Children's Music",
+        "description": "Children's music or kids' music is music composed and performed for children. In European-influenced contexts this means music, usually songs, written specifically for a juvenile audience. The composers are usually adults."
       },
       "christmas_music": {
-        "name": "Christmas Music"
+        "name": "Christmas Music",
+        "description": "Christmas music comprises a variety of genres of music regularly performed or heard around the Christmas season. Music associated with Christmas may be purely instrumental, or in the case of carols, may employ lyrics about the nativity of Jesus Christ, traditions such as gift-giving and merrymaking, cultural figures such as Santa Claus, or other topics. Many songs simply have a winter or seasonal theme, or have been adopted into the canon for other reasons."
       },
       "church_music": {
-        "name": "Church Music"
+        "name": "Church Music",
+        "description": "Church music is a genre of Christian music written for performance in church, or any musical setting of ecclesiastical liturgy, or music set to words expressing propositions of a sacred nature, such as a hymn."
       },
       "classical": {
-        "name": "Classical"
+        "name": "Classical",
+        "description": "Art music is music considered to be of high phonoaesthetic value. It typically implies advanced structural and theoretical considerations or a written musical tradition. In this context, the terms \"serious\" or \"cultivated\" are frequently used to present a contrast with ordinary, everyday music. Many cultures have art music traditions; in the Western world, the term typically refers to Western classical music."
       },
       "comedy": {
-        "name": "Comedy"
+        "name": "Comedy",
+        "description": "Comedy music or musical comedy is a genre of music that is comedic in nature. Its history can be traced back to the first century in ancient Greece and Rome, moving forward in time to the Medieval Period, Classical and Romantic eras, and the 20th century. Various forms of comedic musical theatre, including \"musical play\", \"musical comedy\", \"operetta\" and \"light opera\", evolved from the comic operas first developed in late 17th-century Italy. Popular music artists in the 20th century interested in comedy include Allan Sherman, Frank Zappa, Tiny Tim, Barenaked Ladies, Randy Newman, and \"Weird Al\" Yankovic. Artists in the 21st century include Tenacious D, Flight of the Conchords, The Lonely Island, Ninja Sex Party and The Axis of Awesome."
       },
       "country": {
-        "name": "Country"
+        "name": "Country",
+        "description": "Country music, also known as country and western or simply country, is a music genre known for its ballads and dance tunes, identifiable by both traditional lyrics and harmonies accompanied by banjos, mandolins, fiddles, harmonicas, and many types of guitar; either acoustic, electric, steel, or resonator guitars. Once called hillbilly music, the term country music was popularized in the 1940s to give it a correct term."
       },
       "dance": {
-        "name": "Dance"
+        "name": "Dance",
+        "description": "Dance music is music composed specifically to facilitate or accompany dancing. It can be either a whole piece or part of a larger musical arrangement. In terms of performance, the major categories are live dance music and recorded dance music. While there exist attestations of the combination of dance and music in ancient history, the earliest Western dance music that we can still reproduce with a degree of certainty are old-fashioned dances. In the Baroque period, the major dance styles were noble court dances. In the classical music era, the minuet was frequently used as a third movement, although in this context it would not accompany any dancing. The waltz also arose later in the classical era. Both remained part of the romantic music period, which also saw the rise of various other nationalistic dance forms like the barcarolle, mazurka, ecossaise, ballade and polonaise."
       },
       "dark_ambient": {
-        "name": "Dark Ambient"
+        "name": "Dark Ambient",
+        "description": "Dark ambient is a subgenre of post-industrial music, that originally emerged in the mid-1980s. It draws primary influence from ambient music and is characterized by ominous, dark drones, discordant overtones and a gloomy, monumental or catacomb-inspired atmosphere. Although mostly an electronic genre, artists frequently sample traditional instruments and make use of semi-acoustic recording procedures."
       },
       "dark_wave": {
-        "name": "Dark Wave"
+        "name": "Dark Wave",
+        "description": "Dark wave is a music genre that emerged from the new wave and post-punk movement of the late 1970s. Dark wave compositions are largely based on minor key tonality and introspective lyrics and have been perceived as being dark, romantic and bleak, with an undertone of sorrow. Common features include the use of chordophones such as electric and acoustic guitar, violin and piano, as well as electronic instruments such as synthesizer, sampler and drum machine. Like new wave, dark wave is not a \"unified genre but rather an umbrella term\" that encompasses a variety of musical styles, including cold wave, ethereal wave, gothic rock, neoclassical dark wave and neofolk."
       },
       "disco": {
-        "name": "Disco"
+        "name": "Disco",
+        "description": "Disco is a genre of dance music and a subculture that emerged in the late 1960s from the United States' urban nightlife scene, particularly in African-American, Italian-American, Latino and queer communities. Its sound is typified by four-on-the-floor beats, syncopated basslines, string sections, brass and horns, electric pianos, synthesizers, and electric rhythm guitars."
       },
       "electronic": {
-        "name": "Electronic"
+        "name": "Electronic",
+        "description": "Electronic music broadly is a group of music genres that employ electronic musical instruments, circuitry-based music technology and software, or general-purpose electronics in its creation. It includes both music made using electronic and electromechanical means. Pure electronic instruments depend entirely on circuitry-based sound generation, for instance using devices such as an electronic oscillator, theremin, or synthesizer: no acoustic waves need to be previously generated by mechanical means and then converted into electrical signals. On the other hand, electromechanical instruments have mechanical parts such as strings or hammers that generate the sound waves, together with electric elements including magnetic pickups, power amplifiers and loudspeakers that convert the acoustic waves into electrical signals, process them and convert them back into sound waves. Such electromechanical devices include the telharmonium, Hammond organ, electric piano and electric guitar."
       },
       "experimental": {
-        "name": "Experimental"
+        "name": "Experimental",
+        "description": "Experimental music is a general label for any music or music genre that pushes existing boundaries and genre definitions. Experimental compositional practice is defined broadly by exploratory sensibilities radically opposed to, and questioning of, institutionalized compositional, performing, and aesthetic conventions in music. Elements of experimental music include indeterminacy, in which the composer introduces the elements of chance or unpredictability with regard to either the composition or its performance. Artists may approach a hybrid of disparate styles or incorporate unorthodox and unique elements."
       },
       "field_recording": {
-        "name": "Field Recording"
+        "name": "Field Recording",
+        "description": "Field recording is the production of audio recordings outside recording studios, and the term applies to recordings of both natural and human-produced sounds. It can also include the recording of electromagnetic fields or vibrations using different microphones like a passive magnetic antenna for electromagnetic recordings or contact microphones, or underwater field recordings made with hydrophones to capture the sounds and/or movements of whales, or other sealife. These recordings are often regarded as being very useful for sound designers and foley artists."
       },
       "folk": {
-        "name": "Folk"
+        "name": "Folk",
+        "description": "Folk music is a music genre that includes traditional folk music and the contemporary genre that evolved from the former during the 20th-century folk revival. Some types of folk music may be called world music. Traditional folk music has been defined in several ways: as music transmitted orally, music with unknown composers, music that is played on traditional instruments, music about cultural or national identity, music that changes between generations, music associated with a people's folklore, or music performed by custom over a long period of time. It has been contrasted with commercial and classical styles. The term originated in the 19th century, but folk music extends beyond that."
       },
       "funk": {
-        "name": "Funk"
+        "name": "Funk",
+        "description": "Funk is a music genre that originated in African-American communities in the mid-1960s when musicians created a rhythmic, danceable new form of music through a mixture of various music genres that were popular among African-Americans in the mid-20th century. It deemphasizes melody and chord progressions and focuses on a strong rhythmic groove of a bassline played by an electric bassist and a drum part played by a percussionist, often at slower tempos than other popular music. Funk typically consists of a complex percussive groove with rhythm instruments playing interlocking grooves that create a \"hypnotic\" and \"danceable\" feel. Early funk, specifically James Brown, fused jazz and blues, and added a syncopated drum groove."
       },
       "gangsta_rap": {
-        "name": "Gangsta Rap"
+        "name": "Gangsta Rap",
+        "description": "Gangsta or gangster rap, initially called reality rap, is a subgenre of hip-hop that conveys the culture, values, and experiences of urban gangs and street hustlers, frequently discussing unpleasant realities of the world in general through an urban lens. Emerging in the late 1980s, gangsta rap's pioneers include Schoolly D and Ice-T, later expanding with artists such as N.W.A. In 1992, via record producer and rapper Dr. Dre, rapper Snoop Dogg, and their G-funk sound, gangster rap broadened to mainstream popularity."
       },
       "gospel": {
-        "name": "Gospel"
+        "name": "Gospel",
+        "description": "Gospel music is a traditional genre of Christian music and a cornerstone of Christian media, characterized by dominant vocals and lyrics that reflect Christian teachings and values. The creation, performance, significance, and even the definition of gospel music vary according to culture and social context. Gospel music is composed and performed for many purposes, including aesthetic pleasure, and also religious or ceremonial purposes, and as an entertainment product for the marketplace. Gospel music can be traced to the early 17th century."
       },
       "hip_hop": {
-        "name": "Hip Hop"
+        "name": "Hip Hop",
+        "description": "Hip-hop is a genre of popular music that emerged in the early 1970s alongside an associated subculture in the African-American and Caribbean immigrants communities of New York City. The musical style is characterized by the synthesis of a wide range of techniques, but rapping is frequent enough that it has become a defining characteristic. Other key markers of the genre are the disc jockey (DJ), turntablism, scratching, beatboxing, and instrumental tracks. Cultural interchange has always been central to the hip-hop genre; it simultaneously borrows from its social environment while commenting on it."
       },
       "indian_classical": {
-        "name": "Indian Classical"
+        "name": "Indian Classical",
+        "description": "Indian classical music is the classical music of the Indian subcontinent. It is generally described using terms like Shastriya Sangeet and Marg Sangeet. It has two major traditions: the North Indian classical music known as Hindustani and the South Indian expression known as Carnatic. Hindustani music emphasizes improvisation and exploration of all aspects of a raga, while Carnatic performances tend to be short composition-based. However, the two systems continue to have more common features than differences. Another unique classical music tradition from the eastern part of India is Odissi music, which has evolved over the last two thousand years."
       },
       "industrial": {
-        "name": "Industrial"
+        "name": "Industrial",
+        "description": "Industrial music is a subgenre of experimental music inspired by post-industrial society, initially drawing influences from avant-garde and early electronic music genres such as musique concrète, tape music, noise and sound collage. The term was coined in 1976 by Monte Cazazza and adopted by Throbbing Gristle with the founding of Industrial Records. Other early industrial musicians include NON and Cabaret Voltaire. By the late 1970s, additional artists emerged such as Clock DVA, Nocturnal Emissions, Einstürzende Neubauten, SPK, Nurse with Wound, and Z’EV, alongside Whitehouse who coined the subgenre \"power electronics\"."
       },
       "jazz": {
-        "name": "Jazz"
+        "name": "Jazz",
+        "description": "Jazz is a music genre that originated in the African-American communities of New Orleans, Louisiana, in the late 19th and early 20th centuries. Its roots are in blues, ragtime, European harmony, African rhythmic rituals, spirituals, hymns, marches, vaudeville song, and dance music. Since the 1920s Jazz Age, it has been recognized as a major form of musical expression in traditional and popular music. Jazz is characterized by swing and blue notes, complex chords, call and response vocals, polyrhythms and improvisation."
       },
       "klezmer": {
-        "name": "Klezmer"
+        "name": "Klezmer",
+        "description": "Klezmer is an instrumental musical tradition of the Ashkenazi Jews of Central and Eastern Europe. The essential elements of the tradition include dance tunes, ritual melodies, and virtuosic improvisations played for listening; these would have been played at weddings and other social functions. The musical genre incorporated elements of many other musical genres including Ottoman music, Baroque music, German and Slavic folk dances, and religious Jewish music. As the music arrived in the United States, it lost some of its traditional ritual elements and adopted elements of American big band and popular music. Among the European-born klezmers who popularized the genre in the United States in the 1910s and 1920s were Dave Tarras and Naftule Brandwein; they were followed by American-born musicians such as Max Epstein, Sid Beckerman and Ray Musiker."
       },
       "latin": {
-        "name": "Latin"
+        "name": "Latin",
+        "description": "Latin music is a term used by the music industry as a catch-all category for various styles of music from Ibero-America, which encompasses Latin America, Spain, Portugal, and the Latino population in Canada and the United States, as well as music that is sung in either Spanish or Portuguese. It may also include music from other territories where Spanish- and Portuguese-language music is made."
       },
       "marching_band": {
-        "name": "Marching Band"
+        "name": "Marching Band",
+        "description": "Marching band is a performance-based, visual-musical genre featuring musicians playing brass, woodwind, and percussion instruments while moving in synchronized, choreographed formations, usually at 120-160+ beats per minute. It blends musical performance with athletic, high-speed marching, often incorporating pop, rock, and classical music alongside traditional military-style marches."
       },
       "metal": {
-        "name": "Metal"
+        "name": "Metal",
+        "description": "umbrella category of music genres of metal branch, derived from heavy metal music while not necessarily being its subgenre"
       },
       "middle_eastern_music": {
-        "name": "Middle Eastern Music"
+        "name": "Middle Eastern Music",
+        "description": "The various nations of the region include the Arabic-speaking countries of the Middle East, the traditional Persian ritual music, the Jewish music of Israel and the diaspora, Kurdish music, Armenian music. Azeri Music, the varied traditions of Cypriot music, the Turkish music of Turkey, traditional Assyrian music, Coptic ritual music in Egypt as well as other genres of Egyptian music in general. It is widely regarded that some Middle-Eastern musical styles have influenced Central Asia, as well as the Balkans, Southern Italy, and Spain."
       },
       "musical": {
-        "name": "Musical"
+        "name": "Musical",
+        "description": "Musical theatre is a form of theatrical performance that combines songs, spoken dialogue, acting and dance. The story and emotional content of a musical – humor, pathos, love, anger – are communicated through words, music, movement and technical aspects of the entertainment as an integrated whole. Although musical theatre overlaps with other theatrical forms like opera and dance, it may be distinguished by the equal importance given to the music as compared with the dialogue, movement and other elements. Since the early 20th century, musical theatre stage works have generally been called, simply, musicals."
       },
       "new_age": {
-        "name": "New Age"
+        "name": "New Age",
+        "description": "New age is a genre of music intended to create artistic inspiration, relaxation, and optimism. It is used by listeners for yoga, massage, meditation, and reading as a method of stress management to bring about a state of ecstasy rather than trance, or to create a peaceful atmosphere in homes or other environments. It is sometimes associated with environmentalism and New Age spirituality; however, most of its artists have nothing to do with \"New Age spirituality\", and some even reject the term."
       },
       "poetry": {
-        "name": "Poetry"
+        "name": "Poetry",
+        "description": "Poetry as a musical genre merges spoken-word or recited verse with musical accompaniment, creating a hybrid form focused on emotional expression, storytelling, and rhythm. Often featuring acoustic instruments (piano, guitar) or experimental soundscapes, this genre blurs the line between literature and song, highlighting the inherent melody and cadence in spoken words."
       },
       "polka": {
-        "name": "Polka"
+        "name": "Polka",
+        "description": "Polka is a dance style and genre of dance music in 2/4 time, originating in nineteenth-century Bohemia, now part of the Czech Republic. Though generally associated with Czech and Central European culture, polka is popular throughout Europe and the Americas."
       },
       "pop": {
-        "name": "Pop"
+        "name": "Pop",
+        "description": "Pop music, or simply pop, is a genre of popular music that originated in its modern form during the mid-1950s in the United States and the United Kingdom. During the 1950s and 1960s, pop music encompassed rock and roll and the youth-oriented styles it influenced. Rock and pop music remained roughly synonymous until the late 1960s, after which pop became associated with music that was more commercial, ephemeral, and accessible."
       },
       "psychedelic": {
-        "name": "Psychedelic"
+        "name": "Psychedelic",
+        "description": "Psychedelic music is a wide range of popular music styles and genres influenced by 1960s psychedelia, a subculture of people who used psychedelic drugs such as DMT, LSD, mescaline, and psilocybin mushrooms, to experience synesthesia and altered states of consciousness. Psychedelic music may also aim to enhance the experience of using these drugs and has been found to have a significant influence on psychedelic therapy."
       },
       "punk": {
-        "name": "Punk"
+        "name": "Punk",
+        "description": "umbrella category of music genres related to punk subculture, derived from punk rock music scene while not necessarily being its subgenre"
       },
       "r_b": {
-        "name": "R&b"
+        "name": "R&b",
+        "description": "Rhythm and blues, frequently abbreviated as R&B or R'n'B, is a genre of popular music that originated within African American communities in the 1940s. The term was originally used by record companies to describe recordings marketed predominantly to African Americans, at a time when \"rocking, jazz based music ... [with a] heavy, insistent beat\" was starting to become more popular.\nIn the commercial rhythm and blues music typical of the 1950s through the 1970s, the bands usually consisted of a piano, one or two guitars, bass, drums, one or more saxophones, and sometimes background vocalists. R&B lyrical themes often encapsulate the African-American history and experience of pain and the quest for freedom and joy, as well as triumphs and failures in terms of societal racism, oppression, relationships, economics, and aspirations."
       },
       "ragtime": {
-        "name": "Ragtime"
+        "name": "Ragtime",
+        "description": "Ragtime, also spelled rag-time or rag time, is a musical style noted for its syncopated or \"ragged\" rhythm. It originated in African American communities in the late 19th century and was propelled to popularity in the 1890s to 1910s by composers such as James Scott, Joseph Lamb, and particularly Scott Joplin. Known as the \"King of Ragtime\", Joplin gained fame through compositions like \"Maple Leaf Rag\" and \"The Entertainer\"."
       },
       "rai": {
-        "name": "Raï"
+        "name": "Raï",
+        "description": "Raï, sometimes written rai, is a form of Algerian folk music that dates back to the 1920s. Singers of Raï are called cheb (شاب) or cheba (شابة), i.e. 'young', as opposed to sheikh, i.e. 'old', the name given to Chaabi singers. The tradition arose in the city of Oran, primarily among the poor. Traditionally sung by men, by the end of the 20th century, female singers became common. The lyrics have concerned social issues such as disease and the policing of European colonies that affected native populations."
       },
       "reggae": {
-        "name": "Reggae"
+        "name": "Reggae",
+        "description": "Reggae is a music genre that originated in Jamaica in the late 1960s. The term also refers to the modern popular music of Jamaica and its diaspora. The 1968 single by Toots and the Maytals titled \"Do the Reggay\" was the first popular song to use the word reggae, effectively naming the genre and introducing it to a global audience."
       },
       "reggaeton": {
-        "name": "Reggaeton"
+        "name": "Reggaeton",
+        "description": "Reggaeton is a style of popular and electronic music that originated in Panama during the late 1980s. It has been popularized and dominated by artists from Puerto Rico since the early 1990s."
       },
       "rock": {
-        "name": "Rock"
+        "name": "Rock",
+        "description": "Rock music is a genre of popular music that originated in the United States as \"rock and roll\" in the late 1940s and early 1950s, developing into a range of styles from the mid-1960s, primarily in the United States and United Kingdom. It has its roots in rock and roll, a style that drew from the African-American musical genres of blues and rhythm and blues, as well as from country music. Rock also drew strongly from genres such as electric blues and folk, and incorporated influences from jazz and other styles. Rock is typically centered on the electric guitar, usually as part of a rock group with electric bass guitar, drums, and one or more singers."
       },
       "salsa": {
-        "name": "Salsa"
+        "name": "Salsa",
+        "description": "Salsa music is a style of Latin American music, combining elements of Cuban and Puerto Rican influences. Because most of the basic musical components predate the labeling of salsa, there have been many controversies regarding its origin. Most songs considered as salsa are primarily based on son montuno and son cubano, with elements of cha-cha-chá, bolero, rumba, mambo, jazz, R&B, bomba, and plena. All of these elements are adapted to fit the basic Son montuno template when performed within the context of salsa."
       },
       "singer_songwriter": {
-        "name": "Singer-Songwriter"
+        "name": "Singer-Songwriter",
+        "description": "group of musical genres that emerged in the mid-20th century, referring to the music of singer-songwriters, often characterised by political or personal lyrics and minimal acoustic accompaniment"
       },
       "ska": {
-        "name": "Ska"
+        "name": "Ska",
+        "description": "Ska is a music genre that originated in Jamaica in the late 1950s and was the precursor to rocksteady and reggae. It combined elements of Caribbean mento and calypso with American jazz and rhythm and blues. Ska is characterized by a walking bass line accented with rhythms on the off beat. It was developed in Jamaica in the 1960s when Stranger Cole, Prince Buster, Clement \"Coxsone\" Dodd, and Duke Reid formed sound systems to play American rhythm and blues and then began recording their own songs. In the early 1960s, ska was the dominant music genre of Jamaica and was popular with British mods and with many skinheads."
       },
       "soul": {
-        "name": "Soul"
+        "name": "Soul",
+        "description": "Soul music is a popular music genre that originated in African-American communities throughout the United States in the late 1950s and early 1960s. Catchy rhythms, stressed by handclaps and extemporaneous body movements, are an important hallmark of soul. Other characteristics are a call and response between the lead and backing vocalists, an especially tense vocal sound, and occasional improvisational additions, twirls, and auxiliary sounds. Soul music is known for reflecting African-American identity and stressing the importance of African-American culture."
       },
       "sound_effects": {
-        "name": "Sound Effects"
+        "name": "Sound Effects",
+        "description": "Sound effects as a musical genre—often encompassing soundscape composition, musique concrète, and noise music—utilize environmental noises, mechanical sounds, and Foley recordings as primary musical elements rather than traditional melodies or harmonies. This avant-garde approach creates immersive, narrative, and textured auditory experiences."
       },
       "soundtrack": {
-        "name": "Soundtrack"
+        "name": "Soundtrack",
+        "description": "A film score is original music written specifically to accompany a film or a television program. The score consists of a number of orchestral, instrumental, or choral pieces called cues, which are timed to begin and end at specific points during the film to enhance the dramatic narrative and emotional impact of scenes. Scores are written by one or more composers under the guidance of or in collaboration with the film's director or producer and are then most often performed by an ensemble of musicians – usually including an orchestra or band, instrumental soloists, and choir or vocalists – known as playback singers – and recorded by a sound engineer. The term is less frequently applied to music written for media such as live theatre, television and radio programs, and video games, and that music is typically referred to as either the soundtrack or incidental music."
       },
       "spoken_word": {
-        "name": "Spoken Word"
+        "name": "Spoken Word",
+        "description": "Spoken word is a performance-based genre combining spoken poetry, storytelling, or monologue with musical accompaniment or rhythmic delivery, focusing on the voice as the primary instrument. Rooted in oral traditions and the Beat Generation, it merges literary artistry with music, commonly featuring themes of social justice, politics, and personal narrative, often accompanied by jazz, rock, or folk elements."
       },
       "swing": {
-        "name": "Swing"
+        "name": "Swing",
+        "description": "Swing music is a style of jazz that developed in the United States during the late 1920s and early 1930s. It became nationally popular from the mid-1930s. Swing represents the most famous era of jazz as a genre of entertainment, before the emergence of modern jazz. Swing bands usually featured soloists who would improvise on the melody over the arrangement. The danceable swing style of big bands and bandleaders such as Fletcher Henderson and Benny Goodman was the dominant form of American popular music from 1935 to 1946, known as the swing era, when people were dancing the Lindy Hop. The verb \"to swing\" is also used as a term of praise for playing that has a strong groove or drive. Big band leaders of the swing era include Benny Goodman, Duke Ellington, Count Basie, Jimmie Lunceford, Cab Calloway, Benny Carter, Jimmy Dorsey, Tommy Dorsey, Earl Hines, Bunny Berigan, Harry James, Lionel Hampton, Glenn Miller, and Artie Shaw."
       },
       "tango": {
-        "name": "Tango"
+        "name": "Tango",
+        "description": "Tango is a style of music in 2/4 or 4/4 time that originated in Uruguay and Argentina among European immigrants in the late 19th and early 20th centuries. It has mainly Spanish, Italian, Gaucho, African, and French cultural roots. It is traditionally played on a solo guitar, guitar duo, or an ensemble, known as the orquesta típica, which includes at least two violins, flute, piano, double bass, and at least two bandoneóns. Sometimes guitars and a clarinet join the ensemble. Tango may be purely instrumental or may include a vocalist. Tango music and dance have become popular throughout the world."
       },
       "trap": {
-        "name": "Trap"
+        "name": "Trap",
+        "description": "Trap music, also known simply as trap, is a subgenre of hip-hop music that originated in the Southern United States. Lyrical references to trap started in 1991 but the modern sound of trap appeared in 1999. The genre gets its name from the Atlanta term \"trap house\", a drug house. Trap music features simple, rhythmic, minimalistic productions that use synthesized drums and is characterized by complex hi-hat drum beats, snare drums, bass drums, some tuned with a long decay to emit a bass frequency. Lyrics often focus on drug use and urban violence."
       },
       "waltz": {
-        "name": "Waltz"
+        "name": "Waltz",
+        "description": "A waltz, probably deriving from German Ländler, is dance music in triple metre, often written in 3/4 time. A waltz typically sounds one chord per measure, and the accompaniment style particularly associated with the waltz is to play the root of the chord on the first beat, the upper notes on the second and third beats."
       },
       "wellness": {
-        "name": "Wellness"
+        "name": "Wellness",
+        "description": "Meditation music is music performed to aid in the practice of meditation. It can have a specific religious content, but also more recently has been associated with modern composers who use meditation techniques in their process of composition, or who compose such music with no particular religious group as a focus. The concept also includes music performed as an act of meditation."
       }
     },
     "playlist": {
@@ -774,6 +833,13 @@
     }
   },
   "background_task": {
+    "sync_provider_artists": "Sync Artists for {0}",
+    "sync_provider_albums": "Sync Albums for {0}",
+    "sync_provider_tracks": "Sync Tracks for {0}",
+    "sync_provider_playlists": "Sync Playlists for {0}",
+    "sync_provider_radios": "Sync Radios for {0}",
+    "sync_provider_audiobooks": "Sync Audiobooks for {0}",
+    "sync_provider_podcasts": "Sync Podcasts for {0}",
     "cache_database_cleanup": "Cache database cleanup",
     "cleanup_thumbnail_cache": "Cleanup thumbnail cache",
     "correct_provider_mappings": "Correct provider mappings",

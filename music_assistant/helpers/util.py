@@ -30,7 +30,7 @@ from urllib.parse import urlparse
 import chardet
 import ifaddr
 from music_assistant_models.enums import AlbumType, IdentifierType
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.errors import UnsupportedSystemError
 from zeroconf import InterfaceChoice, IPVersion
 
 from music_assistant.constants import (
@@ -128,16 +128,6 @@ def get_total_system_memory() -> float:
         # Fallback if sysconf is not available (e.g., Windows)
         # Return a conservative default to disable buffering by default
         return 0.0
-
-
-class UnsupportedSystemError(SetupFailedError):
-    """
-    Raised when the host does not meet a provider's minimum requirements.
-
-    Subclass of SetupFailedError so existing setup handling still applies, but it
-    marks a permanent condition (RAM, CPU cores, CPU capability) that will not
-    resolve at runtime, so the provider load must not be retried.
-    """
 
 
 def verify_system_meets_requirements(

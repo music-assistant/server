@@ -22,12 +22,12 @@ dependencies = [
   "certifi==2025.11.12",
   "colorlog==6.10.1",
   "modern_colorthief==0.2.1",
-  "cryptography==46.0.7",
+  "cryptography==49.0.0",
   "chardet>=5.2.0",
   "ifaddr==0.2.0",
   "getmac==0.9.5",
   "mashumaro==3.20",
-  "music-assistant-models==1.1.132",
+  "music-assistant-models==1.1.133",
   "music-assistant-frontend==2.17.189",
   "mutagen==1.47.0",
   "orjson==3.11.6",
@@ -75,8 +75,9 @@ mass = "music_assistant.__main__:main"
 # explicit is misspelled in the iTunes API
 # "additionals" is a fixed field name from the Nicovideo API fixtures
 # "connexion" is a French word in the MusicMe login URL path
+# "claus" is Santa Claus, in the christmas_music genre description
 # translations/*.json are machine-translated locale files (Lokalise); foreign words aren't typos
-ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,connexion,"
+ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,connexion,claus,"
 skip = """*.js,*.svg,\
 music_assistant/providers/itunes_podcasts/itunes_country_codes.json,\
 music_assistant/helpers/resources/genres/genre_mapping.json,\

@@ -37,12 +37,20 @@ from music_assistant_models.enums import (
     PlayerFeature,
     PlayerType,
     ProviderFeature,
+    ProviderStatus,
     ProviderType,
 )
 from music_assistant_models.errors import (
     ActionUnavailable,
+    AuthenticationFailed,
+    AuthenticationRequired,
     InvalidDataError,
+    LoginFailed,
     UnsupportedFeaturedException,
+    UnsupportedSystemError,
+)
+from music_assistant_models.errors import (
+    InvalidToken as InvalidTokenError,
 )
 
 from music_assistant.constants import (
@@ -157,6 +165,32 @@ def _with_translation_owner(
             copied.value = values.get(copied.key, copied.default_value)
         result.append(copied)
     return result
+
+
+_AUTH_ERROR_CODES = frozenset(
+    {
+        AuthenticationRequired.error_code,
+        AuthenticationFailed.error_code,
+        LoginFailed.error_code,
+        InvalidTokenError.error_code,
+    }
+)
+
+
+def _provider_status(conf: ProviderConfig, is_loaded: bool) -> ProviderStatus:
+    """Derive the (lifecycle) status of a provider from its config and load state."""
+    if not conf.enabled:
+        return ProviderStatus.DISABLED
+    if is_loaded:
+        # runtime (un)availability of a loaded provider is conveyed via ProviderInstance.available
+        return ProviderStatus.LOADED
+    if conf.last_error is not None:
+        if conf.last_error.error_code in _AUTH_ERROR_CODES:
+            return ProviderStatus.AUTH_REQUIRED
+        if conf.last_error.error_code == UnsupportedSystemError.error_code:
+            return ProviderStatus.INCOMPATIBLE
+        return ProviderStatus.ERROR
+    return ProviderStatus.LOADING
 
 
 class ConfigController:
@@ -292,16 +326,26 @@ class ConfigController:
         """Return all known provider configurations, optionally filtered by ProviderType."""
         raw_values = self.get(CONF_PROVIDERS, {})
         prov_entries = {x.domain for x in self.mass.get_provider_manifests()}
-        return [
-            await self.get_provider_config(prov_conf["instance_id"])
-            if include_values
-            else cast("ProviderConfig", ProviderConfig.parse([], prov_conf))
-            for prov_conf in raw_values.values()
-            if (provider_type is None or prov_conf["type"] == provider_type)
-            and (provider_domain is None or prov_conf["domain"] == provider_domain)
+        configs: list[ProviderConfig] = []
+        for prov_conf in raw_values.values():
+            if provider_type is not None and prov_conf["type"] != provider_type:
+                continue
+            if provider_domain is not None and prov_conf["domain"] != provider_domain:
+                continue
             # guard for deleted providers
-            and prov_conf["domain"] in prov_entries
-        ]
+            if prov_conf["domain"] not in prov_entries:
+                continue
+            if include_values:
+                # get_provider_config already stamps the derived status
+                configs.append(await self.get_provider_config(prov_conf["instance_id"]))
+                continue
+            conf = cast("ProviderConfig", ProviderConfig.parse([], prov_conf))
+            is_loaded = (
+                self.mass.get_provider(conf.instance_id, return_unavailable=True) is not None
+            )
+            conf.status = _provider_status(conf, is_loaded)
+            configs.append(conf)
+        return configs
 
     @api_command("config/providers/get")
     async def get_provider_config(self, instance_id: str) -> ProviderConfig:
@@ -318,7 +362,10 @@ class ConfigController:
             else:
                 msg = f"Unknown provider domain: {raw_conf['domain']}"
                 raise KeyError(msg)
-            return cast("ProviderConfig", ProviderConfig.parse(config_entries, raw_conf))
+            conf = cast("ProviderConfig", ProviderConfig.parse(config_entries, raw_conf))
+            is_loaded = self.mass.get_provider(instance_id, return_unavailable=True) is not None
+            conf.status = _provider_status(conf, is_loaded)
+            return conf
         msg = f"No config found for provider id {instance_id}"
         raise KeyError(msg)
 
