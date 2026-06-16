@@ -231,9 +231,11 @@ class TestStandardCrossFadeBuild:
         ``d=`` the filter requested, so ffmpeg's acrossfade emitted nothing.
         """
         frame_size = (PCM.bit_depth // 8) * PCM.channels
-        # 6.3333s of audible fade-out — not a whole number of samples
+        # ~6.3333s of audible fade-out: a real PCM buffer is frame-aligned, yet still not a
+        # whole number of seconds, so the effective crossfade stays fractional
+        fade_out_len = _seconds(6.3333) // frame_size * frame_size
         fade = StandardCrossFade(logger=logging.getLogger(), crossfade_duration=10.0)
-        fade._build(_seconds(6.3333), _seconds(45), PCM)
+        fade._build(fade_out_len, _seconds(45), PCM)
         crossfade_filter = fade.filters[0]
         assert isinstance(crossfade_filter, CrossfadeFilter)
         # the source-of-truth byte size is frame-aligned ...
@@ -306,11 +308,14 @@ class TestStandardCrossFadeApplySlicing:
 
         monkeypatch.setattr(SmartFade, "apply", fake_base_apply)
         frame_size = (PCM.bit_depth // 8) * PCM.channels
+        # frame-aligned like a real PCM buffer, but a fractional number of seconds
+        fade_out_len = _seconds(6.3333) // frame_size * frame_size
         fade = StandardCrossFade(logger=logging.getLogger(), crossfade_duration=10.0)
-        fade._build(_seconds(6.3333), _seconds(45), PCM)
+        fade._build(fade_out_len, _seconds(45), PCM)
         crossfade_filter = fade.filters[0]
         assert isinstance(crossfade_filter, CrossfadeFilter)
-        async for _ in fade.apply(b"\x00" * _seconds(6.3333), b"\x11" * _seconds(45), PCM):
+        assert crossfade_filter.crossfade_samples is not None
+        async for _ in fade.apply(b"\x00" * fade_out_len, b"\x11" * _seconds(45), PCM):
             pass
         expected_bytes = crossfade_filter.crossfade_samples * frame_size
         assert len(captured["fade_out"]) == expected_bytes
