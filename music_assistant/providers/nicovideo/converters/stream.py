@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from music_assistant_models.enums import MediaType, StreamType
 from music_assistant_models.errors import UnplayableMediaError
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
-from niconico.objects.video.watch import (  # noqa: TC002 - Using by StreamConversionData(BaseModel Serialization)
+from niconico.objects.video.watch import (  # Using by StreamConversionData(BaseModel Serialization)
     WatchData,
     WatchMediaDomandAudio,
 )

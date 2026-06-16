@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import override
 
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import Album, Track  # noqa: TC002 - used in @use_cache
+from music_assistant_models.media_items import Album, Track  # used in @use_cache
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.providers.nicovideo.provider_mixins.base import (

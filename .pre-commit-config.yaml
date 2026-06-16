@@ -30,7 +30,9 @@ repos:
         name: 🐶 Ruff Formatter
         language: system
         types: [python]
-        entry: uv run ruff format
+        # Hold the formatter at py313 so it does not rewrite stable's tree to PEP 758
+        # parenthesis-free `except` (the lint/type target is py314); see pyproject.toml.
+        entry: uv run ruff format --target-version py313
         require_serial: true
         stages: [pre-commit, pre-push, manual]
 

@@ -6,7 +6,7 @@ from collections.abc import AsyncGenerator
 from typing import override
 
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.media_items import (  # noqa: TC002 - used in @use_cache
+from music_assistant_models.media_items import (  # used in @use_cache
     Album,
     Artist,
     Track,
