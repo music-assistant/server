@@ -864,7 +864,7 @@
     "audio_error": "An error occurred while processing audio.",
     "queue_empty": "The queue is empty.",
     "unsupported_feature": "This feature is not supported.",
-    "player_unavailable": "The player is not available.",
+    "player_unavailable": "The player {0} is not available.",
     "player_command_failed": "The command to the player failed.",
     "invalid_command": "Invalid or unsupported command.",
     "unplayable_media": "This media item cannot be played.",

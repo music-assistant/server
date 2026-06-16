@@ -270,7 +270,7 @@ class ChromecastPlayer(Player):
                 self.last_poll = now
                 await asyncio.to_thread(self.cc.media_controller.update_status)
         except ConnectionResetError as err:
-            raise PlayerUnavailableError from err
+            raise PlayerUnavailableError(translation_args=[self.player_id]) from err
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
@@ -402,7 +402,8 @@ class ChromecastPlayer(Player):
         except TimeoutError:
             self.logger.warning("Timed out waiting for app launch on %s", self.display_name)
             raise PlayerUnavailableError(
-                f"Timed out launching app on {self.display_name}"
+                f"Timed out launching app on {self.display_name}",
+                translation_args=[self.player_id],
             ) from None
 
     ### Callbacks from Chromecast Statuslistener

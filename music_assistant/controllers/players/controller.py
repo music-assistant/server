@@ -361,11 +361,11 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if player := self._players.get(player_id):
             if (not player.state.available or not player.state.enabled) and raise_unavailable:
                 msg = f"Player {player_id} is not available"
-                raise PlayerUnavailableError(msg)
+                raise PlayerUnavailableError(msg, translation_args=[player_id])
             return player
         if raise_unavailable:
             msg = f"Player {player_id} is not available"
-            raise PlayerUnavailableError(msg)
+            raise PlayerUnavailableError(msg, translation_args=[player_id])
         return None
 
     @api_command("players/get")

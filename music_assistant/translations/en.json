@@ -267,7 +267,7 @@
   "common.errors.login_failed": "Login failed. Please check your credentials and try again.",
   "common.errors.media_not_found": "The requested media item could not be found.",
   "common.errors.player_command_failed": "The command to the player failed.",
-  "common.errors.player_unavailable": "The player is not available.",
+  "common.errors.player_unavailable": "The player {0} is not available.",
   "common.errors.provider_permission_denied": "The provider denied this action due to insufficient permissions.",
   "common.errors.provider_unavailable": "The provider is currently unavailable.",
   "common.errors.queue_empty": "The queue is empty.",

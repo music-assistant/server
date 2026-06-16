@@ -510,7 +510,9 @@ class PlayerQueuesController(CoreController):
         """
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
-            raise PlayerUnavailableError(f"Queue {queue_id} is not available")
+            raise PlayerUnavailableError(
+                f"Queue {queue_id} is not available", translation_args=[queue_id]
+            )
         # Lock is acquired by the @handle_play_action decorator on the internal handler
         await self._handle_play_media(
             queue_id, media, option, radio_mode, start_item, username, sort_by
@@ -620,7 +622,9 @@ class PlayerQueuesController(CoreController):
         :param name: The name for the new playlist.
         """
         if not self.get(queue_id):
-            raise PlayerUnavailableError(f"Queue {queue_id} is not available")
+            raise PlayerUnavailableError(
+                f"Queue {queue_id} is not available", translation_args=[queue_id]
+            )
         queue_items = self._queue_items.get(queue_id, [])
         if not queue_items:
             raise QueueEmpty("Cannot save an empty queue as a playlist.")
@@ -652,7 +656,9 @@ class PlayerQueuesController(CoreController):
         self._transitioning_players.discard(queue_id)
         queue_player = self.mass.players.get_player(queue_id, True)
         if queue_player is None:
-            raise PlayerUnavailableError(f"Player {queue_id} is not available")
+            raise PlayerUnavailableError(
+                f"Player {queue_id} is not available", translation_args=[queue_id]
+            )
         if (queue := self.get(queue_id)) and queue.active:
             if queue.state == PlaybackState.PLAYING:
                 queue.resume_pos = int(queue.corrected_elapsed_time)
@@ -671,7 +677,9 @@ class PlayerQueuesController(CoreController):
         """
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
-            raise PlayerUnavailableError(f"Queue {queue_id} is not available")
+            raise PlayerUnavailableError(
+                f"Queue {queue_id} is not available", translation_args=[queue_id]
+            )
         await self._handle_play(queue_id)
 
     @api_command("player_queues/pause")
@@ -830,7 +838,9 @@ class PlayerQueuesController(CoreController):
             raise InvalidCommand(f"Queue {queue_id} is not active")
         queue_player = self.mass.players.get_player(queue_id, True)
         if queue_player is None:
-            raise PlayerUnavailableError(f"Player {queue_id} is not available")
+            raise PlayerUnavailableError(
+                f"Player {queue_id} is not available", translation_args=[queue_id]
+            )
         if not queue.current_item:
             raise InvalidCommand(f"Queue {queue_player.state.name} has no item(s) loaded.")
         if not queue.current_item.duration:
@@ -872,7 +882,9 @@ class PlayerQueuesController(CoreController):
         if resume_item is not None:
             queue_player = self.mass.players.get_player(queue_id)
             if queue_player is None:
-                raise PlayerUnavailableError(f"Player {queue_id} is not available")
+                raise PlayerUnavailableError(
+                    f"Player {queue_id} is not available", translation_args=[queue_id]
+                )
             if (
                 fade_in is None
                 and queue_player.state.playback_state == PlaybackState.IDLE
@@ -921,7 +933,9 @@ class PlayerQueuesController(CoreController):
             queue.flow_mode_stream_log = []
             target_player = self.mass.players.get_player(queue_id)
             if target_player is None:
-                raise PlayerUnavailableError(f"Player {queue_id} is not available")
+                raise PlayerUnavailableError(
+                    f"Player {queue_id} is not available", translation_args=[queue_id]
+                )
             queue.next_item_id_enqueued = None
             # always update session id when we start a new playback session
             queue.session_id = shortuuid.random(length=8)
@@ -999,15 +1013,21 @@ class PlayerQueuesController(CoreController):
     ) -> None:
         """Transfer queue to another queue."""
         if not (source_queue := self.get(source_queue_id)):
-            raise PlayerUnavailableError(f"Queue {source_queue_id} is not available")
+            raise PlayerUnavailableError(
+                f"Queue {source_queue_id} is not available", translation_args=[source_queue_id]
+            )
         if not (target_queue := self.get(target_queue_id)):
-            raise PlayerUnavailableError(f"Queue {target_queue_id} is not available")
+            raise PlayerUnavailableError(
+                f"Queue {target_queue_id} is not available", translation_args=[target_queue_id]
+            )
         if auto_play is None:
             auto_play = source_queue.state == PlaybackState.PLAYING
 
         target_player = self.mass.players.get_player(target_queue_id)
         if target_player is None:
-            raise PlayerUnavailableError(f"Player {target_queue_id} is not available")
+            raise PlayerUnavailableError(
+                f"Player {target_queue_id} is not available", translation_args=[target_queue_id]
+            )
         if target_player.state.active_group or target_player.state.synced_to:
             # edge case: the user wants to move playback from the group as a whole, to a single
             # player in the group or it is grouped and the command targeted at the single player.
@@ -1233,7 +1253,7 @@ class PlayerQueuesController(CoreController):
         queue = self.get(queue_id)
         if not queue:
             msg = f"PlayerQueue {queue_id} is not available"
-            raise PlayerUnavailableError(msg)
+            raise PlayerUnavailableError(msg, translation_args=[queue_id])
         cur_index = self.index_by_id(queue_id, current_item_id)
         if cur_index is None:
             # this is just a guard for bad data
@@ -1302,7 +1322,9 @@ class PlayerQueuesController(CoreController):
         # happening in the background
         BYPASS_THROTTLER.set(True)
         if not (queue := self.get(queue_id)):
-            raise PlayerUnavailableError(f"Queue {queue_id} is not available")
+            raise PlayerUnavailableError(
+                f"Queue {queue_id} is not available", translation_args=[queue_id]
+            )
         # always fetch the underlying player so we can raise early if its not available
         queue_player = self.mass.players.get_player(queue_id, True)
         assert queue_player is not None  # for type checking
@@ -1542,7 +1564,9 @@ class PlayerQueuesController(CoreController):
         """Handle play without acquiring the queue lock."""
         queue_player = self.mass.players.get_player(queue_id, True)
         if queue_player is None:
-            raise PlayerUnavailableError(f"Player {queue_id} is not available")
+            raise PlayerUnavailableError(
+                f"Player {queue_id} is not available", translation_args=[queue_id]
+            )
         if (
             (queue := self._queues.get(queue_id))
             and queue.active
@@ -1681,7 +1705,7 @@ class PlayerQueuesController(CoreController):
         queue = self.get(queue_id)
         if not queue:
             msg = f"PlayerQueue {queue_id} is not available"
-            raise PlayerUnavailableError(msg)
+            raise PlayerUnavailableError(msg, translation_args=[queue_id])
         # store the index of the item that is currently (being) loaded in the buffer
         # which helps us a bit to determine how far the player has buffered ahead
         current_index = self.index_by_id(queue_id, item_id)

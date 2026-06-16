@@ -549,7 +549,7 @@ class DLNAPlayer(Player):
             try:
                 await self._device_connect()
             except UpnpError as err:
-                raise PlayerUnavailableError from err
+                raise PlayerUnavailableError(translation_args=[self.player_id]) from err
 
         assert self.device is not None
 
@@ -570,7 +570,7 @@ class DLNAPlayer(Player):
                 return
             self.logger.debug("Device unavailable: %r", err)
             await self._device_disconnect()
-            raise PlayerUnavailableError from err
+            raise PlayerUnavailableError(translation_args=[self.player_id]) from err
         finally:
             self.force_poll = False
 

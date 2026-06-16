@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 import logging
 from contextlib import contextmanager
 from functools import partial
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
@@ -13,7 +15,11 @@ from music_assistant_models.api import ErrorResultMessage
 from music_assistant_models.background_task import BackgroundTask
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
 from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderType
-from music_assistant_models.errors import LoginFailed, ProviderUnavailableError
+from music_assistant_models.errors import (
+    LoginFailed,
+    PlayerUnavailableError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items.media_item import BrowseFolder, RecommendationFolder
 from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.translations import TRANSLATION_RESOLVER
@@ -211,6 +217,7 @@ def _nl_controller() -> TranslationController:
         "common.errors.provider_unavailable": "The provider is currently unavailable.",
         "common.errors.setup_required": "Music Assistant is not set up yet.",
         "common.errors.insufficient_permissions": "You do not have permission to perform this action.",
+        "common.errors.player_unavailable": "The player {0} is not available.",
         "provider.spotify.errors.token_expired": "Your Spotify session expired.",
     }
     ctrl._locales = {
@@ -227,6 +234,7 @@ def _nl_controller() -> TranslationController:
             "common.errors.provider_unavailable": "De provider is niet beschikbaar.",
             "common.errors.setup_required": "Music Assistant is nog niet ingesteld.",
             "common.errors.insufficient_permissions": "Je hebt geen toestemming voor deze actie.",
+            "common.errors.player_unavailable": "Speler {0} is niet beschikbaar.",
             "provider.spotify.errors.token_expired": "Je Spotify-sessie is verlopen.",
         }
     }
@@ -458,6 +466,48 @@ def test_error_result_message_protocol_error_localization() -> None:
     with _active_resolver(ctrl, "nl"):
         assert setup.to_dict()["details"] == "Music Assistant is nog niet ingesteld."
         assert admin.to_dict()["details"] == "Je hebt geen toestemming voor deze actie."
+
+
+def test_player_unavailable_error_fills_id_param() -> None:
+    """PlayerUnavailableError fills {0} in its default message from translation_args (the id)."""
+    ctrl = _nl_controller()
+    err = PlayerUnavailableError("Queue abc-123 is not available", translation_args=["abc-123"])
+    msg = ErrorResultMessage(
+        "m",
+        err.error_code,
+        str(err),
+        translation_key=err.translation_key,
+        translation_args=err.translation_args,
+    )
+    with _active_resolver(ctrl, "nl"):
+        assert msg.to_dict()["details"] == "Speler abc-123 is niet beschikbaar."
+
+
+def test_player_unavailable_raises_always_pass_translation_args() -> None:
+    """
+    Guard: every ``raise PlayerUnavailableError`` must pass translation_args.
+
+    Its default translation is parameterized ("The player {0} is not available."), so a raise
+    that omits translation_args would render a literal "{0}" to clients.
+    """
+    package_root = Path(translations_module.__file__).parents[2]
+    offenders: list[str] = []
+    for path in package_root.rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
+            if not (isinstance(node, ast.Raise) and node.exc is not None):
+                continue
+            exc = node.exc
+            if isinstance(exc, ast.Call):
+                func = exc.func
+                name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+                has_args = any(kw.arg == "translation_args" for kw in exc.keywords)
+            elif isinstance(exc, ast.Name):
+                name, has_args = exc.id, False
+            else:
+                continue
+            if name == "PlayerUnavailableError" and not has_args:
+                offenders.append(f"{path.relative_to(package_root)}:{node.lineno}")
+    assert not offenders, f"PlayerUnavailableError raised without translation_args: {offenders}"
 
 
 def test_media_item_without_translation_key_is_untouched() -> None:

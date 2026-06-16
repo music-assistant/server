@@ -138,4 +138,4 @@ class DashieKioskPlayer(Player):
                 self.update_state()
         except Exception as err:
             msg = f"Unable to connect to Dashie Kiosk device: {err!s}"
-            raise PlayerUnavailableError(msg) from err
+            raise PlayerUnavailableError(msg, translation_args=[self.player_id]) from err
