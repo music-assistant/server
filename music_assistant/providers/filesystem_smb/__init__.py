@@ -49,7 +49,11 @@ async def setup(
     server = str(config.get_value(CONF_HOST))
     if not await get_ip_from_host(server):
         msg = f"Unable to resolve {server}, make sure the address is resolveable."
-        raise LoginFailed(msg)
+        raise LoginFailed(
+            msg,
+            translation_key="provider.filesystem_smb.errors.unresolvable_host",
+            translation_args=[server],
+        )
     # check if share is valid
     share = str(config.get_value(CONF_SHARE))
     if not share or "/" in share or "\\" in share:

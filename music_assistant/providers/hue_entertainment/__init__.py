@@ -89,7 +89,11 @@ async def _handle_pair_action(values: dict[str, ConfigValueType]) -> None:
     except Exception as err:
         LOGGER.warning("Hue bridge pairing failed: %s", err)
         msg = f"Failed to connect to Hue bridge at {host}: {err}"
-        raise LoginFailed(msg) from err
+        raise LoginFailed(
+            msg,
+            translation_key="provider.hue_entertainment.errors.bridge_connect_failed",
+            translation_args=[host],
+        ) from err
     finally:
         await api.close()
 
