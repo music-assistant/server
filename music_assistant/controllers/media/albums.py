@@ -46,7 +46,15 @@ class AlbumsController(MediaControllerBase[Album]):
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         super().__init__(mass)
-        self.base_query = """
+        # register (extra) api handlers
+        api_base = self.api_base
+        self.mass.register_api_command(f"music/{api_base}/album_tracks", self.tracks)
+        self.mass.register_api_command(f"music/{api_base}/album_versions", self.versions)
+
+    @property
+    def base_query(self) -> tuple[str, dict[str, Any]]:
+        """Return the base SELECT query for albums and its bound query params."""
+        query = """
         SELECT
             albums.*,
             (SELECT JSON_GROUP_ARRAY(
@@ -70,10 +78,7 @@ class AlbumsController(MediaControllerBase[Album]):
                     'media_type', 'artist'
                 )) FROM artists JOIN album_artists on album_artists.album_id = albums.item_id  WHERE artists.item_id = album_artists.artist_id) AS artists
             FROM albums"""
-        # register (extra) api handlers
-        api_base = self.api_base
-        self.mass.register_api_command(f"music/{api_base}/album_tracks", self.tracks)
-        self.mass.register_api_command(f"music/{api_base}/album_versions", self.versions)
+        return query, {}
 
     async def get(
         self,

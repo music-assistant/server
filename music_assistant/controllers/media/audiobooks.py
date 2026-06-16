@@ -39,10 +39,20 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         super().__init__(mass)
+        # register (extra) api handlers
+        api_base = self.api_base
+        self.mass.register_api_command(f"music/{api_base}/audiobook_versions", self.versions)
 
-        # The (actual) base query is a property for the audiobook controller, so we can
-        # dynamically update the user id for playlog retrieval.
-        self._base_query = """
+    @property
+    def base_query(self) -> tuple[str, dict[str, Any]]:
+        """
+        Return the base SELECT query for audiobooks and its bound query params.
+
+        The playlog table is joined to hydrate per-user resume info (fully_played,
+        resume_position_ms). When a session user is present the join is scoped to that
+        user, so multi-user installs don't surface each other's resume state.
+        """
+        query = """
         SELECT
             audiobooks.*,
             (SELECT JSON_GROUP_ARRAY(
@@ -63,23 +73,11 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             FROM audiobooks
             LEFT JOIN playlog ON playlog.item_id = audiobooks.item_id AND playlog.media_type = 'audiobook'
             """
-
-        # register (extra) api handlers
-        api_base = self.api_base
-        self.mass.register_api_command(f"music/{api_base}/audiobook_versions", self.versions)
-
-    @property
-    def base_query(self) -> str:
-        """Base database query string for audiobooks with current user's user id for playlog retrieval."""
-        query = self._base_query
+        params: dict[str, Any] = {}
         if session_user := get_current_user():
-            query += f" AND playlog.userid = '{session_user.user_id}'"
-        return query
-
-    @base_query.setter
-    def base_query(self, query: str) -> None:
-        """Overwrite the base query string."""
-        self._base_query = query
+            query += " AND playlog.userid = :playlog_userid"
+            params["playlog_userid"] = session_user.user_id
+        return query, params
 
     async def library_items(
         self,
@@ -104,7 +102,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
-        extra_join_parts: list[str] = []
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -115,7 +112,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
-            extra_join_parts=extra_join_parts,
             in_library_only=True,
         )
         if search and len(result) < 25 and not offset:
@@ -133,7 +129,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
-                extra_join_parts=extra_join_parts,
                 in_library_only=True,
             )
         return result
