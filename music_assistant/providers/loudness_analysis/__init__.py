@@ -39,15 +39,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_WRITE_REPLAYGAIN_TAGS,
             type=ConfigEntryType.BOOLEAN,
-            label="Write REPLAYGAIN_TRACK_GAIN tags back to files",
-            description=(
-                "When the background audio-analysis scan produces a loudness "
-                "measurement, also write the corresponding REPLAYGAIN_TRACK_GAIN "
-                "tag back into the audio file. Useful if other apps on your "
-                "network read these tags for their own volume normalization. "
-                "Requires write access to the file; read-only files are silently "
-                "skipped."
-            ),
             default_value=False,
             required=False,
         ),

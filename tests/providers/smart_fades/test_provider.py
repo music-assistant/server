@@ -315,18 +315,17 @@ async def test_finalize_returns_none_on_early_exit(provider: SmartFadesProvider)
     assert result is None
 
 
-async def test_handle_async_init_raises_on_unsupported_cpu(
+async def test_setup_raises_when_requirements_not_met(
     mass_mock: Mock, manifest_mock: Mock, config_mock: Mock
 ) -> None:
-    """Setup fails before model initialization when the CPU lacks AVX2."""
-    prov = SmartFadesProvider(mass_mock, manifest_mock, config_mock, set())
+    """setup() fails (before importing the heavy provider module) when requirements aren't met."""
+    from music_assistant.providers import smart_fades  # noqa: PLC0415
+
     with (
         patch(
-            "music_assistant.providers.smart_fades.provider.verify_cpu_supports_ml_inference",
-            side_effect=SetupFailedError("CPU lacks AVX2"),
+            "music_assistant.providers.smart_fades.verify_system_meets_requirements",
+            side_effect=SetupFailedError("unsupported system"),
         ),
-        patch.object(SmartFadesProvider, "_initialize_models") as init_models_mock,
         pytest.raises(SetupFailedError),
     ):
-        await prov.handle_async_init()
-    init_models_mock.assert_not_called()
+        await smart_fades.setup(mass_mock, manifest_mock, config_mock)

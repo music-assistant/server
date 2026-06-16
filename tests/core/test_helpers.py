@@ -5,7 +5,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MusicAssistantError, SetupFailedError
+from music_assistant_models.errors import (
+    MusicAssistantError,
+    SetupFailedError,
+    UnsupportedSystemError,
+)
 from zeroconf import InterfaceChoice, IPVersion
 
 from music_assistant.helpers import uri, util
@@ -432,3 +436,94 @@ def test_verify_cpu_supports_ml_inference_arm() -> None:
         ),
     ):
         util.verify_cpu_supports_ml_inference()
+
+
+def test_unsupported_system_error_is_setup_failed() -> None:
+    """UnsupportedSystemError must subclass SetupFailedError so existing handling applies."""
+    assert issubclass(UnsupportedSystemError, SetupFailedError)
+
+
+@pytest.mark.parametrize(
+    ("cpu_cores", "min_cpu_cores", "should_raise"),
+    [
+        (4, 4, False),
+        (8, 4, False),
+        (2, 4, True),
+        (1, 4, True),
+        (1, 0, False),  # 0 disables the check
+    ],
+)
+def test_verify_system_meets_requirements_cpu(
+    cpu_cores: int, min_cpu_cores: int, should_raise: bool
+) -> None:
+    """The CPU-core gate raises UnsupportedSystemError below the minimum."""
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=cpu_cores),
+        patch("music_assistant.helpers.util.get_total_system_memory", return_value=64.0),
+    ):
+        if should_raise:
+            with pytest.raises(UnsupportedSystemError):
+                util.verify_system_meets_requirements(feature_name="X", min_cpu_cores=min_cpu_cores)
+        else:
+            util.verify_system_meets_requirements(feature_name="X", min_cpu_cores=min_cpu_cores)
+
+
+@pytest.mark.parametrize(
+    ("total_gb", "min_memory_gb", "should_raise"),
+    [
+        (8.0, 8.0, False),
+        (16.0, 8.0, False),
+        (4.0, 6.0, True),
+        (3.5, 6.0, True),
+        (0.0, 8.0, False),  # 0.0 == unknown memory -> fail open, never block
+        (2.0, 0.0, False),  # 0 disables the check
+    ],
+)
+def test_verify_system_meets_requirements_memory(
+    total_gb: float, min_memory_gb: float, should_raise: bool
+) -> None:
+    """The RAM gate raises below the minimum but fails open when memory is unknown (0.0)."""
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=16),
+        patch("music_assistant.helpers.util.get_total_system_memory", return_value=total_gb),
+    ):
+        if should_raise:
+            with pytest.raises(UnsupportedSystemError):
+                util.verify_system_meets_requirements(feature_name="X", min_memory_gb=min_memory_gb)
+        else:
+            util.verify_system_meets_requirements(feature_name="X", min_memory_gb=min_memory_gb)
+
+
+def test_verify_system_meets_requirements_ml_inference() -> None:
+    """require_ml_inference adds the AVX2 capability check after the RAM/CPU checks."""
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=16),
+        patch("music_assistant.helpers.util.get_total_system_memory", return_value=64.0),
+        patch("music_assistant.helpers.util.platform.machine", return_value="x86_64"),
+        patch("torch.backends.cpu.get_cpu_capability", return_value="DEFAULT"),
+    ):
+        # capable RAM/CPU but no AVX2: only raises when the ML inference check is requested
+        with pytest.raises(UnsupportedSystemError):
+            util.verify_system_meets_requirements(
+                feature_name="X", min_cpu_cores=4, min_memory_gb=8.0, require_ml_inference=True
+            )
+        util.verify_system_meets_requirements(feature_name="X", min_cpu_cores=4, min_memory_gb=8.0)
+
+
+@pytest.mark.parametrize(
+    ("cpu_cores", "total_gb", "expected"),
+    [
+        (4, 6.0, True),  # meets both recommended thresholds
+        (8, 16.0, True),
+        (2, 6.0, False),  # below recommended cores
+        (4, 4.0, False),  # below recommended RAM
+        (4, 0.0, True),  # unknown memory -> fail open, same as the gate
+    ],
+)
+def test_system_meets_requirements(cpu_cores: int, total_gb: float, expected: bool) -> None:
+    """The non-raising predicate mirrors the gate's RAM/CPU checks, failing open on unknown RAM."""
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=cpu_cores),
+        patch("music_assistant.helpers.util.get_total_system_memory", return_value=total_gb),
+    ):
+        assert util.system_meets_requirements(min_memory_gb=6.0, min_cpu_cores=4) is expected

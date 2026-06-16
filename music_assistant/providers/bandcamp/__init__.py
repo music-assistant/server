@@ -100,18 +100,13 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_IDENTITY,
             type=ConfigEntryType.SECURE_STRING,
-            label="Identity token",
             required=False,
-            description="Identity token from Bandcamp cookies for account collection access."
-            " Log in https://bandcamp.com and extract browser cookie named 'identity'.",
             value=values.get(CONF_IDENTITY) if values else None,
         ),
         ConfigEntry(
             key=CONF_TOP_TRACKS_LIMIT,
             type=ConfigEntryType.INTEGER,
-            label="Artist Top Tracks search limit",
             required=False,
-            description="Search limit while getting artist top tracks.",
             value=values.get(CONF_TOP_TRACKS_LIMIT) if values else DEFAULT_TOP_TRACKS_LIMIT,
             default_value=DEFAULT_TOP_TRACKS_LIMIT,
             advanced=True,

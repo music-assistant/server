@@ -30,7 +30,7 @@ from urllib.parse import urlparse
 import chardet
 import ifaddr
 from music_assistant_models.enums import AlbumType, IdentifierType
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.errors import UnsupportedSystemError
 from zeroconf import InterfaceChoice, IPVersion
 
 from music_assistant.constants import (
@@ -130,11 +130,74 @@ def get_total_system_memory() -> float:
         return 0.0
 
 
+def verify_system_meets_requirements(
+    *,
+    feature_name: str,
+    min_memory_gb: float = 0.0,
+    min_cpu_cores: int = 0,
+    require_ml_inference: bool = False,
+) -> None:
+    """
+    Verify the host meets the minimum CPU/RAM requirements for a heavy provider.
+
+    :param feature_name: Human-readable provider name used in the error message.
+    :param min_memory_gb: Minimum total system RAM in GB (0 disables the check).
+    :param min_cpu_cores: Minimum CPU core count (0 disables the check).
+    :param require_ml_inference: When True, also verify the CPU can run on-device
+        torch inference (AVX2 on x86). Checked last, as it imports torch.
+    :raises UnsupportedSystemError: If the system does not meet the requirements.
+    """
+    if shortfall := _resource_shortfall(min_memory_gb=min_memory_gb, min_cpu_cores=min_cpu_cores):
+        raise UnsupportedSystemError(
+            f"This system does not meet the minimal requirements for {feature_name}: {shortfall}"
+        )
+    if require_ml_inference:
+        verify_cpu_supports_ml_inference()
+
+
+def system_meets_requirements(
+    *,
+    min_memory_gb: float = 0.0,
+    min_cpu_cores: int = 0,
+) -> bool:
+    """
+    Return whether the host meets the given RAM/CPU thresholds.
+
+    A non-raising companion to verify_system_meets_requirements for soft UI hints
+    (e.g. hiding a recommended-hardware notice) rather than gating setup. The
+    ML-inference capability is not considered here.
+
+    :param min_memory_gb: Minimum total system RAM in GB (0 disables the check).
+    :param min_cpu_cores: Minimum CPU core count (0 disables the check).
+    """
+    return _resource_shortfall(min_memory_gb=min_memory_gb, min_cpu_cores=min_cpu_cores) is None
+
+
+def _resource_shortfall(*, min_memory_gb: float, min_cpu_cores: int) -> str | None:
+    """
+    Return why the host falls short of the RAM/CPU thresholds, or None if it meets them.
+
+    :param min_memory_gb: Minimum total system RAM in GB (0 disables the check).
+    :param min_cpu_cores: Minimum CPU core count (0 disables the check).
+    """
+    cpu_cores = os.process_cpu_count() or os.cpu_count() or 1
+    if min_cpu_cores and cpu_cores < min_cpu_cores:
+        return f"at least {min_cpu_cores} CPU cores are required ({cpu_cores} detected)."
+    total_memory_gb = get_total_system_memory()
+    # get_total_system_memory() returns 0.0 when the platform cannot report memory
+    # (e.g. Windows); treat that as unknown and pass rather than block on a guess.
+    if min_memory_gb and total_memory_gb and total_memory_gb < min_memory_gb:
+        return (
+            f"at least {min_memory_gb:.0f}GB of RAM is required ({total_memory_gb:.1f}GB detected)."
+        )
+    return None
+
+
 def verify_cpu_supports_ml_inference() -> None:
     """
     Verify the CPU can run on-device ML (torch) inference.
 
-    :raises SetupFailedError: If this is an x86 CPU without AVX2 support, which
+    :raises UnsupportedSystemError: If this is an x86 CPU without AVX2 support, which
         torch's FBGEMM quantized backend requires.
     """
     if platform.machine().lower() not in ("x86_64", "amd64", "i386", "i686", "x86"):
@@ -143,7 +206,7 @@ def verify_cpu_supports_ml_inference() -> None:
     import torch  # noqa: PLC0415
 
     if torch.backends.cpu.get_cpu_capability() in ("DEFAULT", "NO AVX"):
-        raise SetupFailedError(
+        raise UnsupportedSystemError(
             "On-device audio analysis requires a CPU with AVX2 support "
             "(Intel Haswell / AMD Zen or newer). This CPU does not support AVX2. "
             "If you are running in a virtual machine (e.g. Proxmox), changing the "

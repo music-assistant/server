@@ -177,10 +177,6 @@ class MusicController(CoreController):
             ConfigEntry(
                 key=CONF_RESET_DB,
                 type=ConfigEntryType.ACTION,
-                label="Reset library database",
-                description="This will issue a full reset of the library "
-                "database and trigger a full sync. Only use this option as a last resort "
-                "if you are seeing issues with the library database.",
                 category="generic",
                 advanced=True,
             ),
@@ -194,7 +190,8 @@ class MusicController(CoreController):
                 ConfigEntry(
                     key=CONF_RESET_DB,
                     type=ConfigEntryType.LABEL,
-                    label="The database has been reset.",
+                    # distinct key so the result label doesn't collide with the action's label
+                    translation_key="config_entries.reset_db_result",
                 ),
             )
         return entries

@@ -169,13 +169,10 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             required=False,
             default_value=CONF_PARTY_PLAYER_AUTO,
-            label="Party Player",
-            description="Select which player/queue is attached to the party dashboard. "
-            "When set to auto, the first active player will be used.",
             options=[
-                ConfigValueOption("Auto (last active player)", CONF_PARTY_PLAYER_AUTO),
+                ConfigValueOption(CONF_PARTY_PLAYER_AUTO),
                 *[
-                    ConfigValueOption(player.display_name, player.player_id)
+                    ConfigValueOption(player.player_id, title=player.display_name)
                     for player in sorted(
                         mass.players.all_players(False, False),
                         key=lambda p: p.display_name.lower(),
@@ -188,17 +185,11 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             default_value="",
             required=False,
-            label="Party Name",
-            description=(
-                "Custom name/title for the party, displayed in the party dashboard. "
-                "Leave blank to not show a text at all."
-            ),
         ),
         ConfigEntry(
             key=CONF_ENABLE_GUEST_ACCESS,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
-            label="Enable Guest Access via QR Code",
             hidden=True,
             value=guest_access_enabled,
             immediate_apply=True,
@@ -207,17 +198,13 @@ async def get_config_entries(
         ConfigEntry(
             key="guest_disabled_note",
             type=ConfigEntryType.LABEL,
-            label="Ready to get the party started? Enable guest access and let "
-            "your friends add songs by scanning a QR code!",
             required=False,
             hidden=guest_access_enabled,
         ),
         ConfigEntry(
             key=CONF_ACTION_ENABLE_GUEST_ACCESS,
             type=ConfigEntryType.ACTION,
-            label="Enable Guest Access",
             action=CONF_ACTION_ENABLE_GUEST_ACCESS,
-            action_label="Enable Guest Access",
             hidden=guest_access_enabled,
             immediate_apply=True,
         ),
@@ -225,18 +212,13 @@ async def get_config_entries(
         ConfigEntry(
             key="guest_enabled_note",
             type=ConfigEntryType.ALERT,
-            label="Guest mode is enabled. Guests will be able to join your party "
-            "by scanning the QR code (which automatically expires after 8 hours). "
-            "Click the button below to end the party and withdraw guest access.",
             required=False,
             hidden=not guest_access_enabled,
         ),
         ConfigEntry(
             key=CONF_ACTION_DISABLE_GUEST_ACCESS,
             type=ConfigEntryType.ACTION,
-            label="Disable Guest Access",
             action=CONF_ACTION_DISABLE_GUEST_ACCESS,
-            action_label="Disable Guest Access",
             hidden=not guest_access_enabled,
             immediate_apply=True,
         ),
@@ -245,58 +227,30 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             default_value="",
             required=False,
-            label="QR Code Text",
-            description=(
-                "Custom text to display alongside the QR code. "
-                "Leave blank to not show a text at all."
-            ),
             depends_on=CONF_ENABLE_GUEST_ACCESS,
         ),
         ConfigEntry(
             key=CONF_HIDE_BACK_BUTTON,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
-            label="Hide Back Button in Fullscreen Mode",
-            description=(
-                "WARNING: Enabling this option will hide all regular navigation "
-                "elements in fullscreen mode. You will need to use browser controls "
-                "(e.g. Alt+Left or the browser back button) to navigate back to "
-                "Music Assistant."
-            ),
             advanced=True,
         ),
         ConfigEntry(
             key=CONF_SHOW_PROGRESS_BAR,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
-            label="Show Progress Bar for the current playing song",
-            description=(
-                "When enabled, a progress bar will be displayed on the current playing song "
-                "in the track list, visually indicating the progress of the currently playing song. "
-            ),
             advanced=True,
         ),
         ConfigEntry(
             key=CONF_PARTY_KARAOKE_MODE,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
-            label="Karaoke Mode",
-            description=(
-                "When enabled, lyrics are displayed prominently in the center of the screen "
-                "with the track list minimized to current and next song at the bottom."
-            ),
             category="Karaoke",
         ),
         ConfigEntry(
             key=CONF_PARTY_HIGHLIGHT_AHEAD,
             type=ConfigEntryType.BOOLEAN,
             default_value=True,
-            label="Highlight Lyrics Ahead of Time",
-            description=(
-                "When enabled, the lyric line highlight transition finishes exactly "
-                "when the line's timestamp arrives, giving a smooth anticipation effect. "
-                "When disabled, the transition starts at the timestamp instead."
-            ),
             depends_on=CONF_PARTY_KARAOKE_MODE,
             category="Karaoke",
             advanced=True,
@@ -305,11 +259,6 @@ async def get_config_entries(
             key=CONF_ANTI_BURN_IN,
             type=ConfigEntryType.BOOLEAN,
             default_value=True,
-            label="Enable Anti Burn-in",
-            description=(
-                "Periodically swap the QR code and track list sides to prevent "
-                "burn-in on OLED or plasma displays. Sides swap every 10 minutes."
-            ),
             depends_on=CONF_ENABLE_GUEST_ACCESS,
             advanced=True,
         ),
@@ -317,11 +266,6 @@ async def get_config_entries(
             key=CONF_ENABLE_RATE_LIMITING,
             type=ConfigEntryType.BOOLEAN,
             default_value=True,
-            label="Enable Rate Limiting",
-            description=(
-                "Enable token-based rate limiting to prevent guests from overusing features. "
-                "When disabled, guests have unlimited uses (subject to feature toggles below)."
-            ),
             depends_on=CONF_ENABLE_GUEST_ACCESS,
             advanced=True,
             category="Guest Features",
@@ -331,11 +275,6 @@ async def get_config_entries(
             key=CONF_ENABLE_ADD_QUEUE,
             type=ConfigEntryType.BOOLEAN,
             default_value=True,
-            label="Allow Add to Queue",
-            description=(
-                "Allow guests to add songs to the end of the queue. "
-                "When disabled, guests cannot add songs to the queue at all."
-            ),
             depends_on=CONF_ENABLE_GUEST_ACCESS,
             advanced=True,
             category="Guest Features",
@@ -344,11 +283,6 @@ async def get_config_entries(
             key=CONF_PREVENT_DUPLICATE_TRACKS,
             type=ConfigEntryType.BOOLEAN,
             default_value=True,
-            label="Prevent Duplicate Tracks",
-            description=(
-                "Prevent guests from adding a track that is already in the queue. "
-                "When enabled, duplicate track requests will be rejected."
-            ),
             depends_on=CONF_ENABLE_ADD_QUEUE,
             advanced=True,
             category="Guest Features",
@@ -357,11 +291,6 @@ async def get_config_entries(
             key=CONF_PARTY_ADD_QUEUE_LIMIT,
             type=ConfigEntryType.INTEGER,
             default_value=10,
-            label="Add to Queue Token Limit",
-            description=(
-                "Maximum number of 'Add to Queue' actions a guest can perform before "
-                "tokens are refilled (based on refill rate below)."
-            ),
             depends_on=CONF_ENABLE_ADD_QUEUE,
             range=(5, 50),
             advanced=True,
@@ -371,11 +300,6 @@ async def get_config_entries(
             key=CONF_PARTY_ADD_QUEUE_REFILL_MINUTES,
             type=ConfigEntryType.INTEGER,
             default_value=2,
-            label="Add to Queue Refill Rate (minutes)",
-            description=(
-                "How many minutes it takes for one 'Add to Queue' token to refill. "
-                "This controls how often guests can add songs."
-            ),
             depends_on=CONF_ENABLE_ADD_QUEUE,
             range=(1, 30),
             advanced=True,
@@ -386,11 +310,6 @@ async def get_config_entries(
             key=CONF_ENABLE_BOOST,
             type=ConfigEntryType.BOOLEAN,
             default_value=True,
-            label="Allow Boost",
-            description=(
-                "Allow guests to boost songs to play next (jump the queue). "
-                "When disabled, guests can only add songs to the end of the queue."
-            ),
             depends_on=CONF_ENABLE_GUEST_ACCESS,
             advanced=True,
             category="Guest Features",
@@ -399,11 +318,6 @@ async def get_config_entries(
             key=CONF_PARTY_BOOST_LIMIT,
             type=ConfigEntryType.INTEGER,
             default_value=1,
-            label="Boost Token Limit",
-            description=(
-                "Maximum number of 'Boost' actions a guest can perform before "
-                "tokens are refilled (based on refill rate below)."
-            ),
             depends_on=CONF_ENABLE_BOOST,
             range=(1, 10),
             advanced=True,
@@ -413,11 +327,6 @@ async def get_config_entries(
             key=CONF_PARTY_BOOST_REFILL_MINUTES,
             type=ConfigEntryType.INTEGER,
             default_value=20,
-            label="Boost Refill Rate (minutes)",
-            description=(
-                "How many minutes it takes for one 'Boost' token to refill. "
-                "This controls how often guests can skip the queue."
-            ),
             depends_on=CONF_ENABLE_BOOST,
             range=(5, 120),
             advanced=True,
@@ -428,11 +337,6 @@ async def get_config_entries(
             key=CONF_ENABLE_SKIP_SONG,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
-            label="Allow Skip Song",
-            description=(
-                "Allow guests to skip the currently playing song. "
-                "When disabled, guests cannot skip songs at all."
-            ),
             depends_on=CONF_ENABLE_GUEST_ACCESS,
             advanced=True,
             category="Guest Features",
@@ -441,11 +345,6 @@ async def get_config_entries(
             key=CONF_PARTY_SKIP_SONG_LIMIT,
             type=ConfigEntryType.INTEGER,
             default_value=1,
-            label="Skip Song Token Limit",
-            description=(
-                "Maximum number of 'Skip Song' actions a guest can perform before "
-                "tokens are refilled (based on refill rate below)."
-            ),
             depends_on=CONF_ENABLE_SKIP_SONG,
             range=(1, 5),
             advanced=True,
@@ -455,11 +354,6 @@ async def get_config_entries(
             key=CONF_PARTY_SKIP_SONG_REFILL_MINUTES,
             type=ConfigEntryType.INTEGER,
             default_value=60,
-            label="Skip Song Refill Rate (minutes)",
-            description=(
-                "How many minutes it takes for one 'Skip Song' token to refill. "
-                "This controls how often guests can skip the currently playing song."
-            ),
             depends_on=CONF_ENABLE_SKIP_SONG,
             range=(15, 180),
             advanced=True,
@@ -470,20 +364,16 @@ async def get_config_entries(
             key=CONF_REQUEST_BADGE_COLOR,
             type=ConfigEntryType.STRING,
             default_value="#2D6A4F",  # Green
-            label="Request Badge Color",
-            description="Color for the 'Request' badge shown on guest-added queue items.",
             depends_on=CONF_ENABLE_GUEST_ACCESS,
-            options=[ConfigValueOption(name, value) for name, value in BADGE_COLOR_OPTIONS],
+            options=[ConfigValueOption(value, title=name) for name, value in BADGE_COLOR_OPTIONS],
             advanced=True,
         ),
         ConfigEntry(
             key=CONF_BOOST_BADGE_COLOR,
             type=ConfigEntryType.STRING,
             default_value="#B55522",  # Orange
-            label="Boost Badge Color",
-            description="Color for the 'Boost' badge shown on priority guest requests.",
             depends_on=CONF_ENABLE_GUEST_ACCESS,
-            options=[ConfigValueOption(name, value) for name, value in BADGE_COLOR_OPTIONS],
+            options=[ConfigValueOption(value, title=name) for name, value in BADGE_COLOR_OPTIONS],
             advanced=True,
         ),
     )

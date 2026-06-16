@@ -218,106 +218,70 @@ class PlayerQueuesController(CoreController):
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         enqueue_options = [
-            ConfigValueOption("Play (and keep queue)", QueueOption.PLAY.value),
-            ConfigValueOption("Play (and replace queue)", QueueOption.REPLACE.value),
+            ConfigValueOption(QueueOption.PLAY.value),
+            ConfigValueOption(QueueOption.REPLACE.value),
         ]
         return (
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
                 type=ConfigEntryType.STRING,
                 default_value=ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
-                label="Items to select when you play a (in-library) artist.",
                 options=[
-                    ConfigValueOption(
-                        title="Artist top tracks only",
-                        value="top_tracks",
-                    ),
-                    ConfigValueOption(
-                        title="In-library tracks for the artist only",
-                        value="library_tracks",
-                    ),
-                    ConfigValueOption(
-                        title="Prefer library, fall back to top",
-                        value="prefer_library",
-                    ),
-                    ConfigValueOption(
-                        title="All tracks from all providers",
-                        value="all_tracks",
-                    ),
+                    ConfigValueOption("top_tracks"),
+                    ConfigValueOption("library_tracks"),
+                    ConfigValueOption("prefer_library"),
+                    ConfigValueOption("all_tracks"),
                 ],
             ),
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
                 type=ConfigEntryType.STRING,
                 default_value=ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
-                label="Items to select when you play a (in-library) album.",
                 options=[
-                    ConfigValueOption(
-                        title="Only in-library tracks",
-                        value="library_tracks",
-                    ),
-                    ConfigValueOption(
-                        title="All tracks for album on (streaming) provider",
-                        value="all_tracks",
-                    ),
+                    ConfigValueOption("library_tracks"),
+                    ConfigValueOption("all_tracks"),
                 ],
             ),
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_OPTION_ARTIST,
                 type=ConfigEntryType.STRING,
                 default_value=QueueOption.REPLACE.value,
-                label="Default enqueue option for Artist item(s).",
                 options=enqueue_options,
-                description="Define the default enqueue action for this mediatype.",
             ),
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_OPTION_ALBUM,
                 type=ConfigEntryType.STRING,
                 default_value=QueueOption.REPLACE.value,
-                label="Default enqueue option for Album item(s).",
                 options=enqueue_options,
-                description="Define the default enqueue action for this mediatype.",
             ),
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_OPTION_TRACK,
                 type=ConfigEntryType.STRING,
                 default_value=QueueOption.PLAY.value,
-                label="Default enqueue option for Track item(s).",
                 options=enqueue_options,
-                description="Define the default enqueue action for this mediatype.",
             ),
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_OPTION_GENRE,
                 type=ConfigEntryType.STRING,
                 default_value=QueueOption.REPLACE.value,
-                label="Default enqueue option for Genre item(s).",
                 options=enqueue_options,
-                description="Define the default enqueue action for this mediatype.",
             ),
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES,
                 type=ConfigEntryType.STRING,
                 default_value=QueueOption.REPLACE.value,
-                label="Default enqueue option for Radio and Live Input item(s).",
                 options=enqueue_options,
-                description=(
-                    "Default enqueue action for live, infinite streams — radio stations and "
-                    "plugin AudioSources (Spotify Connect, AirPlay receiver, etc.)."
-                ),
             ),
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST,
                 type=ConfigEntryType.STRING,
                 default_value=QueueOption.REPLACE.value,
-                label="Default enqueue option for Playlist item(s).",
                 options=enqueue_options,
-                description="Define the default enqueue action for this mediatype.",
             ),
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_OPTION_AUDIOBOOK,
                 type=ConfigEntryType.STRING,
                 default_value=QueueOption.REPLACE.value,
-                label="Default enqueue option for Audiobook item(s).",
                 options=enqueue_options,
                 hidden=True,
             ),
@@ -325,7 +289,6 @@ class PlayerQueuesController(CoreController):
                 key=CONF_DEFAULT_ENQUEUE_OPTION_PODCAST,
                 type=ConfigEntryType.STRING,
                 default_value=QueueOption.REPLACE.value,
-                label="Default enqueue option for Podcast item(s).",
                 options=enqueue_options,
                 hidden=True,
             ),
@@ -333,7 +296,6 @@ class PlayerQueuesController(CoreController):
                 key=CONF_DEFAULT_ENQUEUE_OPTION_PODCAST_EPISODE,
                 type=ConfigEntryType.STRING,
                 default_value=QueueOption.REPLACE.value,
-                label="Default enqueue option for Podcast-episode item(s).",
                 options=enqueue_options,
                 hidden=True,
             ),
@@ -341,7 +303,6 @@ class PlayerQueuesController(CoreController):
                 key=CONF_DEFAULT_ENQUEUE_OPTION_FOLDER,
                 type=ConfigEntryType.STRING,
                 default_value=QueueOption.REPLACE.value,
-                label="Default enqueue option for Folder item(s).",
                 options=enqueue_options,
                 hidden=True,
             ),
@@ -1560,13 +1521,22 @@ class PlayerQueuesController(CoreController):
             return
         # handle add: add/append item(s) to the remaining queue items
         if option == QueueOption.ADD:
+            # When shuffling, mix the new items into the not-yet-played tail. While playing,
+            # keep the item right after the buffered one in place: it has already been enqueued
+            # to the player (and prepared for crossfade), so reshuffling it would swap the
+            # upcoming track underneath the player and cause an abrupt, non-crossfaded switch.
+            if not queue.shuffle_enabled:
+                add_at_index = len(self._queue_items[queue_id]) + 1
+            elif queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+                add_at_index = insert_at_index + 1
+            else:
+                add_at_index = insert_at_index
             await self.load(
                 queue_id=queue_id,
                 queue_items=queue_items,
-                insert_at_index=insert_at_index
-                if queue.shuffle_enabled
-                else len(self._queue_items[queue_id]) + 1,
-                shuffle=queue.shuffle_enabled,
+                insert_at_index=add_at_index,
+                # radio tracks are already ordered in a pattern we want to keep
+                shuffle=queue.shuffle_enabled and not radio_mode,
             )
             # handle edgecase, queue is empty and items are only added (not played)
             # mark first item as new index
@@ -3258,6 +3228,19 @@ class PlayerQueuesController(CoreController):
             # ignore items that have been played less than 5 seconds
             # this also filters out a bounce effect where the previous item
             # gets reported with 0 elapsed seconds after a new item starts playing
+            return
+
+        if (
+            prev_state.get("state") != PlaybackState.PLAYING.value
+            and not duration < PLAYBACK_REPORT_INTERVAL_SECONDS
+        ):
+            # Do not report when resuming from idle or paused.
+            # (unless track has less seconds than PLAYBACK_REPORT_INTERVAL_SECONDS).
+            # Handles edge case: Queue still holds an audiobook/ podcast, and is paused/ idle.
+            # Audiobook is continued outside of MA. Then playback of another media item is
+            # started in MA on that queue. This triggers a progress report with the old position
+            # overwriting the newest one.
+            # We still want to report when transitioning to pause or idle.
             return
 
         # determine if item is fully played

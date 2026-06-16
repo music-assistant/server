@@ -185,7 +185,7 @@ async def create_scrobble_users_config_entry(mass: MusicAssistant) -> ConfigEntr
     ma_user_list = await mass.webserver.auth.list_users()  # excludes system users
     ma_user_list = [user for user in ma_user_list if user.enabled]
     user_options = [
-        ConfigValueOption(title=user.display_name or user.username, value=user.user_id)
+        ConfigValueOption(user.user_id, title=user.display_name or user.username)
         for user in ma_user_list
     ]
     return ConfigEntry(
@@ -208,8 +208,7 @@ def create_scrobble_players_config_entry(mass: MusicAssistant) -> ConfigEntry:
         key=lambda player: player.display_name.lower(),
     )
     player_options = [
-        ConfigValueOption(title=player.display_name, value=player.player_id)
-        for player in ma_player_list
+        ConfigValueOption(player.player_id, title=player.display_name) for player in ma_player_list
     ]
     return ConfigEntry(
         key=CONF_SCROBBLE_PLAYERS,

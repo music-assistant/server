@@ -1,0 +1,46 @@
+{
+  "config_entries": {
+    "locale": {
+      "label": "Marketplace",
+      "options": {
+        "us": "US and all other countries not listed",
+        "ca": "Canada",
+        "uk": "UK and Ireland",
+        "au": "Australia and New Zealand",
+        "fr": "France, Belgium, Switzerland",
+        "de": "Germany, Austria, Switzerland",
+        "jp": "Japan",
+        "it": "Italy",
+        "in": "India",
+        "es": "Spain",
+        "br": "Brazil"
+      }
+    },
+    "authenticate": {
+      "label": "(Re)Authenticate with Audible",
+      "description": "This button will redirect you to Audible to authenticate."
+    },
+    "post_login_url": {
+      "label": "Post Login Url"
+    },
+    "verify_link": {
+      "label": "Verify Audible URL",
+      "description": "This button will check the url and register this provider."
+    },
+    "code_verifier": {
+      "label": "Code Verifier"
+    },
+    "serial": {
+      "label": "Serial"
+    },
+    "login_url": {
+      "label": "Login Url"
+    },
+    "auth_file": {
+      "label": "Authentication File"
+    }
+  },
+  "manifest": {
+    "description": "Access Audible's extensive audiobook library and podcast catalogue — perfect for spoken-word listening."
+  }
+}

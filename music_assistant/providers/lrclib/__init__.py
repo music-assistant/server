@@ -54,8 +54,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_API_URL,
             type=ConfigEntryType.STRING,
-            label="API URL",
-            description="URL of the LRCLib API (including 'api' but excluding '/get')",
             default_value=DEFAULT_API_URL,
             required=False,
         ),

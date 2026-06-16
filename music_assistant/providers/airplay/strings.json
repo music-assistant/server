@@ -1,0 +1,47 @@
+{
+  "config_entries": {
+    "BROKEN_AIRPLAY": {
+      "label": "This player is known to have broken AirPlay support. Playback may fail or simply be silent. There is no workaround for this issue at the moment. \nIf you already enforced AirPlay 2 on the player and it remains silent, this is one of the known broken models. Only remedy is to nag the manufacturer for a fix."
+    },
+    "airplay_protocol": {
+      "label": "AirPlay protocol version to use for streaming",
+      "description": "AirPlay version 1 protocol uses RAOP.\nAirPlay version 2 is an extension of RAOP.\nSome newer devices do not fully support RAOP and will only work with AirPlay version 2, while older devices may only support RAOP.\n\nIn most cases the default automatic selection will work fine.\n\nNOTE: AirPlay 2 currently does not support audio synchronization. Grouping/syncing with other players is only available when using AirPlay 1 (RAOP)."
+    },
+    "encryption": {
+      "label": "Enable encryption",
+      "description": "Enable encrypted communication with the player, some (3rd party) players require this to be disabled."
+    },
+    "alac_encode": {
+      "label": "Enable compression",
+      "description": "Save some network bandwidth by sending the audio as (lossless) ALAC at the cost of a bit of CPU."
+    },
+    "password": {
+      "label": "Device password",
+      "description": "Some devices require a password to connect/play."
+    },
+    "ignore_volume": {
+      "label": "Ignore volume reports sent by the device itself",
+      "description": "The AirPlay protocol allows devices to report their own volume level. \nFor some devices this is not reliable and can cause unexpected volume changes. \nEnable this option to ignore these reports."
+    },
+    "airplay_latency": {
+      "label": "Milliseconds of data to buffer",
+      "description": "The number of milliseconds of data to buffer\nNOTE: This adds to the latency experienced for commencement of playback. \nTry increasing value if playback is unreliable."
+    },
+    "session_establishment_latency": {
+      "label": "Expected milliseconds to establish streaming session with the AirPlay device.",
+      "description": "Adjust this value only if playback is out of sync or does not work.\nThe log will contain a WARNING entry showing a recommendation."
+    },
+    "AIRPLAY2_SYNC_WARN": {
+      "label": "Music Assistant support for the AirPlay2 protocol does support audio synchronisation, but it is fragile. If playback or synchronisation does not work, try adjusting the session establishment latency. This is an interim advanced configuration setting. It will be removed when a robust synchronisation method is implemented."
+    },
+    "pairing_pin": {
+      "label": "Enter the 4-digit PIN shown on the device"
+    },
+    "pairing_password": {
+      "label": "Enter the device password"
+    }
+  },
+  "manifest": {
+    "description": "Stream to AirPlay-enabled devices on your local network."
+  }
+}

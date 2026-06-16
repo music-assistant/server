@@ -14,6 +14,7 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
           'description_language': None,
@@ -69,6 +70,7 @@
         ]),
         'sort_name': 'test artist',
         'translation_key': None,
+        'translation_params': None,
         'uri': 'tidal_instance://artist/12345',
         'version': '',
       }),
@@ -86,6 +88,7 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': '℗ 2023 Test Label',
       'description': None,
       'description_language': None,
@@ -141,6 +144,7 @@
     ]),
     'sort_name': 'test album',
     'translation_key': None,
+    'translation_params': None,
     'uri': 'tidal_instance://album/67890',
     'version': 'Deluxe Edition',
     'year': 2023,
@@ -158,6 +162,7 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -213,6 +218,7 @@
     ]),
     'sort_name': 'test artist',
     'translation_key': None,
+    'translation_params': None,
     'uri': 'tidal_instance://artist/12345',
     'version': '',
   })
@@ -230,6 +236,7 @@
     'media_type': 'playlist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'A personalized mix just for you',
       'description_language': None,
@@ -289,6 +296,7 @@
       'track',
     ]),
     'translation_key': None,
+    'translation_params': None,
     'uri': 'tidal_instance://playlist/mix_mix_123',
     'version': '',
   })
@@ -306,6 +314,7 @@
     'media_type': 'playlist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
       'description_language': None,
@@ -365,6 +374,7 @@
       'track',
     ]),
     'translation_key': None,
+    'translation_params': None,
     'uri': 'tidal_instance://playlist/aabbcc-1122-3344-5566',
     'version': '',
   })
@@ -383,6 +393,7 @@
       'provider': 'tidal_instance',
       'sort_name': 'test album',
       'translation_key': None,
+      'translation_params': None,
       'uri': 'tidal_instance://album/67890',
       'version': '',
       'year': None,
@@ -399,6 +410,7 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
           'description_language': None,
@@ -454,6 +466,7 @@
         ]),
         'sort_name': 'test artist',
         'translation_key': None,
+        'translation_params': None,
         'uri': 'tidal_instance://artist/12345',
         'version': '',
       }),
@@ -474,6 +487,7 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': '℗ 2023 Test Label',
       'description': None,
       'description_language': None,
@@ -530,6 +544,7 @@
     'sort_name': 'test track',
     'track_number': 1,
     'translation_key': None,
+    'translation_params': None,
     'uri': 'tidal_instance://track/112233',
     'version': 'Remastered',
   })

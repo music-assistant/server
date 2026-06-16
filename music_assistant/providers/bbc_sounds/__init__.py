@@ -120,13 +120,11 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Email or username",
             required=False,
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=False,
         ),
         ConfigEntry(
@@ -142,14 +140,8 @@ async def get_config_entries(
             label="Preferred stream format",
             type=ConfigEntryType.STRING,
             options=[
-                ConfigValueOption(
-                    "HLS",
-                    _Constants.CONF_STREAM_FORMAT_HLS,
-                ),
-                ConfigValueOption(
-                    "MPEG-DASH",
-                    _Constants.CONF_STREAM_FORMAT_DASH,
-                ),
+                ConfigValueOption(_Constants.CONF_STREAM_FORMAT_HLS, title="HLS"),
+                ConfigValueOption(_Constants.CONF_STREAM_FORMAT_DASH, title="MPEG-DASH"),
             ],
             default_value=_Constants.CONF_STREAM_FORMAT_HLS,
         ),
