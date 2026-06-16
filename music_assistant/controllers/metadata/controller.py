@@ -110,64 +110,34 @@ class MetaDataController(
             ConfigEntry(
                 key=CONF_LANGUAGE,
                 type=ConfigEntryType.STRING,
-                label="Preferred language",
                 required=False,
                 default_value=DEFAULT_LANGUAGE,
-                description="Preferred language for metadata.\n\n"
-                "This language is also used as the fallback locale for text-based searches, so "
-                "localized item names (e.g. genres and built-in playlists) can be found by the "
-                "name shown in this language.\n\n"
-                "Note that English will always be used as fallback when content "
-                "in your preferred language is not available.",
                 options=[ConfigValueOption(key, title=value) for key, value in LOCALES.items()],
             ),
             ConfigEntry(
                 key=CONF_ENABLE_ONLINE_METADATA,
                 type=ConfigEntryType.BOOLEAN,
-                label="Enable metadata retrieval from online metadata providers",
                 required=False,
                 default_value=True,
-                description="Enable online metadata lookups.\n\n"
-                "This will allow Music Assistant to fetch additional metadata from (enabled) "
-                "metadata providers, such as The Audio DB and Fanart.tv.\n\n"
-                "Note that these online sources are only queried when no information is already "
-                "available from local files or the music providers and local artwork/metadata "
-                "will always have preference over online sources so consider metadata from online "
-                "sources as complementary only.\n\n"
-                "The retrieval of additional rich metadata is a process that is executed slowly "
-                "in the background to not overload these free services with requests. "
-                "You can speedup the process by storing the images and other metadata locally.",
             ),
             ConfigEntry(
                 key=CONF_PREFER_LOCAL_GENRES,
                 type=ConfigEntryType.BOOLEAN,
-                label="Use local genre metadata only when available",
                 required=False,
                 default_value=False,
-                description="When enabled, online metadata providers will not add genres to "
-                "items that already have a genre from a local source such as a file tag "
-                "or NFO file. Items with no local genre still receive genres from online "
-                "providers as usual.",
             ),
             ConfigEntry(
                 key=CONF_ENABLE_RADIO_METADATA_LOOKUP,
                 type=ConfigEntryType.BOOLEAN,
-                label="Enable artist/track artwork lookup for radio streams",
                 required=False,
                 default_value=True,
-                description="Look up artist and track artwork for radio streams "
-                "from online sources when the station provides Artist - Track metadata.\n\n"
-                "When disabled, radio streams show only the station logo (when available).",
             ),
             ConfigEntry(
                 key=CONF_THUMB_CACHE_MAX_SIZE,
                 type=ConfigEntryType.INTEGER,
-                label="Maximum thumbnail cache size (MB)",
                 required=False,
                 default_value=DEFAULT_THUMB_CACHE_MAX_SIZE_MB,
                 range=(50, 5000),
-                description="Maximum total size in megabytes for the on-disk thumbnail cache.\n\n"
-                "Oldest thumbnails are automatically removed when this limit is exceeded.",
             ),
         )
 
