@@ -510,6 +510,36 @@ def test_verify_system_meets_requirements_ml_inference() -> None:
         util.verify_system_meets_requirements(feature_name="X", min_cpu_cores=4, min_memory_gb=8.0)
 
 
+def test_unsupported_system_error_translation() -> None:
+    """Each raise path carries the right translation key + ordered args (feature name first)."""
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=2),
+        patch("music_assistant.helpers.util.get_total_system_memory", return_value=64.0),
+        pytest.raises(UnsupportedSystemError) as cpu_err,
+    ):
+        util.verify_system_meets_requirements(feature_name="Smart Fades", min_cpu_cores=4)
+    assert cpu_err.value.translation_key == "errors.unsupported_system_cpu_cores"
+    assert cpu_err.value.translation_args == ["Smart Fades", 4, 2]
+
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=16),
+        patch("music_assistant.helpers.util.get_total_system_memory", return_value=2.0),
+        pytest.raises(UnsupportedSystemError) as mem_err,
+    ):
+        util.verify_system_meets_requirements(feature_name="Smart Fades", min_memory_gb=8.0)
+    assert mem_err.value.translation_key == "errors.unsupported_system_memory"
+    assert mem_err.value.translation_args == ["Smart Fades", "8", "2.0"]
+
+    with (
+        patch("music_assistant.helpers.util.platform.machine", return_value="x86_64"),
+        patch("torch.backends.cpu.get_cpu_capability", return_value="DEFAULT"),
+        pytest.raises(UnsupportedSystemError) as avx_err,
+    ):
+        util.verify_cpu_supports_ml_inference()
+    assert avx_err.value.translation_key == "errors.unsupported_system_avx2"
+    assert avx_err.value.translation_args == []
+
+
 @pytest.mark.parametrize(
     ("cpu_cores", "total_gb", "expected"),
     [
