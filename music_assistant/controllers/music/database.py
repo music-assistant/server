@@ -246,6 +246,7 @@ class MusicDatabaseSetupMixin:
                 [userid] TEXT NOT NULL,
                 [queue_id] TEXT,
                 [user_initiated] BOOLEAN NOT NULL DEFAULT 1,
+                [playback_speed] REAL NOT NULL DEFAULT 1.0,
                 UNIQUE(item_id, provider, media_type, userid));"""
         )
         await self.database.execute(

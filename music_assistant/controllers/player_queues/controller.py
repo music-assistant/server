@@ -877,6 +877,21 @@ class PlayerQueuesController(CoreController):
             ):
                 seek_position = max(0, int((resume_position_ms - 500) / 1000))
 
+            # restore the persisted playback speed for a freshly queued audiobook/episode
+            # (an in-session item already carries its speed in extra_attributes)
+            if (
+                (queue_item := self.get_item(queue_id, index))
+                and queue_item.media_item is not None
+                and queue_item.media_type in (MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE)
+                and "playback_speed" not in queue_item.extra_attributes
+            ):
+                stored_speed = await self.mass.music.get_playback_speed(
+                    cast("Audiobook | PodcastEpisode", queue_item.media_item),
+                    userid=queue.userid,
+                )
+                if stored_speed != 1.0:
+                    queue_item.extra_attributes["playback_speed"] = stored_speed
+
             # try to load the item, retry with next item if it fails
             for attempt in range(5):
                 try:
@@ -3195,6 +3210,11 @@ class PlayerQueuesController(CoreController):
                     userid=queue.userid,
                     queue_id=queue.queue_id,
                     user_initiated=self._is_user_initiated_play(queue, media_item),
+                    playback_speed=float(
+                        item_to_report.extra_attributes.get("playback_speed") or 1.0
+                    )
+                    if item_to_report.media_type in (MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE)
+                    else None,
                 )
             )
             if fully_played and not is_playing:

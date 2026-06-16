@@ -1329,6 +1329,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         queue_id: str | None = None,
         user_initiated: bool = True,
         skip_artist_ids: list[str] | None = None,
+        playback_speed: float | None = None,
     ) -> None:
         """
         Mark item as played in playlog.
@@ -1341,6 +1342,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param queue_id: The queue ID where the item was played.
         :param user_initiated: If True, the playback was initiated by the user (e.g. enqueued).
         :param skip_artist_ids: Library artist ids to skip when crediting an album's artists.
+        :param playback_speed: The current playback speed to persist (audiobooks/podcasts).
+            If None, any previously stored speed for the item is preserved.
         """
         timestamp = utc_timestamp()
         if (
@@ -1382,8 +1385,34 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             else:
                 # NOTE: if no user was found, we will alter the playlog for all users
                 user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
+            # only audiobooks/podcast episodes ever carry a non-default playback speed
+            preserve_speed = playback_speed is None and media_item.media_type in (
+                MediaType.AUDIOBOOK,
+                MediaType.PODCAST_EPISODE,
+            )
             for user_id in user_ids:
                 params["userid"] = user_id
+                # INSERT OR REPLACE rewrites the whole row, so the speed must be re-supplied
+                # or it reverts to the column default. When the caller has no speed (e.g. a
+                # provider sync), keep the value already stored for this item/user.
+                if playback_speed is not None:
+                    params["playback_speed"] = playback_speed
+                elif preserve_speed:
+                    existing = await self.database.get_row(
+                        DB_TABLE_PLAYLOG,
+                        {
+                            "item_id": params["item_id"],
+                            "provider": params["provider"],
+                            "media_type": params["media_type"],
+                            "userid": user_id,
+                        },
+                    )
+                    params["playback_speed"] = (
+                        existing["playback_speed"]
+                        if existing and existing["playback_speed"] is not None
+                        else 1.0
+                    )
+                # otherwise leave playback_speed out so the column default (1.0) applies
                 await self.database.insert(
                     DB_TABLE_PLAYLOG,
                     params,
@@ -1694,6 +1723,39 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if ma_position_ms >= provider_position_ms:
             return ma_fully_played, ma_position_ms
         return provider_fully_played, provider_position_ms
+
+    async def get_playback_speed(
+        self, media_item: Audiobook | PodcastEpisode, userid: str | None = None
+    ) -> float:
+        """
+        Get the stored playback speed for the given audiobook or podcast episode.
+
+        Returns 1.0 (normal speed) when no custom speed was stored for the item,
+        or when no user can be determined to scope the lookup.
+
+        :param media_item: The audiobook or podcast episode to look up.
+        :param userid: The user ID to look up the speed for (instead of the current user).
+        """
+        if not userid:
+            if session_user := get_current_user():
+                userid = session_user.user_id
+            elif provider_user := await self._get_user_for_provider(media_item.provider_mappings):
+                userid = provider_user.user_id
+            else:
+                # the speed is stored per user; without one we can't scope the lookup
+                return 1.0
+        db_entry = await self.database.get_row(
+            DB_TABLE_PLAYLOG,
+            {
+                "item_id": media_item.item_id,
+                "provider": media_item.provider,
+                "media_type": media_item.media_type.value,
+                "userid": userid,
+            },
+        )
+        if db_entry and (stored_speed := db_entry["playback_speed"]) is not None:
+            return float(stored_speed)
+        return 1.0
 
     def get_controller(
         self, media_type: MediaType
