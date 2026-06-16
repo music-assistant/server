@@ -23,11 +23,9 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.provider import ProviderManifest
 
-import music_assistant.controllers.media.playlists as playlists_module
+import music_assistant.controllers.music.media.playlists as playlists_module
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
-from music_assistant.controllers.media.genres import GenreController
-from music_assistant.controllers.media.playlists import PlaylistController
 from music_assistant.controllers.metadata import (
     MISSING_ARTIST_METADATA_SCAN_TASK_ID,
     PLAYLIST_METADATA_SCAN_TASK_ID,
@@ -35,6 +33,8 @@ from music_assistant.controllers.metadata import (
     MetaDataController,
 )
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.music.media.genres import GenreController
+from music_assistant.controllers.music.media.playlists import PlaylistController
 from music_assistant.controllers.tasks import (
     TasksController,
     get_current_task,

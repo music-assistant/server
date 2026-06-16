@@ -16,9 +16,6 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import Playlist, Track
 
 from music_assistant.constants import DB_TABLE_PLAYLISTS, PLAYLIST_MEDIA_TYPES, PlaylistPlayableItem
-from music_assistant.controllers.media.audiobooks import AudiobooksController
-from music_assistant.controllers.media.radio import RadioController
-from music_assistant.controllers.media.tracks import TracksController
 from music_assistant.controllers.tasks.context import (
     update_current_task_progress,
     update_current_task_progress_text,
@@ -37,7 +34,10 @@ from music_assistant.helpers.uri import create_uri, parse_uri
 from music_assistant.helpers.util import guard_single_request
 from music_assistant.models.music_provider import MusicProvider
 
+from .audiobooks import AudiobooksController
 from .base import MediaControllerBase
+from .radio import RadioController
+from .tracks import TracksController
 
 if TYPE_CHECKING:
     from music_assistant_models.background_task import BackgroundTask
