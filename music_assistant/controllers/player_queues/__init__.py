@@ -13,6 +13,6 @@ but it can also be something else, hence the loose coupling.
 
 from __future__ import annotations
 
-from .controller import CONF_DEFAULT_ENQUEUE_SELECT_ARTIST, PlayerQueuesController
+from .controller import PlayerQueuesController
 
-__all__ = ["CONF_DEFAULT_ENQUEUE_SELECT_ARTIST", "PlayerQueuesController"]
+__all__ = ["PlayerQueuesController"]
