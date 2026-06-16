@@ -2049,7 +2049,7 @@ class MusicController(CoreController):
                 icon="mdi-motion-play",
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.recently_played(limit=10, user_initiated_only=True),
+                    await self.recently_played(limit=10, user_initiated_only=False),
                 ),
             ),
             RecommendationFolder(
