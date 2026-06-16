@@ -230,7 +230,11 @@ class LocalFileSystemProvider(MusicProvider):
         """Handle async initialization of the provider."""
         if not await isdir(self.base_path):
             msg = f"Music Directory {self.base_path} does not exist"
-            raise SetupFailedError(msg)
+            raise SetupFailedError(
+                msg,
+                translation_key="provider.filesystem_local.errors.music_directory_not_found",
+                translation_args=[self.base_path],
+            )
         await self.check_write_access()
 
     async def search(

@@ -460,6 +460,21 @@ def test_error_result_message_protocol_error_localization() -> None:
         assert admin.to_dict()["details"] == "Je hebt geen toestemming voor deze actie."
 
 
+def test_provider_specific_error_keys_resolve_with_params() -> None:
+    """Provider-specific error keys resolve from the built source and fill their {0} param."""
+    ctrl = _make_controller()
+    ctrl._source = build_translations_source()
+    cases = [
+        ("provider.audiobookshelf.errors.login_failed", "https://abs.local"),
+        ("provider.chromecast.errors.app_launch_timeout", "Living Room TV"),
+        ("provider.filesystem_nfs.errors.host_unresolvable", "nas.local"),
+    ]
+    for key, arg in cases:
+        resolved = ctrl.get_translation(key, params=[arg])
+        assert resolved is not None, f"{key} did not resolve"
+        assert arg in resolved, f"{key} did not fill its param: {resolved!r}"
+
+
 def test_media_item_without_translation_key_is_untouched() -> None:
     """A media item with no translation_key keeps its in-code name even under a resolver."""
     ctrl = _nl_controller()

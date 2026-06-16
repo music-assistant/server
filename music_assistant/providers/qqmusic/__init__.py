@@ -319,7 +319,11 @@ async def _start_qr_auth(
             values[CONF_QR_PAGE_URL] = None
             raise InvalidDataError("QR code expired, please generate a new one")
         if event == qq_login_mod.QRCodeLoginEvents.REFUSE:
-            raise InvalidDataError(f"Login was rejected in {_get_qr_login_name(values)} app")
+            raise InvalidDataError(
+                f"Login was rejected in {_get_qr_login_name(values)} app",
+                translation_key="provider.qqmusic.errors.login_rejected",
+                translation_args=[_get_qr_login_name(values)],
+            )
         await asyncio.sleep(1)
     if values.get(CONF_QR_IDENTIFIER):
         raise InvalidDataError(
@@ -347,7 +351,9 @@ async def _check_qr_auth(values: dict[str, ConfigValueType]) -> None:
         raise InvalidDataError("QR code not scanned yet")
     if event == qq_login_mod.QRCodeLoginEvents.CONF:
         raise InvalidDataError(
-            f"QR scanned, please confirm login in {_get_qr_login_name(values)} app"
+            f"QR scanned, please confirm login in {_get_qr_login_name(values)} app",
+            translation_key="provider.qqmusic.errors.confirm_login_in_app",
+            translation_args=[_get_qr_login_name(values)],
         )
     if event == qq_login_mod.QRCodeLoginEvents.TIMEOUT:
         values[CONF_QR_IDENTIFIER] = None
@@ -355,7 +361,11 @@ async def _check_qr_auth(values: dict[str, ConfigValueType]) -> None:
         values[CONF_QR_PAGE_URL] = None
         raise InvalidDataError("QR code expired, please generate a new one")
     if event == qq_login_mod.QRCodeLoginEvents.REFUSE:
-        raise InvalidDataError(f"Login was rejected in {_get_qr_login_name(values)} app")
+        raise InvalidDataError(
+            f"Login was rejected in {_get_qr_login_name(values)} app",
+            translation_key="provider.qqmusic.errors.login_rejected",
+            translation_args=[_get_qr_login_name(values)],
+        )
     raise LoginFailed("Unable to determine QR login status")
 
 
