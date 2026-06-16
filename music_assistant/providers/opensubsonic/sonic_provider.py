@@ -610,7 +610,7 @@ class OpenSonicProvider(MusicProvider):
             if pl.name == name:
                 return parse_playlist(self.instance_id, pl)
         raise MediaNotFoundError(
-            f"Failed to create podcast with name '{name}'",
+            f"Failed to create playlist with name '{name}'",
             translation_key="provider.opensubsonic.errors.create_playlist_failed",
             translation_args=[name],
         )

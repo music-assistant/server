@@ -48,7 +48,7 @@ async def setup(
     # check if valid dns name is given for the host
     server = str(config.get_value(CONF_HOST))
     if not await get_ip_from_host(server):
-        msg = f"Unable to resolve {server}, make sure the address is resolveable."
+        msg = f"Unable to resolve {server}, make sure the address is resolvable."
         raise LoginFailed(
             msg,
             translation_key="provider.filesystem_smb.errors.unresolvable_host",
