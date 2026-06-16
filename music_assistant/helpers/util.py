@@ -130,6 +130,11 @@ def get_total_system_memory() -> float:
         return 0.0
 
 
+def is_arm() -> bool:
+    """Return whether the host CPU is ARM-based (32- or 64-bit)."""
+    return platform.machine().lower() in ("arm64", "aarch64", "armv8l", "armv7l")
+
+
 def verify_system_meets_requirements(
     *,
     feature_name: str,

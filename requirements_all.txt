@@ -86,6 +86,7 @@ soundcloudpy==0.1.4
 sounddevice==0.5.5
 srptools>=1.0.0
 sxm==0.2.8
+threadpoolctl==3.6.0
 torch==2.11.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
 torch==2.11.0; sys_platform != 'linux' or platform_machine != 'x86_64'
 torchaudio==2.11.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
