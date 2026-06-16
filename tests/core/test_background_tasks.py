@@ -26,11 +26,11 @@ from music_assistant_models.provider import ProviderManifest
 import music_assistant.controllers.music.media.playlists as playlists_module
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
-from music_assistant.controllers.metadata import (
+from music_assistant.controllers.metadata import MetaDataController
+from music_assistant.controllers.metadata.constants import (
     MISSING_ARTIST_METADATA_SCAN_TASK_ID,
     PLAYLIST_METADATA_SCAN_TASK_ID,
     THUMB_CACHE_CLEANUP_TASK_ID,
-    MetaDataController,
 )
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.music.media.genres import GenreController

@@ -1,0 +1,6 @@
+{
+  "manifest": {
+    "name": "Metadata",
+    "description": "Configuration of the core metadata management module"
+  }
+}

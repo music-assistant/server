@@ -442,6 +442,8 @@
   "core.discovery.config_entries.upnp_network_scan.label": "Allow network scan for UPnP discovery",
   "core.discovery.manifest.description": "Handles mDNS/Zeroconf, SSDP/UPnP discovery and Music Assistant network broadcast.",
   "core.discovery.manifest.name": "Discovery",
+  "core.metadata.manifest.description": "Configuration of the core metadata management module",
+  "core.metadata.manifest.name": "Metadata",
   "core.music.config_entries.reset_db.description": "This will issue a full reset of the library database and trigger a full sync. Only use this option as a last resort if you are seeing issues with the library database.",
   "core.music.config_entries.reset_db.label": "Reset library database",
   "core.music.config_entries.reset_db_result.label": "The database has been reset.",
