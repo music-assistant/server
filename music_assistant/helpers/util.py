@@ -123,7 +123,7 @@ def get_total_system_memory() -> float:
     try:
         # Works on Linux and macOS
         total_memory_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-        return total_memory_bytes / (1024**3)  # Convert to GB
+        return total_memory_bytes / (1000**3)  # Convert to GB
     except (AttributeError, ValueError):
         # Fallback if sysconf is not available (e.g., Windows)
         # Return a conservative default to disable buffering by default
