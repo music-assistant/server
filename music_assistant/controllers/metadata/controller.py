@@ -74,7 +74,7 @@ if TYPE_CHECKING:
 class MetaDataController(
     ImageProxyMixin, RadioArtworkMixin, MetadataEnrichmentMixin, CoreController
 ):
-    """Several helpers to search and store metadata for mediaitems."""
+    """Controller that handles metadata retrieval and management for media items."""
 
     domain: str = "metadata"
     config: CoreConfig
