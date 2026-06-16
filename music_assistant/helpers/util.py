@@ -119,15 +119,145 @@ async def warn_if_missing_x86_64_v2(logger: logging.Logger) -> None:
 
 
 def get_total_system_memory() -> float:
-    """Get total system memory in GB."""
-    try:
-        # Works on Linux and macOS
-        total_memory_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-        return total_memory_bytes / (1024**3)  # Convert to GB
-    except AttributeError, ValueError:
-        # Fallback if sysconf is not available (e.g., Windows)
-        # Return a conservative default to disable buffering by default
+    """
+    Return the memory available to this process in GB (0.0 when unknown).
+
+    On Linux this is min(physical RAM, cgroup memory limit), so a container's
+    --memory limit is honored when sizing buffers and gating heavy features.
+    Returns 0.0 when the platform cannot report memory (e.g. Windows), which
+    callers treat as "unknown" and fail open.
+    """
+    host_gb = _get_host_memory_gb()
+    if host_gb <= 0.0:
         return 0.0
+    if sys.platform != "linux":
+        return host_gb
+    cgroup_gb = _get_cgroup_memory_limit_gb()
+    if cgroup_gb is None or cgroup_gb <= 0.0:
+        return host_gb
+    return min(host_gb, cgroup_gb)
+
+
+def _get_host_memory_gb() -> float:
+    """Return host physical RAM in GB via sysconf, or 0.0 when unavailable."""
+    try:
+        total_memory_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        return total_memory_bytes / (1024**3)
+    except AttributeError, ValueError, OSError:
+        # sysconf is unavailable on some platforms (e.g. Windows); treat as unknown.
+        return 0.0
+
+
+def _get_cgroup_memory_limit_gb(
+    cgroup_root: str = "/sys/fs/cgroup", proc_cgroup: str = "/proc/self/cgroup"
+) -> float | None:
+    """
+    Return this process's cgroup memory limit in GB, or None if unlimited/unavailable.
+
+    cgroup v2 (memory.max) is tried first, then v1 (memory/memory.limit_in_bytes).
+
+    :param cgroup_root: Mount point of the cgroup filesystem (overridable for tests).
+    :param proc_cgroup: Path to the process cgroup file (overridable for tests).
+    """
+    limit = _read_cgroup_v2_limit(cgroup_root, proc_cgroup)
+    if limit is not None:
+        return limit
+    return _read_cgroup_v1_limit(cgroup_root, proc_cgroup)
+
+
+def _read_cgroup_v2_limit(cgroup_root: str, proc_cgroup: str) -> float | None:
+    """Read the effective cgroup v2 memory limit in GB, or None."""
+    rel = _read_self_cgroup_path(proc_cgroup, controller=None)
+    return _min_hierarchical_limit(cgroup_root, rel, "memory.max")
+
+
+def _read_cgroup_v1_limit(cgroup_root: str, proc_cgroup: str) -> float | None:
+    """Read the effective cgroup v1 memory limit in GB, or None."""
+    # On v1 the memory controller is conventionally mounted at <root>/memory.
+    rel = _read_self_cgroup_path(proc_cgroup, controller="memory")
+    return _min_hierarchical_limit(
+        os.path.join(cgroup_root, "memory"), rel, "memory.limit_in_bytes"
+    )
+
+
+def _min_hierarchical_limit(base: str, rel: str | None, filename: str) -> float | None:
+    """
+    Return the smallest bounded memory limit (GB) across the cgroup and its ancestors, or None.
+
+    The effective limit is the minimum imposed anywhere from the process's own cgroup
+    up to the mount root, since a parent slice can cap memory even when the leaf cgroup
+    itself is unlimited (e.g. systemd slices or nested k8s cgroups).
+
+    :param base: Base of the hierarchy (the cgroup mount, or <mount>/memory on v1).
+    :param rel: The process's cgroup path relative to base (from /proc/self/cgroup).
+    :param filename: Limit file to read at each level (memory.max or memory.limit_in_bytes).
+    """
+    parts = [p for p in (rel or "").split("/") if p]
+    limits: list[float] = []
+    # Walk from the process's own cgroup up to the mount root.
+    while True:
+        directory = os.path.join(base, *parts) if parts else base
+        limit = _read_cgroup_limit_file(os.path.join(directory, filename))
+        if limit is not None:
+            limits.append(limit)
+        if not parts:
+            break
+        parts.pop()
+    return min(limits) if limits else None
+
+
+def _read_cgroup_limit_file(path: str) -> float | None:
+    """
+    Parse a cgroup memory-limit file into GB, or None if missing/unlimited/invalid.
+
+    :param path: Path to a cgroup memory.max (v2) or memory.limit_in_bytes (v1) file.
+    """
+    try:
+        with open(path) as fh:
+            raw = fh.read().strip()
+    except OSError:
+        # File absent or unreadable (covers FileNotFoundError/PermissionError/etc.).
+        return None
+    # "max" (v2) or a near-INT64_MAX sentinel (v1) both mean "no limit set".
+    if not raw or raw == "max":
+        return None
+    try:
+        limit_bytes = int(raw)
+    except ValueError:
+        return None
+    if limit_bytes <= 0 or limit_bytes >= _CGROUP_UNLIMITED_THRESHOLD:
+        return None
+    return limit_bytes / (1024**3)
+
+
+def _read_self_cgroup_path(proc_cgroup: str, *, controller: str | None) -> str | None:
+    """
+    Return the process's cgroup path from /proc/self/cgroup, or None.
+
+    :param proc_cgroup: Path to the process cgroup file.
+    :param controller: For cgroup v1, the controller name (e.g. "memory") whose path
+        to return. None selects the cgroup v2 unified hierarchy line ("0::<path>").
+    """
+    try:
+        with open(proc_cgroup) as fh:
+            for line in fh:
+                parts = line.strip().split(":", 2)
+                if len(parts) != 3:
+                    continue
+                hierarchy_id, controllers, path = parts
+                if controller is None:
+                    if hierarchy_id == "0" and controllers == "":
+                        return path or "/"
+                elif controller in controllers.split(","):
+                    return path or "/"
+    except OSError:
+        return None
+    return None
+
+
+# cgroup v1 writes a near-INT64_MAX value (PAGE_SIZE * LONG_MAX on most kernels) to
+# memory.limit_in_bytes when no limit is set; treat anything this large as unlimited.
+_CGROUP_UNLIMITED_THRESHOLD: int = 1 << 62
 
 
 def is_arm() -> bool:
