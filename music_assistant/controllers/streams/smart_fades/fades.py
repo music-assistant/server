@@ -810,6 +810,11 @@ class StandardCrossFade(SmartFade):
 
         Only the overlapping portions are crossfaded, not the full buffers.
         """
+        # crossfade_size legitimately ends up 0 for a silent/tiny buffer, so guard on
+        # the filter chain (set in _build) to still fail fast on apply-before-build,
+        # consistent with SmartFade._get_ffmpeg_filters()
+        if not self.filters:
+            raise RuntimeError("SmartFade not built — call Mixer.build() first")
         if self.trailing_silence_bytes:
             fade_out_part = fade_out_part[: len(fade_out_part) - self.trailing_silence_bytes]
         # frame-aligned overlap computed once in _build, so it exactly matches the

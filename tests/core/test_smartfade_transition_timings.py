@@ -322,6 +322,14 @@ class TestStandardCrossFadeApplySlicing:
         assert len(captured["fade_in"]) == expected_bytes
 
     @pytest.mark.asyncio
+    async def test_apply_before_build_fails_fast(self) -> None:
+        """apply() without a prior _build() must error, not silently hard-cut."""
+        fade = StandardCrossFade(logger=logging.getLogger(), crossfade_duration=10.0)
+        with pytest.raises(RuntimeError, match="not built"):
+            async for _ in fade.apply(b"\x00" * _seconds(5), b"\x11" * _seconds(5), PCM):
+                pass
+
+    @pytest.mark.asyncio
     async def test_zero_crossfade_skips_ffmpeg(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When crossfade_duration == 0, apply() must concatenate without calling ffmpeg."""
         base_apply_invoked: list[bool] = []
