@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import platform
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -16,6 +15,7 @@ from music_assistant_models.enums import MediaType
 from torchaudio.transforms import SpectralCentroid
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.helpers.util import is_arm
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
@@ -73,8 +73,8 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        # Configure torch thread caps before loading any model (see the controller method).
-        self.mass.streams.audio_analysis.ensure_thread_caps_configured()
+        # Configure the inference runtime before loading any model (see the controller method).
+        self.mass.streams.audio_analysis.ensure_inference_runtime_configured()
         (
             self._beat_this_model,
             self._beat_this_post_processor,
@@ -88,8 +88,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
         """Initialize ML models (runs in a thread to avoid blocking the event loop)."""
         beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
         # torch aarch64 wheels advertise fbgemm in supported_engines but its kernels are x86-only.
-        is_arm = platform.machine().lower() in ("arm64", "aarch64", "armv8l", "armv7l")
-        preference = ("qnnpack", "fbgemm") if is_arm else ("fbgemm", "qnnpack")
+        preference = ("qnnpack", "fbgemm") if is_arm() else ("fbgemm", "qnnpack")
         supported_engines = torch.backends.quantized.supported_engines
         quantized_engine = next((e for e in preference if e in supported_engines), None)
         if quantized_engine is not None and torch.backends.quantized.engine != quantized_engine:

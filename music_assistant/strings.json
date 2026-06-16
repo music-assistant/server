@@ -852,5 +852,33 @@
     "remove_playlist_tracks": "Remove items from playlist {0}",
     "import_playlist_matching": "Import playlist {0}",
     "update_metadata": "Update metadata for {0}"
+  },
+  "errors": {
+    "setup_required": "Music Assistant is not set up yet.",
+    "provider_unavailable": "The provider is currently unavailable.",
+    "media_not_found": "The requested media item could not be found.",
+    "invalid_data": "The data provided is invalid or could not be processed.",
+    "already_registered": "This item is already registered.",
+    "setup_failed": "Setup failed. Please check the configuration and try again.",
+    "login_failed": "Login failed. Please check your credentials and try again.",
+    "audio_error": "An error occurred while processing audio.",
+    "queue_empty": "The queue is empty.",
+    "unsupported_feature": "This feature is not supported.",
+    "player_unavailable": "The player is not available.",
+    "player_command_failed": "The command to the player failed.",
+    "invalid_command": "Invalid or unsupported command.",
+    "unplayable_media": "This media item cannot be played.",
+    "invalid_provider_uri": "The provider URI is invalid.",
+    "invalid_provider_id": "The provider media item identifier is invalid.",
+    "retries_exhausted": "Retries exhausted. The operation could not be completed.",
+    "resource_temporarily_unavailable": "This resource is temporarily unavailable. Please try again later.",
+    "provider_permission_denied": "The provider denied this action due to insufficient permissions.",
+    "action_unavailable": "This action is currently unavailable.",
+    "authentication_required": "Authentication is required.",
+    "authentication_failed": "Authentication failed. The credentials are invalid.",
+    "insufficient_permissions": "You do not have permission to perform this action.",
+    "invalid_token": "The access token is invalid or has expired.",
+    "resource_busy": "This resource is currently in use elsewhere.",
+    "rate_limited": "Rate limit reached. Please try again later."
   }
 }
