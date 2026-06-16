@@ -14,7 +14,7 @@ import os
 import re
 import time
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from functools import partial
 from typing import TYPE_CHECKING, Any, cast
@@ -449,6 +449,8 @@ class StreamsAudio:
         logger = self.logger.getChild("media_stream")
         logger.log(VERBOSE_LOG_LEVEL, "Starting media stream for %s", streamdetails.uri)
         extra_input_args = streamdetails.extra_input_args or []
+        # captured before the seek is consumed below; the metadata monitor's elapsed base
+        metadata_elapsed_base = seek_position
 
         # work out audio source for these streamdetails
         audio_source: str | AsyncGenerator[bytes]
@@ -544,6 +546,7 @@ class StreamsAudio:
         finished = False
         cancelled = False
         first_chunk_received = False
+        metadata_task: asyncio.Task[None] | None = None
         ffmpeg_loglevel = "debug" if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else "info"
         # When a provider hands us already-decoded audio (e.g. Spotify Connect /
         # AirPlay receivers piping PCM after their own decode), audio_format is
@@ -580,6 +583,14 @@ class StreamsAudio:
                     streamdetails.stream_type,
                 )
             stream_start = mass.loop.time()
+            # Refresh live metadata from a dedicated per-stream task so the cadence does not
+            # depend on player state updates, which some player types (e.g. grouped AirPlay)
+            # don't emit at a steady interval. The last-updated throttle dedupes this against
+            # the queue controller's own refresh.
+            if streamdetails.stream_metadata_update_callback is not None:
+                metadata_task = asyncio.create_task(
+                    self._run_stream_metadata_monitor(streamdetails, metadata_elapsed_base)
+                )
             chunk_size = calculate_content_length(pcm_format, chunk_seconds)
             async for chunk in ffmpeg_proc.iter_chunked(chunk_size):
                 if not first_chunk_received:
@@ -634,6 +645,11 @@ class StreamsAudio:
             logger.warning("\n".join(list(ffmpeg_proc.log_history)[-10:]))
             raise AudioError(f"Error while streaming: {err}") from err
         finally:
+            # stop the metadata monitor before tearing down the stream
+            if metadata_task is not None and not metadata_task.done():
+                metadata_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await metadata_task
             # always ensure close is called which also handles all cleanup
             await ffmpeg_proc.close()
             # determine how many seconds we've received
@@ -650,6 +666,39 @@ class StreamsAudio:
                 ffmpeg_proc.returncode,
                 streamdetails.uri,
             )
+
+    async def _run_stream_metadata_monitor(
+        self, streamdetails: StreamDetails, elapsed_base: int
+    ) -> None:
+        """
+        Periodically refresh provider-supplied live stream metadata for the stream's lifetime.
+
+        :param streamdetails: The active stream whose metadata callback to drive.
+        :param elapsed_base: Media-time position (seconds) at which the stream started.
+        """
+        callback = streamdetails.stream_metadata_update_callback
+        if callback is None:
+            return
+        interval = max(1, streamdetails.stream_metadata_update_interval)
+        start = self.mass.loop.time()
+        while True:
+            await asyncio.sleep(interval)
+            # skip if the queue controller already refreshed within the interval
+            last_updated = streamdetails.stream_metadata_last_updated
+            if last_updated is not None and (time.time() - last_updated) < interval:
+                continue
+            elapsed = elapsed_base + int(self.mass.loop.time() - start)
+            try:
+                await callback(streamdetails, elapsed)
+            except (aiohttp.ClientError, TimeoutError, MusicAssistantError) as err:
+                # keep the monitor alive when a single refresh fails to fetch
+                self.logger.warning(
+                    "Error refreshing stream metadata for %s: %s", streamdetails.uri, err
+                )
+                continue
+            streamdetails.stream_metadata_last_updated = time.time()
+            if streamdetails.queue_id:
+                self.mass.player_queues.signal_update(streamdetails.queue_id)
 
     async def _cache_radio_result(
         self,
