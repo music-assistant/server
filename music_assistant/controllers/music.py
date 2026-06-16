@@ -1476,7 +1476,6 @@ class MusicController(CoreController):
                 timestamp=timestamp,
                 user_ids=user_ids,
                 queue_id=queue_id,
-                user_initiated=user_initiated,
                 skip_ids=set(skip_artist_ids or ()),
             )
         await self.database.commit()
@@ -2053,7 +2052,7 @@ class MusicController(CoreController):
                 icon="mdi-motion-play",
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.recently_played(limit=10, user_initiated_only=True),
+                    await self.recently_played(limit=10, user_initiated_only=False),
                 ),
             ),
             RecommendationFolder(
@@ -3601,10 +3600,23 @@ class MusicController(CoreController):
         timestamp: float,
         user_ids: list[str],
         queue_id: str | None,
-        user_initiated: bool,
         skip_ids: set[str],
     ) -> None:
         """Credit each (library-resolvable) artist with a play, skipping skip_ids."""
+        # ON CONFLICT keeps an explicit user-initiated artist play sticky across the
+        # repeated side-effect credits its tracks generate.
+        upsert_query = (
+            f"INSERT INTO {DB_TABLE_PLAYLOG} "
+            "(item_id, provider, media_type, name, image, fully_played, "
+            "seconds_played, timestamp, queue_id, user_initiated, userid) "
+            "VALUES (:item_id, :provider, :media_type, :name, :image, :fully_played, "
+            ":seconds_played, :timestamp, :queue_id, :user_initiated, :userid) "
+            "ON CONFLICT(item_id, provider, media_type, userid) DO UPDATE SET "
+            "name = excluded.name, image = excluded.image, "
+            "fully_played = excluded.fully_played, seconds_played = excluded.seconds_played, "
+            "timestamp = excluded.timestamp, queue_id = excluded.queue_id, "
+            f"user_initiated = {DB_TABLE_PLAYLOG}.user_initiated OR excluded.user_initiated"
+        )
         for artist in artists:
             db_artist = await self.artists.get_library_item_by_prov_id(
                 artist.item_id, artist.provider
@@ -3629,8 +3641,8 @@ class MusicController(CoreController):
                 "seconds_played": None,
                 "timestamp": timestamp,
                 "queue_id": queue_id,
-                "user_initiated": user_initiated,
+                "user_initiated": False,
             }
             for user_id in user_ids:
                 playlog_entry["userid"] = user_id
-                await self.database.insert(DB_TABLE_PLAYLOG, playlog_entry, allow_replace=True)
+                await self.database.execute(upsert_query, playlog_entry)
