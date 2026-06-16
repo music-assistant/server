@@ -116,10 +116,10 @@ def _filter_by_explicit(tracks: list[Track], explicit_rule: bool | None) -> list
     """
     if explicit_rule is True:
         # Only include tracks explicitly marked as explicit
-        return [t for t in tracks if t.metadata is not None and t.metadata.explicit is True]
+        return [t for t in tracks if t.metadata.explicit is True]
     if explicit_rule is False:
         # Exclude tracks explicitly marked as explicit; pass through unknown
-        return [t for t in tracks if t.metadata is None or t.metadata.explicit is not True]
+        return [t for t in tracks if t.metadata.explicit is not True]
     return tracks
 
 
@@ -621,6 +621,7 @@ class SmartPlaylistProvider(PluginProvider):
                     and t.metadata.popularity >= rules.min_popularity
                 ]
 
+            # Apply explicit filter in library mode
             tracks = _filter_by_explicit(tracks, rules.explicit)
 
             if rules.year_from is not None or rules.year_to is not None:
@@ -693,6 +694,7 @@ class SmartPlaylistProvider(PluginProvider):
             ]
         if rules.favorites_only:
             tracks = [t for t in tracks if t.favorite]
+        # Apply explicit filter in seed/discover mode post-filtering
         tracks = _filter_by_explicit(tracks, rules.explicit)
         if has_genre_filter and rules.logic == LOGIC_AND:
             # Best-effort genre filter: resolve names then match against track genre metadata.
