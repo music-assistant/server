@@ -2556,6 +2556,11 @@ class PlayerQueuesController(CoreController):
             return list(await self.get_playlist_tracks(media_item, start_item, sort_by=sort_by))
         if media_item.media_type == MediaType.ARTIST:
             media_item = cast("Artist", media_item)
+            self.mass.create_task(
+                self.mass.music.mark_item_played(
+                    media_item, userid=userid, queue_id=queue_id, user_initiated=True
+                )
+            )
             return list(await self.get_artist_tracks(media_item))
         if media_item.media_type == MediaType.ALBUM:
             media_item = cast("Album", media_item)
@@ -3313,7 +3318,7 @@ class PlayerQueuesController(CoreController):
                     is_playing=is_playing,
                     userid=queue.userid,
                     queue_id=queue.queue_id,
-                    user_initiated=False,
+                    user_initiated=self._is_user_initiated_play(queue, media_item),
                 )
             )
             if fully_played and not is_playing:
@@ -3400,6 +3405,10 @@ class PlayerQueuesController(CoreController):
                 return None
         return enqueued
 
+    def _is_user_initiated_play(self, queue: PlayerQueue, media_item: MediaItemType) -> bool:
+        """Return whether a played item was explicitly chosen by the user."""
+        return media_item in queue.enqueued_media_items
+
     async def _mark_album_played(
         self, album: Album, track: MediaItemType, queue: PlayerQueue
     ) -> None:
@@ -3412,7 +3421,7 @@ class PlayerQueuesController(CoreController):
             album,
             userid=queue.userid,
             queue_id=queue.queue_id,
-            user_initiated=False,
+            user_initiated=True,
             skip_artist_ids=list(skip),
         )
 
