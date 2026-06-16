@@ -1,6 +1,16 @@
 Music Assistant
 ==================================
 
+<!-- Keep these links, translations synced daily. -->
+[Deutsch](https://zdoc.app/de/music-assistant/server) |
+[Español](https://zdoc.app/es/music-assistant/server) |
+[français](https://zdoc.app/fr/music-assistant/server) |
+[日本語](https://zdoc.app/ja/music-assistant/server) |
+[한국어](https://zdoc.app/ko/music-assistant/server) |
+[Português](https://zdoc.app/pt/music-assistant/server) |
+[Русский](https://zdoc.app/ru/music-assistant/server) |
+[中文](https://zdoc.app/zh/music-assistant/server)
+
 **Music Assistant Server**
 
 Music Assistant is a free, opensource Media library manager that connects to your streaming services and a wide range of connected speakers. The server is the beating heart, the core of Music Assistant and must run on an always-on device like a Raspberry Pi, a NAS or an Intel NUC or alike.
