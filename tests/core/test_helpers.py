@@ -523,3 +523,19 @@ def test_system_meets_requirements(cpu_cores: int, total_gb: float, expected: bo
         patch("music_assistant.helpers.util.get_total_system_memory", return_value=total_gb),
     ):
         assert util.system_meets_requirements(min_memory_gb=6.0, min_cpu_cores=4) is expected
+
+
+@pytest.mark.parametrize(
+    ("machine", "expected"),
+    [
+        ("aarch64", True),
+        ("arm64", True),
+        ("armv7l", True),
+        ("x86_64", False),
+        ("AMD64", False),
+    ],
+)
+def test_is_arm(machine: str, expected: bool) -> None:
+    """is_arm recognizes 32/64-bit ARM and rejects x86."""
+    with patch("music_assistant.helpers.util.platform.machine", return_value=machine):
+        assert util.is_arm() is expected
