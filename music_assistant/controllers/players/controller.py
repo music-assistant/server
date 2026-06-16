@@ -53,8 +53,8 @@ from music_assistant_models.errors import (
     UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import AudioSource
-from music_assistant_models.player import PlayerOptionValueType  # noqa: TC002
-from music_assistant_models.player_control import PlayerControl  # noqa: TC002
+from music_assistant_models.player import PlayerOptionValueType
+from music_assistant_models.player_control import PlayerControl
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,

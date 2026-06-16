@@ -97,13 +97,11 @@ fix = true
 show-fixes = true
 
 line-length = 100
-# IMPORTANT: target-version is intentionally pinned ONE MINOR BEHIND the runtime
-# (.python-version = 3.14, target-version = py313) so that lint/format don't
-# introduce 3.14-only syntax (e.g. PEP 758 except-without-parens) while we still
-# need clean cherry-pick backports to `stable` (which runs Python 3.13).
-# BUMP TO "py314" BEFORE THE 2.9 RELEASE — once `stable` follows dev to 3.14,
-# this restriction can be lifted.
-target-version = "py313"
+# Stable runs Python 3.14, so the lint/type target is py314 — it must accept the
+# PEP 758 parenthesis-free `except` syntax that gets cherry-picked from dev. The ruff
+# *formatter* is held at py313 in .pre-commit-config.yaml so it does not rewrite
+# stable's existing tree to that style; transitional until stable next syncs from dev.
+target-version = "py314"
 
 [tool.ruff.lint.pydocstyle]
 # Use Sphinx-style docstrings with :param: syntax
@@ -119,9 +117,7 @@ max-statements = 50
 
 [tool.mypy]
 platform = "linux"
-# Kept at 3.13 to match [tool.ruff] target-version — see the note there.
-# BUMP TO "3.14" BEFORE THE 2.9 RELEASE.
-python_version = "3.13"
+python_version = "3.14"
 
 # set this to normal when we have fixed all exclusions
 follow_imports = "silent"
@@ -220,6 +216,11 @@ ignore = [
   "UP047", # Not yet ready to migrate to type parameters
   "PLW0108", # Just annoying, not really useful
   "FURB110", # Just annoying, not really useful
+  # py314-only lint fixes applied on dev but deferred here to avoid churning stable's
+  # existing tree; drop these when stable next syncs from dev.
+  "UP037", # quoted-annotation
+  "PYI055", # unnecessary-type-union
+  "TC002", # typing-only-third-party-import
   # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
   "BLE001",
   "FBT001",
