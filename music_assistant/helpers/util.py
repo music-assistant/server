@@ -310,6 +310,28 @@ def system_meets_requirements(
     return _resource_shortfall(min_memory_gb=min_memory_gb, min_cpu_cores=min_cpu_cores) is None
 
 
+# The kernel reports MemTotal — installed RAM minus firmware/reserved pages — so a host
+# always shows a little under its nominal size (a "4GB" box reports ~3.8GB). Allow this
+# fraction of slack when checking a RAM target, in one place rather than per call site, so
+# nominal requirements (4, 8 GB) match the hardware they describe without ad-hoc thresholds.
+MEMORY_REPORTING_TOLERANCE: float = 0.08
+
+
+def meets_memory_target(total_memory_gb: float, target_gb: float) -> bool:
+    """
+    Return whether reported RAM satisfies a nominal target within the reporting tolerance.
+
+    Fails open (True) when the target is 0 (no requirement) or memory is unknown
+    (0.0, e.g. Windows), so callers never block on a guess.
+
+    :param total_memory_gb: RAM reported by get_total_system_memory() in GB.
+    :param target_gb: Nominal RAM target in GB (e.g. 4 or 8).
+    """
+    if not target_gb or not total_memory_gb:
+        return True
+    return total_memory_gb >= target_gb * (1.0 - MEMORY_REPORTING_TOLERANCE)
+
+
 def _resource_shortfall(
     *, min_memory_gb: float, min_cpu_cores: int
 ) -> tuple[str, str, list[Any]] | None:
@@ -329,9 +351,9 @@ def _resource_shortfall(
             [min_cpu_cores, cpu_cores],
         )
     total_memory_gb = get_total_system_memory()
-    # get_total_system_memory() returns 0.0 when the platform cannot report memory
-    # (e.g. Windows); treat that as unknown and pass rather than block on a guess.
-    if min_memory_gb and total_memory_gb and total_memory_gb < min_memory_gb:
+    # meets_memory_target() fails open on unknown memory (0.0, e.g. Windows) and absorbs
+    # the kernel's MemTotal under-report, so min_memory_gb stays a clean nominal figure.
+    if min_memory_gb and not meets_memory_target(total_memory_gb, min_memory_gb):
         return (
             f"at least {min_memory_gb:.0f}GB of RAM is required ({total_memory_gb:.1f}GB detected).",
             "errors.unsupported_system_memory",
