@@ -142,10 +142,14 @@ class ChromecastProvider(PlayerProvider):
                 # if it is now positively identified as such.
                 if self._should_recheck_multichannel_child(castplayer, player_id):
                     self._pending_discoveries.add(player_id)
-                    asyncio.run_coroutine_threadsafe(
-                        self._recheck_multichannel_child(player_id, disc_info),
-                        loop=self.mass.loop,
-                    )
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            self._recheck_multichannel_child(player_id, disc_info),
+                            loop=self.mass.loop,
+                        )
+                    except RuntimeError:
+                        # event loop already closed (shutdown): release the marker
+                        self._pending_discoveries.discard(player_id)
                 return
 
             # Prevent duplicate discovery while async setup is in progress
