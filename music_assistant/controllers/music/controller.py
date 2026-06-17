@@ -2441,9 +2441,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
 
     @api_command("music/verify_item_uri")
     async def verify_item_uri(self, uri: str, username: str | None = None) -> bool:
-        """Verify, if a uri specifies a valid item.
+        """
+        Verify whether a uri points to a valid, accessible item.
 
-        If username_or_user_id is specified, verifies additionally, if this user may access this item. This requires the requesting (i.e. authorized user) to be able to access this item as well.
+        :param uri: The uri to verify.
+        :param username: Optional user to additionally verify access for. Requires
+            the authenticated caller to also have access to the item.
         """
         async with ImpersonatedUser(self.mass, username):
             return await self._handle_verify_item_uri(uri)

@@ -1210,7 +1210,7 @@ async def test_revoke_join_code_api_not_found(auth_manager: AuthenticationManage
 
 
 async def test_impersonated_user_context_manager(auth_manager: AuthenticationManager) -> None:
-    """Test OptionalImpersonatedUser."""
+    """Test the ImpersonatedUser context manager."""
     admin_user = await auth_manager.create_user(username="admin", role=UserRole.ADMIN)
     standard_user_a = await auth_manager.create_user(username="user_a", role=UserRole.USER)
     standard_user_b = await auth_manager.create_user(username="user_b", role=UserRole.USER)

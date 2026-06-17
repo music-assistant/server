@@ -324,7 +324,7 @@ class ImpersonatedUser:
     """
 
     def __init__(self, mass: MusicAssistant, username: str | None) -> None:
-        """Initialize UseImpersonatedUser."""
+        """Initialize ImpersonatedUser."""
         self.mass = mass
         self.username = username
         self.previous_impersonated_user = impersonated_user.get()
