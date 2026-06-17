@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import aiofiles
-from aiohttp.client_exceptions import ClientError, ClientResponseError
+from aiohttp.client_exceptions import ClientError
 from PIL import Image, UnidentifiedImageError
 
 from music_assistant.constants import APPLICATION_NAME
@@ -288,21 +288,15 @@ async def _fetch_remote_image(mass: MusicAssistant, url: str) -> bytes:
     :param mass: The MusicAssistant instance.
     :param url: The (http/https) image URL to fetch.
     """
-    try:
-        async with mass.http_session_no_ssl.get(url, raise_for_status=True) as resp:
-            return await resp.read()
-    except ClientResponseError as err:
-        # Some CDNs (e.g. Akamai) 403 our default User-Agent; retry once with
-        # a UA they allowlist before giving up.
-        if err.status not in (401, 403):
-            raise
-        fallback_ua = (
-            f"{APPLICATION_NAME}/{mass.version} (Wget/1.24.5; +https://music-assistant.io)"
-        )
-        async with mass.http_session_no_ssl.get(
-            url, raise_for_status=True, headers={"User-Agent": fallback_ua}
-        ) as resp:
-            return await resp.read()
+    # Bot-protected CDNs (e.g. Akamai) reject our normal self-identifying User-Agent,
+    # and even regular browser User-Agents, while still serving well-known fetch tools.
+    # We keep identifying as Music Assistant but carry a Wget compatibility token, which
+    # such CDNs allowlist, so artwork is served on the first (and only) request.
+    user_agent = f"{APPLICATION_NAME}/{mass.version} (Wget/1.24.5; +https://music-assistant.io)"
+    async with mass.http_session_no_ssl.get(
+        url, raise_for_status=True, headers={"User-Agent": user_agent}
+    ) as resp:
+        return await resp.read()
 
 
 async def get_image_thumb(
