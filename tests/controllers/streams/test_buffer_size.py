@@ -15,6 +15,11 @@ from music_assistant.controllers.streams.constants import BufferSize
         (3.9, [BufferSize.MINIMAL]),
         (4.0, [BufferSize.MINIMAL, BufferSize.BALANCED]),
         (6.0, [BufferSize.MINIMAL, BufferSize.BALANCED]),
+        (6.9, [BufferSize.MINIMAL, BufferSize.BALANCED]),
+        # "8GB" hosts that report slightly less (integrated GPU / container limit)
+        # still reach Maximum thanks to the 7GB threshold.
+        (7.0, [BufferSize.MINIMAL, BufferSize.BALANCED, BufferSize.MAXIMUM]),
+        (7.7, [BufferSize.MINIMAL, BufferSize.BALANCED, BufferSize.MAXIMUM]),
         (8.0, [BufferSize.MINIMAL, BufferSize.BALANCED, BufferSize.MAXIMUM]),
         (16.0, [BufferSize.MINIMAL, BufferSize.BALANCED, BufferSize.MAXIMUM]),
         # unknown memory (0.0) -> offer everything (fail open)
@@ -22,6 +27,25 @@ from music_assistant.controllers.streams.constants import BufferSize
     ],
 )
 def test_get_available_buffer_sizes(total_gb: float, expected: list[BufferSize]) -> None:
-    """Balanced requires >= 4GB, Maximum >= 8GB; unknown RAM offers all (fail open)."""
+    """Balanced requires >= 4GB, Maximum >= 7GB; unknown RAM offers all (fail open)."""
     with patch.object(constants, "TOTAL_SYSTEM_MEMORY_GB", total_gb):
         assert constants.get_available_buffer_sizes() == expected
+
+
+@pytest.mark.parametrize(
+    ("total_gb", "expected"),
+    [
+        (2.0, BufferSize.MINIMAL),
+        (4.0, BufferSize.BALANCED),
+        (6.9, BufferSize.BALANCED),
+        (7.0, BufferSize.MAXIMUM),
+        (7.7, BufferSize.MAXIMUM),
+        (16.0, BufferSize.MAXIMUM),
+        # unknown memory (0.0) -> Minimal default (conservative)
+        (0.0, BufferSize.MINIMAL),
+    ],
+)
+def test_default_buffer_size(total_gb: float, expected: BufferSize) -> None:
+    """The auto-selected default follows the same 4GB/7GB cutoffs as the available presets."""
+    with patch.object(constants, "TOTAL_SYSTEM_MEMORY_GB", total_gb):
+        assert constants._get_default_buffer_size() == expected
