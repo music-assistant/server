@@ -1,5 +1,11 @@
 {
   "config_entries": {
+    "wave_preset_section_label": {
+      "label": "My Wave presets"
+    },
+    "wave_preset_section_saved": {
+      "label": "My Wave presets ({0} saved)"
+    },
     "wave_preset_draft_name": {
       "label": "New preset name",
       "description": "Give the preset a short name, pick up to three dropdowns below and click Save. Saving the same name again overwrites."
