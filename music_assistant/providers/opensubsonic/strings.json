@@ -62,5 +62,9 @@
   },
   "manifest": {
     "description": "Stream music from your OpenSubsonic compatible server — your own cloud jukebox."
+  },
+  "errors": {
+    "connect_failed": "Failed to connect to {0}, check your settings.",
+    "create_playlist_failed": "Failed to create playlist with name '{0}'."
   }
 }

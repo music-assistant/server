@@ -44,5 +44,8 @@
   },
   "manifest": {
     "description": "Play music and audiobooks stored on SMB connected network drives."
+  },
+  "errors": {
+    "unresolvable_host": "Unable to resolve {0}, make sure the address is resolvable."
   }
 }

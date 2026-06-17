@@ -4,11 +4,13 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import suppress
-
-from music_assistant_models.media_items import AudioFormat
+from typing import TYPE_CHECKING
 
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
 from music_assistant.helpers.util import empty_queue
+
+if TYPE_CHECKING:
+    from music_assistant_models.media_items import AudioFormat
 
 LOGGER = logging.getLogger(__name__)
 
