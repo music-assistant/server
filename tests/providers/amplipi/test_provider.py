@@ -140,11 +140,12 @@ class TestLifecycle:
         prov = _provider()
         prov.api.get_streams = AsyncMock(
             return_value=[
-                SimpleNamespace(id=7, name=f"{MA_STREAM_NAME} 0"),
-                SimpleNamespace(id=8, name=f"{MA_STREAM_NAME} 2"),
-                SimpleNamespace(id=9, name="Groove Salad"),
-                SimpleNamespace(id=None, name=f"{MA_STREAM_NAME} 3"),
-                SimpleNamespace(id=10, name=f"{MA_STREAM_NAME} x"),
+                SimpleNamespace(id=7, name=f"{MA_STREAM_NAME} 0", type=MA_STREAM_TYPE),
+                SimpleNamespace(id=8, name=f"{MA_STREAM_NAME} 2", type=MA_STREAM_TYPE),
+                SimpleNamespace(id=9, name="Groove Salad", type=MA_STREAM_TYPE),
+                SimpleNamespace(id=None, name=f"{MA_STREAM_NAME} 3", type=MA_STREAM_TYPE),
+                SimpleNamespace(id=10, name=f"{MA_STREAM_NAME} x", type=MA_STREAM_TYPE),
+                SimpleNamespace(id=11, name=f"{MA_STREAM_NAME} Radio", type="fileplayer"),
             ]
         )
         prov.discover_players = AsyncMock()  # type: ignore[method-assign]
@@ -187,7 +188,7 @@ class TestLifecycle:
         prov._poll_task = None
         prov._players = {}
         prov.api.get_streams = AsyncMock(
-            return_value=[SimpleNamespace(id=7, name=f"{MA_STREAM_NAME} 0")]
+            return_value=[SimpleNamespace(id=7, name=f"{MA_STREAM_NAME} 0", type=MA_STREAM_TYPE)]
         )
         prov.api.delete_stream = AsyncMock()
 
@@ -301,8 +302,10 @@ class TestDiscoverAndHelpers:
             SimpleNamespace(id=1008, name="External Media", type="fileplayer"),
             SimpleNamespace(id=1009, name=f"{MA_STREAM_NAME} 3", type="internetradio"),
             SimpleNamespace(id=None, name="No id", type="airplay"),
+            # a user stream that merely starts with the MA name prefix stays selectable
+            SimpleNamespace(id=1010, name=f"{MA_STREAM_NAME} Radio", type="internetradio"),
         ]
-        assert {s.id for s in prov.selectable_streams()} == {996, 1000}
+        assert {s.id for s in prov.selectable_streams()} == {996, 1000, 1010}
 
 
 class TestPollLoop:
@@ -362,14 +365,16 @@ class TestRemoveMaStreams:
     """Test cleanup of MA-created streams."""
 
     async def test_removes_only_ma_streams(self) -> None:
-        """Only streams named with the MA prefix (and with an id) are deleted."""
+        """Only streams named with the MA prefix, of MA_STREAM_TYPE, with an id, are deleted."""
         prov = _provider()
         prov._ma_streams = {0: 7}
         prov.api.get_streams = AsyncMock(
             return_value=[
-                SimpleNamespace(id=7, name=f"{MA_STREAM_NAME} 1"),
-                SimpleNamespace(id=8, name="Groove Salad"),
-                SimpleNamespace(id=None, name=f"{MA_STREAM_NAME} 2"),
+                SimpleNamespace(id=7, name=f"{MA_STREAM_NAME} 1", type=MA_STREAM_TYPE),
+                SimpleNamespace(id=8, name="Groove Salad", type=MA_STREAM_TYPE),
+                SimpleNamespace(id=None, name=f"{MA_STREAM_NAME} 2", type=MA_STREAM_TYPE),
+                # a user stream that merely starts with the same name prefix must survive
+                SimpleNamespace(id=9, name=f"{MA_STREAM_NAME} Radio", type="fileplayer"),
             ]
         )
         prov.api.delete_stream = AsyncMock()

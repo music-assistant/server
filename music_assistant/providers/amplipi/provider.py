@@ -28,6 +28,28 @@ if TYPE_CHECKING:
     from pyamplipi.models import Stream as AmpliPiStream
 
 
+def _ma_stream_source_id(stream: AmpliPiStream) -> int | None:
+    """
+    Return the AmpliPi source id a Music Assistant stream is bound to, or None.
+
+    Requires both the exact "<MA_STREAM_NAME> <source_id>" naming scheme and
+    MA_STREAM_TYPE, so a user-created stream that merely starts with the same
+    name prefix (e.g. "Music Assistant Radio") is never mistaken for one of ours.
+
+    :param stream: The AmpliPi stream to inspect.
+    """
+    if stream.id is None or stream.type != MA_STREAM_TYPE:
+        return None
+    name = stream.name or ""
+    if not name.startswith(f"{MA_STREAM_NAME} "):
+        return None
+    suffix = name[len(MA_STREAM_NAME) :].strip()
+    try:
+        return int(suffix)
+    except ValueError:
+        return None
+
+
 class AmpliPiPlayerProvider(PlayerProvider):
     """Player provider for AmpliPi multi-zone audio controllers."""
 
@@ -163,7 +185,7 @@ class AmpliPiPlayerProvider(PlayerProvider):
             stream
             for stream in self._streams
             if stream.id is not None
-            and not (stream.name or "").startswith(MA_STREAM_NAME)
+            and _ma_stream_source_id(stream) is None
             and stream.type not in EXCLUDED_SELECTABLE_STREAM_TYPES
         ]
 
@@ -206,17 +228,15 @@ class AmpliPiPlayerProvider(PlayerProvider):
         """
         self._ma_streams = {}
         for stream in streams:
-            if stream.id is None or not (stream.name or "").startswith(MA_STREAM_NAME):
-                continue
-            suffix = stream.name[len(MA_STREAM_NAME) :].strip()
-            with suppress(ValueError):
-                self._ma_streams[int(suffix)] = stream.id
+            source_id = _ma_stream_source_id(stream)
+            if source_id is not None and stream.id is not None:
+                self._ma_streams[source_id] = stream.id
 
     async def _remove_ma_streams(self) -> None:
         """Delete every Music Assistant stream from the AmpliPi controller."""
         with suppress(*AMPLIPI_API_ERRORS):
             for stream in await self.api.get_streams():
-                if stream.id is not None and (stream.name or "").startswith(MA_STREAM_NAME):
+                if _ma_stream_source_id(stream) is not None:
                     with suppress(*AMPLIPI_API_ERRORS):
                         await self.api.delete_stream(stream.id)
         self._ma_streams = {}
