@@ -92,105 +92,53 @@ def build_config_entries(
         ConfigEntry(
             key="open_connect",
             type=ConfigEntryType.ACTION,
-            label="Open Connect Wizard",
-            description=(
-                "One-click setup for Claude Desktop, Claude Code, Cursor, "
-                "Windsurf, VSCode, ChatGPT and other MCP clients. Mints a "
-                "per-client token labelled `MCP — <Client>` (revocable in "
-                "Profile → Long-lived access tokens) and copies the ready-to-paste "
-                "snippet for you."
-            ),
             action="open_connect",
             required=False,
         ),
         ConfigEntry(
             key=CONF_REQUIRE_AUTH,
             type=ConfigEntryType.BOOLEAN,
-            label="Require authentication",
             default_value=True,
             category="Server",
-            description=(
-                "Reject unauthenticated MCP clients. Strongly recommended — "
-                "with auth disabled, every MCP client on the network can drive playback."
-            ),
             required=False,
         ),
         ConfigEntry(
             key=CONF_MOUNT_PATH,
             type=ConfigEntryType.STRING,
-            label="Mount path",
             default_value=DEFAULT_MOUNT_PATH,
             category="Server",
             advanced=True,
-            description=(
-                "HTTP path prefix where the MCP server is mounted on MA's webserver. "
-                "Change only if it conflicts with another route."
-            ),
             required=False,
         ),
         ConfigEntry(
             key=CONF_REQUIRE_CONFIRMATION,
             type=ConfigEntryType.BOOLEAN,
-            label="Confirm destructive operations",
             default_value=True,
             category="Server",
-            description=(
-                "Ask the MCP client to confirm before running destructive tools "
-                "(clear_queue, remove_tracks, remove_from_library, "
-                "remove_from_favorites). If the client doesn't support "
-                "elicitation, the call falls through to the permission flag."
-            ),
             required=False,
         ),
         ConfigEntry(
             key=CONF_ENFORCE_AUDIENCE,
             type=ConfigEntryType.BOOLEAN,
-            label="Enforce token audience (RFC 8707)",
             default_value=False,
             category="Server",
             advanced=True,
-            description=(
-                "Reject Bearer tokens whose `aud` claim does not match this MCP "
-                "server's canonical URI. Mitigates the OAuth confused-deputy "
-                "attack where a token issued for one MA endpoint is replayed "
-                "against another. Requires upstream Music Assistant support for "
-                "writing `aud` into JWTs (in progress) — until then enabling "
-                "this rejects all existing tokens. Leave off unless your MA "
-                "build issues audience-bound tokens."
-            ),
             required=False,
         ),
         ConfigEntry(
             key=CONF_EXTRA_ALLOWED_ORIGINS,
             type=ConfigEntryType.STRING,
-            label="Additional allowed Origins (CSV)",
             default_value="",
             category="Server",
             advanced=True,
-            description=(
-                "Comma-separated list of additional `Origin` headers to accept "
-                "(e.g. `https://ha.example.com` for Home Assistant ingress, or a "
-                "reverse-proxy hostname). By default the server only accepts "
-                "`localhost`, `127.0.0.1`, the MA `base_url` host, and `publish_ip`. "
-                "Mismatching Origins are rejected with 403 to mitigate DNS rebinding."
-            ),
             required=False,
         ),
         ConfigEntry(
             key=CONF_CONNECT_EXTERNAL_URL,
             type=ConfigEntryType.STRING,
-            label="Connect Wizard external URL (fallback)",
             default_value="",
             category="Server",
             advanced=True,
-            description=(
-                "Optional explicit base URL the Connect Wizard should open at "
-                "(e.g. `https://ha.example.com/<addon-slug>` for Home Assistant "
-                "add-on ingress). Used only when the wizard cannot auto-detect "
-                "the external URL from the active client connection — set it "
-                "if your reverse proxy strips the `X-Forwarded-Host` / "
-                "`X-Ingress-Path` headers."
-            ),
             required=False,
         ),
         # Query permissions
@@ -381,15 +329,9 @@ def build_config_entries(
         ConfigEntry(
             key=CONF_DEBUG_EVENT_BUFFER_CAPACITY,
             type=ConfigEntryType.INTEGER,
-            label="Debug: event buffer capacity",
             default_value=500,
             range=(50, 5000),
             category="Debug",
-            description=(
-                "Maximum number of recent events kept in memory when "
-                "`Debug: read recent MA events` is enabled. Older events "
-                "are dropped FIFO. Has no effect when events are off."
-            ),
             required=False,
         ),
         # Config namespace — all off-by-default. See specs/inprogress/0006-config-read-write.md.

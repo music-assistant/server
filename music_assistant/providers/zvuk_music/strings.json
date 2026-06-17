@@ -1,0 +1,23 @@
+{
+  "config_entries": {
+    "token": {
+      "label": "Zvuk Music Token",
+      "description": "Enter your Zvuk Music X-Auth-Token. See the documentation for how to obtain it."
+    },
+    "clear_auth": {
+      "label": "Reset authentication",
+      "description": "Clear the current authentication details."
+    },
+    "quality": {
+      "label": "Audio quality",
+      "description": "Select preferred audio quality.",
+      "options": {
+        "high": "High (320 kbps)",
+        "lossless": "Lossless (FLAC)"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Stream music from Zvuk Music service."
+  }
+}

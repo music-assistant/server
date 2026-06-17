@@ -95,18 +95,12 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_MASS_PLAYER_ID,
             type=ConfigEntryType.STRING,
-            label="Connected Music Assistant Player",
-            description="The Music Assistant player connected to this AirPlay receiver plugin. "
-            "When you stream audio via AirPlay to this virtual speaker, "
-            "the audio will play on the selected player. "
-            "Set to 'Auto' to automatically select a currently playing player, "
-            "or the first available player if none is playing.",
             multi_value=False,
             default_value=PLAYER_ID_AUTO,
             options=[
-                ConfigValueOption("Auto (prefer playing player)", PLAYER_ID_AUTO),
+                ConfigValueOption(PLAYER_ID_AUTO),
                 *(
-                    ConfigValueOption(x.display_name, x.player_id)
+                    ConfigValueOption(x.player_id, title=x.display_name)
                     for x in sorted(
                         mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
                     )
@@ -117,8 +111,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_AIRPLAY_NAME,
             type=ConfigEntryType.STRING,
-            label="AirPlay Device Name",
-            description="How should this AirPlay receiver be named in the AirPlay device list?",
             default_value="Music Assistant",
         ),
     )

@@ -48,6 +48,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
@@ -265,7 +266,7 @@ def _extract_code(payload: dict[str, Any]) -> int | None:
         raw_code = payload["data"].get("code")
     try:
         return int(raw_code) if raw_code is not None else None
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -375,7 +376,7 @@ def _decode_qr_data_url(data_url: str) -> tuple[bytes, str] | None:
     mime_type = meta.replace("data:", "", 1)
     try:
         return (base64.b64decode(b64_data), mime_type)
-    except (ValueError, binascii.Error):
+    except ValueError, binascii.Error:
         return None
 
 
@@ -581,19 +582,13 @@ def _build_config_entries(values: dict[str, ConfigValueType]) -> tuple[ConfigEnt
         ConfigEntry(
             key=CONF_API_BASE_URL,
             type=ConfigEntryType.STRING,
-            label="API base URL",
             required=True,
             default_value=DEFAULT_API_BASE_URL,
             value=str(values.get(CONF_API_BASE_URL) or DEFAULT_API_BASE_URL),
-            description=(
-                "Base URL of your local NeteaseCloudMusicApi-compatible service "
-                "(for Home Assistant users, see companion add-on PR #16)."
-            ),
         ),
         ConfigEntry(
             key=CONF_QR_PAGE_URL,
             type=ConfigEntryType.STRING,
-            label="QR login page URL",
             required=False,
             hidden=not has_qr_pending or not qr_page_url,
             value=qr_page_url,
@@ -601,39 +596,33 @@ def _build_config_entries(values: dict[str, ConfigValueType]) -> tuple[ConfigEnt
         ConfigEntry(
             key=CONF_QUALITY,
             type=ConfigEntryType.STRING,
-            label="Preferred quality",
             default_value=QUALITY_EXHIGH,
             hidden=not is_verified,
             options=[
-                ConfigValueOption("Standard", QUALITY_STANDARD),
-                ConfigValueOption("Higher", QUALITY_HIGHER),
-                ConfigValueOption("Exhigh", QUALITY_EXHIGH),
-                ConfigValueOption("Lossless", QUALITY_LOSSLESS),
-                ConfigValueOption("Hi-Res", QUALITY_HIRES),
-                ConfigValueOption("JY Effect", QUALITY_JYEFFECT),
-                ConfigValueOption("JY Master", QUALITY_JYMASTER),
+                ConfigValueOption(QUALITY_STANDARD),
+                ConfigValueOption(QUALITY_HIGHER),
+                ConfigValueOption(QUALITY_EXHIGH),
+                ConfigValueOption(QUALITY_LOSSLESS),
+                ConfigValueOption(QUALITY_HIRES),
+                ConfigValueOption(QUALITY_JYEFFECT),
+                ConfigValueOption(QUALITY_JYMASTER),
             ],
         ),
         ConfigEntry(
             key=CONF_ACTION_START_QR_AUTH,
             type=ConfigEntryType.ACTION,
-            label="QR Login",
             action=CONF_ACTION_START_QR_AUTH,
-            description="Generate QR code and open login popup page.",
             hidden=is_verified,
         ),
         ConfigEntry(
             key=CONF_ACTION_CHECK_QR_AUTH,
             type=ConfigEntryType.ACTION,
-            label="Check QR status",
             action=CONF_ACTION_CHECK_QR_AUTH,
-            description="Manually check whether scan confirmation completed.",
             hidden=not has_qr_pending or is_verified,
         ),
         ConfigEntry(
             key=CONF_ACTION_CLEAR_AUTH,
             type=ConfigEntryType.ACTION,
-            label="Reset authentication",
             action=CONF_ACTION_CLEAR_AUTH,
             hidden=not (has_qr_pending or is_verified),
         ),
@@ -689,7 +678,7 @@ async def get_config_entries(
             await _check_qr_auth(mass, values)
     except ResourceTemporarilyUnavailable as err:
         raise InvalidDataError(str(err)) from err
-    return _build_config_entries(values)
+    return (CONF_ENTRY_UNOFFICIAL_PROVIDER, *_build_config_entries(values))
 
 
 class NeteaseCloudMusicProvider(MusicProvider):
@@ -1128,7 +1117,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         async def _fetch_quality(track_id: str) -> tuple[str, dict[str, Any] | None]:
             try:
                 quality_obj = await self._get_song_music_detail(track_id)
-            except (InvalidDataError, ResourceTemporarilyUnavailable):
+            except InvalidDataError, ResourceTemporarilyUnavailable:
                 return track_id, None
             return track_id, quality_obj if isinstance(quality_obj, dict) else None
 

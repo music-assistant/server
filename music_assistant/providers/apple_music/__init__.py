@@ -25,6 +25,7 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import LoginFailed
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.helpers.auth import AuthenticationHelper
 
 from .constants import (
@@ -158,10 +159,10 @@ async def get_config_entries(
 
     # ruff: noqa: ARG001
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=CONF_MUSIC_APP_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="MusicKit App Token",
             hidden=default_app_token_valid,
             required=True,
             value=values.get(CONF_MUSIC_APP_TOKEN) if values else None,
@@ -169,11 +170,8 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_MUSIC_USER_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Music User Token",
             required=False,
             action="CONF_ACTION_AUTH",
-            description="Authenticate with Apple Music to retrieve a valid music user token.",
-            action_label="Authenticate with Apple Music",
             value=values.get(CONF_MUSIC_USER_TOKEN)
             if (
                 values
@@ -185,21 +183,14 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_MUSIC_USER_MANUAL_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Manual Music User Token",
             required=False,
             advanced=True,
-            description=(
-                "Authenticate with a manual Music User Token in case the Authentication flow"
-                " is unsupported (e.g. when using child accounts)."
-            ),
             help_link="https://www.music-assistant.io/music-providers/apple-music/",
             value=values.get(CONF_MUSIC_USER_MANUAL_TOKEN),
         ),
         ConfigEntry(
             key=CONF_MUSIC_USER_TOKEN_TIMESTAMP,
             type=ConfigEntryType.INTEGER,
-            description="Timestamp music user token was updated.",
-            label="Music User Token Timestamp",
             hidden=True,
             required=True,
             default_value=0,

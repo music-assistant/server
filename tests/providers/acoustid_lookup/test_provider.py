@@ -264,7 +264,8 @@ def _rg(
             id="streaming_toggle_on",
         ),
         pytest.param({}, {}, None, None, True, True, id="local_file_mbid_missing"),
-        pytest.param({"api_key": None}, {}, None, None, False, False, id="no_api_key"),
+        # No user-supplied key still proceeds — the shared AcoustID key is used.
+        pytest.param({"api_key": None}, {}, None, None, True, True, id="no_user_api_key"),
     ],
 )
 async def test_start_analysis_gates(
@@ -370,6 +371,31 @@ async def test_start_analysis_skips_within_no_match_cooldown(
 
     assert accepted is False
     # declined before any fingerprinting work
+    assert fp.start_args is None
+
+
+@pytest.mark.asyncio
+async def test_start_analysis_skips_multichannel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A multichannel (e.g. 5.1) file is declined before any fingerprinting work.
+
+    Feeding chromaprint multichannel audio trips a C-level assertion that aborts the
+    process, so the session must be refused up-front rather than risk the crash.
+    """
+    provider = _make_provider()
+    track = MagicMock(mbid=None)
+    track.get_external_id.return_value = None
+    cast("MagicMock", provider.mass.music.tracks).get_library_item_by_prov_id = AsyncMock(
+        return_value=track
+    )
+    fp = _FakeFingerprinter()
+    _install_fake_chromaprint(monkeypatch, fp)
+
+    accepted = await provider.start_analysis(
+        "session", _make_streamdetails(), _make_audio_format(channels=6)
+    )
+
+    assert accepted is False
+    # declined before the fingerprinter was ever started
     assert fp.start_args is None
 
 

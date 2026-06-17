@@ -146,18 +146,20 @@ class ImageProvider:
 class Context:
     """Context information for object conversion."""
 
-    provider: "BBCSoundsProvider"
+    provider: BBCSoundsProvider
     provider_domain: str
     path_parts: list[str] | None = None
     force_type: (
-        type[Track]
-        | type[LiveStation]
-        | type[Radio]
-        | type[MAPodcast]
-        | type[MAPodcastEpisode]
-        | type[BrowseFolder]
-        | type[RecommendationFolder]
-        | type[RecommendedMenuItem]
+        type[
+            Track
+            | LiveStation
+            | Radio
+            | MAPodcast
+            | MAPodcastEpisode
+            | BrowseFolder
+            | RecommendationFolder
+            | RecommendedMenuItem
+        ]
         | None
     ) = None
 
@@ -213,7 +215,7 @@ class BaseConverter(ABC):
                 else:
                     return default
             return current
-        except (AttributeError, KeyError, TypeError):
+        except AttributeError, KeyError, TypeError:
             return default
 
 
@@ -734,7 +736,7 @@ class BrowseConverter(BaseConverter):
 class Adaptor:
     """An adaptor object to convert Sounds API objects into MA ones."""
 
-    def __init__(self, provider: "BBCSoundsProvider"):
+    def __init__(self, provider: BBCSoundsProvider):
         """Create new adaptor."""
         self.provider = provider
         self.logger = self.provider.logger
@@ -744,13 +746,9 @@ class Adaptor:
         self,
         path_parts: list[str] | None = None,
         force_type: (
-            type[Track]
-            | type[Any]
-            | type[Radio]
-            | type[Podcast]
-            | type[PodcastEpisode]
-            | type[BrowseFolder]
-            | type[RecommendationFolder]
+            type[
+                Track | Any | Radio | Podcast | PodcastEpisode | BrowseFolder | RecommendationFolder
+            ]
             | None
         ) = None,
     ) -> Context:
@@ -764,7 +762,7 @@ class Adaptor:
     async def new_streamable_object(
         self,
         source_obj: SoundsTypes,
-        force_type: type[Track] | type[Radio] | type[MAPodcastEpisode] | None = None,
+        force_type: type[Track | Radio | MAPodcastEpisode] | None = None,
         path_parts: list[str] | None = None,
     ) -> StreamDetails | None:
         """

@@ -24,12 +24,13 @@ from importlib.metadata import version as pkg_version
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from pathlib import Path
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Self, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Protocol, Self, TypeVar, cast
 from urllib.parse import urlparse
 
 import chardet
 import ifaddr
 from music_assistant_models.enums import AlbumType, IdentifierType
+from music_assistant_models.errors import UnsupportedSystemError
 from zeroconf import InterfaceChoice, IPVersion
 
 from music_assistant.constants import (
@@ -49,8 +50,6 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderModuleType
-    from music_assistant.models.core_controller import CoreController
-    from music_assistant.models.provider import Provider
 
 from dataclasses import fields, is_dataclass
 
@@ -73,7 +72,7 @@ async def warn_if_missing_x86_64_v2(logger: logging.Logger) -> None:
     def _check() -> bool | None:
         try:
             cpuinfo = Path("/proc/cpuinfo").read_text()
-        except (FileNotFoundError, PermissionError):
+        except FileNotFoundError, PermissionError:
             return None
 
         flags: set[str] = set()
@@ -125,10 +124,113 @@ def get_total_system_memory() -> float:
         # Works on Linux and macOS
         total_memory_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
         return total_memory_bytes / (1024**3)  # Convert to GB
-    except (AttributeError, ValueError):
+    except AttributeError, ValueError:
         # Fallback if sysconf is not available (e.g., Windows)
         # Return a conservative default to disable buffering by default
         return 0.0
+
+
+def is_arm() -> bool:
+    """Return whether the host CPU is ARM-based (32- or 64-bit)."""
+    return platform.machine().lower() in ("arm64", "aarch64", "armv8l", "armv7l")
+
+
+def verify_system_meets_requirements(
+    *,
+    feature_name: str,
+    min_memory_gb: float = 0.0,
+    min_cpu_cores: int = 0,
+    require_ml_inference: bool = False,
+) -> None:
+    """
+    Verify the host meets the minimum CPU/RAM requirements for a heavy provider.
+
+    :param feature_name: Human-readable provider name used in the error message.
+    :param min_memory_gb: Minimum total system RAM in GB (0 disables the check).
+    :param min_cpu_cores: Minimum CPU core count (0 disables the check).
+    :param require_ml_inference: When True, also verify the CPU can run on-device
+        torch inference (AVX2 on x86). Checked last, as it imports torch.
+    :raises UnsupportedSystemError: If the system does not meet the requirements.
+    """
+    if shortfall := _resource_shortfall(min_memory_gb=min_memory_gb, min_cpu_cores=min_cpu_cores):
+        message, translation_key, translation_args = shortfall
+        raise UnsupportedSystemError(
+            f"This system does not meet the minimal requirements for {feature_name}: {message}",
+            translation_key=translation_key,
+            translation_args=[feature_name, *translation_args],
+        )
+    if require_ml_inference:
+        verify_cpu_supports_ml_inference()
+
+
+def system_meets_requirements(
+    *,
+    min_memory_gb: float = 0.0,
+    min_cpu_cores: int = 0,
+) -> bool:
+    """
+    Return whether the host meets the given RAM/CPU thresholds.
+
+    A non-raising companion to verify_system_meets_requirements for soft UI hints
+    (e.g. hiding a recommended-hardware notice) rather than gating setup. The
+    ML-inference capability is not considered here.
+
+    :param min_memory_gb: Minimum total system RAM in GB (0 disables the check).
+    :param min_cpu_cores: Minimum CPU core count (0 disables the check).
+    """
+    return _resource_shortfall(min_memory_gb=min_memory_gb, min_cpu_cores=min_cpu_cores) is None
+
+
+def _resource_shortfall(
+    *, min_memory_gb: float, min_cpu_cores: int
+) -> tuple[str, str, list[Any]] | None:
+    """
+    Return an unmet RAM/CPU threshold as (message, translation_key, translation_args), or None.
+
+    translation_args exclude the feature name, which the caller prepends.
+
+    :param min_memory_gb: Minimum total system RAM in GB (0 disables the check).
+    :param min_cpu_cores: Minimum CPU core count (0 disables the check).
+    """
+    cpu_cores = os.process_cpu_count() or os.cpu_count() or 1
+    if min_cpu_cores and cpu_cores < min_cpu_cores:
+        return (
+            f"at least {min_cpu_cores} CPU cores are required ({cpu_cores} detected).",
+            "errors.unsupported_system_cpu_cores",
+            [min_cpu_cores, cpu_cores],
+        )
+    total_memory_gb = get_total_system_memory()
+    # get_total_system_memory() returns 0.0 when the platform cannot report memory
+    # (e.g. Windows); treat that as unknown and pass rather than block on a guess.
+    if min_memory_gb and total_memory_gb and total_memory_gb < min_memory_gb:
+        return (
+            f"at least {min_memory_gb:.0f}GB of RAM is required ({total_memory_gb:.1f}GB detected).",
+            "errors.unsupported_system_memory",
+            [f"{min_memory_gb:.0f}", f"{total_memory_gb:.1f}"],
+        )
+    return None
+
+
+def verify_cpu_supports_ml_inference() -> None:
+    """
+    Verify the CPU can run on-device ML (torch) inference.
+
+    :raises UnsupportedSystemError: If this is an x86 CPU without AVX2 support, which
+        torch's FBGEMM quantized backend requires.
+    """
+    if platform.machine().lower() not in ("x86_64", "amd64", "i386", "i686", "x86"):
+        # non-x86 (ARM) machines run quantized inference via QNNPACK instead of FBGEMM
+        return
+    import torch  # noqa: PLC0415
+
+    if torch.backends.cpu.get_cpu_capability() in ("DEFAULT", "NO AVX"):
+        raise UnsupportedSystemError(
+            "On-device audio analysis requires a CPU with AVX2 support "
+            "(Intel Haswell / AMD Zen or newer). This CPU does not support AVX2. "
+            "If you are running in a virtual machine (e.g. Proxmox), changing the "
+            "CPU type to 'host' may expose AVX2 to the guest.",
+            translation_key="errors.unsupported_system_avx2",
+        )
 
 
 keyword_pattern = re.compile("title=|artist=")
@@ -230,7 +332,7 @@ def try_parse_int(possible_int: Any, default: int | None = 0) -> int | None:
     """Try to parse an int."""
     try:
         return int(float(possible_int))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -238,7 +340,7 @@ def try_parse_float(possible_float: Any, default: float | None = 0.0) -> float |
     """Try to parse a float."""
     try:
         return float(possible_float)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -706,7 +808,7 @@ def empty_queue[T](q: asyncio.Queue[T]) -> None:
         try:
             q.get_nowait()
             q.task_done()
-        except (asyncio.QueueEmpty, ValueError):
+        except asyncio.QueueEmpty, ValueError:
             pass
 
 
@@ -797,7 +899,7 @@ async def has_tmpfs_mount() -> bool:
                 for line in file:
                     if "tmpfs /tmp tmpfs rw" in line:
                         return True
-        except (FileNotFoundError, OSError, PermissionError):
+        except FileNotFoundError, OSError, PermissionError:
             pass
         return False
 
@@ -812,7 +914,7 @@ async def get_free_space(folder: str) -> float:
         try:
             res = shutil.disk_usage(folder)
             return res.free / float(1 << 30)
-        except (FileNotFoundError, OSError, PermissionError):
+        except FileNotFoundError, OSError, PermissionError:
             return 0.0
 
     return await asyncio.to_thread(_get_free_space, folder)
@@ -826,7 +928,7 @@ async def get_free_space_percentage(folder: str) -> float:
         try:
             res = shutil.disk_usage(folder)
             return res.free / res.total * 100
-        except (FileNotFoundError, OSError, PermissionError):
+        except FileNotFoundError, OSError, PermissionError:
             return 0.0
 
     return await asyncio.to_thread(_get_free_space, folder)
@@ -1379,13 +1481,22 @@ class TimedAsyncGenerator:
         return self._factory()
 
 
-def guard_single_request[ProviderT: "Provider | CoreController", **P, R](
-    func: Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]],
-) -> Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]]:
+# Bound for guard_single_request: it only needs ``.mass``, so a structural protocol
+# lets it decorate providers, core controllers and media controllers alike without
+# coupling to their concrete base classes.
+class _SupportsMass(Protocol):
+    """Structural type for objects exposing a MusicAssistant reference."""
+
+    mass: MusicAssistant
+
+
+def guard_single_request[SelfT: _SupportsMass, **P, R](
+    func: Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]],
+) -> Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]]:
     """Guard single request to a function."""
 
     @functools.wraps(func)
-    async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(self: SelfT, *args: P.args, **kwargs: P.kwargs) -> R:
         mass = self.mass
         # create a task_id dynamically based on the function and args/kwargs
         cache_key_parts = [func.__class__.__name__, func.__name__, *args]

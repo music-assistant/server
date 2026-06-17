@@ -80,6 +80,7 @@ from qqmusic_api.utils.session import (
     set_session as qq_set_session,
 )
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
@@ -318,7 +319,11 @@ async def _start_qr_auth(
             values[CONF_QR_PAGE_URL] = None
             raise InvalidDataError("QR code expired, please generate a new one")
         if event == qq_login_mod.QRCodeLoginEvents.REFUSE:
-            raise InvalidDataError(f"Login was rejected in {_get_qr_login_name(values)} app")
+            raise InvalidDataError(
+                f"Login was rejected in {_get_qr_login_name(values)} app",
+                translation_key="provider.qqmusic.errors.login_rejected",
+                translation_args=[_get_qr_login_name(values)],
+            )
         await asyncio.sleep(1)
     if values.get(CONF_QR_IDENTIFIER):
         raise InvalidDataError(
@@ -346,7 +351,9 @@ async def _check_qr_auth(values: dict[str, ConfigValueType]) -> None:
         raise InvalidDataError("QR code not scanned yet")
     if event == qq_login_mod.QRCodeLoginEvents.CONF:
         raise InvalidDataError(
-            f"QR scanned, please confirm login in {_get_qr_login_name(values)} app"
+            f"QR scanned, please confirm login in {_get_qr_login_name(values)} app",
+            translation_key="provider.qqmusic.errors.confirm_login_in_app",
+            translation_args=[_get_qr_login_name(values)],
         )
     if event == qq_login_mod.QRCodeLoginEvents.TIMEOUT:
         values[CONF_QR_IDENTIFIER] = None
@@ -354,7 +361,11 @@ async def _check_qr_auth(values: dict[str, ConfigValueType]) -> None:
         values[CONF_QR_PAGE_URL] = None
         raise InvalidDataError("QR code expired, please generate a new one")
     if event == qq_login_mod.QRCodeLoginEvents.REFUSE:
-        raise InvalidDataError(f"Login was rejected in {_get_qr_login_name(values)} app")
+        raise InvalidDataError(
+            f"Login was rejected in {_get_qr_login_name(values)} app",
+            translation_key="provider.qqmusic.errors.login_rejected",
+            translation_args=[_get_qr_login_name(values)],
+        )
     raise LoginFailed("Unable to determine QR login status")
 
 
@@ -380,7 +391,6 @@ def _build_config_entries(values: dict[str, ConfigValueType]) -> tuple[ConfigEnt
         ConfigEntry(
             key=CONF_QR_PAGE_URL,
             type=ConfigEntryType.STRING,
-            label="QR login page URL",
             required=False,
             hidden=not has_qr_pending or not qr_page_url,
             value=qr_page_url,
@@ -396,44 +406,37 @@ def _build_config_entries(values: dict[str, ConfigValueType]) -> tuple[ConfigEnt
         ConfigEntry(
             key=CONF_QUALITY,
             type=ConfigEntryType.STRING,
-            label="Preferred quality",
             default_value=QUALITY_MP3_320,
             options=[
-                ConfigValueOption("MP3 128kbps (most compatible)", QUALITY_MP3_128),
-                ConfigValueOption("MP3 320kbps", QUALITY_MP3_320),
-                ConfigValueOption("FLAC (fallback to MP3)", QUALITY_FLAC),
-                ConfigValueOption("Hi-Res (Master, fallback to FLAC/MP3)", QUALITY_HI_RES),
+                ConfigValueOption(QUALITY_MP3_128),
+                ConfigValueOption(QUALITY_MP3_320),
+                ConfigValueOption(QUALITY_FLAC),
+                ConfigValueOption(QUALITY_HI_RES),
             ],
             hidden=not is_verified,
         ),
         ConfigEntry(
             key=CONF_ACTION_START_QQ_QR_AUTH,
             type=ConfigEntryType.ACTION,
-            label="QQ Login",
-            description="Generate a QQ QR code and open the login popup page.",
             action=CONF_ACTION_START_QQ_QR_AUTH,
             hidden=is_verified,
         ),
         ConfigEntry(
             key=CONF_ACTION_START_WX_QR_AUTH,
             type=ConfigEntryType.ACTION,
-            label="WeChat Login",
-            description="Generate a WeChat QR code and open the login popup page.",
             action=CONF_ACTION_START_WX_QR_AUTH,
             hidden=is_verified,
         ),
         ConfigEntry(
             key=CONF_ACTION_CHECK_QR_AUTH,
             type=ConfigEntryType.ACTION,
-            label="Check QR status",
-            description=f"Manually check whether {qr_login_name} scan confirmation is completed.",
+            translation_params=[qr_login_name],
             action=CONF_ACTION_CHECK_QR_AUTH,
             hidden=not has_qr_pending or is_verified,
         ),
         ConfigEntry(
             key=CONF_ACTION_CLEAR_AUTH,
             type=ConfigEntryType.ACTION,
-            label="Reset authentication",
             action=CONF_ACTION_CLEAR_AUTH,
             hidden=not (has_qr_pending or is_verified),
         ),
@@ -505,7 +508,7 @@ async def get_config_entries(
         await _start_qr_auth(mass, values, qq_login_mod.QRLoginType.WX)
     elif action == CONF_ACTION_CHECK_QR_AUTH:
         await _check_qr_auth(values)
-    return _build_config_entries(values)
+    return (CONF_ENTRY_UNOFFICIAL_PROVIDER, *_build_config_entries(values))
 
 
 class QQMusicProvider(MusicProvider):
@@ -1050,7 +1053,7 @@ class QQMusicProvider(MusicProvider):
             )
             if isinstance(tab_albums, list):
                 raw_albums = [item for item in tab_albums if isinstance(item, dict)]
-        except (MediaNotFoundError, InvalidDataError, TypeError, ValueError):
+        except MediaNotFoundError, InvalidDataError, TypeError, ValueError:
             raw_albums = []
 
         if not raw_albums:
@@ -1204,7 +1207,7 @@ class QQMusicProvider(MusicProvider):
                 try:
                     yield self._parse_artist(artist_obj)
                     total_yielded += 1
-                except (InvalidDataError, TypeError, ValueError):
+                except InvalidDataError, TypeError, ValueError:
                     continue
             if len(artists) < num:
                 break
@@ -1231,7 +1234,7 @@ class QQMusicProvider(MusicProvider):
                 try:
                     yield self._parse_track(song)
                     yielded += 1
-                except (InvalidDataError, TypeError, ValueError):
+                except InvalidDataError, TypeError, ValueError:
                     continue
             if total and yielded >= total:
                 break
@@ -1265,7 +1268,7 @@ class QQMusicProvider(MusicProvider):
                 try:
                     yield self._parse_album(album_obj)
                     total_yielded += 1
-                except (InvalidDataError, TypeError, ValueError):
+                except InvalidDataError, TypeError, ValueError:
                     continue
             if len(albums) < num:
                 break
@@ -1281,7 +1284,7 @@ class QQMusicProvider(MusicProvider):
         for playlist_obj in created or []:
             try:
                 yield self._parse_playlist(playlist_obj)
-            except (InvalidDataError, TypeError, ValueError):
+            except InvalidDataError, TypeError, ValueError:
                 continue
 
         page = 1
@@ -1301,7 +1304,7 @@ class QQMusicProvider(MusicProvider):
             for playlist_obj in fav_playlists:
                 try:
                     yield self._parse_playlist(playlist_obj)
-                except (InvalidDataError, TypeError, ValueError):
+                except InvalidDataError, TypeError, ValueError:
                     continue
             if len(fav_playlists) < num:
                 break
@@ -1351,7 +1354,7 @@ class QQMusicProvider(MusicProvider):
                 track = self._parse_track(song)
                 track.position = index
                 results.append(track)
-            except (InvalidDataError, TypeError, ValueError):
+            except InvalidDataError, TypeError, ValueError:
                 continue
         return results
 

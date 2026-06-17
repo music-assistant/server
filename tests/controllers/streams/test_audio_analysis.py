@@ -6,7 +6,7 @@ import asyncio
 import inspect
 from collections.abc import AsyncGenerator, Mapping
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.audio_analysis import AudioAnalysisCoverage
@@ -45,6 +45,21 @@ async def test_distribute_chunk_calls_all_providers() -> None:
 
     p1.process_pcm_chunk.assert_awaited_once_with(session_key, b"\x00" * 1024)
     p2.process_pcm_chunk.assert_awaited_once_with(session_key, b"\x00" * 1024)
+
+
+def test_ensure_inference_runtime_configured_is_idempotent() -> None:
+    """The inference runtime (torch + native BLAS caps) is configured once per controller."""
+    controller = _make_controller()
+    with (
+        patch("torch.set_num_threads") as set_threads,
+        patch("torch.set_num_interop_threads"),
+        patch("threadpoolctl.threadpool_limits") as blas_limits,
+        patch("torch.backends.nnpack.set_flags"),
+    ):
+        controller.ensure_inference_runtime_configured()
+        controller.ensure_inference_runtime_configured()
+    set_threads.assert_called_once()
+    blas_limits.assert_called_once()
 
 
 @pytest.mark.asyncio

@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from math import ceil
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import deezer
 from aiohttp import ClientSession, ClientTimeout
@@ -45,10 +45,10 @@ from music_assistant_models.media_items import (
     Track,
     UniqueList,
 )
-from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant import MusicAssistant
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
 from music_assistant.helpers.auth import AuthenticationHelper
@@ -58,6 +58,9 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.music_provider import MusicProvider
 
 from .gw_client import DeezerGWError, GWClient
+
+if TYPE_CHECKING:
+    from music_assistant_models.provider import ProviderManifest
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -175,22 +178,18 @@ async def get_config_entries(
             )
 
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=CONF_ACCESS_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Access token",
             required=True,
             action=CONF_ACTION_AUTH,
-            description="You need to authenticate on Deezer.",
-            action_label="Authenticate with Deezer",
             value=values.get(CONF_ACCESS_TOKEN) if values else None,
         ),
         ConfigEntry(
             key=CONF_ARL_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Arl token",
             required=True,
-            description="See https://www.dumpmedia.com/deezplus/deezer-arl.html",
             value=values.get(CONF_ARL_TOKEN) if values else None,
         ),
     )
@@ -442,7 +441,6 @@ class DeezerProvider(MusicProvider):
             self.parse_track(
                 track=deezer_track,
                 user_country=self.gw_client.user_country,
-                # TODO: doesn't Deezer have disc and track number in the api ?
                 position=0,
             )
             for deezer_track in await album.get_tracks()
@@ -619,7 +617,7 @@ class DeezerProvider(MusicProvider):
                 item_id="made_for_you",
                 provider=self.instance_id,
                 name="Made for you",
-                translation_key="recommendations.made_for_you",
+                translation_key="made_for_you",
                 items=UniqueList(made_for_you_items),
             )
         )
@@ -633,7 +631,7 @@ class DeezerProvider(MusicProvider):
                         item_id="recommended_albums",
                         provider=self.instance_id,
                         name="Recommended albums",
-                        translation_key="recommendations.recommended_albums",
+                        translation_key="recommended_albums",
                         items=UniqueList(
                             [self.parse_album(album=album) for album in recommended_albums]
                         ),
@@ -651,7 +649,7 @@ class DeezerProvider(MusicProvider):
                         item_id="recommended_artists",
                         provider=self.instance_id,
                         name="Recommended artists",
-                        translation_key="recommendations.recommended_artists",
+                        translation_key="recommended_artists",
                         items=UniqueList(
                             [self.parse_artist(artist=artist) for artist in recommended_artists]
                         ),

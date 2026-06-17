@@ -1,0 +1,93 @@
+{
+  "config_entries": {
+    "wave_preset_draft_name": {
+      "label": "New preset name",
+      "description": "Give the preset a short name, pick up to three dropdowns below and click Save. Saving the same name again overwrites."
+    },
+    "wave_preset_draft_diversity": {
+      "label": "New preset: diversity",
+      "description": "How broadly the wave explores."
+    },
+    "wave_preset_draft_mood": {
+      "label": "New preset: mood",
+      "description": "Energy and mood of the tracks."
+    },
+    "wave_preset_draft_language": {
+      "label": "New preset: language",
+      "description": "Lyrics language filter."
+    },
+    "save_wave_preset": {
+      "label": "Save preset",
+      "description": "Adds the values above to Saved presets. The list is shown under Radio then My Presets in Browse.",
+      "action_label": "Save preset"
+    },
+    "wave_preset_to_delete": {
+      "label": "Select preset to delete"
+    },
+    "delete_wave_preset": {
+      "label": "Delete selected preset",
+      "description": "Removes the selected preset from the Saved presets list.",
+      "action_label": "Delete"
+    },
+    "wave_presets_data": {
+      "label": "Saved presets (internal)"
+    },
+    "auth_device": {
+      "label": "Login with device code",
+      "description": "Open a verification URL on any device and enter the short code.",
+      "action_label": "Login with device code"
+    },
+    "auth_qr": {
+      "label": "Login with QR code",
+      "description": "Opens a QR code page — scan it with the Yandex app on your phone.",
+      "action_label": "Login with QR code"
+    },
+    "remember_session": {
+      "label": "Remember session (auto-refresh token)",
+      "description": "When enabled, stores a long-lived session token to automatically refresh your music token when it expires. When disabled, you must re-authenticate manually when the token expires."
+    },
+    "clear_auth": {
+      "label": "Reset authentication",
+      "description": "Clear the current authentication details.",
+      "action_label": "Reset authentication"
+    },
+    "token": {
+      "label": "Yandex Music Token (manual)",
+      "description": "Advanced: manually enter a music token. See the documentation for how to obtain it."
+    },
+    "x_token": {
+      "label": "Session token"
+    },
+    "refresh_token": {
+      "label": "Refresh token"
+    },
+    "quality": {
+      "label": "Audio quality",
+      "description": "Select preferred audio quality.",
+      "options": {
+        "efficient": "Efficient (AAC ~64kbps)",
+        "balanced": "Balanced (AAC ~192kbps)",
+        "high": "High (MP3 ~320kbps)",
+        "superb": "Superb (FLAC Lossless)"
+      }
+    },
+    "my_wave_max_tracks": {
+      "label": "My Wave maximum tracks",
+      "description": "Maximum number of tracks to fetch for My Wave playlist. Lower values load faster but provide fewer tracks. Default: 150."
+    },
+    "liked_tracks_max_tracks": {
+      "label": "Liked Tracks maximum tracks",
+      "description": "Maximum number of tracks to show in Liked Tracks virtual playlist. Higher values may significantly increase load time and risk triggering Yandex smart-captcha. Lower values load faster. Default: 200."
+    },
+    "base_url": {
+      "label": "API Base URL"
+    },
+    "restrictive_rate_limits": {
+      "label": "Restrictive rate limits (datacenter / VPN safe mode)",
+      "description": "Enable when Music Assistant runs on a VPS, NAS-behind-VPN, or any datacenter IP. Caps total in-flight requests to Yandex below the edge concurrency limit observed for those IPs (~6 simultaneous), trading some browse / recommendations responsiveness for fewer captcha trips. Residential users do not need this — Yandex tolerates much higher concurrency from regular ISPs."
+    }
+  },
+  "manifest": {
+    "description": "Stream music, personalized recommendations, and lossless FLAC from Yandex Music — including My Wave radio and library sync."
+  }
+}

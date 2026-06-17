@@ -58,17 +58,17 @@ class GradualTimeStretchFilter(Filter):
         return f"GradualTimeStretch(steps={n}, {start:.4f}->{end:.4f})"
 
 
-class TrimFilter(Filter):
+class FadeInTrimFilter(Filter):
     """Filter that trims incoming track to align with downbeats."""
 
     output_fadeout_label: str = "fadeout_beatalign"
     output_fadein_label: str = "fadein_beatalign"
 
     def __init__(self, logger: logging.Logger, fadein_start_pos: float):
-        """Initialize beat align filter.
+        """
+        Initialize beat align filter.
 
-        Args:
-            fadein_start_pos: Position in seconds to trim the incoming track to
+        :param fadein_start_pos: Position in seconds to trim the incoming track to.
         """
         self.fadein_start_pos = fadein_start_pos
         super().__init__(logger)
@@ -81,15 +81,55 @@ class TrimFilter(Filter):
         ]
 
     def __repr__(self) -> str:
-        """Return string representation of TrimFilter."""
-        return f"Trim(trim={self.fadein_start_pos:.2f}s)"
+        """Return string representation of FadeInTrimFilter."""
+        return f"FadeInTrim(start={self.fadein_start_pos:.2f}s)"
+
+
+class FadeOutTrimFilter(Filter):
+    """Filter that trims trailing (silent) audio off the outgoing track's tail."""
+
+    output_fadeout_label: str = "fadeout_tailtrim"
+    output_fadein_label: str = "fadein_tailtrim"
+
+    def __init__(self, logger: logging.Logger, fadeout_end_pos: float, trimmed_seconds: float):
+        """
+        Initialize fade-out trim filter.
+
+        :param fadeout_end_pos: Position in seconds where the outgoing track's
+            audible content ends; everything after it is dropped.
+            Measured on the untrimmed input timeline, so this filter must precede
+            any time-stretching filter in the chain.
+        :param trimmed_seconds: Amount of trailing audio in seconds that the trim
+            drops, for logging/debugging purposes.
+        """
+        self.fadeout_end_pos = fadeout_end_pos
+        self.trimmed_seconds = trimmed_seconds
+        super().__init__(logger)
+
+    def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
+        """Trim the outgoing track's tail at the effective audio end."""
+        return [
+            f"{input_fadeout_label}atrim=end={self.fadeout_end_pos:.3f},"
+            f"asetpts=PTS-STARTPTS[{self.output_fadeout_label}]",
+            f"{input_fadein_label}anull[{self.output_fadein_label}]",  # codespell:ignore anull
+        ]
+
+    def __repr__(self) -> str:
+        """Return string representation of FadeOutTrimFilter."""
+        return f"FadeOutTrim(end={self.fadeout_end_pos:.2f}s, trimmed={self.trimmed_seconds:.2f}s)"
 
 
 class FrequencySweepFilter(Filter):
-    """Filter that creates frequency sweep effects (lowpass/highpass transitions)."""
+    """Filter that sweeps a lowpass/highpass cutoff frequency over time."""
 
     output_fadeout_label: str = "frequency_sweep"
     output_fadein_label: str = "frequency_sweep"
+
+    # cutoff at which the filter is perceptually transparent
+    lowpass_open_freq: int = 20000
+    highpass_open_freq: int = 20
+    # seconds between cutoff updates; small enough to be perceived as continuous
+    step_interval: float = 0.1
 
     def __init__(
         self,
@@ -103,17 +143,17 @@ class FrequencySweepFilter(Filter):
         curve_type: str,
         stream_type: str = "fadeout",
     ):
-        """Initialize frequency sweep filter.
+        """
+        Initialize frequency sweep filter.
 
-        Args:
-            sweep_type: 'lowpass' or 'highpass'
-            target_freq: Target frequency for the filter
-            duration: Duration of the sweep in seconds
-            start_time: When to start the sweep
-            sweep_direction: 'fade_in' (unfiltered->filtered) or 'fade_out' (filtered->unfiltered)
-            poles: Number of poles for the filter
-            curve_type: 'linear', 'exponential', or 'logarithmic'
-            stream_type: 'fadeout' or 'fadein' - which stream to process
+        :param sweep_type: 'lowpass' or 'highpass'.
+        :param target_freq: Target cutoff frequency for the filter.
+        :param duration: Duration of the sweep in seconds.
+        :param start_time: When to start the sweep.
+        :param sweep_direction: 'fade_in' (open -> target) or 'fade_out' (target -> open).
+        :param poles: Number of poles for the filter.
+        :param curve_type: 'linear', 'exponential', or 'logarithmic'.
+        :param stream_type: 'fadeout' or 'fadein' - which stream to process.
         """
         self.sweep_type = sweep_type
         self.target_freq = target_freq
@@ -134,26 +174,8 @@ class FrequencySweepFilter(Filter):
 
         super().__init__(logger)
 
-    def _generate_volume_expr(self, start: float, dur: float, direction: str, curve: str) -> str:
-        t_expr = f"t-{start}"  # Time relative to start
-        norm_t = f"min(max({t_expr},0),{dur})/{dur}"  # Normalized 0-1
-
-        if curve == "exponential":
-            # Exponential curve for smoother transitions
-            if direction == "up":
-                return f"'pow({norm_t},2)':eval=frame"
-            return f"'1-pow({norm_t},2)':eval=frame"
-        if curve == "logarithmic":
-            # Logarithmic curve for more aggressive initial change
-            if direction == "up":
-                return f"'sqrt({norm_t})':eval=frame"
-            return f"'1-sqrt({norm_t})':eval=frame"
-        if direction == "up":
-            return f"'{norm_t}':eval=frame"
-        return f"'1-{norm_t}':eval=frame"
-
     def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
-        """Generate FFmpeg filters for frequency sweep effect."""
+        """Generate FFmpeg filters for the frequency sweep effect."""
         # Select the correct input based on stream type
         if self.stream_type == "fadeout":
             input_label = input_fadeout_label
@@ -166,48 +188,49 @@ class FrequencySweepFilter(Filter):
             passthrough_label = self.output_fadeout_label
             passthrough_input = input_fadeout_label
 
-        orig_label = f"{output_label}_orig"
-        filter_label = f"{output_label}_to{self.sweep_type[:2]}"
-        filtered_label = f"{output_label}_filtered"
-        orig_faded_label = f"{output_label}_orig_faded"
-        filtered_faded_label = f"{output_label}_filtered_faded"
-
-        # Determine volume ramp directions based on sweep direction
-        if self.sweep_direction == "fade_in":
-            # Fade from dry to wet (unfiltered to filtered)
-            orig_direction = "down"
-            filter_direction = "up"
-        else:  # fade_out
-            # Fade from wet to dry (filtered to unfiltered)
-            orig_direction = "up"
-            filter_direction = "down"
-
-        # Build filter chain
-        orig_volume_expr = self._generate_volume_expr(
-            self.start_time, self.duration, orig_direction, self.curve_type
-        )
-        filtered_volume_expr = self._generate_volume_expr(
-            self.start_time, self.duration, filter_direction, self.curve_type
-        )
+        # instance name is scoped per stream type so both asendcmd command
+        # sequences address their own filter only
+        instance = f"{self.sweep_type}@sweep_{self.stream_type}"
+        steps = self._compute_sweep_steps()
+        cmd_string = "; ".join(f"{ts:.3f} {instance} f {freq:.1f}" for ts, freq in steps)
+        initial_freq = steps[0][1]
 
         return [
             # Pass through the other stream unchanged
             f"{passthrough_input}anull[{passthrough_label}]",  # codespell:ignore anull
-            # Split input into two paths
-            f"{input_label}asplit=2[{orig_label}][{filter_label}]",
-            # Apply frequency filter to one path
-            f"[{filter_label}]{self.sweep_type}=f={self.target_freq}:poles={self.poles}[{filtered_label}]",
-            # Apply time-varying volume to original path
-            f"[{orig_label}]volume={orig_volume_expr}[{orig_faded_label}]",
-            # Apply time-varying volume to filtered path
-            f"[{filtered_label}]volume={filtered_volume_expr}[{filtered_faded_label}]",
-            # Mix the two paths together
-            f"[{orig_faded_label}][{filtered_faded_label}]amix=inputs=2:duration=longest:normalize=0[{output_label}]",
+            f"{input_label}asendcmd=c='{cmd_string}',"
+            f"{instance}=f={initial_freq:.1f}:poles={self.poles}[{output_label}]",
         ]
 
     def __repr__(self) -> str:
         """Return string representation of FrequencySweepFilter."""
-        return f"FreqSweep({self.sweep_type}@{self.target_freq}Hz)"
+        return f"FreqSweep({self.sweep_type}@{self.target_freq}Hz, poles={self.poles})"
+
+    def _compute_sweep_steps(self) -> list[tuple[float, float]]:
+        """Compute the (timestamp, cutoff frequency) steps of the sweep."""
+        open_freq = (
+            self.lowpass_open_freq if self.sweep_type == "lowpass" else self.highpass_open_freq
+        )
+        if self.sweep_direction == "fade_in":
+            freq_start, freq_end = float(open_freq), float(self.target_freq)
+        else:
+            freq_start, freq_end = float(self.target_freq), float(open_freq)
+
+        n_steps = max(2, int(self.duration / self.step_interval))
+        steps: list[tuple[float, float]] = []
+        for i in range(n_steps + 1):
+            progress = i / n_steps
+            # exponential delays the cutoff movement, logarithmic front-loads it
+            # (same perceived pacing as the volume curves this sweep replaced)
+            if self.curve_type == "exponential":
+                progress = progress**2
+            elif self.curve_type == "logarithmic":
+                progress = progress**0.5
+            timestamp = self.start_time + (i / n_steps) * self.duration
+            # interpolate in log-frequency space so the sweep is perceptually linear
+            freq = freq_start * (freq_end / freq_start) ** progress
+            steps.append((timestamp, freq))
+        return steps
 
 
 class CrossfadeFilter(Filter):
@@ -216,15 +239,40 @@ class CrossfadeFilter(Filter):
     output_fadeout_label: str = "crossfade"
     output_fadein_label: str = "crossfade"
 
-    def __init__(self, logger: logging.Logger, crossfade_duration: float):
-        """Initialize crossfade filter."""
+    def __init__(
+        self,
+        logger: logging.Logger,
+        crossfade_duration: float | None = None,
+        crossfade_samples: int | None = None,
+    ):
+        """
+        Initialize crossfade filter.
+
+        :param crossfade_duration: Overlap length in seconds (emits acrossfade ``d=``).
+        :param crossfade_samples: Overlap length in PCM samples (emits acrossfade ``ns=``).
+            Prefer this when the inputs are pre-trimmed to exactly the overlap region:
+            acrossfade silently emits nothing when its requested length exceeds the
+            buffer it is fed, and a fractional ``d`` can round just past a
+            frame-aligned buffer. A sample count cannot.
+        """
+        if (crossfade_duration is None) == (crossfade_samples is None):
+            raise ValueError("Provide exactly one of crossfade_duration or crossfade_samples")
         self.crossfade_duration = crossfade_duration
+        self.crossfade_samples = crossfade_samples
         super().__init__(logger)
 
     def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
         """Apply the acrossfade filter."""
-        return [f"{input_fadeout_label}{input_fadein_label}acrossfade=d={self.crossfade_duration}"]
+        overlap = (
+            f"ns={self.crossfade_samples}"
+            if self.crossfade_samples is not None
+            else f"d={self.crossfade_duration}"
+        )
+        # equal-power qsin curves; the default tri/tri dips ~3dB mid-fade on uncorrelated material
+        return [f"{input_fadeout_label}{input_fadein_label}acrossfade={overlap}:c1=qsin:c2=qsin"]
 
     def __repr__(self) -> str:
         """Return string representation of CrossfadeFilter."""
+        if self.crossfade_samples is not None:
+            return f"Crossfade(ns={self.crossfade_samples})"
         return f"Crossfade(d={self.crossfade_duration:.1f}s)"

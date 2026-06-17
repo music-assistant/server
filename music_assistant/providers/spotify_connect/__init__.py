@@ -111,18 +111,12 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_MASS_PLAYER_ID,
             type=ConfigEntryType.STRING,
-            label="Connected Music Assistant Player",
-            description="The Music Assistant player connected to this Spotify Connect plugin. "
-            "When you start playback in the Spotify app to this virtual speaker, "
-            "the audio will play on the selected player. "
-            "Set to 'Auto' to automatically select a currently playing player, "
-            "or the first available player if none is playing.",
             multi_value=False,
             default_value=PLAYER_ID_AUTO,
             options=[
-                ConfigValueOption("Auto (prefer playing player)", PLAYER_ID_AUTO),
+                ConfigValueOption(PLAYER_ID_AUTO),
                 *(
-                    ConfigValueOption(x.display_name, x.player_id)
+                    ConfigValueOption(x.player_id, title=x.display_name)
                     for x in sorted(
                         mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
                     )
@@ -133,8 +127,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_PUBLISH_NAME,
             type=ConfigEntryType.STRING,
-            label="Name to display in the Spotify app",
-            description="How should this Spotify Connect device be named in the Spotify app?",
             default_value="Music Assistant",
         ),
     )
