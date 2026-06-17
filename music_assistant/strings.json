@@ -656,15 +656,6 @@
       "audiobooks": {
         "name": "Audiobooks"
       },
-      "made_for_you": {
-        "name": "Made for you"
-      },
-      "recommended_albums": {
-        "name": "Recommended albums"
-      },
-      "recommended_artists": {
-        "name": "Recommended artists"
-      },
       "episodes_recently_added": {
         "name": "Newest Podcast Episodes"
       },
