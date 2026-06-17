@@ -125,7 +125,12 @@ class AmpliPiPlayerProvider(PlayerProvider):
                     f"AmpliPi stream operation failed for source {source_id}: {err}"
                 ) from err
             new_stream_id: int | None = next(
-                (s.id for s in streams if s.name == name and s.id is not None), None
+                (
+                    s.id
+                    for s in streams
+                    if s.name == name and s.type == MA_STREAM_TYPE and s.id is not None
+                ),
+                None,
             )
             if new_stream_id is None:
                 raise PlayerCommandFailed(f"Failed to create AmpliPi stream for source {source_id}")

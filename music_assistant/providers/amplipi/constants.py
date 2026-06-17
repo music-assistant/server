@@ -30,8 +30,9 @@ POLL_INTERVAL = 5
 FREE_SOURCE_INPUTS = ("", "None", None)
 
 # AmpliPi stream type used for Music Assistant playback. The "internetradio" type is
-# built for continuous HTTP streams and supports reliable play/pause/stop, unlike the
-# "fileplayer" type (which is intended for one-shot announcements).
+# built for continuous HTTP streams and supports reliable play/stop, unlike the
+# "fileplayer" type (which is intended for one-shot announcements). Note: AmpliPi has
+# no native pause for this type; pause is emulated via stop in the player.
 MA_STREAM_TYPE = "internetradio"
 
 # name prefix for the streams Music Assistant creates on the AmpliPi controller; used to
