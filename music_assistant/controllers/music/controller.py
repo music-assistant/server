@@ -2468,13 +2468,15 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             MediaType.AUDIOBOOK,
             MediaType.PODCAST,
         ]
-        if media_type not in allowed_media_types:
+        if media_type in (None, MediaType.UNKNOWN):
+            media_types = allowed_media_types
+        elif media_type not in allowed_media_types:
             raise InvalidDataError(
-                "%s is not a supported media_type. Supported media_types are %s",
-                media_type,
-                allowed_media_types,
+                f"{media_type} is not a supported media_type. "
+                f"Supported media_types are {allowed_media_types}"
             )
-        media_types = allowed_media_types if media_type is None else [media_type]
+        else:
+            media_types = [media_type]
         library_functions = [
             self.get_controller(media_type).library_items for media_type in media_types
         ]

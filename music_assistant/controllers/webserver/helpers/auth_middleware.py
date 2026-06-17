@@ -330,9 +330,14 @@ class ImpersonatedUser:
         self.previous_impersonated_user = impersonated_user.get()
         authenticated_user = current_user.get()
         if authenticated_user is None:
-            raise InsufficientPermissions(
-                "Authentication is necessary to use OptionalImpersonatedUser."
-            )
+            # No authenticated user in context (e.g. playback from a hardware button
+            # or an external protocol). Impersonating another user is not allowed, but a
+            # call without a username is a no-op so anonymous playback keeps working.
+            if username is not None:
+                raise InsufficientPermissions(
+                    "Authentication is necessary to impersonate another user."
+                )
+            return
         if username is not None:
             if (
                 authenticated_user.role != UserRole.ADMIN
@@ -344,9 +349,11 @@ class ImpersonatedUser:
 
     async def __aenter__(self) -> Self:
         """Set the impersonated user if applicable."""
-        assert self.username is not None  # for type checking
-        if impersonated_user := await self.mass.webserver.auth.get_user_by_username(self.username):
-            set_impersonated_user(impersonated_user)
+        if self.username is None:
+            # no-op: nothing to impersonate (no authenticated user, no username)
+            return self
+        if user := await self.mass.webserver.auth.get_user_by_username(self.username):
+            set_impersonated_user(user)
             return self
         raise InvalidDataError(f"A user with user id or name {self.username} is not available.")
 

@@ -1245,9 +1245,10 @@ class PlayerQueuesController(CoreController):
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
 
-        # save the user requesting the playback
-        if playback_user := get_current_user():
-            queue.userid = playback_user.user_id
+        # save the user requesting the playback (clear it for anonymous playback)
+        playback_user = get_current_user()
+        queue.userid = playback_user.user_id if playback_user else None
+        if playback_user:
             self.logger.debug(
                 "User %s requested playback.", playback_user.display_name or playback_user.username
             )

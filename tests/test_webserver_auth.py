@@ -1268,3 +1268,25 @@ async def test_impersonated_user_context_manager(auth_manager: AuthenticationMan
     async with ImpersonatedUser(auth_manager.mass, None):
         assert get_current_user() == admin_user
     assert get_current_user() == admin_user
+
+
+async def test_impersonated_user_anonymous_playback_is_noop(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Verify an unauthenticated call without a username is a no-op.
+
+    Regression: play_media wraps every call in ImpersonatedUser, so protocol/hardware
+    triggered playback (presets, Spotify Connect, ...) - which has no authenticated user
+    and passes no username - must not raise.
+    """
+    set_current_user(None)
+    set_impersonated_user(None)
+    async with ImpersonatedUser(auth_manager.mass, None):
+        assert get_current_user() is None
+    assert get_current_user() is None
+
+    # an unauthenticated caller may still not impersonate another user
+    with pytest.raises(InsufficientPermissions):
+        async with ImpersonatedUser(auth_manager.mass, "user_a"):
+            ...
