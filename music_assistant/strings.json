@@ -618,6 +618,9 @@
       "radios": {
         "name": "Radio"
       },
+      "radio_stations": {
+        "name": "Radio Stations"
+      },
       "audiobooks": {
         "name": "Audiobooks"
       },
