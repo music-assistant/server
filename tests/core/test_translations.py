@@ -69,11 +69,12 @@ def test_flatten_into() -> None:
 
 
 def test_namespaced_translation_key() -> None:
-    """A bare task key is namespaced under background_task; rooted/grouped keys are left as-is."""
+    """A bare task key is namespaced under background_task; any dotted key is left as-is."""
     assert _namespaced_translation_key("database_cleanup") == "background_task.database_cleanup"
     assert _namespaced_translation_key(None) is None
-    # an already-grouped or fully-qualified key is returned unchanged
+    # any key that already carries a namespace (a ".") is returned unchanged
     assert _namespaced_translation_key("background_task.x") == "background_task.x"
+    assert _namespaced_translation_key("settings.sync") == "settings.sync"
     assert (
         _namespaced_translation_key("core.metadata.background_task.x")
         == "core.metadata.background_task.x"

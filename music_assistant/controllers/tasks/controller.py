@@ -807,14 +807,12 @@ class TasksController(CoreController):
 
 def _namespaced_translation_key(translation_key: str | None) -> str | None:
     """
-    Namespace a relative task key under the shared ``background_task`` group.
+    Namespace a bare task key under the shared ``background_task`` group.
 
     Callers pass just the task key (e.g. ``database_cleanup``); the ``background_task`` group is
-    implicit for tasks and added here. An already fully-qualified key
-    (``provider.``/``core.``/``common.``) or one already in the group is returned unchanged.
+    implicit for tasks and added here. A key that already carries a namespace (anything containing
+    a ``.``, e.g. a fully-qualified key) is returned unchanged.
     """
-    if translation_key and not translation_key.startswith(
-        ("provider.", "core.", "common.", "background_task.")
-    ):
+    if translation_key and "." not in translation_key:
         return f"background_task.{translation_key}"
     return translation_key
