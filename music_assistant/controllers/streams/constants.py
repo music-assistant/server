@@ -41,10 +41,27 @@ RADIO_BUFFER_SIZE: Final[int] = 15
 CONF_BUFFER_SIZE: Final[str] = "buffer_size"
 
 
+def get_available_buffer_sizes() -> list[BufferSize]:
+    """
+    Return the buffer-size presets allowed for this host's RAM.
+
+    Minimal is always available; Balanced requires >= 4GB and Maximum >= 8GB. When total
+    memory is unknown (0.0, e.g. Windows) all presets are offered (fail open).
+    """
+    if TOTAL_SYSTEM_MEMORY_GB == 0.0:
+        return [BufferSize.MINIMAL, BufferSize.BALANCED, BufferSize.MAXIMUM]
+    sizes = [BufferSize.MINIMAL]
+    if TOTAL_SYSTEM_MEMORY_GB >= 4.0:
+        sizes.append(BufferSize.BALANCED)
+    if TOTAL_SYSTEM_MEMORY_GB >= 8.0:
+        sizes.append(BufferSize.MAXIMUM)
+    return sizes
+
+
 def _get_default_buffer_size() -> str:
     if TOTAL_SYSTEM_MEMORY_GB >= 8.0:
         return BufferSize.MAXIMUM
-    if TOTAL_SYSTEM_MEMORY_GB > 4.0:
+    if TOTAL_SYSTEM_MEMORY_GB >= 4.0:
         return BufferSize.BALANCED
     return BufferSize.MINIMAL
 

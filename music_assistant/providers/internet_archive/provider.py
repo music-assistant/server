@@ -621,7 +621,9 @@ class InternetArchiveProvider(MusicProvider):
 
         return track_number
 
-    @use_cache(expiration=86400 * 30)  # Cache for 30 days - artist catalogs change infrequently
+    @use_cache(
+        expiration=86400 * 30, allow_expired_cache=True
+    )  # Cache for 30 days - artist catalogs change infrequently
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """
         Get albums for a specific artist.
@@ -680,7 +682,7 @@ class InternetArchiveProvider(MusicProvider):
             page += 1
         return albums
 
-    @use_cache(expiration=86400 * 7)  # Cache for 1 week
+    @use_cache(expiration=86400 * 7, allow_expired_cache=True)  # Cache for 1 week
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """
         Get top tracks for a specific artist.
@@ -779,7 +781,7 @@ class InternetArchiveProvider(MusicProvider):
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Get audio stream from Internet Archive."""
         # Use sock_read=None to allow long audiobook chapters to stream fully
         timeout = aiohttp.ClientTimeout(sock_read=None, total=None)
@@ -882,9 +884,7 @@ class InternetArchiveProvider(MusicProvider):
 
         return podcast
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get podcast episodes for given podcast id."""
         metadata = await self._get_metadata(prov_podcast_id)
         item_metadata = metadata.get("metadata", {})

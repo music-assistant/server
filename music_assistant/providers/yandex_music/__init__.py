@@ -9,6 +9,8 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
+
 from .auth import perform_device_auth, perform_qr_auth
 from .constants import (
     CONF_ACTION_AUTH_DEVICE,
@@ -22,6 +24,8 @@ from .constants import (
     CONF_QUALITY,
     CONF_REFRESH_TOKEN,
     CONF_REMEMBER_SESSION,
+    CONF_RESTRICTIVE_RATE_LIMITS,
+    CONF_SESSION_ID,
     CONF_TOKEN,
     CONF_WAVE_PRESET_DRAFT_DIVERSITY,
     CONF_WAVE_PRESET_DRAFT_LANGUAGE,
@@ -104,24 +108,24 @@ def _wave_preset_config_entries(values: dict[str, ConfigValueType]) -> list[Conf
     """
     empty_title = "— Default —"
     diversity_options = [
-        ConfigValueOption(title=empty_title if not v else v.title(), value=v)
+        ConfigValueOption(v, title=empty_title if not v else v.title())
         for v in WAVE_PRESET_DIVERSITY_VALUES
     ]
     mood_options = [
-        ConfigValueOption(title=empty_title if not v else v.title(), value=v)
+        ConfigValueOption(v, title=empty_title if not v else v.title())
         for v in WAVE_PRESET_MOOD_VALUES
     ]
     language_options = [
-        ConfigValueOption(title=empty_title if not v else v.replace("-", " ").title(), value=v)
+        ConfigValueOption(v, title=empty_title if not v else v.replace("-", " ").title())
         for v in WAVE_PRESET_LANGUAGE_VALUES
     ]
 
     presets = _parse_stored_presets(values.get(CONF_WAVE_PRESETS_DATA))
     has_presets = bool(presets)
-    delete_options = [ConfigValueOption(title=p["name"], value=p["name"]) for p in presets]
+    delete_options = [ConfigValueOption(p["name"], title=p["name"]) for p in presets]
     if not delete_options:
         # Empty options can break some frontends; supply a no-op placeholder.
-        delete_options = [ConfigValueOption(title="(no presets saved)", value="")]
+        delete_options = [ConfigValueOption("", title="(no presets saved)")]
 
     def _str_value(key: str) -> str | None:
         v = values.get(key)
@@ -137,11 +141,6 @@ def _wave_preset_config_entries(values: dict[str, ConfigValueType]) -> list[Conf
         ConfigEntry(
             key=CONF_WAVE_PRESET_DRAFT_NAME,
             type=ConfigEntryType.STRING,
-            label="New preset name",
-            description=(
-                "Give the preset a short name, pick up to three dropdowns "
-                "below and click Save. Saving the same name again overwrites."
-            ),
             default_value=None,
             required=False,
             advanced=True,
@@ -150,8 +149,6 @@ def _wave_preset_config_entries(values: dict[str, ConfigValueType]) -> list[Conf
         ConfigEntry(
             key=CONF_WAVE_PRESET_DRAFT_DIVERSITY,
             type=ConfigEntryType.STRING,
-            label="New preset: diversity",
-            description="How broadly the wave explores.",
             options=diversity_options,
             default_value="",
             required=False,
@@ -161,8 +158,6 @@ def _wave_preset_config_entries(values: dict[str, ConfigValueType]) -> list[Conf
         ConfigEntry(
             key=CONF_WAVE_PRESET_DRAFT_MOOD,
             type=ConfigEntryType.STRING,
-            label="New preset: mood",
-            description="Energy and mood of the tracks.",
             options=mood_options,
             default_value="",
             required=False,
@@ -172,8 +167,6 @@ def _wave_preset_config_entries(values: dict[str, ConfigValueType]) -> list[Conf
         ConfigEntry(
             key=CONF_WAVE_PRESET_DRAFT_LANGUAGE,
             type=ConfigEntryType.STRING,
-            label="New preset: language",
-            description="Lyrics language filter.",
             options=language_options,
             default_value="",
             required=False,
@@ -183,19 +176,12 @@ def _wave_preset_config_entries(values: dict[str, ConfigValueType]) -> list[Conf
         ConfigEntry(
             key=CONF_ACTION_SAVE_WAVE_PRESET,
             type=ConfigEntryType.ACTION,
-            label="Save preset",
-            description=(
-                "Adds the values above to Saved presets. The list is shown "
-                "under Radio then My Presets in Browse."
-            ),
             action=CONF_ACTION_SAVE_WAVE_PRESET,
-            action_label="Save preset",
             advanced=True,
         ),
         ConfigEntry(
             key=CONF_WAVE_PRESET_TO_DELETE,
             type=ConfigEntryType.STRING,
-            label="Select preset to delete",
             options=delete_options,
             default_value="",
             required=False,
@@ -206,17 +192,13 @@ def _wave_preset_config_entries(values: dict[str, ConfigValueType]) -> list[Conf
         ConfigEntry(
             key=CONF_ACTION_DELETE_WAVE_PRESET,
             type=ConfigEntryType.ACTION,
-            label="Delete selected preset",
-            description="Removes the selected preset from the Saved presets list.",
             action=CONF_ACTION_DELETE_WAVE_PRESET,
-            action_label="Delete",
             advanced=True,
             hidden=not has_presets,
         ),
         ConfigEntry(
             key=CONF_WAVE_PRESETS_DATA,
             type=ConfigEntryType.STRING,
-            label="Saved presets (internal)",
             default_value="",
             required=False,
             advanced=True,
@@ -275,7 +257,7 @@ async def get_config_entries(
 
     # Handle QR auth action
     if action == CONF_ACTION_AUTH_QR:
-        session_id = values.get("session_id")
+        session_id = values.get(CONF_SESSION_ID)
         if not session_id:
             raise InvalidDataError("Missing session_id for QR authentication")
         x_token, music_token = await perform_qr_auth(mass, str(session_id))
@@ -291,7 +273,7 @@ async def get_config_entries(
     # Handle Device Flow auth action (yields x_token + refresh_token,
     # so we get silent auto-refresh on music-token AND x_token expiry)
     if action == CONF_ACTION_AUTH_DEVICE:
-        session_id = values.get("session_id")
+        session_id = values.get(CONF_SESSION_ID)
         if not session_id:
             raise InvalidDataError("Missing session_id for device authentication")
         x_token, music_token, refresh_token = await perform_device_auth(mass, str(session_id))
@@ -332,6 +314,7 @@ async def get_config_entries(
         label_text = "Authenticated to Yandex Music."
 
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         # Status label
         ConfigEntry(
             key="label_text",
@@ -342,30 +325,20 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ACTION_AUTH_DEVICE,
             type=ConfigEntryType.ACTION,
-            label="Login with device code",
-            description=("Open a verification URL on any device and enter the short code."),
             action=CONF_ACTION_AUTH_DEVICE,
-            action_label="Login with device code",
             hidden=is_authenticated,
         ),
         # QR authentication (alternative)
         ConfigEntry(
             key=CONF_ACTION_AUTH_QR,
             type=ConfigEntryType.ACTION,
-            label="Login with QR code",
-            description="Opens a QR code page — scan it with the Yandex app on your phone.",
             action=CONF_ACTION_AUTH_QR,
-            action_label="Login with QR code",
             hidden=is_authenticated,
         ),
         # Remember session toggle
         ConfigEntry(
             key=CONF_REMEMBER_SESSION,
             type=ConfigEntryType.BOOLEAN,
-            label="Remember session (auto-refresh token)",
-            description="When enabled, stores a long-lived session token to automatically "
-            "refresh your music token when it expires. When disabled, you must "
-            "re-authenticate manually when the token expires.",
             default_value=True,
             hidden=is_authenticated,
         ),
@@ -373,19 +346,13 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ACTION_CLEAR_AUTH,
             type=ConfigEntryType.ACTION,
-            label="Reset authentication",
-            description="Clear the current authentication details.",
             action=CONF_ACTION_CLEAR_AUTH,
-            action_label="Reset authentication",
             hidden=not is_authenticated,
         ),
         # Token storage (populated by QR action or manual entry)
         ConfigEntry(
             key=CONF_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Yandex Music Token (manual)",
-            description="Advanced: manually enter a music token. "
-            "See the documentation for how to obtain it.",
             required=True,
             hidden=is_authenticated,
             advanced=True,
@@ -395,7 +362,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_X_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Session token",
             hidden=True,
             required=False,
             value=cast("str", values.get(CONF_X_TOKEN)) if values else None,
@@ -404,7 +370,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_REFRESH_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Refresh token",
             hidden=True,
             required=False,
             value=cast("str", values.get(CONF_REFRESH_TOKEN)) if values else None,
@@ -413,13 +378,11 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_QUALITY,
             type=ConfigEntryType.STRING,
-            label="Audio quality",
-            description="Select preferred audio quality.",
             options=[
-                ConfigValueOption("Efficient (AAC ~64kbps)", QUALITY_EFFICIENT),
-                ConfigValueOption("Balanced (AAC ~192kbps)", QUALITY_BALANCED),
-                ConfigValueOption("High (MP3 ~320kbps)", QUALITY_HIGH),
-                ConfigValueOption("Superb (FLAC Lossless)", QUALITY_SUPERB),
+                ConfigValueOption(QUALITY_EFFICIENT),
+                ConfigValueOption(QUALITY_BALANCED),
+                ConfigValueOption(QUALITY_HIGH),
+                ConfigValueOption(QUALITY_SUPERB),
             ],
             default_value=QUALITY_BALANCED,
         ),
@@ -427,9 +390,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_MY_WAVE_MAX_TRACKS,
             type=ConfigEntryType.INTEGER,
-            label="My Wave maximum tracks",
-            description="Maximum number of tracks to fetch for My Wave playlist. "
-            "Lower values load faster but provide fewer tracks. Default: 150.",
             range=(10, 1000),
             default_value=150,
             required=False,
@@ -441,12 +401,8 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_LIKED_TRACKS_MAX_TRACKS,
             type=ConfigEntryType.INTEGER,
-            label="Liked Tracks maximum tracks",
-            description="Maximum number of tracks to show in Liked Tracks virtual playlist. "
-            "Higher values may significantly increase load time. "
-            "Lower values load faster. Default: 500.",
             range=(50, 2000),
-            default_value=500,
+            default_value=200,
             required=False,
             advanced=True,
         ),
@@ -454,11 +410,18 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_BASE_URL,
             type=ConfigEntryType.STRING,
-            label="API Base URL",
             description="API endpoint base URL. "
             "Only change if Yandex Music changes their API endpoint. "
             f"Default: {DEFAULT_BASE_URL}",
             default_value=DEFAULT_BASE_URL,
+            required=False,
+            advanced=True,
+        ),
+        # Restrictive rate limits (advanced)
+        ConfigEntry(
+            key=CONF_RESTRICTIVE_RATE_LIMITS,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=False,
             required=False,
             advanced=True,
         ),

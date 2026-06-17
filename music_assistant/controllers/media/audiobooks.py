@@ -39,7 +39,20 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         super().__init__(mass)
-        self.base_query = """
+        # register (extra) api handlers
+        api_base = self.api_base
+        self.mass.register_api_command(f"music/{api_base}/audiobook_versions", self.versions)
+
+    @property
+    def base_query(self) -> tuple[str, dict[str, Any]]:
+        """
+        Return the base SELECT query for audiobooks and its bound query params.
+
+        The playlog table is joined to hydrate per-user resume info (fully_played,
+        resume_position_ms). When a session user is present the join is scoped to that
+        user, so multi-user installs don't surface each other's resume state.
+        """
+        query = """
         SELECT
             audiobooks.*,
             (SELECT JSON_GROUP_ARRAY(
@@ -60,9 +73,11 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             FROM audiobooks
             LEFT JOIN playlog ON playlog.item_id = audiobooks.item_id AND playlog.media_type = 'audiobook'
             """
-        # register (extra) api handlers
-        api_base = self.api_base
-        self.mass.register_api_command(f"music/{api_base}/audiobook_versions", self.versions)
+        params: dict[str, Any] = {}
+        if session_user := get_current_user():
+            query += " AND playlog.userid = :playlog_userid"
+            params["playlog_userid"] = session_user.user_id
+        return query, params
 
     async def library_items(
         self,
@@ -87,9 +102,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         """
         extra_query_params: dict[str, Any] = {}
         extra_query_parts: list[str] = []
-        extra_join_parts: list[str] = []
-        if session_user := get_current_user():
-            extra_join_parts = [f"AND playlog.userid = '{session_user.user_id}'"]
         result = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -100,7 +112,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             provider_filter=self._ensure_provider_filter(provider),
             extra_query_parts=extra_query_parts,
             extra_query_params=extra_query_params,
-            extra_join_parts=extra_join_parts,
             in_library_only=True,
         )
         if search and len(result) < 25 and not offset:
@@ -118,7 +129,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 provider_filter=self._ensure_provider_filter(provider),
                 extra_query_parts=extra_query_parts,
                 extra_query_params=extra_query_params,
-                extra_join_parts=extra_join_parts,
                 in_library_only=True,
             )
         return result
@@ -136,7 +146,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             provider = self.mass.get_provider(provider_id)
             if not isinstance(provider, MusicProvider):
                 continue
-            if not provider.library_supported(MediaType.AUDIOBOOK):
+            if not self.mass.music.library_supported(provider, MediaType.AUDIOBOOK):
                 continue
             result.extend(
                 prov_item
@@ -180,6 +190,10 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
         metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+        if not overwrite and update.metadata.images is not None:
+            # audiobooks have no image picker, so keep the cover in sync with the
+            # provider instead of accumulating merged entries
+            metadata.images = update.metadata.images
         cur_item.external_ids.update(update.external_ids)
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
@@ -287,7 +301,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
-            if not provider.library_supported(MediaType.AUDIOBOOK):
+            if not self.mass.music.library_supported(provider, MediaType.AUDIOBOOK):
                 continue
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA

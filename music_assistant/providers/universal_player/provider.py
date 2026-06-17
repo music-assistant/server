@@ -15,7 +15,11 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import IdentifierType, PlayerType
 
-from music_assistant.constants import CONF_LINKED_PROTOCOL_IDS, CONF_PLAYERS
+from music_assistant.constants import (
+    CONF_LINKED_PROTOCOL_IDS,
+    CONF_PLAYERS,
+    CONF_PROTOCOL_PARENT_ID,
+)
 from music_assistant.helpers.util import normalize_mac_for_matching
 from music_assistant.models.player import DeviceInfo
 from music_assistant.models.player_provider import PlayerProvider
@@ -59,7 +63,7 @@ class UniversalPlayerProvider(PlayerProvider):
                 # The stored protocol IDs enable fast matching when protocols register
                 await self._restore_player(player_conf.player_id)
 
-    async def _restore_player(self, player_id: str) -> None:
+    async def _restore_player(self, player_id: str) -> None:  # noqa: PLR0915
         """
         Restore a universal player from config.
 
@@ -78,7 +82,7 @@ class UniversalPlayerProvider(PlayerProvider):
         stored_identifiers = values.get(CONF_DEVICE_IDENTIFIERS, {})
         stored_device_info = values.get(CONF_DEVICE_INFO, {})
 
-        # Filter out protocol IDs that are no longer PROTOCOL type players
+        # Filter out protocol IDs that are no longer valid for this universal
         valid_protocol_ids = []
         for protocol_id in stored_protocol_ids:
             protocol_config = self.mass.config.get(f"{CONF_PLAYERS}/{protocol_id}")
@@ -87,15 +91,27 @@ class UniversalPlayerProvider(PlayerProvider):
                 valid_protocol_ids.append(protocol_id)
                 continue
             protocol_player_type = protocol_config.get("player_type")
-            if protocol_player_type == "protocol":
-                valid_protocol_ids.append(protocol_id)
-            else:
+            if protocol_player_type != "protocol":
                 self.logger.info(
                     "Removing %s from universal player %s - player type changed to %s",
                     protocol_id,
                     player_id,
                     protocol_player_type,
                 )
+                continue
+            protocol_values = protocol_config.get("values") or {}
+            if not protocol_values.get("protocol_parent_id"):
+                self.logger.info(
+                    "Deleting orphaned protocol player config %s (was linked to %s)",
+                    protocol_id,
+                    player_id,
+                )
+                if self.mass.players.get_player(protocol_id):
+                    await self.mass.players.unregister(protocol_id, permanent=True)
+                else:
+                    self.mass.players.delete_player_config(protocol_id)
+                continue
+            valid_protocol_ids.append(protocol_id)
 
         # If no valid protocol IDs remain, delete this stale universal player
         if not valid_protocol_ids:
@@ -148,6 +164,15 @@ class UniversalPlayerProvider(PlayerProvider):
                         protocol_id,
                         other_player_id,
                     )
+                    # When the rightful parent is disabled, the universal player
+                    # was created because the parent's disable left its protocols
+                    # orphaned. Repair the protocol configs (restore parent link,
+                    # cascade-disable) so they don't immediately wrap into a fresh
+                    # universal player on the next registration cycle.
+                    if not other_config.get("enabled", True):
+                        await self._reparent_disabled_protocols(
+                            other_player_id, stored_protocol_ids
+                        )
                     await self.mass.config.remove_player_config(player_id)
                     return
 
@@ -184,6 +209,34 @@ class UniversalPlayerProvider(PlayerProvider):
             protocol_player_ids=list(stored_protocol_ids),
         )
         await self.mass.players.register_or_update(player)
+
+    async def _reparent_disabled_protocols(
+        self, native_parent_id: str, protocol_ids: list[str]
+    ) -> None:
+        """
+        Restore protocol players' parent link to a disabled native parent and disable them.
+
+        Used to repair configs after a stale universal player is removed: the protocols'
+        cached parent_id was overwritten to point at the universal player when it was
+        created. Resetting it to the rightful (disabled) native parent lets the regular
+        cascade-enable flow restore everything cleanly if the user re-enables that parent.
+        """
+        for protocol_id in protocol_ids:
+            protocol_raw = self.mass.config.get(f"{CONF_PLAYERS}/{protocol_id}")
+            if not protocol_raw:
+                continue
+            self.mass.config.set(
+                f"{CONF_PLAYERS}/{protocol_id}/values/{CONF_PROTOCOL_PARENT_ID}",
+                native_parent_id,
+            )
+            if not protocol_raw.get("enabled", True):
+                continue
+            self.logger.info(
+                "Disabling orphaned protocol player %s to match its disabled parent %s",
+                protocol_id,
+                native_parent_id,
+            )
+            await self.mass.config.save_player_config(protocol_id, {"enabled": False})
 
     async def create_universal_player(
         self,

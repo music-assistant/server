@@ -1,0 +1,15 @@
+{
+  "config_entries": {
+    "username": {
+      "label": "Email",
+      "description": "Your MusicMe account email address."
+    },
+    "password": {
+      "label": "Password",
+      "description": "Your MusicMe account password."
+    }
+  },
+  "manifest": {
+    "description": "Stream music from MusicMe's catalogue — a French streaming service with 13M+ tracks."
+  }
+}

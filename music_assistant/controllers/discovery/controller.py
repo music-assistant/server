@@ -7,6 +7,7 @@ import contextlib
 import inspect
 import logging
 import os
+import re
 from collections import defaultdict
 from ipaddress import IPv4Address
 from typing import TYPE_CHECKING, Any
@@ -35,6 +36,10 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
 
     from music_assistant.models import ProviderInstanceType
+
+# RAOP cache keys prefix the device name with the device MAC, e.g. "aabbccddeeff@Kelder".
+# Cache keys are lowercased, so the hex is matched in lowercase.
+RAOP_MAC_PREFIX = re.compile(r"^[0-9a-f]{12}@")
 
 CONF_UPNP_NETWORK_SCAN = "upnp_network_scan"
 UPNP_DISCOVERY_INTERVAL = 300
@@ -102,10 +107,7 @@ class DiscoveryController(CoreController):
             ConfigEntry(
                 key=CONF_UPNP_NETWORK_SCAN,
                 type=ConfigEntryType.BOOLEAN,
-                label="Allow network scan for UPnP discovery",
                 default_value=False,
-                description="Enable additional broadcast-based SSDP discovery. "
-                "Use this if some UPnP/DLNA devices do not answer regular discovery.",
                 requires_reload=False,
             ),
         )
@@ -148,10 +150,10 @@ class DiscoveryController(CoreController):
     async def async_find_mdns_service(
         self, service_type: str, name_filter: str, timeout: float = 3.0
     ) -> AsyncServiceInfo | None:
-        """Find an mDNS service by partial name match, checking cache first then waiting.
+        """Find an mDNS service by exact device name match, checking cache first then waiting.
 
         :param service_type: The mDNS service type (e.g., "_raop._tcp.local.").
-        :param name_filter: Substring that must appear in the service name.
+        :param name_filter: Device name that must exactly match the service name portion.
         :param timeout: Maximum time to wait in seconds.
         """
         deadline = asyncio.get_event_loop().time() + timeout
@@ -166,14 +168,20 @@ class DiscoveryController(CoreController):
                 event.clear()
                 # Check cache for a matching entry
                 for mdns_name in set(self.aiozc.zeroconf.cache.cache):
-                    if (
-                        service_type_lower in mdns_name
-                        and name_filter_lower in mdns_name
-                        and mdns_name != service_type_lower
-                    ):
-                        info = AsyncServiceInfo(service_type, mdns_name)
-                        if await info.async_request(self.aiozc.zeroconf, 3000):
-                            return info
+                    if service_type_lower not in mdns_name or mdns_name == service_type_lower:
+                        continue
+                    # Use exact matching on the device name portion to prevent a device named
+                    # "Foo" from cross-matching another device named "ATV Foo".
+                    # mDNS names are either "MAC@DeviceName.service.local." or "DeviceName.service.local."
+                    # Strip the MAC prefix only when present, so device names that legitimately
+                    # contain "@" are not truncated.
+                    device_part = mdns_name.split(".")[0]
+                    device_name = RAOP_MAC_PREFIX.sub("", device_part, count=1)
+                    if device_name != name_filter_lower:
+                        continue
+                    info = AsyncServiceInfo(service_type, mdns_name)
+                    if await info.async_request(self.aiozc.zeroconf, 3000):
+                        return info
                 remaining = deadline - asyncio.get_event_loop().time()
                 if remaining <= 0:
                     return None

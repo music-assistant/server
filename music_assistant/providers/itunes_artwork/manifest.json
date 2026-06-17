@@ -1,7 +1,7 @@
 {
   "type": "metadata",
   "domain": "itunes_artwork",
-  "stage": "beta",
+  "stage": "stable",
   "name": "iTunes Artwork",
   "description": "Provides high-resolution album artwork from the iTunes/Apple Music catalog.",
   "codeowners": ["@music-assistant"],

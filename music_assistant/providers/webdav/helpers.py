@@ -81,7 +81,11 @@ async def webdav_propfind(
             return _parse_propfind_response(response_text, url)
 
     except TimeoutError as err:
-        raise ProviderUnavailableError(f"WebDAV connection timeout: {url}") from err
+        raise ProviderUnavailableError(
+            f"WebDAV connection timeout: {url}",
+            translation_key="provider.webdav.errors.connection_timeout",
+            translation_args=[url],
+        ) from err
     except aiohttp.ClientError as err:
         raise ProviderUnavailableError(f"WebDAV connection error: {err}") from err
 

@@ -140,9 +140,11 @@ async def get_config_entries(  # noqa: PLR0915 — flow naturally returns ~12 Co
 
     # Build dropdown options: one per YM instance + "Use own credentials" sentinel
     source_options = [
-        ConfigValueOption(f"Yandex Music: {name}", inst_id) for inst_id, name in ym_instances
+        ConfigValueOption(inst_id, title=f"Yandex Music: {name}") for inst_id, name in ym_instances
     ]
-    source_options.append(ConfigValueOption("Use own credentials (QR or token)", YM_INSTANCE_OWN))
+    source_options.append(
+        ConfigValueOption(YM_INSTANCE_OWN, title="Use own credentials (QR or token)")
+    )
 
     # `selected` is normalized above, so it is always either a known instance
     # id (borrowing) or YM_INSTANCE_OWN — safe to use directly as the default.
@@ -163,11 +165,6 @@ async def get_config_entries(  # noqa: PLR0915 — flow naturally returns ~12 Co
         ConfigEntry(
             key=CONF_YM_INSTANCE,
             type=ConfigEntryType.STRING,
-            label="Yandex Music source",
-            description="Borrow OAuth credentials from a linked Yandex Music provider "
-            "instance, or use your own credentials (QR-scan login or manual token paste). "
-            "Per-instance own credentials let you bind separate players to separate "
-            "Yandex accounts without sharing tokens with a Yandex Music provider.",
             options=source_options,
             default_value=dropdown_default,
             required=True,
@@ -176,21 +173,13 @@ async def get_config_entries(  # noqa: PLR0915 — flow naturally returns ~12 Co
         ConfigEntry(
             key=CONF_ACTION_AUTH_QR,
             type=ConfigEntryType.ACTION,
-            label="Login with QR code",
-            description="Open a QR code in a popup and scan it with the Yandex app on "
-            "your phone. Populates the token automatically — no manual paste needed.",
             action=CONF_ACTION_AUTH_QR,
-            action_label="Login with QR code",
             hidden=own_hidden or own_authenticated,
         ),
         # Own-mode: remember-session toggle
         ConfigEntry(
             key=CONF_REMEMBER_SESSION,
             type=ConfigEntryType.BOOLEAN,
-            label="Remember session (auto-refresh token)",
-            description="Store a long-lived session token (x_token) alongside the music "
-            "token so this plugin can refresh on its own when the token expires. "
-            "Disable to keep only the short-lived music token (re-QR required on expiry).",
             default_value=True,
             hidden=own_hidden or own_authenticated,
         ),
@@ -198,20 +187,12 @@ async def get_config_entries(  # noqa: PLR0915 — flow naturally returns ~12 Co
         ConfigEntry(
             key=CONF_ACTION_CLEAR_AUTH,
             type=ConfigEntryType.ACTION,
-            label="Reset authentication",
-            description="Clear the current authentication details "
-            "(music token, session token, and stored login).",
             action=CONF_ACTION_CLEAR_AUTH,
-            action_label="Reset authentication",
             hidden=own_hidden or not own_authenticated,
         ),
         ConfigEntry(
             key=CONF_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Yandex Music Token",
-            description="Manually pasted Yandex Music OAuth token. Populated "
-            "automatically after a successful QR login; only fill in by hand if "
-            "you can't use QR (e.g. headless setup).",
             required=token_required,
             hidden=borrowing,
             value=cast("str", values.get(CONF_TOKEN)) if values else None,
@@ -220,7 +201,6 @@ async def get_config_entries(  # noqa: PLR0915 — flow naturally returns ~12 Co
         ConfigEntry(
             key=CONF_X_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Session token (x_token)",
             hidden=True,
             required=False,
             value=cast("str", values.get(CONF_X_TOKEN)) if values else None,
@@ -229,7 +209,6 @@ async def get_config_entries(  # noqa: PLR0915 — flow naturally returns ~12 Co
         ConfigEntry(
             key=CONF_ACCOUNT_LOGIN,
             type=ConfigEntryType.STRING,
-            label="Account login",
             hidden=True,
             required=False,
             value=cast("str", values.get(CONF_ACCOUNT_LOGIN)) if values else None,
@@ -237,16 +216,11 @@ async def get_config_entries(  # noqa: PLR0915 — flow naturally returns ~12 Co
         ConfigEntry(
             key=CONF_MASS_PLAYER_ID,
             type=ConfigEntryType.STRING,
-            label="Connected Music Assistant Player",
-            description="The Music Assistant player connected to this Ynison plugin. "
-            "When playback is directed to this device in the Yandex Music app, "
-            "the audio will play on the selected player. "
-            "Set to 'Auto' to automatically select a currently playing player.",
             default_value=PLAYER_ID_AUTO,
             options=[
-                ConfigValueOption("Auto (prefer playing player)", PLAYER_ID_AUTO),
+                ConfigValueOption(PLAYER_ID_AUTO),
                 *(
-                    ConfigValueOption(x.display_name, x.player_id)
+                    ConfigValueOption(x.player_id, title=x.display_name)
                     for x in sorted(
                         mass.players.all_players(False, False),
                         key=lambda p: p.display_name.lower(),
@@ -258,53 +232,39 @@ async def get_config_entries(  # noqa: PLR0915 — flow naturally returns ~12 Co
         ConfigEntry(
             key=CONF_ALLOW_PLAYER_SWITCH,
             type=ConfigEntryType.BOOLEAN,
-            label="Allow manual player switching",
-            description="When enabled, you can select this plugin as a source on any player "
-            "to switch playback to that player. When disabled, playback is fixed to the "
-            "configured default player.",
             default_value=True,
         ),
         ConfigEntry(
             key=CONF_OUTPUT_SAMPLE_RATE,
             type=ConfigEntryType.STRING,
-            label="Output sample rate",
-            description="Sample rate for PCM output to the player. "
-            "'Auto' selects 44.1 kHz for lossy or 48 kHz for lossless sources.",
             default_value=OUTPUT_AUTO,
             options=[
-                ConfigValueOption("Auto (from source quality)", OUTPUT_AUTO),
-                ConfigValueOption("44100 Hz (CD)", "44100"),
-                ConfigValueOption("48000 Hz", "48000"),
-                ConfigValueOption("96000 Hz (Hi-Res)", "96000"),
+                ConfigValueOption(OUTPUT_AUTO),
+                ConfigValueOption("44100"),
+                ConfigValueOption("48000"),
+                ConfigValueOption("96000"),
             ],
             advanced=True,
         ),
         ConfigEntry(
             key=CONF_OUTPUT_BIT_DEPTH,
             type=ConfigEntryType.STRING,
-            label="Output bit depth",
-            description="Bit depth for PCM output to the player. "
-            "'Auto' selects 16-bit for lossy or 24-bit for lossless sources.",
             default_value=OUTPUT_AUTO,
             options=[
-                ConfigValueOption("Auto (from source quality)", OUTPUT_AUTO),
-                ConfigValueOption("16-bit", "16"),
-                ConfigValueOption("24-bit", "24"),
+                ConfigValueOption(OUTPUT_AUTO),
+                ConfigValueOption("16"),
+                ConfigValueOption("24"),
             ],
             advanced=True,
         ),
         ConfigEntry(
             key=CONF_PUBLISH_NAME,
             type=ConfigEntryType.STRING,
-            label="Device name in Yandex Music",
-            description="How this device appears in the Yandex Music app.",
             default_value=DEFAULT_DISPLAY_NAME,
-            advanced=True,
         ),
         ConfigEntry(
             key=CONF_DEVICE_ID,
             type=ConfigEntryType.STRING,
-            label="Device ID",
             hidden=True,
             required=False,
         ),

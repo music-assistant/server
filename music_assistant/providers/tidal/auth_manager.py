@@ -10,7 +10,6 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
 import pkce
-from aiohttp import ClientSession
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import LoginFailed
 
@@ -19,6 +18,8 @@ from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-define
 from .constants import AUTH_URL, LOGIN_URL, REDIRECT_URI, SESSIONS_URL
 
 if TYPE_CHECKING:
+    from aiohttp import ClientSession
+
     from music_assistant.mass import MusicAssistant
 
 TOKEN_REFRESH_BUFFER = 60 * 7  # 7 minutes
@@ -43,12 +44,12 @@ class ManualAuthenticationHelper:
     but instead requires the user to manually copy a URL after authentication.
     """
 
-    def __init__(self, mass: "MusicAssistant", session_id: str) -> None:
+    def __init__(self, mass: MusicAssistant, session_id: str) -> None:
         """Initialize the Manual Authentication Helper."""
         self.mass = mass
         self.session_id = session_id
 
-    async def __aenter__(self) -> "ManualAuthenticationHelper":
+    async def __aenter__(self) -> ManualAuthenticationHelper:
         """Enter context manager."""
         return self
 

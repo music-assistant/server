@@ -80,13 +80,16 @@ from qqmusic_api.utils.session import (
     set_session as qq_set_session,
 )
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     CONF_ACTION_CHECK_QR_AUTH,
     CONF_ACTION_CLEAR_AUTH,
+    CONF_ACTION_START_QQ_QR_AUTH,
     CONF_ACTION_START_QR_AUTH,
+    CONF_ACTION_START_WX_QR_AUTH,
     CONF_CREDENTIAL_JSON,
     CONF_LOGIN_TYPE,
     CONF_MUSICID,
@@ -216,6 +219,18 @@ def _has_qr_pending(values: dict[str, ConfigValueType]) -> bool:
     return bool(values.get(CONF_QR_IDENTIFIER))
 
 
+def _get_qr_login_type(values: dict[str, ConfigValueType]) -> Any:
+    qr_type_value = str(values.get(CONF_QR_TYPE) or "qq")
+    return next(
+        (item for item in qq_login_mod.QRLoginType if item.value == qr_type_value),
+        qq_login_mod.QRLoginType.QQ,
+    )
+
+
+def _get_qr_login_name(values: dict[str, ConfigValueType]) -> str:
+    return "WeChat" if str(values.get(CONF_QR_TYPE) or "") == "wx" else "QQ"
+
+
 def _clear_auth(values: dict[str, ConfigValueType]) -> None:
     route_path = _get_qr_route_path(values)
     values[CONF_UIN] = None
@@ -258,9 +273,13 @@ def _store_credential(values: dict[str, ConfigValueType], credential: Any) -> No
     values[CONF_QR_PAGE_URL] = None
 
 
-async def _start_qr_auth(mass: MusicAssistant, values: dict[str, ConfigValueType]) -> None:
+async def _start_qr_auth(
+    mass: MusicAssistant,
+    values: dict[str, ConfigValueType],
+    login_type: Any,
+) -> None:
     _clear_qr_route(_get_qr_route_path(values))
-    qr = await qq_login_mod.get_qrcode(qq_login_mod.QRLoginType.QQ)
+    qr = await qq_login_mod.get_qrcode(login_type)
     if not getattr(qr, "identifier", None) or not getattr(qr, "data", None):
         raise LoginFailed("Failed to generate QQ Music login QR code")
     values[CONF_QR_IDENTIFIER] = str(qr.identifier)
@@ -278,11 +297,7 @@ async def _start_qr_auth(mass: MusicAssistant, values: dict[str, ConfigValueType
     if not (hasattr(qq_login_mod, "QR") and hasattr(qq_login_mod, "check_qrcode")):
         return
     deadline = time.monotonic() + 120
-    qr_type_value = str(values.get(CONF_QR_TYPE))
-    qr_type = next(
-        (item for item in qq_login_mod.QRLoginType if item.value == qr_type_value),
-        qq_login_mod.QRLoginType.QQ,
-    )
+    qr_type = _get_qr_login_type(values)
     while time.monotonic() < deadline:
         qr_ref = qq_login_mod.QR(
             data=b"",
@@ -304,7 +319,11 @@ async def _start_qr_auth(mass: MusicAssistant, values: dict[str, ConfigValueType
             values[CONF_QR_PAGE_URL] = None
             raise InvalidDataError("QR code expired, please generate a new one")
         if event == qq_login_mod.QRCodeLoginEvents.REFUSE:
-            raise InvalidDataError("Login was rejected in QQ app")
+            raise InvalidDataError(
+                f"Login was rejected in {_get_qr_login_name(values)} app",
+                translation_key="provider.qqmusic.errors.login_rejected",
+                translation_args=[_get_qr_login_name(values)],
+            )
         await asyncio.sleep(1)
     if values.get(CONF_QR_IDENTIFIER):
         raise InvalidDataError(
@@ -317,11 +336,7 @@ async def _check_qr_auth(values: dict[str, ConfigValueType]) -> None:
     qr_identifier = str(values.get(CONF_QR_IDENTIFIER) or "")
     if not qr_identifier:
         raise InvalidDataError("Please generate a QR code first")
-    qr_type_val = str(values.get(CONF_QR_TYPE) or "qq")
-    qr_type = next(
-        (item for item in qq_login_mod.QRLoginType if item.value == qr_type_val),
-        qq_login_mod.QRLoginType.QQ,
-    )
+    qr_type = _get_qr_login_type(values)
     qr = qq_login_mod.QR(
         data=b"",
         qr_type=qr_type,
@@ -335,14 +350,22 @@ async def _check_qr_auth(values: dict[str, ConfigValueType]) -> None:
     if event == qq_login_mod.QRCodeLoginEvents.SCAN:
         raise InvalidDataError("QR code not scanned yet")
     if event == qq_login_mod.QRCodeLoginEvents.CONF:
-        raise InvalidDataError("QR scanned, please confirm login in QQ app")
+        raise InvalidDataError(
+            f"QR scanned, please confirm login in {_get_qr_login_name(values)} app",
+            translation_key="provider.qqmusic.errors.confirm_login_in_app",
+            translation_args=[_get_qr_login_name(values)],
+        )
     if event == qq_login_mod.QRCodeLoginEvents.TIMEOUT:
         values[CONF_QR_IDENTIFIER] = None
         values[CONF_QR_TYPE] = None
         values[CONF_QR_PAGE_URL] = None
         raise InvalidDataError("QR code expired, please generate a new one")
     if event == qq_login_mod.QRCodeLoginEvents.REFUSE:
-        raise InvalidDataError("Login was rejected in QQ app")
+        raise InvalidDataError(
+            f"Login was rejected in {_get_qr_login_name(values)} app",
+            translation_key="provider.qqmusic.errors.login_rejected",
+            translation_args=[_get_qr_login_name(values)],
+        )
     raise LoginFailed("Unable to determine QR login status")
 
 
@@ -350,16 +373,17 @@ def _build_config_entries(values: dict[str, ConfigValueType]) -> tuple[ConfigEnt
     has_qr_pending = _has_qr_pending(values)
     is_verified = _is_verified(values)
     qr_page_url = str(values.get(CONF_QR_PAGE_URL) or "")
+    qr_login_name = _get_qr_login_name(values)
     status_label = (
         "QQ Music login confirmed. Close the QR page and click Save to finish setup."
         if is_verified
-        else "QR code generated. Open the popup page, scan with QQ, and confirm login."
+        else f"QR code generated. Open the popup page, scan with {qr_login_name}, and confirm login."
         if has_qr_pending
-        else "Click QR Login to start authentication."
+        else "Choose QQ or WeChat QR login to start authentication."
     )
     help_text = (
-        "Login flow: 1) Click QR Login. 2) In the newly opened page, scan with QQ and confirm. "
-        "3) Close the QR page. 4) Click Save."
+        "Login flow: 1) Click QQ Login or WeChat Login. 2) In the newly opened page, "
+        "scan with the matching app and confirm. 3) Close the QR page. 4) Click Save."
     )
     return (
         ConfigEntry(key="auth_help", type=ConfigEntryType.LABEL, label=help_text),
@@ -367,7 +391,6 @@ def _build_config_entries(values: dict[str, ConfigValueType]) -> tuple[ConfigEnt
         ConfigEntry(
             key=CONF_QR_PAGE_URL,
             type=ConfigEntryType.STRING,
-            label="QR login page URL",
             required=False,
             hidden=not has_qr_pending or not qr_page_url,
             value=qr_page_url,
@@ -383,36 +406,37 @@ def _build_config_entries(values: dict[str, ConfigValueType]) -> tuple[ConfigEnt
         ConfigEntry(
             key=CONF_QUALITY,
             type=ConfigEntryType.STRING,
-            label="Preferred quality",
             default_value=QUALITY_MP3_320,
             options=[
-                ConfigValueOption("MP3 128kbps (most compatible)", QUALITY_MP3_128),
-                ConfigValueOption("MP3 320kbps", QUALITY_MP3_320),
-                ConfigValueOption("FLAC (fallback to MP3)", QUALITY_FLAC),
-                ConfigValueOption("Hi-Res (Master, fallback to FLAC/MP3)", QUALITY_HI_RES),
+                ConfigValueOption(QUALITY_MP3_128),
+                ConfigValueOption(QUALITY_MP3_320),
+                ConfigValueOption(QUALITY_FLAC),
+                ConfigValueOption(QUALITY_HI_RES),
             ],
             hidden=not is_verified,
         ),
         ConfigEntry(
-            key=CONF_ACTION_START_QR_AUTH,
+            key=CONF_ACTION_START_QQ_QR_AUTH,
             type=ConfigEntryType.ACTION,
-            label="QR Login",
-            description="Generate QR code and open the login popup page.",
-            action=CONF_ACTION_START_QR_AUTH,
+            action=CONF_ACTION_START_QQ_QR_AUTH,
+            hidden=is_verified,
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_START_WX_QR_AUTH,
+            type=ConfigEntryType.ACTION,
+            action=CONF_ACTION_START_WX_QR_AUTH,
             hidden=is_verified,
         ),
         ConfigEntry(
             key=CONF_ACTION_CHECK_QR_AUTH,
             type=ConfigEntryType.ACTION,
-            label="Check QR status",
-            description="Manually check whether QQ scan confirmation is completed.",
+            translation_params=[qr_login_name],
             action=CONF_ACTION_CHECK_QR_AUTH,
             hidden=not has_qr_pending or is_verified,
         ),
         ConfigEntry(
             key=CONF_ACTION_CLEAR_AUTH,
             type=ConfigEntryType.ACTION,
-            label="Reset authentication",
             action=CONF_ACTION_CLEAR_AUTH,
             hidden=not (has_qr_pending or is_verified),
         ),
@@ -478,11 +502,13 @@ async def get_config_entries(
         values = {}
     if action == CONF_ACTION_CLEAR_AUTH:
         _clear_auth(values)
-    elif action == CONF_ACTION_START_QR_AUTH:
-        await _start_qr_auth(mass, values)
+    elif action in (CONF_ACTION_START_QR_AUTH, CONF_ACTION_START_QQ_QR_AUTH):
+        await _start_qr_auth(mass, values, qq_login_mod.QRLoginType.QQ)
+    elif action == CONF_ACTION_START_WX_QR_AUTH:
+        await _start_qr_auth(mass, values, qq_login_mod.QRLoginType.WX)
     elif action == CONF_ACTION_CHECK_QR_AUTH:
         await _check_qr_auth(values)
-    return _build_config_entries(values)
+    return (CONF_ENTRY_UNOFFICIAL_PROVIDER, *_build_config_entries(values))
 
 
 class QQMusicProvider(MusicProvider):
@@ -1008,7 +1034,7 @@ class QQMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found")
         return self._parse_artist(artist_obj)
 
-    @use_cache(3600 * 12)
+    @use_cache(3600 * 12, allow_expired_cache=True)
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get all albums for artist."""
         if prov_artist_id.isdigit():
@@ -1027,7 +1053,7 @@ class QQMusicProvider(MusicProvider):
             )
             if isinstance(tab_albums, list):
                 raw_albums = [item for item in tab_albums if isinstance(item, dict)]
-        except (MediaNotFoundError, InvalidDataError, TypeError, ValueError):
+        except MediaNotFoundError, InvalidDataError, TypeError, ValueError:
             raw_albums = []
 
         if not raw_albums:
@@ -1057,7 +1083,7 @@ class QQMusicProvider(MusicProvider):
                 albums.append(self._parse_album(item))
         return albums
 
-    @use_cache(3600 * 6)
+    @use_cache(3600 * 6, allow_expired_cache=True)
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get top tracks for artist."""
         if prov_artist_id.isdigit():
@@ -1098,7 +1124,7 @@ class QQMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Album {prov_album_id} returned unexpected payload")
         return self._parse_album(album_obj)
 
-    @use_cache(3600 * 24 * 7)
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for album id."""
         album_value: str | int = int(prov_album_id) if prov_album_id.isdigit() else prov_album_id
@@ -1151,7 +1177,7 @@ class QQMusicProvider(MusicProvider):
             self.logger.debug("Failed to load QQ Music lyrics for %s: %s", prov_track_id, err)
         return track
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve followed artists from QQ Music."""
         euin = await self._ensure_user_euin()
         page = 1
@@ -1181,14 +1207,14 @@ class QQMusicProvider(MusicProvider):
                 try:
                     yield self._parse_artist(artist_obj)
                     total_yielded += 1
-                except (InvalidDataError, TypeError, ValueError):
+                except InvalidDataError, TypeError, ValueError:
                     continue
             if len(artists) < num:
                 break
             page += 1
         self.logger.info("QQ library artists sync yielded %s artist(s)", total_yielded)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from QQ Music."""
         euin = await self._ensure_user_euin()
         page = 1
@@ -1208,13 +1234,13 @@ class QQMusicProvider(MusicProvider):
                 try:
                     yield self._parse_track(song)
                     yielded += 1
-                except (InvalidDataError, TypeError, ValueError):
+                except InvalidDataError, TypeError, ValueError:
                     continue
             if total and yielded >= total:
                 break
             page += 1
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from QQ Music."""
         euin = await self._ensure_user_euin()
         page = 1
@@ -1242,14 +1268,14 @@ class QQMusicProvider(MusicProvider):
                 try:
                     yield self._parse_album(album_obj)
                     total_yielded += 1
-                except (InvalidDataError, TypeError, ValueError):
+                except InvalidDataError, TypeError, ValueError:
                     continue
             if len(albums) < num:
                 break
             page += 1
         self.logger.info("QQ library albums sync yielded %s album(s)", total_yielded)
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve user playlists from QQ Music."""
         euin = await self._ensure_user_euin()
         created = await self._run_with_session(
@@ -1258,7 +1284,7 @@ class QQMusicProvider(MusicProvider):
         for playlist_obj in created or []:
             try:
                 yield self._parse_playlist(playlist_obj)
-            except (InvalidDataError, TypeError, ValueError):
+            except InvalidDataError, TypeError, ValueError:
                 continue
 
         page = 1
@@ -1278,7 +1304,7 @@ class QQMusicProvider(MusicProvider):
             for playlist_obj in fav_playlists:
                 try:
                     yield self._parse_playlist(playlist_obj)
-                except (InvalidDataError, TypeError, ValueError):
+                except InvalidDataError, TypeError, ValueError:
                     continue
             if len(fav_playlists) < num:
                 break
@@ -1304,7 +1330,7 @@ class QQMusicProvider(MusicProvider):
         playlist_obj = {**playlist_obj, "dissid": dissid, "dirid": dirid}
         return self._parse_playlist(playlist_obj)
 
-    @use_cache(3600)
+    @use_cache(3600, allow_expired_cache=True)
     async def get_playlist_tracks(
         self,
         prov_playlist_id: str,
@@ -1328,7 +1354,7 @@ class QQMusicProvider(MusicProvider):
                 track = self._parse_track(song)
                 track.position = index
                 results.append(track)
-            except (InvalidDataError, TypeError, ValueError):
+            except InvalidDataError, TypeError, ValueError:
                 continue
         return results
 
@@ -1526,7 +1552,7 @@ class QQMusicProvider(MusicProvider):
             )
         )
 
-    @use_cache(3600 * 24)
+    @use_cache(3600 * 24, allow_expired_cache=True)
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of similar tracks based on the provided track."""
         song_id = await self._resolve_song_id(prov_track_id)

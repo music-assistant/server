@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature
+from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature, ProviderType
 from music_assistant_models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
@@ -22,13 +23,20 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_NAME,
 )
 from music_assistant.controllers.media.base import MediaControllerBase
-from music_assistant.helpers.compare import compare_artist, compare_strings, create_safe_string
+from music_assistant.helpers.compare import (
+    compare_album,
+    compare_artist,
+    compare_strings,
+    compare_track,
+    create_safe_string,
+)
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
-    from music_assistant.models.music_provider import MusicProvider
+    from music_assistant.models.metadata_provider import MetadataProvider
 
 
 class ArtistsController(MediaControllerBase[Artist]):
@@ -46,6 +54,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/artist_albums", self.albums)
         self.mass.register_api_command(f"music/{api_base}/artist_tracks", self.tracks)
+        self.mass.register_api_command(f"music/{api_base}/top_tracks", self.top_tracks)
+        self.mass.register_api_command(f"music/{api_base}/top_albums", self.top_albums)
+        self.mass.register_api_command(f"music/{api_base}/similar_artists", self.similar_artists)
 
     async def library_count(
         self, favorite_only: bool = False, album_artists_only: bool = False
@@ -111,92 +122,503 @@ class ArtistsController(MediaControllerBase[Artist]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-        in_library_only: bool = False,
-        provider_filter: str | list[str] | None = None,
+        provider_filter: str | None = None,
     ) -> list[Track]:
-        """Return all/top tracks for an artist."""
-        if provider_filter and provider_instance_id_or_domain != "library":
-            raise MusicAssistantError("Cannot use provider_filter with specific provider request")
-        if isinstance(provider_filter, str):
-            provider_filter = [provider_filter]
-        # always check if we have a library item for this artist
-        library_artist = await self.get_library_item_by_prov_id(
-            item_id, provider_instance_id_or_domain
-        )
-        if not library_artist:
-            return await self.get_provider_artist_toptracks(item_id, provider_instance_id_or_domain)
-        db_items = await self.get_library_artist_tracks(library_artist.item_id)
-        result: list[Track] = db_items
-        if in_library_only and not provider_filter:
-            # return in-library items only
-            return result
-        # return all (unique) items from all providers
-        # initialize unique_ids with db_items to prevent duplicates
-        unique_ids: set[str] = {f"{item.name}.{item.version}" for item in db_items}
-        unique_providers = self.mass.music.get_unique_providers()
-        for provider_mapping in library_artist.provider_mappings:
-            if provider_mapping.provider_instance not in unique_providers:
-                continue
-            if provider_filter and provider_mapping.provider_instance not in provider_filter:
-                continue
-            provider_tracks = await self.get_provider_artist_toptracks(
-                provider_mapping.item_id, provider_mapping.provider_instance
-            )
-            for provider_track in provider_tracks:
-                unique_id = f"{provider_track.name}.{provider_track.version}"
-                if unique_id in unique_ids:
-                    continue
-                unique_ids.add(unique_id)
-                # prefer db item
-                if db_item := await self.mass.music.tracks.get_library_item_by_prov_id(
-                    provider_track.item_id, provider_track.provider
-                ):
-                    result.append(db_item)
-                elif not in_library_only:
-                    result.append(provider_track)
-        return result
+        """
+        Return the tracks for an artist.
+
+        For a library item, the in-library tracks are returned, optionally limited to a single
+        provider instance with the provider_filter. For a provider item, that provider's
+        tracks listing is returned (which may be empty if it is not supported).
+
+        :param item_id: The item ID of the artist.
+        :param provider_instance_id_or_domain: The provider instance ID or domain of the artist.
+        :param provider_filter: Optional provider instance ID to limit the (library) result to.
+        """
+        if provider_instance_id_or_domain == "library":
+            return await self.get_library_artist_tracks(item_id, provider_filter=provider_filter)
+        self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
+        return await self.get_provider_artist_tracks(item_id, provider_instance_id_or_domain)
 
     async def albums(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-        in_library_only: bool = False,
+        provider_filter: str | None = None,
     ) -> list[Album]:
-        """Return (all/most popular) albums for an artist."""
-        # always check if we have a library item for this artist
-        library_artist = await self.get_library_item_by_prov_id(
-            item_id, provider_instance_id_or_domain
-        )
-        if not library_artist:
-            return await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain)
-        db_items = await self.get_library_artist_albums(library_artist.item_id)
-        result: list[Album] = db_items
-        if in_library_only:
-            # return in-library items only
-            return result
-        # return all (unique) items from all providers
-        # initialize unique_ids with db_items to prevent duplicates
-        unique_ids: set[str] = {f"{item.name}.{item.version}" for item in db_items}
-        unique_providers = self.mass.music.get_unique_providers()
-        for provider_mapping in library_artist.provider_mappings:
-            if provider_mapping.provider_instance not in unique_providers:
-                continue
-            provider_albums = await self.get_provider_artist_albums(
-                provider_mapping.item_id, provider_mapping.provider_instance
+        """
+        Return the albums for an artist.
+
+        For a library item, the in-library albums are returned, optionally limited to a single
+        provider instance with the provider_filter. For a provider item, that provider's
+        albums listing is returned (which may be empty if it is not supported).
+
+        :param item_id: The item ID of the artist.
+        :param provider_instance_id_or_domain: The provider instance ID or domain of the artist.
+        :param provider_filter: Optional provider instance ID to limit the (library) result to.
+        """
+        if provider_instance_id_or_domain == "library":
+            return await self.get_library_artist_albums(item_id, provider_filter=provider_filter)
+        self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
+        return await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain)
+
+    async def top_tracks(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        provider_filter: str | None = None,
+    ) -> list[Track]:
+        """
+        Return the top/featured tracks for an artist.
+
+        For a library item, the top tracks of all the artist's providers are aggregated (and
+        deduplicated), optionally limited to a single provider instance. For a provider
+        item, that provider's top tracks listing is returned (may be empty if not supported).
+
+        :param item_id: The item ID of the artist.
+        :param provider_instance_id_or_domain: The provider instance ID or domain of the artist.
+        :param provider_filter: Optional provider instance ID to limit the result to.
+        """
+        if provider_instance_id_or_domain == "library":
+            return await self.get_library_artist_toptracks(item_id, provider_filter=provider_filter)
+        self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
+        return await self.get_provider_artist_toptracks(item_id, provider_instance_id_or_domain)
+
+    async def top_albums(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        provider_filter: str | None = None,
+    ) -> list[Album]:
+        """
+        Return the top/featured albums for an artist.
+
+        For a library item, the top albums of all the artist's providers are aggregated (and
+        deduplicated), optionally limited to a single provider instance. For a provider
+        item, that provider's top albums listing is returned (may be empty if not supported).
+
+        :param item_id: The item ID of the artist.
+        :param provider_instance_id_or_domain: The provider instance ID or domain of the artist.
+        :param provider_filter: Optional provider instance ID to limit the result to.
+        """
+        if provider_instance_id_or_domain == "library":
+            return await self.get_library_artist_topalbums(item_id, provider_filter=provider_filter)
+        self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
+        return await self.get_provider_artist_topalbums(item_id, provider_instance_id_or_domain)
+
+    async def similar_artists(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        provider_filter: str | None = None,
+        limit: int = 25,
+    ) -> list[Artist]:
+        """
+        Return similar artists for an artist.
+
+        For a library item, the similar artists of all the artist's providers are aggregated
+        (and deduplicated), optionally limited to a single provider instance. For a provider
+        item, that provider's similar artists listing is returned (may be empty if not
+        supported).
+
+        :param item_id: The item ID of the artist.
+        :param provider_instance_id_or_domain: The provider instance ID or domain of the artist.
+        :param provider_filter: Optional provider instance ID to limit the result to.
+        :param limit: Maximum number of similar artists to return.
+        """
+        if provider_instance_id_or_domain == "library":
+            return await self.get_library_artist_similar_artists(
+                item_id, provider_filter=provider_filter, limit=limit
             )
-            for provider_album in provider_albums:
-                unique_id = f"{provider_album.name}.{provider_album.version}"
+        self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
+        return await self.get_provider_artist_similar_artists(
+            item_id, provider_instance_id_or_domain, limit=limit
+        )
+
+    async def get_provider_artist_toptracks(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+    ) -> list[Track]:
+        """
+        Return the top tracks for an artist on the given provider.
+
+        Each track is resolved to its in-library equivalent where available.
+        """
+        provider = self.mass.get_provider(
+            provider_instance_id_or_domain, provider_type=MusicProvider
+        )
+        if provider is None or not provider.available:
+            return []  # guard against unavailable provider
+        if not provider.supports_feature(ProviderFeature.ARTIST_TOPTRACKS):
+            self.logger.warning(
+                "Provider %s does not support fetching artist top tracks.",
+                provider.name,
+            )
+            return []  # guard against unsupported feature
+        tracks = await provider.get_artist_toptracks(item_id)
+        # resolve to in-library equivalents (in parallel) where available
+        resolved = await asyncio.gather(
+            *(
+                self.mass.music.tracks.get_library_item_by_prov_id(track.item_id, track.provider)
+                for track in tracks
+            )
+        )
+        return [
+            library_track or track for library_track, track in zip(resolved, tracks, strict=True)
+        ]
+
+    async def get_library_artist_toptracks(
+        self,
+        item_id: str | int,
+        provider_filter: str | None = None,
+    ) -> list[Track]:
+        """
+        Return the top tracks for an in-library artist, aggregated across all its providers.
+
+        The result combines (and deduplicates, preserving order) the top tracks from every
+        provider attached to the artist and any metadata/plugin provider implementing the
+        feature. Empty when no provider yields a result.
+
+        :param item_id: The library item ID of the artist.
+        :param provider_filter: Optional provider instance ID to limit the result to.
+        """
+        ref_item = await self.get_library_item(item_id)
+        allowed = self._ensure_provider_filter(provider_filter)
+        # fetch each provider's ranked top tracks in parallel
+        fetches = []
+        # streaming providers attached to the artist (results resolved to library items)
+        for provider_mapping in ref_item.provider_mappings:
+            if allowed is not None and provider_mapping.provider_instance not in allowed:
+                continue
+            music_prov = self.mass.get_provider(
+                provider_mapping.provider_instance, provider_type=MusicProvider
+            )
+            if (
+                music_prov is None
+                or ProviderFeature.ARTIST_TOPTRACKS not in music_prov.supported_features
+            ):
+                continue
+            fetches.append(
+                self.get_provider_artist_toptracks(
+                    provider_mapping.item_id, provider_mapping.provider_instance
+                )
+            )
+        # metadata/plugin providers implementing the feature
+        for prov in self.mass.get_providers_supporting_feature(
+            ProviderFeature.ARTIST_TOPTRACKS,
+            priority=(ProviderType.METADATA, ProviderType.PLUGIN),
+        ):
+            if allowed is not None and prov.instance_id not in allowed:
+                continue
+            fetches.append(cast("MetadataProvider", prov).get_artist_toptracks(ref_item))
+        per_provider = await asyncio.gather(*fetches, return_exceptions=True)
+        # drop (and log) any provider that failed so one bad provider can't sink the listing
+        listings: list[list[Track]] = []
+        for listing in per_provider:
+            if isinstance(listing, BaseException):
+                self.logger.warning(
+                    "Error fetching top tracks for artist %s from a provider",
+                    ref_item.name,
+                    exc_info=listing,
+                )
+                continue
+            listings.append(listing)
+        # interleave the providers' rankings by position (zip), deduplicating with the compare
+        # helper (which also matches on version/duration)
+        result: list[Track] = []
+        for row in zip_longest(*listings):
+            for candidate in row:
+                if candidate is None or any(
+                    compare_track(existing, candidate) for existing in result
+                ):
+                    continue
+                result.append(candidate)
+        return result
+
+    async def get_provider_artist_topalbums(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+    ) -> list[Album]:
+        """
+        Return the top/featured albums for an artist on the given provider.
+
+        Each album is resolved to its in-library equivalent where available.
+        """
+        provider = self.mass.get_provider(
+            provider_instance_id_or_domain, provider_type=MusicProvider
+        )
+        if provider is None or not provider.available:
+            return []  # guard against unavailable provider
+        if not provider.supports_feature(ProviderFeature.ARTIST_TOPALBUMS):
+            self.logger.warning(
+                "Provider %s does not support fetching artist top albums.",
+                provider.name,
+            )
+            return []  # guard against unsupported feature
+        albums = await provider.get_artist_topalbums(item_id)
+        # resolve to in-library equivalents (in parallel) where available
+        resolved = await asyncio.gather(
+            *(
+                self.mass.music.albums.get_library_item_by_prov_id(album.item_id, album.provider)
+                for album in albums
+            )
+        )
+        return [
+            library_album or album for library_album, album in zip(resolved, albums, strict=True)
+        ]
+
+    async def get_library_artist_topalbums(
+        self,
+        item_id: str | int,
+        provider_filter: str | None = None,
+    ) -> list[Album]:
+        """
+        Return the top albums for an in-library artist, aggregated across all its providers.
+
+        The result combines (and deduplicates, preserving order) the top albums from every
+        provider attached to the artist and any metadata/plugin provider implementing the
+        feature. Empty when no provider yields a result.
+
+        :param item_id: The library item ID of the artist.
+        :param provider_filter: Optional provider instance ID to limit the result to.
+        """
+        ref_item = await self.get_library_item(item_id)
+        allowed = self._ensure_provider_filter(provider_filter)
+        # fetch each provider's ranked top albums in parallel
+        fetches = []
+        # streaming providers attached to the artist (results resolved to library items)
+        for provider_mapping in ref_item.provider_mappings:
+            if allowed is not None and provider_mapping.provider_instance not in allowed:
+                continue
+            music_prov = self.mass.get_provider(
+                provider_mapping.provider_instance, provider_type=MusicProvider
+            )
+            if (
+                music_prov is None
+                or ProviderFeature.ARTIST_TOPALBUMS not in music_prov.supported_features
+            ):
+                continue
+            fetches.append(
+                self.get_provider_artist_topalbums(
+                    provider_mapping.item_id, provider_mapping.provider_instance
+                )
+            )
+        # metadata/plugin providers implementing the feature
+        for prov in self.mass.get_providers_supporting_feature(
+            ProviderFeature.ARTIST_TOPALBUMS,
+            priority=(ProviderType.METADATA, ProviderType.PLUGIN),
+        ):
+            if allowed is not None and prov.instance_id not in allowed:
+                continue
+            fetches.append(cast("MetadataProvider", prov).get_artist_topalbums(ref_item))
+        per_provider = await asyncio.gather(*fetches, return_exceptions=True)
+        # drop (and log) any provider that failed so one bad provider can't sink the listing
+        listings: list[list[Album]] = []
+        for listing in per_provider:
+            if isinstance(listing, BaseException):
+                self.logger.warning(
+                    "Error fetching top albums for artist %s from a provider",
+                    ref_item.name,
+                    exc_info=listing,
+                )
+                continue
+            listings.append(listing)
+        # interleave the providers' rankings by position (zip), deduplicating with the compare
+        # helper (which also matches on version/duration)
+        result: list[Album] = []
+        for row in zip_longest(*listings):
+            for candidate in row:
+                if candidate is None or any(
+                    compare_album(existing, candidate) for existing in result
+                ):
+                    continue
+                result.append(candidate)
+        return result
+
+    async def get_provider_artist_tracks(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+    ) -> list[Track]:
+        """Return all tracks for an artist on given provider."""
+        provider = self.mass.get_provider(
+            provider_instance_id_or_domain, provider_type=MusicProvider
+        )
+        if provider is None or not provider.available:
+            return []  # guard against unavailable provider
+        if provider.supports_feature(ProviderFeature.ARTIST_TRACKS):
+            return await provider.get_artist_tracks(item_id)
+        # fallback: enumerate (and dedupe) the tracks of all the artist's albums on the provider
+        result: list[Track] = []
+        unique_ids: set[str] = set()
+        for album in await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain):
+            for track in await self.mass.music.albums.tracks(album.item_id, album.provider):
+                unique_id = f"{track.name}.{track.version}"
                 if unique_id in unique_ids:
                     continue
                 unique_ids.add(unique_id)
-                # prefer db item
-                if db_item := await self.mass.music.albums.get_library_item_by_prov_id(
-                    provider_album.item_id, provider_album.provider
-                ):
-                    result.append(db_item)
-                elif not in_library_only:
-                    result.append(provider_album)
+                result.append(track)
         return result
+
+    async def get_library_artist_tracks(
+        self,
+        item_id: str | int,
+        provider_filter: str | None = None,
+    ) -> list[Track]:
+        """Return all in-library tracks for an artist, optionally limited to a single provider."""
+        db_id = int(item_id)  # ensure integer
+        subquery = f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = :artist_id"
+        query = f"tracks.item_id in ({subquery})"
+        return await self.mass.music.tracks.get_library_items_by_query(
+            extra_query_parts=[query],
+            extra_query_params={"artist_id": db_id},
+            provider_filter=self._ensure_provider_filter(provider_filter),
+            in_library_only=True,
+        )
+
+    async def get_provider_artist_albums(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+    ) -> list[Album]:
+        """Return albums for an artist on given provider."""
+        provider = self.mass.get_provider(
+            provider_instance_id_or_domain, provider_type=MusicProvider
+        )
+        if provider is None or not provider.available:
+            return []  # guard against unavailable provider
+        if not provider.supports_feature(ProviderFeature.ARTIST_ALBUMS):
+            self.logger.warning(
+                "Provider %s does not support fetching all artist albums.",
+                provider.name,
+            )
+            return []  # guard against unsupported feature
+        return await provider.get_artist_albums(item_id)
+
+    async def get_library_artist_albums(
+        self,
+        item_id: str | int,
+        provider_filter: str | None = None,
+    ) -> list[Album]:
+        """Return all in-library albums for an artist, optionally limited to a single provider."""
+        db_id = int(item_id)  # ensure integer
+        subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id"
+        query = f"albums.item_id in ({subquery})"
+        return await self.mass.music.albums.get_library_items_by_query(
+            extra_query_parts=[query],
+            extra_query_params={"artist_id": db_id},
+            provider_filter=self._ensure_provider_filter(provider_filter),
+            in_library_only=True,
+        )
+
+    async def get_provider_artist_similar_artists(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        limit: int = 25,
+    ) -> list[Artist]:
+        """
+        Return similar artists for an artist on the given provider.
+
+        Each artist is resolved to its in-library equivalent where available.
+        """
+        provider = self.mass.get_provider(
+            provider_instance_id_or_domain, provider_type=MusicProvider
+        )
+        if provider is None or not provider.available:
+            return []  # guard against unavailable provider
+        if not provider.supports_feature(ProviderFeature.SIMILAR_ARTISTS):
+            self.logger.warning(
+                "Provider %s does not support fetching similar artists.",
+                provider.name,
+            )
+            return []  # guard against unsupported feature
+        artists = await provider.get_similar_artists(item_id, limit=limit)
+        # resolve to in-library equivalents (in parallel) where available
+        resolved = await asyncio.gather(
+            *(
+                self.get_library_item_by_prov_id(artist.item_id, artist.provider)
+                for artist in artists
+            )
+        )
+        return [
+            library_artist or artist
+            for library_artist, artist in zip(resolved, artists, strict=True)
+        ]
+
+    async def get_library_artist_similar_artists(
+        self,
+        item_id: str | int,
+        provider_filter: str | None = None,
+        limit: int = 25,
+    ) -> list[Artist]:
+        """
+        Return similar artists for an in-library artist, aggregated across all its providers.
+
+        The result combines (and deduplicates, preserving order) the similar artists from
+        every provider attached to the artist and any metadata/plugin provider implementing
+        the feature. Empty when no provider yields a result.
+
+        :param item_id: The library item ID of the artist.
+        :param provider_filter: Optional provider instance ID to limit the result to.
+        :param limit: Maximum number of similar artists to return.
+        """
+        ref_item = await self.get_library_item(item_id)
+        allowed = self._ensure_provider_filter(provider_filter)
+        # fetch each provider's similar artists in parallel
+        fetches = []
+        # streaming providers attached to the artist (results resolved to library items)
+        for provider_mapping in ref_item.provider_mappings:
+            if allowed is not None and provider_mapping.provider_instance not in allowed:
+                continue
+            music_prov = self.mass.get_provider(
+                provider_mapping.provider_instance, provider_type=MusicProvider
+            )
+            if (
+                music_prov is None
+                or ProviderFeature.SIMILAR_ARTISTS not in music_prov.supported_features
+            ):
+                continue
+            fetches.append(
+                self.get_provider_artist_similar_artists(
+                    provider_mapping.item_id, provider_mapping.provider_instance, limit=limit
+                )
+            )
+        # metadata/plugin providers implementing the feature
+        for prov in self.mass.get_providers_supporting_feature(
+            ProviderFeature.SIMILAR_ARTISTS,
+            priority=(ProviderType.METADATA, ProviderType.PLUGIN),
+        ):
+            if allowed is not None and prov.instance_id not in allowed:
+                continue
+            fetches.append(
+                cast("MetadataProvider", prov).get_similar_artists(ref_item, limit=limit)
+            )
+        per_provider = await asyncio.gather(*fetches, return_exceptions=True)
+        # drop (and log) any provider that failed so one bad provider can't sink the listing
+        listings: list[list[Artist]] = []
+        for listing in per_provider:
+            if isinstance(listing, BaseException):
+                self.logger.warning(
+                    "Error fetching similar artists for %s from a provider",
+                    ref_item.name,
+                    exc_info=listing,
+                )
+                continue
+            listings.append(listing)
+        # interleave the providers' results by position (zip), deduplicating with the compare
+        # helper, and cap to the requested limit
+        result: list[Artist] = []
+        for row in zip_longest(*listings):
+            for candidate in row:
+                if candidate is None or any(
+                    compare_artist(existing, candidate) for existing in result
+                ):
+                    continue
+                result.append(candidate)
+        return result[:limit]
 
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
         """Delete record from the database."""
@@ -227,85 +649,15 @@ class ArtistsController(MediaControllerBase[Artist]):
         # this will raise if the item still has references and recursive is false
         await super().remove_item_from_library(db_id)
 
-    async def get_provider_artist_toptracks(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-    ) -> list[Track]:
-        """Return top tracks for an artist on given provider."""
-        assert provider_instance_id_or_domain != "library"
-        if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
-            return []
-        prov = cast("MusicProvider", prov)
-        if ProviderFeature.ARTIST_TOPTRACKS in prov.supported_features:
-            return await prov.get_artist_toptracks(item_id)
-        # fallback implementation using the library db
-        if db_artist := await self.mass.music.artists.get_library_item_by_prov_id(
-            item_id,
-            provider_instance_id_or_domain,
-        ):
-            db_artist_id = int(db_artist.item_id)  # ensure integer
-            subquery = f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = :artist_id"
-            query = f"tracks.item_id in ({subquery})"
-            return await self.mass.music.tracks.get_library_items_by_query(
-                extra_query_parts=[query],
-                extra_query_params={"artist_id": db_artist_id},
-                provider_filter=[provider_instance_id_or_domain],
+    def _validate_provider_filter(
+        self, provider_instance_id_or_domain: str, provider_filter: str | None
+    ) -> None:
+        """Raise when a provider filter is set that does not match the requested provider."""
+        if provider_filter is not None and provider_filter != provider_instance_id_or_domain:
+            raise MusicAssistantError(
+                f"provider_filter '{provider_filter}' does not match the requested "
+                f"provider '{provider_instance_id_or_domain}'"
             )
-        return []
-
-    async def get_library_artist_tracks(
-        self,
-        item_id: str | int,
-    ) -> list[Track]:
-        """Return all tracks for an artist in the library/db."""
-        db_id = int(item_id)  # ensure integer
-        subquery = f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = :artist_id"
-        query = f"tracks.item_id in ({subquery})"
-        return await self.mass.music.tracks.get_library_items_by_query(
-            extra_query_parts=[query],
-            extra_query_params={"artist_id": db_id},
-        )
-
-    async def get_provider_artist_albums(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-    ) -> list[Album]:
-        """Return albums for an artist on given provider."""
-        assert provider_instance_id_or_domain != "library"
-        if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
-            return []
-        prov = cast("MusicProvider", prov)
-        if ProviderFeature.ARTIST_ALBUMS in prov.supported_features:
-            return await prov.get_artist_albums(item_id)
-        # fallback implementation using the db
-        if db_artist := await self.mass.music.artists.get_library_item_by_prov_id(
-            item_id,
-            provider_instance_id_or_domain,
-        ):
-            db_artist_id = int(db_artist.item_id)  # ensure integer
-            subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id"
-            query = f"albums.item_id in ({subquery})"
-            return await self.mass.music.albums.get_library_items_by_query(
-                extra_query_parts=[query],
-                extra_query_params={"artist_id": db_artist_id},
-                provider_filter=[provider_instance_id_or_domain],
-            )
-        return []
-
-    async def get_library_artist_albums(
-        self,
-        item_id: str | int,
-    ) -> list[Album]:
-        """Return all in-library albums for an artist."""
-        db_id = int(item_id)  # ensure integer
-        subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id"
-        query = f"albums.item_id in ({subquery})"
-        return await self.mass.music.albums.get_library_items_by_query(
-            extra_query_parts=[query],
-            extra_query_params={"artist_id": db_id},
-        )
 
     async def _add_library_item(
         self, item: Artist | ItemMapping, overwrite_existing: bool = False
@@ -400,11 +752,10 @@ class ArtistsController(MediaControllerBase[Artist]):
         :param item: The Artist to get base tracks for.
         :param preferred_provider_instances: List of preferred provider instance IDs to use.
         """
-        return await self.tracks(
-            item.item_id,
-            item.provider,
-            in_library_only=False,
-        )
+        # prefer the (top) tracks listing as radio seed, falling back to all tracks
+        if result := await self.top_tracks(item.item_id, item.provider):
+            return result
+        return await self.tracks(item.item_id, item.provider)
 
     async def match_provider(
         self, db_artist: Artist, provider: MusicProvider, strict: bool = True
@@ -506,7 +857,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
-            if not provider.library_supported(MediaType.ARTIST):
+            if not self.mass.music.library_supported(provider, MediaType.ARTIST):
                 continue
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA

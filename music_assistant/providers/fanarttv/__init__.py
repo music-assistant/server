@@ -70,22 +70,16 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ENABLE_ARTIST_IMAGES,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable retrieval of artist images.",
             default_value=True,
         ),
         ConfigEntry(
             key=CONF_ENABLE_ALBUM_IMAGES,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable retrieval of album image(s).",
             default_value=True,
         ),
         ConfigEntry(
             key=CONF_CLIENT_KEY,
             type=ConfigEntryType.SECURE_STRING,
-            label="VIP Member Personal API Key (optional)",
-            description="Support this metadata provider by becoming a VIP Member, "
-            "resulting in higher rate limits and faster response times among other benefits. "
-            "See https://wiki.fanart.tv/General/personal%20api/ for more information.",
             required=False,
         ),
     )

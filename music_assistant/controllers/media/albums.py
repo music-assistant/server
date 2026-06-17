@@ -6,7 +6,7 @@ import contextlib
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import AlbumType, MediaType, ProviderFeature
+from music_assistant_models.enums import AlbumType, ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, MusicAssistantError
 from music_assistant_models.media_items import (
     Album,
@@ -46,7 +46,15 @@ class AlbumsController(MediaControllerBase[Album]):
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         super().__init__(mass)
-        self.base_query = """
+        # register (extra) api handlers
+        api_base = self.api_base
+        self.mass.register_api_command(f"music/{api_base}/album_tracks", self.tracks)
+        self.mass.register_api_command(f"music/{api_base}/album_versions", self.versions)
+
+    @property
+    def base_query(self) -> tuple[str, dict[str, Any]]:
+        """Return the base SELECT query for albums and its bound query params."""
+        query = """
         SELECT
             albums.*,
             (SELECT JSON_GROUP_ARRAY(
@@ -70,10 +78,7 @@ class AlbumsController(MediaControllerBase[Album]):
                     'media_type', 'artist'
                 )) FROM artists JOIN album_artists on album_artists.album_id = albums.item_id  WHERE artists.item_id = album_artists.artist_id) AS artists
             FROM albums"""
-        # register (extra) api handlers
-        api_base = self.api_base
-        self.mass.register_api_command(f"music/{api_base}/album_tracks", self.tracks)
-        self.mass.register_api_command(f"music/{api_base}/album_versions", self.versions)
+        return query, {}
 
     async def get(
         self,
@@ -244,6 +249,37 @@ class AlbumsController(MediaControllerBase[Album]):
         # this will raise if the item still has references and recursive is false
         await super().remove_item_from_library(item_id)
 
+    async def set_release_group(
+        self,
+        album_item_id: int,
+        release_group_mbid: str,
+    ) -> None:
+        """
+        Persist a MusicBrainz release-group ID on a library album, idempotently.
+
+        :param album_item_id: Library album item_id (database id).
+        :param release_group_mbid: MusicBrainz release-group UUID to set.
+        """
+        if not release_group_mbid:
+            return
+        try:
+            album = await self.get_library_item(album_item_id)
+        except MusicAssistantError as err:
+            self.logger.debug("set_release_group: cannot load album %s: %s", album_item_id, err)
+            return
+        # Refuse to overwrite — keeps tag-sourced or already-enriched IDs authoritative.
+        if album.get_external_id(ExternalID.MB_RELEASEGROUP):
+            self.logger.debug(
+                "set_release_group: album %s already has MB_RELEASEGROUP — keeping",
+                album_item_id,
+            )
+            return
+        album.add_external_id(ExternalID.MB_RELEASEGROUP, release_group_mbid)
+        await self.update_item_in_library(album_item_id, album)
+        self.logger.debug(
+            "set_release_group: wrote %s onto album %s", release_group_mbid, album_item_id
+        )
+
     async def tracks(
         self,
         item_id: str,
@@ -259,13 +295,16 @@ class AlbumsController(MediaControllerBase[Album]):
             album_tracks = await self._get_provider_album_tracks(
                 item_id, provider_instance_id_or_domain
             )
-            if album_tracks and not album_tracks[0].image:
-                # set album image from provider album if not present on tracks
+            # some album-track listings omit the parent album and its image; backfill both
+            # from the provider album so the queue shows the album name and artwork.
+            if album_tracks and (not album_tracks[0].album or not album_tracks[0].image):
                 prov_album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-                if prov_album.image:
-                    for track in album_tracks:
-                        if not track.image:
-                            track.metadata.add_image(prov_album.image)
+                album_mapping = ItemMapping.from_item(prov_album)
+                for track in album_tracks:
+                    if prov_album.image and not track.image:
+                        track.metadata.add_image(prov_album.image)
+                    if track.album is None:
+                        track.album = album_mapping
             return album_tracks
 
         db_items = await self.get_library_album_tracks(library_album.item_id)
@@ -347,7 +386,7 @@ class AlbumsController(MediaControllerBase[Album]):
             provider = self.mass.get_provider(provider_id)
             if not provider or not isinstance(provider, MusicProvider):
                 continue
-            if not provider.library_supported(MediaType.ALBUM):
+            if not self.mass.music.library_supported(provider, MediaType.ALBUM):
                 continue
             result.extend(
                 prov_item
@@ -591,7 +630,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
-            if not provider.library_supported(MediaType.ALBUM):
+            if not self.mass.music.library_supported(provider, MediaType.ALBUM):
                 continue
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA

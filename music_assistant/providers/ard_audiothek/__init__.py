@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Sequence
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from gql import Client
@@ -36,6 +36,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_PASSWORD
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.datetime import from_utc_timestamp, future_timestamp, utc
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.ard_audiothek.database_queries import (
     get_history_query,
@@ -166,44 +167,34 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_EMAIL,
             type=ConfigEntryType.STRING,
-            label="E-Mail",
             required=False,
-            description="E-Mail address of ARD account.",
             hidden=authenticated,
             value=values.get(CONF_EMAIL),
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=False,
-            description="Password of ARD account.",
             hidden=authenticated,
             value=values.get(CONF_PASSWORD),
         ),
         ConfigEntry(
             key=CONF_MAX_BITRATE,
             type=ConfigEntryType.INTEGER,
-            label="Maximum bitrate for streams (0 for unlimited)",
             required=False,
-            description="Maximum bitrate for streams. Use 0 for unlimited",
             default_value=0,
             value=values.get(CONF_MAX_BITRATE),
         ),
         ConfigEntry(
             key=CONF_PODCAST_FINISHED,
             type=ConfigEntryType.INTEGER,
-            label="Percentage required before podcast episode is marked as fully played",
             required=False,
-            description="This setting defines how much of a podcast must be listened to before an "
-            "episode is marked as fully played",
             default_value=95,
             value=values.get(CONF_PODCAST_FINISHED),
         ),
         ConfigEntry(
             key=CONF_TOKEN_BEARER,
             type=ConfigEntryType.SECURE_STRING,
-            label="token",
             hidden=True,
             required=False,
             value=values.get(CONF_TOKEN_BEARER),
@@ -211,7 +202,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_USERID,
             type=ConfigEntryType.SECURE_STRING,
-            label="uid",
             hidden=True,
             required=False,
             value=values.get(CONF_USERID),
@@ -219,7 +209,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_EXPIRY_TIME,
             type=ConfigEntryType.SECURE_STRING,
-            label="token_expiry",
             hidden=True,
             required=False,
             default_value=0,
@@ -228,7 +217,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_DISPLAY_NAME,
             type=ConfigEntryType.STRING,
-            label="username",
             hidden=True,
             required=False,
             value=values.get(CONF_DISPLAY_NAME),
@@ -248,16 +236,14 @@ class ARDAudiothek(MusicProvider):
         _password = self.config.get_value(CONF_PASSWORD)
         self.token = self.config.get_value(CONF_TOKEN_BEARER)
         self.user_id = self.config.get_value(CONF_USERID)
-        self.token_expire = datetime.fromtimestamp(
-            float(str(self.config.get_value(CONF_EXPIRY_TIME)))
-        )
+        self.token_expire = from_utc_timestamp(float(str(self.config.get_value(CONF_EXPIRY_TIME))))
 
         self.max_bitrate = int(float(str(self.config.get_value(CONF_MAX_BITRATE))))
 
         if (
             _email is not None
             and _password is not None
-            and (self.token is None or self.user_id is None or self.token_expire < datetime.now())
+            and (self.token is None or self.user_id is None or self.token_expire < utc())
         ):
             self.token, self.user_id, _display_name = await _login(
                 self.mass.http_session, str(_email), str(_password)
@@ -265,9 +251,7 @@ class ARDAudiothek(MusicProvider):
             self._update_config_value(CONF_TOKEN_BEARER, self.token, encrypted=True)
             self._update_config_value(CONF_USERID, self.user_id, encrypted=True)
             self._update_config_value(CONF_DISPLAY_NAME, _display_name)
-            self._update_config_value(
-                CONF_EXPIRY_TIME, str((datetime.now() + timedelta(hours=1)).timestamp())
-            )
+            self._update_config_value(CONF_EXPIRY_TIME, str(future_timestamp(hours=1)))
             self._client_initialized = False
 
         if not self._client_initialized:
@@ -428,7 +412,7 @@ class ARDAudiothek(MusicProvider):
             prov_radio_id,
         )
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library/subscribed podcasts from the provider.
 
         Minified podcast information is enough.
@@ -482,9 +466,7 @@ class ARDAudiothek(MusicProvider):
             prov_podcast_id,
         )
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get podcast episodes."""
         await self._update_progress()
         depublished_filter = {"isPublished": {"equalTo": True}}

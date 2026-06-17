@@ -479,7 +479,7 @@ def _try_json(body: str) -> Any:
         return None
     try:
         return json.loads(body)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
 
 

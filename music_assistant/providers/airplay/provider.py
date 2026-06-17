@@ -364,6 +364,15 @@ class AirPlayProvider(PlayerProvider):
                     # Already handling a prevent-playback for this stream
                     # (duplicate message while ungroup/stop is still in progress)
                     self.logger.debug("Ignoring duplicate prevent-playback for %s", player.name)
+                elif not player.stream.connected:
+                    # Some devices (e.g. Denon AVR-X2700H) emit a transient
+                    # prevent-playback=1/=0 pair during RAOP session setup.
+                    # A real "device switched off / source switched" event only happens
+                    # once the stream is actually established, so ignore these.
+                    self.logger.debug(
+                        "Ignoring prevent-playback for %s - stream not yet established",
+                        player.name,
+                    )
                 else:
                     player.stream.prevent_playback = True
                     if player.stream.session:

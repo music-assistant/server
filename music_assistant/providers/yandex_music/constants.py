@@ -5,24 +5,28 @@ from __future__ import annotations
 from typing import Final
 
 # Configuration Keys
-CONF_TOKEN = "token"
-CONF_QUALITY = "quality"
-CONF_BASE_URL = "base_url"
+CONF_TOKEN: Final[str] = "token"
+CONF_QUALITY: Final[str] = "quality"
+CONF_BASE_URL: Final[str] = "base_url"
 
 # Actions
-CONF_ACTION_AUTH = "auth"
-CONF_ACTION_AUTH_QR = "auth_qr"
-CONF_ACTION_AUTH_DEVICE = "auth_device"
-CONF_ACTION_CLEAR_AUTH = "clear_auth"
+CONF_ACTION_AUTH_QR: Final[str] = "auth_qr"
+CONF_ACTION_AUTH_DEVICE: Final[str] = "auth_device"
+CONF_ACTION_CLEAR_AUTH: Final[str] = "clear_auth"
 
 # QR authentication config keys
-CONF_X_TOKEN = "x_token"
+CONF_X_TOKEN: Final[str] = "x_token"
 CONF_REFRESH_TOKEN: Final[str] = "refresh_token"
-CONF_REMEMBER_SESSION = "remember_session"
+CONF_REMEMBER_SESSION: Final[str] = "remember_session"
 
-# Labels
-LABEL_TOKEN = "token_label"
-LABEL_AUTH_INSTRUCTIONS = "auth_instructions_label"
+# Session-id key handed to the QR / Device-flow handlers from the MA config flow.
+CONF_SESSION_ID: Final[str] = "session_id"
+
+# Advanced toggle: enable a token-wide concurrency cap to keep MA below
+# Yandex's per-token edge concurrency limit on datacenter / VPN IPs
+# (probed at ~6 simultaneous in-flight before captcha trips). Off by
+# default — residential users tolerate much higher concurrency.
+CONF_RESTRICTIVE_RATE_LIMITS: Final[str] = "restrictive_rate_limits"
 
 # API defaults
 DEFAULT_LIMIT: Final[int] = 50
@@ -30,18 +34,18 @@ DEFAULT_BASE_URL: Final[str] = "https://api.music.yandex.net"
 WEB_BASE_URL: Final[str] = "https://music.yandex.ru"
 
 # Quality options (matching reference implementation)
-QUALITY_EFFICIENT = "efficient"  # Low quality, efficient bandwidth (~64kbps AAC)
-QUALITY_BALANCED = "balanced"  # Medium quality, balanced performance (~192kbps AAC)
-QUALITY_HIGH = "high"  # High quality, lossy (~320kbps MP3)
-QUALITY_SUPERB = "superb"  # Highest quality, lossless (FLAC)
+QUALITY_EFFICIENT: Final[str] = "efficient"  # Low quality, efficient bandwidth (~64kbps AAC)
+QUALITY_BALANCED: Final[str] = "balanced"  # Medium quality, balanced performance (~192kbps AAC)
+QUALITY_HIGH: Final[str] = "high"  # High quality, lossy (~320kbps MP3)
+QUALITY_SUPERB: Final[str] = "superb"  # Highest quality, lossless (FLAC)
 
 # Transport modes for get-file-info API
-CONF_TRANSPORT = "transport"
-TRANSPORT_RAW = "raw"  # Direct unencrypted stream (default)
-TRANSPORT_ENCRAW = "encraw"  # AES-CTR encrypted stream
+CONF_TRANSPORT: Final[str] = "transport"
+TRANSPORT_RAW: Final[str] = "raw"  # Direct unencrypted stream (default)
+TRANSPORT_ENCRAW: Final[str] = "encraw"  # AES-CTR encrypted stream
 
 # Custom codecs override (empty = use quality-based default)
-CONF_CODECS = "codecs"
+CONF_CODECS: Final[str] = "codecs"
 
 # Quality → get-file-info parameter mapping
 # Codecs order determines API priority (first codec = preferred by server)
@@ -72,14 +76,75 @@ CONF_LIKED_TRACKS_MAX_TRACKS: Final[str] = "liked_tracks_max_tracks"
 
 # Hardcoded default values for removed config entries
 MY_WAVE_BATCH_SIZE: Final[int] = 3
-TRACK_BATCH_SIZE: Final[int] = 50
+TRACK_BATCH_SIZE: Final[int] = 100
 DISCOVERY_INITIAL_TRACKS: Final[int] = 20
 BROWSE_INITIAL_TRACKS: Final[int] = 15
 
+# Rate-limit / smart-captcha handling.
+# Yandex's smart-captcha edge protection is per-endpoint-family. When it
+# triggers (HTML body with smart-captcha markers), the corresponding
+# throttler "kind" is put in a quarantine for a duration picked from
+# CAPTCHA_COOLDOWN_LADDER_S based on how many captcha strikes that kind has
+# accumulated inside CAPTCHA_STRIKE_RETENTION_S. The first strike is cheap
+# (60s) so a transient burst during initial library sync does not stall the
+# provider for 10 minutes; repeated strikes escalate to the original 600s.
+# Plain 429 (no captcha markers) only signals backoff_time on the failing
+# request — no kind-wide block, no escalation.
+# Ladder tightened after empirical probing against Yandex's edge layer
+# showed a tripped token actually recovers in ~15s; the previous
+# (60, 300, 600) ladder left the provider blocked far beyond Yandex's
+# real cooldown memory.
+CAPTCHA_COOLDOWN_LADDER_S: Final[tuple[float, ...]] = (15.0, 60.0, 120.0)
+CAPTCHA_STRIKE_RETENTION_S: Final[float] = 3600.0
+RATE_LIMIT_COOLDOWN_S: Final[float] = 60.0
+
+# Per-kind request budgets (requests per second). Tuned by endpoint cost:
+# - file_info is signed + most aggressively rate-limited at Yandex's edge
+# - rotor sits in the middle
+# - metadata covers the artist/album refresh burst MA fires during initial
+#   sync — kept low so it does not flood smart-captcha
+# - everything else (likes, tracks, search, playlists, ...) shares default
+#
+# Defaults bumped after empirical probing showed Yandex tolerates ≥10
+# sustained sequential RPS on both residential and datacenter IPs — the
+# previous 3/2 RPS caps were over-conservative without measurable
+# anti-scraper benefit.
+THROTTLE_DEFAULT_RPS: Final[int] = 5
+THROTTLE_METADATA_RPS: Final[int] = 3
+THROTTLE_FILE_INFO_RPS: Final[int] = 2
+THROTTLE_ROTOR_RPS: Final[int] = 3
+
+# Restrictive-mode global concurrency cap. When the
+# ``restrictive_rate_limits`` provider setting is enabled, every API
+# request runs through an additional ``asyncio.Semaphore(N)`` so the
+# total in-flight count across all kinds and endpoints can never exceed
+# this value. Sized one below Yandex's observed datacenter-IP captcha
+# threshold (N=8 trips, N≤6 clean) to keep a safety margin.
+RESTRICTIVE_GLOBAL_CONCURRENCY: Final[int] = 5
+
+# Initial-sync jitter: during the first INITIAL_SYNC_WINDOW_S after a
+# successful connect(), add up to INITIAL_SYNC_JITTER_S of uniform random
+# delay before acquiring the default/metadata throttlers. Smooths out the
+# parallel metadata-refresh burst MA fires immediately after a fresh
+# install + auth, which is what triggers smart-captcha in #146. After the
+# window expires the helper is a no-op — no steady-state overhead.
+INITIAL_SYNC_JITTER_S: Final[float] = 0.5
+INITIAL_SYNC_WINDOW_S: Final[float] = 60.0
+
+# get-file-info LRU cache. Bounded TTL so we never serve a URL after its CDN
+# expiry (Yandex stream URLs live ~60s) but still absorb same-track replays
+# from MA's streaming retry loop.
+FILE_INFO_CACHE_TTL_S: Final[float] = 30.0
+FILE_INFO_CACHE_MAX: Final[int] = 256
+
+# Inter-batch jitter when hydrating large lists (liked tracks/albums).
+# Spreads requests so a 5-batch burst looks like a human, not a bot.
+LIKED_BATCH_JITTER_MIN_S: Final[float] = 0.15
+LIKED_BATCH_JITTER_SPAN_S: Final[float] = 0.20
+
 # Image sizes
-IMAGE_SIZE_SMALL = "200x200"
-IMAGE_SIZE_MEDIUM = "400x400"
-IMAGE_SIZE_LARGE = "1000x1000"
+IMAGE_SIZE_MEDIUM: Final[str] = "400x400"
+IMAGE_SIZE_LARGE: Final[str] = "1000x1000"
 
 # Locale-aware provider display names for owner normalization
 PROVIDER_DISPLAY_NAME_RU: Final[str] = "Яндекс Музыка"

@@ -4,18 +4,19 @@ Credits go out to RemixDev (https://gitlab.com/RemixDev) for figuring out, how t
 cookie based on the api_token.
 """
 
-import datetime
 import json
 from collections.abc import Mapping
 from http.cookies import BaseCookie, Morsel
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import ClientSession, ClientTimeout
 from music_assistant_models.errors import MediaNotFoundError
-from music_assistant_models.streamdetails import StreamDetails
 from yarl import URL
 
-from music_assistant.helpers.datetime import utc_timestamp
+from music_assistant.helpers.datetime import future_timestamp, utc_timestamp
+
+if TYPE_CHECKING:
+    from music_assistant_models.streamdetails import StreamDetails
 
 USER_AGENT_HEADER = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -89,10 +90,7 @@ class GWClient:
         await self._update_user_data()
 
     async def _get_license(self) -> str | None:
-        if (
-            self._license_expiration_timestamp
-            < (datetime.datetime.now() + datetime.timedelta(days=1)).timestamp()
-        ):
+        if self._license_expiration_timestamp < future_timestamp(days=1):
             await self._update_user_data()
         return self._license
 

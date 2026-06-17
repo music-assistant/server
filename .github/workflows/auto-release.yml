@@ -350,12 +350,10 @@ jobs:
       contents: write
       pull-requests: read
       packages: write
-      id-token: write # Required for PyPI publishing
     uses: ./.github/workflows/release.yml
     with:
       version: ${{ needs.check-and-release.outputs.version }}
       channel: ${{ needs.check-and-release.outputs.channel }}
       important_notes: ${{ inputs.important_notes }}
     secrets:
-      PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
       PRIVILEGED_GITHUB_TOKEN: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}

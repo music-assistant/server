@@ -128,7 +128,7 @@ def get_multizone_info(
                 if group["multichannel_group"] and (udn := group.get("uuid")):
                     uuid = UUID(udn.replace("-", ""))
                     multichannel_groups.add(uuid)
-    except (urllib.error.HTTPError, urllib.error.URLError, OSError, KeyError, ValueError):
+    except urllib.error.HTTPError, urllib.error.URLError, OSError, KeyError, ValueError:
         pass
     return (dynamic_groups, multichannel_groups)
 
@@ -159,7 +159,7 @@ def get_mac_address(
             if ":" not in mac and len(mac) == 12:
                 mac = ":".join(mac[i : i + 2] for i in range(0, 12, 2))
             return str(mac)
-    except (urllib.error.HTTPError, urllib.error.URLError, OSError, KeyError, ValueError):
+    except urllib.error.HTTPError, urllib.error.URLError, OSError, KeyError, ValueError:
         pass
     return None
 

@@ -297,7 +297,12 @@ async def test_stale_ym_selection_normalizes_to_own() -> None:
     """
     mass = _make_mock_mass({"ym-b": {"domain": "yandex_music", "name": "B"}})
     values: dict[str, object] = {CONF_YM_INSTANCE: "ym-removed"}
-    entries = await get_config_entries(mass, values=values)  # type: ignore[arg-type]
+    # `arg-type`: upstream (music-assistant-models ≥ 1.1.117) flags
+    # `dict[str, object]` vs `dict[str, ConfigValueType] | None`; the
+    # local pin (1.1.111) accepts it, so the local mypy gate sees the
+    # ignore as unused. Combine both codes so the comment is correct
+    # under either dependency version.
+    entries = await get_config_entries(mass, values=values)  # type: ignore[arg-type, unused-ignore]
     by_key = _entries_by_key(entries)
 
     ym_source = by_key[CONF_YM_INSTANCE]

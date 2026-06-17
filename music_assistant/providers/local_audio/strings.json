@@ -1,0 +1,16 @@
+{
+  "config_entries": {
+    "volume_control": {
+      "label": "Volume control mode",
+      "description": "Hardware uses OS/ALSA-level volume control. Software applies volume scaling to PCM audio data. Disabled passes audio at full volume.",
+      "options": {
+        "hardware": "Hardware (preferred)",
+        "software": "Software",
+        "disabled": "Disabled"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Play audio through locally attached soundcards (USB DACs, built-in speakers, etc.)."
+  }
+}

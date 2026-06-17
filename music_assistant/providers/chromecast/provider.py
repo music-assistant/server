@@ -189,7 +189,7 @@ class ChromecastProvider(PlayerProvider):
             await castplayer.async_setup()
             await self.mass.players.register_or_update(castplayer)
             # Set up Sendspin bridge
-            await self.bridge_manager.setup_bridge(castplayer)
+            await self.bridge_manager.evaluate_bridge(castplayer)
         finally:
             self._pending_discoveries.discard(player_id)
 

@@ -15,9 +15,14 @@ class DummyHandler(ScrobblerHelper):
     _tracked = 0
     _now_playing = 0
 
-    def __init__(self, logger: logging.Logger, config: ScrobblerConfig | None = None) -> None:
+    def __init__(
+        self,
+        logger: logging.Logger,
+        config: ScrobblerConfig | None = None,
+        supported_media_types: frozenset[MediaType] | None = None,
+    ) -> None:
         """Initialize."""
-        super().__init__(logger, config)
+        super().__init__(logger, config, supported_media_types)
 
     def _is_configured(self) -> bool:
         return True
@@ -87,6 +92,75 @@ async def test_it_does_not_update_now_playing_on_pause() -> None:
     assert handler._now_playing == 0
 
 
+async def test_it_filters_scrobbles_by_player() -> None:
+    """Only scrobble tracks from configured players."""
+    handler = DummyHandler(
+        logging.getLogger(),
+        ScrobblerConfig(suffix_version=False, mass_playerids=["living_room"]),
+    )
+
+    await handler._on_mass_media_item_played(
+        create_report(duration=180, seconds_played=176, player_id="kitchen")
+    )
+    assert handler._now_playing == 0
+    assert handler._tracked == 0
+
+    await handler._on_mass_media_item_played(
+        create_report(duration=180, seconds_played=176, player_id="living_room")
+    )
+    assert handler._now_playing == 1
+    assert handler._tracked == 1
+
+
+async def test_it_filters_scrobbles_without_player_context() -> None:
+    """Skip scrobbling if a player filter is configured and the event has no player context."""
+    handler = DummyHandler(
+        logging.getLogger(),
+        ScrobblerConfig(suffix_version=False, mass_playerids=["living_room"]),
+    )
+
+    await handler._on_mass_media_item_played(
+        create_report(duration=180, seconds_played=176, player_id=None)
+    )
+    assert handler._now_playing == 0
+    assert handler._tracked == 0
+
+
+async def test_it_filters_unsupported_media_types() -> None:
+    """Only provider supported media types should be scrobbled."""
+    handler = DummyHandler(logging.getLogger(), supported_media_types=frozenset({MediaType.TRACK}))
+
+    await handler._on_mass_media_item_played(
+        create_report(
+            duration=180,
+            seconds_played=176,
+            uri="filesystem://audiobook/1",
+            media_type=MediaType.AUDIOBOOK,
+        )
+    )
+    assert handler._now_playing == 0
+    assert handler._tracked == 0
+
+
+async def test_it_allows_provider_supported_media_types() -> None:
+    """Providers can opt in to scrobbling additional media types."""
+    handler = DummyHandler(
+        logging.getLogger(),
+        supported_media_types=frozenset({MediaType.TRACK, MediaType.AUDIOBOOK}),
+    )
+
+    await handler._on_mass_media_item_played(
+        create_report(
+            duration=180,
+            seconds_played=176,
+            uri="filesystem://audiobook/1",
+            media_type=MediaType.AUDIOBOOK,
+        )
+    )
+    assert handler._now_playing == 1
+    assert handler._tracked == 1
+
+
 async def test_it_suffixes_the_version_if_enabled_and_available() -> None:
     """Test that the track version is suffixed to the track name when enabled."""
     report_with_version = create_report(version="Deluxe Edition").data
@@ -107,12 +181,14 @@ def create_report(
     is_playing: bool = True,
     uri: str = "filesystem://track/1",
     version: str | None = None,
+    player_id: str | None = "test_player",
+    media_type: MediaType = MediaType.TRACK,
 ) -> MassEvent:
     """Create the MediaItemPlaybackProgressReport and wrap it in a MassEvent."""
     return wrap_event(
         MediaItemPlaybackProgressReport(
             uri=uri,
-            media_type=MediaType.TRACK,
+            media_type=media_type,
             name="track",
             artist=None,
             artist_mbids=None,
@@ -125,6 +201,7 @@ def create_report(
             fully_played=duration - seconds_played < 5,
             is_playing=is_playing,
             version=version,
+            player_id=player_id,
         )
     )
 

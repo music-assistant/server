@@ -103,3 +103,63 @@ async def test_discovery_controller_owns_async_zeroconf(mass_minimal: MusicAssis
         ip_version=IPVersion.All,
         interfaces=["192.168.1.10", "fd00::1%2"],
     )
+
+
+async def test_async_find_mdns_service_matches_exact_device_name(mass: MusicAssistant) -> None:
+    """A device name must not cross-match another device whose name contains it."""
+    mass.discovery.aiozc.zeroconf.cache.cache = {
+        "aabbccddeeff@kelder._raop._tcp.local.": {},
+        "atv kelder._raop._tcp.local.": {},
+    }
+    mock_info = MagicMock()
+    mock_info.async_request = AsyncMock(return_value=True)
+    with patch(
+        "music_assistant.controllers.discovery.controller.AsyncServiceInfo",
+        return_value=mock_info,
+    ) as mock_service_info:
+        result = await mass.discovery.async_find_mdns_service(
+            "_raop._tcp.local.", "Kelder", timeout=1.0
+        )
+
+    assert result is mock_info
+    # "Kelder" must resolve to its own RAOP entry, never the "ATV Kelder" one.
+    mock_service_info.assert_called_once_with(
+        "_raop._tcp.local.", "aabbccddeeff@kelder._raop._tcp.local."
+    )
+
+
+async def test_async_find_mdns_service_no_substring_match(mass: MusicAssistant) -> None:
+    """Looking up a name that is only a substring of a discovered name should not match."""
+    mass.discovery.aiozc.zeroconf.cache.cache = {
+        "atv kelder._raop._tcp.local.": {},
+    }
+    with patch(
+        "music_assistant.controllers.discovery.controller.AsyncServiceInfo",
+    ) as mock_service_info:
+        result = await mass.discovery.async_find_mdns_service(
+            "_raop._tcp.local.", "Kelder", timeout=0.1
+        )
+
+    assert result is None
+    mock_service_info.assert_not_called()
+
+
+async def test_async_find_mdns_service_preserves_at_sign_in_name(mass: MusicAssistant) -> None:
+    """Only a RAOP MAC prefix is stripped, so device names containing '@' still match."""
+    mass.discovery.aiozc.zeroconf.cache.cache = {
+        "living@home._airplay._tcp.local.": {},
+    }
+    mock_info = MagicMock()
+    mock_info.async_request = AsyncMock(return_value=True)
+    with patch(
+        "music_assistant.controllers.discovery.controller.AsyncServiceInfo",
+        return_value=mock_info,
+    ) as mock_service_info:
+        result = await mass.discovery.async_find_mdns_service(
+            "_airplay._tcp.local.", "Living@Home", timeout=1.0
+        )
+
+    assert result is mock_info
+    mock_service_info.assert_called_once_with(
+        "_airplay._tcp.local.", "living@home._airplay._tcp.local."
+    )

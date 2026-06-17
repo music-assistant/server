@@ -162,17 +162,12 @@ async def get_config_entries(
             ConfigEntry(
                 key=CONF_URL,
                 type=ConfigEntryType.STRING,
-                label="URL",
                 required=True,
-                description="URL to your Home Assistant instance (e.g. http://192.168.1.1:8123)",
                 value=cast("str", values.get(CONF_URL)) if values else None,
             ),
             ConfigEntry(
                 key=CONF_ACTION_AUTH,
                 type=ConfigEntryType.ACTION,
-                label="(re)Authenticate Home Assistant",
-                description="Authenticate to your home assistant "
-                "instance and generate the long lived token.",
                 action=CONF_ACTION_AUTH,
                 depends_on=CONF_URL,
                 required=False,
@@ -180,9 +175,6 @@ async def get_config_entries(
             ConfigEntry(
                 key=CONF_AUTH_TOKEN,
                 type=ConfigEntryType.SECURE_STRING,
-                label="Authentication token for HomeAssistant",
-                description="You can either paste a Long Lived Token here manually or use the "
-                "'authenticate' button to generate a token for you with logging in.",
                 depends_on=CONF_URL,
                 value=cast("str", values.get(CONF_AUTH_TOKEN)) if values else None,
                 advanced=True,
@@ -190,9 +182,7 @@ async def get_config_entries(
             ConfigEntry(
                 key=CONF_VERIFY_SSL,
                 type=ConfigEntryType.BOOLEAN,
-                label="Verify SSL",
                 required=False,
-                description="Whether or not to verify the certificate of SSL/TLS connections.",
                 advanced=True,
                 default_value=True,
             ),
@@ -262,18 +252,18 @@ async def _get_config_entries(hass: HomeAssistantClient) -> tuple[ConfigEntry, .
 
         if entity_platform in ("switch", "input_boolean"):
             # simple on/off controls are suitable as power and mute controls
-            all_power_entities.append(ConfigValueOption(name, state["entity_id"]))
-            all_mute_entities.append(ConfigValueOption(name, state["entity_id"]))
+            all_power_entities.append(ConfigValueOption(state["entity_id"], title=name))
+            all_mute_entities.append(ConfigValueOption(state["entity_id"], title=name))
             continue
         if entity_platform in ("number", "input_number"):
             # number and input_number are very similar, both are suitable for volume control
-            all_volume_entities.append(ConfigValueOption(name, state["entity_id"]))
+            all_volume_entities.append(ConfigValueOption(state["entity_id"], title=name))
             continue
         if entity_platform == "tts":
-            tts_entities.append(ConfigValueOption(name, state["entity_id"]))
+            tts_entities.append(ConfigValueOption(state["entity_id"], title=name))
             continue
         if entity_platform == "ai_task":
-            ai_task_entities.append(ConfigValueOption(name, state["entity_id"]))
+            ai_task_entities.append(ConfigValueOption(state["entity_id"], title=name))
             continue
 
         # media player can be used as control, depending on features
@@ -284,74 +274,61 @@ async def _get_config_entries(hass: HomeAssistantClient) -> tuple[ConfigEntry, .
             continue
         supported_features = MediaPlayerEntityFeature(state["attributes"]["supported_features"])
         if MediaPlayerEntityFeature.VOLUME_MUTE in supported_features:
-            all_mute_entities.append(ConfigValueOption(name, state["entity_id"]))
+            all_mute_entities.append(ConfigValueOption(state["entity_id"], title=name))
         if MediaPlayerEntityFeature.VOLUME_SET in supported_features:
-            all_volume_entities.append(ConfigValueOption(name, state["entity_id"]))
+            all_volume_entities.append(ConfigValueOption(state["entity_id"], title=name))
         if (
             MediaPlayerEntityFeature.TURN_ON in supported_features
             and MediaPlayerEntityFeature.TURN_OFF in supported_features
         ):
-            all_power_entities.append(ConfigValueOption(name, state["entity_id"]))
-    all_power_entities.sort(key=lambda x: x.title)
-    all_mute_entities.sort(key=lambda x: x.title)
-    all_volume_entities.sort(key=lambda x: x.title)
-    tts_entities.sort(key=lambda x: x.title)
-    ai_task_entities.sort(key=lambda x: x.title)
+            all_power_entities.append(ConfigValueOption(state["entity_id"], title=name))
+    all_power_entities.sort(key=lambda x: x.title or "")
+    all_mute_entities.sort(key=lambda x: x.title or "")
+    all_volume_entities.sort(key=lambda x: x.title or "")
+    tts_entities.sort(key=lambda x: x.title or "")
+    ai_task_entities.sort(key=lambda x: x.title or "")
     entries: list[ConfigEntry] = [
         ConfigEntry(
             key=CONF_POWER_CONTROLS,
             type=ConfigEntryType.STRING,
             multi_value=True,
-            label="Player Power Control entities",
             required=True,
             options=all_power_entities,
             default_value=[],
-            description="Specify which Home Assistant entities you "
-            "like to import as player Power controls in Music Assistant.",
             category="player_controls",
         ),
         ConfigEntry(
             key=CONF_VOLUME_CONTROLS,
             type=ConfigEntryType.STRING,
             multi_value=True,
-            label="Player Volume Control entities",
             required=True,
             options=all_volume_entities,
             default_value=[],
-            description="Specify which Home Assistant entities you "
-            "like to import as player Volume controls in Music Assistant.",
             category="player_controls",
         ),
         ConfigEntry(
             key=CONF_MUTE_CONTROLS,
             type=ConfigEntryType.STRING,
             multi_value=True,
-            label="Player Mute Control entities",
             required=True,
             options=all_mute_entities,
             default_value=[],
-            description="Specify which Home Assistant entities you "
-            "like to import as player Mute controls in Music Assistant.",
             category="player_controls",
         ),
         ConfigEntry(
             key=CONF_TTS_ENTITY,
             type=ConfigEntryType.STRING,
-            label="Text-to-Speech entity",
             required=False,
             options=tts_entities,
             default_value=tts_entities[0].value if tts_entities else None,
-            description="Select which Home Assistant TTS entity you like to use for text-to-speech capabilities inside Music Assistant.",
             category="Features",
         ),
         ConfigEntry(
             key=CONF_AI_TASK_ENTITY,
             type=ConfigEntryType.STRING,
-            label="AI Task entity",
             required=False,
             options=ai_task_entities,
             default_value=ai_task_entities[0].value if ai_task_entities else None,
-            description="Select which Home Assistant AI Task entity you like to use for AI queries inside Music Assistant.",
             category="Features",
         ),
     ]

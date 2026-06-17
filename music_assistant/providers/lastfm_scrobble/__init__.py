@@ -5,7 +5,7 @@ import enum
 import logging
 import time
 from collections.abc import Callable, Mapping
-from typing import Final, cast
+from typing import TYPE_CHECKING, Final, cast
 
 import pylast
 from music_assistant_models.config_entries import (
@@ -15,22 +15,20 @@ from music_assistant_models.config_entries import (
     ProviderConfig,
 )
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
-from music_assistant_models.enums import ConfigEntryType, EventType, ProviderFeature
+from music_assistant_models.enums import ConfigEntryType, EventType, MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, SetupFailedError
-from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
-from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
 from music_assistant.helpers.auth import AuthenticationHelper
-from music_assistant.helpers.scrobbler import (
-    ScrobblerConfig,
-    ScrobblerHelper,
-    create_scrobble_users_config_entry,
-)
+from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
+
+if TYPE_CHECKING:
+    from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
+    from music_assistant_models.provider import ProviderManifest
 
 # Built-in Last.fm API credentials (not available for Libre.fm)
 _DEFAULT_API_KEY: str = app_var(12)
@@ -42,6 +40,7 @@ _DEFAULT_API_SECRET: str = app_var(13)
 # updating the PluginProvider base class
 # as well as other similar classes that also use set[ProviderFeature].
 SUPPORTED_FEATURES: Final[set[ProviderFeature]] = set()
+SUPPORTED_SCROBBLE_MEDIA_TYPES: Final[frozenset[MediaType]] = frozenset({MediaType.TRACK})
 
 # Configuration keys
 CONF_API_KEY: Final[str] = "_api_key"
@@ -179,7 +178,11 @@ class LastFMEventHandler(ScrobblerHelper):
         self, network: pylast._Network, logger: logging.Logger, config: ProviderConfig
     ) -> None:
         """Initialize."""
-        super().__init__(logger, ScrobblerConfig.create_from_config(config))
+        super().__init__(
+            logger,
+            ScrobblerConfig.create_from_config(config),
+            SUPPORTED_SCROBBLE_MEDIA_TYPES,
+        )
         self._network = network
 
     async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
@@ -234,17 +237,15 @@ async def get_config_entries(
     else:
         network_type = _NetworkType.LASTFM
 
-    entries: list[ConfigEntry] = ScrobblerConfig.get_shared_config_entries(values)
+    entries: list[ConfigEntry] = await ScrobblerConfig.get_shared_config_entries(mass, values)
     entries += [
         ConfigEntry(
             key=CONF_PROVIDER,
             type=ConfigEntryType.STRING,
-            label="Provider",
             required=True,
-            description="The endpoint to use, defaults to Last.fm",
             options=[
-                ConfigValueOption(title="Last.FM", value=_NetworkType.LASTFM.value),
-                ConfigValueOption(title="LibreFM", value=_NetworkType.LIBREFM.value),
+                ConfigValueOption(_NetworkType.LASTFM.value, title="Last.FM"),
+                ConfigValueOption(_NetworkType.LIBREFM.value, title="LibreFM"),
             ],
             default_value=network_type.value,
             value=network_type.value,
@@ -252,23 +253,17 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_API_KEY,
             type=ConfigEntryType.SECURE_STRING,
-            label="API Key",
             required=network_type != _NetworkType.LASTFM,
-            description="Override the built-in Last.fm API key. Required for Libre.fm.",
             value=values.get(CONF_API_KEY) if values else None,
             advanced=True,
         ),
         ConfigEntry(
             key=CONF_API_SECRET,
             type=ConfigEntryType.SECURE_STRING,
-            label="Shared secret",
             required=network_type != _NetworkType.LASTFM,
-            description="Override the built-in Last.fm shared secret. Required for Libre.fm.",
             value=values.get(CONF_API_SECRET) if values else None,
             advanced=True,
         ),
-        # add user selection entry
-        await create_scrobble_users_config_entry(mass),
     ]
 
     # early return so we can assume values are present
@@ -328,14 +323,12 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Logged in user",
             hidden=True,
             value=values.get(CONF_USERNAME) if values else None,
         ),
         ConfigEntry(
             key=CONF_SESSION_KEY,
             type=ConfigEntryType.SECURE_STRING,
-            label="Session key",
             hidden=True,
             required=False,
             value=values.get(CONF_SESSION_KEY) if values else None,

@@ -21,6 +21,7 @@ from music_assistant_models.enums import ConfigEntryType, EventType, MediaType, 
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import BrowseFolder, ItemMapping
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audible.audible_helper import (
     AudibleHelper,
@@ -154,6 +155,7 @@ async def get_config_entries(
             raise LoginFailed(f"Verification failed: {e}") from e
 
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key="label_text",
             type=ConfigEntryType.LABEL,
@@ -162,36 +164,32 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_LOCALE,
             type=ConfigEntryType.STRING,
-            label="Marketplace",
             hidden=not auth_required,
             required=True,
             value=locale,
             options=[
-                ConfigValueOption("US and all other countries not listed", "us"),
-                ConfigValueOption("Canada", "ca"),
-                ConfigValueOption("UK and Ireland", "uk"),
-                ConfigValueOption("Australia and New Zealand", "au"),
-                ConfigValueOption("France, Belgium, Switzerland", "fr"),
-                ConfigValueOption("Germany, Austria, Switzerland", "de"),
-                ConfigValueOption("Japan", "jp"),
-                ConfigValueOption("Italy", "it"),
-                ConfigValueOption("India", "in"),
-                ConfigValueOption("Spain", "es"),
-                ConfigValueOption("Brazil", "br"),
+                ConfigValueOption("us"),
+                ConfigValueOption("ca"),
+                ConfigValueOption("uk"),
+                ConfigValueOption("au"),
+                ConfigValueOption("fr"),
+                ConfigValueOption("de"),
+                ConfigValueOption("jp"),
+                ConfigValueOption("it"),
+                ConfigValueOption("in"),
+                ConfigValueOption("es"),
+                ConfigValueOption("br"),
             ],
             default_value="us",
         ),
         ConfigEntry(
             key=CONF_ACTION_AUTH,
             type=ConfigEntryType.ACTION,
-            label="(Re)Authenticate with Audible",
-            description="This button will redirect you to Audible to authenticate.",
             action=CONF_ACTION_AUTH,
         ),
         ConfigEntry(
             key=CONF_POST_LOGIN_URL,
             type=ConfigEntryType.STRING,
-            label="Post Login Url",
             required=False,
             value=cast("str | None", values.get(CONF_POST_LOGIN_URL)),
             hidden=not auth_required,
@@ -199,15 +197,12 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ACTION_VERIFY,
             type=ConfigEntryType.ACTION,
-            label="Verify Audible URL",
-            description="This button will check the url and register this provider.",
             action=CONF_ACTION_VERIFY,
             hidden=not auth_required,
         ),
         ConfigEntry(
             key=CONF_CODE_VERIFIER,
             type=ConfigEntryType.STRING,
-            label="Code Verifier",
             hidden=True,
             required=False,
             value=cast("str | None", values.get(CONF_CODE_VERIFIER)),
@@ -215,7 +210,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_SERIAL,
             type=ConfigEntryType.STRING,
-            label="Serial",
             hidden=True,
             required=False,
             value=cast("str | None", values.get(CONF_SERIAL)),
@@ -223,7 +217,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_LOGIN_URL,
             type=ConfigEntryType.STRING,
-            label="Login Url",
             hidden=True,
             required=False,
             value=cast("str | None", values.get(CONF_LOGIN_URL)),
@@ -231,7 +224,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_AUTH_FILE,
             type=ConfigEntryType.STRING,
-            label="Authentication File",
             hidden=True,
             required=True,
             value=cast("str | None", values.get(CONF_AUTH_FILE)),
@@ -327,7 +319,7 @@ class Audibleprovider(MusicProvider):
         """Return True if the provider is a streaming provider."""
         return True
 
-    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Get all audiobooks from the library."""
         async for audiobook in self.helper.get_library():
             yield audiobook
@@ -517,7 +509,7 @@ class Audibleprovider(MusicProvider):
         """Return audiobooks from a specific publisher."""
         return await self.helper.get_audiobooks_by_publisher(publisher)
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Get all podcasts from the library."""
         async for podcast in self.helper.get_library_podcasts():
             yield podcast
@@ -526,9 +518,7 @@ class Audibleprovider(MusicProvider):
         """Get full podcast details by id."""
         return await self.helper.get_podcast(asin=prov_podcast_id)
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get all episodes for a podcast."""
         async for episode in self.helper.get_podcast_episodes(prov_podcast_id):
             yield episode

@@ -18,13 +18,14 @@ from __future__ import annotations
 import pathlib
 import re
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
-from aiohttp import web
+from aiohttp import ClientTimeout, web
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import LoginFailed
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.helpers.auth import AuthenticationHelper
 
 from .constants import (
@@ -66,8 +67,9 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
+    values = values or {}
 
-    def validate_user_token(token):
+    def validate_user_token(token: ConfigValueType) -> bool:
         if not isinstance(token, str):
             return False
         valid = re.findall(r"[a-zA-Z0-9=/+]{32,}==$", token)
@@ -80,7 +82,7 @@ async def get_config_entries(
             "https://api.music.apple.com/v1/test",
             headers={"Authorization": f"Bearer {MUSIC_APP_TOKEN}"},
             ssl=True,
-            timeout=10,
+            timeout=ClientTimeout(total=10),
         ) as response,
     ):
         if response.status == 200:
@@ -90,7 +92,9 @@ async def get_config_entries(
     # Action is to launch MusicKit flow
     if action == "CONF_ACTION_AUTH" and default_app_token_valid:
         callback_method = "POST"
-        async with AuthenticationHelper(mass, values["session_id"], callback_method) as auth_helper:
+        async with AuthenticationHelper(
+            mass, cast("str", values["session_id"]), callback_method
+        ) as auth_helper:
             callback_url = auth_helper.callback_url
             flow_base_path = f"apple_music_auth/{values['session_id']}/"
             flow_timeout = 600
@@ -98,14 +102,14 @@ async def get_config_entries(
             base_url = f"{mass.webserver.base_url}/{flow_base_path}"
             flow_base_url = f"{base_url}index.html"
 
-            async def serve_mk_auth_page(request: web.Request) -> web.Response:
+            async def serve_mk_auth_page(request: web.Request) -> web.FileResponse:
                 auth_html_path = parent_file_path.joinpath("musickit_auth/musickit_wrapper.html")
                 return web.FileResponse(
                     auth_html_path,
                     headers={"content-type": "text/html"},
                 )
 
-            async def serve_mk_auth_css(request: web.Request) -> web.Response:
+            async def serve_mk_auth_css(request: web.Request) -> web.FileResponse:
                 auth_css_path = parent_file_path.joinpath("musickit_auth/musickit_wrapper.css")
                 return web.FileResponse(
                     auth_css_path,
@@ -155,10 +159,10 @@ async def get_config_entries(
 
     # ruff: noqa: ARG001
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=CONF_MUSIC_APP_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="MusicKit App Token",
             hidden=default_app_token_valid,
             required=True,
             value=values.get(CONF_MUSIC_APP_TOKEN) if values else None,
@@ -166,39 +170,27 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_MUSIC_USER_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Music User Token",
             required=False,
             action="CONF_ACTION_AUTH",
-            description="Authenticate with Apple Music to retrieve a valid music user token.",
-            action_label="Authenticate with Apple Music",
             value=values.get(CONF_MUSIC_USER_TOKEN)
             if (
                 values
-                and isinstance(values.get(CONF_MUSIC_USER_TOKEN_TIMESTAMP), int)
-                and (
-                    values.get(CONF_MUSIC_USER_TOKEN_TIMESTAMP) > (time.time() - (3600 * 24 * 150))
-                )
+                and isinstance(ts := values.get(CONF_MUSIC_USER_TOKEN_TIMESTAMP), int)
+                and ts > (time.time() - (3600 * 24 * 150))
             )
             else None,
         ),
         ConfigEntry(
             key=CONF_MUSIC_USER_MANUAL_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Manual Music User Token",
             required=False,
             advanced=True,
-            description=(
-                "Authenticate with a manual Music User Token in case the Authentication flow"
-                " is unsupported (e.g. when using child accounts)."
-            ),
             help_link="https://www.music-assistant.io/music-providers/apple-music/",
             value=values.get(CONF_MUSIC_USER_MANUAL_TOKEN),
         ),
         ConfigEntry(
             key=CONF_MUSIC_USER_TOKEN_TIMESTAMP,
             type=ConfigEntryType.INTEGER,
-            description="Timestamp music user token was updated.",
-            label="Music User Token Timestamp",
             hidden=True,
             required=True,
             default_value=0,

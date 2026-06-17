@@ -1,10 +1,9 @@
 """Podcastfeed -> Mass."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from io import BytesIO
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import aiohttp
 import podcastparser
 from aiohttp.client import ClientError
 from music_assistant_models.enums import ContentType, ImageType, MediaType
@@ -19,6 +18,9 @@ from music_assistant_models.media_items import (
     ProviderMapping,
     UniqueList,
 )
+
+if TYPE_CHECKING:
+    import aiohttp
 
 
 async def get_podcastparser_dict(
@@ -193,7 +195,7 @@ def parse_podcast_episode(
         },
     )
     if episode_published is not None:
-        mass_episode.metadata.release_date = datetime.fromtimestamp(episode_published)
+        mass_episode.metadata.release_date = datetime.fromtimestamp(episode_published, tz=UTC)
 
     # chapter
     if chapters := episode.get("chapters"):

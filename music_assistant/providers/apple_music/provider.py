@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.media_items import (
     Album,
@@ -66,10 +66,12 @@ class AppleMusicProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self._music_user_token = self.config.get_value(
-            CONF_MUSIC_USER_MANUAL_TOKEN
-        ) or self.config.get_value(CONF_MUSIC_USER_TOKEN)
-        self._music_app_token = self.config.get_value(CONF_MUSIC_APP_TOKEN)
+        self._music_user_token = cast(
+            "str | None",
+            self.config.get_value(CONF_MUSIC_USER_MANUAL_TOKEN)
+            or self.config.get_value(CONF_MUSIC_USER_TOKEN),
+        )
+        self._music_app_token = cast("str | None", self.config.get_value(CONF_MUSIC_APP_TOKEN))
         self._storefront = await self.api_client.get_user_storefront()
         await self.streaming_manager.initialize()
 
@@ -153,26 +155,30 @@ class AppleMusicProvider(MusicProvider):
         """Retrieve a dynamic list of tracks based on the provided item."""
         return await self.recommendation_manager.get_similar_tracks(prov_track_id, limit)
 
+    async def get_similar_artists(self, prov_artist_id: str, limit: int = 25) -> list[Artist]:
+        """Retrieve a list of artists similar to the provided artist."""
+        return await self.recommendation_manager.get_similar_artists(prov_artist_id, limit)
+
     # ------------------------------------------------------------------
     # Library generators
     # ------------------------------------------------------------------
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
         async for item in self.library_manager.get_library_artists():
             yield item
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from the provider."""
         async for item in self.library_manager.get_library_albums():
             yield item
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from the provider."""
         async for item in self.library_manager.get_library_tracks():
             yield item
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve playlists from the provider."""
         async for item in self.library_manager.get_library_playlists():
             yield item
@@ -181,13 +187,15 @@ class AppleMusicProvider(MusicProvider):
     # Library mutations
     # ------------------------------------------------------------------
 
-    async def library_add(self, item: MediaItemType) -> None:
+    async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
         await self.library_manager.library_add(item)
+        return True
 
-    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> None:
+    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove item from library."""
         await self.library_manager.library_remove(prov_item_id, media_type)
+        return True
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""

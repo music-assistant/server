@@ -46,7 +46,7 @@ from music_assistant.mass import MusicAssistant
 
 
 @pytest.fixture(scope="class")
-async def mass(tmp_path_factory: pytest.TempPathFactory) -> AsyncGenerator[MusicAssistant, None]:
+async def mass(tmp_path_factory: pytest.TempPathFactory) -> AsyncGenerator[MusicAssistant]:
     """Class-scoped MusicAssistant instance (one per test class)."""
     tmp_path = tmp_path_factory.mktemp("genre_tests")
     storage_path = tmp_path / "data"
@@ -875,6 +875,82 @@ class TestPromoteAlias:
         assert updated_parent.genre_aliases is not None
         assert "PromAlias" not in updated_parent.genre_aliases
         assert "PromComplete" in updated_parent.genre_aliases
+
+    async def test_promote_alias_shared_across_genres(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """
+        Promotion handles aliases shared across multiple genres.
+
+        Every genre that claimed the alias loses it and all mappings made via
+        the alias are moved to the new genre, regardless of which source the
+        caller invoked the promotion from.
+        """
+        folk = await genre_ctrl.add_item_to_library(_make_genre("PromFolk"))
+        pop = await genre_ctrl.add_item_to_library(_make_genre("PromPop"))
+        await genre_ctrl.add_alias(folk.item_id, "PromManele")
+        await genre_ctrl.add_alias(pop.item_id, "PromManele")
+        track = await _add_test_track(mass, "Manele Track")
+        # Track is mapped to both genres via the same alias (n:n).
+        await genre_ctrl.add_media_mapping(
+            folk.item_id, MediaType.TRACK, track.item_id, "PromManele"
+        )
+        await genre_ctrl.add_media_mapping(
+            pop.item_id, MediaType.TRACK, track.item_id, "PromManele"
+        )
+
+        # Invoke from one of the owning genres; both should be cleared.
+        new_genre = await genre_ctrl.promote_alias_to_genre(folk.item_id, "PromManele")
+
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT genre_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_id = :mid AND media_type = 'track'",
+            {"mid": int(track.item_id)},
+            limit=0,
+        )
+        genre_ids = {int(r["genre_id"]) for r in rows}
+        assert genre_ids == {int(new_genre.item_id)}
+
+        updated_folk = await genre_ctrl.get_library_item(int(folk.item_id))
+        updated_pop = await genre_ctrl.get_library_item(int(pop.item_id))
+        assert "PromManele" not in (updated_folk.genre_aliases or [])
+        assert "PromManele" not in (updated_pop.genre_aliases or [])
+
+    async def test_promote_rebuilds_derived_album_mappings(
+        self, mass: MusicAssistant, genre_ctrl: GenreController
+    ) -> None:
+        """
+        Derived album rows are cleared from the source genre after promotion.
+
+        Without this, propagation-derived (alias=NULL, is_derived=1) rows would
+        still link the album to the source genre even though the underlying
+        tracks have moved to the new one.
+        """
+        parent = await genre_ctrl.add_item_to_library(_make_genre("PromHipHop"))
+        await genre_ctrl.add_alias(parent.item_id, "PromRap")
+        track = await _add_test_track(mass, "Rap Track")
+        album = await _add_test_album(mass, "Rap Album")
+        await genre_ctrl.add_media_mapping(
+            parent.item_id, MediaType.TRACK, track.item_id, "PromRap"
+        )
+        # Seed a propagation-derived album row (alias=NULL, is_derived=1) as if
+        # it had been written by _propagate_genre_mappings_to_parents.
+        await mass.music.database.execute(
+            f"INSERT INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "(genre_id, media_id, media_type, alias, is_derived) "
+            "VALUES (:gid, :mid, 'album', NULL, 1)",
+            {"gid": int(parent.item_id), "mid": int(album.item_id)},
+        )
+
+        await genre_ctrl.promote_alias_to_genre(parent.item_id, "PromRap")
+
+        rows = await mass.music.database.get_rows_from_query(
+            f"SELECT genre_id FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE media_id = :mid AND media_type = 'album'",
+            {"mid": int(album.item_id)},
+            limit=0,
+        )
+        assert all(int(r["genre_id"]) != int(parent.item_id) for r in rows)
 
 
 # ===================================================================

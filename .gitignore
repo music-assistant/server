@@ -1,5 +1,4 @@
 
-.DS_Store
 *.db
 *.pyc
 music_assistant/config.json
@@ -19,7 +18,10 @@ venv/
 .idea
 .coverage
 uv.lock
-/.claude/worktrees
+/.claude/*
+!/.claude/skills
+!/.claude/skills/**
+.DS_Store
 docs/superpowers
 
 # Devenv
