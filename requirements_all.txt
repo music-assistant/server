@@ -76,7 +76,7 @@ pytz==2025.2
 pywam==0.2.0
 pywidevine==1.9.0
 PyYAML==6.0.3
-qqmusic-api-python==0.4.1
+qqmusic-api-python==0.6.6
 radios==0.3.2
 rokuecp==0.19.5
 shortuuid==1.0.13
