@@ -190,7 +190,7 @@ class StreamsController(CoreController):
                 "- **Maximum**: Large buffer, "
                 "best performance for systems with plenty of memory.",
                 # Only offer presets the host's RAM can sustain (Balanced >= 4GB,
-                # Maximum >= 8GB); see get_available_buffer_sizes.
+                # Maximum >= 7GB); see get_available_buffer_sizes.
                 options=[
                     ConfigValueOption(size.value.title(), size.value)
                     for size in get_available_buffer_sizes()
