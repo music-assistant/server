@@ -439,7 +439,7 @@ class CacheController(CoreController):
             name="Cache database cleanup",
             handler=self.auto_cleanup,
             schedule=desired_schedule,
-            translation_key="background_task.cache_database_cleanup",
+            translation_key="core.cache.background_task.cache_database_cleanup",
             metadata={"task_domain": "cache_database_cleanup"},
             allow_retry=True,
         )

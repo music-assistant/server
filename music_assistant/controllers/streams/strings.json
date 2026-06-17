@@ -16,6 +16,26 @@
     "smart_fades_log_level": {
       "label": "Smart Fades Log level",
       "description": "Log level for the Smart Fades mixer and analyzer."
+    },
+    "publish_ip": {
+      "label": "Published IP address",
+      "description": "This IP address is communicated to players where to find this server.\nMake sure that this IP can be reached by players on the local network, otherwise audio streaming will not work."
+    },
+    "volume_normalization_radio": {
+      "label": "Volume normalization method for radio streams"
+    },
+    "volume_normalization_tracks": {
+      "label": "Volume normalization method for tracks"
+    },
+    "volume_normalization_fixed_gain_radio": {
+      "label": "Fixed/fallback gain adjustment for radio streams"
+    },
+    "volume_normalization_fixed_gain_tracks": {
+      "label": "Fixed/fallback gain adjustment for tracks"
+    },
+    "background_scan_concurrency": {
+      "label": "Background analysis concurrency",
+      "description": "Maximum number of tracks analyzed concurrently during the nightly background scan. Default 1 (serial). Increase only if your hardware can handle concurrent torch/ffmpeg work."
     }
   },
   "manifest": {

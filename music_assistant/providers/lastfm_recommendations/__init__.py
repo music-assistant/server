@@ -149,7 +149,7 @@ class LastFMRecommendationsProvider(MetadataProvider):
             name="Refresh Last.fm recommendations",
             handler=self._refresh_recommendations,
             schedule=TaskSchedule.hourly(every=6),
-            translation_key="background_task.refresh_lastfm_recommendations",
+            translation_key="provider.lastfm_recommendations.background_task.refresh_lastfm_recommendations",
         )
 
         # Populate on every startup so the UI isn't empty until the next scheduled refresh.

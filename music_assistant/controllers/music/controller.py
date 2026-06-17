@@ -2155,19 +2155,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     def _get_sync_task_translation_key(self, media_type: MediaType) -> str:
         """Return translation key for a provider sync task."""
         if media_type == MediaType.ARTIST:
-            return "background_task.sync_provider_artists"
+            return "core.music.background_task.sync_provider_artists"
         if media_type == MediaType.ALBUM:
-            return "background_task.sync_provider_albums"
+            return "core.music.background_task.sync_provider_albums"
         if media_type == MediaType.TRACK:
-            return "background_task.sync_provider_tracks"
+            return "core.music.background_task.sync_provider_tracks"
         if media_type == MediaType.PLAYLIST:
-            return "background_task.sync_provider_playlists"
+            return "core.music.background_task.sync_provider_playlists"
         if media_type == MediaType.RADIO:
-            return "background_task.sync_provider_radios"
+            return "core.music.background_task.sync_provider_radios"
         if media_type == MediaType.AUDIOBOOK:
-            return "background_task.sync_provider_audiobooks"
+            return "core.music.background_task.sync_provider_audiobooks"
         if media_type == MediaType.PODCAST:
-            return "background_task.sync_provider_podcasts"
+            return "core.music.background_task.sync_provider_podcasts"
         return "settings.sync"
 
     def _get_sync_task_metadata(
@@ -2198,7 +2198,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             name="Database cleanup",
             handler=self._cleanup_database,
             schedule=desired_schedule,
-            translation_key="background_task.database_cleanup",
+            translation_key="core.music.background_task.database_cleanup",
             metadata={
                 "task_domain": "music_database_cleanup",
             },
@@ -2214,7 +2214,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             name="Correct provider mappings",
             handler=self.correct_multi_instance_provider_mappings,
             schedule=desired_schedule,
-            translation_key="background_task.correct_provider_mappings",
+            translation_key="core.music.background_task.correct_provider_mappings",
             metadata={
                 "task_domain": "music_provider_mapping_correction",
             },

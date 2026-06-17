@@ -229,7 +229,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         return self.mass.tasks.run_background_task(
             name=f"Add items to playlist {playlist_name}",
             handler=lambda: self._handle_add_playlist_tracks(db_playlist_id, uris),
-            translation_key="background_task.add_playlist_tracks",
+            translation_key="core.music.background_task.add_playlist_tracks",
             translation_args=[playlist_name],
             user_id=user.user_id if user else None,
             metadata={
@@ -265,7 +265,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             handler=lambda: self._handle_remove_playlist_tracks(
                 db_playlist_id, positions_to_remove
             ),
-            translation_key="background_task.remove_playlist_tracks",
+            translation_key="core.music.background_task.remove_playlist_tracks",
             translation_args=[playlist_name],
             user_id=user.user_id if user else None,
             metadata={
@@ -709,7 +709,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 handler=lambda: builtin_prov.match_imported_playlist_tracks(
                     prov_playlist_id, match_providers
                 ),
-                translation_key="background_task.import_playlist_matching",
+                translation_key="core.music.background_task.import_playlist_matching",
                 translation_args=[db_playlist.name],
                 user_id=user.user_id if user else None,
                 metadata={
