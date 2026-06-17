@@ -501,7 +501,7 @@ def test_media_names_are_keyed_by_media_type() -> None:
     assert source["common.media.genre.jazz.name"] == "Jazz"
     assert source["common.media.playlist.random_album.name"]  # built-in playlists -> playlist.*
     assert source["common.media.folder.albums.name"] == "Albums"  # browse-folder titles
-    assert source["common.media.recommendations.made_for_you.name"] == "Made for you"
+    assert source["common.media.recommendations.recommended_tracks.name"] == "Recommended tracks"
     # the old flat keys are gone (would silently break localization if left behind)
     for stale in (
         "common.media.jazz.name",  # genre was flat

@@ -27,7 +27,6 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Protocol, Self, TypeVar, cast
 from urllib.parse import urlparse
 
-import chardet
 import ifaddr
 from music_assistant_models.enums import AlbumType, IdentifierType
 from music_assistant_models.errors import UnsupportedSystemError
@@ -1184,6 +1183,10 @@ async def close_async_generator(agen: AsyncGenerator[Any]) -> None:
 
 async def detect_charset(data: bytes, fallback: str = "utf-8") -> str:
     """Detect charset of raw data."""
+    # imported here to keep chardet (~18MB) out of the idle import footprint:
+    # it is only needed on the rarely-hit playlist/radio charset fallback path
+    import chardet  # noqa: PLC0415
+
     try:
         detected: ResultDict = await asyncio.to_thread(chardet.detect, data)
         if detected and detected["encoding"] and detected["confidence"] > 0.75:

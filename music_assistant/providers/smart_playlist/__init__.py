@@ -213,6 +213,7 @@ class SmartPlaylistProvider(PluginProvider):
                 item_id="smart_playlists",
                 provider=self.domain,
                 name="Smart Playlists",
+                translation_key="smart_playlists",
                 items=playlists,  # type: ignore[arg-type]
             )
         ]

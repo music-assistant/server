@@ -245,16 +245,19 @@ class NugsProvider(MusicProvider):
 
         popular_folder = RecommendationFolder(
             name="Most Popular",
+            translation_key="nugs_popular_shows",
             item_id="nugs_popular_shows",
             provider=self.instance_id,
         )
         recommended_folder = RecommendationFolder(
             name="Recommended Shows",
+            translation_key="nugs_recommended_shows",
             item_id="nugs_recommended_shows",
             provider=self.instance_id,
         )
         recent_folder = RecommendationFolder(
             name="Recent Shows",
+            translation_key="nugs_recent_shows",
             item_id="nugs_recent_shows",
             provider=self.instance_id,
         )
