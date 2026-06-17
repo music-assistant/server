@@ -201,10 +201,11 @@ class TestRecommendations:
     ) -> None:
         """recommendations() asks for partial plays and does NOT filter on user_initiated.
 
-        MA only sets user_initiated=True on container-level plays (album, artist,
-        playlist, genre); individual tracks always get user_initiated=False from
-        the playback-report hook. Restricting to user_initiated=True therefore
-        excludes the actual track-level plays we want as seeds.
+        MA sets user_initiated=True only for items the user explicitly chose (a
+        container such as an album, artist, playlist or genre, or a single track played
+        directly). Tracks that play as part of a container or as radio fill -- exactly
+        the track-level plays we want as seeds -- stay user_initiated=False, so
+        restricting to user_initiated=True would exclude them.
         """
         plugin = make_plugin(signatures={("spotify", "seed_id"): [0.1] * 18})
         mock_mass.music.recently_played = AsyncMock(return_value=[])

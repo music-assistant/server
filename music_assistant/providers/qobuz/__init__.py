@@ -298,7 +298,11 @@ class QobuzProvider(MusicProvider):
         )
         if not playlist_obj or not playlist_obj.get("id"):
             msg = f"Failed to create playlist: {name}"
-            raise InvalidDataError(msg)
+            raise InvalidDataError(
+                msg,
+                translation_key="provider.qobuz.errors.create_playlist_failed",
+                translation_args=[name],
+            )
         return self._parse_playlist(playlist_obj)
 
     @use_cache(3600 * 24 * 30, allow_expired_cache=True)  # Cache for 30 days

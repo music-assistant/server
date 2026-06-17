@@ -278,7 +278,11 @@ class Audiobookshelf(MusicProvider):
                 )
             await self._client_socket.init_client()
         except AbsLoginError as exc:
-            raise LoginFailed(f"Login to abs instance at {base_url} failed.") from exc
+            raise LoginFailed(
+                f"Login to abs instance at {base_url} failed.",
+                translation_key="provider.audiobookshelf.errors.login_failed",
+                translation_args=[base_url],
+            ) from exc
 
         if token_old is not None and token_api is None:
             # Log Message that the old token won't work

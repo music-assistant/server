@@ -562,7 +562,7 @@ def _register_health_tool(
 
         try:
             queues = list(mass.player_queues.all())
-        except (AttributeError, TypeError):
+        except AttributeError, TypeError:
             queues = []
         queues_active = sum(1 for q in queues if getattr(q, "state", None) == "playing")
         queues_errors = sum(

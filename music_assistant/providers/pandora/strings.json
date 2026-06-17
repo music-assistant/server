@@ -25,6 +25,13 @@
       "description": "Pandora only allows one active stream at a time per account. You can request that Pandora terminate any existing stream on other devices and allow streaming here. You must manually restart playback after performing this action."
     }
   },
+  "media": {
+    "radio": {
+      "pandora_station": {
+        "name": "Pandora Station {0}"
+      }
+    }
+  },
   "manifest": {
     "description": "Pandora is a music and podcast streaming service that creates personalized radio stations based on your favorite songs and artists."
   }

@@ -45,7 +45,11 @@ async def setup(
     server = str(config.get_value(CONF_HOST))
     if not await get_ip_from_host(server):
         msg = f"Unable to resolve {server}, make sure the address is resolvable."
-        raise SetupFailedError(msg)
+        raise SetupFailedError(
+            msg,
+            translation_key="provider.filesystem_nfs.errors.host_unresolvable",
+            translation_args=[server],
+        )
     # check if export path is valid
     export_path = str(config.get_value(CONF_EXPORT_PATH))
     if not export_path or not export_path.startswith("/") or not is_safe_path(export_path):

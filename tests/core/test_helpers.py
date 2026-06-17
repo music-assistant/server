@@ -1,11 +1,16 @@
 """Tests for utility/helper functions."""
 
 from ipaddress import IPv4Address, IPv6Address
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MusicAssistantError, SetupFailedError
+from music_assistant_models.errors import (
+    MusicAssistantError,
+    SetupFailedError,
+    UnsupportedSystemError,
+)
 from zeroconf import InterfaceChoice, IPVersion
 
 from music_assistant.helpers import uri, util
@@ -436,7 +441,7 @@ def test_verify_cpu_supports_ml_inference_arm() -> None:
 
 def test_unsupported_system_error_is_setup_failed() -> None:
     """UnsupportedSystemError must subclass SetupFailedError so existing handling applies."""
-    assert issubclass(util.UnsupportedSystemError, SetupFailedError)
+    assert issubclass(UnsupportedSystemError, SetupFailedError)
 
 
 @pytest.mark.parametrize(
@@ -458,7 +463,7 @@ def test_verify_system_meets_requirements_cpu(
         patch("music_assistant.helpers.util.get_total_system_memory", return_value=64.0),
     ):
         if should_raise:
-            with pytest.raises(util.UnsupportedSystemError):
+            with pytest.raises(UnsupportedSystemError):
                 util.verify_system_meets_requirements(feature_name="X", min_cpu_cores=min_cpu_cores)
         else:
             util.verify_system_meets_requirements(feature_name="X", min_cpu_cores=min_cpu_cores)
@@ -484,7 +489,7 @@ def test_verify_system_meets_requirements_memory(
         patch("music_assistant.helpers.util.get_total_system_memory", return_value=total_gb),
     ):
         if should_raise:
-            with pytest.raises(util.UnsupportedSystemError):
+            with pytest.raises(UnsupportedSystemError):
                 util.verify_system_meets_requirements(feature_name="X", min_memory_gb=min_memory_gb)
         else:
             util.verify_system_meets_requirements(feature_name="X", min_memory_gb=min_memory_gb)
@@ -499,8 +504,180 @@ def test_verify_system_meets_requirements_ml_inference() -> None:
         patch("torch.backends.cpu.get_cpu_capability", return_value="DEFAULT"),
     ):
         # capable RAM/CPU but no AVX2: only raises when the ML inference check is requested
-        with pytest.raises(util.UnsupportedSystemError):
+        with pytest.raises(UnsupportedSystemError):
             util.verify_system_meets_requirements(
                 feature_name="X", min_cpu_cores=4, min_memory_gb=8.0, require_ml_inference=True
             )
         util.verify_system_meets_requirements(feature_name="X", min_cpu_cores=4, min_memory_gb=8.0)
+
+
+def test_unsupported_system_error_translation() -> None:
+    """Each raise path carries the right translation key + ordered args (feature name first)."""
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=2),
+        patch("music_assistant.helpers.util.get_total_system_memory", return_value=64.0),
+        pytest.raises(UnsupportedSystemError) as cpu_err,
+    ):
+        util.verify_system_meets_requirements(feature_name="Smart Fades", min_cpu_cores=4)
+    assert cpu_err.value.translation_key == "errors.unsupported_system_cpu_cores"
+    assert cpu_err.value.translation_args == ["Smart Fades", 4, 2]
+
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=16),
+        patch("music_assistant.helpers.util.get_total_system_memory", return_value=2.0),
+        pytest.raises(UnsupportedSystemError) as mem_err,
+    ):
+        util.verify_system_meets_requirements(feature_name="Smart Fades", min_memory_gb=8.0)
+    assert mem_err.value.translation_key == "errors.unsupported_system_memory"
+    assert mem_err.value.translation_args == ["Smart Fades", "8", "2.0"]
+
+    with (
+        patch("music_assistant.helpers.util.platform.machine", return_value="x86_64"),
+        patch("torch.backends.cpu.get_cpu_capability", return_value="DEFAULT"),
+        pytest.raises(UnsupportedSystemError) as avx_err,
+    ):
+        util.verify_cpu_supports_ml_inference()
+    assert avx_err.value.translation_key == "errors.unsupported_system_avx2"
+    assert avx_err.value.translation_args == []
+
+
+@pytest.mark.parametrize(
+    ("cpu_cores", "total_gb", "expected"),
+    [
+        (4, 6.0, True),  # meets both recommended thresholds
+        (8, 16.0, True),
+        (2, 6.0, False),  # below recommended cores
+        (4, 4.0, False),  # below recommended RAM
+        (4, 0.0, True),  # unknown memory -> fail open, same as the gate
+    ],
+)
+def test_system_meets_requirements(cpu_cores: int, total_gb: float, expected: bool) -> None:
+    """The non-raising predicate mirrors the gate's RAM/CPU checks, failing open on unknown RAM."""
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=cpu_cores),
+        patch("music_assistant.helpers.util.get_total_system_memory", return_value=total_gb),
+    ):
+        assert util.system_meets_requirements(min_memory_gb=6.0, min_cpu_cores=4) is expected
+
+
+@pytest.mark.parametrize(
+    ("machine", "expected"),
+    [
+        ("aarch64", True),
+        ("arm64", True),
+        ("armv7l", True),
+        ("x86_64", False),
+        ("AMD64", False),
+    ],
+)
+def test_is_arm(machine: str, expected: bool) -> None:
+    """is_arm recognizes 32/64-bit ARM and rejects x86."""
+    with patch("music_assistant.helpers.util.platform.machine", return_value=machine):
+        assert util.is_arm() is expected
+
+
+# 4/8/2 GiB expressed in bytes, for cgroup fixture files.
+_GIB = 1024**3
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (str(4 * _GIB), 4.0),
+        (str(8 * _GIB), 8.0),
+        ("max", None),  # v2 unlimited sentinel
+        ("", None),  # empty file
+        (str(1 << 62), None),  # v1 unlimited sentinel
+        ("0", None),  # zero is not a real limit
+        ("-1", None),  # negative is not a real limit
+        ("not-a-number", None),
+    ],
+)
+def test_read_cgroup_limit_file(tmp_path: Path, raw: str, expected: float | None) -> None:
+    """A cgroup limit file parses to GB, treating max/sentinel/garbage as no limit."""
+    limit_file = tmp_path / "memory.max"
+    limit_file.write_text(raw)
+    assert util._read_cgroup_limit_file(str(limit_file)) == expected
+
+
+def test_read_cgroup_limit_file_missing(tmp_path: Path) -> None:
+    """A missing cgroup limit file yields None rather than raising."""
+    assert util._read_cgroup_limit_file(str(tmp_path / "absent")) is None
+
+
+def test_cgroup_limit_v2(tmp_path: Path) -> None:
+    """Cgroup v2 memory.max at the mount root is read (namespaced container case)."""
+    (tmp_path / "memory.max").write_text(str(4 * _GIB))
+    # proc file absent -> rel is None -> falls back to the mount root.
+    limit = util._get_cgroup_memory_limit_gb(
+        cgroup_root=str(tmp_path), proc_cgroup=str(tmp_path / "absent")
+    )
+    assert limit == 4.0
+
+
+def test_cgroup_limit_v2_uses_min_across_hierarchy(tmp_path: Path) -> None:
+    """The effective v2 limit is the smallest memory.max across the cgroup and its ancestors."""
+    (tmp_path / "memory.max").write_text(str(8 * _GIB))  # root cap
+    leaf = tmp_path / "leaf"
+    leaf.mkdir()
+    (leaf / "memory.max").write_text(str(2 * _GIB))  # tighter leaf cap wins
+    proc = tmp_path / "proc_cgroup"
+    proc.write_text("0::/leaf\n")
+    limit = util._get_cgroup_memory_limit_gb(cgroup_root=str(tmp_path), proc_cgroup=str(proc))
+    assert limit == 2.0
+
+
+def test_cgroup_limit_v2_walks_ancestors(tmp_path: Path) -> None:
+    """A parent slice's memory.max caps the limit even when the leaf cgroup is unlimited."""
+    leaf = tmp_path / "system.slice" / "ma.service"
+    leaf.mkdir(parents=True)
+    (leaf / "memory.max").write_text("max")  # leaf is unlimited...
+    (tmp_path / "system.slice" / "memory.max").write_text(str(4 * _GIB))  # ...ancestor caps it
+    (tmp_path / "memory.max").write_text("max")
+    proc = tmp_path / "proc_cgroup"
+    proc.write_text("0::/system.slice/ma.service\n")
+    limit = util._get_cgroup_memory_limit_gb(cgroup_root=str(tmp_path), proc_cgroup=str(proc))
+    assert limit == 4.0
+
+
+def test_cgroup_limit_v1_fallback(tmp_path: Path) -> None:
+    """With no v2 file, the v1 memory controller limit is used."""
+    mem = tmp_path / "memory"
+    mem.mkdir()
+    (mem / "memory.limit_in_bytes").write_text(str(4 * _GIB))
+    proc = tmp_path / "proc_cgroup"
+    proc.write_text("3:memory:/\n")
+    limit = util._get_cgroup_memory_limit_gb(cgroup_root=str(tmp_path), proc_cgroup=str(proc))
+    assert limit == 4.0
+
+
+def test_cgroup_limit_none_when_unset(tmp_path: Path) -> None:
+    """No cgroup files present -> no limit detected."""
+    assert (
+        util._get_cgroup_memory_limit_gb(
+            cgroup_root=str(tmp_path), proc_cgroup=str(tmp_path / "absent")
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    ("host_gb", "cgroup_gb", "platform", "expected"),
+    [
+        (16.0, 4.0, "linux", 4.0),  # container limit below host -> use the limit
+        (8.0, 16.0, "linux", 8.0),  # limit above host -> host wins
+        (8.0, None, "linux", 8.0),  # no limit -> host RAM
+        (0.0, 4.0, "linux", 0.0),  # host unknown -> unknown (fail open)
+        (8.0, 4.0, "darwin", 8.0),  # non-linux never consults cgroups
+    ],
+)
+def test_get_total_system_memory(
+    host_gb: float, cgroup_gb: float | None, platform: str, expected: float
+) -> None:
+    """Total memory is min(host RAM, cgroup limit) on Linux; host RAM elsewhere."""
+    with (
+        patch("music_assistant.helpers.util._get_host_memory_gb", return_value=host_gb),
+        patch("music_assistant.helpers.util._get_cgroup_memory_limit_gb", return_value=cgroup_gb),
+        patch("music_assistant.helpers.util.sys.platform", platform),
+    ):
+        assert util.get_total_system_memory() == expected

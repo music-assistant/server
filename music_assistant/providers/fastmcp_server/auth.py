@@ -47,7 +47,7 @@ def _extract_jwt_audience(token: str) -> str | list[str] | None:
     try:
         raw = base64.urlsafe_b64decode(payload_segment + pad)
         claims = json.loads(raw)
-    except (binascii.Error, ValueError, UnicodeDecodeError):
+    except binascii.Error, ValueError, UnicodeDecodeError:
         return None
     aud = claims.get("aud") if isinstance(claims, dict) else None
     if isinstance(aud, (str, list)) or aud is None:

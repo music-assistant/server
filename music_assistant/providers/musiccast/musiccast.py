@@ -17,10 +17,9 @@ from contextlib import suppress
 from datetime import datetime
 from enum import Enum, auto
 from random import getrandbits
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from aiomusiccast.exceptions import MusicCastConnectionException, MusicCastGroupException
-from aiomusiccast.musiccast_device import MusicCastDevice
 
 from .constants import (
     MC_DEFAULT_ZONE,
@@ -29,6 +28,9 @@ from .constants import (
     MC_SOURCE_MAIN_SYNC,
     MC_SOURCE_MC_LINK,
 )
+
+if TYPE_CHECKING:
+    from aiomusiccast.musiccast_device import MusicCastDevice
 
 
 def random_uuid_hex() -> str:
@@ -58,7 +60,7 @@ class MusicCastZoneDevice:
     can be used for net playback (but the other ones can be synced internally).
     """
 
-    def __init__(self, zone_name: str, physical_device: "MusicCastPhysicalDevice") -> None:
+    def __init__(self, zone_name: str, physical_device: MusicCastPhysicalDevice) -> None:
         """Init."""
         self.zone_name = zone_name  # this is not the friendly name
         self.controller = physical_device.controller
@@ -171,7 +173,7 @@ class MusicCastZoneDevice:
         )
 
     @property
-    def other_zones(self) -> list["MusicCastZoneDevice"]:
+    def other_zones(self) -> list[MusicCastZoneDevice]:
         """Return media player entities of the other zones of this device."""
         return [
             entity
@@ -223,7 +225,7 @@ class MusicCastZoneDevice:
         return self.is_network_client or self.source_id == MC_SOURCE_MAIN_SYNC
 
     @property
-    def musiccast_zone_entity(self) -> "MusicCastZoneDevice":
+    def musiccast_zone_entity(self) -> MusicCastZoneDevice:
         """Return the musiccast entity of the physical device.
 
         It is possible that multiple zones use MusicCast as client at the same time.
@@ -236,7 +238,7 @@ class MusicCastZoneDevice:
         return self
 
     @property
-    def musiccast_group(self) -> list["MusicCastZoneDevice"]:
+    def musiccast_group(self) -> list[MusicCastZoneDevice]:
         """Return all media players of the current group, if the media player is server."""
         if self.is_client:
             # If we are a client we can still share group information, but we will take them from
@@ -252,7 +254,7 @@ class MusicCastZoneDevice:
         return [self, *clients]
 
     @property
-    def group_server(self) -> "MusicCastZoneDevice":
+    def group_server(self) -> MusicCastZoneDevice:
         """Return the server of the own group if present, self else."""
         for entity in self.controller.all_server_devices:
             if self.is_part_of_group(entity):
@@ -353,7 +355,7 @@ class MusicCastZoneDevice:
         """Select sound mode. Internal sound_mode name."""
         await self.device.select_sound_mode(self.zone_name, sound_mode_id)
 
-    def is_part_of_group(self, group_server: "MusicCastZoneDevice") -> bool:
+    def is_part_of_group(self, group_server: MusicCastZoneDevice) -> bool:
         """Return True if the given server is the server of self's group."""
         return group_server != self and (
             (
@@ -365,7 +367,7 @@ class MusicCastZoneDevice:
             or (self.device.ip == group_server.device.ip and self.source_id == MC_SOURCE_MAIN_SYNC)
         )
 
-    async def join_players(self, group_members: list["MusicCastZoneDevice"]) -> None:
+    async def join_players(self, group_members: list[MusicCastZoneDevice]) -> None:
         """Add all clients given in entities to the group of the server.
 
         Creates a new group if necessary. Used for join service.
@@ -419,7 +421,7 @@ class MusicCastZoneDevice:
 
     # Internal client functions
 
-    async def _client_join(self, group_id: str, server: "MusicCastZoneDevice") -> bool:
+    async def _client_join(self, group_id: str, server: MusicCastZoneDevice) -> bool:
         """Let the client join a group.
 
         If this client is a server, the server will stop distributing.
@@ -530,7 +532,7 @@ class MusicCastPhysicalDevice:
     def __init__(
         self,
         device: MusicCastDevice,
-        controller: "MusicCastController",
+        controller: MusicCastController,
     ):
         """Init."""
         self.device = device
@@ -545,7 +547,7 @@ class MusicCastPhysicalDevice:
         """
         try:
             await self.fetch()
-        except (MusicCastConnectionException, MusicCastGroupException):
+        except MusicCastConnectionException, MusicCastGroupException:
             return False
 
         self.device.build_capabilities()
@@ -576,7 +578,7 @@ class MusicCastPhysicalDevice:
         """
         await self.device.fetch()
 
-    def register_callback(self, fun: Callable[["MusicCastPhysicalDevice"], None]) -> None:
+    def register_callback(self, fun: Callable[[MusicCastPhysicalDevice], None]) -> None:
         """Register a non-async callback."""
 
         def _cb() -> None:

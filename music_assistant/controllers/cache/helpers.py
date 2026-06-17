@@ -78,9 +78,8 @@ def use_cache(
         def _reconstruct(cachedata: Any) -> R:
             if base_class is not None:
                 return cast("R", cachedata)
-            # fallback: reconstruct using type annotations
-            type_hints = get_type_hints(func)
-            return cast("R", parse_value(func.__name__, cachedata, type_hints["return"]))
+            # fallback: reconstruct using the (memoized) return-type annotation
+            return cast("R", parse_value(func.__name__, cachedata, _resolve_return_hint(func)))
 
         @functools.wraps(func)
         async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
@@ -156,3 +155,18 @@ def use_cache(
         return wrapper
 
     return _decorator
+
+
+@functools.cache
+def _resolve_return_hint(func: Callable[..., Any]) -> Any:
+    """
+    Return the resolved return-type annotation of func, memoized per function.
+
+    A function's return annotation is invariant for the process lifetime, so it is resolved
+    once and cached instead of re-running get_type_hints() — which re-evaluates the PEP-563
+    string annotations — on every cache hit. Resolution stays lazy (it happens on the first
+    hit, not at decoration time), so forward-reference handling is unchanged.
+
+    :param func: The decorated function whose return-type annotation to resolve.
+    """
+    return get_type_hints(func)["return"]

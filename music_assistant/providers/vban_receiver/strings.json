@@ -43,5 +43,8 @@
   },
   "manifest": {
     "description": "VBAN protocol receiver - receive PCM-over-UDP streams from a VBAN protocol sender"
+  },
+  "errors": {
+    "no_packets": "VBAN sender {0} did not send any packets on stream {1}."
   }
 }

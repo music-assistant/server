@@ -28,5 +28,8 @@
   },
   "manifest": {
     "description": "Stream music and audiobooks stored on any WebDAV-compatible server"
+  },
+  "errors": {
+    "connection_timeout": "WebDAV connection timeout: {0}"
   }
 }

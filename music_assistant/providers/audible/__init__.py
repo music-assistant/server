@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import AsyncGenerator, Sequence
+from datetime import datetime
 from logging import getLevelName
 from typing import TYPE_CHECKING, cast
 from urllib.parse import quote, unquote
@@ -382,14 +383,14 @@ class Audibleprovider(MusicProvider):
                 item_id="audiobooks",
                 provider=self.instance_id,
                 path=f"{base_path}audiobooks",
-                name="",
+                name="Audiobooks",
                 translation_key="audiobooks",
             ),
             BrowseFolder(
                 item_id="podcasts",
                 provider=self.instance_id,
                 path=f"{base_path}podcasts",
-                name="",
+                name="Podcasts",
                 translation_key="podcasts",
             ),
             BrowseFolder(
@@ -397,30 +398,35 @@ class Audibleprovider(MusicProvider):
                 provider=self.instance_id,
                 path=f"{base_path}authors",
                 name="Authors",
+                translation_key="authors",
             ),
             BrowseFolder(
                 item_id="series",
                 provider=self.instance_id,
                 path=f"{base_path}series",
                 name="Series",
+                translation_key="series",
             ),
             BrowseFolder(
                 item_id="narrators",
                 provider=self.instance_id,
                 path=f"{base_path}narrators",
                 name="Narrators",
+                translation_key="narrators",
             ),
             BrowseFolder(
                 item_id="genres",
                 provider=self.instance_id,
                 path=f"{base_path}genres",
                 name="Genres",
+                translation_key="genres",
             ),
             BrowseFolder(
                 item_id="publishers",
                 provider=self.instance_id,
                 path=f"{base_path}publishers",
                 name="Publishers",
+                translation_key="publishers",
             ),
         ]
 
@@ -566,6 +572,19 @@ class Audibleprovider(MusicProvider):
         media_item is the full media item details of the played/playing track.
         """
         await self.helper.set_last_position(prov_item_id, position, media_type)
+
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
+        """
+        Return the resume position from Audible for the given item.
+
+        :param item_id: The provider item ID (ASIN) of the audiobook.
+        :param media_type: The media type of the item.
+        """
+        if media_type != MediaType.AUDIOBOOK:
+            raise NotImplementedError
+        return await self.helper.get_audible_resume_position(item_id)
 
     async def unload(self, is_removed: bool = False) -> None:
         """
