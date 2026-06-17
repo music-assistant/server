@@ -10,6 +10,9 @@
   "schedule_programmes": {
     "name": "Schedule and Programmes"
   },
+  "schedule": {
+    "name": "Schedule"
+  },
   "listen_live": {
     "name": "Listen Live"
   },

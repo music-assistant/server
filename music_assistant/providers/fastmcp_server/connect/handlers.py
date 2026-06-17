@@ -85,7 +85,7 @@ def _is_request_via_ha_ingress(request: web.Request) -> bool:
         from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
             is_request_from_ingress,
         )
-    except (ImportError, ModuleNotFoundError):
+    except ImportError, ModuleNotFoundError:
         # Bare provider venv — MA helper unavailable. Fail closed without noise.
         return False
     except Exception:

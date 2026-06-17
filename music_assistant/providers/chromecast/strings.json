@@ -7,5 +7,8 @@
   },
   "manifest": {
     "description": "Cast music and podcasts to Chromecast or Google Cast devices."
+  },
+  "errors": {
+    "app_launch_timeout": "Timed out launching app on {0}."
   }
 }

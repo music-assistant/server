@@ -1,9 +1,12 @@
 """Helpers for HEOS Player Provider."""
 
+from typing import TYPE_CHECKING
 from urllib.parse import urlencode
 
-from pyheos import HeosNowPlayingMedia
 from pyheos.util.mediauri import BASE_URI
+
+if TYPE_CHECKING:
+    from pyheos import HeosNowPlayingMedia
 
 
 def media_uri_from_now_playing_media(now_playing_media: HeosNowPlayingMedia) -> str:

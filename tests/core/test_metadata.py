@@ -38,9 +38,10 @@ async def test_get_image_palette_dispatches_by_input_type(
         calls["get_palette_for_url"] = url
         return palette
 
-    monkeypatch.setattr("music_assistant.controllers.metadata.get_palette", fake_get_palette)
+    monkeypatch.setattr("music_assistant.controllers.metadata.images.get_palette", fake_get_palette)
     monkeypatch.setattr(
-        "music_assistant.controllers.metadata.get_palette_for_url", fake_get_palette_for_url
+        "music_assistant.controllers.metadata.images.get_palette_for_url",
+        fake_get_palette_for_url,
     )
 
     image = MediaItemImage(type=ImageType.THUMB, path="cover.jpg", provider="spotify")
@@ -59,6 +60,6 @@ async def test_get_image_palette_returns_none_for_unreadable_image(
     async def boom(_mass: object, path: str, _provider: str) -> MediaItemPalette:
         raise FileNotFoundError(path)
 
-    monkeypatch.setattr("music_assistant.controllers.metadata.get_palette", boom)
+    monkeypatch.setattr("music_assistant.controllers.metadata.images.get_palette", boom)
     image = MediaItemImage(type=ImageType.THUMB, path="missing.jpg", provider="filesystem")
     assert await metadata_controller.get_image_palette(image) is None

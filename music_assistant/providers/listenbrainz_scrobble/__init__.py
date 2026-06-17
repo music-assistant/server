@@ -8,21 +8,23 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from liblistenbrainz import Listen, ListenBrainz
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
 from music_assistant_models.enums import ConfigEntryType, EventType, MediaType, ProviderFeature
 from music_assistant_models.errors import SetupFailedError
-from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
-from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
+
+if TYPE_CHECKING:
+    from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
+    from music_assistant_models.provider import ProviderManifest
 
 CONF_USER_TOKEN = "_user_token"
 CONF_API_BASE_URL = "api_base_url"

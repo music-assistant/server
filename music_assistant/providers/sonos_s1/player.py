@@ -223,7 +223,11 @@ class SonosPlayer(Player):
                 f"Player {self.display_name} can not "
                 "accept play_media command, it is synced to another player."
             )
-            raise PlayerCommandFailed(msg)
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="provider.sonos_s1.errors.play_media_synced",
+                translation_args=[self.display_name],
+            )
 
         stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         if not media.duration:
@@ -247,7 +251,11 @@ class SonosPlayer(Player):
                 f"Player {self.display_name} can not "
                 "accept enqueue command, it is synced to another player."
             )
-            raise PlayerCommandFailed(msg)
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="provider.sonos_s1.errors.enqueue_synced",
+                translation_args=[self.display_name],
+            )
 
         didl_metadata = create_didl_metadata(media)
         stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)

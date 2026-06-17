@@ -35,7 +35,7 @@ class SubscriptionsGet(SubscriptionsChangeRequest):
     timestamp: int
 
 
-def action_tagger(cls: "type[EpisodeAction]") -> list[str]:
+def action_tagger(cls: type[EpisodeAction]) -> list[str]:
     """Use action field to distinguish classes.
 
     NC Gpodder uses upper case values, opodsync lower case.

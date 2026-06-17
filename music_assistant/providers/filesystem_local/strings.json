@@ -47,5 +47,8 @@
   },
   "manifest": {
     "description": "Play music and audiobooks stored on locally connected drives."
+  },
+  "errors": {
+    "music_directory_not_found": "Music directory {0} does not exist."
   }
 }

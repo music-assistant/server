@@ -231,7 +231,7 @@ class SnapcastSocketServer:
             data = json.dumps(message) + "\n"
             self._client_writer.write(data.encode())
             await self._client_writer.drain()
-        except (ConnectionResetError, BrokenPipeError):
+        except ConnectionResetError, BrokenPipeError:
             self._logger.debug("Failed to send message - connection closed")
             self._client_writer = None
 

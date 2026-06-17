@@ -31,5 +31,8 @@
   },
   "manifest": {
     "description": "Stream music to Smart TVs via Media Station X"
+  },
+  "errors": {
+    "player_offline": "MSX TV {0} is offline."
   }
 }

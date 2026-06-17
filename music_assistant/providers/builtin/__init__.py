@@ -543,7 +543,7 @@ class BuiltinProvider(MusicProvider):
                     continue
                 try:
                     entry = await self._build_m3u_entry_from_uri(uri)
-                except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError):
+                except MediaNotFoundError, InvalidDataError, ProviderUnavailableError:
                     self.logger.warning("Can't add %s to playlist - item not found", uri)
                     continue
                 # check dedup against the newly built entry's providers too
@@ -1255,7 +1255,7 @@ class BuiltinProvider(MusicProvider):
                 )
                 if library_item is not None:
                     return library_item
-            except (InvalidDataError, KeyError, NotImplementedError):
+            except InvalidDataError, KeyError, NotImplementedError:
                 continue
         # return unresolved media item so the entry still shows in the playlist
         return media_item
@@ -1383,7 +1383,7 @@ class BuiltinProvider(MusicProvider):
             for uri in uris:
                 try:
                     entries.append(await self._build_m3u_entry_from_uri(uri))
-                except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError):
+                except MediaNotFoundError, InvalidDataError, ProviderUnavailableError:
                     # parse URI for minimal provider info so the entry is resolvable later
                     entry = PlaylistItem(path=uri)
                     if "://" in uri:

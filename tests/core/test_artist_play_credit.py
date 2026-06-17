@@ -80,6 +80,16 @@ async def _play_count(mass: MusicAssistant, table: str, item_id: str) -> int:
     return int(row["play_count"])
 
 
+async def _artist_user_initiated(mass: MusicAssistant, item_id: str, userid: str) -> int:
+    """Read the user_initiated flag of an artist playlog row."""
+    row = await mass.music.database.get_row(
+        DB_TABLE_PLAYLOG,
+        {"media_type": MediaType.ARTIST.value, "item_id": item_id, "userid": userid},
+    )
+    assert row is not None
+    return int(row["user_initiated"])
+
+
 async def test_played_track_credits_all_track_artists(mass: MusicAssistant) -> None:
     """A fully played track credits every one of its artists (not just the primary)."""
     user = await mass.webserver.auth.create_user("trackcredit")
@@ -118,6 +128,38 @@ async def test_album_play_credits_album_artists_with_dedup(mass: MusicAssistant)
     assert await _play_count(mass, DB_TABLE_ALBUMS, album.item_id) == 1
     assert await _play_count(mass, DB_TABLE_ARTISTS, kept.item_id) == 1
     assert await _play_count(mass, DB_TABLE_ARTISTS, skipped.item_id) == 0
+
+
+async def test_track_credit_does_not_flag_artist_user_initiated(mass: MusicAssistant) -> None:
+    """A track play credits its artist as a side-effect, never as user-initiated."""
+    user = await mass.webserver.auth.create_user("trackcreditui")
+    artist = await _add_artist(mass, "Sideeffect")
+    track = await _add_track(mass, "A Song", [artist])
+
+    await mass.music.mark_item_played(
+        track, fully_played=True, user_initiated=True, userid=user.user_id
+    )
+
+    assert await _artist_user_initiated(mass, artist.item_id, user.user_id) == 0
+
+
+async def test_explicit_artist_play_survives_track_credit(mass: MusicAssistant) -> None:
+    """An explicit artist play stays user-initiated after later side-effect credits."""
+    user = await mass.webserver.auth.create_user("artiststicky")
+    artist = await _add_artist(mass, "Chosen")
+    track = await _add_track(mass, "Their Song", [artist])
+
+    # user explicitly plays the artist
+    await mass.music.mark_item_played(
+        artist, fully_played=True, user_initiated=True, userid=user.user_id
+    )
+    assert await _artist_user_initiated(mass, artist.item_id, user.user_id) == 1
+
+    # later, one of the artist's tracks auto-plays (not user-initiated)
+    await mass.music.mark_item_played(
+        track, fully_played=True, user_initiated=False, userid=user.user_id
+    )
+    assert await _artist_user_initiated(mass, artist.item_id, user.user_id) == 1
 
 
 def test_enqueued_album_decision() -> None:

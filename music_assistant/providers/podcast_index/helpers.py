@@ -164,7 +164,7 @@ def parse_episode_from_data(
     raw_duration = episode_data.get("duration")
     try:
         duration = int(raw_duration) if raw_duration is not None else 0
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         duration = 0
 
     episode = PodcastEpisode(

@@ -437,7 +437,9 @@ class SyncGroupPlayer(Player):
         """Handle SET_MEMBERS command on the player."""
         if not self.is_dynamic:
             raise UnsupportedFeaturedException(
-                f"Group {self.display_name} does not allow dynamically adding/removing members!"
+                f"Group {self.display_name} does not allow dynamically adding/removing members!",
+                translation_key="provider.sync_group.errors.not_dynamic",
+                translation_args=[self.display_name],
             )
         sync_leader = self.sync_leader or self._select_sync_leader(new_members=player_ids_to_add)
         was_playing = self.playback_state == PlaybackState.PLAYING
@@ -496,7 +498,9 @@ class SyncGroupPlayer(Player):
                 continue
             if member_id == self.player_id:
                 raise PlayerCommandFailed(
-                    f"Cannot remove {self.display_name} from itself as a member!"
+                    f"Cannot remove {self.display_name} from itself as a member!",
+                    translation_key="provider.sync_group.errors.remove_self",
+                    translation_args=[self.display_name],
                 )
             self._attr_group_members.remove(member_id)
             final_players_to_remove.append(member_id)

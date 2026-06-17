@@ -71,7 +71,7 @@ class SonosQueue:
     """Simple representation of a Sonos (cloud) Queue."""
 
     items: list[PlayerMedia] = field(default_factory=list)
-    last_updated: float = time.time()
+    last_updated: float = field(default_factory=time.time)
     includes_beginning: bool = False
     includes_end: bool = False
 
@@ -315,7 +315,11 @@ class SonosPlayer(Player):
                 f"Player {self.display_name} can not "
                 "accept play_media command, it is synced to another player."
             )
-            raise PlayerCommandFailed(msg)
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="provider.sonos.errors.player_synced_cannot_play",
+                translation_args=[self.display_name],
+            )
         # for now always reset the active session
         self.group_controller.active_session_id = None
         if media.source_id:
@@ -789,6 +793,7 @@ class SonosPlayer(Player):
             self.sonos_queue.items.clear()
             self.sonos_queue.includes_beginning = False
             self.sonos_queue.includes_end = False
+            self._bump_queue_version()
             return
         current_index = queue.current_index or 0
         current_index = (
@@ -832,6 +837,9 @@ class SonosPlayer(Player):
         self.sonos_queue.items = items
         self.sonos_queue.includes_beginning = offset == 0
         self.sonos_queue.includes_end = includes_end
+        # bump only after the new window is assigned (no await in between) so Sonos never sees a
+        # new version while itemWindow still serves the previous items
+        self._bump_queue_version()
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Set Sonos queue items from MA queue %s on player %s: %s",
@@ -866,3 +874,13 @@ class SonosPlayer(Player):
 
         # Format as XX:XX:XX:XX:XX:XX
         return ":".join(mac_hex[i : i + 2].upper() for i in range(0, 12, 2))
+
+    def _bump_queue_version(self) -> None:
+        """
+        Advance the Sonos cloud-queue version to the current time.
+
+        The version is exposed as the queueVersion in the cloud-queue endpoints; advancing it on
+        every window rebuild is what makes Sonos refetch the window instead of replaying a stale
+        cached one.
+        """
+        self.sonos_queue.last_updated = time.time()
