@@ -78,7 +78,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         without_collections: bool | None = None,
         **kwargs: Any,
     ) -> list[Audiobook]:
-        """Get in-database audiobooks.
+        """
+        Get in-database audiobooks.
 
         :param favorite: Filter by favorite status.
         :param search: Filter by search query.
