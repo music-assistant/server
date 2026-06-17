@@ -12,7 +12,7 @@ from music_assistant_models.errors import PlayerCommandFailed, SetupFailedError
 from pyamplipi.error import AmpliPiUnreachableError
 
 from music_assistant.providers.amplipi import get_config_entries, setup
-from music_assistant.providers.amplipi.constants import CONF_HOST, MA_STREAM_NAME
+from music_assistant.providers.amplipi.constants import CONF_HOST, MA_STREAM_NAME, MA_STREAM_TYPE
 from music_assistant.providers.amplipi.provider import AmpliPiPlayerProvider
 
 
@@ -218,8 +218,8 @@ class TestEnsureStream:
         prov.api.create_stream = AsyncMock()
         prov.api.get_streams = AsyncMock(
             return_value=[
-                SimpleNamespace(id=7, name=f"{MA_STREAM_NAME} 1"),
-                SimpleNamespace(id=8, name="Groove Salad"),
+                SimpleNamespace(id=7, name=f"{MA_STREAM_NAME} 1", type=MA_STREAM_TYPE),
+                SimpleNamespace(id=8, name="Groove Salad", type=MA_STREAM_TYPE),
             ]
         )
         result = await prov.ensure_stream(1, "http://ma/x.flac")
