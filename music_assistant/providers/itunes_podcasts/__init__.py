@@ -105,30 +105,27 @@ async def get_config_entries(
     async with aiofiles.open(json_path) as f:
         country_codes = orjson.loads(await f.read())
 
-    language_options = [ConfigValueOption(val, key.lower()) for key, val in country_codes.items()]
+    language_options = [
+        ConfigValueOption(key.lower(), title=val) for key, val in country_codes.items()
+    ]
     return (
         CONF_ENTRY_LIBRARY_SYNC_PODCASTS_HIDDEN,
         ConfigEntry(
             key=CONF_LOCALE,
             type=ConfigEntryType.STRING,
-            label="Country",
             required=True,
             options=language_options,
         ),
         ConfigEntry(
             key=CONF_NUM_EPISODES,
             type=ConfigEntryType.INTEGER,
-            label="Maximum number of episodes. 0 for unlimited.",
             required=False,
-            description="Maximum number of episodes. 0 for unlimited.",
             default_value=0,
         ),
         ConfigEntry(
             key=CONF_EXPLICIT,
             type=ConfigEntryType.BOOLEAN,
-            label="Include explicit results",
             required=False,
-            description="Whether or not to include explicit content results in search.",
             default_value=True,
         ),
     )

@@ -496,7 +496,7 @@ def parse_value(  # noqa: PLR0911
                 return parse_value(
                     name, value, sub_arg_type, allow_value_convert=allow_value_convert
                 )
-            except (KeyError, TypeError, ValueError, MissingField):
+            except KeyError, TypeError, ValueError, MissingField:
                 pass
         # if we get to this point, all possibilities failed
         # find out if we should raise or log this

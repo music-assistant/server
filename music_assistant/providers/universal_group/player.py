@@ -190,12 +190,10 @@ class UniversalGroupPlayer(Player):
                 key=CONF_GROUP_MEMBERS,
                 type=ConfigEntryType.STRING,
                 multi_value=True,
-                label="Group members",
                 default_value=[],
-                description="Select all players you want to be part of this group",
                 required=False,  # needed for dynamic members (which allows empty members list)
                 options=[
-                    ConfigValueOption(x.display_name, x.player_id)
+                    ConfigValueOption(x.player_id, title=x.display_name)
                     for x in self.mass.players.all_players(True, False)
                     if x.type != PlayerType.GROUP
                 ],
@@ -203,8 +201,6 @@ class UniversalGroupPlayer(Player):
             ConfigEntry(
                 key=CONF_DYNAMIC_GROUP_MEMBERS,
                 type=ConfigEntryType.BOOLEAN,
-                label="Enable dynamic members",
-                description="Allow members to (temporary) join/leave the group dynamically.",
                 default_value=False,
                 required=False,
             ),
@@ -411,7 +407,9 @@ class UniversalGroupPlayer(Player):
         """Handle SET_MEMBERS command on the player."""
         if not self.is_dynamic:
             raise UnsupportedFeaturedException(
-                f"Group {self.display_name} does not allow dynamically adding/removing members!"
+                f"Group {self.display_name} does not allow dynamically adding/removing members!",
+                translation_key="provider.universal_group.errors.group_not_dynamic",
+                translation_args=[self.display_name],
             )
         # handle additions
         for player_id in player_ids_to_add or []:
@@ -419,7 +417,9 @@ class UniversalGroupPlayer(Player):
                 continue
             if player_id == self.player_id:
                 raise UnsupportedFeaturedException(
-                    f"Cannot add {self.display_name} to itself as a member!"
+                    f"Cannot add {self.display_name} to itself as a member!",
+                    translation_key="provider.universal_group.errors.cannot_add_group_to_itself",
+                    translation_args=[self.display_name],
                 )
             child_player = self.mass.players.get_player(player_id, True)
             assert child_player  # for type checking
@@ -453,7 +453,11 @@ class UniversalGroupPlayer(Player):
                 continue
             if player_id == self.player_id:
                 raise UnsupportedFeaturedException(
-                    f"Cannot remove {self.display_name} from itself as a member!"
+                    f"Cannot remove {self.display_name} from itself as a member!",
+                    translation_key=(
+                        "provider.universal_group.errors.cannot_remove_group_from_itself"
+                    ),
+                    translation_args=[self.display_name],
                 )
             self._attr_group_members.remove(player_id)
             child_player = self.mass.players.get_player(player_id, True)
@@ -627,7 +631,7 @@ class UniversalGroupPlayer(Player):
         ):
             try:
                 await resp.write(chunk)
-            except (ConnectionError, ConnectionResetError):
+            except ConnectionError, ConnectionResetError:
                 break
 
         return resp

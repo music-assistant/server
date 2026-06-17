@@ -187,7 +187,7 @@ class PhishInProvider(MusicProvider):
 
             return albums
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get artist albums: %s", err)
@@ -345,7 +345,7 @@ class PhishInProvider(MusicProvider):
                 can_seek=True,
             )
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get stream details for %s: %s", item_id, err)
@@ -371,7 +371,7 @@ class PhishInProvider(MusicProvider):
             for playlist_data in await self._get_playlists():
                 if playlist_data.get("tracks_count", 0) > 0:
                     yield playlist_to_ma_playlist(self, playlist_data)
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get library playlists: %s", err)
@@ -412,7 +412,7 @@ class PhishInProvider(MusicProvider):
 
             return tracks
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get playlist tracks for %s: %s", prov_playlist_id, err)
@@ -534,7 +534,7 @@ class PhishInProvider(MusicProvider):
 
                 return sorted(folders, key=lambda x: x.name, reverse=True)
 
-            except (MediaNotFoundError, ProviderUnavailableError):
+            except MediaNotFoundError, ProviderUnavailableError:
                 raise
             except Exception as err:
                 self.logger.error("Failed to browse years: %s", err)
@@ -555,7 +555,7 @@ class PhishInProvider(MusicProvider):
 
             return albums
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to browse recent shows: %s", err)
@@ -570,7 +570,7 @@ class PhishInProvider(MusicProvider):
                 return [album]
             return []
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get random show: %s", err)
@@ -632,7 +632,7 @@ class PhishInProvider(MusicProvider):
 
                 return folders[:50]
 
-            except (MediaNotFoundError, ProviderUnavailableError):
+            except MediaNotFoundError, ProviderUnavailableError:
                 raise
             except Exception as err:
                 self.logger.error("Failed to browse venues: %s", err)
@@ -668,7 +668,7 @@ class PhishInProvider(MusicProvider):
 
                 return sorted(folders, key=lambda x: x.name)
 
-            except (MediaNotFoundError, ProviderUnavailableError):
+            except MediaNotFoundError, ProviderUnavailableError:
                 raise
             except Exception as err:
                 self.logger.error("Failed to browse tags: %s", err)
@@ -709,7 +709,7 @@ class PhishInProvider(MusicProvider):
 
                 return subfolders
 
-            except (MediaNotFoundError, ProviderUnavailableError):
+            except MediaNotFoundError, ProviderUnavailableError:
                 raise
             except Exception as err:
                 self.logger.error("Failed to get tag subfolders: %s", err)
@@ -745,7 +745,7 @@ class PhishInProvider(MusicProvider):
 
             return tracks
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get tracks for tag %s: %s", tag_slug, err)
@@ -772,7 +772,7 @@ class PhishInProvider(MusicProvider):
 
             return albums
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get top shows: %s", err)
@@ -799,7 +799,7 @@ class PhishInProvider(MusicProvider):
 
             return tracks
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get top tracks: %s", err)
@@ -832,7 +832,7 @@ class PhishInProvider(MusicProvider):
 
             return sorted(albums, key=lambda x: x.name)
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to browse period %s: %s", period, err)
@@ -861,7 +861,7 @@ class PhishInProvider(MusicProvider):
 
             return albums
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get shows for venue %s: %s", venue_slug, err)
@@ -890,7 +890,7 @@ class PhishInProvider(MusicProvider):
 
             return albums
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get shows for tag %s: %s", tag_slug, err)

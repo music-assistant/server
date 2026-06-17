@@ -230,7 +230,11 @@ class LocalFileSystemProvider(MusicProvider):
         """Handle async initialization of the provider."""
         if not await isdir(self.base_path):
             msg = f"Music Directory {self.base_path} does not exist"
-            raise SetupFailedError(msg)
+            raise SetupFailedError(
+                msg,
+                translation_key="provider.filesystem_local.errors.music_directory_not_found",
+                translation_args=[self.base_path],
+            )
         await self.check_write_access()
 
     async def search(
@@ -733,7 +737,7 @@ class LocalFileSystemProvider(MusicProvider):
             return cached[0] if cached else None
         try:
             folder_files = await self._scandir(file_item.relative_parent_path)
-        except (OSError, MusicAssistantError):
+        except OSError, MusicAssistantError:
             return None
         target = file_item.name.lower()
         result: MediaItemImage | None = None

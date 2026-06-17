@@ -18,9 +18,9 @@ from uuid import uuid4
 from music_assistant_models.media_items import Artist, ProviderMapping, Track
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.controllers.player_queues import (
+from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
-    PlayerQueuesController,
 )
 
 if TYPE_CHECKING:

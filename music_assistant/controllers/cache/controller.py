@@ -70,15 +70,14 @@ class CacheController(CoreController):
                 ConfigEntry(
                     key=CONF_CLEAR_CACHE,
                     type=ConfigEntryType.LABEL,
-                    label="The cache has been cleared",
+                    # distinct key so the result label doesn't collide with the action's label
+                    translation_key="config_entries.clear_cache_result",
                 ),
             )
         return (
             ConfigEntry(
                 key=CONF_CLEAR_CACHE,
                 type=ConfigEntryType.ACTION,
-                label="Clear cache",
-                description="Reset/clear all items in the cache. ",
             ),
         )
 
@@ -319,7 +318,7 @@ class CacheController(CoreController):
                 prev_version = int(db_row["value"])
             else:
                 prev_version = 0
-        except (KeyError, ValueError):
+        except KeyError, ValueError:
             prev_version = 0
 
         if prev_version not in (0, DB_SCHEMA_VERSION):

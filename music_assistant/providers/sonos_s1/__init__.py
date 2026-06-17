@@ -61,18 +61,12 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_NETWORK_SCAN,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable network scan for discovery",
             default_value=False,
-            description="Enable network scan for discovery of players. \n"
-            "Can be used if (some of) your players are not automatically discovered.\n"
-            "Should normally not be needed",
         ),
         ConfigEntry(
             key=CONF_HOUSEHOLD_ID,
             type=ConfigEntryType.STRING,
-            label="Household ID",
             default_value=household_ids[0] if household_ids else None,
-            description="Household ID for the Sonos (S1) system. Will be auto detected if empty.",
             advanced=True,
             required=False,
         ),

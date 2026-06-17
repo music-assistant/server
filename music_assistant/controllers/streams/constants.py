@@ -26,6 +26,13 @@ class BufferSize(StrEnum):
 # Calculate total system memory once at module load time
 TOTAL_SYSTEM_MEMORY_GB: Final[float] = get_total_system_memory()
 
+# RAM thresholds (in GB) for the buffer-size presets. Balanced needs >= 4GB.
+# Maximum uses 7GB rather than a literal 8GB so machines marketed as "8GB" that
+# report slightly less still qualify for the largest buffer: integrated GPUs carve
+# out shared system memory, and container runtimes report their cgroup limit.
+BALANCED_MIN_RAM_GB: Final[float] = 4.0
+MAXIMUM_MIN_RAM_GB: Final[float] = 7.0
+
 # Buffer size in seconds for each preset
 BUFFER_SIZE_MAP: Final[dict[str, int]] = {
     BufferSize.MINIMAL: 60,
@@ -41,10 +48,27 @@ RADIO_BUFFER_SIZE: Final[int] = 15
 CONF_BUFFER_SIZE: Final[str] = "buffer_size"
 
 
+def get_available_buffer_sizes() -> list[BufferSize]:
+    """
+    Return the buffer-size presets allowed for this host's RAM.
+
+    Minimal is always available; Balanced requires >= 4GB and Maximum >= 7GB. When total
+    memory is unknown (0.0, e.g. Windows) all presets are offered (fail open).
+    """
+    if TOTAL_SYSTEM_MEMORY_GB == 0.0:
+        return [BufferSize.MINIMAL, BufferSize.BALANCED, BufferSize.MAXIMUM]
+    sizes = [BufferSize.MINIMAL]
+    if TOTAL_SYSTEM_MEMORY_GB >= BALANCED_MIN_RAM_GB:
+        sizes.append(BufferSize.BALANCED)
+    if TOTAL_SYSTEM_MEMORY_GB >= MAXIMUM_MIN_RAM_GB:
+        sizes.append(BufferSize.MAXIMUM)
+    return sizes
+
+
 def _get_default_buffer_size() -> str:
-    if TOTAL_SYSTEM_MEMORY_GB >= 8.0:
+    if TOTAL_SYSTEM_MEMORY_GB >= MAXIMUM_MIN_RAM_GB:
         return BufferSize.MAXIMUM
-    if TOTAL_SYSTEM_MEMORY_GB > 4.0:
+    if TOTAL_SYSTEM_MEMORY_GB >= BALANCED_MIN_RAM_GB:
         return BufferSize.BALANCED
     return BufferSize.MINIMAL
 

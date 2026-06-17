@@ -1,0 +1,19 @@
+{
+  "config_entries": {
+    "ip_address": {
+      "label": "Server",
+      "description": "The url of the Emby server to connect to."
+    },
+    "username": {
+      "label": "Username",
+      "description": "The username to authenticate to the remote server."
+    },
+    "password": {
+      "label": "Password",
+      "description": "The password to authenticate to the remote server."
+    }
+  },
+  "manifest": {
+    "description": "Stream music from your self-hosted Emby server."
+  }
+}

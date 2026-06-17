@@ -273,7 +273,7 @@ class SyncGroupPlayer(Player):
         }
         possible_players = sorted(
             [
-                ConfigValueOption(x.display_name, x.player_id)
+                ConfigValueOption(x.player_id, title=x.display_name)
                 for x in self.mass.players.all_players(True, False)
                 if x.type != PlayerType.GROUP
                 and (
@@ -284,7 +284,7 @@ class SyncGroupPlayer(Player):
                     )
                 )
             ],
-            key=lambda x: x.title,
+            key=lambda x: x.title or "",
         )
         entries: list[ConfigEntry] = [
             # syncgroup specific entries
@@ -293,19 +293,13 @@ class SyncGroupPlayer(Player):
                 key=CONF_GROUP_MEMBERS,
                 type=ConfigEntryType.STRING,
                 multi_value=True,
-                label="Group members",
                 default_value=[],
-                description="Select the members of this sync group. ",
                 required=False,  # needed for dynamic members (which allows empty members list)
                 options=possible_players,
             ),
             ConfigEntry(
                 key=CONF_DYNAMIC_GROUP_MEMBERS,
                 type=ConfigEntryType.BOOLEAN,
-                label="Enable dynamic members",
-                description="Allow (un)joining members dynamically, so the group more or less "
-                "behaves the same like manually syncing players together, "
-                "with the main difference being that the group player will hold the queue.",
                 default_value=False,
                 required=False,
             ),
@@ -313,11 +307,6 @@ class SyncGroupPlayer(Player):
                 key=CONF_ALLOWED_MEMBERS,
                 type=ConfigEntryType.STRING,
                 multi_value=True,
-                label="Allowed members",
-                description="Limit which players can join this group. "
-                "Leave empty to allow any sync-compatible player. "
-                "This can be used to reduce the list of players that show up for joining "
-                "in case you have a lot of players.",
                 default_value=[],
                 required=False,
                 options=possible_players,
@@ -448,7 +437,9 @@ class SyncGroupPlayer(Player):
         """Handle SET_MEMBERS command on the player."""
         if not self.is_dynamic:
             raise UnsupportedFeaturedException(
-                f"Group {self.display_name} does not allow dynamically adding/removing members!"
+                f"Group {self.display_name} does not allow dynamically adding/removing members!",
+                translation_key="provider.sync_group.errors.not_dynamic",
+                translation_args=[self.display_name],
             )
         sync_leader = self.sync_leader or self._select_sync_leader(new_members=player_ids_to_add)
         was_playing = self.playback_state == PlaybackState.PLAYING
@@ -507,7 +498,9 @@ class SyncGroupPlayer(Player):
                 continue
             if member_id == self.player_id:
                 raise PlayerCommandFailed(
-                    f"Cannot remove {self.display_name} from itself as a member!"
+                    f"Cannot remove {self.display_name} from itself as a member!",
+                    translation_key="provider.sync_group.errors.remove_self",
+                    translation_args=[self.display_name],
                 )
             self._attr_group_members.remove(member_id)
             final_players_to_remove.append(member_id)

@@ -110,7 +110,7 @@ def option_value_to_format(value: str) -> tuple[AudioCodec, SendspinAudioFormat]
             channels=int(channels_str),
         )
         return (codec, audio_format)
-    except (ValueError, KeyError):
+    except ValueError, KeyError:
         return None
 
 
@@ -710,7 +710,9 @@ class SendspinPlayer(SendspinBasePlayer):
                 await self.playback_session.cancel("cast app readiness failed")
             if isinstance(exc, TimeoutError):
                 raise PlayerCommandFailed(
-                    f"Cast app on {self.display_name} did not report ready within 30s"
+                    f"Cast app on {self.display_name} did not report ready within 30s",
+                    translation_key="provider.sendspin.errors.cast_app_not_ready",
+                    translation_args=[self.display_name],
                 ) from None
             raise
 
@@ -823,7 +825,9 @@ class SendspinPlayer(SendspinBasePlayer):
                 except TimeoutError:
                     stuck = [m.display_name for m, f in pending_cast if not f.done()]
                     raise PlayerCommandFailed(
-                        f"Cast app on {', '.join(stuck)} did not report ready within 30s"
+                        f"Cast app on {', '.join(stuck)} did not report ready within 30s",
+                        translation_key="provider.sendspin.errors.cast_app_members_not_ready",
+                        translation_args=[", ".join(stuck)],
                     ) from None
         except BaseException:
             # Roll back Cast members we just added so a failed group operation
@@ -1281,8 +1285,6 @@ class SendspinPlayer(SendspinBasePlayer):
                 ConfigEntry(
                     key="cast_audio_unsupported",
                     type=ConfigEntryType.ALERT,
-                    label="Sendspin isn't supported on this Cast device. "
-                    "Use the standard Cast protocol instead.",
                     required=False,
                 )
             )
@@ -1292,24 +1294,18 @@ class SendspinPlayer(SendspinBasePlayer):
             supported_formats = player_role.get_supported_formats()
             if supported_formats:
                 format_options = [
-                    ConfigValueOption(
-                        title="Automatic (let client decide)",
-                        value=SENDSPIN_FORMAT_AUTOMATIC,
-                    ),
+                    ConfigValueOption(SENDSPIN_FORMAT_AUTOMATIC),
                 ]
                 for fmt in supported_formats:
                     format_options.append(
                         ConfigValueOption(
-                            title=format_to_display_string(fmt),
-                            value=format_to_option_value(fmt),
+                            format_to_option_value(fmt), title=format_to_display_string(fmt)
                         )
                     )
                 entries.append(
                     ConfigEntry(
                         key=CONF_PREFERRED_SENDSPIN_FORMAT,
                         type=ConfigEntryType.STRING,
-                        label="Preferred audio format",
-                        description="Select the audio format to use for playback on this player.",
                         category="protocol_generic",
                         default_value=SENDSPIN_FORMAT_AUTOMATIC,
                         options=format_options,
@@ -1325,12 +1321,6 @@ class SendspinPlayer(SendspinBasePlayer):
                 ConfigEntry(
                     key=CONF_SENDSPIN_STATIC_DELAY,
                     type=ConfigEntryType.INTEGER,
-                    label="Static playback delay (ms)",
-                    description=(
-                        "Offset in milliseconds to keep this player in sync with other players. "
-                        "Increase if audio plays too late, for example to compensate for latency "
-                        "from an amp, active speakers, or the OS."
-                    ),
                     required=False,
                     default_value=self.static_delay_default_ms,
                     range=(0, 5000),

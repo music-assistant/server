@@ -1,0 +1,37 @@
+{
+  "config_entries": {
+    "api_base_url": {
+      "label": "API base URL",
+      "description": "Base URL of your local NeteaseCloudMusicApi-compatible service (for Home Assistant users, see companion add-on PR #16)."
+    },
+    "qr_page_url": {
+      "label": "QR login page URL"
+    },
+    "quality": {
+      "label": "Preferred quality",
+      "options": {
+        "standard": "Standard",
+        "higher": "Higher",
+        "exhigh": "Exhigh",
+        "lossless": "Lossless",
+        "hires": "Hi-Res",
+        "jyeffect": "JY Effect",
+        "jymaster": "JY Master"
+      }
+    },
+    "start_qr_auth": {
+      "label": "QR Login",
+      "description": "Generate QR code and open login popup page."
+    },
+    "check_qr_auth": {
+      "label": "Check QR status",
+      "description": "Manually check whether scan confirmation completed."
+    },
+    "clear_auth": {
+      "label": "Reset authentication"
+    }
+  },
+  "manifest": {
+    "description": "Stream NetEase Cloud Music catalog, playlists, lyrics, and recommendations."
+  }
+}

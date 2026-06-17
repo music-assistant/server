@@ -7,6 +7,7 @@ import pytest
 
 from music_assistant.constants import VACUUM_MIN_RECLAIM_RATIO
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.music.database import MusicDatabaseSetupMixin
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.mass import MusicAssistant
 
@@ -48,3 +49,19 @@ async def test_setup_runs_vacuum_when_reclaimable(music: MusicController) -> Non
     ):
         await music._setup_database()
     mock_vacuum.assert_awaited_once_with()
+
+
+def test_database_setup_mixin_applied() -> None:
+    """The database setup/migration logic is provided to the controller via the mixin."""
+    assert issubclass(MusicController, MusicDatabaseSetupMixin)
+    # the schema/migration entrypoints resolve on the controller
+    assert hasattr(MusicController, "_setup_database")
+    assert hasattr(MusicController, "_reset_database")
+    assert hasattr(MusicController, "_cleanup_database")
+
+
+async def test_cleanup_database_runs_on_empty_library(music: MusicController) -> None:
+    """Database maintenance/cleanup completes without error on a freshly created library."""
+    await music._setup_database()
+    # should be a no-op on an empty database, but must run end-to-end against a real connection
+    await music._cleanup_database()
