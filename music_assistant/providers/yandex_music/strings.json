@@ -22,7 +22,10 @@
       "action_label": "Save preset"
     },
     "wave_preset_to_delete": {
-      "label": "Select preset to delete"
+      "label": "Select preset to delete",
+      "options": {
+        "": "(no presets saved)"
+      }
     },
     "delete_wave_preset": {
       "label": "Delete selected preset",

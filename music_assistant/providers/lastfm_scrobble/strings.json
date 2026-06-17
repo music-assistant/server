@@ -2,7 +2,11 @@
   "config_entries": {
     "_provider": {
       "label": "Provider",
-      "description": "The endpoint to use, defaults to Last.fm"
+      "description": "The endpoint to use, defaults to Last.fm",
+      "options": {
+        "lastfm": "Last.FM",
+        "librefm": "LibreFM"
+      }
     },
     "_api_key": {
       "label": "API Key",

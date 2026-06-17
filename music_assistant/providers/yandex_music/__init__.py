@@ -125,7 +125,7 @@ def _wave_preset_config_entries(values: dict[str, ConfigValueType]) -> list[Conf
     delete_options = [ConfigValueOption(p["name"], title=p["name"]) for p in presets]
     if not delete_options:
         # Empty options can break some frontends; supply a no-op placeholder.
-        delete_options = [ConfigValueOption("", title="(no presets saved)")]
+        delete_options = [ConfigValueOption("")]
 
     def _str_value(key: str) -> str | None:
         v = values.get(key)

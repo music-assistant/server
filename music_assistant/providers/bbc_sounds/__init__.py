@@ -136,8 +136,8 @@ async def get_config_entries(
             advanced=True,
             type=ConfigEntryType.STRING,
             options=[
-                ConfigValueOption(_Constants.CONF_STREAM_FORMAT_HLS, title="HLS"),
-                ConfigValueOption(_Constants.CONF_STREAM_FORMAT_DASH, title="MPEG-DASH"),
+                ConfigValueOption(_Constants.CONF_STREAM_FORMAT_HLS),
+                ConfigValueOption(_Constants.CONF_STREAM_FORMAT_DASH),
             ],
             default_value=_Constants.CONF_STREAM_FORMAT_HLS,
         ),

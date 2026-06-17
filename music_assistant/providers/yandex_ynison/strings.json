@@ -2,7 +2,10 @@
   "config_entries": {
     "ym_instance": {
       "label": "Yandex Music source",
-      "description": "Borrow OAuth credentials from a linked Yandex Music provider instance, or use your own credentials (QR-scan login or manual token paste). Per-instance own credentials let you bind separate players to separate Yandex accounts without sharing tokens with a Yandex Music provider."
+      "description": "Borrow OAuth credentials from a linked Yandex Music provider instance, or use your own credentials (QR-scan login or manual token paste). Per-instance own credentials let you bind separate players to separate Yandex accounts without sharing tokens with a Yandex Music provider.",
+      "options": {
+        "__own__": "Use own credentials (QR or token)"
+      }
     },
     "auth_qr": {
       "label": "Login with QR code",

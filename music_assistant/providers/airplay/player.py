@@ -245,15 +245,11 @@ class AirPlayPlayer(Player):
                 options=[
                     opt
                     for opt in (
-                        ConfigValueOption(0, title="Automatically select"),
-                        ConfigValueOption(
-                            StreamingProtocol.RAOP.value, title="Prefer AirPlay 1 (RAOP)"
-                        )
+                        ConfigValueOption(0),
+                        ConfigValueOption(StreamingProtocol.RAOP.value)
                         if self.raop_discovery_info
                         else None,
-                        ConfigValueOption(
-                            StreamingProtocol.AIRPLAY2.value, title="Prefer AirPlay 2"
-                        )
+                        ConfigValueOption(StreamingProtocol.AIRPLAY2.value)
                         if self.airplay_discovery_info
                         else None,
                     )
