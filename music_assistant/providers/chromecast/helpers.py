@@ -127,7 +127,12 @@ def get_multizone_info(
                     continue
                 if group["multichannel_group"] and (udn := group.get("uuid")):
                     uuid = UUID(udn.replace("-", ""))
-                    multichannel_groups.add(uuid)
+                    # new firmware drops cast_port and renames elected_leader to leader
+                    is_leader = (
+                        group.get("elected_leader") == "self" or group.get("leader") == "self"
+                    )
+                    if group.get("cast_port") or not is_leader:
+                        multichannel_groups.add(uuid)
     except (urllib.error.HTTPError, urllib.error.URLError, OSError, KeyError, ValueError):
         pass
     return (dynamic_groups, multichannel_groups)
