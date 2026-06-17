@@ -449,7 +449,8 @@ class AirPlayPlayer(Player):
                         ConfigEntry(
                             key=CONF_ACTION_FINISH_PAIRING,
                             type=ConfigEntryType.ACTION,
-                            label=f"Complete {protocol_name} pairing with the PIN",
+                            translation_key="config_entries.finish_pairing_pin",
+                            translation_params=[protocol_name],
                             action=CONF_ACTION_FINISH_PAIRING,
                             category="protocol_generic",
                         )
@@ -468,7 +469,8 @@ class AirPlayPlayer(Player):
                         ConfigEntry(
                             key=CONF_ACTION_FINISH_PAIRING,
                             type=ConfigEntryType.ACTION,
-                            label=f"Complete {protocol_name} pairing with the password",
+                            translation_key="config_entries.finish_pairing_password",
+                            translation_params=[protocol_name],
                             action=CONF_ACTION_FINISH_PAIRING,
                             category="protocol_generic",
                         )
@@ -482,10 +484,7 @@ class AirPlayPlayer(Player):
                     ConfigEntry(
                         key="pairing_instructions",
                         type=ConfigEntryType.LABEL,
-                        label=(
-                            f"This device requires {protocol_name} pairing before it can be used. "
-                            "Click the button below to start the pairing process."
-                        ),
+                        translation_params=[protocol_name],
                         category="protocol_generic",
                     )
                 )
@@ -493,7 +492,8 @@ class AirPlayPlayer(Player):
                     ConfigEntry(
                         key=CONF_ACTION_START_PAIRING,
                         type=ConfigEntryType.ACTION,
-                        label=f"Start {protocol_name} pairing",
+                        translation_key="config_entries.start_pairing",
+                        translation_params=[protocol_name],
                         action=CONF_ACTION_START_PAIRING,
                         category="protocol_generic",
                     )
@@ -505,7 +505,7 @@ class AirPlayPlayer(Player):
                 ConfigEntry(
                     key="pairing_status",
                     type=ConfigEntryType.LABEL,
-                    label=f"Device is paired ({protocol_name}) and ready to use.",
+                    translation_params=[protocol_name],
                     category="protocol_generic",
                 )
             )
@@ -514,7 +514,8 @@ class AirPlayPlayer(Player):
                 ConfigEntry(
                     key=CONF_ACTION_RESET_PAIRING,
                     type=ConfigEntryType.ACTION,
-                    label=f"Reset {protocol_name} pairing",
+                    translation_key="config_entries.reset_pairing",
+                    translation_params=[protocol_name],
                     action=CONF_ACTION_RESET_PAIRING,
                     category="protocol_generic",
                 )

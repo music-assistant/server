@@ -7,9 +7,9 @@ key, so they must not be passed as literals in code: a hardcoded string never re
 stays English-only. This is a pre-commit/CI guard that scans the source tree and prints every
 offending call so it can be moved into a strings.json.
 
-Only plain string literals are flagged. Dynamic f-string labels (e.g. transient auth/status
-messages) carry runtime data and need a translation_key plus translation_params, so localizing
-them is a separate effort that this check does not cover.
+Both plain string literals and f-strings are flagged: a dynamic label/description must use a
+strings.json template (with ``{0}``/``{1}`` placeholders) plus ``translation_params`` rather than
+interpolating the value into the string in code.
 
 Template/test providers (``_*`` and ``test``) are skipped, matching ``build_translations.py``.
 
@@ -46,7 +46,7 @@ def find_violations() -> list[str]:
             if not _is_config_entry_call(node):
                 continue
             for keyword in node.keywords:
-                if keyword.arg in LOCALIZED_FIELDS and _is_string_literal(keyword.value):
+                if keyword.arg in LOCALIZED_FIELDS and _is_hardcoded_text(keyword.value):
                     violations.append(
                         f"{rel}:{keyword.value.lineno}: ConfigEntry '{keyword.arg}' is hardcoded; "
                         f"author it in the owner's strings.json (config_entries.<key>.{keyword.arg})"
@@ -101,9 +101,11 @@ def _is_config_entry_call(node: ast.AST) -> TypeGuard[ast.Call]:
     return isinstance(func, ast.Attribute) and func.attr == "ConfigEntry"
 
 
-def _is_string_literal(node: ast.AST) -> bool:
-    """Return True for a plain string literal (adjacent literals fold into one ``Constant``)."""
-    return isinstance(node, ast.Constant) and isinstance(node.value, str)
+def _is_hardcoded_text(node: ast.AST) -> bool:
+    """Return True for a string literal or an f-string; both hardcode user-facing text in code."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return True
+    return isinstance(node, ast.JoinedStr)
 
 
 if __name__ == "__main__":

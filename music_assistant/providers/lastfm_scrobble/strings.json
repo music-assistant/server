@@ -17,6 +17,12 @@
     },
     "_api_session_key": {
       "label": "Session key"
+    },
+    "save_reminder": {
+      "label": "Successfully logged in as {0}, don't forget to hit save to complete the setup"
+    },
+    "authorize": {
+      "label": "Authorize with {0}"
     }
   },
   "manifest": {
