@@ -383,14 +383,14 @@ class Audibleprovider(MusicProvider):
                 item_id="audiobooks",
                 provider=self.instance_id,
                 path=f"{base_path}audiobooks",
-                name="",
+                name="Audiobooks",
                 translation_key="audiobooks",
             ),
             BrowseFolder(
                 item_id="podcasts",
                 provider=self.instance_id,
                 path=f"{base_path}podcasts",
-                name="",
+                name="Podcasts",
                 translation_key="podcasts",
             ),
             BrowseFolder(
@@ -398,30 +398,35 @@ class Audibleprovider(MusicProvider):
                 provider=self.instance_id,
                 path=f"{base_path}authors",
                 name="Authors",
+                translation_key="authors",
             ),
             BrowseFolder(
                 item_id="series",
                 provider=self.instance_id,
                 path=f"{base_path}series",
                 name="Series",
+                translation_key="series",
             ),
             BrowseFolder(
                 item_id="narrators",
                 provider=self.instance_id,
                 path=f"{base_path}narrators",
                 name="Narrators",
+                translation_key="narrators",
             ),
             BrowseFolder(
                 item_id="genres",
                 provider=self.instance_id,
                 path=f"{base_path}genres",
                 name="Genres",
+                translation_key="genres",
             ),
             BrowseFolder(
                 item_id="publishers",
                 provider=self.instance_id,
                 path=f"{base_path}publishers",
                 name="Publishers",
+                translation_key="publishers",
             ),
         ]
 
