@@ -466,7 +466,7 @@ class CueSheetHandler:
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Yield the segment of the underlying audio file for a CUE-derived track.
 

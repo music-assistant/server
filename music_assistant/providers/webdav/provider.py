@@ -281,7 +281,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         async def _walk(path: str, is_root: bool) -> None:
             try:
                 items = await self._scandir(path)
-            except (LoginFailed, SetupFailedError, ProviderUnavailableError):
+            except LoginFailed, SetupFailedError, ProviderUnavailableError:
                 raise
             except aiohttp.ClientError as err:
                 # only a root-level failure aborts the sync; subdir failures
