@@ -110,10 +110,33 @@ def _call_name(node: ast.Call) -> str:
 
 
 def _is_hardcoded_text(node: ast.AST, flag_fstrings: bool) -> bool:
-    """Return True for a string literal (always) or an f-string (only when ``flag_fstrings``)."""
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return True
-    return flag_fstrings and isinstance(node, ast.JoinedStr)
+    """
+    Return True when the value is, or embeds, user-facing text written in code.
+
+    Covers a plain string literal, an f-string (when ``flag_fstrings``), and those wrapped in a
+    conditional expression, string concatenation / ``%`` formatting, or a ``.format()``/``.join()``
+    call — all of which keep the text out of strings.json. Text routed only through a variable is
+    not detected (that needs data-flow analysis).
+    """
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, str)
+    if isinstance(node, ast.JoinedStr):
+        return flag_fstrings
+    if isinstance(node, ast.IfExp):
+        return _is_hardcoded_text(node.body, flag_fstrings) or _is_hardcoded_text(
+            node.orelse, flag_fstrings
+        )
+    if isinstance(node, ast.BinOp):
+        return _is_hardcoded_text(node.left, flag_fstrings) or _is_hardcoded_text(
+            node.right, flag_fstrings
+        )
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in ("format", "join")
+    ):
+        return _is_hardcoded_text(node.func.value, flag_fstrings)
+    return False
 
 
 if __name__ == "__main__":

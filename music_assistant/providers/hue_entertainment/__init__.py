@@ -150,7 +150,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ACTION_PAIR,
             type=ConfigEntryType.ACTION,
-            label="(Re)Pair with Hue Bridge" if paired else "Pair with Hue Bridge",
+            translation_key="config_entries.repair_bridge" if paired else None,
             action=CONF_ACTION_PAIR,
             depends_on=CONF_BRIDGE_HOST,
             required=False,
