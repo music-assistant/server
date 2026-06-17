@@ -384,7 +384,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
     async def collections(
         self,
     ) -> list[AudiobookCollection]:
-        """Get all available audiobook collections.
+        """
+        Get all available audiobook collections.
 
         :param limit: Maximum number of items to return.
         :param offset: Number of items to skip.
