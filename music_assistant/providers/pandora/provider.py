@@ -279,6 +279,8 @@ class PandoraProvider(MusicProvider):
             item_id=prov_radio_id,
             provider=self.domain,
             name=f"Pandora Station {prov_radio_id}",
+            translation_key="pandora_station",
+            translation_params=[prov_radio_id],
             provider_mappings={
                 ProviderMapping(
                     item_id=prov_radio_id,

@@ -11,7 +11,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from .vectors import compute_weighted_distance
+from .vectors import build_dimension_weights, compute_weighted_distance_vec
 
 
 class Candidate(NamedTuple):
@@ -111,9 +111,11 @@ def apply_mmr(
     seed_arr = np.array(seed_vec, dtype=np.float64)
 
     if weights is not None:
+        # Build the per-dimension weight vector once; _similarity runs O(n²) times.
+        dim_weights = build_dimension_weights(weights)
 
         def _similarity(a: np.ndarray, b: np.ndarray) -> float:
-            d = compute_weighted_distance(a.tolist(), b.tolist(), weights)
+            d = compute_weighted_distance_vec(a, b, dim_weights)
             return 1.0 / (1.0 + d)
 
         relevance: dict[str, float] = {

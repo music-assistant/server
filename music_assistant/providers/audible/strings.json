@@ -40,6 +40,15 @@
       "label": "Authentication File"
     }
   },
+  "media": {
+    "folder": {
+      "authors": { "name": "Authors" },
+      "series": { "name": "Series" },
+      "narrators": { "name": "Narrators" },
+      "genres": { "name": "Genres" },
+      "publishers": { "name": "Publishers" }
+    }
+  },
   "manifest": {
     "description": "Access Audible's extensive audiobook library and podcast catalogue — perfect for spoken-word listening."
   }

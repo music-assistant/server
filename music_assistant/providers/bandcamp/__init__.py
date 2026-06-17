@@ -500,6 +500,7 @@ class BandcampProvider(MusicProvider):
                     item_id="feed",
                     provider=self.instance_id,
                     name="Bandcamp Feed",
+                    translation_key="feed",
                     icon="mdi-rss",
                     items=UniqueList(feed_tracks),
                 )
@@ -510,6 +511,7 @@ class BandcampProvider(MusicProvider):
                     item_id="wishlist",
                     provider=self.instance_id,
                     name="Wishlist",
+                    translation_key="wishlist",
                     icon="mdi-heart",
                     items=UniqueList(wishlist),
                 )
@@ -588,6 +590,7 @@ class BandcampProvider(MusicProvider):
                         provider=self.instance_id,
                         path=base + folder_id,
                         name=folder_name,
+                        translation_key=folder_id,
                     )
                 )
 
@@ -720,6 +723,7 @@ class BandcampProvider(MusicProvider):
                 provider=self.instance_id,
                 path=f"{base_path}/{sub_id}",
                 name=name,
+                translation_key=sub_id,
             )
             for sub_id, name in PERSON_SUB_FOLDERS
         ]
