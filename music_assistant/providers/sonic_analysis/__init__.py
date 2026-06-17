@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -24,11 +23,11 @@ from music_assistant.models.audio_analysis_provider import (
 )
 
 from .clap_prompts import (
-    CALIBRATION,
     PRECOMPUTED_EMBEDDINGS_PATH,
     SCALAR_PROMPT_PAIRS,
     hash_scalar_prompt_pairs,
     load_precomputed_prompt_embeddings,
+    score_scalars,
 )
 from .helpers import (
     BlockFeatures,
@@ -557,12 +556,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             mean_emb = mean_emb / norm
         mean_sim = session.clap_sum_similarities / n
 
-        for idx, (scalar_name, _) in enumerate(self._clap_prompt_order):
-            pos_logit = float(mean_sim[idx * 2])
-            neg_logit = float(mean_sim[idx * 2 + 1])
-            a, b = CALIBRATION[scalar_name]
-            margin = pos_logit - neg_logit
-            setattr(analysis, scalar_name, 1.0 / (1.0 + math.exp(-(a * margin + b))))
+        for scalar_name, value in score_scalars(mean_sim).items():
+            setattr(analysis, scalar_name, value)
 
         _store_clap_embedding(analysis, mean_emb)
         self.logger.debug(
