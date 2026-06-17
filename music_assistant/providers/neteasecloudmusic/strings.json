@@ -31,6 +31,15 @@
       "label": "Reset authentication"
     }
   },
+  "media": {
+    "playlist": {
+      "heart_mode": { "name": "Heart Mode" },
+      "personal_fm": { "name": "Personal FM" }
+    },
+    "recommendations": {
+      "personal_radio": { "name": "Personal Radio" }
+    }
+  },
   "manifest": {
     "description": "Stream NetEase Cloud Music catalog, playlists, lyrics, and recommendations."
   }
