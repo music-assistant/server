@@ -144,71 +144,56 @@ async def get_config_entries(
         ConfigEntry(
             key="label_text",
             type=ConfigEntryType.LABEL,
-            label="Authentication did succeed! Please press save to continue.",
             hidden=not authenticated_nc,
         ),
         ConfigEntry(
             key="label_gpodder",
             type=ConfigEntryType.LABEL,
-            label="Authentication with gPodder compatible web service, e.g. opodsync:",
             hidden=authenticated_nc,
         ),
         ConfigEntry(
             key=CONF_URL,
             type=ConfigEntryType.STRING,
-            label="gPodder Service URL",
             required=False,
-            description="URL of gPodder instance.",
             value=values.get(CONF_URL),
             hidden=authenticated_nc,
         ),
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Username",
             required=False,
-            description="Username of gPodder instance.",
             hidden=authenticated_nc,
             value=values.get(CONF_USERNAME),
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=False,
-            description="Password for gPodder instance.",
             hidden=authenticated_nc,
             value=values.get(CONF_PASSWORD),
         ),
         ConfigEntry(
             key=CONF_DEVICE_ID,
             type=ConfigEntryType.STRING,
-            label="Device ID",
             required=False,
-            description="Device ID of user.",
             hidden=authenticated_nc,
             value=values.get(CONF_DEVICE_ID),
         ),
         ConfigEntry(
             key="label_nextcloud",
             type=ConfigEntryType.LABEL,
-            label="Authentication with Nextcloud with gPodder Sync (nextcloud-gpodder) installed:",
             hidden=authenticated_nc or using_gpodder,
         ),
         ConfigEntry(
             key=CONF_URL_NC,
             type=ConfigEntryType.STRING,
-            label="Nextcloud URL",
             required=False,
-            description="URL of Nextcloud instance.",
             value=values.get(CONF_URL_NC),
             hidden=using_gpodder,
         ),
         ConfigEntry(
             key=CONF_ACTION_AUTH_NC,
             type=ConfigEntryType.ACTION,
-            label="(Re)Authenticate with Nextcloud",
-            description="This button will redirect you to your Nextcloud instance to authenticate.",
             action=CONF_ACTION_AUTH_NC,
             required=False,
             hidden=using_gpodder,
@@ -216,23 +201,18 @@ async def get_config_entries(
         ConfigEntry(
             key="label_general",
             type=ConfigEntryType.LABEL,
-            label="General config:",
         ),
         ConfigEntry(
             key=CONF_MAX_NUM_EPISODES,
             type=ConfigEntryType.INTEGER,
-            label="Maximum number of episodes (0 for unlimited)",
             required=False,
-            description="Maximum number of episodes to sync per feed. Use 0 for unlimited",
             default_value=0,
             value=values.get(CONF_MAX_NUM_EPISODES),
         ),
         ConfigEntry(
             key=CONF_VERIFY_SSL,
             type=ConfigEntryType.BOOLEAN,
-            label="Verify SSL",
             required=False,
-            description="Whether or not to verify the certificate of SSL/TLS connections.",
             advanced=True,
             default_value=True,
             value=values.get(CONF_VERIFY_SSL),
@@ -240,7 +220,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_TOKEN_NC,
             type=ConfigEntryType.SECURE_STRING,
-            label="token",
             hidden=True,
             required=False,
             value=values.get(CONF_TOKEN_NC),
@@ -248,7 +227,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_USING_GPODDER,
             type=ConfigEntryType.BOOLEAN,
-            label="using_gpodder",
             hidden=True,
             required=False,
             value=values.get(CONF_USING_GPODDER),
@@ -335,7 +313,7 @@ class GPodder(MusicProvider):
         # While the streams are remote, the user controls what is added.
         return False
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library/subscribed podcasts from the provider."""
         try:
             subscriptions = await self._client.get_subscriptions()
@@ -434,7 +412,7 @@ class GPodder(MusicProvider):
 
     async def get_podcast_episodes(
         self, prov_podcast_id: str, add_progress: bool = True
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    ) -> AsyncGenerator[PodcastEpisode]:
         """Get Podcast episodes. Add progress information."""
         if add_progress:
             episode_actions, timestamp = await self._client.get_episode_actions()

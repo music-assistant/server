@@ -164,7 +164,7 @@ class TidalAPIClient:
         limit: int = 50,
         cursor_based: bool = False,
         **kwargs: Any,
-    ) -> AsyncGenerator[Any, None]:
+    ) -> AsyncGenerator[Any]:
         """Paginate through all items from a Tidal API endpoint."""
         offset = 0
         cursor = None

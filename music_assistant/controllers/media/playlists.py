@@ -117,7 +117,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider_instance_id_or_domain: str,
         force_refresh: bool = False,
         allow_dynamic_tracks: bool = False,
-    ) -> AsyncGenerator[PlaylistPlayableItem, None]:
+    ) -> AsyncGenerator[PlaylistPlayableItem]:
         """Return playlist tracks for the given provider playlist id."""
         if provider_instance_id_or_domain == "library":
             library_item = await self.get_library_item(item_id)
@@ -343,7 +343,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
-    @guard_single_request  # type: ignore[type-var]  # TODO: fix typing in util.py
+    @guard_single_request
     async def _get_provider_playlist_tracks(
         self,
         item_id: str,

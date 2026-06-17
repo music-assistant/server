@@ -66,6 +66,7 @@ from music_assistant.helpers.util import get_changed_dataclass_values
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, PlayerConfig
+    from music_assistant_models.media_items import MediaItemPalette
     from music_assistant_models.player_queue import PlayerQueue
 
     from .player_provider import PlayerProvider
@@ -98,6 +99,11 @@ class Player(ABC):
     _attr_active_source: str | None = None
     _attr_active_sound_mode: str | None = None
     _attr_current_media: PlayerMedia | None = None
+    # Palette for the image currently shown, resolved asynchronously from the
+    # cache controller and carried here so the (synchronous) state serialization
+    # can read it back without blocking. See set_resolved_palette.
+    _attr_current_palette: MediaItemPalette | None = None
+    _attr_current_palette_url: str | None = None
     _attr_needs_poll: bool = False
     _attr_poll_interval: int = 30
     _attr_hidden_by_default: bool = False
@@ -826,7 +832,7 @@ class Player(ABC):
                 try:
                     sample_rate_str, bit_depth_str = item.split(MULTI_VALUE_SPLITTER, 1)
                     config_rates.append((int(sample_rate_str.strip()), int(bit_depth_str.strip())))
-                except (ValueError, TypeError):
+                except ValueError, TypeError:
                     self.logger.warning(
                         "Ignoring malformed CONF_SAMPLE_RATES entry %r for player %s",
                         item,
@@ -1388,6 +1394,22 @@ class Player(ABC):
             self._attr_current_media.custom_data = custom_data
 
     @final
+    def set_resolved_palette(self, image_url: str, palette: MediaItemPalette) -> None:
+        """
+        Store the resolved color palette for the currently shown image.
+
+        The palette is resolved asynchronously (from the cache controller) by the
+        PlayerController; it is carried on the player here so the synchronous state
+        serialization can attach it without blocking. May only be called by the
+        PlayerController.
+
+        :param image_url: Image URL the palette was extracted from.
+        :param palette: The extracted color palette.
+        """
+        self._attr_current_palette_url = image_url
+        self._attr_current_palette = palette
+
+    @final
     def set_config(self, config: PlayerConfig) -> None:
         """
         Set/update the player config.
@@ -1764,9 +1786,6 @@ class Player(ABC):
     @final
     def __final_current_media(self) -> PlayerMedia | None:
         """Return the FINAL current media for the player."""
-        # Lazy import to avoid helpers.colors -> helpers.images -> models.plugin cycle.
-        from music_assistant.helpers.colors import peek_palette_for_url  # noqa: PLC0415
-
         # if the player is grouped/synced, use the current_media of the group/parent player
         if parent_player_id := (self.__final_active_group or self.__final_synced_to):
             if parent_player_id != self.player_id and (
@@ -1788,7 +1807,7 @@ class Player(ABC):
         if active_queue and (current_item := active_queue.current_item):
             item_image_url = (
                 # the image format needs to be 512x512 jpeg for maximum compatibility with players
-                self.mass.metadata.get_image_url(current_item.image, size=512, image_format="jpeg")
+                self.mass.metadata.get_image_url(current_item.image, size=512)
                 if current_item.image
                 else None
             )
@@ -1804,7 +1823,7 @@ class Player(ABC):
                     artist=stream_metadata.artist,
                     album=stream_metadata.album or stream_metadata.description or current_item.name,
                     image_url=image_url,
-                    palette=peek_palette_for_url(image_url),
+                    palette=self._resolved_palette(image_url),
                     duration=stream_metadata.duration or current_item.duration,
                     source_id=active_queue.queue_id,
                     queue_item_id=current_item.queue_item_id,
@@ -1820,11 +1839,8 @@ class Player(ABC):
                 podcast = getattr(media_item, "podcast", None)
                 metadata = getattr(media_item, "metadata", None)
                 description = getattr(metadata, "description", None) if metadata else None
-                # the image format needs to be 512x512 jpeg for maximum player compatibility
                 image_url = (
-                    self.mass.metadata.get_image_url(
-                        current_item.media_item.image, size=512, image_format="jpeg"
-                    )
+                    self.mass.metadata.get_image_url(current_item.media_item.image, size=512)
                     or item_image_url
                     if current_item.media_item.image
                     else item_image_url
@@ -1836,7 +1852,7 @@ class Player(ABC):
                     artist=getattr(media_item, "artist_str", None),
                     album=album.name if album else podcast.name if podcast else description,
                     image_url=image_url,
-                    palette=peek_palette_for_url(image_url),
+                    palette=self._resolved_palette(image_url),
                     duration=media_item.duration,
                     source_id=active_queue.queue_id,
                     queue_item_id=current_item.queue_item_id,
@@ -1850,7 +1866,7 @@ class Player(ABC):
                 media_type=current_item.media_type,
                 title=current_item.name,
                 image_url=item_image_url,
-                palette=peek_palette_for_url(item_image_url),
+                palette=self._resolved_palette(item_image_url),
                 duration=current_item.duration,
                 source_id=active_queue.queue_id,
                 queue_item_id=current_item.queue_item_id,
@@ -1870,7 +1886,7 @@ class Player(ABC):
                 artist=self.current_media.artist,
                 album=self.current_media.album,
                 image_url=image_url,
-                palette=peek_palette_for_url(image_url),
+                palette=self._resolved_palette(image_url),
                 duration=self.current_media.duration,
                 source_id=self.current_media.source_id or active_source,
                 queue_item_id=self.current_media.queue_item_id,
@@ -1880,6 +1896,12 @@ class Player(ABC):
                 elapsed_time_last_updated=self.current_media.elapsed_time_last_updated
                 or self.elapsed_time_last_updated,
             )
+        return None
+
+    def _resolved_palette(self, image_url: str | None) -> MediaItemPalette | None:
+        """Return the carried palette if it matches image_url, else None."""
+        if image_url and image_url == self._attr_current_palette_url:
+            return self._attr_current_palette
         return None
 
     @cached_property

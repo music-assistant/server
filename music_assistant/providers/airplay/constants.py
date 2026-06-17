@@ -39,7 +39,10 @@ DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 # Time allowance for MA processing and OS spawning of the binary. Helps reduce initial audio loss.
 AIRPLAY_DEFAULT_SESSION_DELAY_MS: Final[int] = 900
 # Read ahead buffer for cliraop. Default output buffer duration.
-AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS: Final[int] = 1000
+AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS: Final[int] = 1500
+# RAOP buffer settings
+RAOP_OUTPUT_BUFFER_MIN_DURATION_MS: Final[int] = 250
+RAOP_OUTPUT_BUFFER_MAX_DURATION_MS: Final[int] = 5000
 # Default session establishment latency i.e. expected duration to pair with AirPlay device and negotiate session
 AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_DEFAULT_MS: Final[int] = 500
 AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MIN_MS: Final[int] = (
@@ -54,7 +57,9 @@ RAOP_CONNECT_TIME_MS: Final[int] = 1500  # Time in ms to allow RAOP device to co
 # Per-protocol credential storage keys
 CONF_RAOP_CREDENTIALS: Final[str] = "raop_credentials"
 CONF_AIRPLAY_CREDENTIALS: Final[str] = "airplay_credentials"
-CONF_AIRPLAY_LATENCY: Final[str] = "airplay_latency"
+
+# Some RAOP models require a higher than default 1000ms buffer to prevent stuttering
+CONF_RAOP_LATENCY: Final[str] = "airplay_latency"
 
 # Legacy credential key (for migration)
 CONF_AP_CREDENTIALS: Final[str] = "ap_credentials"
@@ -98,11 +103,6 @@ BROKEN_AIRPLAY_WARN = ConfigEntry(
     type=ConfigEntryType.ALERT,
     default_value=None,
     required=False,
-    label="This player is known to have broken AirPlay support. "
-    "Playback may fail or simply be silent. "
-    "There is no workaround for this issue at the moment. \n"
-    "If you already enforced AirPlay 2 on the player and it remains silent, "
-    "this is one of the known broken models. Only remedy is to nag the manufacturer for a fix.",
 )
 
 BASE_PLAYER_FEATURES: Final[set[PlayerFeature]] = {

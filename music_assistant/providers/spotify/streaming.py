@@ -28,7 +28,7 @@ class LibrespotStreamer:
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Return the audio stream for the provider item."""
         # Regular track/episode streaming - audiobooks are handled in the provider
         media_type = "episode" if streamdetails.media_type == MediaType.PODCAST_EPISODE else "track"
@@ -38,7 +38,7 @@ class LibrespotStreamer:
 
     async def stream_spotify_uri(
         self, spotify_uri: str, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Return the audio stream for the Spotify URI."""
         self.provider.logger.log(
             VERBOSE_LOG_LEVEL, f"Start streaming {spotify_uri} using librespot"

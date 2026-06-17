@@ -1,18 +1,21 @@
 """Integration tests for the Bandcamp provider."""
 
 from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING
 from unittest import mock
 
 import pytest
-from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import MediaType, StreamType
 
 from music_assistant.mass import MusicAssistant
 from tests.common import wait_for_sync_completion
 
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ProviderConfig
+
 
 @pytest.fixture
-async def bandcamp_provider(mass: MusicAssistant) -> AsyncGenerator[ProviderConfig, None]:
+async def bandcamp_provider(mass: MusicAssistant) -> AsyncGenerator[ProviderConfig]:
     """Configure a Bandcamp test fixture, and add a provider to mass that uses it."""
     # Mock the BandcampAPIClient to avoid real API calls
     with mock.patch("music_assistant.providers.bandcamp.BandcampAPIClient") as mock_client_class:

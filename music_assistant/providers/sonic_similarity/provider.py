@@ -218,12 +218,9 @@ class SonicSimilarityPlugin(PluginProvider):
                     "sonic_similarity/text_search", self._handle_text_search
                 )
             )
-            # Warm in background so the timeout-less global SEARCH dispatcher never blocks
-            # on the ~500MB GPT2 download; search() short-circuits until the encoder is set.
-            self.mass.create_task(
-                self._get_text_encoder, task_id="sonic_similarity_text_encoder_warm"
-            )
-            self.logger.info("Text search ready (encoder warming in background)")
+            # The ~500MB GPT2 text encoder loads lazily on the first query (see search()
+            # and _handle_text_search), not at plugin start.
+            self.logger.info("Text search enabled (encoder loads on first query)")
 
         self.mass.tasks.register_scheduled_task(
             task_id=PERIODIC_REFRESH_TASK_ID,
@@ -606,7 +603,7 @@ class SonicSimilarityPlugin(PluginProvider):
         # The slider is a 0-10 integer; the engine wants a 0.0-1.0 weight.
         try:
             diversity = int(str(self.config.get_value(CONF_SIMILAR_DIVERSITY) or 0)) / 10.0
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             diversity = 0.0
         self.logger.debug(
             "Traits Similar Tracks: seed=%s/%s preset=%s diversity=%s limit=%d",
@@ -745,7 +742,7 @@ class SonicSimilarityPlugin(PluginProvider):
         # The slider is a 0-10 integer; the engine wants a 0.0-1.0 weight.
         try:
             diversity = int(str(self.config.get_value(CONF_DISCOVER_DIVERSITY) or 0)) / 10.0
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             diversity = 0.0
         self.logger.debug(
             "Discover row: engine=%s seeds=%d preset=%s diversity=%s",
@@ -819,9 +816,13 @@ class SonicSimilarityPlugin(PluginProvider):
             return SearchResults()
         if self._clap_index is None or len(self._clap_index) == 0:
             return SearchResults()
-        # Only serve once the encoder is warm; never hold up the global search
-        # gather waiting on the lazy load (background-scheduled in loaded_in_mass).
+        # Never hold up the timeout-less global SEARCH gather on the ~500MB encoder load:
+        # warm it in the background and short-circuit until it is ready. create_task dedupes
+        # on task_id while a load is in flight, and re-attempts after a previous load failed.
         if self._text_encoder is None:
+            self.mass.create_task(
+                self._get_text_encoder, task_id="sonic_similarity_text_encoder_warm"
+            )
             return SearchResults()
         emb_np = await self._embed_text_query(search_query)
         if emb_np is None:
@@ -1263,7 +1264,7 @@ class SonicSimilarityPlugin(PluginProvider):
                     continue
                 try:
                     raw = json.loads(row["analysis_data"])
-                except (json.JSONDecodeError, TypeError):
+                except json.JSONDecodeError, TypeError:
                     continue
                 emb = _parse_clap_embedding(
                     (raw.get("extra_data") or {}).get(EXTRA_DATA_CLAP_EMBEDDING)

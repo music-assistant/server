@@ -3,14 +3,11 @@
 import asyncio
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from aiohttp.client_exceptions import ClientError
 from aiomusiccast.musiccast_device import MusicCastDevice
-from music_assistant_models.config_entries import ProviderConfig
-from music_assistant_models.enums import ProviderFeature
-from music_assistant_models.provider import ProviderManifest
 from zeroconf import ServiceStateChange
-from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.util import format_ip_for_url
@@ -26,6 +23,12 @@ from music_assistant.providers.sonos.helpers import get_primary_ip_address
 
 from .musiccast import MusicCastController, MusicCastPhysicalDevice, MusicCastZoneDevice
 from .player import MusicCastPlayer, UpnpUpdateHelper
+
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.enums import ProviderFeature
+    from music_assistant_models.provider import ProviderManifest
+    from zeroconf.asyncio import AsyncServiceInfo
 
 
 @dataclass(kw_only=True)

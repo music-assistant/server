@@ -1,0 +1,18 @@
+{
+  "config_entries": {
+    "mass_player_id": {
+      "label": "Connected Music Assistant Player",
+      "description": "The Music Assistant player connected to this AirPlay receiver plugin. When you stream audio via AirPlay to this virtual speaker, the audio will play on the selected player. Set to 'Auto' to automatically select a currently playing player, or the first available player if none is playing.",
+      "options": {
+        "__auto__": "Auto (prefer playing player)"
+      }
+    },
+    "airplay_name": {
+      "label": "AirPlay Device Name",
+      "description": "How should this AirPlay receiver be named in the AirPlay device list?"
+    }
+  },
+  "manifest": {
+    "description": "Receive AirPlay audio streams and use them as a source in Music Assistant."
+  }
+}

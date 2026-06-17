@@ -83,6 +83,32 @@ class MetadataProvider(Provider):
             raise NotImplementedError
         return []
 
+    async def get_artist_toptracks(self, artist: Artist, limit: int = 25) -> list[Track]:
+        """
+        Retrieve a list of top tracks for the given artist.
+
+        Will only be called if ProviderFeature.ARTIST_TOPTRACKS is declared.
+
+        :param artist: The reference artist.
+        :param limit: Maximum number of top tracks to return.
+        """
+        if ProviderFeature.ARTIST_TOPTRACKS in self.supported_features:
+            raise NotImplementedError
+        return []
+
+    async def get_artist_topalbums(self, artist: Artist, limit: int = 25) -> list[Album]:
+        """
+        Retrieve a list of top albums for the given artist.
+
+        Will only be called if ProviderFeature.ARTIST_TOPALBUMS is declared.
+
+        :param artist: The reference artist.
+        :param limit: Maximum number of top albums to return.
+        """
+        if ProviderFeature.ARTIST_TOPALBUMS in self.supported_features:
+            raise NotImplementedError
+        return []
+
     async def resolve_image(self, path: str) -> str | bytes:
         """
         Resolve an image from an image path.

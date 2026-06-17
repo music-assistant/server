@@ -359,7 +359,7 @@ class MusicMeProvider(MusicProvider):
 
     # ---- library ----
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library playlists from MusicMe."""
         data = await self._api_get('/playlists?resources=home{details:"list"}')
         if not data:
@@ -626,7 +626,7 @@ class MusicMeProvider(MusicProvider):
                 disc_track_parts = disc_track.split("_")
                 track.disc_number = int(disc_track_parts[0])
                 track.track_number = int(disc_track_parts[1])
-            except (ValueError, IndexError):
+            except ValueError, IndexError:
                 pass
         for art_obj in track_obj.get("artists", []):
             if art_obj.get("id"):
@@ -843,7 +843,7 @@ class MusicMeProvider(MusicProvider):
                 if response.status == 429:
                     try:
                         backoff = min(int(response.headers.get("Retry-After", 10)), 300)
-                    except (ValueError, TypeError):
+                    except ValueError, TypeError:
                         backoff = 10
                     raise RateLimited("Rate limited", backoff_time=backoff)
                 if response.status in (502, 503):

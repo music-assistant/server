@@ -369,7 +369,7 @@ async def validate_x_token(x_token: SecretStr) -> bool:
     try:
         async with PassportClient.create() as client:
             return bool(await client.validate_x_token(x_token))
-    except (NetworkError, RateLimitedError):
+    except NetworkError, RateLimitedError:
         raise
     except YaPassportError:
         return False

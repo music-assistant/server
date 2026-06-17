@@ -195,7 +195,7 @@ class VBANReceiverProvider(PluginProvider):
 
     async def get_audio_stream(  # noqa: PLR0915
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Yield raw PCM chunks from the VBANIncomingStream queue."""
         assert self._vban_stream  # for type checking
         assert self._udp_socket_fut  # for type checking
@@ -277,7 +277,9 @@ class VBANReceiverProvider(PluginProvider):
                     if not _stream_acquired:
                         raise AudioError(
                             f"VBAN sender {self._sender_host!r} did not send any packets "
-                            f"on stream {self._vban_stream_name!r}"
+                            f"on stream {self._vban_stream_name!r}",
+                            translation_key="provider.vban_receiver.errors.no_packets",
+                            translation_args=[self._sender_host, self._vban_stream_name],
                         ) from None
                     continue
                 except asyncio.QueueShutDown:

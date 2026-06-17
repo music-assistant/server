@@ -69,7 +69,7 @@ from music_assistant.controllers.streams.constants import (
     CONF_BUFFER_SIZE_DEFAULT,
     CONF_SMART_FADES_LOG_LEVEL,
     DEFAULT_PORT,
-    BufferSize,
+    get_available_buffer_sizes,
 )
 from music_assistant.helpers.audio import (
     calculate_content_length,
@@ -124,8 +124,8 @@ def _streaming_wav_header(output_format: AudioFormat) -> bytes:
 
 
 async def _wav_passthrough_stream(
-    audio_input: AsyncGenerator[bytes, None], output_format: AudioFormat
-) -> AsyncGenerator[bytes, None]:
+    audio_input: AsyncGenerator[bytes], output_format: AudioFormat
+) -> AsyncGenerator[bytes]:
     """Yield a WAV header followed by raw PCM bytes from ``audio_input``."""
     yield _streaming_wav_header(output_format)
     async for chunk in audio_input:
@@ -179,21 +179,9 @@ class StreamsController(CoreController):
                 key=CONF_BUFFER_SIZE,
                 type=ConfigEntryType.STRING,
                 default_value=CONF_BUFFER_SIZE_DEFAULT,
-                label="Audio buffer size",
-                description="Controls how much audio is buffered in memory. "
-                "A larger buffer improves playback stability and seeking "
-                "but uses more memory.\n\n"
-                "- **Minimal**: Small buffer, "
-                "recommended for memory-constrained devices.\n"
-                "- **Balanced**: Moderate buffer, "
-                "good balance for most systems.\n"
-                "- **Maximum**: Large buffer, "
-                "best performance for systems with plenty of memory.",
-                options=[
-                    ConfigValueOption("Minimal", BufferSize.MINIMAL.value),
-                    ConfigValueOption("Balanced", BufferSize.BALANCED.value),
-                    ConfigValueOption("Maximum", BufferSize.MAXIMUM.value),
-                ],
+                # Only offer presets the host's RAM can sustain (Balanced >= 4GB,
+                # Maximum >= 8GB); see get_available_buffer_sizes.
+                options=[ConfigValueOption(size.value) for size in get_available_buffer_sizes()],
                 required=False,
                 category="playback",
             ),
@@ -201,9 +189,8 @@ class StreamsController(CoreController):
                 key=CONF_VOLUME_NORMALIZATION_RADIO,
                 type=ConfigEntryType.STRING,
                 default_value=VolumeNormalizationMode.FALLBACK_DYNAMIC,
-                label="Volume normalization method for radio streams",
                 options=[
-                    ConfigValueOption(x.value.replace("_", " ").title(), x.value)
+                    ConfigValueOption(x.value, title=x.value.replace("_", " ").title())
                     for x in VolumeNormalizationMode
                 ],
                 category="playback",
@@ -212,9 +199,8 @@ class StreamsController(CoreController):
                 key=CONF_VOLUME_NORMALIZATION_TRACKS,
                 type=ConfigEntryType.STRING,
                 default_value=VolumeNormalizationMode.FALLBACK_DYNAMIC,
-                label="Volume normalization method for tracks",
                 options=[
-                    ConfigValueOption(x.value.replace("_", " ").title(), x.value)
+                    ConfigValueOption(x.value, title=x.value.replace("_", " ").title())
                     for x in VolumeNormalizationMode
                 ],
                 category="playback",
@@ -224,7 +210,6 @@ class StreamsController(CoreController):
                 type=ConfigEntryType.FLOAT,
                 range=(-20, 10),
                 default_value=-6,
-                label="Fixed/fallback gain adjustment for radio streams",
                 category="playback",
             ),
             ConfigEntry(
@@ -232,26 +217,18 @@ class StreamsController(CoreController):
                 type=ConfigEntryType.FLOAT,
                 range=(-20, 10),
                 default_value=-6,
-                label="Fixed/fallback gain adjustment for tracks",
                 category="playback",
             ),
             ConfigEntry(
                 key=CONF_ALLOW_CROSSFADE_SAME_ALBUM,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
-                label="Allow crossfade between tracks from the same album",
-                description="Enabling this option allows for crossfading between tracks "
-                "that are part of the same album.",
                 category="playback",
             ),
             ConfigEntry(
                 key=CONF_PUBLISH_IP,
                 type=ConfigEntryType.STRING,
                 default_value=ip_addresses[0],
-                label="Published IP address",
-                description="This IP address is communicated to players where to find this server."
-                "\nMake sure that this IP can be reached by players on the local network, "
-                "otherwise audio streaming will not work.",
                 required=False,
                 category="generic",
                 advanced=True,
@@ -261,10 +238,6 @@ class StreamsController(CoreController):
                 key=CONF_BIND_PORT,
                 type=ConfigEntryType.INTEGER,
                 default_value=DEFAULT_PORT,
-                label="TCP Port",
-                description="The TCP port to run the server. "
-                "Make sure that this server can be reached "
-                "on the given IP and TCP port by players on the local network.",
                 category="generic",
                 advanced=True,
                 requires_reload=True,
@@ -273,13 +246,7 @@ class StreamsController(CoreController):
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
                 default_value="0.0.0.0",
-                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", *ip_addresses}],
-                label="Bind to IP/interface",
-                description="Start the stream server on this specific interface. \n"
-                "Use 0.0.0.0 to bind to all interfaces (both IPv4 and IPv6), "
-                "which is the default. \n"
-                "This is an advanced setting that should normally "
-                "not be adjusted in regular setups.",
+                options=[ConfigValueOption(x, title=x) for x in {"0.0.0.0", *ip_addresses}],
                 category="generic",
                 advanced=True,
                 required=False,
@@ -288,8 +255,6 @@ class StreamsController(CoreController):
             ConfigEntry(
                 key=CONF_SMART_FADES_LOG_LEVEL,
                 type=ConfigEntryType.STRING,
-                label="Smart Fades Log level",
-                description="Log level for the Smart Fades mixer and analyzer.",
                 options=CONF_ENTRY_LOG_LEVEL.options,
                 default_value="GLOBAL",
                 category="audio_analysis",
@@ -300,10 +265,6 @@ class StreamsController(CoreController):
                 type=ConfigEntryType.INTEGER,
                 range=(1, 8),
                 default_value=DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
-                label="Background analysis concurrency",
-                description="Maximum number of tracks analyzed concurrently during the nightly "
-                "background scan. Default 1 (serial). Increase only if your hardware can handle "
-                "concurrent torch/ffmpeg work.",
                 category="audio_analysis",
             ),
         )
@@ -725,7 +686,7 @@ class StreamsController(CoreController):
             # skip the encode ffmpeg entirely and just stream a WAV header
             # followed by the raw PCM bytes — saves an ffmpeg process and the
             # latency of its internal buffer on every realtime stream.
-            audio_bytes: AsyncGenerator[bytes, None]
+            audio_bytes: AsyncGenerator[bytes]
             if (
                 queue_item.media_type == MediaType.AUDIO_SOURCE
                 and output_format.content_type == ContentType.WAV
@@ -875,10 +836,14 @@ class StreamsController(CoreController):
         enable_icy = request.headers.get("Icy-MetaData", "") == "1" and icy_preference != "disabled"
         icy_meta_interval = 256000 if icy_preference == "full" else 16384
 
-        # prepare request, add some DLNA/UPNP compatible headers
+        # prepare request, add some DLNA/UPNP compatible headers.
+        # icy-name (in DEFAULT_STREAM_HEADERS) is always present so players have a
+        # readable stream name; the rest of the ICY/shoutcast metadata headers are
+        # only advertised when the client actually requested ICY metadata, rather
+        # than on every flow response.
         headers = {
             **DEFAULT_STREAM_HEADERS,
-            **ICY_HEADERS,
+            **(ICY_HEADERS if enable_icy else {}),
             "contentFeatures.dlna.org": DLNA_CONTENT_FEATURES_REALTIME,
             "Content-Type": get_mime_type(output_format.output_format_str),
         }
@@ -926,7 +891,7 @@ class StreamsController(CoreController):
         ):
             try:
                 await resp.write(chunk)
-            except (BrokenPipeError, ConnectionResetError, ConnectionError):
+            except BrokenPipeError, ConnectionResetError, ConnectionError:
                 # race condition
                 break
 
@@ -1025,7 +990,7 @@ class StreamsController(CoreController):
         ):
             try:
                 await resp.write(chunk)
-            except (BrokenPipeError, ConnectionResetError):
+            except BrokenPipeError, ConnectionResetError:
                 break
 
         self.logger.debug(
@@ -1060,7 +1025,7 @@ class StreamsController(CoreController):
         player_id: str | None = None,
         force_flow_mode: bool = False,
         use_flow_stream_buffering: bool = False,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Get a stream of the given media as raw PCM audio.
 
@@ -1175,7 +1140,7 @@ class StreamsController(CoreController):
         provider_instance_id_or_domain: str,
         item_id: str,
         media_type: MediaType = MediaType.TRACK,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Create a 30 seconds preview audioclip for the given media item."""
         if not (music_prov := self.mass.get_provider(provider_instance_id_or_domain)):
             raise ProviderUnavailableError
@@ -1218,7 +1183,7 @@ class StreamsController(CoreController):
         output_format: AudioFormat,
         pre_announce: bool | str = False,
         pre_announce_url: str = ANNOUNCE_ALERT_FILE,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Get the special announcement stream."""
         announcement_data: asyncio.Queue[bytes | None] = asyncio.Queue(10)
         # we are doing announcement in PCM first to avoid multiple encodings
@@ -1257,7 +1222,7 @@ class StreamsController(CoreController):
 
         self.mass.create_task(fetch_announcement())
 
-        async def _announcement_stream() -> AsyncGenerator[bytes, None]:
+        async def _announcement_stream() -> AsyncGenerator[bytes]:
             """Generate the PCM audio stream for the announcement + optional pre-announce."""
             if pre_announce:
                 async for chunk in get_ffmpeg_stream(
@@ -1294,10 +1259,10 @@ class StreamsController(CoreController):
 
     async def _wrap_with_audio_source_lifecycle(
         self,
-        inner: AsyncGenerator[bytes, None],
+        inner: AsyncGenerator[bytes],
         queue_item: QueueItem,
         player_id: str,
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Wrap an AudioSource queue item stream with on_source_selected/unselected hooks.
 

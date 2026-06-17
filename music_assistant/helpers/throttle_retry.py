@@ -46,14 +46,14 @@ def parse_retry_after(value: str | None) -> int:
     # Try delay-seconds (non-negative integer) first — the common case
     try:
         return max(0, int(value))
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         pass
     # Try HTTP-date format (e.g., "Fri, 31 Dec 1999 23:59:59 GMT")
     try:
         target = parsedate_to_datetime(value)
         delta = (target - datetime.datetime.now(tz=datetime.UTC)).total_seconds()
         return max(0, int(delta))
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return 0
 
 
@@ -120,7 +120,7 @@ class ThrottlerManager:
         self.throttler = Throttler(rate_limit, period)
 
     @asynccontextmanager
-    async def acquire(self) -> AsyncGenerator[float, None]:
+    async def acquire(self) -> AsyncGenerator[float]:
         """Acquire a free slot from the Throttler, returns the throttled time."""
         if BYPASS_THROTTLER.get():
             yield 0
@@ -128,7 +128,7 @@ class ThrottlerManager:
             yield await self.throttler.acquire()
 
     @asynccontextmanager
-    async def bypass(self) -> AsyncGenerator[None, None]:
+    async def bypass(self) -> AsyncGenerator[None]:
         """Bypass the throttler."""
         try:
             token = BYPASS_THROTTLER.set(True)

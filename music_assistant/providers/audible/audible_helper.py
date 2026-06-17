@@ -151,7 +151,7 @@ class AudibleHelper:
         self,
         response_groups: str,
         content_types: tuple[str, ...],
-    ) -> AsyncGenerator[dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any]]:
         """Fetch items from the library with pagination."""
         page = 1
         page_size = 50
@@ -231,7 +231,7 @@ class AudibleHelper:
             )
             return None
 
-    async def get_library(self) -> AsyncGenerator[Audiobook, None]:
+    async def get_library(self) -> AsyncGenerator[Audiobook]:
         """Fetch the user's library with pagination."""
         response_groups = [
             "contributors",
@@ -586,12 +586,12 @@ class AudibleHelper:
         """Parse chapter data into MediaItemChapter object."""
         try:
             start = int(chapter_data.get("start_offset_sec", 0))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             start = 0
 
         try:
             length = int(chapter_data.get("length_ms", 0)) / 1000
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             length = 0
 
         raw_title = chapter_data.get("title")
@@ -699,7 +699,7 @@ class AudibleHelper:
             )
             return None
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Fetch podcasts from the user's library with pagination."""
         response_groups = [
             "contributors",
@@ -755,7 +755,7 @@ class AudibleHelper:
         )
         return self._parse_podcast(item_data)
 
-    async def get_podcast_episodes(self, podcast_asin: str) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, podcast_asin: str) -> AsyncGenerator[PodcastEpisode]:
         """Fetch all episodes for a podcast.
 
         :param podcast_asin: The ASIN of the parent podcast.
@@ -1096,7 +1096,7 @@ class AudibleHelper:
                     sequence = s.get("sequence")
                     try:
                         seq_num = float(sequence) if sequence else 999
-                    except (ValueError, TypeError):
+                    except ValueError, TypeError:
                         seq_num = 999
                     audiobooks.append((seq_num, self._parse_audiobook(item)))
                     break

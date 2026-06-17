@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, cast
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
+
 from .constants import (
     CONF_ACTION_CLEAR_AUTH,
     CONF_BASE_URL,
@@ -77,13 +79,11 @@ async def get_config_entries(
     is_authenticated = bool(values.get(CONF_TOKEN))
 
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         # Authentication
         ConfigEntry(
             key=CONF_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="KION Music Token",
-            description="Enter your KION Music OAuth token. "
-            "See the documentation for how to obtain it.",
             required=True,
             hidden=is_authenticated,
             value=cast("str", values.get(CONF_TOKEN)) if values else None,
@@ -91,8 +91,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ACTION_CLEAR_AUTH,
             type=ConfigEntryType.ACTION,
-            label="Reset authentication",
-            description="Clear the current authentication details.",
             action=CONF_ACTION_CLEAR_AUTH,
             hidden=not is_authenticated,
         ),
@@ -100,13 +98,11 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_QUALITY,
             type=ConfigEntryType.STRING,
-            label="Audio quality",
-            description="Select preferred audio quality.",
             options=[
-                ConfigValueOption("Efficient (AAC ~64kbps)", QUALITY_EFFICIENT),
-                ConfigValueOption("Balanced (AAC ~192kbps)", QUALITY_BALANCED),
-                ConfigValueOption("High (MP3 ~320kbps)", QUALITY_HIGH),
-                ConfigValueOption("Superb (FLAC Lossless)", QUALITY_LOSSLESS),
+                ConfigValueOption(QUALITY_EFFICIENT),
+                ConfigValueOption(QUALITY_BALANCED),
+                ConfigValueOption(QUALITY_HIGH),
+                ConfigValueOption(QUALITY_LOSSLESS),
             ],
             default_value=QUALITY_BALANCED,
         ),
@@ -114,9 +110,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_MY_WAVE_MAX_TRACKS,
             type=ConfigEntryType.INTEGER,
-            label="My Mix maximum tracks",
-            description="Maximum number of tracks to fetch for My Mix playlist. "
-            "Lower values load faster but provide fewer tracks. Default: 150.",
             range=(10, 1000),
             default_value=150,
             required=False,
@@ -126,10 +119,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_LIKED_TRACKS_MAX_TRACKS,
             type=ConfigEntryType.INTEGER,
-            label="Liked Tracks maximum tracks",
-            description="Maximum number of tracks to show in Liked Tracks virtual playlist. "
-            "Higher values may significantly increase load time. "
-            "Lower values load faster. Default: 500.",
             range=(50, 2000),
             default_value=500,
             required=False,
@@ -139,13 +128,9 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_TRANSPORT,
             type=ConfigEntryType.STRING,
-            label="Streaming transport",
-            description="Transport mode for audio streaming. "
-            "'raw' — direct unencrypted stream (default). "
-            "'encraw' — AES-CTR encrypted stream (fallback).",
             options=[
-                ConfigValueOption("Raw (unencrypted)", TRANSPORT_RAW),
-                ConfigValueOption("Encrypted (AES-CTR)", TRANSPORT_ENCRAW),
+                ConfigValueOption(TRANSPORT_RAW),
+                ConfigValueOption(TRANSPORT_ENCRAW),
             ],
             default_value=TRANSPORT_RAW,
             required=False,
@@ -155,9 +140,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_CODECS,
             type=ConfigEntryType.STRING,
-            label="Codecs override",
-            description="Comma-separated codec list to override quality-based defaults. "
-            "Leave empty to use defaults. Example: 'flac-mp4,flac,aac-mp4,aac,mp3'.",
             default_value="",
             required=False,
             advanced=True,
@@ -166,10 +148,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_BASE_URL,
             type=ConfigEntryType.STRING,
-            label="API Base URL",
-            description="API endpoint base URL. "
-            "Only change if KION Music changes their API endpoint. "
-            f"Default: {DEFAULT_BASE_URL}",
+            translation_params=[DEFAULT_BASE_URL],
             default_value=DEFAULT_BASE_URL,
             required=False,
             advanced=True,

@@ -6,7 +6,7 @@ import asyncio
 import datetime
 import random
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.media_items import (
@@ -18,22 +18,32 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import CONF_USERNAME
+from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.providers.lastfm_recommendations.constants import (
     CACHE_CATEGORY_RESOLVED_ITEMS,
+    CACHE_CATEGORY_TOP_GENRES,
     CACHE_EXPIRATION_SECONDS,
     CONF_ENABLE_GENRE,
     CONF_ENABLE_GEO,
     CONF_ENABLE_GLOBAL_CHARTS,
     CONF_ENABLE_PERSONALIZED,
     CONF_GEO_COUNTRY,
+    GENRE_ARTISTS_LIMIT,
+    GENRE_ARTISTS_PERIOD,
+    LIBRARY_MATCH_SCAN_LIMIT,
+    RECENT_TRACKS_SCAN_LIMIT,
     RESOLUTION_BUFFER_LARGE,
     RESOLUTION_BUFFER_SMALL,
     SIMILAR_ITEMS_BUFFER,
     SIMILAR_ITEMS_PER_SEED,
+    SIMILAR_TRACKS_BUFFER,
+    TAGS_PER_ARTIST,
     TARGET_ITEM_COUNT,
     TOP_ARTISTS_LIMIT,
+    TOP_GENRES_CACHE_EXPIRATION_SECONDS,
+    TOP_GENRES_LIMIT,
     TOP_ITEMS_TO_TAKE,
-    TOP_TAGS_LIMIT,
     TOP_TRACKS_LIMIT,
 )
 from music_assistant.providers.lastfm_recommendations.parsers import (
@@ -43,7 +53,11 @@ from music_assistant.providers.lastfm_recommendations.parsers import (
 )
 
 if TYPE_CHECKING:
+    import logging
+
     from music_assistant.providers.lastfm_recommendations import LastFMRecommendationsProvider
+
+_MediaItemT = TypeVar("_MediaItemT", Artist, Album, Track)
 
 
 class LastFMRecommendationManager:
@@ -57,11 +71,15 @@ class LastFMRecommendationManager:
         """
         self.provider = provider
         self.api = provider.api
-        self.logger = provider.logger
         self.mass = provider.mass
 
         # Resolved items keyed by MBID (preferred) or name to avoid re-resolving.
         self._resolved_cache: dict[str, Artist | Album | Track] = {}
+
+    @property
+    def logger(self) -> logging.Logger:
+        """Return the provider's active logger."""
+        return self.provider.logger
 
     async def clear_cache(self) -> None:
         """Clear in-memory and persistent recommendation caches."""
@@ -69,6 +87,10 @@ class LastFMRecommendationManager:
 
         await self.mass.cache.clear(
             category_filter=CACHE_CATEGORY_RESOLVED_ITEMS,
+            provider_filter=self.provider.instance_id,
+        )
+        await self.mass.cache.clear(
+            category_filter=CACHE_CATEGORY_TOP_GENRES,
             provider_filter=self.provider.instance_id,
         )
 
@@ -137,21 +159,36 @@ class LastFMRecommendationManager:
                     self.logger.debug("Filtered track '%s' (MBID match: %s)", name, mbid)
                     return True
 
+        # Library search is fuzzy and always returns a best-effort row, so verify the hit's
+        # name actually matches before treating the item as owned. Lenient (strict=False) so
+        # tagging variants still count, erring towards filtering over showing owned items.
         if media_type == MediaType.ARTIST:
             if name:
-                artist_results = await self.mass.music.artists.library_items(search=name, limit=1)
-                if artist_results:
+                artist_results = await self.mass.music.artists.library_items(
+                    search=name, limit=LIBRARY_MATCH_SCAN_LIMIT
+                )
+                artist_match = next(
+                    (a for a in artist_results if compare_strings(name, a.name, strict=False)),
+                    None,
+                )
+                if artist_match:
                     self.logger.debug(
-                        "Filtered artist '%s' (name match: '%s')", name, artist_results[0].name
+                        "Filtered artist '%s' (name match: '%s')", name, artist_match.name
                     )
                     return True
 
         elif media_type == MediaType.ALBUM:
             if name:
-                album_results = await self.mass.music.albums.library_items(search=name, limit=1)
-                if album_results:
+                album_results = await self.mass.music.albums.library_items(
+                    search=name, limit=LIBRARY_MATCH_SCAN_LIMIT
+                )
+                album_match = next(
+                    (a for a in album_results if compare_strings(name, a.name, strict=False)),
+                    None,
+                )
+                if album_match:
                     self.logger.debug(
-                        "Filtered album '%s' (name match: '%s')", name, album_results[0].name
+                        "Filtered album '%s' (name match: '%s')", name, album_match.name
                     )
                     return True
 
@@ -161,26 +198,57 @@ class LastFMRecommendationManager:
                 artist_info if isinstance(artist_info, str) else artist_info.get("name", "")
             )
             if name and artist_name:
-                search_query = f"{artist_name} {name}"
+                # Last.fm track names carry scrobbled version suffixes ("- 2006 Remaster");
+                # strip those so variants of an owned track still match
+                clean_name, _ = parse_title_and_version(name, strip_for_search=True)
+                # "Artist - Title" format so the tracks controller searches both fields
+                search_query = f"{artist_name} - {clean_name}"
                 track_results = await self.mass.music.tracks.library_items(
-                    search=search_query, limit=1
+                    search=search_query, limit=LIBRARY_MATCH_SCAN_LIMIT
                 )
-                if track_results:
+                # Match both title and artist; a title-only check would treat a same-named
+                # track by a different artist as owned. Differing recording MBIDs identify
+                # genuinely different tracks, so those never count as a match.
+                track_match = next(
+                    (
+                        track
+                        for track in track_results
+                        if compare_strings(clean_name, track.name, strict=False)
+                        and any(
+                            compare_strings(artist_name, track_artist.name, strict=False)
+                            for track_artist in track.artists
+                        )
+                        and not (mbid and track.mbid and track.mbid != mbid)
+                    ),
+                    None,
+                )
+                if track_match:
                     self.logger.debug(
                         "Filtered track '%s - %s' (name match: '%s')",
                         artist_name,
                         name,
-                        track_results[0].name,
+                        track_match.name,
                     )
                     return True
 
         return False
 
+    @staticmethod
+    def _exclude_owned(items: list[_MediaItemT]) -> list[_MediaItemT]:
+        """
+        Drop items that resolved to the user's own library copy from a discovery row.
+
+        :param items: Resolved discovery items to filter.
+        """
+        # Resolution returns the library copy when a recommendation matches on ISRC/MBID,
+        # which the cheaper pre-filter can miss; exclude those so Discover rows stay discovery.
+        return [item for item in items if item.provider != "library"]
+
     def _sample_items(
         self, items: list[dict[str, Any]], seed_suffix: str, target_count: int = TARGET_ITEM_COUNT
     ) -> list[dict[str, Any]]:
         """
-        Sample items using a 'top N + random remainder' strategy with a daily seed.
+        Sample items using a 'top N + random remainder' strategy with an hourly seed.
 
         :param items: List of items to sample from (already filtered).
         :param seed_suffix: Unique suffix for random seed (to vary between recommendation types).
@@ -194,8 +262,9 @@ class LastFMRecommendationManager:
         remaining = items[TOP_ITEMS_TO_TAKE:]
         random_count = target_count - TOP_ITEMS_TO_TAKE
 
-        # Daily seed keeps recommendations stable within the day and rotates them overnight.
-        seed = f"{datetime.datetime.now(tz=datetime.UTC).date().isoformat()}_{seed_suffix}"
+        # Hourly seed keeps the sampled remainder stable within the hour and rotates it each hour.
+        now = datetime.datetime.now(tz=datetime.UTC)
+        seed = f"{now.date().isoformat()}_{now.hour}_{seed_suffix}"
         rng = random.Random(seed)
         random_items = rng.sample(remaining, min(random_count, len(remaining)))
 
@@ -336,12 +405,7 @@ class LastFMRecommendationManager:
         if not self.provider.config.get_value(CONF_ENABLE_PERSONALIZED):
             return
 
-        # TODO: evaluate recent play history (e.g. last_played, last 7 days) instead of all-time
-        # play_count, possibly weighted. Needs user feedback.
-
-        top_artists = await self.mass.music.artists.library_items(
-            limit=TOP_ARTISTS_LIMIT, order_by="play_count_desc"
-        )
+        top_artists = await self._get_top_artists_by_track_plays()
 
         if top_artists:
             similar_artists = await self._get_similar_artists_from_seeds(top_artists)
@@ -350,6 +414,7 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_similar_artists",
                     name="Discover Similar Artists",
+                    translation_key="discover_similar_artists",
                     provider=self.provider.instance_id,
                     items=UniqueList(similar_artists[:TARGET_ITEM_COUNT]),
                     subtitle=f"Based on your top {len(top_artists)} artists",
@@ -359,6 +424,9 @@ class LastFMRecommendationManager:
         top_tracks = await self.mass.music.tracks.library_items(
             limit=TOP_TRACKS_LIMIT, order_by="play_count_desc"
         )
+        # only seed from tracks actually played, so a new library of unplayed tracks
+        # doesn't produce a row from arbitrary zero-play seeds
+        top_tracks = [track for track in top_tracks if track.last_played]
 
         if top_tracks:
             similar_tracks = await self._get_similar_tracks_from_seeds(top_tracks)
@@ -367,6 +435,7 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_similar_tracks",
                     name="Discover Similar Tracks",
+                    translation_key="discover_similar_tracks",
                     provider=self.provider.instance_id,
                     items=UniqueList(similar_tracks[:TARGET_ITEM_COUNT]),
                     subtitle=f"Based on your top {len(top_tracks)} tracks",
@@ -391,6 +460,7 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_chart_top_artists",
                     name="Global Top Artists",
+                    translation_key="global_top_artists",
                     provider=self.provider.instance_id,
                     items=UniqueList(top_artists),
                     subtitle="Most popular artists worldwide",
@@ -409,6 +479,7 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_chart_top_tracks",
                     name="Global Top Tracks",
+                    translation_key="global_top_tracks",
                     provider=self.provider.instance_id,
                     items=UniqueList(top_tracks),
                     subtitle="Most popular tracks worldwide",
@@ -417,24 +488,20 @@ class LastFMRecommendationManager:
 
     async def _get_genre_based_recommendations(self) -> AsyncIterator[RecommendationFolder]:
         """
-        Yield genre-based recommendation folders derived from the user's top Last.fm tag.
+        Yield genre-based recommendation folders derived from the user's top genres.
 
         Requires a username to be configured.
         """
         if not self.provider.config.get_value(CONF_ENABLE_GENRE):
             return
 
-        username = self.provider.config.get_value(CONF_USERNAME)
-        if not username or not isinstance(username, str):
+        top_genres = await self._get_top_genres()
+        if not top_genres:
             return
 
-        top_tags = await self.api.get_user_top_tags(username, limit=TOP_TAGS_LIMIT)
-        if not top_tags:
-            return
-
-        tag_name = top_tags[0].get("name")
-        if not tag_name:
-            return
+        # cycle through the user's top genres day by day so the genre rows vary
+        day_index = datetime.datetime.now(tz=datetime.UTC).date().toordinal()
+        tag_name = top_genres[day_index % len(top_genres)]
 
         # Over-fetch so there's enough left after library filtering and resolution failures.
         genre_artists_raw = await self.api.get_tag_top_artists(
@@ -442,7 +509,7 @@ class LastFMRecommendationManager:
         )
         if genre_artists_raw:
             # Drop items already in the library using a cheap DB lookup, before the
-            # expensive MusicBrainz + provider resolution step.
+            # expensive provider resolution step.
             non_library_artists_raw = [
                 artist_data
                 for artist_data in genre_artists_raw
@@ -458,7 +525,7 @@ class LastFMRecommendationManager:
             resolved_artists = await asyncio.gather(
                 *[self.get_or_resolve_artist(artist_data) for artist_data in sampled_artists_raw]
             )
-            all_resolved = [a for a in resolved_artists if a is not None]
+            all_resolved = self._exclude_owned([a for a in resolved_artists if a is not None])
             genre_artists = list(UniqueList(all_resolved))[:TARGET_ITEM_COUNT]
 
             if genre_artists:
@@ -467,7 +534,7 @@ class LastFMRecommendationManager:
                     name=f"Discover {tag_name.title()} Artists",
                     provider=self.provider.instance_id,
                     items=UniqueList(genre_artists),
-                    subtitle="Top artists in your most played genre",
+                    subtitle="Top artists in your top genres",
                     icon="mdi-account-music",
                 )
 
@@ -490,7 +557,9 @@ class LastFMRecommendationManager:
             resolved_albums = await asyncio.gather(
                 *[self._get_or_resolve_album(album_data) for album_data in sampled_albums_raw]
             )
-            all_resolved_albums = [album for album in resolved_albums if album is not None]
+            all_resolved_albums = self._exclude_owned(
+                [album for album in resolved_albums if album is not None]
+            )
             genre_albums = list(UniqueList(all_resolved_albums))[:TARGET_ITEM_COUNT]
 
             if genre_albums:
@@ -499,7 +568,7 @@ class LastFMRecommendationManager:
                     name=f"Discover {tag_name.title()} Albums",
                     provider=self.provider.instance_id,
                     items=UniqueList(genre_albums),
-                    subtitle="Top albums in your most played genre",
+                    subtitle="Top albums in your top genres",
                     icon="mdi-album",
                 )
 
@@ -522,7 +591,9 @@ class LastFMRecommendationManager:
             resolved_tracks = await asyncio.gather(
                 *[self.get_or_resolve_track(track_data) for track_data in sampled_tracks_raw]
             )
-            all_resolved_genre_tracks = [track for track in resolved_tracks if track is not None]
+            all_resolved_genre_tracks = self._exclude_owned(
+                [track for track in resolved_tracks if track is not None]
+            )
             genre_tracks = list(UniqueList(all_resolved_genre_tracks))[:TARGET_ITEM_COUNT]
 
             if genre_tracks:
@@ -531,9 +602,76 @@ class LastFMRecommendationManager:
                     name=f"Discover {tag_name.title()} Tracks",
                     provider=self.provider.instance_id,
                     items=UniqueList(genre_tracks),
-                    subtitle="Top tracks in your most played genre",
+                    subtitle="Top tracks in your top genres",
                     icon="mdi-music",
                 )
+
+    async def _get_top_genres(self) -> list[str]:
+        """Return the user's top genres, most prominent first, derived from their listening."""
+        username = self.provider.config.get_value(CONF_USERNAME)
+        if not username or not isinstance(username, str):
+            return []
+
+        # Deriving genres costs a request per top artist, so cache the result.
+        cached = await self.mass.cache.get(
+            key="top_genres",
+            category=CACHE_CATEGORY_TOP_GENRES,
+            provider=self.provider.instance_id,
+        )
+        if isinstance(cached, list):
+            return cached
+
+        top_artists = await self.api.get_user_top_artists(
+            username, period=GENRE_ARTISTS_PERIOD, limit=GENRE_ARTISTS_LIMIT
+        )
+        if not top_artists:
+            return []
+
+        # Last.fm has no genre data, so an artist's top community tags stand in for its genre.
+        # The user's genres are those tags aggregated across their most played artists, weighted
+        # by how much they play each (playcount) and how strongly each tag applies (count 0-100).
+        tag_lists = await asyncio.gather(
+            *[
+                self.api.get_artist_top_tags(
+                    artist.get("name", ""), artist.get("mbid"), limit=TAGS_PER_ARTIST
+                )
+                for artist in top_artists
+            ]
+        )
+
+        scores: dict[str, float] = {}
+        display_names: dict[str, str] = {}
+        for artist, tags in zip(top_artists, tag_lists, strict=True):
+            try:
+                artist_weight = float(artist.get("playcount", 0))
+            except TypeError, ValueError:
+                continue
+            if artist_weight <= 0:
+                continue
+            for tag in tags:
+                name = tag.get("name", "")
+                if not name:
+                    continue
+                try:
+                    tag_count = float(tag.get("count", 0))
+                except TypeError, ValueError:
+                    continue
+                key = name.lower()
+                scores[key] = scores.get(key, 0.0) + artist_weight * tag_count / 100
+                display_names.setdefault(key, name)
+
+        ranked = sorted(scores, key=lambda key: scores[key], reverse=True)
+        top_genres = [display_names[key] for key in ranked[:TOP_GENRES_LIMIT]]
+
+        if top_genres:
+            await self.mass.cache.set(
+                "top_genres",
+                top_genres,
+                category=CACHE_CATEGORY_TOP_GENRES,
+                provider=self.provider.instance_id,
+                expiration=TOP_GENRES_CACHE_EXPIRATION_SECONDS,
+            )
+        return top_genres
 
     async def _get_geo_based_recommendations(self) -> AsyncIterator[RecommendationFolder]:
         """Yield geography-based recommendation folders for the configured country."""
@@ -579,6 +717,34 @@ class LastFMRecommendationManager:
                     subtitle=f"Most popular tracks in {country}",
                     icon="mdi-earth",
                 )
+
+    async def _get_top_artists_by_track_plays(self) -> list[Artist]:
+        """
+        Return the user's most listened library artists to seed recommendations.
+
+        :return: Up to TOP_ARTISTS_LIMIT artists, most listened first.
+        """
+        # Artist play_count only increments when an artist is played as a unit, so rank by
+        # appearances across the user's most recently played tracks instead. Ordering happens
+        # in the DB; ties fall to the more recently played artist via insertion order.
+        recent_tracks = await self.mass.music.tracks.library_items(
+            limit=RECENT_TRACKS_SCAN_LIMIT, order_by="last_played_desc"
+        )
+        counts: dict[str | int, int] = {}
+        for track in recent_tracks:
+            if not track.last_played:
+                continue
+            for artist in track.artists:
+                counts[artist.item_id] = counts.get(artist.item_id, 0) + 1
+
+        top_artist_ids = sorted(counts, key=lambda item_id: counts[item_id], reverse=True)[
+            :TOP_ARTISTS_LIMIT
+        ]
+        resolved = await asyncio.gather(
+            *[self.mass.music.artists.get_library_item(item_id) for item_id in top_artist_ids],
+            return_exceptions=True,
+        )
+        return [artist for artist in resolved if isinstance(artist, Artist)]
 
     async def _get_similar_artists_from_seeds(self, seed_artists: list[Artist]) -> list[Artist]:
         """
@@ -642,7 +808,7 @@ class LastFMRecommendationManager:
                 for artist_data in unique_similar[:SIMILAR_ITEMS_BUFFER]
             ]
         )
-        return [artist for artist in resolved_artists if artist is not None]
+        return self._exclude_owned([artist for artist in resolved_artists if artist is not None])
 
     async def _get_similar_tracks_from_seeds(self, seed_tracks: list[Track]) -> list[Track]:
         """
@@ -711,10 +877,11 @@ class LastFMRecommendationManager:
 
         unique_similar.sort(key=lambda x: float(x.get("match", 0)), reverse=True)
 
-        # Only resolve ISRCs for the top results to avoid unnecessary MusicBrainz lookups.
-        top_tracks_data = unique_similar[:TARGET_ITEM_COUNT]
+        # Resolve a small buffer beyond the target so resolution failures and owned-copy
+        # exclusion still leave enough to fill the row, while capping provider searches.
+        top_tracks_data = unique_similar[:SIMILAR_TRACKS_BUFFER]
 
         resolved_tracks = await asyncio.gather(
             *[self.get_or_resolve_track(track_data) for track_data in top_tracks_data]
         )
-        return [track for track in resolved_tracks if track is not None]
+        return self._exclude_owned([track for track in resolved_tracks if track is not None])

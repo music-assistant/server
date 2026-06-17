@@ -79,27 +79,6 @@ class GenreController(MediaControllerBase[Genre]):
         super().__init__(mass)
         self._last_scan_time: float = 0
         self._last_scan_mapped: int = 0
-        # Use a derived table to filter out globally excluded genres so all queries
-        # built by the base class (which appends its own WHERE) stay valid SQL.
-        self.base_query = f"""
-        SELECT
-            {DB_TABLE_GENRES}.*,
-            (SELECT JSON_GROUP_ARRAY(
-                json_object(
-                    'item_id', provider_mappings.provider_item_id,
-                    'provider_domain', provider_mappings.provider_domain,
-                    'provider_instance', provider_mappings.provider_instance,
-                    'available', provider_mappings.available,
-                    'audio_format', json(provider_mappings.audio_format),
-                    'url', provider_mappings.url,
-                    'details', provider_mappings.details,
-                    'in_library', provider_mappings.in_library,
-                    'is_unique', provider_mappings.is_unique
-                )) FROM provider_mappings
-                WHERE provider_mappings.item_id = {DB_TABLE_GENRES}.item_id
-                AND provider_mappings.media_type = '{MediaType.GENRE.value}'
-            ) AS provider_mappings
-        FROM (SELECT * FROM {DB_TABLE_GENRES} WHERE is_excluded = 0) AS {DB_TABLE_GENRES}"""
 
         # register extra api handlers
         self.mass.register_api_command(
@@ -187,6 +166,32 @@ class GenreController(MediaControllerBase[Genre]):
 
         # Run genre mapping scanner after library sync completes
         self.mass.subscribe(self._on_music_sync_completed, EventType.MUSIC_SYNC_COMPLETED)
+
+    @property
+    def base_query(self) -> tuple[str, dict[str, Any]]:
+        """Return the base SELECT query for genres and its bound query params."""
+        # Use a derived table to filter out globally excluded genres so all queries
+        # built by the base class (which appends its own WHERE) stay valid SQL.
+        query = f"""
+        SELECT
+            {DB_TABLE_GENRES}.*,
+            (SELECT JSON_GROUP_ARRAY(
+                json_object(
+                    'item_id', provider_mappings.provider_item_id,
+                    'provider_domain', provider_mappings.provider_domain,
+                    'provider_instance', provider_mappings.provider_instance,
+                    'available', provider_mappings.available,
+                    'audio_format', json(provider_mappings.audio_format),
+                    'url', provider_mappings.url,
+                    'details', provider_mappings.details,
+                    'in_library', provider_mappings.in_library,
+                    'is_unique', provider_mappings.is_unique
+                )) FROM provider_mappings
+                WHERE provider_mappings.item_id = {DB_TABLE_GENRES}.item_id
+                AND provider_mappings.media_type = '{MediaType.GENRE.value}'
+            ) AS provider_mappings
+        FROM (SELECT * FROM {DB_TABLE_GENRES} WHERE is_excluded = 0) AS {DB_TABLE_GENRES}"""
+        return query, {}
 
     @staticmethod
     def _get_genre_icon_metadata(translation_key: str | None) -> MediaItemMetadata | None:
@@ -376,7 +381,7 @@ class GenreController(MediaControllerBase[Genre]):
             extra_parts.append(
                 f"EXISTS(SELECT 1 FROM {gm} gm WHERE gm.genre_id = {self.db_table}.item_id)"
             )
-        return await self.get_library_items_by_query(
+        items = await self.get_library_items_by_query(
             favorite=favorite,
             search=search,
             limit=limit,
@@ -385,6 +390,19 @@ class GenreController(MediaControllerBase[Genre]):
             extra_query_params=extra_params,
             extra_query_parts=extra_parts,
         )
+        if kwargs.get("_localized_fallback", True) and search and not items:
+            # retry with the canonical name behind a localized query, so genres are findable
+            # by the name shown in the user's language (see _localized_search_fallback)
+            return await self._localized_search_fallback(
+                search,
+                limit=limit,
+                offset=offset,
+                favorite=favorite,
+                order_by=order_by,
+                hide_empty=hide_empty,
+                media_type=media_type,
+            )
+        return items
 
     async def radio_mode_base_tracks(
         self,
@@ -491,7 +509,7 @@ class GenreController(MediaControllerBase[Genre]):
         """
         try:
             media_id_int = int(media_id)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return []
         gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
         query = (
@@ -518,7 +536,7 @@ class GenreController(MediaControllerBase[Genre]):
         """
         try:
             media_id_int = int(media_id)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return []
         excl = DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION
         query = (
@@ -543,7 +561,7 @@ class GenreController(MediaControllerBase[Genre]):
         """
         try:
             media_id_int = int(media_id)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return False
         row = await self.mass.music.database.get_row(
             DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
@@ -573,18 +591,18 @@ class GenreController(MediaControllerBase[Genre]):
         item = await self.get(item_id, provider)
         db_id = int(item.item_id)
         gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
-        media_rows: list[tuple[MediaType, str]] = [
-            (MediaType.ARTIST, "Artists"),
-            (MediaType.ALBUM, "Albums"),
-            (MediaType.TRACK, "Tracks"),
-            (MediaType.PLAYLIST, "Playlists"),
-            (MediaType.RADIO, "Radio"),
-            (MediaType.PODCAST, "Podcasts"),
-            (MediaType.AUDIOBOOK, "Audiobooks"),
+        media_rows: list[tuple[MediaType, str, str]] = [
+            (MediaType.ARTIST, "Artists", "artists"),
+            (MediaType.ALBUM, "Albums", "albums"),
+            (MediaType.TRACK, "Tracks", "tracks"),
+            (MediaType.PLAYLIST, "Playlists", "playlists"),
+            (MediaType.RADIO, "Radio", "radios"),
+            (MediaType.PODCAST, "Podcasts", "podcasts"),
+            (MediaType.AUDIOBOOK, "Audiobooks", "audiobooks"),
         ]
 
         async def _fetch_media_type(
-            media_type: MediaType, title: str
+            media_type: MediaType, title: str, translation_key: str
         ) -> RecommendationFolder | None:
             ctrl = self.mass.music.get_controller(media_type)
             query = (
@@ -606,11 +624,14 @@ class GenreController(MediaControllerBase[Genre]):
             return RecommendationFolder(
                 item_id=f"genre_{media_type.value}",
                 name=title,
+                translation_key=translation_key,
                 provider="library",
                 items=UniqueList(items[:limit]),
             )
 
-        results = await asyncio.gather(*[_fetch_media_type(mt, title) for mt, title in media_rows])
+        results = await asyncio.gather(
+            *[_fetch_media_type(mt, title, key) for mt, title, key in media_rows]
+        )
         return [r for r in results if r is not None]
 
     async def get_genre_media_counts(self, genre_ids: list[str]) -> dict[str, dict[str, int]]:

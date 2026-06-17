@@ -1,0 +1,100 @@
+{
+  "manifest": {
+    "name": "Player Queues",
+    "description": "Configuration of the core player queue management module"
+  },
+  "config_entries": {
+    "default_enqueue_select_artist": {
+      "label": "Items to select when you play a (in-library) artist.",
+      "options": {
+        "top_tracks": "Artist top tracks only",
+        "library_tracks": "In-library tracks for the artist only",
+        "prefer_library": "Prefer library, fall back to top",
+        "all_tracks": "All tracks from all providers"
+      }
+    },
+    "default_enqueue_select_album": {
+      "label": "Items to select when you play a (in-library) album.",
+      "options": {
+        "library_tracks": "Only in-library tracks",
+        "all_tracks": "All tracks for album on (streaming) provider"
+      }
+    },
+    "default_enqueue_option_artist": {
+      "label": "Default enqueue option for Artist item(s).",
+      "description": "Define the default enqueue action for this mediatype.",
+      "options": {
+        "play": "Play (and keep queue)",
+        "replace": "Play (and replace queue)"
+      }
+    },
+    "default_enqueue_option_album": {
+      "label": "Default enqueue option for Album item(s).",
+      "description": "Define the default enqueue action for this mediatype.",
+      "options": {
+        "play": "Play (and keep queue)",
+        "replace": "Play (and replace queue)"
+      }
+    },
+    "default_enqueue_option_track": {
+      "label": "Default enqueue option for Track item(s).",
+      "description": "Define the default enqueue action for this mediatype.",
+      "options": {
+        "play": "Play (and keep queue)",
+        "replace": "Play (and replace queue)"
+      }
+    },
+    "default_enqueue_option_genre": {
+      "label": "Default enqueue option for Genre item(s).",
+      "description": "Define the default enqueue action for this mediatype.",
+      "options": {
+        "play": "Play (and keep queue)",
+        "replace": "Play (and replace queue)"
+      }
+    },
+    "default_enqueue_option_live_sources": {
+      "label": "Default enqueue option for Radio and Live Input item(s).",
+      "description": "Default enqueue action for live, infinite streams — radio stations and plugin AudioSources (Spotify Connect, AirPlay receiver, etc.).",
+      "options": {
+        "play": "Play (and keep queue)",
+        "replace": "Play (and replace queue)"
+      }
+    },
+    "default_enqueue_option_playlist": {
+      "label": "Default enqueue option for Playlist item(s).",
+      "description": "Define the default enqueue action for this mediatype.",
+      "options": {
+        "play": "Play (and keep queue)",
+        "replace": "Play (and replace queue)"
+      }
+    },
+    "default_enqueue_option_audiobook": {
+      "label": "Default enqueue option for Audiobook item(s).",
+      "options": {
+        "play": "Play (and keep queue)",
+        "replace": "Play (and replace queue)"
+      }
+    },
+    "default_enqueue_option_podcast": {
+      "label": "Default enqueue option for Podcast item(s).",
+      "options": {
+        "play": "Play (and keep queue)",
+        "replace": "Play (and replace queue)"
+      }
+    },
+    "default_enqueue_option_podcast_episode": {
+      "label": "Default enqueue option for Podcast-episode item(s).",
+      "options": {
+        "play": "Play (and keep queue)",
+        "replace": "Play (and replace queue)"
+      }
+    },
+    "default_enqueue_option_folder": {
+      "label": "Default enqueue option for Folder item(s).",
+      "options": {
+        "play": "Play (and keep queue)",
+        "replace": "Play (and replace queue)"
+      }
+    }
+  }
+}

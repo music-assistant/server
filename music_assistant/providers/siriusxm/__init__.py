@@ -31,6 +31,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from tenacity import RetryError
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.util import select_free_port
 from music_assistant.helpers.webserver import Webserver
@@ -80,16 +81,15 @@ async def get_config_entries(
     """
     # ruff: noqa: ARG001
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=CONF_SXM_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Username",
             required=True,
         ),
         ConfigEntry(
             key=CONF_SXM_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=True,
         ),
         ConfigEntry(
@@ -97,10 +97,9 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             default_value="US",
             options=[
-                ConfigValueOption(title="United States", value="US"),
-                ConfigValueOption(title="Canada", value="CA"),
+                ConfigValueOption("US"),
+                ConfigValueOption("CA"),
             ],
-            label="Region",
             required=True,
         ),
     )
@@ -202,7 +201,7 @@ class SiriusXMProvider(MusicProvider):
         """
         return True
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
         for channel in self._channels_by_id.values():
             if channel.is_favorite:

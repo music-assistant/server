@@ -8,6 +8,7 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import InvalidDataError, LoginFailed
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
 
 from .constants import (
@@ -137,6 +138,7 @@ async def get_config_entries(
         )
 
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         # Global authentication section
         ConfigEntry(
             key="label_text",
@@ -155,8 +157,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ACTION_AUTH,
             type=ConfigEntryType.ACTION,
-            label="Authenticate with Spotify",
-            description="This button will redirect you to Spotify to authenticate.",
             action=CONF_ACTION_AUTH,
             # Show only when not authenticated
             hidden=global_authenticated,
@@ -164,10 +164,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ACTION_CLEAR_AUTH,
             type=ConfigEntryType.ACTION,
-            label="Clear authentication",
-            description="Clear the current authentication details.",
             action=CONF_ACTION_CLEAR_AUTH,
-            action_label="Clear authentication",
             required=False,
             # Show only when authenticated
             hidden=not global_authenticated,
@@ -184,11 +181,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_CLIENT_ID,
             type=ConfigEntryType.SECURE_STRING,
-            label="Client ID (optional)",
-            description="Enter your own Spotify Developer Client ID to speed up performance "
-            "by avoiding global rate limits. Some features like recommendations and similar "
-            "tracks will continue to use the global session due to Spotify API restrictions.\n\n"
-            f"Use {CALLBACK_REDIRECT_URL} as callback URL in your Spotify Developer app.",
+            translation_params=[CALLBACK_REDIRECT_URL],
             required=False,
             default_value="",
             value=values.get(CONF_CLIENT_ID, "") if values else "",
@@ -208,8 +201,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ACTION_AUTH_DEV,
             type=ConfigEntryType.ACTION,
-            label="Authenticate Developer Session",
-            description="Authenticate with your custom Client ID.",
             action=CONF_ACTION_AUTH_DEV,
             category="Developer Token",
             # Show only when global is authenticated and dev is NOT authenticated
@@ -219,10 +210,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ACTION_CLEAR_AUTH_DEV,
             type=ConfigEntryType.ACTION,
-            label="Clear Developer Authentication",
-            description="Clear the developer session authentication and client ID.",
             action=CONF_ACTION_CLEAR_AUTH_DEV,
-            action_label="Clear developer authentication",
             required=False,
             category="Developer Token",
             # Show when dev token is set
@@ -232,11 +220,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_SYNC_PODCAST_PROGRESS,
             type=ConfigEntryType.BOOLEAN,
-            label="Sync Podcast Progress from Spotify",
-            description="Automatically sync episode played status from Spotify to Music Assistant. "
-            "Episodes marked as played in Spotify will be marked as played in MA."
-            "Only enable this if you use both the Spotify app and Music Assistant "
-            "for podcast playback.",
             default_value=False,
             value=values.get(CONF_SYNC_PODCAST_PROGRESS, True) if values else True,
             category="sync_options",
@@ -245,11 +228,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_SYNC_AUDIOBOOK_PROGRESS,
             type=ConfigEntryType.BOOLEAN,
-            label="Sync Audiobook Progress from Spotify",
-            description="Automatically sync audiobook progress from Spotify to Music Assistant. "
-            "Progress from Spotify app will sync to MA when audiobooks are accessed. "
-            "Only enable this if you use both the Spotify app and Music Assistant "
-            "for audiobook playback.",
             default_value=False,
             value=values.get(CONF_SYNC_AUDIOBOOK_PROGRESS, False) if values else False,
             category="sync_options",

@@ -119,6 +119,10 @@ def mock_mass(mock_user: MagicMock) -> MagicMock:
     mass.webserver.auth.authenticate_with_token = AsyncMock(return_value=mock_user)
     mass.webserver.register_dynamic_route = MagicMock(return_value=lambda: None)
 
+    # No catalog in the mock: translation resolution returns None so callers (e.g. the MCP
+    # config dump) fall back to the in-code label/description or the entry key.
+    mass.translations.get_translation = MagicMock(return_value=None)
+
     mass.music = MagicMock()
     mass.music.search = AsyncMock()
     mass.music.recently_added_tracks = AsyncMock(return_value=[])

@@ -13,7 +13,7 @@ from io import StringIO
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, unquote, urlparse
 
-from aiohttp import ClientConnectorError
+from aiohttp import ClientError
 from duration_parser import parse as parse_str_duration
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
@@ -53,7 +53,11 @@ from ytmusicapi.constants import SUPPORTED_LANGUAGES
 from ytmusicapi.exceptions import YTMusicServerError
 from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
 
-from music_assistant.constants import CONF_USERNAME, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    CONF_ENTRY_UNOFFICIAL_PROVIDER,
+    CONF_USERNAME,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.util import infer_album_type, install_package, parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
@@ -167,27 +171,18 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     return (
-        ConfigEntry(
-            key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
-        ),
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
+        ConfigEntry(key=CONF_USERNAME, type=ConfigEntryType.STRING, required=True),
         ConfigEntry(
             key=CONF_COOKIE,
             type=ConfigEntryType.SECURE_STRING,
-            label="Login Cookie",
             required=True,
-            description="The Login cookie you grabbed from an existing session, "
-            "see the documentation.",
         ),
         ConfigEntry(
             key=CONF_PO_TOKEN_SERVER_URL,
             type=ConfigEntryType.STRING,
             default_value=DEFAULT_PO_TOKEN_SERVER_URL,
-            label="PO Token Server URL",
             required=True,
-            description="The URL to the PO Token server. "
-            "Can be left as default for most people. \n\n"
-            "**Note that this does require you to have the "
-            "'YT Music PO Token Generator' addon installed!**",
         ),
     )
 
@@ -290,7 +285,7 @@ class YoutubeMusicProvider(MusicProvider):
         parsed_results.tracks = tracks
         return parsed_results
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Youtube Music."""
         artists_obj = await get_library_artists(
             headers=self._headers, language=self.language, user=self._yt_user
@@ -298,7 +293,7 @@ class YoutubeMusicProvider(MusicProvider):
         for artist in artists_obj:
             yield self._parse_artist(artist)
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve all library albums from Youtube Music."""
         albums_obj = await get_library_albums(
             headers=self._headers, language=self.language, user=self._yt_user
@@ -306,7 +301,7 @@ class YoutubeMusicProvider(MusicProvider):
         for album in albums_obj:
             yield self._parse_album(album, album["browseId"])
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from the provider."""
         playlists_obj = await get_library_playlists(
             headers=self._headers, language=self.language, user=self._yt_user
@@ -317,7 +312,7 @@ class YoutubeMusicProvider(MusicProvider):
                 continue
             yield self._parse_playlist(playlist)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Youtube Music."""
         tracks_obj = await get_library_tracks(
             headers=self._headers, language=self.language, user=self._yt_user
@@ -331,7 +326,7 @@ class YoutubeMusicProvider(MusicProvider):
                 full_track = await self.get_track(track["videoId"])
                 yield full_track
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve the library podcasts from Youtube Music."""
         podcasts_obj = await get_library_podcasts(
             headers=self._headers, language=self.language, user=self._yt_user
@@ -502,9 +497,7 @@ class YoutubeMusicProvider(MusicProvider):
         podcast_obj = await get_podcast(prov_podcast_id, headers=self._headers)
         return self._parse_podcast(podcast_obj)
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get all episodes from a podcast."""
         podcast_obj = await get_podcast(prov_podcast_id, headers=self._headers)
         podcast_obj["podcastId"] = prov_podcast_id
@@ -720,6 +713,14 @@ class YoutubeMusicProvider(MusicProvider):
                     elif recommended_item.get("subscribers"):
                         # Probably artist
                         folder.items.append(self._parse_album(recommended_item))
+                    elif recommended_item.get("videoType") == "MUSIC_VIDEO_TYPE_PODCAST_EPISODE":
+                        # Podcast episodes show up here without a videoId/browseId,
+                        # so there is no playable item to build from them
+                        self.logger.debug(
+                            "Skipping podcast episode in recommendation folder: %s",
+                            recommended_item.get("title"),
+                        )
+                        continue
                     else:
                         self.logger.warning(
                             "Unknown item type in recommendation folder: %s", recommended_item
@@ -730,6 +731,19 @@ class YoutubeMusicProvider(MusicProvider):
 
         folders = await asyncio.to_thread(_parse_sections)
         # Also add personalized mixes if available
+        mixed_for_you_folder = await self._get_mixed_for_you_folder()
+        if mixed_for_you_folder.items:
+            folders.append(mixed_for_you_folder)
+
+        return folders
+
+    @use_cache(3600 * 24, allow_expired_cache=True)  # Cache for 24 hours
+    async def _get_mixed_for_you_folder(self) -> RecommendationFolder:
+        """
+        Build the "Mixed for you" recommendation folder from the user's personal mixes.
+
+        :return: The folder, which has no items when no personal mixes are available.
+        """
         mixed_for_you_folder = RecommendationFolder(
             name="Mixed for you",
             item_id=f"{self.instance_id}_mixed_for_you",
@@ -762,10 +776,7 @@ class YoutubeMusicProvider(MusicProvider):
         mixed_for_you_folder.items.extend(
             preview for preview in playlist_previews if preview is not None
         )
-        if mixed_for_you_folder.items:
-            folders.append(mixed_for_you_folder)
-
-        return folders
+        return mixed_for_you_folder
 
     async def _post_data(self, endpoint: str, data: dict[str, str], **kwargs: Any) -> Any:
         """Post data to the given endpoint."""
@@ -1142,7 +1153,8 @@ class YoutubeMusicProvider(MusicProvider):
                 response.raise_for_status()
                 self.logger.debug("PO Token server responded with %s", response.status)
                 return response.status == 200
-        except ClientConnectorError:
+        except (ClientError, TimeoutError) as err:
+            self.logger.debug("PO Token server ping failed: %s", err)
             return False
 
     async def _user_has_ytm_premium(self) -> bool:
