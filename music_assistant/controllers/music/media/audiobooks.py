@@ -80,6 +80,16 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                         'in_library', audiobook_pm.in_library,
                         'is_unique', audiobook_pm.is_unique
                 )) FROM provider_mappings audiobook_pm WHERE audiobook_pm.item_id = audiobooks.item_id AND audiobook_pm.media_type = 'audiobook') AS provider_mappings,
+            (SELECT JSON_GROUP_ARRAY(
+                json_object(
+                 'item_id', artists.item_id,
+                 'provider', 'library',
+                 'name', artists.name,
+                 'sort_name', artists.sort_name,
+                 'media_type', 'artist',
+                 'artist_type', artists.artist_type
+            ))
+            FROM artists JOIN audiobook_artists on audiobook_artists.audiobook_id = audiobooks.item_id WHERE artists.item_id = audiobook_artists.artist_id) AS audiobook_artists,
             playlog.fully_played AS fully_played,
             playlog.seconds_played AS seconds_played,
             playlog.seconds_played * 1000 as resume_position_ms
