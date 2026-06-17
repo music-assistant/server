@@ -287,7 +287,8 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         return matches
 
     async def match_providers(self, db_audiobook: Audiobook) -> None:
-        """Try to find match on all (streaming) providers for the provided (database) audiobook.
+        """
+        Try to find match on all (streaming) providers for the provided (database) audiobook.
 
         This is used to link objects of different providers/qualities together.
         """
