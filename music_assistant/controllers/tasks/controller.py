@@ -264,7 +264,7 @@ class TasksController(CoreController):
             id=resolved_task_id,
             name=name,
             status=TaskStatus.IDLE,
-            translation_key=translation_key,
+            translation_key=_namespaced_translation_key(translation_key),
             translation_args=translation_args or [],
             translation_owner=translation_owner,
             user_id=user_id,
@@ -316,7 +316,7 @@ class TasksController(CoreController):
         if existing := self._tasks.get(task_id):
             task_info = existing.task_info
             task_info.name = name
-            task_info.translation_key = translation_key
+            task_info.translation_key = _namespaced_translation_key(translation_key)
             task_info.translation_args = translation_args or []
             task_info.translation_owner = translation_owner
             task_info.metadata = metadata or {}
@@ -342,7 +342,7 @@ class TasksController(CoreController):
             id=task_id,
             name=name,
             status=TaskStatus.IDLE,
-            translation_key=translation_key,
+            translation_key=_namespaced_translation_key(translation_key),
             translation_args=translation_args or [],
             translation_owner=translation_owner,
             metadata=metadata or {},
@@ -803,3 +803,18 @@ class TasksController(CoreController):
         self._scheduled_task_update_at = None
         self._last_task_update_signal = self.mass.loop.time()
         self.mass.signal_event(EventType.TASKS_UPDATED, data=self.list_tasks_for_user(None))
+
+
+def _namespaced_translation_key(translation_key: str | None) -> str | None:
+    """
+    Namespace a relative task key under the shared ``background_task`` group.
+
+    Callers pass just the task key (e.g. ``database_cleanup``); the ``background_task`` group is
+    implicit for tasks and added here. An already fully-qualified key
+    (``provider.``/``core.``/``common.``) or one already in the group is returned unchanged.
+    """
+    if translation_key and not translation_key.startswith(
+        ("provider.", "core.", "common.", "background_task.")
+    ):
+        return f"background_task.{translation_key}"
+    return translation_key

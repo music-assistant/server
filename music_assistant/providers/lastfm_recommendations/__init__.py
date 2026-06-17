@@ -149,7 +149,7 @@ class LastFMRecommendationsProvider(MetadataProvider):
             name="Refresh Last.fm recommendations",
             handler=self._refresh_recommendations,
             schedule=TaskSchedule.hourly(every=6),
-            translation_key="background_task.refresh_lastfm_recommendations",
+            translation_key="refresh_lastfm_recommendations",
             translation_owner=self.translation_owner,
         )
 

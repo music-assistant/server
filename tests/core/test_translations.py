@@ -21,6 +21,7 @@ from music_assistant_models.translations import TRANSLATION_RESOLVER
 from music_assistant.controllers import translations as translations_module
 from music_assistant.controllers.config import _with_translation_owner
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.tasks.controller import _namespaced_translation_key
 from music_assistant.controllers.translations import (
     SOURCE_LANGUAGE,
     TranslationController,
@@ -65,6 +66,18 @@ def test_flatten_into() -> None:
         "provider.ytmusic.config_entries.cookie.description": "From a session.",
         "provider.ytmusic.media.mixes": "Your Mixes",
     }
+
+
+def test_namespaced_translation_key() -> None:
+    """A bare task key is namespaced under background_task; rooted/grouped keys are left as-is."""
+    assert _namespaced_translation_key("database_cleanup") == "background_task.database_cleanup"
+    assert _namespaced_translation_key(None) is None
+    # an already-grouped or fully-qualified key is returned unchanged
+    assert _namespaced_translation_key("background_task.x") == "background_task.x"
+    assert (
+        _namespaced_translation_key("core.metadata.background_task.x")
+        == "core.metadata.background_task.x"
+    )
 
 
 def test_candidate_keys_common_rewrite() -> None:
@@ -349,9 +362,10 @@ def test_recommendation_folder_localized_serialization() -> None:
 def test_provider_sync_task_localized_serialization() -> None:
     """Provider-sync BackgroundTasks resolve their name from the built catalog with the provider name.
 
-    Guards that every key returned by MusicController._get_sync_task_translation_key has a matching
-    core.music.background_task.* entry authored in strings.json, that the provider name fills the {0}
-    placeholder, and that the translation machinery is stripped from the wire under a resolver.
+    Guards that every key returned by MusicController._get_sync_task_translation_key resolves to a
+    core.music.background_task.* entry authored in strings.json (the tasks controller namespaces the
+    bare key under the background_task group), that the provider name fills the {0} placeholder, and
+    that the translation machinery is stripped from the wire under a resolver.
     """
     ctrl = _make_controller()
     ctrl._source = build_translations_source()
@@ -371,7 +385,7 @@ def test_provider_sync_task_localized_serialization() -> None:
             key = get_key(None, media_type)  # type: ignore[arg-type]
             task = BackgroundTask(
                 name=f"Sync Spotify {media_type.value}s",  # in-code English fallback
-                translation_key=key,
+                translation_key=_namespaced_translation_key(key),
                 translation_args=["Spotify"],
                 translation_owner="core.music",
             )

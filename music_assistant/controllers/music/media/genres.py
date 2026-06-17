@@ -1785,7 +1785,7 @@ class GenreController(MediaControllerBase[Genre]):
             name="Scan genre mappings",
             handler=self._scan_genre_mappings,
             schedule=desired_schedule,
-            translation_key="background_task.scan_genre_mappings",
+            translation_key="scan_genre_mappings",
             translation_owner=self.mass.music.translation_owner,
             metadata={
                 "task_domain": "genre_mapping_scan",
