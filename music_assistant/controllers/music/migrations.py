@@ -651,6 +651,17 @@ async def migrate_database(  # noqa: PLR0915
                     {"metadata": serialize_to_json(metadata)},
                 )
 
+    if prev_version <= 41:
+        # add playback_speed column to playlog (per-item speed for audiobooks/episodes)
+        try:
+            await database.execute(
+                f"ALTER TABLE {DB_TABLE_PLAYLOG} "
+                "ADD COLUMN playback_speed REAL NOT NULL DEFAULT 1.0"
+            )
+        except Exception as err:
+            if "duplicate column" not in str(err):
+                raise
+
     # save changes
     await database.commit()
 
