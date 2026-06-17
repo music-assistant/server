@@ -136,21 +136,29 @@ def _target_player_option_title(player: BosePlayerInfo) -> str:
     )
 
 
-def _target_player_detail_entries(player: BosePlayerInfo) -> tuple[ConfigEntry, ...]:
+def _target_player_detail_entries(
+    player: BosePlayerInfo,
+    player_index: int | None = None,
+) -> tuple[ConfigEntry, ...]:
     """Return read-only detail rows for the selected target player."""
     details = (
         ("Music Assistant player Id", player.player_id),
         ("MAC address", player.mac_address),
         ("Bose UUID", player.bose_uuid),
     )
+    key_prefix = (
+        f"target_player_detail_{player_index}_" if player_index else "target_player_detail_"
+    )
+    label_prefix = f"{player.name} - " if player_index else ""
+    category = "Target players" if player_index else "Target player"
 
     return tuple(
         ConfigEntry(
-            key=f"target_player_detail_{index}",
+            key=f"{key_prefix}{index}",
             type=ConfigEntryType.LABEL,
-            label=f"{label}: {_unknown_if_empty(value)}",
+            label=f"{label_prefix}{label}: {_unknown_if_empty(value)}",
             required=False,
-            category="Target player",
+            category=category,
             advanced=True,
         )
         for index, (label, value) in enumerate(details, start=1)
@@ -166,6 +174,31 @@ def _string_config_value(
     if values and isinstance(value := values.get(key), str):
         return value
     return default
+
+
+def _string_list_config_value(value: ConfigValueType, default: list[str]) -> list[str]:
+    """Return a string list config value."""
+    if not isinstance(value, list):
+        return default
+
+    string_values: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            return default
+        string_values.append(item)
+
+    return string_values
+
+
+def _target_player_ids_config_value(
+    values: dict[str, ConfigValueType] | None,
+    default: list[str],
+) -> list[str]:
+    """Return selected target player ids from config values."""
+    if not values:
+        return default
+
+    return _string_list_config_value(values.get("target_players"), default)
 
 
 def _media_type_config_value(
@@ -273,7 +306,7 @@ async def _build_preset_media_options(
 
 async def get_config_entries(
     mass: MusicAssistant,
-    instance_id: str | None = None,
+    instance_id: str | None = None,  # noqa: ARG001
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
@@ -307,16 +340,19 @@ async def get_config_entries(
         )
         for player in configurable_players
     ]
-    selected_target_player_id = _string_config_value(
-        values, "target_player", configurable_players[0].player_id
-    )
-    selected_target_player = next(
-        (
-            player
-            for player in configurable_players
-            if player.player_id == selected_target_player_id
-        ),
-        configurable_players[0],
+    configurable_player_ids = {player.player_id for player in configurable_players}
+    selected_target_player_ids = [
+        player_id
+        for player_id in _target_player_ids_config_value(values, [])
+        if player_id in configurable_player_ids
+    ]
+    selected_target_players = [
+        player for player in configurable_players if player.player_id in selected_target_player_ids
+    ]
+    target_player_detail_entries = tuple(
+        detail_entry
+        for player_index, player in enumerate(selected_target_players, start=1)
+        for detail_entry in _target_player_detail_entries(player, player_index)
     )
     preset_entries: list[ConfigEntry] = []
 
@@ -427,18 +463,18 @@ async def get_config_entries(
 
     return (
         ConfigEntry(
-            key="target_player",
+            key="target_players",
             type=ConfigEntryType.STRING,
-            label="Target player",
+            label="Target players",
             required=True,
-            default_value=player_options[0].value,
-            value=selected_target_player.player_id,
+            default_value=[],
+            value=selected_target_player_ids,
             options=player_options,
-            description="Bose SoundTouch speaker detected by Music Assistant.",
-            category="Target player",
-            immediate_apply=bool(instance_id),
+            multi_value=True,
+            description="Bose SoundTouch speakers detected by Music Assistant.",
+            category="Target players",
         ),
-        *_target_player_detail_entries(selected_target_player),
+        *target_player_detail_entries,
         *preset_entries,
     )
 
@@ -468,7 +504,7 @@ def extract_preset_id(message: str) -> int | None:
 class BoseSoundTouchFavoritesProvider(PluginProvider):
     """Listen to Bose SoundTouch favorite button events."""
 
-    _listener_task: asyncio.Task[None] | None = None
+    _listener_tasks: dict[str, asyncio.Task[None]] | None = None
     _stop_event: asyncio.Event | None = None
     _bose_player: BosePlayerInfo | None = None
 
@@ -478,55 +514,69 @@ class BoseSoundTouchFavoritesProvider(PluginProvider):
         if self._bose_player:
             return self._bose_player.name
 
-        target_player = self.config.get_value("target_player")
-        if not target_player:
+        target_player_ids = _string_list_config_value(
+            self.config.get_value("target_players"),
+            [],
+        )
+        if not target_player_ids:
             return None
 
-        player = self.mass.players.get_player(str(target_player))
+        target_player_id = target_player_ids[0]
+        player = self.mass.players.get_player(target_player_id)
         if player is None:
-            return str(target_player)
+            return target_player_id
 
         return player.display_name
 
     async def loaded_in_mass(self) -> None:
         """Start listening after Music Assistant loads the provider."""
-        target_player = self.config.get_value("target_player")
-        if not target_player:
+        target_player_ids = _string_list_config_value(
+            self.config.get_value("target_players"),
+            [],
+        )
+        if not target_player_ids:
             raise SetupFailedError("No Bose SoundTouch speaker has been configured")
 
-        target_player_id = str(target_player)
-        player = self.mass.players.get_player(target_player_id)
-        if player is None:
-            raise SetupFailedError(
-                f"Configured Bose SoundTouch speaker no longer exists: {target_player_id}"
+        self._listener_tasks = {}
+        bose_players: list[BosePlayerInfo] = []
+        for target_player_id in target_player_ids:
+            player = self.mass.players.get_player(target_player_id)
+            if player is None:
+                raise SetupFailedError(
+                    f"Configured Bose SoundTouch speaker no longer exists: {target_player_id}"
+                )
+
+            bose_player = build_bose_player_info(player)
+
+            if not bose_player:
+                raise SetupFailedError(f"Selected player is not a Bose player: {target_player_id}")
+
+            if not bose_player.ip_address:
+                raise SetupFailedError(f"Unable to find IP address for player {target_player_id}")
+
+            bose_players.append(bose_player)
+
+            self.logger.info(
+                (
+                    "Bose SoundTouch Favorites target loaded: name=%s player_id=%s "
+                    "ip=%s model=%s uuid=%s mac=%s"
+                ),
+                bose_player.name,
+                bose_player.player_id,
+                bose_player.ip_address,
+                bose_player.model,
+                bose_player.bose_uuid,
+                bose_player.mac_address,
             )
 
-        self._bose_player = build_bose_player_info(player)
-
-        if not self._bose_player:
-            raise SetupFailedError(f"Selected player is not a Bose player: {target_player_id}")
-
-        if not self._bose_player.ip_address:
-            raise SetupFailedError(f"Unable to find IP address for player {target_player_id}")
-
-        self.logger.info(
-            (
-                "Bose SoundTouch Favorites loaded: name=%s player_id=%s "
-                "ip=%s model=%s uuid=%s mac=%s"
-            ),
-            self._bose_player.name,
-            self._bose_player.player_id,
-            self._bose_player.ip_address,
-            self._bose_player.model,
-            self._bose_player.bose_uuid,
-            self._bose_player.mac_address,
-        )
+        self._bose_player = bose_players[0]
 
         self._stop_event = asyncio.Event()
-        self._listener_task = asyncio.create_task(
-            self._listen_to_bose(self._bose_player.ip_address),
-            name="bose_soundtouch_favorites_listener",
-        )
+        for bose_player in bose_players:
+            self._listener_tasks[bose_player.player_id] = asyncio.create_task(
+                self._listen_to_bose(bose_player),
+                name=f"bose_soundtouch_favorites_listener_{bose_player.player_id}",
+            )
 
     async def unload(self, is_removed: bool = False) -> None:
         """Unload the provider and stop the Bose listener."""
@@ -535,28 +585,35 @@ class BoseSoundTouchFavoritesProvider(PluginProvider):
         if self._stop_event:
             self._stop_event.set()
 
-        if self._listener_task:
-            self._listener_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._listener_task
-            self._listener_task = None
+        if self._listener_tasks:
+            for listener_task in self._listener_tasks.values():
+                listener_task.cancel()
+            for listener_task in self._listener_tasks.values():
+                with contextlib.suppress(asyncio.CancelledError):
+                    await listener_task
+            self._listener_tasks.clear()
+            self._listener_tasks = None
 
         self._stop_event = None
         self._bose_player = None
 
-    async def _listen_to_bose(self, speaker_ip: str) -> None:
+    async def _listen_to_bose(self, bose_player: BosePlayerInfo) -> None:
         """Connect to Bose WebSocket and handle physical favorite button presses."""
+        speaker_ip = bose_player.ip_address
+        if not speaker_ip:
+            return
+
         uri = f"ws://{speaker_ip}:8080"
 
         while self._stop_event and not self._stop_event.is_set():
             try:
-                self.logger.info("Connecting to Bose WebSocket: %s", uri)
+                self.logger.info("[%s] Connecting to Bose WebSocket: %s", bose_player.name, uri)
 
                 async with self.mass.http_session.ws_connect(
                     uri,
                     protocols=BOSE_SUBPROTOCOLS,
                 ) as ws:
-                    self.logger.info("Connected to Bose WebSocket: %s", uri)
+                    self.logger.info("[%s] Connected to Bose WebSocket: %s", bose_player.name, uri)
 
                     async for msg in ws:
                         if self._stop_event and self._stop_event.is_set():
@@ -577,13 +634,14 @@ class BoseSoundTouchFavoritesProvider(PluginProvider):
                         preset_id = extract_preset_id(message)
 
                         if preset_id is not None:
-                            await self._handle_preset(preset_id)
+                            await self._handle_preset(bose_player, preset_id)
 
             except asyncio.CancelledError:
                 raise
             except (aiohttp.ClientError, OSError, TimeoutError, UnicodeDecodeError) as err:
                 self.logger.warning(
-                    "Bose WebSocket error: %s. Reconnecting in %s seconds...",
+                    "[%s] Bose WebSocket error: %s. Reconnecting in %s seconds...",
+                    bose_player.name,
                     err,
                     RECONNECT_DELAY,
                 )
@@ -594,23 +652,21 @@ class BoseSoundTouchFavoritesProvider(PluginProvider):
                             timeout=RECONNECT_DELAY,
                         )
 
-    async def _handle_preset(self, preset_id: int) -> None:
+    async def _handle_preset(self, bose_player: BosePlayerInfo, preset_id: int) -> None:
         """Handle a Bose physical favorite press."""
         if preset_id not in PRESET_IDS:
             self.logger.debug("Ignoring unsupported Bose SoundTouch favorite id: %s", preset_id)
             return
 
-        player_id = str(self.config.get_value("target_player"))
+        player_id = bose_player.player_id
         media_key = f"preset_{preset_id}_media"
         media_id = str(self.config.get_value(media_key) or "")
         media_type = str(self.config.get_value(f"preset_{preset_id}_media_type") or "playlist")
 
-        speaker_name = self._bose_player.name if self._bose_player else player_id
-
         if not media_id:
             self.logger.warning(
                 "[%s] Bose SoundTouch favorite_%s detected, but no media configured for %s",
-                speaker_name,
+                bose_player.name,
                 preset_id,
                 media_key,
             )
@@ -618,7 +674,7 @@ class BoseSoundTouchFavoritesProvider(PluginProvider):
 
         self.logger.info(
             "[%s] Bose SoundTouch favorite_%s detected. Playing %s (%s) on player %s",
-            speaker_name,
+            bose_player.name,
             preset_id,
             media_id,
             media_type,
