@@ -50,7 +50,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 from ytmusicapi.constants import SUPPORTED_LANGUAGES
-from ytmusicapi.exceptions import YTMusicServerError
+from ytmusicapi.exceptions import YTMusicError, YTMusicServerError
 from ytmusicapi.helpers import get_authorization, sapisid_from_cookie
 
 from music_assistant.constants import (
@@ -622,30 +622,83 @@ class YoutubeMusicProvider(MusicProvider):
             user=self._yt_user,
         )
 
-    @use_cache(3600 * 24, allow_expired_cache=True)  # Cache for 1 day
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
-        """Retrieve a dynamic list of tracks based on the provided item."""
+        """Retrieve a dynamic list of tracks based on the provided item.
+
+        :param prov_track_id: Provider track ID to base similar tracks on.
+        :param limit: Maximum number of tracks to return.
+        """
         try:
-            result = await get_song_radio_tracks(
-                headers=self._headers, prov_item_id=prov_track_id, limit=limit, user=self._yt_user
-            )
-        except Exception as err:
+            return await self._get_similar_tracks(prov_track_id, limit)
+        except (YTMusicError, KeyError, InvalidDataError) as err:
             self.logger.warning("Failed to get similar/radio tracks from YT Music: %s", err)
             return []
-        if "tracks" in result:
-            tracks = []
-            for track in result["tracks"]:
-                # Playlist tracks sometimes do not have a valid artist id
-                # In that case, call the API for track details based on track id
+
+    @use_cache(3600 * 24, allow_expired_cache=True)  # Cache for 1 day
+    async def _get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
+        """Get similar/radio tracks (internal cached implementation).
+
+        May return a partial list. Raises if every candidate item fails to parse
+        so transient data problems do not overwrite good cached results when
+        allow_expired_cache is active.
+        """
+        result = await get_song_radio_tracks(
+            headers=self._headers, prov_item_id=prov_track_id, limit=limit, user=self._yt_user
+        )
+
+        raw_tracks = result.get("tracks") or []
+        if not raw_tracks:
+            return []
+
+        tracks: list[Track] = []
+        for raw_track in raw_tracks:
+            # Try normal parse first
+            try:
+                if track := self._parse_track(raw_track):
+                    tracks.append(track)
+                    continue
+            except InvalidDataError:
+                # Playlist tracks sometimes do not have a valid artist id.
+                # Fall back to fetching the full track by ID.
+                vid = raw_track.get("videoId")
+                if vid:
+                    try:
+                        if track := await self.get_track(vid):
+                            tracks.append(track)
+                            continue
+                    except (
+                        MediaNotFoundError,
+                        InvalidDataError,
+                        YTMusicError,
+                        KeyError,
+                        TypeError,
+                    ) as err:
+                        self.logger.debug("Similar track fallback failed: %s", err)
+            except (KeyError, TypeError, ValueError) as err:
+                self.logger.debug("Failed to parse similar track: %s", err)
+
+            # Last-resort fallback using videoId if we haven't succeeded yet
+            vid = raw_track.get("videoId")
+            if vid:
                 try:
-                    track = self._parse_track(track)
-                    if track:
+                    if track := await self.get_track(vid):
                         tracks.append(track)
-                except InvalidDataError:
-                    if track := await self.get_track(track["videoId"]):
-                        tracks.append(track)
-            return tracks
-        return []
+                except (
+                    MediaNotFoundError,
+                    InvalidDataError,
+                    YTMusicError,
+                    KeyError,
+                    TypeError,
+                ) as err:
+                    self.logger.debug("Similar track fallback failed: %s", err)
+
+        if not tracks:
+            # All candidate tracks failed to parse. Raise so the failure is not
+            # treated as a successful empty result (preserves stale data via
+            # allow_expired_cache / background refresh).
+            raise InvalidDataError("Failed to parse any similar/radio tracks")
+
+        return tracks
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
