@@ -688,6 +688,9 @@ class StreamsAudio:
             if last_updated is not None and (time.time() - last_updated) < interval:
                 continue
             elapsed = elapsed_base + int(self.mass.loop.time() - start)
+            # claim the refresh slot before awaiting so a concurrent queue-controller
+            # refresh sees a fresh timestamp and skips, avoiding a double fetch
+            streamdetails.stream_metadata_last_updated = time.time()
             try:
                 await callback(streamdetails, elapsed)
             except (aiohttp.ClientError, TimeoutError, MusicAssistantError) as err:
@@ -696,7 +699,6 @@ class StreamsAudio:
                     "Error refreshing stream metadata for %s: %s", streamdetails.uri, err
                 )
                 continue
-            streamdetails.stream_metadata_last_updated = time.time()
             if streamdetails.queue_id:
                 self.mass.player_queues.signal_update(streamdetails.queue_id)
 
