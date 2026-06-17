@@ -373,6 +373,7 @@ def test_provider_sync_task_localized_serialization() -> None:
                 name=f"Sync Spotify {media_type.value}s",  # in-code English fallback
                 translation_key=key,
                 translation_args=["Spotify"],
+                translation_owner="core.music",
             )
             serialized = task.to_dict()
             assert serialized["name"] == name

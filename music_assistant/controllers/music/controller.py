@@ -274,6 +274,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                             handler=self._create_provider_sync_handler(provider, media_type),
                             translation_key=self._get_sync_task_translation_key(media_type),
                             translation_args=[provider.name],
+                            translation_owner=self.translation_owner,
                             user_id=(user.user_id if (user := get_current_user()) else None),
                             metadata=self._get_sync_task_metadata(provider, media_type),
                             allow_retry=True,
@@ -2155,19 +2156,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     def _get_sync_task_translation_key(self, media_type: MediaType) -> str:
         """Return translation key for a provider sync task."""
         if media_type == MediaType.ARTIST:
-            return "core.music.background_task.sync_provider_artists"
+            return "background_task.sync_provider_artists"
         if media_type == MediaType.ALBUM:
-            return "core.music.background_task.sync_provider_albums"
+            return "background_task.sync_provider_albums"
         if media_type == MediaType.TRACK:
-            return "core.music.background_task.sync_provider_tracks"
+            return "background_task.sync_provider_tracks"
         if media_type == MediaType.PLAYLIST:
-            return "core.music.background_task.sync_provider_playlists"
+            return "background_task.sync_provider_playlists"
         if media_type == MediaType.RADIO:
-            return "core.music.background_task.sync_provider_radios"
+            return "background_task.sync_provider_radios"
         if media_type == MediaType.AUDIOBOOK:
-            return "core.music.background_task.sync_provider_audiobooks"
+            return "background_task.sync_provider_audiobooks"
         if media_type == MediaType.PODCAST:
-            return "core.music.background_task.sync_provider_podcasts"
+            return "background_task.sync_provider_podcasts"
         return "settings.sync"
 
     def _get_sync_task_metadata(
@@ -2198,7 +2199,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             name="Database cleanup",
             handler=self._cleanup_database,
             schedule=desired_schedule,
-            translation_key="core.music.background_task.database_cleanup",
+            translation_key="background_task.database_cleanup",
+            translation_owner=self.translation_owner,
             metadata={
                 "task_domain": "music_database_cleanup",
             },
@@ -2214,7 +2216,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             name="Correct provider mappings",
             handler=self.correct_multi_instance_provider_mappings,
             schedule=desired_schedule,
-            translation_key="core.music.background_task.correct_provider_mappings",
+            translation_key="background_task.correct_provider_mappings",
+            translation_owner=self.translation_owner,
             metadata={
                 "task_domain": "music_provider_mapping_correction",
             },
@@ -2251,6 +2254,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             initial_delay=10 if is_initial else None,
             translation_key=self._get_sync_task_translation_key(media_type),
             translation_args=[provider.name],
+            translation_owner=self.translation_owner,
             metadata=self._get_sync_task_metadata(provider, media_type),
             allow_retry=True,
         )
