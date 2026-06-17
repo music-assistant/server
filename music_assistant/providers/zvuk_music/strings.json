@@ -17,6 +17,18 @@
       }
     }
   },
+  "media": {
+    "recommendations": {
+      "editorial": {
+        "name": "Collections",
+        "subtitle": "Editorial playlists from Zvuk by genre"
+      }
+    },
+    "folder": {
+      "made_for_you": { "name": "Made for you" },
+      "editorial": { "name": "Collections" }
+    }
+  },
   "manifest": {
     "description": "Stream music from Zvuk Music service."
   }

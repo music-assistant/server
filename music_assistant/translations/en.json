@@ -1670,5 +1670,9 @@
   "provider.zvuk_music.config_entries.quality.options.lossless": "Lossless (FLAC)",
   "provider.zvuk_music.config_entries.token.description": "Enter your Zvuk Music X-Auth-Token. See the documentation for how to obtain it.",
   "provider.zvuk_music.config_entries.token.label": "Zvuk Music Token",
-  "provider.zvuk_music.manifest.description": "Stream music from Zvuk Music service."
+  "provider.zvuk_music.manifest.description": "Stream music from Zvuk Music service.",
+  "provider.zvuk_music.media.folder.editorial.name": "Collections",
+  "provider.zvuk_music.media.folder.made_for_you.name": "Made for you",
+  "provider.zvuk_music.media.recommendations.editorial.name": "Collections",
+  "provider.zvuk_music.media.recommendations.editorial.subtitle": "Editorial playlists from Zvuk by genre"
 }
