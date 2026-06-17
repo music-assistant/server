@@ -8,7 +8,6 @@ from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.media_items import Audiobook, ProviderMapping, UniqueList
 
 from music_assistant.constants import DB_TABLE_AUDIOBOOKS, DB_TABLE_PLAYLOG
-from music_assistant.controllers.media.base import MediaControllerBase
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
     compare_audiobook,
@@ -21,6 +20,8 @@ from music_assistant.helpers.datetime import utc_timestamp
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.helpers.util import parse_optional_bool
 from music_assistant.models.music_provider import MusicProvider
+
+from .base import MediaControllerBase
 
 if TYPE_CHECKING:
     from music_assistant_models.auth import User

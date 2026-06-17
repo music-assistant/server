@@ -312,13 +312,6 @@
     "background_scan_concurrency": {
       "label": "Background analysis concurrency",
       "description": "Maximum number of tracks analyzed concurrently during the nightly background scan. Default 1 (serial). Increase only if your hardware can handle concurrent torch/ffmpeg work."
-    },
-    "reset_db": {
-      "label": "Reset library database",
-      "description": "This will issue a full reset of the library database and trigger a full sync. Only use this option as a last resort if you are seeing issues with the library database."
-    },
-    "reset_db_result": {
-      "label": "The database has been reset."
     }
   },
   "config_categories": {

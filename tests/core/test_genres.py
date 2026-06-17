@@ -36,7 +36,7 @@ from music_assistant.constants import (
     DB_TABLE_TRACKS,
     DEFAULT_GENRE_MAPPING,
 )
-from music_assistant.controllers.media.genres import GenreController
+from music_assistant.controllers.music.media.genres import GenreController
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.mass import MusicAssistant
 
