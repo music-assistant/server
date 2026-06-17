@@ -717,7 +717,7 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             return
         try:
             album_item_id = int(album_item_id_raw)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             self.logger.debug(
                 "Skipping album lookup — album id %r is not an integer", album_item_id_raw
             )

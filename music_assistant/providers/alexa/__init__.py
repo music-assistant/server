@@ -236,7 +236,7 @@ async def save_cookie(login: AlexaLogin, username: str, mass: MusicAssistant) ->
         _LOGGER.debug("Saving cookie to %s", login._cookiefile[0])
     try:
         await asyncio.to_thread(cookie_jar.save, login._cookiefile[0])
-    except (OSError, EOFError, TypeError, AttributeError):
+    except OSError, EOFError, TypeError, AttributeError:
         _LOGGER.debug("Error saving pickled cookie to %s", login._cookiefile[0])
 
 

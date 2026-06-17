@@ -3,7 +3,7 @@
 import logging
 import pathlib
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiofiles
 import aiohttp
@@ -11,7 +11,6 @@ import pytest
 from aiojellyfin import Artist, Connection
 from aiojellyfin.session import SessionConfiguration
 from mashumaro.codecs.json import JSONDecoder
-from syrupy.assertion import SnapshotAssertion
 
 from music_assistant.providers.jellyfin.const import (
     ITEM_KEY_MEDIA_CODEC,
@@ -23,6 +22,9 @@ from music_assistant.providers.jellyfin.parsers import (
     parse_artist,
     parse_track,
 )
+
+if TYPE_CHECKING:
+    from syrupy.assertion import SnapshotAssertion
 
 FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures"
 ARTIST_FIXTURES = list(FIXTURES_DIR.glob("artists/*.json"))

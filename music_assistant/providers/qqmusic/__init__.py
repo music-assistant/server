@@ -1123,7 +1123,7 @@ class QQMusicProvider(MusicProvider):
                 tab_albums,
                 ("album_tab", "albumList", "album_list", "list"),
             )
-        except (MediaNotFoundError, InvalidDataError, TypeError, ValueError):
+        except MediaNotFoundError, InvalidDataError, TypeError, ValueError:
             raw_albums = []
 
         if not raw_albums:
@@ -1273,6 +1273,7 @@ class QQMusicProvider(MusicProvider):
         euin = await self._ensure_user_euin()
         page = 1
         num = 100
+        total_yielded = 0
         while True:
             response = await self._run_with_session(
                 self._qq_user.get_follow_singers(
@@ -1291,11 +1292,13 @@ class QQMusicProvider(MusicProvider):
             for artist_obj in artists:
                 try:
                     yield self._parse_artist(artist_obj)
-                except (InvalidDataError, TypeError, ValueError):
+                    total_yielded += 1
+                except InvalidDataError, TypeError, ValueError:
                     continue
             if len(artists) < num:
                 break
             page += 1
+        self.logger.info("QQ library artists sync yielded %s artist(s)", total_yielded)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from QQ Music."""
@@ -1318,7 +1321,7 @@ class QQMusicProvider(MusicProvider):
                 try:
                     yield self._parse_track(song)
                     yielded += 1
-                except (InvalidDataError, TypeError, ValueError):
+                except InvalidDataError, TypeError, ValueError:
                     continue
             if total and yielded >= total:
                 break
@@ -1329,6 +1332,7 @@ class QQMusicProvider(MusicProvider):
         euin = await self._ensure_user_euin()
         page = 1
         num = 100
+        total_yielded = 0
         while True:
             response = await self._run_with_session(
                 self._qq_user.get_fav_album(euin, page=page, num=num, credential=self._credential)
@@ -1350,11 +1354,13 @@ class QQMusicProvider(MusicProvider):
             for album_obj in albums:
                 try:
                     yield self._parse_album(album_obj)
-                except (InvalidDataError, TypeError, ValueError):
+                    total_yielded += 1
+                except InvalidDataError, TypeError, ValueError:
                     continue
             if len(albums) < num:
                 break
             page += 1
+        self.logger.info("QQ library albums sync yielded %s album(s)", total_yielded)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve user playlists from QQ Music."""
@@ -1368,7 +1374,7 @@ class QQMusicProvider(MusicProvider):
         ):
             try:
                 yield self._parse_playlist(playlist_obj)
-            except (InvalidDataError, TypeError, ValueError):
+            except InvalidDataError, TypeError, ValueError:
                 continue
 
         page = 1
@@ -1388,7 +1394,7 @@ class QQMusicProvider(MusicProvider):
             for playlist_obj in fav_playlists:
                 try:
                     yield self._parse_playlist(playlist_obj)
-                except (InvalidDataError, TypeError, ValueError):
+                except InvalidDataError, TypeError, ValueError:
                     continue
             if len(fav_playlists) < num:
                 break
@@ -1439,7 +1445,7 @@ class QQMusicProvider(MusicProvider):
                 track = self._parse_track(song)
                 track.position = index
                 results.append(track)
-            except (InvalidDataError, TypeError, ValueError):
+            except InvalidDataError, TypeError, ValueError:
                 continue
         return results
 

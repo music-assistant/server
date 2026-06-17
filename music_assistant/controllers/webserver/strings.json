@@ -36,5 +36,9 @@
       "label": "Bind to IP/interface",
       "description": "Bind the (web)server to this specific interface. \nUse 0.0.0.0 to bind to all interfaces (both IPv4 and IPv6). \nSet this address for example to a docker-internal network, when you are running a reverse proxy to enhance security and protect outside access to the webinterface and API. \n\nThis is an advanced setting that should normally not be adjusted in regular setups."
     }
+  },
+  "manifest": {
+    "name": "Webserver",
+    "description": "Configuration of the webserver and API"
   }
 }

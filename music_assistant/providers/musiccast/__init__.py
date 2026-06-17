@@ -1,13 +1,17 @@
 """MusicCast for MusicAssistant."""
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+from typing import TYPE_CHECKING
+
 from music_assistant_models.enums import ProviderFeature
-from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 
 from .provider import MusicCastProvider
+
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.provider import ProviderManifest
 
 SUPPORTED_FEATURES = {
     ProviderFeature.SYNC_PLAYERS,

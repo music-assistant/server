@@ -34,7 +34,7 @@ def extract_song_id(track_obj: dict[str, Any]) -> int | None:
             continue
         try:
             song_id = int(raw_val)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         if song_id > 0:
             return song_id

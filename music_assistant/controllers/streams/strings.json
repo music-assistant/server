@@ -17,5 +17,9 @@
       "label": "Smart Fades Log level",
       "description": "Log level for the Smart Fades mixer and analyzer."
     }
+  },
+  "manifest": {
+    "name": "Streams",
+    "description": "Configuration of the audio streaming and processing engine"
   }
 }

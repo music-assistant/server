@@ -31,7 +31,7 @@ class SpeakerStatusFilter(logging.Filter):
                 event_obj = record.args[0]
                 if getattr(event_obj, "method", None) == "SpeakerStatus":
                     return False
-            except (IndexError, AttributeError):
+            except IndexError, AttributeError:
                 pass
         return True
 
