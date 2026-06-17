@@ -12,13 +12,16 @@ import logging
 import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from aiortc import RTCConfiguration, RTCPeerConnection
-from aiortc.rtcdtlstransport import RTCCertificate
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
+
+if TYPE_CHECKING:
+    from aiortc import RTCConfiguration, RTCPeerConnection
+    from aiortc.rtcdtlstransport import RTCCertificate
 
 LOGGER = logging.getLogger(__name__)
 
@@ -133,64 +136,70 @@ def _is_certificate_valid(cert: x509.Certificate) -> bool:
     return not days_remaining < CERT_RENEWAL_THRESHOLD_DAYS
 
 
-def get_or_create_webrtc_certificate(storage_path: str) -> RTCCertificate:
-    """Get or create a persistent WebRTC DTLS certificate.
-
-    Loads an existing certificate from disk if available and valid.
-    Otherwise, generates a new certificate and saves it.
+def _get_or_create_certificate(
+    storage_path: str,
+) -> tuple[ec.EllipticCurvePrivateKey, x509.Certificate]:
+    """
+    Load a valid persisted DTLS keypair, or generate and persist a new one.
 
     :param storage_path: Directory to store/load the certificate files.
-    :return: RTCCertificate instance for use with WebRTC.
+    :return: Tuple of (private_key, certificate).
     """
     loaded = _load_certificate(storage_path)
-
-    if loaded is not None:
-        private_key, cert = loaded
-
-        if _is_certificate_valid(cert):
-            return RTCCertificate(key=private_key, cert=cert)
+    if loaded is not None and _is_certificate_valid(loaded[1]):
+        return loaded
 
     LOGGER.debug("Generating new WebRTC DTLS certificate (valid for %d days)", CERT_VALIDITY_DAYS)
     private_key, cert = _generate_certificate()
     _save_certificate(storage_path, private_key, cert)
+    return private_key, cert
 
+
+def _remote_id_from_certificate(cert: x509.Certificate) -> str:
+    """
+    Derive the deterministic Remote ID from a certificate.
+
+    :param cert: The X.509 certificate to derive the Remote ID from.
+    :return: Custom base32-encoded (with 9s instead of 2s) Remote ID string
+        (26 characters, uppercase, no-padding).
+    """
+    # SHA-256 over the DER certificate, matching aiortc's certificate_digest; take the
+    # first 128 bits and base32-encode (with 9s instead of 2s) without padding.
+    digest = cert.fingerprint(hashes.SHA256())
+    return base64.b32encode(digest[:16]).decode("ascii").rstrip("=").replace("2", "9")
+
+
+def get_or_create_webrtc_certificate(storage_path: str) -> RTCCertificate:
+    """
+    Get or create a persistent WebRTC DTLS certificate.
+
+    Loads an existing certificate from disk if available and valid, otherwise
+    generates a new certificate and saves it.
+
+    :param storage_path: Directory to store/load the certificate files.
+    :return: RTCCertificate instance for use with WebRTC.
+    """
+    # imported here so importing this module never pulls in aiortc/PyAV (~51MB);
+    # only the (rarely-used) WebRTC paths actually need it
+    from aiortc.rtcdtlstransport import RTCCertificate  # noqa: PLC0415
+
+    private_key, cert = _get_or_create_certificate(storage_path)
     return RTCCertificate(key=private_key, cert=cert)
 
 
-def _get_certificate_fingerprint(certificate: RTCCertificate) -> str:
-    """Get the SHA-256 fingerprint of a certificate.
-
-    :param certificate: The RTCCertificate to get the fingerprint for.
-    :return: SHA-256 fingerprint as colon-separated hex string (e.g., "A1:B2:C3:...").
+def get_or_create_remote_id(storage_path: str) -> str:
     """
-    fingerprints = certificate.getFingerprints()
-    for fp in fingerprints:
-        if fp.algorithm == "sha-256":
-            return fp.value
-    raise ValueError("SHA-256 fingerprint not found in certificate")
+    Return the stable Remote ID for this instance without importing aiortc.
 
+    Loads (or creates and persists) the WebRTC DTLS certificate and derives the
+    Remote ID from it, so the always-on remote_access/info endpoint can report the
+    Remote ID even when remote access is disabled and aiortc was never loaded.
 
-def get_remote_id_from_certificate(certificate: RTCCertificate) -> str:
-    """Generate a remote ID from the certificate fingerprint.
-
-    Uses base32-encoded 128-bit truncation of the SHA-256 fingerprint.
-    This creates a deterministic remote ID tied to the certificate.
-
-    :param certificate: The RTCCertificate to derive the remote ID from.
-    :return: Custom base32-encoded (with 9s instead of 2s) remote ID string
-        (26 characters, uppercase, no-padding).
+    :param storage_path: Directory to store/load the certificate files.
+    :return: The Remote ID derived from the persistent certificate.
     """
-    fingerprint = _get_certificate_fingerprint(certificate)
-
-    # Parse the colon-separated hex fingerprint to bytes
-    # Format: "A1:B2:C3:D4:..." -> bytes
-    fingerprint_bytes = bytes.fromhex(fingerprint.replace(":", ""))
-
-    # Take first 128 bits (16 bytes) of SHA-256
-    truncated = fingerprint_bytes[:16]
-
-    # Base32 encode (with 9s instead of 2s) and return (uppercase) without padding
-    return base64.b32encode(truncated).decode("ascii").rstrip("=").replace("2", "9")
+    _, cert = _get_or_create_certificate(storage_path)
+    return _remote_id_from_certificate(cert)
 
 
 def create_peer_connection_with_certificate(
@@ -203,6 +212,8 @@ def create_peer_connection_with_certificate(
     :param configuration: Optional RTCConfiguration with ICE servers.
     :return: RTCPeerConnection configured with the provided certificate.
     """
+    from aiortc import RTCPeerConnection  # noqa: PLC0415
+
     pc = RTCPeerConnection(configuration=configuration)
     # Replace the auto-generated certificate with our persistent one
     # Uses name-mangled private attribute access

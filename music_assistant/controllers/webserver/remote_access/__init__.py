@@ -16,11 +16,10 @@ from mashumaro import DataClassDictMixin
 from music_assistant_models.enums import EventType
 
 from music_assistant.constants import CONF_CORE
-from music_assistant.controllers.webserver.remote_access.gateway import WebRTCGateway
 from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.helpers.webrtc_certificate import (
+    get_or_create_remote_id,
     get_or_create_webrtc_certificate,
-    get_remote_id_from_certificate,
 )
 
 if TYPE_CHECKING:
@@ -28,6 +27,7 @@ if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
 
     from music_assistant.controllers.webserver import WebserverController
+    from music_assistant.controllers.webserver.remote_access.gateway import WebRTCGateway
     from music_assistant.providers.hass import HomeAssistantProvider
 
 # Signaling server URL
@@ -69,9 +69,9 @@ class RemoteAccessManager:
 
     async def setup(self) -> None:
         """Initialize the remote access manager."""
-        self._certificate = get_or_create_webrtc_certificate(self.mass.storage_path)
-
-        self._remote_id = get_remote_id_from_certificate(self._certificate)
+        # derive the Remote ID without importing aiortc, so a disabled instance keeps
+        # aiortc/PyAV (~51MB) out of memory while the remote_access/info endpoint still works
+        self._remote_id = get_or_create_remote_id(self.mass.storage_path)
 
         enabled_value = self.mass.config.get(f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_ENABLED}", False)
         self._enabled = bool(enabled_value)
@@ -106,6 +106,14 @@ class RemoteAccessManager:
         if not self._enabled:
             self.logger.debug("Remote access disabled, skipping start")
             return
+
+        # imported here (and the certificate built here) so aiortc/PyAV is only
+        # loaded when remote access is actually enabled, never at idle
+        from music_assistant.controllers.webserver.remote_access.gateway import (  # noqa: PLC0415
+            WebRTCGateway,
+        )
+
+        self._certificate = get_or_create_webrtc_certificate(self.mass.storage_path)
 
         base_url = self.mass.webserver.base_url
         local_ws_url = base_url.replace("http", "ws")
