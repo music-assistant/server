@@ -10,7 +10,7 @@ This adaptor maps those objects to the most sensible type for MA.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, tzinfo
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
 from music_assistant_models.media_items import (
@@ -146,18 +146,20 @@ class ImageProvider:
 class Context:
     """Context information for object conversion."""
 
-    provider: "BBCSoundsProvider"
+    provider: BBCSoundsProvider
     provider_domain: str
     path_parts: list[str] | None = None
     force_type: (
-        type[Track]
-        | type[LiveStation]
-        | type[Radio]
-        | type[MAPodcast]
-        | type[MAPodcastEpisode]
-        | type[BrowseFolder]
-        | type[RecommendationFolder]
-        | type[RecommendedMenuItem]
+        type[
+            Track
+            | LiveStation
+            | Radio
+            | MAPodcast
+            | MAPodcastEpisode
+            | BrowseFolder
+            | RecommendationFolder
+            | RecommendedMenuItem
+        ]
         | None
     ) = None
 
@@ -213,7 +215,7 @@ class BaseConverter(ABC):
                 else:
                     return default
             return current
-        except (AttributeError, KeyError, TypeError):
+        except AttributeError, KeyError, TypeError:
             return default
 
 
@@ -467,7 +469,7 @@ class PodcastConverter(BaseConverter):
             return await self._convert_radio_show(source_obj)
         if isinstance(source_obj, RadioClip) or self.context.force_type is Track:
             return await self._convert_radio_clip(source_obj)
-        return source_obj
+        return cast("MAPodcast | MAPodcastEpisode | Track", source_obj)
 
     async def _convert_podcast(self, podcast: Podcast | RadioSeries) -> MAPodcast:
         name = self._get_attr(podcast, "titles.primary") or self._get_attr(podcast, "title")
@@ -734,7 +736,7 @@ class BrowseConverter(BaseConverter):
 class Adaptor:
     """An adaptor object to convert Sounds API objects into MA ones."""
 
-    def __init__(self, provider: "BBCSoundsProvider"):
+    def __init__(self, provider: BBCSoundsProvider):
         """Create new adaptor."""
         self.provider = provider
         self.logger = self.provider.logger
@@ -744,13 +746,9 @@ class Adaptor:
         self,
         path_parts: list[str] | None = None,
         force_type: (
-            type[Track]
-            | type[Any]
-            | type[Radio]
-            | type[Podcast]
-            | type[PodcastEpisode]
-            | type[BrowseFolder]
-            | type[RecommendationFolder]
+            type[
+                Track | Any | Radio | Podcast | PodcastEpisode | BrowseFolder | RecommendationFolder
+            ]
             | None
         ) = None,
     ) -> Context:
@@ -764,7 +762,7 @@ class Adaptor:
     async def new_streamable_object(
         self,
         source_obj: SoundsTypes,
-        force_type: type[Track] | type[Radio] | type[MAPodcastEpisode] | None = None,
+        force_type: type[Track | Radio | MAPodcastEpisode] | None = None,
         path_parts: list[str] | None = None,
     ) -> StreamDetails | None:
         """

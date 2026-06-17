@@ -48,7 +48,7 @@ async def test_parse_metadata_from_id3tags() -> None:
     assert _tags.disc is None
     _tags.tags["disc"] = "1"
     assert _tags.disc == 1
-    _tags.tags["disc"] = "1/1"
+    _tags.tags["disc"] = "1/1"  # type: ignore[unreachable]
     assert _tags.disc == 1
     # test parsing album year
     _tags.tags["date"] = "blah"
@@ -229,6 +229,10 @@ def test_split_artists_featuring() -> None:
     # "ft." should work
     result = split_artists("Artist A ft. Artist B", expected_count=None)
     assert result == ("Artist A", "Artist B")
+
+    # " presents " should split without disturbing an ampersand inside an artist name
+    result = split_artists("Above & Beyond presents OceanLab", expected_count=None)
+    assert result == ("Above & Beyond", "OceanLab")
 
 
 def test_split_artists_no_oversplit() -> None:

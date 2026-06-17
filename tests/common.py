@@ -5,15 +5,18 @@ import contextlib
 import logging
 import pathlib
 from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import aiofiles.os
 from music_assistant_models.enums import EventType, IdentifierType, PlayerFeature, PlayerType
-from music_assistant_models.event import MassEvent
 from music_assistant_models.player import DeviceInfo
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
+
+if TYPE_CHECKING:
+    from music_assistant_models.event import MassEvent
 
 
 def _get_fixture_folder(provider: str | None = None) -> pathlib.Path:
@@ -25,7 +28,7 @@ def _get_fixture_folder(provider: str | None = None) -> pathlib.Path:
 
 async def get_fixtures_dir(
     subdir: str, provider: str | None = None
-) -> AsyncGenerator[tuple[str, bytes], None]:
+) -> AsyncGenerator[tuple[str, bytes]]:
     """Yield the contents of every fixture in a fixtures folder."""
     dir_path = _get_fixture_folder(provider) / subdir
     for file in await aiofiles.os.listdir(dir_path):
@@ -34,7 +37,7 @@ async def get_fixtures_dir(
 
 
 @contextlib.asynccontextmanager
-async def wait_for_sync_completion(mass: MusicAssistant) -> AsyncGenerator[None, None]:
+async def wait_for_sync_completion(mass: MusicAssistant) -> AsyncGenerator[None]:
     """Wait for a sync to finish."""
     flag = asyncio.Event()
 

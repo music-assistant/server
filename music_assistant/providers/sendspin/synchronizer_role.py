@@ -109,8 +109,8 @@ class SynchronizerRole(Role):
         payload: dict[str, object] = support_raw.to_dict()
         if "types" not in payload:
             payload["types"] = ["loudness", "f_peak"]
-        if "batch_max" not in payload:
-            payload["batch_max"] = 8
+        if "rate_max" not in payload:
+            payload["rate_max"] = 30
         support = ClientHelloVisualizerSupport.from_dict(payload)
         self._stream_config = StreamStartVisualizer.from_support(support)
 
@@ -161,9 +161,10 @@ class SynchronizerRole(Role):
         """Process audio chunk and forward visualization data via callback."""
         if self._extractor is None or self._stream_config is None:
             return
-        frame = self._extractor.process_chunk(chunk.data, chunk.timestamp_us)
+        frames = self._extractor.process_chunk(chunk.data, chunk.timestamp_us)
         if self._on_visualization_data_cb:
-            self._on_visualization_data_cb(frame)
+            for frame in frames:
+                self._on_visualization_data_cb(frame)
 
     def on_stream_clear(self) -> None:
         """Reset extractor state at stream boundaries."""

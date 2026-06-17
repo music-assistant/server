@@ -33,12 +33,12 @@ from music_assistant_models.player import OutputProtocol, PlayerMedia
 from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
     VERBOSE_LOG_LEVEL,
-    create_sample_rates_config_entry,
 )
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
 from music_assistant.providers.sonos.const import (
+    NON_HIRES_MODELS,
     PLAYBACK_STATE_MAP,
     PLAYER_SOURCE_MAP,
     SOURCE_AIRPLAY,
@@ -71,7 +71,9 @@ class SonosQueue:
     """Simple representation of a Sonos (cloud) Queue."""
 
     items: list[PlayerMedia] = field(default_factory=list)
-    last_updated: float = time.time()
+    last_updated: float = field(default_factory=time.time)
+    includes_beginning: bool = False
+    includes_end: bool = False
 
 
 class SonosPlayer(Player):
@@ -145,6 +147,18 @@ class SonosPlayer(Player):
         self._attr_device_info.manufacturer = self._provider.manifest.name
         self._attr_can_group_with = {self._provider.instance_id}
 
+        # all current Sonos models accept up to 24-bit/48kHz; the older models in
+        # NON_HIRES_MODELS are limited to 16-bit playback
+        if self._attr_device_info.model in NON_HIRES_MODELS:
+            self._attr_supported_sample_rates = [(44100, 16), (48000, 16)]
+        else:
+            self._attr_supported_sample_rates = [
+                (44100, 16),
+                (48000, 16),
+                (44100, 24),
+                (48000, 24),
+            ]
+
         # Add identifiers for matching with other protocols (like AirPlay, DLNA)
         # The player_id is the Sonos UUID (e.g., RINCON_xxxxxxxxxxxx)
         self._attr_device_info.add_identifier(IdentifierType.UUID, self.player_id)
@@ -184,14 +198,6 @@ class SonosPlayer(Player):
         """Return all (provider/player specific) Config Entries for the player."""
         return [
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
-            create_sample_rates_config_entry(
-                # set safe max bit depth to 16 bits because the older Sonos players
-                # do not support 24 bit playback (e.g. Play:1)
-                max_sample_rate=48000,
-                max_bit_depth=24,
-                safe_max_bit_depth=16,
-                hidden=False,
-            ),
         ]
 
     async def volume_set(self, volume_level: int) -> None:
@@ -309,7 +315,11 @@ class SonosPlayer(Player):
                 f"Player {self.display_name} can not "
                 "accept play_media command, it is synced to another player."
             )
-            raise PlayerCommandFailed(msg)
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="provider.sonos.errors.player_synced_cannot_play",
+                translation_args=[self.display_name],
+            )
         # for now always reset the active session
         self.group_controller.active_session_id = None
         if media.source_id:
@@ -332,9 +342,7 @@ class SonosPlayer(Player):
             )
             return
 
-        if (
-            not self.flow_mode and media.source_id and media.queue_item_id
-        ) or media.media_type == MediaType.PLUGIN_SOURCE:
+        if not self.flow_mode and media.source_id and media.queue_item_id:
             # Regular Queue item playback
             # create a sonos cloud queue and load it
             cloud_queue_url = f"{self.mass.streams.base_url}/sonos_queue/{self.player_id}/v2.3/"
@@ -783,6 +791,9 @@ class SonosPlayer(Player):
         queue = self.mass.player_queues.get(queue_id)
         if not queue:
             self.sonos_queue.items.clear()
+            self.sonos_queue.includes_beginning = False
+            self.sonos_queue.includes_end = False
+            self._bump_queue_version()
             return
         current_index = queue.current_index or 0
         current_index = (
@@ -820,7 +831,15 @@ class SonosPlayer(Player):
             items.append(media)
             last_index = next_item.queue_item_id
 
+        # check after the loop in case the window filled exactly up to the last item
+        includes_end = self.mass.player_queues.get_next_item(queue_id, last_index) is None
+
         self.sonos_queue.items = items
+        self.sonos_queue.includes_beginning = offset == 0
+        self.sonos_queue.includes_end = includes_end
+        # bump only after the new window is assigned (no await in between) so Sonos never sees a
+        # new version while itemWindow still serves the previous items
+        self._bump_queue_version()
         self.logger.log(
             VERBOSE_LOG_LEVEL,
             "Set Sonos queue items from MA queue %s on player %s: %s",
@@ -855,3 +874,13 @@ class SonosPlayer(Player):
 
         # Format as XX:XX:XX:XX:XX:XX
         return ":".join(mac_hex[i : i + 2].upper() for i in range(0, 12, 2))
+
+    def _bump_queue_version(self) -> None:
+        """
+        Advance the Sonos cloud-queue version to the current time.
+
+        The version is exposed as the queueVersion in the cloud-queue endpoints; advancing it on
+        every window rebuild is what makes Sonos refetch the window instead of replaying a stale
+        cached one.
+        """
+        self.sonos_queue.last_updated = time.time()

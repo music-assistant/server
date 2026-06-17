@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import urllib.parse
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature, ProviderType
 from music_assistant_models.errors import (
     InvalidDataError,
     MusicAssistantError,
@@ -42,6 +42,8 @@ from .base import MediaControllerBase
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
+    from music_assistant.models.metadata_provider import MetadataProvider
+    from music_assistant.models.plugin import PluginProvider
 
 
 class TracksController(MediaControllerBase[Track]):
@@ -54,7 +56,17 @@ class TracksController(MediaControllerBase[Track]):
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         super().__init__(mass)
-        self.base_query = """
+        # register (extra) api handlers
+        api_base = self.api_base
+        self.mass.register_api_command(f"music/{api_base}/track_versions", self.versions)
+        self.mass.register_api_command(f"music/{api_base}/track_albums", self.albums)
+        self.mass.register_api_command(f"music/{api_base}/preview", self.get_preview_url)
+        self.mass.register_api_command(f"music/{api_base}/similar_tracks", self.similar_tracks)
+
+    @property
+    def base_query(self) -> tuple[str, dict[str, Any]]:
+        """Return the base SELECT query for tracks and its bound query params."""
+        query = """
         SELECT
             tracks.*,
             (SELECT JSON_GROUP_ARRAY(
@@ -76,7 +88,8 @@ class TracksController(MediaControllerBase[Track]):
                 'provider', 'library',
                     'name', artists.name,
                     'sort_name', artists.sort_name,
-                    'media_type', 'artist'
+                    'media_type', 'artist',
+                    'external_ids', json(artists.external_ids)
                 )) FROM artists JOIN track_artists on track_artists.track_id = tracks.item_id  WHERE artists.item_id = track_artists.artist_id) AS artists,
             (SELECT
                 json_object(
@@ -93,12 +106,7 @@ class TracksController(MediaControllerBase[Track]):
             FROM tracks
             LEFT JOIN album_tracks on album_tracks.track_id = tracks.item_id
             """
-        # register (extra) api handlers
-        api_base = self.api_base
-        self.mass.register_api_command(f"music/{api_base}/track_versions", self.versions)
-        self.mass.register_api_command(f"music/{api_base}/track_albums", self.albums)
-        self.mass.register_api_command(f"music/{api_base}/preview", self.get_preview_url)
-        self.mass.register_api_command(f"music/{api_base}/similar_tracks", self.similar_tracks)
+        return query, {}
 
     async def get(
         self,
@@ -258,7 +266,7 @@ class TracksController(MediaControllerBase[Track]):
             provider = self.mass.get_provider(provider_id)
             if not isinstance(provider, MusicProvider):
                 continue
-            if not provider.library_supported(MediaType.TRACK):
+            if not self.mass.music.library_supported(provider, MediaType.TRACK):
                 continue
             result.extend(
                 prov_item
@@ -363,16 +371,29 @@ class TracksController(MediaControllerBase[Track]):
                 if ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
                     continue
                 # Grab similar tracks from the music provider
-                return await prov.get_similar_tracks(
-                    prov_track_id=prov_mapping.item_id, limit=limit
-                )
+                try:
+                    if result := await prov.get_similar_tracks(
+                        prov_track_id=prov_mapping.item_id, limit=limit
+                    ):
+                        return result
+                except NotImplementedError:
+                    continue
+
+        # Fallback: consult metadata/plugin providers that claim SIMILAR_TRACKS
+        for prov in self.mass.get_providers_supporting_feature(
+            ProviderFeature.SIMILAR_TRACKS,
+            priority=(ProviderType.METADATA, ProviderType.PLUGIN),
+        ):
+            try:
+                cross_prov = cast("MetadataProvider | PluginProvider", prov)
+                if result := await cross_prov.get_similar_tracks(ref_item, limit=limit):
+                    return result
+            except NotImplementedError:
+                continue
 
         if not allow_lookup:
             return []
 
-        # check if we have any provider that supports dynamic tracks
-        # TODO: query metadata provider(s) (such as lastfm?)
-        # to get similar tracks (or tracks from similar artists)
         music_prov: MusicProvider | None = None
         for prov in self.mass.music.providers:
             if ProviderFeature.SIMILAR_TRACKS in prov.supported_features:
@@ -402,6 +423,59 @@ class TracksController(MediaControllerBase[Track]):
         await self.mass.music.database.delete(DB_TABLE_TRACK_ARTISTS, {"track_id": db_id})
         # delete the track itself from db
         await super().remove_item_from_library(db_id)
+
+    async def set_identifiers(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        mbid: str | None = None,
+        acoustid: str | None = None,
+        isrcs: list[str] | None = None,
+    ) -> None:
+        """
+        Persist MBID / AcoustID / ISRCs onto the library track row.
+
+        :param item_id: Provider-native track ID.
+        :param provider_instance_id_or_domain: Music provider instance ID or domain.
+        :param mbid: MusicBrainz recording ID.
+        :param acoustid: AcoustID UUID.
+        :param isrcs: ISRC codes.
+        """
+        # MBID is filled only when empty; AcoustID/ISRCs are appended via
+        # external_ids without clobbering tag-sourced values.
+        if not mbid and not acoustid and not isrcs:
+            return
+        try:
+            track = await self.get_library_item_by_prov_id(item_id, provider_instance_id_or_domain)
+        except MusicAssistantError as err:
+            self.logger.debug(
+                "set_identifiers: failed to load library track %s/%s: %s",
+                provider_instance_id_or_domain,
+                item_id,
+                err,
+            )
+            return
+        if track is None:
+            return
+
+        changed = False
+        if mbid and not track.mbid:
+            track.mbid = mbid
+            changed = True
+        if acoustid and not any(
+            ext_id[0] == ExternalID.ACOUSTID and ext_id[1] == acoustid
+            for ext_id in track.external_ids
+        ):
+            track.add_external_id(ExternalID.ACOUSTID, acoustid)
+            changed = True
+        for isrc in isrcs or ():
+            if isrc:
+                track.add_external_id(ExternalID.ISRC, isrc)
+                changed = True
+        if not changed:
+            return
+
+        await self.update_item_in_library(int(track.item_id), track)
 
     async def get_preview_url(self, provider_instance_id_or_domain: str, item_id: str) -> str:
         """Return url to short preview sample."""
@@ -494,7 +568,7 @@ class TracksController(MediaControllerBase[Track]):
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
-            if not provider.library_supported(MediaType.TRACK):
+            if not self.mass.music.library_supported(provider, MediaType.TRACK):
                 continue
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA

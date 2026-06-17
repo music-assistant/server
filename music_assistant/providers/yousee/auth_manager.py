@@ -39,7 +39,7 @@ class YouSeeAccessToken:
 class YouSeeAuthManager:
     """YouSee Musik authentication manager."""
 
-    def __init__(self, provider: "YouSeeMusikProvider"):
+    def __init__(self, provider: YouSeeMusikProvider):
         """Initialize YouSeeAuthManager."""
         self._access_token: YouSeeAccessToken | None = None
         self._refresh_token: str | None = None

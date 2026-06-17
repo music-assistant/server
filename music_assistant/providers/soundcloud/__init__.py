@@ -31,6 +31,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from soundcloudpy import SoundcloudAsyncAPI
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
@@ -90,16 +91,15 @@ async def get_config_entries(
     """
     # ruff: noqa: ARG001
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=CONF_CLIENT_ID,
             type=ConfigEntryType.SECURE_STRING,
-            label="Client ID",
             required=True,
         ),
         ConfigEntry(
             key=CONF_AUTHORIZATION,
             type=ConfigEntryType.SECURE_STRING,
-            label="Authorization",
             required=True,
         ),
     )
@@ -157,7 +157,7 @@ class SoundcloudMusicProvider(MusicProvider):
 
         return result
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Soundcloud."""
         time_start = time.time()
 
@@ -173,7 +173,7 @@ class SoundcloudMusicProvider(MusicProvider):
                 self.logger.debug("Parse artist failed: %s", artist, exc_info=error)
                 continue
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from Soundcloud."""
         time_start = time.time()
         async for item in self._soundcloud.get_account_playlists():
@@ -205,7 +205,7 @@ class SoundcloudMusicProvider(MusicProvider):
             round(time.time() - time_start, 2),
         )
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Soundcloud."""
         time_start = time.time()
         async for track in self._soundcloud.get_track_details_liked(self._user_id):
@@ -312,7 +312,7 @@ class SoundcloudMusicProvider(MusicProvider):
         result = await self._soundcloud.get_playlist_details(prov_playlist_id)
         return cast("dict[str, Any]", result)
 
-    @use_cache(3600 * 3)  # Cache for 3 hours
+    @use_cache(3600 * 3, allow_expired_cache=True)  # Cache for 3 hours
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
@@ -339,7 +339,7 @@ class SoundcloudMusicProvider(MusicProvider):
                 continue
         return result
 
-    @use_cache(3600 * 24 * 14)  # Cache for 14 days
+    @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of (max 100, API doesn't allow a higher limit) tracks for the given artist."""
         tracks_obj = await self._soundcloud.get_tracks_from_user(prov_artist_id, 100)
@@ -385,7 +385,7 @@ class SoundcloudMusicProvider(MusicProvider):
             return None
         return api_response.get("collection") or api_response.get("items")
 
-    @use_cache(3600 * 24 * 14)  # Cache for 14 days
+    @use_cache(3600 * 24 * 14, allow_expired_cache=True)  # Cache for 14 days
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         tracks_obj = await self._soundcloud.get_recommended(prov_track_id, limit)
@@ -499,8 +499,9 @@ class SoundcloudMusicProvider(MusicProvider):
         )
         if artist_obj.get("description"):
             artist.metadata.description = artist_obj["description"]
-        if artist_obj.get("avatar_url"):
-            img_url = self._transform_artwork_url(artist_obj["avatar_url"])
+        # skip default_avatar placeholder; it has no high-res variant and 404s after transform
+        if (avatar_url := artist_obj.get("avatar_url")) and "default_avatar" not in avatar_url:
+            img_url = self._transform_artwork_url(avatar_url)
             artist.metadata.images = UniqueList(
                 [
                     MediaItemImage(

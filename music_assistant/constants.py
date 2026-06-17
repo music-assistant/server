@@ -3,7 +3,6 @@
 import json
 import os
 import pathlib
-from collections.abc import Callable
 from copy import deepcopy
 from typing import Any, Final, cast
 
@@ -21,6 +20,9 @@ APPLICATION_NAME: Final = "Music Assistant"
 # Type alias for items that can be added to playlists
 PlaylistPlayableItem = Track | Radio | PodcastEpisode | Audiobook
 
+# Default number of tracks a music provider may return as a preview sample for a dynamic playlist
+DYNAMIC_PLAYLIST_SAMPLE_SIZE: Final[int] = 25
+
 # Corresponding MediaType enum values (must match PlaylistPlayableItem types above)
 PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
     MediaType.TRACK,
@@ -31,7 +33,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 30
+API_SCHEMA_VERSION: Final[int] = 33
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -58,8 +60,10 @@ VARIOUS_ARTISTS_MBID: Final[str] = "89ad4ac3-39f7-470e-963a-56509c546377"
 RESOURCES_DIR: Final[pathlib.Path] = (
     pathlib.Path(__file__).parent.resolve().joinpath("helpers/resources")
 )
-GENRE_ICONS_DIR: Final[pathlib.Path] = RESOURCES_DIR.joinpath("genres")
-GENRE_MAPPING_FILE: Final[pathlib.Path] = GENRE_ICONS_DIR.joinpath("genre_mapping.json")
+GENRE_ICONS_DIR_NAME: Final[str] = "genres"
+GENRE_MAPPING_FILE: Final[pathlib.Path] = RESOURCES_DIR.joinpath(
+    GENRE_ICONS_DIR_NAME, "genre_mapping.json"
+)
 
 ANNOUNCE_ALERT_FILE: Final[str] = str(RESOURCES_DIR.joinpath("announce.mp3"))
 SILENCE_FILE: Final[str] = str(RESOURCES_DIR.joinpath("silence.mp3"))
@@ -87,6 +91,7 @@ CONF_PLAYER_DSP: Final[str] = "player_dsp"
 CONF_PLAYER_DSP_PRESETS: Final[str] = "player_dsp_presets"
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
 CONF_FLOW_MODE: Final[str] = "flow_mode"
+CONF_FLOW_MODE_SAMPLE_RATE: Final[str] = "flow_mode_sample_rate"
 CONF_LOG_LEVEL: Final[str] = "log_level"
 CONF_HIDE_GROUP_CHILDS: Final[str] = "hide_group_childs"
 CONF_CROSSFADE_DURATION: Final[str] = "crossfade_duration"
@@ -94,6 +99,7 @@ CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
 CONF_AUTO_PLAY: Final[str] = "auto_play"
+CONF_PLAY_MEDIA_OVERRIDES_GROUP: Final[str] = "play_media_overrides_group"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
 CONF_DYNAMIC_GROUP_MEMBERS: Final[str] = "dynamic_members"
 CONF_HIDE_IN_UI: Final[str] = "hide_in_ui"
@@ -140,11 +146,22 @@ CONF_ENABLED: Final[str] = "enabled"
 CONF_PROTOCOL_KEY_SPLITTER: Final[str] = "||protocol||"
 CONF_PROTOCOL_CATEGORY_PREFIX: Final[str] = "protocol"
 CONF_DEFAULT_PROVIDERS_SETUP: Final[str] = "default_providers_setup"
+CONF_BACKGROUND_SCAN_CONCURRENCY: Final[str] = "background_scan_concurrency"
+
+
+def _default_background_scan_concurrency() -> int:
+    cpu_count = os.process_cpu_count() or os.cpu_count() or 4
+    if cpu_count >= 16:
+        return 4
+    if cpu_count >= 8:
+        return 2
+    return 1
 
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
 DEFAULT_PORT: Final[int] = 8095
+DEFAULT_BACKGROUND_SCAN_CONCURRENCY: Final[int] = _default_background_scan_concurrency()
 
 
 # common db tables
@@ -168,6 +185,9 @@ DB_TABLE_AUDIO_ANALYSIS: Final[str] = "audio_analysis"
 DB_TABLE_GENRES: Final[str] = "genres"
 DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
 DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION: Final[str] = "genre_media_item_exclusion"
+
+# Min fraction of a database file reclaimable before a startup VACUUM is worth running.
+VACUUM_MIN_RECLAIM_RATIO: Final[float] = 0.2
 
 # Loudness measurements at or below this value are considered unreliable:
 # ebur128 reports ~-70 LUFS when it receives near-silence or very little
@@ -216,7 +236,7 @@ DEFAULT_GENRES: Final[tuple[str, ...]] = tuple(entry["genre"] for entry in DEFAU
 
 # all other
 MASS_LOGO_ONLINE: Final[str] = (
-    "https://github.com/music-assistant/server/blob/dev/music_assistant/logo.png"
+    "https://raw.githubusercontent.com/music-assistant/server/refs/heads/dev/music_assistant/logo.png"
 )
 ENCRYPT_SUFFIX = "_encrypted_"
 CONFIGURABLE_CORE_CONTROLLERS = (
@@ -238,14 +258,13 @@ PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music")
 CONF_ENTRY_LOG_LEVEL = ConfigEntry(
     key=CONF_LOG_LEVEL,
     type=ConfigEntryType.STRING,
-    label="Log level",
     options=[
-        ConfigValueOption("global", "GLOBAL"),
-        ConfigValueOption("info", "INFO"),
-        ConfigValueOption("warning", "WARNING"),
-        ConfigValueOption("error", "ERROR"),
-        ConfigValueOption("debug", "DEBUG"),
-        ConfigValueOption("verbose", "VERBOSE"),
+        ConfigValueOption("GLOBAL"),
+        ConfigValueOption("INFO"),
+        ConfigValueOption("WARNING"),
+        ConfigValueOption("ERROR"),
+        ConfigValueOption("DEBUG"),
+        ConfigValueOption("VERBOSE"),
     ],
     default_value="GLOBAL",
     advanced=True,
@@ -260,8 +279,30 @@ DEFAULT_CORE_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
 CONF_ENTRY_FLOW_MODE = ConfigEntry(
     key=CONF_FLOW_MODE,
     type=ConfigEntryType.BOOLEAN,
-    label="Enforce Gapless playback with Queue Flow Mode streaming",
     default_value=False,
+    category="protocol_generic",
+    advanced=True,
+    requires_reload=True,
+)
+
+
+FLOW_MODE_SAMPLE_RATE_SMART: Final[str] = "smart"
+FLOW_MODE_SAMPLE_RATE_BIT_PERFECT: Final[str] = "bit_perfect"
+FLOW_MODE_SAMPLE_RATE_48000: Final[str] = "48000"
+FLOW_MODE_SAMPLE_RATE_96000: Final[str] = "96000"
+FLOW_MODE_SAMPLE_RATE_HIGHEST: Final[str] = "highest"
+
+CONF_ENTRY_FLOW_MODE_SAMPLE_RATE = ConfigEntry(
+    key=CONF_FLOW_MODE_SAMPLE_RATE,
+    type=ConfigEntryType.STRING,
+    options=[
+        ConfigValueOption(FLOW_MODE_SAMPLE_RATE_SMART),
+        ConfigValueOption(FLOW_MODE_SAMPLE_RATE_BIT_PERFECT),
+        ConfigValueOption(FLOW_MODE_SAMPLE_RATE_48000),
+        ConfigValueOption(FLOW_MODE_SAMPLE_RATE_96000),
+        ConfigValueOption(FLOW_MODE_SAMPLE_RATE_HIGHEST),
+    ],
+    default_value=FLOW_MODE_SAMPLE_RATE_SMART,
     category="protocol_generic",
     advanced=True,
     requires_reload=True,
@@ -271,13 +312,18 @@ CONF_ENTRY_FLOW_MODE = ConfigEntry(
 CONF_ENTRY_AUTO_PLAY = ConfigEntry(
     key=CONF_AUTO_PLAY,
     type=ConfigEntryType.BOOLEAN,
-    label="Automatically play/resume on power on",
     default_value=False,
-    description="When this player is turned ON, automatically start playing "
-    "(if there are items in the queue).",
     depends_on=CONF_POWER_CONTROL,
     depends_on_value_not="none",
     category="player_controls",
+)
+
+CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP = ConfigEntry(
+    key=CONF_PLAY_MEDIA_OVERRIDES_GROUP,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=True,
+    category="generic",
+    advanced=False,
 )
 
 CONF_ENTRY_MIN_VOLUME = ConfigEntry(
@@ -285,9 +331,6 @@ CONF_ENTRY_MIN_VOLUME = ConfigEntry(
     type=ConfigEntryType.INTEGER,
     range=(0, 100),
     default_value=0,
-    label="Minimum volume",
-    description="Minimum device volume. "
-    "The volume slider (0-100) will be scaled to this as the lower bound.",
     category="player_controls",
     advanced=True,
     depends_on=CONF_VOLUME_CONTROL,
@@ -299,9 +342,6 @@ CONF_ENTRY_MAX_VOLUME = ConfigEntry(
     type=ConfigEntryType.INTEGER,
     range=(0, 100),
     default_value=100,
-    label="Maximum volume",
-    description="Maximum device volume. "
-    "The volume slider (0-100) will be scaled to this as the upper bound.",
     category="player_controls",
     advanced=True,
     depends_on=CONF_VOLUME_CONTROL,
@@ -312,13 +352,12 @@ CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
     key=CONF_OUTPUT_CHANNELS,
     type=ConfigEntryType.STRING,
     options=[
-        ConfigValueOption("Stereo (both channels)", "stereo"),
-        ConfigValueOption("Left channel", "left"),
-        ConfigValueOption("Right channel", "right"),
-        ConfigValueOption("Mono (both channels)", "mono"),
+        ConfigValueOption("stereo"),
+        ConfigValueOption("left"),
+        ConfigValueOption("right"),
+        ConfigValueOption("mono"),
     ],
     default_value="stereo",
-    label="Output Channel Mode",
     category="protocol_generic",
     advanced=True,
     requires_reload=True,
@@ -327,9 +366,7 @@ CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
 CONF_ENTRY_VOLUME_NORMALIZATION = ConfigEntry(
     key=CONF_VOLUME_NORMALIZATION,
     type=ConfigEntryType.BOOLEAN,
-    label="Enable volume normalization",
     default_value=True,
-    description="Enable volume normalization (EBU-R128 based)",
     category="playback",
     requires_reload=True,
 )
@@ -339,8 +376,6 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     type=ConfigEntryType.INTEGER,
     range=(-30, -5),
     default_value=-17,
-    label="Target level for volume normalization",
-    description="Adjust average (perceived) loudness to this target level",
     depends_on=CONF_VOLUME_NORMALIZATION,
     category="playback",
     advanced=True,
@@ -350,9 +385,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
 CONF_ENTRY_OUTPUT_LIMITER = ConfigEntry(
     key=CONF_OUTPUT_LIMITER,
     type=ConfigEntryType.BOOLEAN,
-    label="Enable limiting to prevent clipping",
     default_value=True,
-    description="Activates a limiter that prevents audio distortion by making loud peaks quieter.",
     category="playback",
     advanced=True,
     requires_reload=True,
@@ -362,18 +395,12 @@ CONF_ENTRY_OUTPUT_LIMITER = ConfigEntry(
 CONF_ENTRY_SMART_FADES_MODE = ConfigEntry(
     key=CONF_SMART_FADES_MODE,
     type=ConfigEntryType.STRING,
-    label="Enable Smart Fades",
     options=[
-        ConfigValueOption("Disabled", "disabled"),
-        ConfigValueOption("Smart Crossfade", "smart_crossfade"),
-        ConfigValueOption("Standard Crossfade", "standard_crossfade"),
+        ConfigValueOption("disabled"),
+        ConfigValueOption("smart_crossfade"),
+        ConfigValueOption("standard_crossfade"),
     ],
     default_value="disabled",
-    description="Select the crossfade mode to use when transitioning between tracks.\n\n"
-    "- 'Smart Crossfade': Uses beat matching and EQ filters to create smooth transitions"
-    " between tracks.\n"
-    "- 'Standard Crossfade': Regular crossfade that crossfades the last/first x-seconds of a "
-    "track.",
     category="playback",
     requires_reload=True,
 )
@@ -383,9 +410,6 @@ CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     type=ConfigEntryType.INTEGER,
     range=(1, 15),
     default_value=8,
-    label="Fallback crossfade duration",
-    description="Duration in seconds of the standard crossfade between tracks when"
-    " 'Enable Smart Fade' has been set to 'Standard Crossfade' or when a Smart Fade fails",
     depends_on=CONF_SMART_FADES_MODE,
     depends_on_value="standard_crossfade",
     category="playback",
@@ -397,20 +421,13 @@ CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
 CONF_ENTRY_OUTPUT_CODEC = ConfigEntry(
     key=CONF_OUTPUT_CODEC,
     type=ConfigEntryType.STRING,
-    label="Output codec to use for streaming audio to the player",
     default_value="flac",
     options=[
-        ConfigValueOption("FLAC (lossless, compressed)", "flac"),
-        ConfigValueOption("MP3 (lossy)", "mp3"),
-        ConfigValueOption("AAC (lossy)", "aac"),
-        ConfigValueOption("WAV (lossless, uncompressed)", "wav"),
+        ConfigValueOption("flac"),
+        ConfigValueOption("mp3"),
+        ConfigValueOption("aac"),
+        ConfigValueOption("wav"),
     ],
-    description="Select the codec to use for streaming audio to this player. \n"
-    "By default, Music Assistant sends lossless, high quality audio to all players and prefers "
-    "the FLAC codec because it offers some compression while still remaining lossless \n\n"
-    "Some players however do not support FLAC and require the stream to be packed "
-    "into e.g. a lossy mp3 codec or you like to save some network bandwidth. \n\n "
-    "Choosing a lossy codec saves some bandwidth at the cost of audio quality.",
     category="protocol_generic",
     advanced=True,
     requires_reload=True,
@@ -445,10 +462,6 @@ CONF_ENTRY_SYNC_ADJUST = ConfigEntry(
     type=ConfigEntryType.INTEGER,
     range=(-500, 500),
     default_value=0,
-    label="Audio synchronization delay correction",
-    description="If this player is playing audio synced with other players "
-    "and you always hear the audio too early or late on this player, "
-    "you can shift the audio a bit.",
     category="protocol_generic",
     advanced=True,
     requires_reload=True,
@@ -459,7 +472,6 @@ CONF_ENTRY_TTS_PRE_ANNOUNCE = ConfigEntry(
     key=CONF_TTS_PRE_ANNOUNCE,
     type=ConfigEntryType.BOOLEAN,
     default_value=True,
-    label="Pre-announce TTS announcements",
     category="announcements",
 )
 
@@ -468,13 +480,12 @@ CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY = ConfigEntry(
     key=CONF_ANNOUNCE_VOLUME_STRATEGY,
     type=ConfigEntryType.STRING,
     options=[
-        ConfigValueOption("Absolute volume", "absolute"),
-        ConfigValueOption("Relative volume increase", "relative"),
-        ConfigValueOption("Volume increase by fixed percentage", "percentual"),
-        ConfigValueOption("Do not adjust volume", "none"),
+        ConfigValueOption("absolute"),
+        ConfigValueOption("relative"),
+        ConfigValueOption("percentual"),
+        ConfigValueOption("none"),
     ],
     default_value="percentual",
-    label="Volume strategy for Announcements",
     category="announcements",
 )
 
@@ -486,7 +497,6 @@ CONF_ENTRY_ANNOUNCE_VOLUME = ConfigEntry(
     key=CONF_ANNOUNCE_VOLUME,
     type=ConfigEntryType.INTEGER,
     default_value=85,
-    label="Volume for Announcements",
     category="announcements",
 )
 CONF_ENTRY_ANNOUNCE_VOLUME_HIDDEN = ConfigEntry.from_dict(
@@ -497,8 +507,6 @@ CONF_ENTRY_ANNOUNCE_VOLUME_MIN = ConfigEntry(
     key=CONF_ANNOUNCE_VOLUME_MIN,
     type=ConfigEntryType.INTEGER,
     default_value=15,
-    label="Minimum Volume level for Announcements",
-    description="The volume (adjustment) of announcements should no go below this level.",
     category="announcements",
 )
 CONF_ENTRY_ANNOUNCE_VOLUME_MIN_HIDDEN = ConfigEntry.from_dict(
@@ -509,8 +517,6 @@ CONF_ENTRY_ANNOUNCE_VOLUME_MAX = ConfigEntry(
     key=CONF_ANNOUNCE_VOLUME_MAX,
     type=ConfigEntryType.INTEGER,
     default_value=75,
-    label="Maximum Volume level for Announcements",
-    description="The volume (adjustment) of announcements should no go above this level.",
     category="announcements",
 )
 CONF_ENTRY_ANNOUNCE_VOLUME_MAX_HIDDEN = ConfigEntry.from_dict(
@@ -531,30 +537,27 @@ CONF_ENTRY_SAMPLE_RATES = ConfigEntry(
     type=ConfigEntryType.SPLITTED_STRING,
     multi_value=True,
     options=[
-        ConfigValueOption("44.1kHz / 16 bits", f"44100{MULTI_VALUE_SPLITTER}16"),
-        ConfigValueOption("44.1kHz / 24 bits", f"44100{MULTI_VALUE_SPLITTER}24"),
-        ConfigValueOption("48kHz / 16 bits", f"48000{MULTI_VALUE_SPLITTER}16"),
-        ConfigValueOption("48kHz / 24 bits", f"48000{MULTI_VALUE_SPLITTER}24"),
-        ConfigValueOption("88.2kHz / 16 bits", f"88200{MULTI_VALUE_SPLITTER}16"),
-        ConfigValueOption("88.2kHz / 24 bits", f"88200{MULTI_VALUE_SPLITTER}24"),
-        ConfigValueOption("96kHz / 16 bits", f"96000{MULTI_VALUE_SPLITTER}16"),
-        ConfigValueOption("96kHz / 24 bits", f"96000{MULTI_VALUE_SPLITTER}24"),
-        ConfigValueOption("176.4kHz / 16 bits", f"176400{MULTI_VALUE_SPLITTER}16"),
-        ConfigValueOption("176.4kHz / 24 bits", f"176400{MULTI_VALUE_SPLITTER}24"),
-        ConfigValueOption("192kHz / 16 bits", f"192000{MULTI_VALUE_SPLITTER}16"),
-        ConfigValueOption("192kHz / 24 bits", f"192000{MULTI_VALUE_SPLITTER}24"),
-        ConfigValueOption("352.8kHz / 16 bits", f"352800{MULTI_VALUE_SPLITTER}16"),
-        ConfigValueOption("352.8kHz / 24 bits", f"352800{MULTI_VALUE_SPLITTER}24"),
-        ConfigValueOption("384kHz / 16 bits", f"384000{MULTI_VALUE_SPLITTER}16"),
-        ConfigValueOption("384kHz / 24 bits", f"384000{MULTI_VALUE_SPLITTER}24"),
+        ConfigValueOption(f"44100{MULTI_VALUE_SPLITTER}16"),
+        ConfigValueOption(f"44100{MULTI_VALUE_SPLITTER}24"),
+        ConfigValueOption(f"48000{MULTI_VALUE_SPLITTER}16"),
+        ConfigValueOption(f"48000{MULTI_VALUE_SPLITTER}24"),
+        ConfigValueOption(f"88200{MULTI_VALUE_SPLITTER}16"),
+        ConfigValueOption(f"88200{MULTI_VALUE_SPLITTER}24"),
+        ConfigValueOption(f"96000{MULTI_VALUE_SPLITTER}16"),
+        ConfigValueOption(f"96000{MULTI_VALUE_SPLITTER}24"),
+        ConfigValueOption(f"176400{MULTI_VALUE_SPLITTER}16"),
+        ConfigValueOption(f"176400{MULTI_VALUE_SPLITTER}24"),
+        ConfigValueOption(f"192000{MULTI_VALUE_SPLITTER}16"),
+        ConfigValueOption(f"192000{MULTI_VALUE_SPLITTER}24"),
+        ConfigValueOption(f"352800{MULTI_VALUE_SPLITTER}16"),
+        ConfigValueOption(f"352800{MULTI_VALUE_SPLITTER}24"),
+        ConfigValueOption(f"384000{MULTI_VALUE_SPLITTER}16"),
+        ConfigValueOption(f"384000{MULTI_VALUE_SPLITTER}24"),
     ],
     default_value=[f"44100{MULTI_VALUE_SPLITTER}16", f"48000{MULTI_VALUE_SPLITTER}16"],
     required=True,
-    label="Sample rates supported by this player",
     category="protocol_generic",
     advanced=True,
-    description="The sample rates (and bit depths) supported by this player.\n"
-    "Content with unsupported sample rates will be automatically resampled.",
     requires_reload=True,
 )
 
@@ -563,17 +566,13 @@ CONF_ENTRY_HTTP_PROFILE = ConfigEntry(
     key=CONF_HTTP_PROFILE,
     type=ConfigEntryType.STRING,
     options=[
-        ConfigValueOption("Profile 1 - chunked", "chunked"),
-        ConfigValueOption("Profile 2 - no content length", "no_content_length"),
-        ConfigValueOption("Profile 3 - forced content length", "forced_content_length"),
+        ConfigValueOption("chunked"),
+        ConfigValueOption("no_content_length"),
+        ConfigValueOption("forced_content_length"),
     ],
     default_value="no_content_length",
-    label="HTTP Profile used for sending audio",
     category="protocol_generic",
     advanced=True,
-    description="This is considered to be a very advanced setting, only adjust this if needed, "
-    "for example if your player stops playing halfway streams or if you experience "
-    "other playback related issues. In most cases the default setting is fine.",
     requires_reload=True,
 )
 
@@ -607,20 +606,15 @@ CONF_ENTRY_ENABLE_ICY_METADATA = ConfigEntry(
     key=CONF_ENABLE_ICY_METADATA,
     type=ConfigEntryType.STRING,
     options=[
-        ConfigValueOption("Disabled - do not send ICY metadata", "disabled"),
-        ConfigValueOption("Profile 1 - basic info", "basic"),
-        ConfigValueOption("Profile 2 - full info (including image)", "full"),
+        ConfigValueOption("disabled"),
+        ConfigValueOption("basic"),
+        ConfigValueOption("full"),
     ],
     depends_on=CONF_FLOW_MODE,
     depends_on_value_not=False,
     default_value="disabled",
-    label="Try to inject metadata into stream (ICY)",
     category="protocol_generic",
     advanced=True,
-    description="Try to inject metadata into the stream (ICY) to show track info on the player, "
-    "even when flow mode is enabled.\n\nThis is called ICY metadata and is what is used by "
-    "online radio stations to show you what is playing. \n\nBe aware that not all players support "
-    "this correctly. If you experience issues with playback, try disabling this setting.",
     requires_reload=True,
 )
 
@@ -647,10 +641,6 @@ CONF_ENTRY_ICY_METADATA_DEFAULT_FULL = ConfigEntry.from_dict(
 CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES = ConfigEntry(
     key="crossfade_different_sample_rates",
     type=ConfigEntryType.BOOLEAN,
-    label="Allow crossfades between tracks of different sample rates",
-    description="Enable this option to allow crossfades between tracks that have different "
-    "sample rates (e.g. 44.1kHz to 48kHz). \n\n "
-    "Disable this option if you experience audio glitches during transitions between tracks.",
     default_value=True,
     category="protocol_generic",
     advanced=True,
@@ -662,26 +652,18 @@ CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES = ConfigEntry(
 CONF_ENTRY_WARN_PREVIEW = ConfigEntry(
     key="preview_note",
     type=ConfigEntryType.ALERT,
-    label="Please note that this feature/provider is still in early stages. \n\n"
-    "Functionality may still be limited and/or bugs may occur!",
+    required=False,
+)
+
+CONF_ENTRY_UNOFFICIAL_PROVIDER = ConfigEntry(
+    key="unofficial_provider_note",
+    type=ConfigEntryType.ALERT,
     required=False,
 )
 
 CONF_ENTRY_MANUAL_DISCOVERY_IPS = ConfigEntry(
     key="manual_discovery_ip_addresses",
     type=ConfigEntryType.STRING,
-    label="Manual IP addresses for discovery",
-    description="In normal circumstances, "
-    "Music Assistant will automatically discover all players on the network. "
-    "using multicast discovery on the (L2) local network, such as mDNS or UPNP.\n\n"
-    "In case of special network setups or when you run into issues where "
-    "one or more players are not discovered, you can manually add the IP "
-    "addresses of the players here. \n\n"
-    "Note that this setting is not recommended for normal use and should only be used "
-    "if you know what you are doing. Also, if players are not on the same subnet as"
-    "the Music Assistant server, you may run into issues with streaming. "
-    "In that case always ensure that the players can reach the server on the network "
-    "and double check the base URL configuration of the Stream server in the settings.",
     advanced=True,
     default_value=[],
     required=False,
@@ -691,9 +673,6 @@ CONF_ENTRY_MANUAL_DISCOVERY_IPS = ConfigEntry(
 CONF_ENTRY_LIBRARY_SYNC_ARTISTS = ConfigEntry(
     key="library_sync_artists",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync Library Artists from this source to Music Assistant",
-    description="Whether to synchronize (favourited/in-library) Artists from this "
-    "source to the Music Assistant Library.",
     default_value=True,
     category="sync_options",
 )
@@ -702,16 +681,9 @@ CONF_ENTRY_LIBRARY_SYNC_ARTISTS = ConfigEntry(
 CONF_ENTRY_ZEROCONF_INTERFACES = ConfigEntry(
     key=CONF_ZEROCONF_INTERFACES,
     type=ConfigEntryType.STRING,
-    label="Mdns/Zeroconf discovery interface(s)",
-    description="In normal circumstances, Music Assistant will automatically "
-    "discover all players on the network using multicast discovery on the "
-    "(L2) local network, such as mDNS or UPNP.\n\n"
-    "By default, Music Assistant will only listen on the default interface. "
-    "If you have multiple network interfaces and you want to discover players "
-    "on all interfaces, you can change this setting to 'All interfaces'.",
     options=[
-        ConfigValueOption("Default interface", "default"),
-        ConfigValueOption("All interfaces", "all"),
+        ConfigValueOption("default"),
+        ConfigValueOption("all"),
     ],
     default_value="default",
     advanced=True,
@@ -720,86 +692,48 @@ CONF_ENTRY_ZEROCONF_INTERFACES = ConfigEntry(
 CONF_ENTRY_LIBRARY_SYNC_ALBUMS = ConfigEntry(
     key="library_sync_albums",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync Library Albums from this source to Music Assistant",
-    description="Whether to import (favourited/in-library) Albums from this "
-    "source to the Music Assistant Library. \n\n"
-    "Please note that by adding an Album into the Music Assistant library, "
-    "the Album Artists will always be imported as well.",
     default_value=True,
     category="sync_options",
 )
 CONF_ENTRY_LIBRARY_SYNC_TRACKS = ConfigEntry(
     key="library_sync_tracks",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync Library Tracks from this source to Music Assistant",
-    description="Whether to import (favourited/in-library) Tracks from this "
-    "source to the Music Assistant Library. \n\n"
-    "Please note that by adding a Track into the Music Assistant library, "
-    "the Track's Artists and Album will always be imported as well.",
     default_value=True,
     category="sync_options",
 )
 CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS = ConfigEntry(
     key="library_sync_playlists",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync Library Playlists from this source to Music Assistant",
-    description="Whether to import (favourited/in-library) Playlists from this "
-    "source to the Music Assistant Library.",
     default_value=True,
     category="sync_options",
 )
 CONF_ENTRY_LIBRARY_SYNC_PODCASTS = ConfigEntry(
     key="library_sync_podcasts",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync Library Podcasts from this source to Music Assistant",
-    description="Whether to import (favourited/in-library) Podcasts from this "
-    "source to the Music Assistant Library.",
     default_value=True,
     category="sync_options",
 )
 CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS = ConfigEntry(
     key="library_sync_audiobooks",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync Library Audiobooks from this source to Music Assistant",
-    description="Whether to import (favourited/in-library) Audiobooks from this "
-    "source to the Music Assistant Library.",
     default_value=True,
     category="sync_options",
 )
 CONF_ENTRY_LIBRARY_SYNC_RADIOS = ConfigEntry(
     key="library_sync_radios",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync Library Radios from this source to Music Assistant",
-    description="Whether to import (favourited/in-library) Radio stations from this "
-    "source to the Music Assistant Library.",
     default_value=True,
     category="sync_options",
 )
 CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS = ConfigEntry(
     key="library_sync_album_tracks",
     type=ConfigEntryType.BOOLEAN,
-    label="Import album tracks",
-    description="By default, when importing Albums into the library, "
-    "only the Album itself will be imported into the Music Assistant Library, "
-    "allowing you to manually browse and select which tracks you want to import. \n\n"
-    "If you want to override this default behavior, "
-    "you can use this configuration option.\n\n"
-    "Please note that some (streaming) sources may already define this behavior unsolicited, "
-    "by automatically adding all tracks from the album to their library/favorites.",
     default_value=False,
     category="sync_options",
 )
 CONF_ENTRY_LIBRARY_SYNC_PLAYLIST_TRACKS = ConfigEntry(
     key="library_sync_playlist_tracks",
     type=ConfigEntryType.STRING,
-    label="Import playlist tracks",
-    description="By default, when importing Playlists into the library, "
-    "only the Playlist itself will be imported into the Music Assistant Library, "
-    "allowing you to browse and play the Playlist and optionally add any individual "
-    "tracks of the Playlist to the Music Assistant Library manually. \n\n"
-    "Use this configuration option to override this default behavior, "
-    "by specifying the Playlists for which you'd like to import all tracks.\n"
-    "You can either enter the Playlist name (case sensitive) or the Playlist URI.",
     default_value=[],
     category="sync_options",
     multi_value=True,
@@ -808,13 +742,6 @@ CONF_ENTRY_LIBRARY_SYNC_PLAYLIST_TRACKS = ConfigEntry(
 CONF_ENTRY_LIBRARY_SYNC_BACK = ConfigEntry(
     key="library_sync_back",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync back library additions/removals (2-way sync)",
-    description="Specify the behavior if an item is manually added to "
-    "(or removed from) the Music Assistant Library. \n"
-    "Should we synchronise that action back to the source?\n\n"
-    "Please note that if you you don't sync back to the source and you have enabled "
-    "automatic sync/import for this source, a removed item may reappear in the library "
-    "the next time a sync is performed.",
     default_value=True,
     category="sync_options",
 )
@@ -822,11 +749,6 @@ CONF_ENTRY_LIBRARY_SYNC_BACK = ConfigEntry(
 CONF_ENTRY_LIBRARY_SYNC_DELETIONS = ConfigEntry(
     key="library_sync_deletions",
     type=ConfigEntryType.BOOLEAN,
-    label="Sync library deletions",
-    description="When enabled, items removed from the source's library will also be "
-    "hidden from the Music Assistant library.\n\n"
-    "When disabled, items removed from the source will remain visible in the "
-    "Music Assistant library.",
     default_value=True,
     category="sync_options",
     advanced=True,
@@ -836,9 +758,6 @@ CONF_ENTRY_PLAYER_ICON = ConfigEntry(
     key=CONF_ICON,
     type=ConfigEntryType.ICON,
     default_value="mdi-speaker",
-    label="Icon",
-    description="Material design icon for this player. "
-    "\n\nSee https://pictogrammers.com/library/mdi/",
     category="generic",
 )
 
@@ -1009,19 +928,22 @@ ACTIVE_PROTOCOL_FEATURES: Final[set[PlayerFeature]] = {
 }
 
 PLAYER_CONTROL_PROTOCOL: Final[str] = "follow_protocol"
-DEFAULT_PROVIDERS: Final[set[tuple[str, bool, Callable[[], bool]]]] = {
+DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     # list of providers that are setup by default once
     # (and they can be removed/disabled by the user if they want to)
     # the boolean value indicates whether it needs to be discovered on mdns
-    # the callable is a precondition that must return True for the provider to be setup
-    ("airplay", False, lambda: True),
-    ("chromecast", False, lambda: True),
-    ("dlna", False, lambda: True),
-    ("sonos", True, lambda: True),
-    ("bluesound", True, lambda: True),
-    ("heos", True, lambda: True),
-    ("party", False, lambda: True),
-    ("smart_fades", False, lambda: (os.cpu_count() or 1) > 1),
+    ("airplay", False),
+    ("chromecast", False),
+    ("dlna", False),
+    ("sonos", True),
+    ("bluesound", True),
+    ("heos", True),
+    ("wiim", True),
+    ("party", False),
+    # smart_fades gates on system requirements (RAM/CPU) in its own setup(); an
+    # under-spec host has the auto-created config removed again at load time.
+    ("smart_fades", False),
+    ("lastfm_recommendations", False),
 }
 
 EXTERNAL_SOURCES: Final[set[str]] = {

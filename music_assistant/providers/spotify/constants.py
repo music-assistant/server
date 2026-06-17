@@ -16,7 +16,6 @@ CONF_SYNC_AUDIOBOOK_PROGRESS = "sync_audiobook_progress"
 
 # OAuth Settings
 SCOPE = [
-    "playlist-read",
     "playlist-read-private",
     "playlist-read-collaborative",
     "playlist-modify-public",
@@ -33,8 +32,6 @@ SCOPE = [
     "user-read-playback-state",
     "user-modify-playback-state",
     "user-read-currently-playing",
-    "user-modify-private",
-    "user-modify",
     "user-read-playback-position",
     "user-read-recently-played",
 ]

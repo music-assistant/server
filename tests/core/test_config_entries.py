@@ -35,7 +35,7 @@ class TestRequiresReload:
 
     @pytest.mark.asyncio
     async def test_zeroconf_interfaces_entry_lives_on_discovery_controller(
-        self, mock_mass: "MockMass"
+        self, mock_mass: MockMass
     ) -> None:
         """Test that zeroconf interface selection belongs to the discovery controller."""
         discovery_controller = DiscoveryController(mock_mass)

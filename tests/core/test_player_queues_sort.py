@@ -7,7 +7,7 @@ from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import PlaylistPlayableItem
-from music_assistant.controllers.player_queues import PlayerQueuesController
+from music_assistant.controllers.player_queues.helpers import sort_tracks
 
 
 def _make_provider_mappings(provider: str = "test") -> set[ProviderMapping]:
@@ -72,7 +72,7 @@ class TestSortTracks:
             _make_track("Alpha"),
             _make_track("Bravo"),
         ]
-        result = PlayerQueuesController._sort_tracks(tracks, "name")
+        result = sort_tracks(tracks, "name")
         assert [t.name for t in result] == ["Alpha", "Bravo", "Charlie"]
 
     def test_sort_by_name_ignores_articles(self) -> None:
@@ -82,7 +82,7 @@ class TestSortTracks:
             _make_track("Alpha"),
         ]
         # sort_name for "The Zebra" becomes "zebra, the" so it sorts after "alpha"
-        result = PlayerQueuesController._sort_tracks(tracks, "name")
+        result = sort_tracks(tracks, "name")
         assert [t.name for t in result] == ["Alpha", "The Zebra"]
 
     def test_sort_by_artist(self) -> None:
@@ -92,7 +92,7 @@ class TestSortTracks:
             _make_track("Song2", artist_name="ABBA"),
             _make_track("Song3", artist_name="Metallica"),
         ]
-        result = PlayerQueuesController._sort_tracks(tracks, "artist")
+        result = sort_tracks(tracks, "artist")
         assert [cast("Track", t).artists[0].name for t in result] == [
             "ABBA",
             "Metallica",
@@ -106,7 +106,7 @@ class TestSortTracks:
             _make_track("Song2", album_name="Abbey Road"),
             _make_track("Song3", album_name="Nevermind"),
         ]
-        result = PlayerQueuesController._sort_tracks(tracks, "album")
+        result = sort_tracks(tracks, "album")
         albums = [cast("Track", t).album for t in result]
         assert all(a is not None for a in albums)
         assert [a.name for a in albums if a is not None] == [
@@ -122,7 +122,7 @@ class TestSortTracks:
             _make_track("Short", duration=100),
             _make_track("Medium", duration=300),
         ]
-        result = PlayerQueuesController._sort_tracks(tracks, "duration")
+        result = sort_tracks(tracks, "duration")
         assert [t.duration for t in result] == [100, 300, 500]
 
     def test_sort_by_duration_descending(self) -> None:
@@ -132,7 +132,7 @@ class TestSortTracks:
             _make_track("Short", duration=100),
             _make_track("Medium", duration=300),
         ]
-        result = PlayerQueuesController._sort_tracks(tracks, "duration_desc")
+        result = sort_tracks(tracks, "duration_desc")
         assert [t.duration for t in result] == [500, 300, 100]
 
     def test_sort_by_position_desc(self) -> None:
@@ -142,7 +142,7 @@ class TestSortTracks:
             _make_track("Third", position=3),
             _make_track("Second", position=2),
         ]
-        result = PlayerQueuesController._sort_tracks(tracks, "position_desc")
+        result = sort_tracks(tracks, "position_desc")
         assert [t.position for t in result] == [3, 2, 1]
 
     def test_sort_by_track_number(self) -> None:
@@ -152,7 +152,7 @@ class TestSortTracks:
             _make_track("D1T3", disc_number=1, track_number=3),
             _make_track("D1T1", disc_number=1, track_number=1),
         ]
-        result = PlayerQueuesController._sort_tracks(tracks, "track_number")
+        result = sort_tracks(tracks, "track_number")
         assert [t.name for t in result] == ["D1T1", "D1T3", "D2T1"]
 
     def test_unknown_sort_key_returns_original_order(self) -> None:
@@ -162,7 +162,7 @@ class TestSortTracks:
             _make_track("A"),
             _make_track("B"),
         ]
-        result = PlayerQueuesController._sort_tracks(tracks, "nonexistent")
+        result = sort_tracks(tracks, "nonexistent")
         assert [t.name for t in result] == ["C", "A", "B"]
 
     def test_sort_is_stable(self) -> None:
@@ -172,7 +172,7 @@ class TestSortTracks:
             _make_track("Song2", duration=200),
             _make_track("Song3", duration=200),
         ]
-        result = PlayerQueuesController._sort_tracks(tracks, "duration")
+        result = sort_tracks(tracks, "duration")
         assert [t.name for t in result] == ["Song1", "Song2", "Song3"]
 
     def test_sort_with_missing_album(self) -> None:
@@ -181,7 +181,7 @@ class TestSortTracks:
         track_no_album.album = None
         track_with_album = _make_track("WithAlbum", album_name="Abc")
         tracks: list[PlaylistPlayableItem] = [track_with_album, track_no_album]
-        result = PlayerQueuesController._sort_tracks(tracks, "album")
+        result = sort_tracks(tracks, "album")
         # empty string sorts before "abc"
         assert [t.name for t in result] == ["NoAlbum", "WithAlbum"]
 
@@ -191,7 +191,7 @@ class TestSortTracks:
         track_no_artist.artists = UniqueList()
         track_with_artist = _make_track("WithArtist", artist_name="Beta")
         tracks: list[PlaylistPlayableItem] = [track_with_artist, track_no_artist]
-        result = PlayerQueuesController._sort_tracks(tracks, "artist")
+        result = sort_tracks(tracks, "artist")
         assert [t.name for t in result] == ["NoArtist", "WithArtist"]
 
     def test_sort_does_not_mutate_input(self) -> None:
@@ -201,11 +201,11 @@ class TestSortTracks:
             _make_track("Alpha"),
         ]
         original_order = [t.name for t in tracks]
-        PlayerQueuesController._sort_tracks(tracks, "name")
+        sort_tracks(tracks, "name")
         assert [t.name for t in tracks] == original_order
 
     def test_empty_list(self) -> None:
         """Sorting an empty list returns an empty list."""
         tracks: list[PlaylistPlayableItem] = []
-        result = PlayerQueuesController._sort_tracks(tracks, "name")
+        result = sort_tracks(tracks, "name")
         assert result == []

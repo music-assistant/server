@@ -55,7 +55,7 @@ class PodcastIndexProvider(MusicProvider):
         # Test API connection
         try:
             await self._api_request("stats/current")
-        except (LoginFailed, ProviderUnavailableError):
+        except LoginFailed, ProviderUnavailableError:
             # Re-raise these specific errors as they have proper context
             raise
         except aiohttp.ClientConnectorError as err:
@@ -218,7 +218,7 @@ class PodcastIndexProvider(MusicProvider):
                 podcast = parse_podcast_from_feed(response["feed"], self.instance_id, self.domain)
                 if podcast:
                     return podcast
-        except (ProviderUnavailableError, InvalidDataError):
+        except ProviderUnavailableError, InvalidDataError:
             # Re-raise these specific errors
             raise
         except Exception as err:
@@ -226,9 +226,7 @@ class PodcastIndexProvider(MusicProvider):
 
         raise MediaNotFoundError(f"Podcast {prov_podcast_id} not found")
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get episodes for a podcast."""
         self.logger.debug("Getting episodes for podcast ID: %s", prov_podcast_id)
 
@@ -274,7 +272,7 @@ class PodcastIndexProvider(MusicProvider):
                 if episode:
                     yield episode
 
-        except (ProviderUnavailableError, InvalidDataError):
+        except ProviderUnavailableError, InvalidDataError:
             # Re-raise these specific errors
             raise
         except Exception as err:
@@ -302,7 +300,7 @@ class PodcastIndexProvider(MusicProvider):
                 if episode:
                     return episode
 
-        except (ProviderUnavailableError, InvalidDataError):
+        except ProviderUnavailableError, InvalidDataError:
             # Re-raise these specific errors
             raise
         except ValueError as err:
@@ -347,7 +345,7 @@ class PodcastIndexProvider(MusicProvider):
                         allow_seek=True,
                     )
 
-        except (ProviderUnavailableError, InvalidDataError):
+        except ProviderUnavailableError, InvalidDataError:
             # Re-raise these specific errors
             raise
         except ValueError as err:
@@ -357,14 +355,6 @@ class PodcastIndexProvider(MusicProvider):
             self.logger.warning("Unexpected error getting stream for %s: %s", item_id, err)
 
         raise MediaNotFoundError(f"Stream not found for {item_id}")
-
-    async def get_item(self, media_type: MediaType, prov_item_id: str) -> Podcast | PodcastEpisode:
-        """Get single MediaItem from provider."""
-        if media_type == MediaType.PODCAST:
-            return await self.get_podcast(prov_item_id)
-        if media_type == MediaType.PODCAST_EPISODE:
-            return await self.get_podcast_episode(prov_item_id)
-        raise MediaNotFoundError(f"Media type {media_type} not supported by this provider")
 
     async def _fetch_podcasts(
         self, endpoint: str, params: dict[str, Any] | None = None
@@ -393,7 +383,7 @@ class PodcastIndexProvider(MusicProvider):
             response = await self._api_request("podcasts/byfeedid", params={"id": podcast_id})
             feed_data: dict[str, Any] = response.get("feed", {})
             return feed_data.get("url")
-        except (ProviderUnavailableError, InvalidDataError):
+        except ProviderUnavailableError, InvalidDataError:
             # Re-raise these specific errors
             raise
         except Exception as err:
@@ -410,7 +400,7 @@ class PodcastIndexProvider(MusicProvider):
         """Browse trending podcasts."""
         try:
             return await self._fetch_podcasts("podcasts/trending", {"max": 50})
-        except (ProviderUnavailableError, InvalidDataError):
+        except ProviderUnavailableError, InvalidDataError:
             raise
         except Exception as err:
             self.logger.warning(
@@ -443,7 +433,7 @@ class PodcastIndexProvider(MusicProvider):
 
             return episodes
 
-        except (ProviderUnavailableError, InvalidDataError):
+        except ProviderUnavailableError, InvalidDataError:
             # Re-raise these specific errors
             raise
         except Exception as err:
@@ -475,7 +465,7 @@ class PodcastIndexProvider(MusicProvider):
             # Sort by name
             return sorted(categories, key=lambda x: x.name)
 
-        except (ProviderUnavailableError, InvalidDataError):
+        except ProviderUnavailableError, InvalidDataError:
             # Re-raise these specific errors
             raise
         except Exception as err:
@@ -499,7 +489,7 @@ class PodcastIndexProvider(MusicProvider):
 
             return podcasts
 
-        except (ProviderUnavailableError, InvalidDataError):
+        except ProviderUnavailableError, InvalidDataError:
             raise
         except Exception as err:
             self.logger.warning(

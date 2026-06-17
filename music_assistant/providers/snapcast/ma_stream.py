@@ -421,8 +421,57 @@ class SnapcastMAStream:
             self._streamer_task = self._mass.create_task(self._streamer_task_impl())
             self._streamer_task.add_done_callback(self._on_streamer_done)
 
+    def _find_local_stream_by_name(self, name: str) -> SnapstreamProto | None:
+        """
+        Look up a snapserver stream by its name (not id) in the local cache.
+
+        :param name: Stream name to look up.
+        :return: The matching SnapstreamProto, or None if not found.
+        """
+        for s in self._provider._snapserver.streams:
+            if getattr(s, "name", None) == name:
+                return s
+        return None
+
+    @staticmethod
+    def _is_name_collision_error(result: object) -> bool:
+        """
+        Detect snapserver's 'Stream with name X already exists' error.
+
+        :param result: Result returned by snapserver.stream_add_stream.
+        :return: True if the result indicates a stream-name collision.
+        """
+        if not isinstance(result, dict):
+            return False
+        data = result.get("data", "")
+        return (
+            isinstance(data, str)
+            and data.startswith("Stream with name")
+            and "already exists" in data
+        )
+
+    def _pick_port_avoiding(self, used: set[int]) -> int | None:
+        """
+        Pick a random TCP source port within the unchanged upstream range.
+
+        Avoids ports already tried in the current retry loop.
+
+        :param used: Set of ports that should not be returned again.
+        :return: A port in [4953, 5153] not in `used`, or None if none could be
+            found within 20 attempts (extremely rare; the range has 201 values).
+        """
+        for _ in range(20):
+            port = random.randint(4953, 4953 + 200)
+            if port not in used:
+                return port
+        return None
+
     async def _register_tcp_server_source(self) -> None:
         """Create a Snapcast TCP source for this stream (or reuse an existing one)."""
+        # This runs under the per-stream `_lifecycle_lock` (acquired in setup()), not the
+        # provider-wide `_snapcast_ma_streams_lock`. Adoption is safe because each MA-managed
+        # stream has at most one outstanding setup() call at a time.
+
         # prefer to reuse existing stream if possible
         if self.snap_stream:
             return
@@ -442,32 +491,67 @@ class SnapcastMAStream:
                 f"--streamserver-port={self._mass.streams.publish_port}"
             )
 
+        tried_ports: set[int] = set()
         attempts = 50
-        while attempts:
-            attempts -= 1
-            # pick a random port
-            port = random.randint(4953, 4953 + 200)
-            ## Do we need to add a time out here?
-            result = await self._provider._snapserver.stream_add_stream(
-                # NOTE: setting the sampleformat to something else
-                # (like 24 bits bit depth) does not seem to work at all!
-                f"tcp://0.0.0.0:{port}?sampleformat=48000:16:2"
-                f"&idle_threshold={self._provider._snapcast_stream_idle_threshold}"
-                f"{extra_args}&name={self.stream_name}"
-            )
-            if result is None or "id" not in result:
+        loop_succeeded = False
+        try:
+            while attempts:
+                attempts -= 1
+                port = self._pick_port_avoiding(tried_ports)
+                if port is None:
+                    break
+                tried_ports.add(port)
+                result = await self._provider._snapserver.stream_add_stream(
+                    # NOTE: setting the sampleformat to something else
+                    # (like 24 bits bit depth) does not seem to work at all!
+                    f"tcp://0.0.0.0:{port}?sampleformat=48000:16:2"
+                    f"&idle_threshold={self._provider._snapcast_stream_idle_threshold}"
+                    f"{extra_args}&name={self.stream_name}"
+                )
+                if isinstance(result, dict) and "id" in result:
+                    self.snap_stream = self._provider._snapserver.stream(result["id"])
+                    self.snap_stream.set_callback(self._snap_on_stream_update)
+                    loop_succeeded = True
+                    return
+
+                if self._is_name_collision_error(result):
+                    adopted = self._find_local_stream_by_name(self.stream_name)
+                    if adopted is None:
+                        # Local cache may be stale (e.g. after an MA restart). Resync.
+                        status, _ = await self._provider._snapserver.status()
+                        if isinstance(status, dict):
+                            self._provider._snapserver.synchronize(status)
+                        adopted = self._find_local_stream_by_name(self.stream_name)
+                    if adopted is not None:
+                        self._logger.info(
+                            "Adopted orphaned snapserver stream %s (name=%s)",
+                            adopted.identifier,
+                            self.stream_name,
+                        )
+                        self.snap_stream = adopted
+                        self.snap_stream.set_callback(self._snap_on_stream_update)
+                        loop_succeeded = True
+                        return
+                elif isinstance(result, dict) and result.get("code") == -32603:
+                    # Forward-compat hint: snapserver may rephrase the name-collision
+                    # error in a future release; surface mismatches in debug logs.
+                    self._logger.debug(
+                        "snapserver returned internal error not matching "
+                        "name-collision pattern: %s",
+                        result,
+                    )
+
                 # if the port is already taken, the result will be an error
-                self._logger.warning(result)
+                self._logger.warning("stream_add_stream failed: %s", result)
                 continue
-            ## Do we need to synchronize the snapserver repr first?
-            self.snap_stream = self._provider._snapserver.stream(result["id"])
-            self.snap_stream.set_callback(self._snap_on_stream_update)
-            return
+        finally:
+            # Invariant: if we leave _register_tcp_server_source without setting
+            # self.snap_stream (retries exhausted OR exception during a retry),
+            # any socket_server we started must be stopped.
+            if not loop_succeeded and self._socket_server:
+                await self._stop_socket_server()
 
-        if self._socket_server:
-            await self._stop_socket_server()
-
-        msg = "Unable to create stream - No free port found?"
+        msg = f"Unable to register snapserver stream {self.stream_name!r} after 50 attempts"
         raise RuntimeError(msg)
 
     async def _remove_snap_source(self) -> None:

@@ -1,0 +1,38 @@
+{
+  "config_entries": {
+    "http_port": {
+      "label": "HTTP Server Port",
+      "description": "Port for the MSX HTTP server."
+    },
+    "output_format": {
+      "label": "Audio Output Format",
+      "description": "Audio format for streaming to MSX (mp3, aac, or flac)."
+    },
+    "player_idle_timeout": {
+      "label": "Player Idle Timeout (minutes)",
+      "description": "Unregister MSX players after this many minutes without activity."
+    },
+    "show_stop_notification": {
+      "label": "Show notification before closing player",
+      "description": "Show confirmation dialog on MSX when stopping playback from MA."
+    },
+    "enable_player_grouping": {
+      "label": "Enable player grouping (experimental)",
+      "description": "Experimental: allow grouping multiple MSX TVs to play the same track simultaneously. Disable if you experience issues with multi-TV setups."
+    },
+    "group_stream_mode": {
+      "label": "Group Stream Mode",
+      "description": "How to stream audio to grouped players. 'Independent' creates separate streams per TV (more CPU, no sync). 'Shared Buffer' uses one ffmpeg process for all group members (less CPU, better sync).",
+      "options": {
+        "independent": "Independent (default) - each TV has own stream",
+        "shared": "Shared Buffer - one ffmpeg, multiple readers (less CPU)"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Stream music to Smart TVs via Media Station X"
+  },
+  "errors": {
+    "player_offline": "MSX TV {0} is offline."
+  }
+}
