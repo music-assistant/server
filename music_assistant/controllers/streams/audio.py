@@ -646,10 +646,14 @@ class StreamsAudio:
             raise AudioError(f"Error while streaming: {err}") from err
         finally:
             # stop the metadata monitor before tearing down the stream
-            if metadata_task is not None and not metadata_task.done():
-                metadata_task.cancel()
+            if metadata_task is not None:
+                if not metadata_task.done():
+                    metadata_task.cancel()
                 with suppress(asyncio.CancelledError):
-                    await metadata_task
+                    try:
+                        await metadata_task
+                    except Exception:
+                        logger.exception("Stream metadata monitor task crashed")
             # always ensure close is called which also handles all cleanup
             await ffmpeg_proc.close()
             # determine how many seconds we've received
