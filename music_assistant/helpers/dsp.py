@@ -1,6 +1,7 @@
 """Helper functions for DSP filters."""
 
 import math
+from typing import TYPE_CHECKING
 
 from music_assistant_models.dsp import (
     AudioChannel,
@@ -9,7 +10,9 @@ from music_assistant_models.dsp import (
     ParametricEQFilter,
     ToneControlFilter,
 )
-from music_assistant_models.media_items.audio_format import AudioFormat
+
+if TYPE_CHECKING:
+    from music_assistant_models.media_items.audio_format import AudioFormat
 
 # ruff: noqa: PLR0915
 

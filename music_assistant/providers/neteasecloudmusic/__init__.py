@@ -266,7 +266,7 @@ def _extract_code(payload: dict[str, Any]) -> int | None:
         raw_code = payload["data"].get("code")
     try:
         return int(raw_code) if raw_code is not None else None
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -376,7 +376,7 @@ def _decode_qr_data_url(data_url: str) -> tuple[bytes, str] | None:
     mime_type = meta.replace("data:", "", 1)
     try:
         return (base64.b64decode(b64_data), mime_type)
-    except (ValueError, binascii.Error):
+    except ValueError, binascii.Error:
         return None
 
 
@@ -1117,7 +1117,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         async def _fetch_quality(track_id: str) -> tuple[str, dict[str, Any] | None]:
             try:
                 quality_obj = await self._get_song_music_detail(track_id)
-            except (InvalidDataError, ResourceTemporarilyUnavailable):
+            except InvalidDataError, ResourceTemporarilyUnavailable:
                 return track_id, None
             return track_id, quality_obj if isinstance(quality_obj, dict) else None
 

@@ -119,7 +119,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         try:
             items = await webdav_propfind(session, webdav_url, depth=0, auth=self._auth)
             return len(items) > 0 or webdav_url.rstrip("/") == self.base_url.rstrip("/")
-        except (LoginFailed, SetupFailedError, ProviderUnavailableError):
+        except LoginFailed, SetupFailedError, ProviderUnavailableError:
             raise
         except aiohttp.ClientError:
             return False
@@ -291,7 +291,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         """Recursively scan WebDAV directory."""
         try:
             items = await self._scandir(path)
-        except (LoginFailed, SetupFailedError, ProviderUnavailableError):
+        except LoginFailed, SetupFailedError, ProviderUnavailableError:
             raise
         except aiohttp.ClientError as err:
             self.logger.warning("WebDAV error scanning %s: %s", path, err)

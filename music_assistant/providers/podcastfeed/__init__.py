@@ -272,7 +272,7 @@ class PodcastMusicprovider(MusicProvider):
 
                 return await response.read()
 
-        except (ClientError, Exception):
+        except ClientError, Exception:
             # Try podcast cover fallback
             podcast_cover = self.parsed_podcast.get("cover_url")
             if podcast_cover and isinstance(podcast_cover, str) and podcast_cover != path:

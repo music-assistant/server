@@ -1,6 +1,6 @@
 """Unit tests for genre helper functions (_normalize_genre_name)."""
 
-from music_assistant.controllers.media.genres import GenreController
+from music_assistant.controllers.music.media.genres import GenreController
 
 _normalize = GenreController._normalize_genre_name
 

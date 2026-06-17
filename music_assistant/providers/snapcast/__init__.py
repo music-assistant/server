@@ -1,6 +1,7 @@
 """Snapcast Player provider for Music Assistant."""
 
 import re
+from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import (
     ConfigEntry,
@@ -10,7 +11,6 @@ from music_assistant_models.config_entries import (
 )
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import SetupFailedError
-from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.helpers.process import check_output
 from music_assistant.mass import MusicAssistant
@@ -32,6 +32,9 @@ from music_assistant.providers.snapcast.constants import (
     DEFAULT_SNAPSTREAM_IDLE_THRESHOLD,
 )
 from music_assistant.providers.snapcast.provider import SnapCastProvider
+
+if TYPE_CHECKING:
+    from music_assistant_models.provider import ProviderManifest
 
 SUPPORTED_FEATURES = {
     ProviderFeature.SYNC_PLAYERS,

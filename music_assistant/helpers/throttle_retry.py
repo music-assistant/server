@@ -46,14 +46,14 @@ def parse_retry_after(value: str | None) -> int:
     # Try delay-seconds (non-negative integer) first — the common case
     try:
         return max(0, int(value))
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         pass
     # Try HTTP-date format (e.g., "Fri, 31 Dec 1999 23:59:59 GMT")
     try:
         target = parsedate_to_datetime(value)
         delta = (target - datetime.datetime.now(tz=datetime.UTC)).total_seconds()
         return max(0, int(delta))
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return 0
 
 

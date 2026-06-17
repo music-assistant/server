@@ -95,7 +95,7 @@ class TidalLibraryManager:
                     f"users/{self.auth.user_id}/{endpoint}", data=data, as_form=True
                 )
             return True
-        except (ClientError, MediaNotFoundError, ResourceTemporarilyUnavailable):
+        except ClientError, MediaNotFoundError, ResourceTemporarilyUnavailable:
             return False
 
     async def remove_item(self, prov_item_id: str, media_type: MediaType) -> bool:
@@ -110,7 +110,7 @@ class TidalLibraryManager:
             else:
                 await self.api.delete(f"users/{self.auth.user_id}/{endpoint}")
             return True
-        except (ClientError, MediaNotFoundError, ResourceTemporarilyUnavailable):
+        except ClientError, MediaNotFoundError, ResourceTemporarilyUnavailable:
             return False
 
     def _get_endpoint_data(

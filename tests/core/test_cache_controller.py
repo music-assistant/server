@@ -23,7 +23,7 @@ class _FakeModel:
     value: int = 0
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "_FakeModel":
+    def from_dict(cls, data: dict[str, Any]) -> _FakeModel:
         """Reconstruct from dict."""
         return cls(name=data.get("name", ""), value=data.get("value", 0))
 

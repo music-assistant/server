@@ -172,7 +172,7 @@ async def _stop_asgi_lifespan(state: dict[str, Any]) -> None:
     if not task.done():
         try:
             await asyncio.wait_for(task, timeout=10)
-        except (TimeoutError, asyncio.CancelledError):
+        except TimeoutError, asyncio.CancelledError:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await task
@@ -346,7 +346,7 @@ async def _asgi_to_aiohttp(  # noqa: PLR0915 - single-purpose ASGI bridge, split
                     await response.write(body)
                 if not message.get("more_body", False):
                     await response.write_eof()
-        except (ConnectionResetError, ConnectionError, asyncio.CancelledError):
+        except ConnectionResetError, ConnectionError, asyncio.CancelledError:
             # The other side closed the (SSE) stream. Mark the response as
             # disconnected and feed an ASGI ``http.disconnect`` upstream so
             # the app's keep-alive / ping loops can wind down cleanly. Logged
@@ -362,7 +362,7 @@ async def _asgi_to_aiohttp(  # noqa: PLR0915 - single-purpose ASGI bridge, split
             async for chunk in request.content.iter_chunked(64 * 1024):
                 await body_queue.put({"type": "http.request", "body": chunk, "more_body": True})
             await body_queue.put({"type": "http.request", "body": b"", "more_body": False})
-        except (ConnectionResetError, ConnectionError, asyncio.CancelledError):
+        except ConnectionResetError, ConnectionError, asyncio.CancelledError:
             response_state["disconnected"] = True
             with contextlib.suppress(Exception):
                 await body_queue.put({"type": "http.disconnect"})
@@ -374,7 +374,7 @@ async def _asgi_to_aiohttp(  # noqa: PLR0915 - single-purpose ASGI bridge, split
     pump_task = asyncio.create_task(pump_request_body())
     try:
         await asgi_app(scope, receive, send)
-    except (ConnectionResetError, ConnectionError, asyncio.CancelledError):
+    except ConnectionResetError, ConnectionError, asyncio.CancelledError:
         # Client-driven disconnect during streaming — normal flow; don't
         # re-raise as 500.
         response_state["disconnected"] = True

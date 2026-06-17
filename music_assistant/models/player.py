@@ -832,7 +832,7 @@ class Player(ABC):
                 try:
                     sample_rate_str, bit_depth_str = item.split(MULTI_VALUE_SPLITTER, 1)
                     config_rates.append((int(sample_rate_str.strip()), int(bit_depth_str.strip())))
-                except (ValueError, TypeError):
+                except ValueError, TypeError:
                     self.logger.warning(
                         "Ignoring malformed CONF_SAMPLE_RATES entry %r for player %s",
                         item,

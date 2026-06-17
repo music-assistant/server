@@ -407,7 +407,9 @@ class UniversalGroupPlayer(Player):
         """Handle SET_MEMBERS command on the player."""
         if not self.is_dynamic:
             raise UnsupportedFeaturedException(
-                f"Group {self.display_name} does not allow dynamically adding/removing members!"
+                f"Group {self.display_name} does not allow dynamically adding/removing members!",
+                translation_key="provider.universal_group.errors.group_not_dynamic",
+                translation_args=[self.display_name],
             )
         # handle additions
         for player_id in player_ids_to_add or []:
@@ -415,7 +417,9 @@ class UniversalGroupPlayer(Player):
                 continue
             if player_id == self.player_id:
                 raise UnsupportedFeaturedException(
-                    f"Cannot add {self.display_name} to itself as a member!"
+                    f"Cannot add {self.display_name} to itself as a member!",
+                    translation_key="provider.universal_group.errors.cannot_add_group_to_itself",
+                    translation_args=[self.display_name],
                 )
             child_player = self.mass.players.get_player(player_id, True)
             assert child_player  # for type checking
@@ -449,7 +453,11 @@ class UniversalGroupPlayer(Player):
                 continue
             if player_id == self.player_id:
                 raise UnsupportedFeaturedException(
-                    f"Cannot remove {self.display_name} from itself as a member!"
+                    f"Cannot remove {self.display_name} from itself as a member!",
+                    translation_key=(
+                        "provider.universal_group.errors.cannot_remove_group_from_itself"
+                    ),
+                    translation_args=[self.display_name],
                 )
             self._attr_group_members.remove(player_id)
             child_player = self.mass.players.get_player(player_id, True)
@@ -623,7 +631,7 @@ class UniversalGroupPlayer(Player):
         ):
             try:
                 await resp.write(chunk)
-            except (ConnectionError, ConnectionResetError):
+            except ConnectionError, ConnectionResetError:
                 break
 
         return resp
