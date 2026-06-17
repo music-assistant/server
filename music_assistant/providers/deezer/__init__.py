@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from math import ceil
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import deezer
 from aiohttp import ClientSession, ClientTimeout
@@ -45,7 +45,6 @@ from music_assistant_models.media_items import (
     Track,
     UniqueList,
 )
-from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant import MusicAssistant
@@ -59,6 +58,9 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.music_provider import MusicProvider
 
 from .gw_client import DeezerGWError, GWClient
+
+if TYPE_CHECKING:
+    from music_assistant_models.provider import ProviderManifest
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -439,7 +441,6 @@ class DeezerProvider(MusicProvider):
             self.parse_track(
                 track=deezer_track,
                 user_country=self.gw_client.user_country,
-                # TODO: doesn't Deezer have disc and track number in the api ?
                 position=0,
             )
             for deezer_track in await album.get_tracks()

@@ -330,7 +330,11 @@ class SmartPlaylistProvider(PluginProvider):
         """
         if not is_safe_name(name):
             msg = f"{name} is not a valid playlist name"
-            raise InvalidDataError(msg)
+            raise InvalidDataError(
+                msg,
+                translation_key="provider.smart_playlist.errors.invalid_name",
+                translation_args=[name],
+            )
 
         parsed_rules = SmartPlaylistRules.from_dict(rules)
         parsed_rules.is_dynamic = is_dynamic
@@ -361,7 +365,11 @@ class SmartPlaylistProvider(PluginProvider):
         """
         if not is_safe_name(name):
             msg = f"{name} is not a valid playlist name"
-            raise InvalidDataError(msg)
+            raise InvalidDataError(
+                msg,
+                translation_key="provider.smart_playlist.errors.invalid_name",
+                translation_args=[name],
+            )
 
         parsed_rules = SmartPlaylistRules.from_dict(rules)
         self._validate_rules(parsed_rules)

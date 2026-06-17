@@ -116,23 +116,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         self.mass = mass
-        self.base_query = f"""
-        SELECT
-            {self.db_table}.*,
-            (SELECT JSON_GROUP_ARRAY(
-                json_object(
-                'item_id', provider_mappings.provider_item_id,
-                    'provider_domain', provider_mappings.provider_domain,
-                        'provider_instance', provider_mappings.provider_instance,
-                        'available', provider_mappings.available,
-                        'audio_format', json(provider_mappings.audio_format),
-                        'url', provider_mappings.url,
-                        'details', provider_mappings.details,
-                        'in_library', provider_mappings.in_library,
-                        'is_unique', provider_mappings.is_unique
-                )) FROM provider_mappings WHERE provider_mappings.item_id = {self.db_table}.item_id
-                    AND provider_mappings.media_type = '{self.media_type.value}') AS provider_mappings
-            FROM {self.db_table} """
         self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.music.{self.media_type.value}")
         # register (base) api handlers
         self.api_base = api_base = f"{self.media_type}s"
@@ -150,6 +133,33 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             f"music/{api_base}/remove", self.remove_item_from_library, required_role="admin"
         )
         self._db_add_lock = asyncio.Lock()
+
+    @property
+    def base_query(self) -> tuple[str, dict[str, Any]]:
+        """
+        Return the base SELECT query for this media type and its bound query params.
+
+        Override in a subclass to customize the query (extra joins/columns) and/or to
+        inject dynamic, parameterized filters.
+        """
+        query = f"""
+        SELECT
+            {self.db_table}.*,
+            (SELECT JSON_GROUP_ARRAY(
+                json_object(
+                'item_id', provider_mappings.provider_item_id,
+                    'provider_domain', provider_mappings.provider_domain,
+                        'provider_instance', provider_mappings.provider_instance,
+                        'available', provider_mappings.available,
+                        'audio_format', json(provider_mappings.audio_format),
+                        'url', provider_mappings.url,
+                        'details', provider_mappings.details,
+                        'in_library', provider_mappings.in_library,
+                        'is_unique', provider_mappings.is_unique
+                )) FROM provider_mappings WHERE provider_mappings.item_id = {self.db_table}.item_id
+                    AND provider_mappings.media_type = '{self.media_type.value}') AS provider_mappings
+            FROM {self.db_table} """
+        return query, {}
 
     @final
     async def add_item_to_library(
@@ -1043,7 +1053,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 in_library_only=in_library_only,
             )
         # build and execute final query
-        sql_query = self._build_final_query(query_parts, join_parts, order_by)
+        sql_query, base_query_params = self._build_final_query(query_parts, join_parts, order_by)
+        query_params.update(base_query_params)
 
         return [
             cast("ItemCls", self.item_cls.from_dict(self._parse_db_row(db_row)))
@@ -1188,9 +1199,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         query_parts: list[str],
         join_parts: list[str],
         order_by: str | None,
-    ) -> str:
-        """Build the final SQL query string."""
-        sql_query = self.base_query
+    ) -> tuple[str, dict[str, Any]]:
+        """Build the final SQL query string and its (base) bound query params."""
+        sql_query, base_query_params = self.base_query
 
         # Add joins
         if join_parts:
@@ -1208,7 +1219,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             if sort_key := SORT_KEYS.get(order_by):
                 sql_query += f" ORDER BY {sort_key}"
 
-        return sql_query
+        return sql_query, base_query_params
 
     @final
     @staticmethod

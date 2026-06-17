@@ -9,13 +9,10 @@ from typing import TYPE_CHECKING, Any, Concatenate
 from urllib.parse import urlparse
 
 import defusedxml.ElementTree as DefusedET
-from async_upnp_client.client import UpnpDevice, UpnpService, UpnpStateVariable
 from async_upnp_client.exceptions import UpnpError, UpnpResponseError
 from async_upnp_client.profiles.dlna import DmrDevice, TransportState
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerUnavailableError
-from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.upnp import create_didl_metadata
@@ -24,6 +21,10 @@ from music_assistant.models.player import DeviceInfo, Player
 from .constants import PLAYER_CONFIG_ENTRIES
 
 if TYPE_CHECKING:
+    from async_upnp_client.client import UpnpDevice, UpnpService, UpnpStateVariable
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.player import PlayerMedia
+
     from .provider import DLNAPlayerProvider
 
 
@@ -72,7 +73,7 @@ class DLNAPlayer(Player):
 
     def __init__(
         self,
-        provider: "DLNAPlayerProvider",
+        provider: DLNAPlayerProvider,
         player_id: str,
         description_url: str,
         device: DmrDevice | None = None,
@@ -201,7 +202,7 @@ class DLNAPlayer(Player):
 
         try:
             self.update_state()
-        except (KeyError, TypeError):
+        except KeyError, TypeError:
             # at start the update might come faster than the config is initialized
             await asyncio.sleep(2)
             self.update_state()

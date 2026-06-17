@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import random
-import shutil
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextlib import suppress
 from copy import deepcopy
 from datetime import datetime
 from itertools import zip_longest
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.background_task import BackgroundTask, TaskMetadata, TaskSchedule
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
@@ -49,45 +47,45 @@ from music_assistant_models.media_items import (
     SearchResults,
     Track,
 )
-from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_BACK,
-    DB_TABLE_ALBUM_ARTISTS,
-    DB_TABLE_ALBUM_TRACKS,
-    DB_TABLE_ALBUMS,
-    DB_TABLE_ARTISTS,
-    DB_TABLE_AUDIO_ANALYSIS,
-    DB_TABLE_AUDIOBOOKS,
-    DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
-    DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
-    DB_TABLE_GENRES,
-    DB_TABLE_LOUDNESS_MEASUREMENTS,
-    DB_TABLE_PLAYLISTS,
     DB_TABLE_PLAYLOG,
-    DB_TABLE_PODCASTS,
     DB_TABLE_PROVIDER_MAPPINGS,
-    DB_TABLE_RADIOS,
-    DB_TABLE_SETTINGS,
-    DB_TABLE_TRACK_ARTISTS,
-    DB_TABLE_TRACKS,
-    DEFAULT_GENRE_MAPPING,
-    GENRE_ICONS_DIR_NAME,
-    LOUDNESS_MEASUREMENT_MIN_LUFS,
     PROVIDERS_WITH_SHAREABLE_URLS,
-    VACUUM_MIN_RECLAIM_RATIO,
 )
-from music_assistant.controllers.tasks.context import update_current_task_progress_text
+from music_assistant.controllers.music.constants import (
+    CACHE_CATEGORY_SEARCH_RESULTS,
+    CONF_DELETED_PROVIDERS,
+    CONF_RESET_DB,
+    DATABASE_CLEANUP_TASK_ID,
+    DYNAMIC_RADIO_BASE_SAMPLE_SIZE,
+    DYNAMIC_RADIO_DYNAMIC_TARGET,
+    MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
+    PROVIDER_MAPPING_CORRECTION_TASK_ID,
+    RADIO_TRACK_MAX_DURATION_SECS,
+)
+from music_assistant.controllers.music.database import MusicDatabaseSetupMixin
+from music_assistant.controllers.music.helpers import sort_search_result
+from music_assistant.controllers.music.media.albums import AlbumsController
+from music_assistant.controllers.music.media.artists import ArtistsController
+from music_assistant.controllers.music.media.audiobooks import AudiobooksController
+from music_assistant.controllers.music.media.base import SUPPRESS_MEDIA_ITEM_UPDATES
+from music_assistant.controllers.music.media.genres import GenreController
+from music_assistant.controllers.music.media.playlists import PlaylistController
+from music_assistant.controllers.music.media.podcasts import PodcastsController
+from music_assistant.controllers.music.media.radio import RadioController
+from music_assistant.controllers.music.media.tracks import TracksController
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.compare import compare_strings, compare_version, create_safe_string
+from music_assistant.helpers.compare import compare_strings, compare_version
 from music_assistant.helpers.database import UNSET, DatabaseConnection
 from music_assistant.helpers.datetime import (
     from_utc_timestamp,
     local_clock_time_to_utc,
     utc_timestamp,
 )
-from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
+from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.helpers.util import TaskManager, parse_optional_bool, parse_title_and_version
@@ -95,46 +93,21 @@ from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider
 
-from .media.albums import AlbumsController
-from .media.artists import ArtistsController
-from .media.audiobooks import AudiobooksController
-from .media.base import SUPPRESS_MEDIA_ITEM_UPDATES
-from .media.genres import GenreController
-from .media.playlists import PlaylistController
-from .media.podcasts import PodcastsController
-from .media.radio import RadioController
-from .media.tracks import TracksController
-
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.media_items import Audiobook, PodcastEpisode
+    from music_assistant_models.unique_list import UniqueList
 
     from music_assistant import MusicAssistant
-    from music_assistant.controllers.media.base import MediaControllerBase
+    from music_assistant.controllers.music.media.base import MediaControllerBase
     from music_assistant.models import ProviderInstanceType
     from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.models.provider import Provider
     from music_assistant.providers.builtin import BuiltinProvider
 
 
-CONF_RESET_DB = "reset_db"
-DEFAULT_SYNC_INTERVAL = 12 * 60  # default sync interval in minutes
-CONF_SYNC_INTERVAL = "sync_interval"
-CONF_DELETED_PROVIDERS = "deleted_providers"
-DB_SCHEMA_VERSION: Final[int] = 41
-# tracks longer that this will not be included in radio mode
-RADIO_TRACK_MAX_DURATION_SECS: Final[int] = 20 * 60
-_DYNAMIC_RADIO_BASE_SAMPLE_SIZE: Final[int] = 5
-_DYNAMIC_RADIO_DYNAMIC_TARGET: Final[int] = 50
-
-CACHE_CATEGORY_SEARCH_RESULTS: Final[int] = 10
-DATABASE_CLEANUP_TASK_ID: Final[str] = "music_database_cleanup"
-PROVIDER_MAPPING_CORRECTION_TASK_ID: Final[str] = "music_provider_mapping_correction"
-MUSIC_SYNC_COMPLETION_CHECK_TASK_ID: Final[str] = "music_sync_completion_check"
-
-
-class MusicController(CoreController):
+class MusicController(MusicDatabaseSetupMixin, CoreController):
     """Several helpers around the musicproviders."""
 
     domain: str = "music"
@@ -472,13 +445,13 @@ class MusicController(CoreController):
         # the search results should already be sorted by relevance
         # but we apply one extra round of sorting and that is to put exact name
         # matches and library items first
-        result.artists = self._sort_search_result(search_query, result.artists)
-        result.albums = self._sort_search_result(search_query, result.albums)
-        result.tracks = self._sort_search_result(search_query, result.tracks)
-        result.playlists = self._sort_search_result(search_query, result.playlists)
-        result.radio = self._sort_search_result(search_query, result.radio)
-        result.audiobooks = self._sort_search_result(search_query, result.audiobooks)
-        result.podcasts = self._sort_search_result(search_query, result.podcasts)
+        result.artists = sort_search_result(search_query, result.artists)
+        result.albums = sort_search_result(search_query, result.albums)
+        result.tracks = sort_search_result(search_query, result.tracks)
+        result.playlists = sort_search_result(search_query, result.playlists)
+        result.radio = sort_search_result(search_query, result.radio)
+        result.audiobooks = sort_search_result(search_query, result.audiobooks)
+        result.podcasts = sort_search_result(search_query, result.podcasts)
         await self.mass.cache.set(
             key=cache_key,
             data=result.to_dict(),
@@ -942,11 +915,11 @@ class MusicController(CoreController):
 
         base_tracks = random.sample(
             available_base_tracks,
-            min(_DYNAMIC_RADIO_BASE_SAMPLE_SIZE, len(available_base_tracks)),
+            min(DYNAMIC_RADIO_BASE_SAMPLE_SIZE, len(available_base_tracks)),
         )
         dynamic_tracks: set[Track] = set()
         for allow_lookup in (False, True):
-            if len(dynamic_tracks) >= _DYNAMIC_RADIO_DYNAMIC_TARGET:
+            if len(dynamic_tracks) >= DYNAMIC_RADIO_DYNAMIC_TARGET:
                 break
             for base_track in base_tracks:
                 try:
@@ -961,7 +934,7 @@ class MusicController(CoreController):
                 for track in similar:
                     if track not in base_tracks and track.duration <= RADIO_TRACK_MAX_DURATION_SECS:
                         dynamic_tracks.add(track)
-                if len(dynamic_tracks) >= _DYNAMIC_RADIO_DYNAMIC_TARGET:
+                if len(dynamic_tracks) >= DYNAMIC_RADIO_DYNAMIC_TARGET:
                     break
 
         result: list[Track] = []
@@ -1051,7 +1024,7 @@ class MusicController(CoreController):
             # instead of bubbling MediaNotFoundError from get_item_by_uri.
             try:
                 uri_media_type, _, _ = await parse_uri(item)
-            except (InvalidProviderURI, InvalidProviderID):
+            except InvalidProviderURI, InvalidProviderID:
                 uri_media_type = None
             if uri_media_type == MediaType.AUDIO_SOURCE:
                 raise UnsupportedFeaturedException("AudioSource items can not be favorites")
@@ -1159,7 +1132,7 @@ class MusicController(CoreController):
             # Mirrors the same guard in add_item_to_favorites.
             try:
                 uri_media_type, _, _ = await parse_uri(item)
-            except (InvalidProviderURI, InvalidProviderID):
+            except InvalidProviderURI, InvalidProviderID:
                 uri_media_type = None
             if uri_media_type == MediaType.AUDIO_SOURCE:
                 raise UnsupportedFeaturedException("AudioSource items can not be library items")
@@ -1473,7 +1446,6 @@ class MusicController(CoreController):
                 timestamp=timestamp,
                 user_ids=user_ids,
                 queue_id=queue_id,
-                user_initiated=user_initiated,
                 skip_ids=set(skip_artist_ids or ()),
             )
         await self.database.commit()
@@ -2050,7 +2022,7 @@ class MusicController(CoreController):
                 icon="mdi-motion-play",
                 items=cast(
                     "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.recently_played(limit=10, user_initiated_only=True),
+                    await self.recently_played(limit=10, user_initiated_only=False),
                 ),
             ),
             RecommendationFolder(
@@ -2259,46 +2231,6 @@ class MusicController(CoreController):
         self._register_provider_mapping_correction_task()
         return self.mass.tasks.run_task(PROVIDER_MAPPING_CORRECTION_TASK_ID)
 
-    def _sort_search_result[SortItemT: MediaItemType | ItemMapping](
-        self,
-        search_query: str,
-        items: Sequence[SortItemT],
-    ) -> UniqueList[SortItemT]:
-        """Sort search results on priority/preference."""
-        scored_items: list[tuple[int, SortItemT]] = []
-        # search results are already sorted by (streaming) providers on relevance
-        # but we prefer exact name matches and library items so we simply put those
-        # on top of the list.
-        safe_title_str = create_safe_string(search_query)
-        if " - " in search_query:
-            artist_name, title_alt = search_query.split(" - ", 1)
-            safe_title_alt = create_safe_string(title_alt)
-            safe_artist_str = create_safe_string(artist_name)
-        else:
-            safe_artist_str = None
-            safe_title_alt = None
-        for item in items:
-            score = 0
-            if create_safe_string(item.name) not in (safe_title_str, safe_title_alt):
-                # literal name match is mandatory to get a score at all
-                continue
-            # bonus point if artist provided and exact match
-            if safe_artist_str:
-                artist: Artist | ItemMapping
-                for artist in getattr(item, "artists", []):
-                    if create_safe_string(artist.name) == safe_artist_str:
-                        score += 1
-            # bonus point for library items
-            if item.provider == "library":
-                score += 1
-            scored_items.append((score, item))
-        scored_items.sort(key=lambda x: x[0], reverse=True)
-        # combine it all with uniquelist, so this will deduplicated by default
-        # note that streaming provider results are already (most likely) sorted on relevance
-        # so we add all remaining items in their original order. We just prioritize
-        # exact name matches and library items.
-        return UniqueList([*[x[1] for x in scored_items], *items])
-
     async def _schedule_provider_mediatype_sync(
         self, provider: MusicProvider, media_type: MediaType, is_initial: bool = False
     ) -> None:
@@ -2322,1160 +2254,6 @@ class MusicController(CoreController):
             metadata=self._get_sync_task_metadata(provider, media_type),
             allow_retry=True,
         )
-
-    async def _cleanup_database(self) -> None:
-        """Perform database cleanup/maintenance."""
-        self.logger.debug("Performing database cleanup...")
-        update_current_task_progress_text("Cleaning old playlog entries")
-        # Remove playlog entries older than 90 days
-        await self.database.delete_where_query(
-            DB_TABLE_PLAYLOG, f"timestamp < strftime('%s','now') - {3600 * 24 * 90}"
-        )
-        # db tables cleanup
-        for ctrl in (
-            self.albums,
-            self.artists,
-            self.tracks,
-            self.playlists,
-            self.radio,
-        ):
-            update_current_task_progress_text(f"Cleaning {ctrl.media_type.value} library records")
-            # Provider mappings where the db item is removed
-            query = (
-                f"item_id not in (SELECT item_id from {ctrl.db_table}) "
-                f"AND media_type = '{ctrl.media_type}'"
-            )
-            await self.database.delete_where_query(DB_TABLE_PROVIDER_MAPPINGS, query)
-            # Orphaned db items
-            query = (
-                f"item_id not in (SELECT item_id from {DB_TABLE_PROVIDER_MAPPINGS} "
-                f"WHERE media_type = '{ctrl.media_type}')"
-            )
-            await self.database.delete_where_query(ctrl.db_table, query)
-            # Cleanup removed db items from the playlog
-            where_clause = (
-                f"media_type = '{ctrl.media_type}' AND provider = 'library' "
-                f"AND item_id not in (select item_id from {ctrl.db_table})"
-            )
-            await self.mass.music.database.delete_where_query(DB_TABLE_PLAYLOG, where_clause)
-        update_current_task_progress_text("Database cleanup finished")
-        self.logger.debug("Database cleanup done")
-
-    async def _setup_database(self) -> None:
-        """Initialize database."""
-        db_path = os.path.join(self.mass.storage_path, "library.db")
-        self._database = DatabaseConnection(db_path)
-        await self._database.setup()
-
-        # always create db tables if they don't exist to prevent errors trying to access them later
-        await self.__create_database_tables()
-        try:
-            if db_row := await self._database.get_row(DB_TABLE_SETTINGS, {"key": "version"}):
-                prev_version = int(db_row["value"])
-            else:
-                prev_version = 0
-        except (KeyError, ValueError):
-            prev_version = 0
-
-        if prev_version not in (0, DB_SCHEMA_VERSION):
-            # db version mismatch - we need to do a migration
-            # make a backup of db file
-            db_path_backup = db_path + ".backup"
-            await asyncio.to_thread(shutil.copyfile, db_path, db_path_backup)
-
-            # handle db migration from previous schema(s) to this one
-            try:
-                await self.__migrate_database(prev_version)
-            except Exception as err:
-                # if the migration fails completely we reset the db
-                # so the user at least can have a working situation back
-                # a backup file is made with the previous version
-                self.logger.error(
-                    "Database migration failed - starting with a fresh library database, "
-                    "a full rescan will be performed, this can take a while!",
-                )
-                if not isinstance(err, MusicAssistantError):
-                    self.logger.exception(err)
-
-                await self._database.close()
-                await asyncio.to_thread(os.remove, db_path)
-                self._database = DatabaseConnection(db_path)
-                await self._database.setup()
-                await self.mass.cache.clear()
-                await self.__create_database_tables()
-                prev_version = 0
-
-        # store current schema version
-        await self._database.insert_or_replace(
-            DB_TABLE_SETTINGS,
-            {"key": "version", "value": str(DB_SCHEMA_VERSION), "type": "str"},
-        )
-        # create indexes and triggers if needed
-        await self.__create_database_indexes()
-        await self.__create_database_triggers()
-        if prev_version == 0:
-            # fresh install - populate default genres
-            await self.genres.restore_default_genres()
-        # compact db - skip the full rebuild unless a meaningful share is reclaimable
-        try:
-            reclaimable_ratio = await self._database.get_reclaimable_ratio()
-            if reclaimable_ratio < VACUUM_MIN_RECLAIM_RATIO:
-                self.logger.debug(
-                    "Skipping database compaction (only %.1f%% reclaimable)",
-                    reclaimable_ratio * 100,
-                )
-            else:
-                self.logger.debug(
-                    "Compacting database (%.1f%% reclaimable)...", reclaimable_ratio * 100
-                )
-                await self._database.vacuum()
-                self.logger.debug("Compacting database done")
-        except Exception as err:
-            self.logger.warning("Database vacuum failed: %s", str(err))
-
-    async def __migrate_database(self, prev_version: int) -> None:  # noqa: PLR0915
-        """Perform a database migration."""
-        self.logger.info(
-            "Migrating database from version %s to %s", prev_version, DB_SCHEMA_VERSION
-        )
-
-        if prev_version < 15:
-            raise MusicAssistantError("Database schema version too old to migrate")
-
-        if prev_version <= 15:
-            # add search_name and search_sort_name columns to all tables
-            # and populate them with the name and sort_name values
-            # this is to allow for local/case independent searches
-            for table in (
-                DB_TABLE_TRACKS,
-                DB_TABLE_ALBUMS,
-                DB_TABLE_ARTISTS,
-                DB_TABLE_RADIOS,
-                DB_TABLE_PLAYLISTS,
-                DB_TABLE_AUDIOBOOKS,
-                DB_TABLE_PODCASTS,
-            ):
-                try:
-                    await self.database.execute(
-                        f"ALTER TABLE {table} ADD COLUMN search_name TEXT DEFAULT '' NOT NULL"
-                    )
-                    await self.database.execute(
-                        f"ALTER TABLE {table} ADD COLUMN search_sort_name TEXT DEFAULT '' NOT NULL"
-                    )
-                except Exception as err:
-                    if "duplicate column" not in str(err):
-                        raise
-                # migrate all existing values
-                async for db_row in self.database.iter_items(table):
-                    await self.database.update(
-                        table,
-                        {"item_id": db_row["item_id"]},
-                        {
-                            "search_name": create_safe_string(db_row["name"], True, True),
-                            "search_sort_name": create_safe_string(db_row["sort_name"], True, True),
-                        },
-                    )
-
-        if prev_version <= 16:
-            # cleanup invalid release_date field in metadata
-            for table in (
-                DB_TABLE_TRACKS,
-                DB_TABLE_ALBUMS,
-                DB_TABLE_AUDIOBOOKS,
-                DB_TABLE_PODCASTS,
-            ):
-                async for db_row in self.database.iter_items(table):
-                    if '"release_date":null' in db_row["metadata"]:
-                        continue
-                    metadata = json_loads(db_row["metadata"])
-                    try:
-                        datetime.fromisoformat(metadata["release_date"])
-                    except (KeyError, ValueError):
-                        # this is not a valid date, so we set it to None
-                        metadata["release_date"] = None
-                        await self.database.update(
-                            table,
-                            {"item_id": db_row["item_id"]},
-                            {
-                                "metadata": serialize_to_json(metadata),
-                            },
-                        )
-
-        if prev_version <= 17:
-            # migrate triggers to auto update timestamps
-            # it had an error in the previous version where it was not created
-            for db_table in (
-                "artists",
-                "albums",
-                "tracks",
-                "playlists",
-                "radios",
-                "audiobooks",
-                "podcasts",
-            ):
-                await self.database.execute(f"DROP TRIGGER IF EXISTS update_{db_table}_timestamp;")
-
-        if prev_version <= 18:
-            # add in_library column to provider_mappings table
-            await self.database.execute(
-                f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD COLUMN in_library "
-                "BOOLEAN NOT NULL DEFAULT 0;"
-            )
-            # migrate existing entries in provider_mappings which are filesystem
-            await self.database.execute(
-                f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
-                "WHERE provider_domain in ('filesystem_local', 'filesystem_smb');"
-            )
-
-        if prev_version <= 20:
-            # drop column cache_checksum from playlists table
-            # this is no longer used and is a leftover from previous designs
-            try:
-                await self.database.execute(
-                    f"ALTER TABLE {DB_TABLE_PLAYLISTS} DROP COLUMN cache_checksum"
-                )
-            except Exception as err:
-                if "no such column" not in str(err):
-                    raise
-
-        if prev_version <= 21:
-            # drop table for smart fades analysis - it will be recreated with needed columns
-            await self.database.execute("DROP TABLE IF EXISTS smart_fades_analysis")
-            await self.__create_database_tables()
-
-        if prev_version <= 22:
-            # add userid column to playlog table
-            try:
-                await self.database.execute(
-                    f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN userid TEXT"
-                )
-            except Exception as err:
-                if "duplicate column" not in str(err):
-                    raise
-            # Note: SQLite doesn't support modifying constraints directly
-            # The UNIQUE constraint will be updated when the table is recreated
-            # For now, we'll keep the old constraint and add a new one via unique index
-            try:
-                await self.database.execute(f"DROP INDEX IF EXISTS {DB_TABLE_PLAYLOG}_unique_idx")
-                await self.database.execute(
-                    f"CREATE UNIQUE INDEX {DB_TABLE_PLAYLOG}_unique_idx "
-                    f"ON {DB_TABLE_PLAYLOG}(item_id,provider,media_type,userid)"
-                )
-            except Exception as err:
-                # If we can't create the index due to duplicate entries, log and continue
-                self.logger.warning("Could not create unique index on playlog: %s", err)
-
-        if prev_version <= 23:
-            # add is_unique column to provider_mappings table
-            try:
-                await self.database.execute(
-                    f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD COLUMN is_unique BOOLEAN"
-                )
-            except Exception as err:
-                if "duplicate column" not in str(err):
-                    raise
-
-        if prev_version <= 24:
-            # add queue_id and user_initiated columns to playlog table
-            try:
-                await self.database.execute(
-                    f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN queue_id TEXT"
-                )
-            except Exception as err:
-                if "duplicate column" not in str(err):
-                    raise
-            try:
-                await self.database.execute(
-                    f"ALTER TABLE {DB_TABLE_PLAYLOG} "
-                    "ADD COLUMN user_initiated BOOLEAN NOT NULL DEFAULT 1"
-                )
-            except Exception as err:
-                if "duplicate column" not in str(err):
-                    raise
-
-        if prev_version <= 26:
-            # force in_library=True for provider mappings from non-streaming providers
-            # streaming providers will be automatically added to library when synced
-            await self.database.execute(
-                f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
-                "WHERE provider_domain NOT IN "
-                "('spotify', 'deezer', 'tidal', 'qobuz', 'apple_music', 'ytmusic');"
-            )
-            # also set in_library=True for all radio items
-            await self.database.execute(
-                f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
-                "WHERE media_type = 'radio';"
-            )
-            # remove invalid playlist provider mappings for playlists which are not in library
-            await self.database.execute(
-                f"DELETE FROM {DB_TABLE_PROVIDER_MAPPINGS} "
-                "WHERE media_type = 'playlist' AND in_library = 0;"
-            )
-
-        if prev_version <= 27:
-            # set streaming provider mappings to in_library=True, but only for items
-            # that do not already have any mapping with in_library=True
-            # (to avoid overwriting explicit values in multi-instance setups)
-            await self.database.execute(
-                f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
-                "WHERE provider_domain NOT IN "
-                "('filesystem_local', 'builtin', 'test', 'jellyfin', 'emby', "
-                "'plex', 'opensubsonic', 'audiobookshelf', 'gpodder', 'podcastfeed') "
-                "AND NOT EXISTS ("
-                f"SELECT 1 FROM {DB_TABLE_PROVIDER_MAPPINGS} AS pm2 "
-                f"WHERE pm2.media_type = {DB_TABLE_PROVIDER_MAPPINGS}.media_type "
-                f"AND pm2.item_id = {DB_TABLE_PROVIDER_MAPPINGS}.item_id "
-                "AND pm2.in_library = 1)"
-            )
-
-        if prev_version <= 28:
-            # create genre/alias tables
-            await self.__create_database_tables()
-
-            # Use raw aiosqlite connection for bulk operations.
-            db = self.database._db
-
-            empty_metadata = serialize_to_json({})
-            empty_external_ids = serialize_to_json(set())
-
-            def _normalize_name(raw_name: str) -> tuple[str, str, str, str]:
-                name = raw_name.strip()
-                sort_name = name
-                search_name = create_safe_string(name, True, True)
-                search_sort_name = create_safe_string(sort_name or "", True, True)
-                return name, sort_name, search_name, search_sort_name
-
-            genre_cache: dict[str, int] = {}
-
-            genre_insert_sql = (
-                f"INSERT OR IGNORE INTO {DB_TABLE_GENRES}"
-                "(name, sort_name, translation_key, description, favorite, "
-                "metadata, external_ids, genre_aliases, play_count, last_played, "
-                "search_name, search_sort_name) "
-                "VALUES (?, ?, ?, NULL, 0, ?, ?, ?, 0, 0, ?, ?)"
-            )
-            genre_select_sql = f"SELECT item_id FROM {DB_TABLE_GENRES} WHERE search_name = ?"
-
-            async def _get_or_create_genre(
-                raw_name: str,
-                aliases: list[str] | None = None,
-                translation_key: str | None = None,
-            ) -> int:
-                name, sort_name, search_name, search_sort_name = _normalize_name(raw_name)
-                if not search_name:
-                    return 0
-                if search_name in genre_cache:
-                    return genre_cache[search_name]
-                aliases_json = serialize_to_json(aliases or [name])
-                icon_metadata = GenreController._get_genre_icon_metadata(translation_key)
-                metadata_json = (
-                    serialize_to_json(icon_metadata.to_dict()) if icon_metadata else empty_metadata
-                )
-                row_id = await db.execute_insert(
-                    genre_insert_sql,
-                    (
-                        name,
-                        sort_name,
-                        translation_key,
-                        metadata_json,
-                        empty_external_ids,
-                        aliases_json,
-                        search_name,
-                        search_sort_name,
-                    ),
-                )
-                if row_id and row_id[0]:
-                    genre_cache[search_name] = row_id[0]
-                    return cast("int", row_id[0])
-                async with db.execute(genre_select_sql, (search_name,)) as cursor:
-                    row = await cursor.fetchone()
-                    if row:
-                        genre_cache[search_name] = row[0]
-                        return cast("int", row[0])
-                return 0
-
-            # Phase 1: Seed DEFAULT_GENRE_MAPPING — create genres with aliases.
-            # Build n:n lookup: normalized alias name -> list of genre_ids.
-            # One alias can belong to multiple genres (e.g. "funk" is both
-            # a standalone genre and an alias of Soul/R&B).
-            alias_to_genre: dict[str, list[int]] = {}
-            for entry in DEFAULT_GENRE_MAPPING:
-                genre_name = entry.get("genre")
-                if not genre_name:
-                    continue
-                all_aliases = [genre_name, *entry.get("aliases", [])]
-                genre_id = await _get_or_create_genre(
-                    genre_name,
-                    aliases=all_aliases,
-                    translation_key=entry.get("translation_key"),
-                )
-                if not genre_id:
-                    continue
-                for alias in all_aliases:
-                    norm = create_safe_string(alias.strip(), True, True)
-                    if norm:
-                        alias_to_genre.setdefault(norm, [])
-                        if genre_id not in alias_to_genre[norm]:
-                            alias_to_genre[norm].append(genre_id)
-            await db.commit()
-
-            # Phase 2: Discover unique genre names from all media items,
-            # create genres for unknown names, then bulk-insert mappings.
-            media_tables = (
-                (DB_TABLE_TRACKS, MediaType.TRACK),
-                (DB_TABLE_ALBUMS, MediaType.ALBUM),
-                (DB_TABLE_ARTISTS, MediaType.ARTIST),
-                (DB_TABLE_PLAYLISTS, MediaType.PLAYLIST),
-                (DB_TABLE_RADIOS, MediaType.RADIO),
-                (DB_TABLE_AUDIOBOOKS, MediaType.AUDIOBOOK),
-                (DB_TABLE_PODCASTS, MediaType.PODCAST),
-            )
-
-            # 2a: Extract all unique raw genre names from metadata
-            union_parts = [
-                f"SELECT DISTINCT TRIM(g.value) AS raw_name "
-                f"FROM {table}, json_each(json_extract({table}.metadata, '$.genres')) AS g "
-                f"WHERE json_extract({table}.metadata, '$.genres') IS NOT NULL "
-                f"AND json_extract({table}.metadata, '$.genres') != '[]'"
-                for table, _ in media_tables
-            ]
-            unique_names_sql = " UNION ".join(union_parts)
-            self.logger.info("Genre migration - unique names query:\n%s", unique_names_sql)
-            async with db.execute(unique_names_sql) as cursor:
-                unique_raw_names = [row[0] for row in await cursor.fetchall() if row[0]]
-            self.logger.info(
-                "Genre migration - discovered %d unique genre names", len(unique_raw_names)
-            )
-
-            # 2b: Ensure genres exist for all discovered names.
-            # Names already covered by Phase 1 aliases just reuse those genre(s).
-            # New names get their own genre. One alias can map to multiple genres (n:n).
-            raw_name_to_genres: dict[str, list[int]] = {}
-            for raw_name in unique_raw_names:
-                norm = create_safe_string(raw_name.strip(), True, True)
-                if not norm:
-                    continue
-                if norm in alias_to_genre:
-                    raw_name_to_genres[raw_name] = list(alias_to_genre[norm])
-                    self.logger.debug(
-                        "Genre migration - resolved %r -> genre_ids %s (alias match)",
-                        raw_name,
-                        alias_to_genre[norm],
-                    )
-                else:
-                    genre_id = await _get_or_create_genre(raw_name)
-                    if genre_id:
-                        raw_name_to_genres[raw_name] = [genre_id]
-                        alias_to_genre[norm] = [genre_id]
-                        self.logger.debug(
-                            "Genre migration - resolved %r -> genre_id %d (new genre)",
-                            raw_name,
-                            genre_id,
-                        )
-            await db.commit()
-            self.logger.info(
-                "Genre migration - resolved %d unique genre names", len(raw_name_to_genres)
-            )
-
-            # 2c: Add discovered raw names as aliases to their resolved genres
-            # so that frontend searches by raw name find the parent genre.
-            genre_new_aliases: dict[int, list[str]] = {}
-            for raw_name, gids in raw_name_to_genres.items():
-                for gid in gids:
-                    genre_new_aliases.setdefault(gid, []).append(raw_name)
-            for gid, new_aliases in genre_new_aliases.items():
-                async with db.execute(
-                    f"SELECT genre_aliases FROM {DB_TABLE_GENRES} WHERE item_id = :gid",
-                    {"gid": gid},
-                ) as cursor:
-                    row = await cursor.fetchone()
-                if not row:
-                    continue
-                existing = json_loads(row[0]) if row[0] else []
-                existing_norms = {create_safe_string(a, True, True) for a in existing}
-                to_add = [
-                    a
-                    for a in new_aliases
-                    if create_safe_string(a, True, True) not in existing_norms
-                ]
-                if to_add:
-                    merged = existing + to_add
-                    await db.execute(
-                        f"UPDATE {DB_TABLE_GENRES} SET genre_aliases = :aliases "
-                        "WHERE item_id = :gid",
-                        {"aliases": json_dumps(merged), "gid": gid},
-                    )
-            await db.commit()
-
-            # 2d: Build CTE with (raw_name, genre_id) and do one INSERT per
-            # media type using json_each to map media items directly to genres.
-            # One raw_name can map to multiple genre_ids (n:n).
-            if raw_name_to_genres:
-                cte_values = ", ".join(
-                    f"(LOWER('{name.replace(chr(39), chr(39) + chr(39))}'), {gid})"
-                    for name, gids in raw_name_to_genres.items()
-                    for gid in gids
-                )
-                cte = f"WITH genre_lookup(raw_name, genre_id) AS (VALUES {cte_values})"
-
-                for table, media_type in media_tables:
-                    full_query = (
-                        f"{cte} INSERT OR REPLACE INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}"
-                        f"(genre_id, media_id, media_type, alias) "
-                        f"SELECT gl.genre_id, {table}.item_id, "
-                        f"'{media_type.value}', TRIM(g.value) "
-                        f"FROM {table}, "
-                        f"json_each(json_extract({table}.metadata, '$.genres')) AS g "
-                        f"JOIN genre_lookup gl ON gl.raw_name = LOWER(TRIM(g.value)) "
-                        f"WHERE json_extract({table}.metadata, '$.genres') IS NOT NULL "
-                        f"AND json_extract({table}.metadata, '$.genres') != '[]'"
-                    )
-                    self.logger.info(
-                        "Genre migration - %s query:\n%s", media_type.value, full_query
-                    )
-                    await db.execute(full_query)
-                    await db.commit()
-
-        if prev_version <= 29:
-            # Smart fades analyses were previously computed on silence-stripped audio,
-            # so beat timestamps are misaligned with the unstripped buffers now passed
-            # to the crossfade mixer. Truncate the table so all analyses are re-computed.
-            with suppress(Exception):
-                await self.database.execute("DELETE FROM smart_fades_analysis")
-
-        if prev_version <= 30:
-            # add supported_mediatypes column to playlist table, and make {MediaType.TRACK},
-            # i.e. ["track"] the default, as this was the only media type supported.
-            try:
-                await self.database.execute(
-                    f"ALTER TABLE {DB_TABLE_PLAYLISTS} ADD COLUMN supported_mediatypes"
-                    " json DEFAULT '[\"track\"]' NOT NULL"
-                )
-            except Exception as err:
-                if "duplicate column" not in str(err):
-                    raise
-
-        if prev_version <= 31:
-            # create the genre_media_item_exclusion table (new in schema 31)
-            await self.database.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(
-                [genre_id] INTEGER NOT NULL,
-                [media_id] INTEGER NOT NULL,
-                [media_type] TEXT NOT NULL,
-                FOREIGN KEY([genre_id]) REFERENCES [genres]([item_id]),
-                UNIQUE(genre_id, media_id, media_type)
-                );"""
-            )
-            await self.database.execute(
-                f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}_media_idx "
-                f"on {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(media_id,media_type);"
-            )
-            await self.database.execute(
-                f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}_genre_idx "
-                f"on {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(genre_id);"
-            )
-
-        if prev_version <= 32:
-            # recreate genre_media_item_mapping with nullable alias and is_derived column
-            # (new in schema 33 to support propagated genre mappings from tracks)
-            await self.database.execute(
-                f"ALTER TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
-                f"RENAME TO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_old;"
-            )
-            await self.database.execute(
-                f"""
-                CREATE TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}(
-                [genre_id] INTEGER NOT NULL,
-                [media_id] INTEGER NOT NULL,
-                [media_type] TEXT NOT NULL,
-                [alias] TEXT,
-                [is_derived] BOOLEAN NOT NULL DEFAULT 0,
-                FOREIGN KEY([genre_id]) REFERENCES [genres]([item_id]),
-                UNIQUE(genre_id, media_id, media_type)
-                );"""
-            )
-            await self.database.execute(
-                f"INSERT INTO {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
-                f"(genre_id, media_id, media_type, alias) "
-                f"SELECT genre_id, media_id, media_type, alias "
-                f"FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_old;"
-            )
-            await self.database.execute(f"DROP TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_old;")
-
-        if prev_version <= 33:
-            # add is_excluded column to genres table (new in schema 34)
-            try:
-                await self.database.execute(
-                    f"ALTER TABLE {DB_TABLE_GENRES} "
-                    "ADD COLUMN [is_excluded] BOOLEAN NOT NULL DEFAULT 0;"
-                )
-            except Exception as err:
-                if "duplicate column" not in str(err):
-                    raise
-            # drop the old genre_global_exclusion table (replaced by is_excluded column)
-            await self.database.execute("DROP TABLE IF EXISTS genre_global_exclusion;")
-            # add is_default column to genres table (new in schema 34)
-            try:
-                await self.database.execute(
-                    f"ALTER TABLE {DB_TABLE_GENRES} "
-                    "ADD COLUMN [is_default] BOOLEAN NOT NULL DEFAULT 0;"
-                )
-            except Exception as err:
-                if "duplicate column" not in str(err):
-                    raise
-            # mark all existing genres with a translation_key as default
-            await self.database.execute(
-                f"UPDATE {DB_TABLE_GENRES} SET is_default = 1 WHERE translation_key IS NOT NULL;"
-            )
-        if prev_version <= 34:
-            # fix filesystem playlists missing in_library flag
-            await self.database.execute(
-                f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET in_library = 1 "
-                "WHERE media_type = 'playlist' "
-                "AND provider_domain IN ('filesystem_local', 'filesystem_smb', 'filesystem_nfs');"
-            )
-
-        if prev_version <= 35:
-            # add is_dynamic column to playlist table
-            try:
-                await self.database.execute(
-                    f"ALTER TABLE {DB_TABLE_PLAYLISTS} ADD COLUMN is_dynamic"
-                    " BOOLEAN NOT NULL DEFAULT 0"
-                )
-            except Exception as err:
-                if "duplicate column" not in str(err):
-                    raise
-            # backfill is_dynamic for existing Apple Music station playlists
-            await self.database.execute(
-                f"UPDATE {DB_TABLE_PLAYLISTS} SET is_dynamic = 1 "
-                f"WHERE item_id IN ("
-                f"  SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
-                f"  WHERE media_type = 'playlist' "
-                f"  AND provider_domain = 'apple_music' "
-                f"  AND provider_item_id LIKE 'ra.%'"
-                f")"
-            )
-
-        if prev_version <= 36:
-            # drop legacy smart_fades_analysis table — analysis is now handled by
-            # audio analysis providers and stored in the audio_analysis table.
-            await self.database.execute("DROP TABLE IF EXISTS smart_fades_analysis")
-
-        if prev_version <= 37:
-            # purge unreliable loudness measurements persisted by earlier versions
-            # (ebur128 reports ~-70 LUFS on near-silence / early-cancelled streams,
-            # which caused huge gain corrections on subsequent plays)
-            await self.database.execute(
-                f"DELETE FROM {DB_TABLE_LOUDNESS_MEASUREMENTS} "
-                f"WHERE loudness <= {LOUDNESS_MEASUREMENT_MIN_LUFS}"
-            )
-            await self.database.execute(
-                f"UPDATE {DB_TABLE_LOUDNESS_MEASUREMENTS} "
-                f"SET loudness_album = NULL "
-                f"WHERE loudness_album <= {LOUDNESS_MEASUREMENT_MIN_LUFS}"
-            )
-
-        if prev_version <= 38:
-            # stable 2.8.9 shipped schema v38 without the smart_fades_analysis drop
-            # (that drop is gated at <= 36, which v38 users leapfrog). re-run it here
-            # so stable->2.9.0 upgraders also lose the legacy table. idempotent: a
-            # no-op for beta users who already dropped it at v36.
-            await self.database.execute("DROP TABLE IF EXISTS smart_fades_analysis")
-            # migrate loudness measurements to the unified audio_analysis table
-            # under the new builtin loudness_analysis provider, then drop the
-            # legacy table. album loudness rides along when present.
-            await self.database.execute(
-                f"INSERT OR IGNORE INTO {DB_TABLE_AUDIO_ANALYSIS} "
-                f"(media_type, item_id, provider, aa_provider_domain, "
-                f" analysis_data, analysis_version) "
-                f"SELECT media_type, item_id, provider, 'loudness_analysis', "
-                f"       json_object("
-                f"           'loudness_integrated', loudness, "
-                f"           'loudness_album', loudness_album"
-                f"       ), 1 "
-                f"FROM {DB_TABLE_LOUDNESS_MEASUREMENTS} "
-                f"WHERE loudness IS NOT NULL "
-                f"  AND loudness > {LOUDNESS_MEASUREMENT_MIN_LUFS}"
-            )
-            await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_LOUDNESS_MEASUREMENTS}")
-
-        if prev_version <= 39:
-            # add is_manual column to genre_media_item_mapping
-            try:
-                await self.database.execute(
-                    f"ALTER TABLE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
-                    "ADD COLUMN [is_manual] BOOLEAN NOT NULL DEFAULT 0;"
-                )
-            except Exception as err:
-                if "duplicate column" not in str(err):
-                    raise
-
-        if prev_version <= 40:
-            # genre icons were previously stored with an absolute filesystem path to
-            # the builtin SVG, which is install-location dependent. after a runtime
-            # upgrade or relocation (e.g. the python3.13 -> python3.14 site-packages
-            # move) that path no longer existed, so genre icons 404'd via imageproxy.
-            # rewrite them to the install-independent "<GENRE_ICONS_DIR_NAME>/<file>"
-            # form; the builtin provider resolves that against RESOURCES_DIR at serve
-            # time.
-            genre_dir_marker = f"/resources/{GENRE_ICONS_DIR_NAME}/"
-            async for db_row in self.database.iter_items(DB_TABLE_GENRES):
-                raw_metadata = db_row["metadata"]
-                if not raw_metadata:
-                    continue
-                metadata = json_loads(raw_metadata)
-                images = metadata.get("images")
-                if not images:
-                    continue
-                changed = False
-                for image in images:
-                    path = image.get("path")
-                    if not (image.get("provider") == "builtin" and isinstance(path, str)):
-                        continue
-                    norm = path.replace("\\", "/")
-                    if genre_dir_marker in norm and norm.endswith(".svg"):
-                        image["path"] = f"{GENRE_ICONS_DIR_NAME}/{norm.rsplit('/', 1)[-1]}"
-                        changed = True
-                if changed:
-                    await self.database.update(
-                        DB_TABLE_GENRES,
-                        {"item_id": db_row["item_id"]},
-                        {"metadata": serialize_to_json(metadata)},
-                    )
-
-        # save changes
-        await self.database.commit()
-
-        # always clear the cache after a db migration
-        await self.mass.cache.clear()
-
-    async def _reset_database(self) -> None:
-        """Reset the database."""
-        await self.close()
-        db_path = os.path.join(self.mass.storage_path, "library.db")
-        await asyncio.to_thread(os.remove, db_path)
-        await self._setup_database()
-        # initiate full sync
-        await self.start_sync()
-
-    async def __create_database_tables(self) -> None:
-        """Create database tables."""
-        await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_SETTINGS}(
-                    [key] TEXT PRIMARY KEY,
-                    [value] TEXT,
-                    [type] TEXT
-                );"""
-        )
-        await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_PLAYLOG}(
-                [id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                [item_id] TEXT NOT NULL,
-                [provider] TEXT NOT NULL,
-                [media_type] TEXT NOT NULL,
-                [name] TEXT NOT NULL,
-                [image] json,
-                [timestamp] INTEGER DEFAULT 0,
-                [fully_played] BOOLEAN,
-                [seconds_played] INTEGER,
-                [userid] TEXT NOT NULL,
-                [queue_id] TEXT,
-                [user_initiated] BOOLEAN NOT NULL DEFAULT 1,
-                UNIQUE(item_id, provider, media_type, userid));"""
-        )
-        await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUMS}(
-                    [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                    [name] TEXT NOT NULL,
-                    [sort_name] TEXT NOT NULL,
-                    [version] TEXT,
-                    [album_type] TEXT NOT NULL,
-                    [year] INTEGER,
-                    [favorite] BOOLEAN NOT NULL DEFAULT 0,
-                    [metadata] json NOT NULL,
-                    [external_ids] json NOT NULL,
-                    [play_count] INTEGER NOT NULL DEFAULT 0,
-                    [last_played] INTEGER NOT NULL DEFAULT 0,
-                    [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-                    [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
-                    [search_name] TEXT NOT NULL,
-                    [search_sort_name] TEXT NOT NULL
-                );"""
-        )
-        await self.database.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {DB_TABLE_ARTISTS}(
-            [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
-            [name] TEXT NOT NULL,
-            [sort_name] TEXT NOT NULL,
-            [favorite] BOOLEAN NOT NULL DEFAULT 0,
-            [metadata] json NOT NULL,
-            [external_ids] json NOT NULL,
-            [play_count] INTEGER DEFAULT 0,
-            [last_played] INTEGER DEFAULT 0,
-            [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
-            [search_name] TEXT NOT NULL,
-            [search_sort_name] TEXT NOT NULL
-            );"""
-        )
-        await self.database.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {DB_TABLE_TRACKS}(
-            [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
-            [name] TEXT NOT NULL,
-            [sort_name] TEXT NOT NULL,
-            [version] TEXT,
-            [duration] INTEGER,
-            [favorite] BOOLEAN NOT NULL DEFAULT 0,
-            [metadata] json NOT NULL,
-            [external_ids] json NOT NULL,
-            [play_count] INTEGER DEFAULT 0,
-            [last_played] INTEGER DEFAULT 0,
-            [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
-            [search_name] TEXT NOT NULL,
-            [search_sort_name] TEXT NOT NULL
-            );"""
-        )
-        await self.database.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {DB_TABLE_PLAYLISTS}(
-            [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
-            [name] TEXT NOT NULL,
-            [sort_name] TEXT NOT NULL,
-            [owner] TEXT NOT NULL,
-            [is_editable] BOOLEAN NOT NULL,
-            [favorite] BOOLEAN NOT NULL DEFAULT 0,
-            [metadata] json NOT NULL,
-            [external_ids] json NOT NULL,
-            [play_count] INTEGER DEFAULT 0,
-            [last_played] INTEGER DEFAULT 0,
-            [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
-            [search_name] TEXT NOT NULL,
-            [search_sort_name] TEXT NOT NULL,
-            [supported_mediatypes] json NOT NULL DEFAULT '[\"track\"]',
-            [is_dynamic] BOOLEAN NOT NULL DEFAULT 0
-            );"""
-        )
-        await self.database.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {DB_TABLE_RADIOS}(
-            [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
-            [name] TEXT NOT NULL,
-            [sort_name] TEXT NOT NULL,
-            [favorite] BOOLEAN NOT NULL DEFAULT 0,
-            [metadata] json NOT NULL,
-            [external_ids] json NOT NULL,
-            [play_count] INTEGER DEFAULT 0,
-            [last_played] INTEGER DEFAULT 0,
-            [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
-            [search_name] TEXT NOT NULL,
-            [search_sort_name] TEXT NOT NULL
-            );"""
-        )
-        await self.database.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIOBOOKS}(
-            [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
-            [name] TEXT NOT NULL,
-            [sort_name] TEXT NOT NULL,
-            [version] TEXT,
-            [favorite] BOOLEAN NOT NULL DEFAULT 0,
-            [publisher] TEXT,
-            [authors] json NOT NULL,
-            [narrators] json NOT NULL,
-            [metadata] json NOT NULL,
-            [duration] INTEGER,
-            [external_ids] json NOT NULL,
-            [play_count] INTEGER DEFAULT 0,
-            [last_played] INTEGER DEFAULT 0,
-            [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
-            [search_name] TEXT NOT NULL,
-            [search_sort_name] TEXT NOT NULL
-            );"""
-        )
-        await self.database.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {DB_TABLE_PODCASTS}(
-            [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
-            [name] TEXT NOT NULL,
-            [sort_name] TEXT NOT NULL,
-            [version] TEXT,
-            [favorite] BOOLEAN NOT NULL DEFAULT 0,
-            [publisher] TEXT,
-            [total_episodes] INTEGER NOT NULL,
-            [metadata] json NOT NULL,
-            [external_ids] json NOT NULL,
-            [play_count] INTEGER NOT NULL DEFAULT 0,
-            [last_played] INTEGER NOT NULL DEFAULT 0,
-            [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
-            [search_name] TEXT NOT NULL,
-            [search_sort_name] TEXT NOT NULL
-            );"""
-        )
-        await self.database.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {DB_TABLE_GENRES}(
-            [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
-            [name] TEXT NOT NULL,
-            [sort_name] TEXT NOT NULL,
-            [translation_key] TEXT,
-            [description] TEXT,
-            [favorite] BOOLEAN NOT NULL DEFAULT 0,
-            [metadata] json NOT NULL,
-            [external_ids] json NOT NULL,
-            [genre_aliases] json NOT NULL DEFAULT '[]',
-            [play_count] INTEGER NOT NULL DEFAULT 0,
-            [last_played] INTEGER NOT NULL DEFAULT 0,
-            [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-            [timestamp_modified] INTEGER NOT NULL DEFAULT 0,
-            [search_name] TEXT NOT NULL,
-            [search_sort_name] TEXT NOT NULL,
-            [is_excluded] BOOLEAN NOT NULL DEFAULT 0,
-            [is_default] BOOLEAN NOT NULL DEFAULT 0
-            );"""
-        )
-        await self.database.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}(
-            [genre_id] INTEGER NOT NULL,
-            [media_id] INTEGER NOT NULL,
-            [media_type] TEXT NOT NULL,
-            [alias] TEXT,
-            [is_derived] BOOLEAN NOT NULL DEFAULT 0,
-            [is_manual] BOOLEAN NOT NULL DEFAULT 0,
-            FOREIGN KEY([genre_id]) REFERENCES [genres]([item_id]),
-            UNIQUE(genre_id, media_id, media_type)
-            );"""
-        )
-        await self.database.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(
-            [genre_id] INTEGER NOT NULL,
-            [media_id] INTEGER NOT NULL,
-            [media_type] TEXT NOT NULL,
-            FOREIGN KEY([genre_id]) REFERENCES [genres]([item_id]),
-            UNIQUE(genre_id, media_id, media_type)
-            );"""
-        )
-        await self.database.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUM_TRACKS}(
-            [id] INTEGER PRIMARY KEY AUTOINCREMENT,
-            [track_id] INTEGER NOT NULL,
-            [album_id] INTEGER NOT NULL,
-            [disc_number] INTEGER NOT NULL,
-            [track_number] INTEGER NOT NULL,
-            FOREIGN KEY([track_id]) REFERENCES [tracks]([item_id]),
-            FOREIGN KEY([album_id]) REFERENCES [albums]([item_id]),
-            UNIQUE(track_id, album_id)
-            );"""
-        )
-        await self.database.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {DB_TABLE_PROVIDER_MAPPINGS}(
-            [media_type] TEXT NOT NULL,
-            [item_id] INTEGER NOT NULL,
-            [provider_domain] TEXT NOT NULL,
-            [provider_instance] TEXT NOT NULL,
-            [provider_item_id] TEXT NOT NULL,
-            [available] BOOLEAN NOT NULL DEFAULT 1,
-            [in_library] BOOLEAN NOT NULL DEFAULT 0,
-            [is_unique] BOOLEAN,
-            [url] text,
-            [audio_format] json,
-            [details] TEXT,
-            UNIQUE(media_type, provider_instance, provider_item_id)
-            );"""
-        )
-        await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_TRACK_ARTISTS}(
-            [track_id] INTEGER NOT NULL,
-            [artist_id] INTEGER NOT NULL,
-            FOREIGN KEY([track_id]) REFERENCES [tracks]([item_id]),
-            FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id]),
-            UNIQUE(track_id, artist_id)
-            );"""
-        )
-        await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUM_ARTISTS}(
-            [album_id] INTEGER NOT NULL,
-            [artist_id] INTEGER NOT NULL,
-            FOREIGN KEY([album_id]) REFERENCES [albums]([item_id]),
-            FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id]),
-            UNIQUE(album_id, artist_id)
-            );"""
-        )
-
-        await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_AUDIO_ANALYSIS}(
-                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                    [media_type] TEXT NOT NULL,
-                    [item_id] TEXT NOT NULL,
-                    [provider] TEXT NOT NULL,
-                    [aa_provider_domain] TEXT NOT NULL,
-                    [analysis_data] json NOT NULL,
-                    [analysis_version] INTEGER DEFAULT 1,
-                    [timestamp_created] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
-                    UNIQUE(item_id,provider,aa_provider_domain,media_type));"""
-        )
-
-        await self.database.commit()
-
-    async def __create_database_indexes(self) -> None:
-        """Create database indexes."""
-        for db_table in (
-            DB_TABLE_ARTISTS,
-            DB_TABLE_ALBUMS,
-            DB_TABLE_TRACKS,
-            DB_TABLE_PLAYLISTS,
-            DB_TABLE_RADIOS,
-            DB_TABLE_AUDIOBOOKS,
-            DB_TABLE_PODCASTS,
-            DB_TABLE_GENRES,
-        ):
-            # index on favorite column
-            await self.database.execute(
-                f"CREATE INDEX IF NOT EXISTS {db_table}_favorite_idx on {db_table}(favorite);"
-            )
-            # index on name
-            await self.database.execute(
-                f"CREATE INDEX IF NOT EXISTS {db_table}_name_idx on {db_table}(name);"
-            )
-            # index on search_name (=lowercase name without diacritics)
-            await self.database.execute(
-                f"CREATE INDEX IF NOT EXISTS {db_table}_name_nocase_idx ON {db_table}(search_name);"
-            )
-            # index on sort_name
-            await self.database.execute(
-                f"CREATE INDEX IF NOT EXISTS {db_table}_sort_name_idx on {db_table}(sort_name);"
-            )
-            # index on search_sort_name (=lowercase sort_name without diacritics)
-            await self.database.execute(
-                f"CREATE INDEX IF NOT EXISTS {db_table}_search_sort_name_idx "
-                f"ON {db_table}(search_sort_name);"
-            )
-            # index on external_ids
-            await self.database.execute(
-                f"CREATE INDEX IF NOT EXISTS {db_table}_external_ids_idx "
-                f"ON {db_table}(external_ids);"
-            )
-            # index on timestamp_added
-            await self.database.execute(
-                f"CREATE INDEX IF NOT EXISTS {db_table}_timestamp_added_idx "
-                f"on {db_table}(timestamp_added);"
-            )
-            # index on play_count
-            await self.database.execute(
-                f"CREATE INDEX IF NOT EXISTS {db_table}_play_count_idx on {db_table}(play_count);"
-            )
-            # index on last_played
-            await self.database.execute(
-                f"CREATE INDEX IF NOT EXISTS {db_table}_last_played_idx on {db_table}(last_played);"
-            )
-
-        # indexes on provider_mappings table
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PROVIDER_MAPPINGS}_media_type_item_id_idx "
-            f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,item_id);"
-        )
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PROVIDER_MAPPINGS}_provider_domain_idx "
-            f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,provider_domain,provider_item_id);"
-        )
-        await self.database.execute(
-            f"CREATE UNIQUE INDEX IF NOT EXISTS {DB_TABLE_PROVIDER_MAPPINGS}_provider_instance_idx "
-            f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,provider_instance,provider_item_id);"
-        )
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS "
-            f"{DB_TABLE_PROVIDER_MAPPINGS}_media_type_provider_instance_idx "
-            f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,provider_instance);"
-        )
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS "
-            f"{DB_TABLE_PROVIDER_MAPPINGS}_media_type_provider_domain_idx "
-            f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,provider_domain);"
-        )
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS "
-            f"{DB_TABLE_PROVIDER_MAPPINGS}_media_type_provider_instance_library_idx "
-            f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,provider_instance,in_library);"
-        )
-
-        # indexes on track_artists table
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_TRACK_ARTISTS}_track_id_idx "
-            f"on {DB_TABLE_TRACK_ARTISTS}(track_id);"
-        )
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_TRACK_ARTISTS}_artist_id_idx "
-            f"on {DB_TABLE_TRACK_ARTISTS}(artist_id);"
-        )
-        # indexes on album_artists table
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_ALBUM_ARTISTS}_album_id_idx "
-            f"on {DB_TABLE_ALBUM_ARTISTS}(album_id);"
-        )
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_ALBUM_ARTISTS}_artist_id_idx "
-            f"on {DB_TABLE_ALBUM_ARTISTS}(artist_id);"
-        )
-        # indexes on genre_media_item_mapping table
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_media_idx "
-            f"on {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}(media_id,media_type);"
-        )
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}_genre_alias_idx "
-            f"on {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING}(genre_id,alias);"
-        )
-        # indexes on genre_media_item_exclusion table
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}_media_idx "
-            f"on {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(media_id,media_type);"
-        )
-        await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}_genre_idx "
-            f"on {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}(genre_id);"
-        )
-        # unique index on playlog table
-        await self.database.execute(
-            f"CREATE UNIQUE INDEX IF NOT EXISTS {DB_TABLE_PLAYLOG}_unique_idx "
-            f"on {DB_TABLE_PLAYLOG}(item_id,provider,media_type,userid);"
-        )
-        await self.database.commit()
-
-    async def __create_database_triggers(self) -> None:
-        """Create database triggers."""
-        # triggers to auto update timestamps
-        for db_table in (
-            "artists",
-            "albums",
-            "tracks",
-            "playlists",
-            "radios",
-            "audiobooks",
-            "podcasts",
-            "genres",
-        ):
-            await self.database.execute(
-                f"""
-                CREATE TRIGGER IF NOT EXISTS update_{db_table}_timestamp
-                AFTER UPDATE ON {db_table}
-                BEGIN
-                    UPDATE {db_table} SET timestamp_modified=cast(strftime('%s','now') as int)
-                    WHERE rowid = new.rowid;
-                END;
-                """
-            )
-        await self.database.commit()
 
     async def correct_multi_instance_provider_mappings(self) -> None:
         """Correct provider mappings for multi-instance providers."""
@@ -3598,10 +2376,23 @@ class MusicController(CoreController):
         timestamp: float,
         user_ids: list[str],
         queue_id: str | None,
-        user_initiated: bool,
         skip_ids: set[str],
     ) -> None:
         """Credit each (library-resolvable) artist with a play, skipping skip_ids."""
+        # ON CONFLICT keeps an explicit user-initiated artist play sticky across the
+        # repeated side-effect credits its tracks generate.
+        upsert_query = (
+            f"INSERT INTO {DB_TABLE_PLAYLOG} "
+            "(item_id, provider, media_type, name, image, fully_played, "
+            "seconds_played, timestamp, queue_id, user_initiated, userid) "
+            "VALUES (:item_id, :provider, :media_type, :name, :image, :fully_played, "
+            ":seconds_played, :timestamp, :queue_id, :user_initiated, :userid) "
+            "ON CONFLICT(item_id, provider, media_type, userid) DO UPDATE SET "
+            "name = excluded.name, image = excluded.image, "
+            "fully_played = excluded.fully_played, seconds_played = excluded.seconds_played, "
+            "timestamp = excluded.timestamp, queue_id = excluded.queue_id, "
+            f"user_initiated = {DB_TABLE_PLAYLOG}.user_initiated OR excluded.user_initiated"
+        )
         for artist in artists:
             db_artist = await self.artists.get_library_item_by_prov_id(
                 artist.item_id, artist.provider
@@ -3626,8 +2417,8 @@ class MusicController(CoreController):
                 "seconds_played": None,
                 "timestamp": timestamp,
                 "queue_id": queue_id,
-                "user_initiated": user_initiated,
+                "user_initiated": False,
             }
             for user_id in user_ids:
                 playlog_entry["userid"] = user_id
-                await self.database.insert(DB_TABLE_PLAYLOG, playlog_entry, allow_replace=True)
+                await self.database.execute(upsert_query, playlog_entry)

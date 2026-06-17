@@ -19,7 +19,7 @@ def parse_requirements(manifest_content: str) -> list[str]:
     try:
         data = json.loads(manifest_content)
         return data.get("requirements", [])
-    except (json.JSONDecodeError, KeyError):
+    except json.JSONDecodeError, KeyError:
         return []
 
 

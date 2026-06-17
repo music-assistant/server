@@ -16,7 +16,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from music_assistant.controllers.media.playlists import PlaylistController
+from music_assistant.controllers.music.media.playlists import PlaylistController
 from music_assistant.helpers.playlists import (
     ImageInfo,
     PlaylistItem,

@@ -19,7 +19,6 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import DB_TABLE_ALBUM_ARTISTS, DB_TABLE_ALBUM_TRACKS, DB_TABLE_ALBUMS
-from music_assistant.controllers.media.base import MediaControllerBase
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
     compare_album,
@@ -31,6 +30,8 @@ from music_assistant.helpers.compare import (
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
+
+from .base import MediaControllerBase
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
@@ -46,7 +47,15 @@ class AlbumsController(MediaControllerBase[Album]):
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         super().__init__(mass)
-        self.base_query = """
+        # register (extra) api handlers
+        api_base = self.api_base
+        self.mass.register_api_command(f"music/{api_base}/album_tracks", self.tracks)
+        self.mass.register_api_command(f"music/{api_base}/album_versions", self.versions)
+
+    @property
+    def base_query(self) -> tuple[str, dict[str, Any]]:
+        """Return the base SELECT query for albums and its bound query params."""
+        query = """
         SELECT
             albums.*,
             (SELECT JSON_GROUP_ARRAY(
@@ -70,10 +79,7 @@ class AlbumsController(MediaControllerBase[Album]):
                     'media_type', 'artist'
                 )) FROM artists JOIN album_artists on album_artists.album_id = albums.item_id  WHERE artists.item_id = album_artists.artist_id) AS artists
             FROM albums"""
-        # register (extra) api handlers
-        api_base = self.api_base
-        self.mass.register_api_command(f"music/{api_base}/album_tracks", self.tracks)
-        self.mass.register_api_command(f"music/{api_base}/album_versions", self.versions)
+        return query, {}
 
     async def get(
         self,
@@ -290,13 +296,16 @@ class AlbumsController(MediaControllerBase[Album]):
             album_tracks = await self._get_provider_album_tracks(
                 item_id, provider_instance_id_or_domain
             )
-            if album_tracks and not album_tracks[0].image:
-                # set album image from provider album if not present on tracks
+            # some album-track listings omit the parent album and its image; backfill both
+            # from the provider album so the queue shows the album name and artwork.
+            if album_tracks and (not album_tracks[0].album or not album_tracks[0].image):
                 prov_album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-                if prov_album.image:
-                    for track in album_tracks:
-                        if not track.image:
-                            track.metadata.add_image(prov_album.image)
+                album_mapping = ItemMapping.from_item(prov_album)
+                for track in album_tracks:
+                    if prov_album.image and not track.image:
+                        track.metadata.add_image(prov_album.image)
+                    if track.album is None:
+                        track.album = album_mapping
             return album_tracks
 
         db_items = await self.get_library_album_tracks(library_album.item_id)

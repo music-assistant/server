@@ -108,7 +108,11 @@ class WebsocketClientHandler:
 
         # Block until onboarding is complete
         if not self.webserver.auth.has_users and not self._is_ingress:
-            await self._send_message(ErrorResultMessage("connection", 503, "Setup required"))
+            await self._send_message(
+                ErrorResultMessage(
+                    "connection", 503, "Setup required", translation_key="errors.setup_required"
+                )
+            )
             await wsock.close()
             return wsock
 
@@ -194,6 +198,7 @@ class WebsocketClientHandler:
                     msg.message_id,
                     InvalidCommand.error_code,
                     f"Invalid command: {msg.command}",
+                    translation_key="errors.invalid_command",
                 )
             )
             self._logger.warning("Invalid command: %s", msg.command)
@@ -209,6 +214,7 @@ class WebsocketClientHandler:
                         msg.message_id,
                         AuthenticationRequired.error_code,
                         "Authentication required. Please send auth command first.",
+                        translation_key="errors.authentication_required",
                     )
                 )
                 return
@@ -226,6 +232,7 @@ class WebsocketClientHandler:
                             msg.message_id,
                             InsufficientPermissions.error_code,
                             "Admin access required",
+                            translation_key="errors.insufficient_permissions",
                         )
                     )
                     return
@@ -257,7 +264,17 @@ class WebsocketClientHandler:
             # Log at warning level since these are normal error responses, not crashes.
             self._logger.warning("%s: %s", msg.command, err)
             err_msg = str(err) or err.__class__.__name__
-            await self._send_message(ErrorResultMessage(msg.message_id, err.error_code, err_msg))
+            # err_msg is the English fallback; the translation_key (per-type default or a
+            # provider override) localizes `details` to the connection locale at serialization.
+            await self._send_message(
+                ErrorResultMessage(
+                    msg.message_id,
+                    err.error_code,
+                    err_msg,
+                    translation_key=err.translation_key,
+                    translation_args=err.translation_args,
+                )
+            )
         except Exception as err:
             if self._logger.isEnabledFor(logging.DEBUG):
                 self._logger.exception("Error handling message: %s", msg)
@@ -363,6 +380,7 @@ class WebsocketClientHandler:
                     msg.message_id,
                     InvalidToken.error_code,
                     "Invalid or expired token",
+                    translation_key="errors.invalid_token",
                 )
             )
             return
