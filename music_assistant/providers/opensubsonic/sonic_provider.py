@@ -131,7 +131,11 @@ class OpenSonicProvider(MusicProvider):
             msg = (
                 f"Failed to connect to {self.config.get_value(CONF_BASE_URL)}, check your settings."
             )
-            raise LoginFailed(msg) from e
+            raise LoginFailed(
+                msg,
+                translation_key="provider.opensubsonic.errors.connect_failed",
+                translation_args=[self.config.get_value(CONF_BASE_URL)],
+            ) from e
         self._enable_podcasts = bool(self.config.get_value(CONF_ENABLE_PODCASTS))
         self._ignore_offset = bool(self.config.get_value(CONF_OVERRIDE_OFFSET))
         try:
@@ -605,7 +609,11 @@ class OpenSonicProvider(MusicProvider):
         for pl in pls:
             if pl.name == name:
                 return parse_playlist(self.instance_id, pl)
-        raise MediaNotFoundError(f"Failed to create podcast with name '{name}'")
+        raise MediaNotFoundError(
+            f"Failed to create playlist with name '{name}'",
+            translation_key="provider.opensubsonic.errors.create_playlist_failed",
+            translation_args=[name],
+        )
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Append the listed tracks to the selected playlist.
@@ -831,7 +839,7 @@ class OpenSonicProvider(MusicProvider):
             item_id="subsonic_newest_podcasts",
             provider=self.domain,
             name="Newest Podcast Episodes",
-            translation_key="recommendations.episodes_recently_added",
+            translation_key="episodes_recently_added",
         )
         sonic_episodes = await self.conn.get_newest_podcasts(count=self._reco_limit)
         for ep in sonic_episodes:
@@ -868,7 +876,7 @@ class OpenSonicProvider(MusicProvider):
             item_id="subsonic_new_albums",
             provider=self.domain,
             name="New Albums",
-            translation_key="recommendations.recently_added_albums",
+            translation_key="recently_added_albums",
         )
         new_albums = await self.conn.get_album_list2(ltype="newest", size=self._reco_limit)
         for sonic_album in new_albums:
@@ -880,7 +888,7 @@ class OpenSonicProvider(MusicProvider):
             item_id="subsonic_most_played",
             provider=self.domain,
             name="Most Played Albums",
-            translation_key="recommendations.most_played_albums",
+            translation_key="most_played_albums",
         )
         albums = await self.conn.get_album_list2(ltype="frequent", size=self._reco_limit)
         for sonic_album in albums:

@@ -1,0 +1,15 @@
+{
+  "config_entries": {
+    "clear_cache": {
+      "label": "Clear cache",
+      "description": "Reset/clear all items in the cache. "
+    },
+    "clear_cache_result": {
+      "label": "The cache has been cleared"
+    }
+  },
+  "manifest": {
+    "name": "Cache",
+    "description": "Configuration of the core module that handles caching of data across the application"
+  }
+}

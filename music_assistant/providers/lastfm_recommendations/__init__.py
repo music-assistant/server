@@ -81,80 +81,51 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_API_KEY,
             type=ConfigEntryType.SECURE_STRING,
-            label="Last.fm API Key",
             required=False,
-            description="Optional. Override the built-in API key.",
             value=values.get(CONF_API_KEY) if values else None,
             advanced=True,
         ),
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Last.fm Username",
             required=False,
-            description="Your Last.fm username for genre-based recommendations (optional)",
             value=values.get(CONF_USERNAME) if values else None,
         ),
         ConfigEntry(
             key=CONF_ENABLE_PERSONALIZED,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable Personalized Recommendations",
             default_value=False,
-            description=(
-                "Provide 'Similar Artists' and 'Similar Tracks' rows based on your "
-                "listening history"
-            ),
             category="Recommendations",
         ),
         ConfigEntry(
             key=CONF_ENABLE_GLOBAL_CHARTS,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable Global Charts",
             default_value=False,
-            description=(
-                "Provide 'Global Top Artists' and 'Global Top Tracks' rows from "
-                "Last.fm's worldwide charts"
-            ),
             category="Recommendations",
         ),
         ConfigEntry(
             key=CONF_ENABLE_GENRE,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable Genre Recommendations",
             default_value=False,
-            description=(
-                "Provide 'Top Artists', 'Top Albums' and 'Top Tracks' rows for your "
-                "most played genre (requires username)"
-            ),
             category="Recommendations",
         ),
         ConfigEntry(
             key=CONF_ENABLE_GEO,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable Geographic Charts",
             default_value=False,
-            description=("Provide 'Top Artists' and 'Top Tracks' rows for the selected country"),
             category="Recommendations",
         ),
         ConfigEntry(
             key=CONF_GEO_COUNTRY,
             type=ConfigEntryType.STRING,
-            label="Country for Geographic Charts",
             default_value="Argentina",
-            description="Select country for geography-based top artists and tracks",
-            options=[ConfigValueOption(country, country) for country in GEO_COUNTRIES],
+            options=[ConfigValueOption(country, title=country) for country in GEO_COUNTRIES],
             category="Recommendations",
         ),
         ConfigEntry(
             key=CONF_ACTION_CLEAR_CACHE,
             type=ConfigEntryType.ACTION,
-            label="Refresh Recommendations",
-            description=(
-                "Rebuild recommendations immediately instead of waiting for the next "
-                "scheduled refresh."
-            ),
             action=CONF_ACTION_CLEAR_CACHE,
-            action_label="Refresh Now",
             category="Recommendations",
             advanced=True,
             required=False,

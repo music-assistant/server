@@ -13,14 +13,13 @@ CONF_CONTENT_TYPE = "content_type"
 CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
     key=CONF_MISSING_ALBUM_ARTIST_ACTION,
     type=ConfigEntryType.STRING,
-    label="Action when a track is missing the Albumartist ID3 tag",
     default_value="various_artists",
     help_link="https://music-assistant.io/music-providers/filesystem/#tagging-files",
     required=False,
     options=[
-        ConfigValueOption("Use Track artist(s)", "track_artist"),
-        ConfigValueOption("Use Various Artists", "various_artists"),
-        ConfigValueOption("Use Folder name (if possible)", "folder_name"),
+        ConfigValueOption("track_artist"),
+        ConfigValueOption("various_artists"),
+        ConfigValueOption("folder_name"),
     ],
     depends_on=CONF_CONTENT_TYPE,
     depends_on_value="music",
@@ -30,21 +29,18 @@ CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
 CONF_ENTRY_PATH = ConfigEntry(
     key="path",
     type=ConfigEntryType.STRING,
-    label="Path",
     default_value="/media",
 )
 
 CONF_ENTRY_CONTENT_TYPE = ConfigEntry(
     key=CONF_CONTENT_TYPE,
     type=ConfigEntryType.STRING,
-    label="Content type in media folder(s)",
     default_value="music",
-    description="The type of content to expect in the media folder(s)",
     required=False,
     options=[
-        ConfigValueOption("Music", "music"),
-        ConfigValueOption("Audiobooks", "audiobooks"),
-        ConfigValueOption("Podcasts", "podcasts"),
+        ConfigValueOption("music"),
+        ConfigValueOption("audiobooks"),
+        ConfigValueOption("podcasts"),
     ],
 )
 CONF_ENTRY_CONTENT_TYPE_READ_ONLY = ConfigEntry.from_dict(
@@ -54,12 +50,6 @@ CONF_ENTRY_CONTENT_TYPE_READ_ONLY = ConfigEntry.from_dict(
 CONF_ENTRY_LIBRARY_SYNC_TRACKS = ConfigEntry(
     key="library_sync_tracks",
     type=ConfigEntryType.BOOLEAN,
-    label="Import tracks/files into the Music Assistant library",
-    description="Define how/if you want to import tracks/files from the filesystem "
-    "into the Music Assistant Library. \nWhen not importing into the library, "
-    "they can still be manually browsed using the Browse feature. \n\n"
-    "Please note that by adding a Track into the Music Assistant library, "
-    "the track artists and album will always be imported as well.",
     default_value=True,
     category="sync_options",
     depends_on=CONF_CONTENT_TYPE,
@@ -68,10 +58,6 @@ CONF_ENTRY_LIBRARY_SYNC_TRACKS = ConfigEntry(
 CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS = ConfigEntry(
     key="library_sync_playlists",
     type=ConfigEntryType.BOOLEAN,
-    label="Import playlists (m3u files) into the Music Assistant library",
-    description="Define how/if you want to import playlists (m3u files) from the filesystem "
-    "into the Music Assistant Library. \nWhen not importing into the library, "
-    "they can still be manually browsed using the Browse feature.",
     default_value=True,
     category="sync_options",
     depends_on=CONF_CONTENT_TYPE,
@@ -80,10 +66,6 @@ CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS = ConfigEntry(
 CONF_ENTRY_LIBRARY_SYNC_PODCASTS = ConfigEntry(
     key="library_sync_podcasts",
     type=ConfigEntryType.BOOLEAN,
-    label="Import Podcasts(files) into the Music Assistant library",
-    description="Define how/if you want to import Podcasts(files) from the filesystem "
-    "into the Music Assistant Library. \nWhen not importing into the library, "
-    "they can still be manually browsed using the Browse feature.",
     default_value=True,
     category="sync_options",
     depends_on=CONF_CONTENT_TYPE,
@@ -92,10 +74,6 @@ CONF_ENTRY_LIBRARY_SYNC_PODCASTS = ConfigEntry(
 CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS = ConfigEntry(
     key="library_sync_audiobooks",
     type=ConfigEntryType.BOOLEAN,
-    label="Import Audiobooks(files) into the Music Assistant library",
-    description="Define how/if you want to import Audiobooks(files) from the filesystem "
-    "into the Music Assistant Library. \nWhen not importing into the library, "
-    "they can still be manually browsed using the Browse feature.",
     default_value=True,
     category="sync_options",
     depends_on=CONF_CONTENT_TYPE,
@@ -105,10 +83,6 @@ CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS = ConfigEntry(
 CONF_ENTRY_PROPAGATE_GENRES = ConfigEntry(
     key="propagate_track_genres",
     type=ConfigEntryType.BOOLEAN,
-    label="Propagate track genres to albums and artists",
-    description="Derive album and artist genres from their tracks when the album/artist "
-    "has no genre metadata of its own. Useful when your files only have genres "
-    "tagged at track level.",
     default_value=False,
     required=False,
     category="sync_options",
@@ -119,12 +93,6 @@ CONF_ENTRY_PROPAGATE_GENRES = ConfigEntry(
 CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS = ConfigEntry(
     key="ignore_album_playlists",
     type=ConfigEntryType.BOOLEAN,
-    label="Ignore playlists with album tracks within album folders",
-    description="A digital album often comes with a playlist file (.m3u) "
-    "that contains the tracks of the album. \nAdding all these playlists to the library, "
-    "is not very practical so it's better to just ignore them.\n\n"
-    "If this option is enabled, all playlists will be ignored which are more than "
-    "1 level deep anywhere in the folder structure. E.g. /music/artistname/albumname/playlist.m3u",
     default_value=True,
     required=False,
     depends_on=CONF_CONTENT_TYPE,

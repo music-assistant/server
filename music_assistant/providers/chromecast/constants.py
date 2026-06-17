@@ -36,13 +36,7 @@ CAST_PLAYER_CONFIG_ENTRIES = (
     ConfigEntry(
         key=CONF_USE_MASS_APP,
         type=ConfigEntryType.BOOLEAN,
-        label="Use Music Assistant Cast App",
         default_value=True,
-        description="By default, Music Assistant will use a special Music Assistant "
-        "Cast Receiver app to play media on cast devices. It is tweaked to provide "
-        "better metadata and future expansion. \\n\\n"
-        "If you want to use the official Google Cast Receiver app instead, disable this option, "
-        "for example if your device has issues with the Music Assistant app.",
         advanced=True,
     ),
 )

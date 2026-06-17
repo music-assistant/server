@@ -188,7 +188,7 @@ def is_origin_allowed_for_request(
         from music_assistant.controllers.webserver.helpers.auth_middleware import (  # noqa: PLC0415
             is_request_from_ingress,
         )
-    except (ImportError, ModuleNotFoundError):
+    except ImportError, ModuleNotFoundError:
         # ``music_assistant`` is a dev-only / test-extras dep here; absent in
         # the bare provider venv. Fail closed without log noise.
         return False

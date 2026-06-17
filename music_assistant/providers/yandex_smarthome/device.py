@@ -447,7 +447,7 @@ async def execute_capability_action(  # noqa: PLR0915
                 ),
             )
 
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return CapabilityActionResult(
             type=action.type,
             state=CapabilityActionResultState(

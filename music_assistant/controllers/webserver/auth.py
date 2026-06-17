@@ -124,7 +124,7 @@ class AuthenticationManager:
                 prev_version = int(db_row["value"])
             else:
                 prev_version = DB_SCHEMA_VERSION
-        except (KeyError, ValueError, Exception):
+        except KeyError, ValueError, Exception:
             # settings table doesn't exist yet or other error
             prev_version = 0
 

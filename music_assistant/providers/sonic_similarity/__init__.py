@@ -165,36 +165,20 @@ async def get_config_entries(
             key=CONF_ENABLE_CLAP_INDEX,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
-            label="Enable Character index",
-            description="Also build a second usearch index over the 1024-dim CLAP audio "
-            "embeddings already stored by sonic_analysis. Enables track-to-track semantic "
-            "similarity via the sonic_similarity/similar_clap API. Requires no extra "
-            "downloads — uses embeddings already on disk.",
         ),
         ConfigEntry(
             key=CONF_ENABLE_TEXT_SEARCH,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
-            label="Enable free-text search",
-            description="Enable natural-language track search (e.g. 'super dancy disco') via "
-            "the CLAP GPT2 text encoder, exposed as sonic_similarity/text_search. "
-            "First-time use lazily downloads ~500MB of GPT2 weights to the local "
-            "HuggingFace cache — the model is loaded on the first query, not at plugin "
-            "start. Implicitly enables the Character index above (text and audio "
-            "share the same 1024-dim joint embedding space).",
         ),
         # === Similarity search: engine choice + 18-dim tuning ===
         ConfigEntry(
             key=CONF_SIMILAR_TRACKS_ENGINE,
             type=ConfigEntryType.STRING,
             default_value=SIMILAR_ENGINE_18DIM,
-            label="Similar Tracks engine",
-            description="Which index powers library-wide Similar Tracks. Traits matches on "
-            "measured sound traits (tempo, energy, loudness, key); Character matches on overall "
-            "feel — how a listener would describe the sound.",
             options=[
-                ConfigValueOption("Traits (default)", SIMILAR_ENGINE_18DIM),
-                ConfigValueOption("Character", SIMILAR_ENGINE_CLAP),
+                ConfigValueOption(SIMILAR_ENGINE_18DIM),
+                ConfigValueOption(SIMILAR_ENGINE_CLAP),
             ],
             category="Similarity search",
             depends_on=CONF_ENABLE_CLAP_INDEX,
@@ -204,17 +188,12 @@ async def get_config_entries(
             key=CONF_SIMILAR_PRESET,
             type=ConfigEntryType.STRING,
             default_value="balanced",
-            label="Similar Tracks preset",
-            description="Similarity weight preset applied to the Similar Tracks action "
-            "(Traits engine only). 'balanced' is uniform; 'vibe' weights mood + timbre; "
-            "'party' weights rhythm + regularity; 'genre_era' stays close to the seed's "
-            "genre and decade; 'discover' favours novelty (low genre/era weighting).",
             options=[
-                ConfigValueOption("Balanced", "balanced"),
-                ConfigValueOption("Vibe (mood + timbre)", "vibe"),
-                ConfigValueOption("Party (rhythm-heavy)", "party"),
-                ConfigValueOption("Genre + Era (stay close)", "genre_era"),
-                ConfigValueOption("Discover (novelty-leaning)", "discover"),
+                ConfigValueOption("balanced"),
+                ConfigValueOption("vibe"),
+                ConfigValueOption("party"),
+                ConfigValueOption("genre_era"),
+                ConfigValueOption("discover"),
             ],
             category="Similarity search",
             depends_on=CONF_SIMILAR_TRACKS_ENGINE,
@@ -225,10 +204,6 @@ async def get_config_entries(
             type=ConfigEntryType.INTEGER,
             default_value=0,
             range=(0, 10),
-            label="Similar Tracks diversity",
-            description="0 keeps results closest to the seed; 10 maximises variety via MMR "
-            "(some results may be less similar but more distinct from each other). "
-            "Traits engine only.",
             category="Similarity search",
             depends_on=CONF_SIMILAR_TRACKS_ENGINE,
             depends_on_value=SIMILAR_ENGINE_18DIM,
@@ -238,22 +213,15 @@ async def get_config_entries(
             key=CONF_ENABLE_DISCOVER_ROW,
             type=ConfigEntryType.BOOLEAN,
             default_value=True,
-            label="Show 'Inspired by recently played' on the discover page",
-            description="Yield a discover-page row seeded by your recently-played tracks. "
-            "Disable to suppress the row without uninstalling the plugin.",
             category="Discover",
         ),
         ConfigEntry(
             key=CONF_DISCOVER_ENGINE,
             type=ConfigEntryType.STRING,
             default_value=SIMILAR_ENGINE_18DIM,
-            label="Discover row engine",
-            description="Which index seeds the discover row. Traits matches on measured sound "
-            "traits; Character matches on overall feel. Character requires the Character index "
-            "(Generic section) to be enabled — the row falls back to Traits otherwise.",
             options=[
-                ConfigValueOption("Traits (default)", SIMILAR_ENGINE_18DIM),
-                ConfigValueOption("Character", SIMILAR_ENGINE_CLAP),
+                ConfigValueOption(SIMILAR_ENGINE_18DIM),
+                ConfigValueOption(SIMILAR_ENGINE_CLAP),
             ],
             category="Discover",
             depends_on=CONF_ENABLE_DISCOVER_ROW,
@@ -263,17 +231,12 @@ async def get_config_entries(
             key=CONF_DISCOVER_PRESET,
             type=ConfigEntryType.STRING,
             default_value="discover",
-            label="Discover row preset",
-            description="Similarity weight preset used to rank candidates for the row "
-            "(Traits engine only). 'discover' favours novelty (low genre/era weighting); "
-            "'balanced' is uniform; 'vibe' weights mood + timbre; 'party' weights rhythm + "
-            "regularity; 'genre_era' stays close to the seed's genre and decade.",
             options=[
-                ConfigValueOption("Discover (novelty-leaning)", "discover"),
-                ConfigValueOption("Balanced", "balanced"),
-                ConfigValueOption("Vibe (mood + timbre)", "vibe"),
-                ConfigValueOption("Party (rhythm-heavy)", "party"),
-                ConfigValueOption("Genre + Era (stay close)", "genre_era"),
+                ConfigValueOption("discover"),
+                ConfigValueOption("balanced"),
+                ConfigValueOption("vibe"),
+                ConfigValueOption("party"),
+                ConfigValueOption("genre_era"),
             ],
             category="Discover",
             depends_on=CONF_DISCOVER_ENGINE,
@@ -284,10 +247,6 @@ async def get_config_entries(
             type=ConfigEntryType.INTEGER,
             default_value=2,
             range=(0, 10),
-            label="Discover row diversity",
-            description="0 keeps results closest to the seeds; 10 maximises variety via "
-            "MMR (some results may be less similar but more distinct from each other). "
-            "Traits engine only.",
             category="Discover",
             depends_on=CONF_DISCOVER_ENGINE,
             depends_on_value=SIMILAR_ENGINE_18DIM,
@@ -302,11 +261,7 @@ async def get_config_entries(
         ConfigEntry(
             key=ACTION_REBUILD_18DIM,
             type=ConfigEntryType.ACTION,
-            label="Rebuild Traits index",
-            description="Re-scan all stored signatures and rebuild the weighted-Euclidean "
-            "search index. Runs in the background; refresh the page to see updated counts.",
             action=ACTION_REBUILD_18DIM,
-            action_label="Rebuild Traits index",
             category="Status",
             advanced=True,
             required=False,
@@ -322,12 +277,7 @@ async def get_config_entries(
         ConfigEntry(
             key=ACTION_REBUILD_CLAP,
             type=ConfigEntryType.ACTION,
-            label="Rebuild Character index",
-            description="Incrementally re-scan audio_analysis rows and add any missing CLAP "
-            "embeddings to the 1024-dim index. Runs in the background; refresh the page to "
-            "see updated counts.",
             action=ACTION_REBUILD_CLAP,
-            action_label="Rebuild Character index",
             category="Status",
             advanced=True,
             required=False,

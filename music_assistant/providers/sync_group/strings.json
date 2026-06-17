@@ -1,0 +1,26 @@
+{
+  "config_entries": {
+    "sgp_note": {
+      "label": "Sync groups allow you to group compatible players together to play audio in sync. Players can only be grouped together if they support the same sync protocol"
+    },
+    "group_members": {
+      "label": "Group members",
+      "description": "Select the members of this sync group. "
+    },
+    "dynamic_members": {
+      "label": "Enable dynamic members",
+      "description": "Allow (un)joining members dynamically, so the group more or less behaves the same like manually syncing players together, with the main difference being that the group player will hold the queue."
+    },
+    "allowed_members": {
+      "label": "Allowed members",
+      "description": "Limit which players can join this group. Leave empty to allow any sync-compatible player. This can be used to reduce the list of players that show up for joining in case you have a lot of players."
+    }
+  },
+  "manifest": {
+    "description": "Create (permanent) sync groups to group speakers of compatible protocols/ecosystems to play audio in sync."
+  },
+  "errors": {
+    "not_dynamic": "Group {0} does not allow dynamically adding or removing members.",
+    "remove_self": "Cannot remove {0} from itself as a member."
+  }
+}
