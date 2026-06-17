@@ -24,7 +24,11 @@ from audible import AsyncClient
 if TYPE_CHECKING:
     from aiohttp import ClientSession
 from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import (
+    LoginFailed,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import (
     Audiobook,
     AudioFormat,
@@ -315,7 +319,7 @@ class AudibleHelper:
                 self.logger.warning(f"Error calculating duration from chapters for {asin}: {exc}")
 
         # Fetch resume position
-        book.resume_position_ms = await self.get_last_postion(asin=asin)
+        book.resume_position_ms = await self.get_last_position(asin=asin)
 
     async def get_stream(
         self, asin: str, media_type: MediaType = MediaType.AUDIOBOOK
@@ -504,8 +508,9 @@ class AudibleHelper:
 
         return position_ms, timestamp
 
-    async def get_last_postion(self, asin: str) -> int:
-        """Fetch the last-heard position in milliseconds for the given ASIN.
+    async def get_last_position(self, asin: str) -> int:
+        """
+        Fetch the last-heard position in milliseconds for the given ASIN.
 
         :param asin: The audiobook ASIN to query.
         """
@@ -513,7 +518,7 @@ class AudibleHelper:
             return 0
         try:
             result = await self._fetch_last_position(asin)
-        except (audible.exceptions.AudibleError, KeyError, TypeError, ValueError) as exc:
+        except (ProviderUnavailableError, KeyError, TypeError, ValueError) as exc:
             self.logger.error("Error getting last position for ASIN %s: %s", asin, exc)
             return 0
         return result[0] if result else 0
@@ -569,7 +574,7 @@ class AudibleHelper:
             raise NotImplementedError
         try:
             result = await self._fetch_last_position(asin)
-        except (audible.exceptions.AudibleError, KeyError, TypeError, ValueError) as exc:
+        except (ProviderUnavailableError, KeyError, TypeError, ValueError) as exc:
             self.logger.debug("Audible lastpositions fetch failed for %s: %s", asin, exc)
             raise NotImplementedError from exc
         if not result or result[0] == 0:
@@ -590,7 +595,12 @@ class AudibleHelper:
                 category=CACHE_CATEGORY_API,
             )
         if not response:
-            response = await self.client.get(path, **kwargs)
+            try:
+                response = await self.client.get(path, **kwargs)
+            except audible.exceptions.AudibleError as exc:
+                raise ProviderUnavailableError(
+                    f"Audible API request failed for '{path}': {exc}"
+                ) from exc
             await self.mass.cache.set(
                 key=cache_key_with_params, provider=self.provider_instance, data=response
             )
