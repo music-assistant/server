@@ -743,9 +743,13 @@ class WebserverController(CoreController):
                 "token": token,
                 "user": auth_result.user.to_dict(),
             }
-
-            # If return_url provided, append code parameter and return as redirect_to
+# If return_url provided, append code parameter and return as redirect_to
             if return_url:
+                # SECURITY FIX (GHSA-j369-4c4w-7qmq): Validate return_url before
+                # appending the JWT token, mirroring the check in _handle_auth_authorize.
+                is_valid, _ = is_allowed_redirect_url(return_url, request, self.base_url)
+                if not is_valid:
+                    return web.Response(status=400, text="Invalid return_url")
                 # Insert code parameter before any hash fragment
                 code_param = f"code={quote(token, safe='')}"
                 if "#" in return_url:
