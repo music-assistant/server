@@ -698,6 +698,7 @@ class BrowseConverter(BaseConverter):
         return BrowseFolder(
             item_id="schedule",
             name="Schedule",
+            translation_key="provider.bbc_sounds.schedule",
             provider=self.context.provider_domain,
             path=self._build_path("schedule"),
         )

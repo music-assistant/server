@@ -747,6 +747,7 @@ class YoutubeMusicProvider(MusicProvider):
         """
         mixed_for_you_folder = RecommendationFolder(
             name="Mixed for you",
+            translation_key="mixed_for_you",
             item_id=f"{self.instance_id}_mixed_for_you",
             provider=self.instance_id,
             icon="mdi:shuffle-variant",

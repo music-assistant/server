@@ -618,6 +618,9 @@
       "radios": {
         "name": "Radio"
       },
+      "radio_stations": {
+        "name": "Radio Stations"
+      },
       "audiobooks": {
         "name": "Audiobooks"
       },
@@ -656,15 +659,6 @@
       "audiobooks": {
         "name": "Audiobooks"
       },
-      "made_for_you": {
-        "name": "Made for you"
-      },
-      "recommended_albums": {
-        "name": "Recommended albums"
-      },
-      "recommended_artists": {
-        "name": "Recommended artists"
-      },
       "episodes_recently_added": {
         "name": "Newest Podcast Episodes"
       },
@@ -673,20 +667,6 @@
       },
       "most_played_albums": {
         "name": "Most Played Albums"
-      },
-      "discover_similar_artists": {
-        "name": "Discover Similar Artists"
-      },
-      "discover_similar_tracks": {
-        "name": "Discover Similar Tracks"
-      },
-      "global_top_artists": {
-        "name": "Global Top Artists",
-        "subtitle": "Most popular artists worldwide"
-      },
-      "global_top_tracks": {
-        "name": "Global Top Tracks",
-        "subtitle": "Most popular tracks worldwide"
       },
       "recently_played": {
         "name": "Recently played",
