@@ -285,98 +285,6 @@
     "smart_crossfade_unavailable": {
       "label": "Smart Crossfade is unavailable because this system has limited memory. It requires more RAM than is currently available for audio buffering."
     },
-    "default_enqueue_select_artist": {
-      "label": "Items to select when you play a (in-library) artist.",
-      "options": {
-        "top_tracks": "Artist top tracks only",
-        "library_tracks": "In-library tracks for the artist only",
-        "prefer_library": "Prefer library, fall back to top",
-        "all_tracks": "All tracks from all providers"
-      }
-    },
-    "default_enqueue_select_album": {
-      "label": "Items to select when you play a (in-library) album.",
-      "options": {
-        "library_tracks": "Only in-library tracks",
-        "all_tracks": "All tracks for album on (streaming) provider"
-      }
-    },
-    "default_enqueue_option_artist": {
-      "label": "Default enqueue option for Artist item(s).",
-      "description": "Define the default enqueue action for this mediatype.",
-      "options": {
-        "play": "Play (and keep queue)",
-        "replace": "Play (and replace queue)"
-      }
-    },
-    "default_enqueue_option_album": {
-      "label": "Default enqueue option for Album item(s).",
-      "description": "Define the default enqueue action for this mediatype.",
-      "options": {
-        "play": "Play (and keep queue)",
-        "replace": "Play (and replace queue)"
-      }
-    },
-    "default_enqueue_option_track": {
-      "label": "Default enqueue option for Track item(s).",
-      "description": "Define the default enqueue action for this mediatype.",
-      "options": {
-        "play": "Play (and keep queue)",
-        "replace": "Play (and replace queue)"
-      }
-    },
-    "default_enqueue_option_genre": {
-      "label": "Default enqueue option for Genre item(s).",
-      "description": "Define the default enqueue action for this mediatype.",
-      "options": {
-        "play": "Play (and keep queue)",
-        "replace": "Play (and replace queue)"
-      }
-    },
-    "default_enqueue_option_live_sources": {
-      "label": "Default enqueue option for Radio and Live Input item(s).",
-      "description": "Default enqueue action for live, infinite streams — radio stations and plugin AudioSources (Spotify Connect, AirPlay receiver, etc.).",
-      "options": {
-        "play": "Play (and keep queue)",
-        "replace": "Play (and replace queue)"
-      }
-    },
-    "default_enqueue_option_playlist": {
-      "label": "Default enqueue option for Playlist item(s).",
-      "description": "Define the default enqueue action for this mediatype.",
-      "options": {
-        "play": "Play (and keep queue)",
-        "replace": "Play (and replace queue)"
-      }
-    },
-    "default_enqueue_option_audiobook": {
-      "label": "Default enqueue option for Audiobook item(s).",
-      "options": {
-        "play": "Play (and keep queue)",
-        "replace": "Play (and replace queue)"
-      }
-    },
-    "default_enqueue_option_podcast": {
-      "label": "Default enqueue option for Podcast item(s).",
-      "options": {
-        "play": "Play (and keep queue)",
-        "replace": "Play (and replace queue)"
-      }
-    },
-    "default_enqueue_option_podcast_episode": {
-      "label": "Default enqueue option for Podcast-episode item(s).",
-      "options": {
-        "play": "Play (and keep queue)",
-        "replace": "Play (and replace queue)"
-      }
-    },
-    "default_enqueue_option_folder": {
-      "label": "Default enqueue option for Folder item(s).",
-      "options": {
-        "play": "Play (and keep queue)",
-        "replace": "Play (and replace queue)"
-      }
-    },
     "volume_normalization_radio": {
       "label": "Volume normalization method for radio streams"
     },
@@ -852,5 +760,120 @@
     "remove_playlist_tracks": "Remove items from playlist {0}",
     "import_playlist_matching": "Import playlist {0}",
     "update_metadata": "Update metadata for {0}"
+  },
+  "player_options": {
+    "adaptive_drc": {
+      "name": "Adaptive DRC"
+    },
+    "bass": {
+      "name": "Bass"
+    },
+    "bass_extension": {
+      "name": "Bass extension"
+    },
+    "clear_voice": {
+      "name": "Clear voice"
+    },
+    "dialogue_level": {
+      "name": "Dialogue level"
+    },
+    "dialogue_lift": {
+      "name": "Dialogue lift"
+    },
+    "dimmer": {
+      "name": "Dimmer"
+    },
+    "dts_dialogue_control": {
+      "name": "DTS Dialogue Control"
+    },
+    "enhancer": {
+      "name": "Enhancer"
+    },
+    "equalizer_high": {
+      "name": "Equalizer high"
+    },
+    "equalizer_low": {
+      "name": "Equalizer low"
+    },
+    "equalizer_mid": {
+      "name": "Equalizer mid"
+    },
+    "equalizer_mode": {
+      "name": "Equalizer mode"
+    },
+    "extra_bass": {
+      "name": "Extra bass"
+    },
+    "link_audio_delay": {
+      "name": "Link audio delay"
+    },
+    "link_audio_quality": {
+      "name": "Link audio quality"
+    },
+    "link_control": {
+      "name": "Link control"
+    },
+    "party_mode": {
+      "name": "Party mode"
+    },
+    "pure_direct": {
+      "name": "Pure direct"
+    },
+    "sleep": {
+      "name": "Sleep timer"
+    },
+    "speaker_a": {
+      "name": "Speaker A"
+    },
+    "speaker_b": {
+      "name": "Speaker B"
+    },
+    "subwoofer_volume": {
+      "name": "Subwoofer Volume"
+    },
+    "surround_3d": {
+      "name": "Surround 3D"
+    },
+    "surround_decoder_type": {
+      "name": "Surround decoder type"
+    },
+    "tone_control_mode": {
+      "name": "Tone control mode"
+    },
+    "treble": {
+      "name": "Treble"
+    }
+  },
+  "errors": {
+    "setup_required": "Music Assistant is not set up yet.",
+    "provider_unavailable": "The provider is currently unavailable.",
+    "media_not_found": "The requested media item could not be found.",
+    "invalid_data": "The data provided is invalid or could not be processed.",
+    "already_registered": "This item is already registered.",
+    "setup_failed": "Setup failed. Please check the configuration and try again.",
+    "login_failed": "Login failed. Please check your credentials and try again.",
+    "audio_error": "An error occurred while processing audio.",
+    "queue_empty": "The queue is empty.",
+    "unsupported_feature": "This feature is not supported.",
+    "unsupported_system": "This is not supported on this system.",
+    "unsupported_system_cpu_cores": "This system does not meet the minimal requirements for {0}: at least {1} CPU cores are required ({2} detected).",
+    "unsupported_system_memory": "This system does not meet the minimal requirements for {0}: at least {1}GB of RAM is required ({2}GB detected).",
+    "unsupported_system_avx2": "On-device audio analysis requires a CPU with AVX2 support (Intel Haswell / AMD Zen or newer). This CPU does not support AVX2. If you are running in a virtual machine (e.g. Proxmox), changing the CPU type to 'host' may expose AVX2 to the guest.",
+    "player_unavailable": "The player is not available.",
+    "player_command_failed": "The command to the player failed.",
+    "invalid_command": "Invalid or unsupported command.",
+    "unplayable_media": "This media item cannot be played.",
+    "invalid_provider_uri": "The provider URI is invalid.",
+    "invalid_provider_id": "The provider media item identifier is invalid.",
+    "retries_exhausted": "Retries exhausted. The operation could not be completed.",
+    "resource_temporarily_unavailable": "This resource is temporarily unavailable. Please try again later.",
+    "provider_permission_denied": "The provider denied this action due to insufficient permissions.",
+    "action_unavailable": "This action is currently unavailable.",
+    "authentication_required": "Authentication is required.",
+    "authentication_failed": "Authentication failed. The credentials are invalid.",
+    "insufficient_permissions": "You do not have permission to perform this action.",
+    "invalid_token": "The access token is invalid or has expired.",
+    "resource_busy": "This resource is currently in use elsewhere.",
+    "rate_limited": "Rate limit reached. Please try again later."
   }
 }

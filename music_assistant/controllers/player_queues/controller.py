@@ -14,19 +14,16 @@ but it can also be something else, hence the loose coupling.
 from __future__ import annotations
 
 import asyncio
-import functools
 import random
 import time
-from collections.abc import Awaitable, Callable, Coroutine
 from contextlib import suppress
 from types import NoneType
-from typing import TYPE_CHECKING, Any, Concatenate, TypedDict, TypeVar, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import shortuuid
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
-    ContentType,
     EventType,
     MediaType,
     PlaybackState,
@@ -76,7 +73,32 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
     PlaylistPlayableItem,
 )
-from music_assistant.controllers.players.constants import PlayerLockPurpose
+from music_assistant.controllers.player_queues.constants import (
+    CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
+    CACHE_CATEGORY_PLAYER_QUEUE_STATE,
+    CONF_DEFAULT_ENQUEUE_OPTION_ALBUM,
+    CONF_DEFAULT_ENQUEUE_OPTION_ARTIST,
+    CONF_DEFAULT_ENQUEUE_OPTION_AUDIOBOOK,
+    CONF_DEFAULT_ENQUEUE_OPTION_FOLDER,
+    CONF_DEFAULT_ENQUEUE_OPTION_GENRE,
+    CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES,
+    CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST,
+    CONF_DEFAULT_ENQUEUE_OPTION_PODCAST,
+    CONF_DEFAULT_ENQUEUE_OPTION_PODCAST_EPISODE,
+    CONF_DEFAULT_ENQUEUE_OPTION_TRACK,
+    CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
+    CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
+    ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
+    ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
+)
+from music_assistant.controllers.player_queues.helpers import (
+    CompareState,
+    get_current_playback_speed,
+    handle_play_action,
+    is_radio_source_dynamic,
+    smart_shuffle,
+    sort_tracks,
+)
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
@@ -88,8 +110,6 @@ from music_assistant.helpers.util import get_changed_keys, percentage
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.player import Player, PlayerMedia
 
-_SortableT = TypeVar("_SortableT", bound=PlaylistPlayableItem)
-
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -99,89 +119,6 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.models.player import Player
-
-CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
-CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
-
-ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE = "all_tracks"
-ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE = "all_tracks"
-
-CONF_DEFAULT_ENQUEUE_OPTION_ARTIST = "default_enqueue_option_artist"
-CONF_DEFAULT_ENQUEUE_OPTION_ALBUM = "default_enqueue_option_album"
-CONF_DEFAULT_ENQUEUE_OPTION_TRACK = "default_enqueue_option_track"
-CONF_DEFAULT_ENQUEUE_OPTION_GENRE = "default_enqueue_option_genre"
-CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES = "default_enqueue_option_live_sources"
-CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST = "default_enqueue_option_playlist"
-CONF_DEFAULT_ENQUEUE_OPTION_AUDIOBOOK = "default_enqueue_option_audiobook"
-CONF_DEFAULT_ENQUEUE_OPTION_PODCAST = "default_enqueue_option_podcast"
-CONF_DEFAULT_ENQUEUE_OPTION_PODCAST_EPISODE = "default_enqueue_option_podcast_episode"
-CONF_DEFAULT_ENQUEUE_OPTION_FOLDER = "default_enqueue_option_folder"
-CONF_DEFAULT_ENQUEUE_OPTION_UNKNOWN = "default_enqueue_option_unknown"
-CACHE_CATEGORY_PLAYER_QUEUE_STATE = 0
-CACHE_CATEGORY_PLAYER_QUEUE_ITEMS = 1
-
-
-def handle_play_action[PlayerQueuesControllerT: "PlayerQueuesController", **P, R](
-    func: Callable[Concatenate[PlayerQueuesControllerT, P], Awaitable[R]],
-) -> Callable[Concatenate[PlayerQueuesControllerT, P], Coroutine[Any, Any, R]]:
-    """
-    Decorator for queue playback actions.
-
-    Acquires the shared playback lock for the queue's player (re-entrant)
-    and sets ATTR_PLAY_ACTION_IN_PROGRESS on the queue while the action runs.
-    Uses an internal refcount so nested actions don't clear the flag prematurely.
-
-    :param func: The function to wrap.
-    """  # noqa: D401
-
-    @functools.wraps(func)
-    async def wrapper(self: PlayerQueuesControllerT, *args: P.args, **kwargs: P.kwargs) -> R:
-        """Execute function with playback lock and play action flag set."""
-        queue_id = kwargs.get("queue_id") or args[0]
-        assert isinstance(queue_id, str)  # for type checking
-        queue = self._queues.get(queue_id)
-        if queue is None:
-            return await func(self, *args, **kwargs)
-        async with self.mass.players.get_player_lock(queue_id, PlayerLockPurpose.PLAYBACK):
-            prev_in_progress = queue.extra_attributes.get(ATTR_PLAY_ACTION_IN_PROGRESS, False)
-            try:
-                self._play_action_refcount[queue_id] = (
-                    self._play_action_refcount.get(queue_id, 0) + 1
-                )
-                queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = True
-                if not prev_in_progress:
-                    self.signal_update(queue_id)
-                return await func(self, *args, **kwargs)
-            finally:
-                refcount = self._play_action_refcount.get(queue_id, 1) - 1
-                if refcount <= 0:
-                    self._play_action_refcount.pop(queue_id, None)
-                    queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
-                    self.signal_update(queue_id)
-                else:
-                    self._play_action_refcount[queue_id] = refcount
-
-    return wrapper
-
-
-class CompareState(TypedDict):
-    """Simple object where we store the (previous) state of a queue.
-
-    Used for compare actions.
-    """
-
-    queue_id: str
-    state: PlaybackState
-    current_item_id: str | None
-    next_item_id: str | None
-    current_item: QueueItem | None
-    elapsed_time: int
-    # last_playing_elapsed_time: elapsed time from the last PLAYING state update
-    # used to determine if a track was fully played when transitioning to idle
-    last_playing_elapsed_time: int
-    stream_title: str | None
-    codec_type: ContentType | None
-    output_formats: list[str] | None
 
 
 class PlayerQueuesController(CoreController):
@@ -323,7 +260,8 @@ class PlayerQueuesController(CoreController):
         return self._queues.get(queue_id)
 
     def _check_player_permission(self, queue_id: str) -> None:
-        """Check if the current user has permission to control this player/queue.
+        """
+        Check if the current user has permission to control this player/queue.
 
         :param queue_id: The queue/player ID to check access for.
         :raises InsufficientPermissions: If the user lacks access.
@@ -403,7 +341,7 @@ class PlayerQueuesController(CoreController):
             and (queue.items - queue.current_index) <= 1
         ):
             queue.radio_source = queue.enqueued_media_items
-            queue.is_dynamic = _is_radio_source_dynamic(queue.radio_source)
+            queue.is_dynamic = is_radio_source_dynamic(queue.radio_source)
             task_id = f"fill_radio_tracks_{queue_id}"
             self.mass.call_later(5, self._fill_radio_tracks, queue_id, task_id=task_id)
         self.signal_update(queue_id=queue_id)
@@ -614,7 +552,8 @@ class PlayerQueuesController(CoreController):
 
     @api_command("player_queues/save_as_playlist")
     async def save_as_playlist(self, queue_id: str, name: str) -> BackgroundTask:
-        """Save the current queue items as a new playlist.
+        """
+        Save the current queue items as a new playlist.
 
         :param queue_id: The queue_id of the queue to save.
         :param name: The name for the new playlist.
@@ -676,7 +615,8 @@ class PlayerQueuesController(CoreController):
 
     @api_command("player_queues/pause")
     async def pause(self, queue_id: str) -> None:
-        """Handle PAUSE command for given queue.
+        """
+        Handle PAUSE command for given queue.
 
         - queue_id: queue_id of the playerqueue to handle the command.
         """
@@ -720,7 +660,8 @@ class PlayerQueuesController(CoreController):
 
     @api_command("player_queues/play_pause")
     async def play_pause(self, queue_id: str) -> None:
-        """Toggle play/pause on given playerqueue.
+        """
+        Toggle play/pause on given playerqueue.
 
         - queue_id: queue_id of the queue to handle the command.
         """
@@ -810,7 +751,8 @@ class PlayerQueuesController(CoreController):
 
     @api_command("player_queues/skip")
     async def skip(self, queue_id: str, seconds: int = 10) -> None:
-        """Handle SKIP command for given queue.
+        """
+        Handle SKIP command for given queue.
 
         - queue_id: queue_id of the queue to handle the command.
         - seconds: number of seconds to skip in track. Use negative value to skip back.
@@ -821,7 +763,8 @@ class PlayerQueuesController(CoreController):
 
     @api_command("player_queues/seek")
     async def seek(self, queue_id: str, position: int = 10) -> None:
-        """Handle SEEK command for given queue.
+        """
+        Handle SEEK command for given queue.
 
         - queue_id: queue_id of the queue to handle the command.
         - position: position in seconds to seek to in the current playing item.
@@ -845,7 +788,8 @@ class PlayerQueuesController(CoreController):
     @api_command("player_queues/resume")
     @handle_play_action
     async def resume(self, queue_id: str, fade_in: bool | None = None) -> None:
-        """Handle RESUME command for given queue.
+        """
+        Handle RESUME command for given queue.
 
         - queue_id: queue_id of the queue to handle the command.
         """
@@ -1084,7 +1028,7 @@ class PlayerQueuesController(CoreController):
                 queue.from_cache(prev_state)
                 # recalculate is_dynamic after radio_source is restored from cache
                 # (old cache entries won't have is_dynamic set)
-                queue.is_dynamic = _is_radio_source_dynamic(queue.radio_source)
+                queue.is_dynamic = is_radio_source_dynamic(queue.radio_source)
                 prev_items = await self.mass.cache.get(
                     key=queue_id,
                     provider=self.domain,
@@ -1166,7 +1110,7 @@ class PlayerQueuesController(CoreController):
         # queue.elapsed_time is stored in media-time so it can be displayed and
         # used as a resume position directly. The player reports stream-time
         # (post-atempo), so we scale by the current item's playback_speed.
-        speed = self._current_playback_speed(queue)
+        speed = get_current_playback_speed(queue)
         if queue.flow_mode:
             # _get_flow_queue_stream_index returns media-time in the current item
             # using each playlog entry's recorded speed.
@@ -1184,13 +1128,6 @@ class PlayerQueuesController(CoreController):
             object_id=queue_id,
             data=queue.elapsed_time,
         )
-
-    @staticmethod
-    def _current_playback_speed(queue: PlayerQueue) -> float:
-        """Return the playback_speed of the queue's current item (1.0 if unset)."""
-        if queue.current_item is None:
-            return 1.0
-        return float(queue.current_item.extra_attributes.get("playback_speed") or 1.0)
 
     def on_player_remove(self, player_id: str, permanent: bool) -> None:
         """Call when a player is removed from the registry."""
@@ -1255,7 +1192,7 @@ class PlayerQueuesController(CoreController):
                 # we're all set, this is our next item
                 next_item = queue_item
                 break
-            except (MediaNotFoundError, AudioError):
+            except MediaNotFoundError, AudioError:
                 # No stream details found, skip this QueueItem
                 self.logger.warning(
                     "Skipping unplayable item %s (%s)", queue_item.name, queue_item.uri
@@ -1437,7 +1374,7 @@ class PlayerQueuesController(CoreController):
             queue.radio_source = radio_source
         else:
             queue.radio_source += radio_source
-        queue.is_dynamic = _is_radio_source_dynamic(queue.radio_source)
+        queue.is_dynamic = is_radio_source_dynamic(queue.radio_source)
         # Use collected media items to calculate the radio if radio mode is on
         if radio_mode:
             radio_tracks = await self._get_radio_tracks(
@@ -1521,13 +1458,22 @@ class PlayerQueuesController(CoreController):
             return
         # handle add: add/append item(s) to the remaining queue items
         if option == QueueOption.ADD:
+            # When shuffling, mix the new items into the not-yet-played tail. While playing,
+            # keep the item right after the buffered one in place: it has already been enqueued
+            # to the player (and prepared for crossfade), so reshuffling it would swap the
+            # upcoming track underneath the player and cause an abrupt, non-crossfaded switch.
+            if not queue.shuffle_enabled:
+                add_at_index = len(self._queue_items[queue_id]) + 1
+            elif queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+                add_at_index = insert_at_index + 1
+            else:
+                add_at_index = insert_at_index
             await self.load(
                 queue_id=queue_id,
                 queue_items=queue_items,
-                insert_at_index=insert_at_index
-                if queue.shuffle_enabled
-                else len(self._queue_items[queue_id]) + 1,
-                shuffle=queue.shuffle_enabled,
+                insert_at_index=add_at_index,
+                # radio tracks are already ordered in a pattern we want to keep
+                shuffle=queue.shuffle_enabled and not radio_mode,
             )
             # handle edgecase, queue is empty and items are only added (not played)
             # mark first item as new index
@@ -1695,7 +1641,8 @@ class PlayerQueuesController(CoreController):
             self.mass.create_task(self._cleanup_stale_queue_buffers(queue_id, current_index))
 
     def queue_buffer_completed(self, queue_id: str) -> None:
-        """Call when the flow stream has finished generating all audio data for a queue.
+        """
+        Call when the flow stream has finished generating all audio data for a queue.
 
         At this point all audio data for the queue has been passed to the encoding pipeline.
         The player will go idle once it finishes playing the remaining buffered audio.
@@ -1755,7 +1702,8 @@ class PlayerQueuesController(CoreController):
         keep_played: bool = True,
         shuffle: bool = False,
     ) -> None:
-        """Load new items at index.
+        """
+        Load new items at index.
 
         - queue_id: id of the queue to process this request.
         - queue_items: a list of QueueItems
@@ -1775,7 +1723,7 @@ class PlayerQueuesController(CoreController):
             item.sort_index += insert_at_index + index
         # (re)shuffle the final batch if needed
         if shuffle:
-            next_items = await _smart_shuffle(next_items)
+            next_items = await smart_shuffle(next_items)
         self.update_items(queue_id, prev_items + next_items)
 
     def update_items(self, queue_id: str, queue_items: list[QueueItem]) -> None:
@@ -2013,7 +1961,7 @@ class PlayerQueuesController(CoreController):
                 continue
             result.append(album_track)
         if sort_by and sort_by != "track_number":
-            result = self._sort_tracks(result, sort_by)
+            result = sort_tracks(result, sort_by)
         if start_item is not None:
             for idx, track in enumerate(result):
                 if start_item in (track.item_id, track.uri):
@@ -2022,7 +1970,8 @@ class PlayerQueuesController(CoreController):
         return result
 
     async def get_genre_tracks(self, genre: Genre, start_item: str | None) -> list[Track]:
-        """Return tracks for given genre, based on alias mappings.
+        """
+        Return tracks for given genre, based on alias mappings.
 
         Limits results to avoid loading thousands of tracks for broad genres.
         Directly mapped tracks are fetched with random ordering, then supplemented
@@ -2102,50 +2051,13 @@ class PlayerQueuesController(CoreController):
             if not playlist_track.available:
                 continue
             result.append(playlist_track)
-        result = self._sort_tracks(result, cast("str", sort_by))
+        result = sort_tracks(result, cast("str", sort_by))
         if start_item is not None:
             for idx, track in enumerate(result):
                 if start_item in (track.item_id, track.uri):
                     return result[idx:]
             return []
         return result
-
-    @staticmethod
-    def _sort_tracks(tracks: list[_SortableT], sort_by: str) -> list[_SortableT]:
-        """Sort tracks by the given sort key."""
-        key_map: dict[str, tuple[Any, bool]] = {
-            "position_desc": (lambda t: getattr(t, "position", 0) or 0, True),
-            "name": (lambda t: (t.sort_name or t.name or "").lower(), False),
-            "artist": (
-                lambda t: (
-                    (t.artists[0].sort_name or t.artists[0].name).lower()
-                    if hasattr(t, "artists") and t.artists
-                    else ""
-                ),
-                False,
-            ),
-            "album": (
-                lambda t: (
-                    (t.album.sort_name or t.album.name).lower()
-                    if hasattr(t, "album") and t.album
-                    else ""
-                ),
-                False,
-            ),
-            "duration": (lambda t: getattr(t, "duration", 0) or 0, False),
-            "duration_desc": (lambda t: getattr(t, "duration", 0) or 0, True),
-            "track_number": (
-                lambda t: (
-                    getattr(t, "disc_number", 0) or 0,
-                    getattr(t, "track_number", 0) or 0,
-                ),
-                False,
-            ),
-        }
-        if sort_by in key_map:
-            key_fn, reverse = key_map[sort_by]
-            return sorted(tracks, key=key_fn, reverse=reverse)
-        return list(tracks)
 
     async def get_audiobook_resume_point(
         self, audio_book: Audiobook, chapter: str | int | None = None, userid: str | None = None
@@ -2517,6 +2429,11 @@ class PlayerQueuesController(CoreController):
             return list(await self.get_playlist_tracks(media_item, start_item, sort_by=sort_by))
         if media_item.media_type == MediaType.ARTIST:
             media_item = cast("Artist", media_item)
+            self.mass.create_task(
+                self.mass.music.mark_item_played(
+                    media_item, userid=userid, queue_id=queue_id, user_initiated=True
+                )
+            )
             return list(await self.get_artist_tracks(media_item))
         if media_item.media_type == MediaType.ALBUM:
             media_item = cast("Album", media_item)
@@ -2554,7 +2471,8 @@ class PlayerQueuesController(CoreController):
         return [cast("MediaItemType", media_item)]
 
     async def _try_resume_from_playlog(self, queue: PlayerQueue) -> bool:
-        """Try to resume playback from playlog when queue is empty.
+        """
+        Try to resume playback from playlog when queue is empty.
 
         Attempts to find user-initiated recently played items in the following order:
         1. By userid AND queue_id
@@ -2668,7 +2586,8 @@ class PlayerQueuesController(CoreController):
         return tracks
 
     def _update_current_index_from_player(self, queue: PlayerQueue, player: Player) -> bool:
-        """Update the current item/index/elapsed time on the queue from the player state.
+        """
+        Update the current item/index/elapsed time on the queue from the player state.
 
         Returns True if the update was successful, False if the caller should return early.
         """
@@ -2704,7 +2623,7 @@ class PlayerQueuesController(CoreController):
 
             # convert player's stream-time to media-time and add seek offset (non-flow only;
             # flow mode already returns media-time from _get_flow_queue_stream_index above)
-            speed = self._current_playback_speed(queue)
+            speed = get_current_playback_speed(queue)
             if not queue.flow_mode:
                 elapsed_time *= speed
                 if (
@@ -2910,7 +2829,7 @@ class PlayerQueuesController(CoreController):
                     ", ".join([x.uri for x in queue.enqueued_media_items]),  # type: ignore[misc]  # uri set in __post_init__
                 )
                 queue.radio_source = queue.enqueued_media_items
-                queue.is_dynamic = _is_radio_source_dynamic(queue.radio_source)
+                queue.is_dynamic = is_radio_source_dynamic(queue.radio_source)
             # auto fill radio tracks if less than 5 tracks left in the queue
             if (
                 queue.radio_source
@@ -2923,7 +2842,8 @@ class PlayerQueuesController(CoreController):
     def _get_flow_queue_stream_index(
         self, queue: PlayerQueue, player: Player
     ) -> tuple[int | None, float]:
-        """Calculate current queue index and current track elapsed time when flow mode is active.
+        """
+        Calculate current queue index and current track elapsed time when flow mode is active.
 
         The player reports cumulative stream-time (post-atempo). The returned
         track elapsed time is in media-time, scaled by the current item's
@@ -3274,7 +3194,7 @@ class PlayerQueuesController(CoreController):
                     is_playing=is_playing,
                     userid=queue.userid,
                     queue_id=queue.queue_id,
-                    user_initiated=False,
+                    user_initiated=self._is_user_initiated_play(queue, media_item),
                 )
             )
             if fully_played and not is_playing:
@@ -3361,6 +3281,10 @@ class PlayerQueuesController(CoreController):
                 return None
         return enqueued
 
+    def _is_user_initiated_play(self, queue: PlayerQueue, media_item: MediaItemType) -> bool:
+        """Return whether a played item was explicitly chosen by the user."""
+        return media_item in queue.enqueued_media_items
+
     async def _mark_album_played(
         self, album: Album, track: MediaItemType, queue: PlayerQueue
     ) -> None:
@@ -3373,12 +3297,13 @@ class PlayerQueuesController(CoreController):
             album,
             userid=queue.userid,
             queue_id=queue.queue_id,
-            user_initiated=False,
+            user_initiated=True,
             skip_artist_ids=list(skip),
         )
 
     async def _cleanup_stale_queue_buffers(self, queue_id: str, current_index: int) -> None:
-        """Clean up audio buffers for queue items that are no longer needed.
+        """
+        Clean up audio buffers for queue items that are no longer needed.
 
         This clears buffers for items at index <= current_index - 2, keeping only:
         - The previous track (current_index - 1)
@@ -3419,7 +3344,8 @@ class PlayerQueuesController(CoreController):
             )
 
     async def _cleanup_queue_audio_data(self, queue_id: str) -> None:
-        """Clean up all audio-related data for a queue when it is stopped or cleared.
+        """
+        Clean up all audio-related data for a queue when it is stopped or cleared.
 
         This clears:
         - All audio buffers attached to queue item streamdetails
@@ -3468,47 +3394,3 @@ class PlayerQueuesController(CoreController):
         if not fully_played and self._last_counted_play.get(queue_id) == queue_item_id:
             del self._last_counted_play[queue_id]
         return True
-
-
-def _is_radio_source_dynamic(radio_source: list[MediaItemType]) -> bool:
-    """Return True if radio_source is a single dynamic playlist."""
-    return (
-        len(radio_source) == 1
-        and isinstance(radio_source[0], Playlist)
-        and radio_source[0].is_dynamic
-    )
-
-
-async def _smart_shuffle(items: list[QueueItem]) -> list[QueueItem]:
-    """Shuffle queue items, avoiding identical tracks next to each other.
-
-    Best-effort approach to prevent the same track from appearing adjacent.
-    Does a random shuffle first, then makes a limited number of passes to
-    swap adjacent duplicates with a random item further in the list.
-
-    :param items: List of queue items to shuffle.
-    """
-    if len(items) <= 2:
-        return random.sample(items, len(items)) if len(items) == 2 else items
-
-    # Start with a random shuffle
-    shuffled = random.sample(items, len(items))
-
-    # Make a few passes to fix adjacent duplicates
-    max_passes = 3
-    for _ in range(max_passes):
-        swapped = False
-        for i in range(len(shuffled) - 1):
-            if shuffled[i].name == shuffled[i + 1].name:
-                # Found adjacent duplicate - swap with random position at least 2 away
-                swap_candidates = [j for j in range(len(shuffled)) if abs(j - i - 1) >= 2]
-                if swap_candidates:
-                    swap_pos = random.choice(swap_candidates)
-                    shuffled[i + 1], shuffled[swap_pos] = shuffled[swap_pos], shuffled[i + 1]
-                    swapped = True
-        if not swapped:
-            break
-        # Yield to event loop between passes
-        await asyncio.sleep(0)
-
-    return shuffled

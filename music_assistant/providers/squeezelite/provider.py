@@ -217,7 +217,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
         ):
             try:
                 await resp.write(chunk)
-            except (BrokenPipeError, ConnectionResetError, ConnectionError):
+            except BrokenPipeError, ConnectionResetError, ConnectionError:
                 # race condition
                 break
         return resp

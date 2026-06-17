@@ -7,5 +7,8 @@
   },
   "manifest": {
     "description": "Create dynamic or fixed playlists based on rules like genres, artists, albums, favorites and similar tracks."
+  },
+  "errors": {
+    "invalid_name": "{0} is not a valid playlist name."
   }
 }

@@ -6,7 +6,7 @@ Brotli>=1.0.9
 aioaudiobookshelf==0.1.21
 aiodns>=3.2.0
 aiofiles==24.1.0
-aiohttp==3.14.0
+aiohttp==3.14.1
 aiohttp_asyncmdnsresolver==0.1.1
 aiohttp-fast-zlib==0.3.0
 aiohttp-socks==0.11.0
@@ -48,8 +48,8 @@ librosa==0.11.0
 lyricsgenius==3.12.2
 mashumaro==3.20
 modern_colorthief==0.2.1
-music-assistant-frontend==2.17.189
-music-assistant-models==1.1.133
+music-assistant-frontend==2.17.190
+music-assistant-models==1.1.135
 mutagen==1.47.0
 niconico.py-ma==2.1.0.post2
 nnAudio==0.3.3
@@ -86,6 +86,7 @@ soundcloudpy==0.1.4
 sounddevice==0.5.5
 srptools>=1.0.0
 sxm==0.2.8
+threadpoolctl==3.6.0
 torch==2.11.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
 torch==2.11.0; sys_platform != 'linux' or platform_machine != 'x86_64'
 torchaudio==2.11.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'

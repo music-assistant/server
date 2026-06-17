@@ -9,9 +9,11 @@ from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
+from music_assistant_models.api import ErrorResultMessage
 from music_assistant_models.background_task import BackgroundTask
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
 from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderType
+from music_assistant_models.errors import LoginFailed, ProviderUnavailableError
 from music_assistant_models.media_items.media_item import BrowseFolder, RecommendationFolder
 from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.translations import TRANSLATION_RESOLVER
@@ -205,6 +207,11 @@ def _nl_controller() -> TranslationController:
         "common.media.genre.classical.name": "Classical",
         # a genre description (resolved into a Genre's nested metadata.description)
         "common.media.genre.classical.description": "Classical music is art music.",
+        # error messages: a shared default (common.errors.*) + a provider-specific override
+        "common.errors.provider_unavailable": "The provider is currently unavailable.",
+        "common.errors.setup_required": "Music Assistant is not set up yet.",
+        "common.errors.insufficient_permissions": "You do not have permission to perform this action.",
+        "provider.spotify.errors.token_expired": "Your Spotify session expired.",
     }
     ctrl._locales = {
         "nl": {
@@ -217,6 +224,10 @@ def _nl_controller() -> TranslationController:
             "common.media.recommendations.recently_played.subtitle": "Ga verder waar je gebleven was",
             "common.media.genre.classical.name": "Klassiek",
             "common.media.genre.classical.description": "Klassieke muziek is kunstmuziek.",
+            "common.errors.provider_unavailable": "De provider is niet beschikbaar.",
+            "common.errors.setup_required": "Music Assistant is nog niet ingesteld.",
+            "common.errors.insufficient_permissions": "Je hebt geen toestemming voor deze actie.",
+            "provider.spotify.errors.token_expired": "Je Spotify-sessie is verlopen.",
         }
     }
     ctrl._available_locales = {"en", "nl"}
@@ -367,6 +378,101 @@ def test_provider_sync_task_localized_serialization() -> None:
             assert serialized["name"] == name
             assert "translation_key" not in serialized
             assert "translation_args" not in serialized
+
+
+def test_error_result_message_localized_serialization() -> None:
+    """ErrorResultMessage localizes `details` from a MusicAssistantError's default key."""
+    ctrl = _nl_controller()
+    err = ProviderUnavailableError("WebDAV PROPFIND failed with status 503")
+    msg = ErrorResultMessage(
+        "msg-1",
+        err.error_code,
+        str(err),
+        translation_key=err.translation_key,
+        translation_args=err.translation_args,
+    )
+    # no resolver -> raw English details + machinery kept (internal round-trips stay localizable)
+    plain = msg.to_dict()
+    assert plain["details"] == "WebDAV PROPFIND failed with status 503"
+    assert plain["translation_key"] == "errors.provider_unavailable"
+    # nl resolver -> localized details; error_code/message_id kept, machinery stripped
+    with _active_resolver(ctrl, "nl"):
+        localized = msg.to_dict()
+    assert localized["details"] == "De provider is niet beschikbaar."
+    assert localized["error_code"] == err.error_code
+    assert localized["message_id"] == "msg-1"
+    assert "translation_key" not in localized
+    assert "translation_args" not in localized
+    # any bound locale (incl. an untranslated one) resolves to the English source string,
+    # not the original specific message (the specific text stays in the server log)
+    with _active_resolver(ctrl, "fr"):
+        fallback = msg.to_dict()
+    assert fallback["details"] == "The provider is currently unavailable."
+
+
+def test_error_result_message_provider_specific_override() -> None:
+    """A provider can override translation_key to localize a provider-specific message."""
+    ctrl = _nl_controller()
+    err = LoginFailed(
+        "token exchange failed", translation_key="provider.spotify.errors.token_expired"
+    )
+    msg = ErrorResultMessage(
+        "m",
+        err.error_code,
+        str(err),
+        translation_key=err.translation_key,
+        translation_args=err.translation_args,
+    )
+    with _active_resolver(ctrl, "nl"):
+        assert msg.to_dict()["details"] == "Je Spotify-sessie is verlopen."
+
+
+def test_error_result_message_unresolved_key_keeps_details() -> None:
+    """An unresolvable or absent translation_key leaves the raw `details` string intact."""
+    ctrl = _nl_controller()
+    # key not in the catalog -> details kept as-is
+    typed = ErrorResultMessage(
+        "m", 2, "Track 123 not found", translation_key="errors.media_not_found"
+    )
+    with _active_resolver(ctrl, "nl"):
+        assert typed.to_dict()["details"] == "Track 123 not found"
+    # no key at all (e.g. an unexpected non-MA error) -> details kept
+    untyped = ErrorResultMessage("m", 999, "boom")
+    with _active_resolver(ctrl, "nl"):
+        out = untyped.to_dict()
+    assert out["details"] == "boom"
+    assert out["error_code"] == 999
+
+
+def test_error_result_message_protocol_error_localization() -> None:
+    """The hard-coded auth/command error responses localize via their translation_key too."""
+    ctrl = _nl_controller()
+    # the new connection-time setup_required key resolves under nl
+    setup = ErrorResultMessage(
+        "connection", 503, "Setup required", translation_key="errors.setup_required"
+    )
+    # a reused generic key for the admin/role error
+    admin = ErrorResultMessage(
+        "m", 22, "Admin access required", translation_key="errors.insufficient_permissions"
+    )
+    with _active_resolver(ctrl, "nl"):
+        assert setup.to_dict()["details"] == "Music Assistant is nog niet ingesteld."
+        assert admin.to_dict()["details"] == "Je hebt geen toestemming voor deze actie."
+
+
+def test_provider_specific_error_keys_resolve_with_params() -> None:
+    """Provider-specific error keys resolve from the built source and fill their {0} param."""
+    ctrl = _make_controller()
+    ctrl._source = build_translations_source()
+    cases = [
+        ("provider.audiobookshelf.errors.login_failed", "https://abs.local"),
+        ("provider.chromecast.errors.app_launch_timeout", "Living Room TV"),
+        ("provider.filesystem_nfs.errors.host_unresolvable", "nas.local"),
+    ]
+    for key, arg in cases:
+        resolved = ctrl.get_translation(key, params=[arg])
+        assert resolved is not None, f"{key} did not resolve"
+        assert arg in resolved, f"{key} did not fill its param: {resolved!r}"
 
 
 def test_media_item_without_translation_key_is_untouched() -> None:

@@ -79,27 +79,6 @@ class GenreController(MediaControllerBase[Genre]):
         super().__init__(mass)
         self._last_scan_time: float = 0
         self._last_scan_mapped: int = 0
-        # Use a derived table to filter out globally excluded genres so all queries
-        # built by the base class (which appends its own WHERE) stay valid SQL.
-        self.base_query = f"""
-        SELECT
-            {DB_TABLE_GENRES}.*,
-            (SELECT JSON_GROUP_ARRAY(
-                json_object(
-                    'item_id', provider_mappings.provider_item_id,
-                    'provider_domain', provider_mappings.provider_domain,
-                    'provider_instance', provider_mappings.provider_instance,
-                    'available', provider_mappings.available,
-                    'audio_format', json(provider_mappings.audio_format),
-                    'url', provider_mappings.url,
-                    'details', provider_mappings.details,
-                    'in_library', provider_mappings.in_library,
-                    'is_unique', provider_mappings.is_unique
-                )) FROM provider_mappings
-                WHERE provider_mappings.item_id = {DB_TABLE_GENRES}.item_id
-                AND provider_mappings.media_type = '{MediaType.GENRE.value}'
-            ) AS provider_mappings
-        FROM (SELECT * FROM {DB_TABLE_GENRES} WHERE is_excluded = 0) AS {DB_TABLE_GENRES}"""
 
         # register extra api handlers
         self.mass.register_api_command(
@@ -187,6 +166,32 @@ class GenreController(MediaControllerBase[Genre]):
 
         # Run genre mapping scanner after library sync completes
         self.mass.subscribe(self._on_music_sync_completed, EventType.MUSIC_SYNC_COMPLETED)
+
+    @property
+    def base_query(self) -> tuple[str, dict[str, Any]]:
+        """Return the base SELECT query for genres and its bound query params."""
+        # Use a derived table to filter out globally excluded genres so all queries
+        # built by the base class (which appends its own WHERE) stay valid SQL.
+        query = f"""
+        SELECT
+            {DB_TABLE_GENRES}.*,
+            (SELECT JSON_GROUP_ARRAY(
+                json_object(
+                    'item_id', provider_mappings.provider_item_id,
+                    'provider_domain', provider_mappings.provider_domain,
+                    'provider_instance', provider_mappings.provider_instance,
+                    'available', provider_mappings.available,
+                    'audio_format', json(provider_mappings.audio_format),
+                    'url', provider_mappings.url,
+                    'details', provider_mappings.details,
+                    'in_library', provider_mappings.in_library,
+                    'is_unique', provider_mappings.is_unique
+                )) FROM provider_mappings
+                WHERE provider_mappings.item_id = {DB_TABLE_GENRES}.item_id
+                AND provider_mappings.media_type = '{MediaType.GENRE.value}'
+            ) AS provider_mappings
+        FROM (SELECT * FROM {DB_TABLE_GENRES} WHERE is_excluded = 0) AS {DB_TABLE_GENRES}"""
+        return query, {}
 
     @staticmethod
     def _get_genre_icon_metadata(translation_key: str | None) -> MediaItemMetadata | None:
@@ -504,7 +509,7 @@ class GenreController(MediaControllerBase[Genre]):
         """
         try:
             media_id_int = int(media_id)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return []
         gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
         query = (
@@ -531,7 +536,7 @@ class GenreController(MediaControllerBase[Genre]):
         """
         try:
             media_id_int = int(media_id)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return []
         excl = DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION
         query = (
@@ -556,7 +561,7 @@ class GenreController(MediaControllerBase[Genre]):
         """
         try:
             media_id_int = int(media_id)
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return False
         row = await self.mass.music.database.get_row(
             DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,

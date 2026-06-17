@@ -508,3 +508,68 @@ def test_verify_system_meets_requirements_ml_inference() -> None:
                 feature_name="X", min_cpu_cores=4, min_memory_gb=8.0, require_ml_inference=True
             )
         util.verify_system_meets_requirements(feature_name="X", min_cpu_cores=4, min_memory_gb=8.0)
+
+
+def test_unsupported_system_error_translation() -> None:
+    """Each raise path carries the right translation key + ordered args (feature name first)."""
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=2),
+        patch("music_assistant.helpers.util.get_total_system_memory", return_value=64.0),
+        pytest.raises(UnsupportedSystemError) as cpu_err,
+    ):
+        util.verify_system_meets_requirements(feature_name="Smart Fades", min_cpu_cores=4)
+    assert cpu_err.value.translation_key == "errors.unsupported_system_cpu_cores"
+    assert cpu_err.value.translation_args == ["Smart Fades", 4, 2]
+
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=16),
+        patch("music_assistant.helpers.util.get_total_system_memory", return_value=2.0),
+        pytest.raises(UnsupportedSystemError) as mem_err,
+    ):
+        util.verify_system_meets_requirements(feature_name="Smart Fades", min_memory_gb=8.0)
+    assert mem_err.value.translation_key == "errors.unsupported_system_memory"
+    assert mem_err.value.translation_args == ["Smart Fades", "8", "2.0"]
+
+    with (
+        patch("music_assistant.helpers.util.platform.machine", return_value="x86_64"),
+        patch("torch.backends.cpu.get_cpu_capability", return_value="DEFAULT"),
+        pytest.raises(UnsupportedSystemError) as avx_err,
+    ):
+        util.verify_cpu_supports_ml_inference()
+    assert avx_err.value.translation_key == "errors.unsupported_system_avx2"
+    assert avx_err.value.translation_args == []
+
+
+@pytest.mark.parametrize(
+    ("cpu_cores", "total_gb", "expected"),
+    [
+        (4, 6.0, True),  # meets both recommended thresholds
+        (8, 16.0, True),
+        (2, 6.0, False),  # below recommended cores
+        (4, 4.0, False),  # below recommended RAM
+        (4, 0.0, True),  # unknown memory -> fail open, same as the gate
+    ],
+)
+def test_system_meets_requirements(cpu_cores: int, total_gb: float, expected: bool) -> None:
+    """The non-raising predicate mirrors the gate's RAM/CPU checks, failing open on unknown RAM."""
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=cpu_cores),
+        patch("music_assistant.helpers.util.get_total_system_memory", return_value=total_gb),
+    ):
+        assert util.system_meets_requirements(min_memory_gb=6.0, min_cpu_cores=4) is expected
+
+
+@pytest.mark.parametrize(
+    ("machine", "expected"),
+    [
+        ("aarch64", True),
+        ("arm64", True),
+        ("armv7l", True),
+        ("x86_64", False),
+        ("AMD64", False),
+    ],
+)
+def test_is_arm(machine: str, expected: bool) -> None:
+    """is_arm recognizes 32/64-bit ARM and rejects x86."""
+    with patch("music_assistant.helpers.util.platform.machine", return_value=machine):
+        assert util.is_arm() is expected

@@ -3,14 +3,11 @@
 import logging
 import time
 from collections.abc import Callable
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import EventType, MediaType
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.media_items import Audiobook, PodcastEpisode, Track
-from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
-from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 from music_assistant.helpers.uri import parse_uri
@@ -19,6 +16,11 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.opensubsonic.parsers import EP_CHAN_SEP
 from music_assistant.providers.opensubsonic.sonic_provider import OpenSonicProvider
+
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
+    from music_assistant_models.provider import ProviderManifest
 
 SUPPORTED_SCROBBLE_MEDIA_TYPES: Final[frozenset[MediaType]] = frozenset(
     {

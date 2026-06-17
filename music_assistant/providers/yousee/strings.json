@@ -11,5 +11,8 @@
   },
   "manifest": {
     "description": "YouSee Musik, a Danish music streaming service."
+  },
+  "errors": {
+    "playlist_create_failed": "Could not create playlist {0}."
   }
 }
