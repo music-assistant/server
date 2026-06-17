@@ -5,7 +5,7 @@ import enum
 import logging
 import time
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, ClassVar, Final, cast
 
 import pylast
 from music_assistant_models.config_entries import (
@@ -173,6 +173,9 @@ class LastFMScrobbleProvider(PluginProvider):
 
 class LastFMEventHandler(ScrobblerHelper):
     """Handle Last.fm event processing for scrobbling and now-playing updates."""
+
+    # pylast wraps every failure — including network errors — in PyLastError.
+    scrobble_exceptions: ClassVar[tuple[type[Exception], ...]] = (pylast.PyLastError,)
 
     def __init__(
         self, network: pylast._Network, logger: logging.Logger, config: ProviderConfig

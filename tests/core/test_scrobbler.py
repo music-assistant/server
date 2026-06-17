@@ -2,6 +2,7 @@
 
 import logging
 
+import pytest
 from music_assistant_models.enums import EventType, MediaType
 from music_assistant_models.event import MassEvent
 from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
@@ -173,6 +174,47 @@ async def test_it_suffixes_the_version_if_enabled_and_available() -> None:
     handler = DummyHandler(logging.getLogger(), ScrobblerConfig(suffix_version=False))
     assert handler.get_name(report_with_version) == "track"
     assert handler.get_name(report_without_version) == "track"
+
+
+class _ServiceError(Exception):
+    """Stand-in for a scrobble client's expected service/network error."""
+
+
+class FailingHandler(DummyHandler):
+    """Handler whose submissions always raise, to test exception handling."""
+
+    scrobble_exceptions = (_ServiceError,)
+
+    def __init__(self, logger: logging.Logger, error: Exception) -> None:
+        """Initialize with the error to raise on every submission."""
+        super().__init__(logger)
+        self._error = error
+
+    async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
+        raise self._error
+
+    async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
+        raise self._error
+
+
+async def test_it_swallows_expected_scrobble_exceptions() -> None:
+    """Errors listed in scrobble_exceptions are logged and swallowed, leaving state untouched."""
+    handler = FailingHandler(logging.getLogger(), _ServiceError("service unavailable"))
+
+    # a fully played, playing report drives both the now_playing and scrobble paths
+    await handler._on_mass_media_item_played(create_report(duration=180, seconds_played=176))
+
+    # neither marker advances because both submissions failed before assignment
+    assert handler.currently_playing is None
+    assert handler.last_scrobbled is None
+
+
+async def test_it_propagates_unexpected_scrobble_exceptions() -> None:
+    """Errors outside scrobble_exceptions surface instead of being silently swallowed."""
+    handler = FailingHandler(logging.getLogger(), ValueError("unexpected bug"))
+
+    with pytest.raises(ValueError, match="unexpected bug"):
+        await handler._on_mass_media_item_played(create_report(duration=180, seconds_played=176))
 
 
 def create_report(
