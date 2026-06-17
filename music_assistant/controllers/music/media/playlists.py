@@ -230,7 +230,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             name=f"Add items to playlist {playlist_name}",
             handler=lambda: self._handle_add_playlist_tracks(db_playlist_id, uris),
             translation_key="add_playlist_tracks",
-            translation_owner=self.mass.music.translation_owner,
+            translation_owner=self.translation_owner,
             translation_args=[playlist_name],
             user_id=user.user_id if user else None,
             metadata={
@@ -267,7 +267,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 db_playlist_id, positions_to_remove
             ),
             translation_key="remove_playlist_tracks",
-            translation_owner=self.mass.music.translation_owner,
+            translation_owner=self.translation_owner,
             translation_args=[playlist_name],
             user_id=user.user_id if user else None,
             metadata={
@@ -712,7 +712,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     prov_playlist_id, match_providers
                 ),
                 translation_key="import_playlist_matching",
-                translation_owner=self.mass.music.translation_owner,
+                translation_owner=self.translation_owner,
                 translation_args=[db_playlist.name],
                 user_id=user.user_id if user else None,
                 metadata={

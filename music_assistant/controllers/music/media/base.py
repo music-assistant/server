@@ -135,6 +135,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self._db_add_lock = asyncio.Lock()
 
     @property
+    def translation_owner(self) -> str:
+        """Return the "core.music" namespace these media controllers' translation strings live under."""
+        return "core.music"
+
+    @property
     def base_query(self) -> tuple[str, dict[str, Any]]:
         """
         Return the base SELECT query for this media type and its bound query params.
