@@ -37,8 +37,8 @@ def _coerce_optional_int(value: Any, field_name: str) -> int | None:
         raise InvalidDataError(f"Invalid value for {field_name}: {value!r}") from err
 
 
-def _validate_optional_bool(value: Any, field_name: str) -> bool | None:
-    """Validate a value is bool | None, raising InvalidDataError on bad input."""
+def _coerce_optional_bool(value: Any, field_name: str) -> bool | None:
+    """Coerce a value to bool | None, raising InvalidDataError on bad input."""
     if value is None:
         return None
     if isinstance(value, bool):
@@ -229,7 +229,7 @@ class SmartPlaylistRules:
             excluded_album_types=_coerce_str_list(
                 data.get("excluded_album_types"), "excluded_album_types"
             ),
-            explicit=_validate_optional_bool(data.get("explicit"), "explicit"),
+            explicit=_coerce_optional_bool(data.get("explicit"), "explicit"),
         )
 
     def human_readable(self) -> str:
