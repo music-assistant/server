@@ -476,7 +476,8 @@ class AudibleHelper:
         return parsed
 
     async def _fetch_last_position(self, asin: str) -> tuple[int, datetime | None] | None:
-        """Fetch the last-heard position for a single ASIN from Audible.
+        """
+        Fetch the last-heard position for a single ASIN from Audible.
 
         :param asin: The audiobook ASIN to query.
         """
@@ -566,7 +567,8 @@ class AudibleHelper:
             self.logger.error(f"Unexpected error reporting position for ASIN {asin}: {exc}")
 
     async def get_audible_resume_position(self, asin: str) -> tuple[bool, int, datetime | None]:
-        """Return resume state for the given ASIN from Audible.
+        """
+        Return resume state for the given ASIN from Audible.
 
         :param asin: The audiobook ASIN to query.
         """
