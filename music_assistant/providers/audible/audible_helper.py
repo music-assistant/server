@@ -469,7 +469,7 @@ class AudibleHelper:
             return None
         try:
             parsed = datetime.fromisoformat(str(raw_ts))
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return None
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
