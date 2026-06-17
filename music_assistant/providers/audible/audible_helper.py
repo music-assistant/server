@@ -456,7 +456,8 @@ class AudibleHelper:
 
     @staticmethod
     def _parse_audible_timestamp(raw_ts: Any) -> datetime | None:
-        """Parse an Audible timestamp value into a timezone-aware datetime.
+        """
+        Parse an Audible timestamp value into a timezone-aware datetime.
 
         :param raw_ts: The raw timestamp value from the Audible annotation payload.
         """
