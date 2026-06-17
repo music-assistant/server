@@ -28,7 +28,11 @@ from music_assistant.controllers.translations import (
     _format,
     _locale_candidates,
 )
-from scripts.build_translations import _flatten_into, build_translations_source
+from scripts.build_translations import (
+    _flatten_into,
+    _resolve_references,
+    build_translations_source,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -65,6 +69,30 @@ def test_flatten_into() -> None:
         "provider.ytmusic.config_entries.cookie.description": "From a session.",
         "provider.ytmusic.media.mixes": "Your Mixes",
     }
+
+
+def test_resolve_references_validated_and_omitted() -> None:
+    """A reference reuses an existing string: its target is validated and the key is omitted."""
+    resolved = _resolve_references(
+        {
+            "common.media.recommendations.recommended_tracks.name": "Recommended tracks",
+            "provider.deezer.media.recommendations.recommended_tracks.name": (
+                "[%key:common::media::recommendations::recommended_tracks::name%]"
+            ),
+        }
+    )
+    # the shared (target) string stays; the referencing key is dropped (resolved via the fallback)
+    assert resolved == {
+        "common.media.recommendations.recommended_tracks.name": "Recommended tracks",
+    }
+
+
+def test_resolve_references_missing_target_raises() -> None:
+    """A reference whose target does not exist fails the build with a clear error."""
+    with pytest.raises(ValueError, match="Unresolved translation reference"):
+        _resolve_references(
+            {"provider.deezer.media.x.name": "[%key:common::media::does::not::exist%]"}
+        )
 
 
 def test_candidate_keys_common_rewrite() -> None:
