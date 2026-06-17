@@ -133,7 +133,7 @@ class TestRecommendations:
 
     @pytest.mark.asyncio
     async def test_omits_for_you_folder_when_helper_returns_empty(self) -> None:
-        """The «Плейлисты для вас» folder is omitted when _get_for_you_playlists returns []."""
+        """The "Made for you" folder is omitted when _get_for_you_playlists returns []."""
         provider = _make_provider()
         provider._get_for_you_playlists = AsyncMock(return_value=[])
         provider._get_editorial_playlists = AsyncMock(return_value=[_make_playlist("99")])
@@ -145,7 +145,7 @@ class TestRecommendations:
 
     @pytest.mark.asyncio
     async def test_omits_editorial_folder_when_helper_returns_empty(self) -> None:
-        """The «Подборки» folder is omitted when _get_editorial_playlists returns []."""
+        """The "Collections" folder is omitted when _get_editorial_playlists returns []."""
         provider = _make_provider()
         provider._get_for_you_playlists = AsyncMock(return_value=[_make_playlist("3")])
         provider._get_editorial_playlists = AsyncMock(return_value=[])

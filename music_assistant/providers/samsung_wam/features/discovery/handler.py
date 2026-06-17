@@ -97,7 +97,7 @@ class DiscoveryHandler(WamProviderFeatureBase):
                 return None
 
             return str(udn_el.text.removeprefix("uuid:"))
-        except (TimeoutError, aiohttp.ClientError, ET.ParseError):
+        except TimeoutError, aiohttp.ClientError, ET.ParseError:
             return None
 
     async def _handle_presence(self, udn: str, ip_address: str) -> None:

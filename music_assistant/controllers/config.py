@@ -1531,7 +1531,7 @@ class ConfigController:
                 continue
             try:
                 port = int(old_values.get("port") or 2323)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 port = 2323
             entry = host if port == 2323 else f"{host}:{port}"
             if entry not in ip_entries:

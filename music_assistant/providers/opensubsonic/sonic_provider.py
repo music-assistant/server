@@ -131,7 +131,11 @@ class OpenSonicProvider(MusicProvider):
             msg = (
                 f"Failed to connect to {self.config.get_value(CONF_BASE_URL)}, check your settings."
             )
-            raise LoginFailed(msg) from e
+            raise LoginFailed(
+                msg,
+                translation_key="provider.opensubsonic.errors.connect_failed",
+                translation_args=[self.config.get_value(CONF_BASE_URL)],
+            ) from e
         self._enable_podcasts = bool(self.config.get_value(CONF_ENABLE_PODCASTS))
         self._ignore_offset = bool(self.config.get_value(CONF_OVERRIDE_OFFSET))
         try:
@@ -605,7 +609,11 @@ class OpenSonicProvider(MusicProvider):
         for pl in pls:
             if pl.name == name:
                 return parse_playlist(self.instance_id, pl)
-        raise MediaNotFoundError(f"Failed to create podcast with name '{name}'")
+        raise MediaNotFoundError(
+            f"Failed to create playlist with name '{name}'",
+            translation_key="provider.opensubsonic.errors.create_playlist_failed",
+            translation_args=[name],
+        )
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Append the listed tracks to the selected playlist.

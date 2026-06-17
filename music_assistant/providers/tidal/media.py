@@ -252,6 +252,6 @@ class TidalMediaManager:
                 track = parse_track(self.provider, item)
                 track.position = offset + idx
                 result.append(track)
-            except (KeyError, TypeError):
+            except KeyError, TypeError:
                 continue
         return result

@@ -1011,7 +1011,9 @@ class SpotifyProvider(MusicProvider):
         liked_songs = Playlist(
             item_id=self._get_liked_songs_playlist_id(),
             provider=self.instance_id,
-            name=f"Liked Songs {self._sp_user['display_name']}",  # TODO to be translated
+            name=f"Liked Songs {self._sp_user['display_name']}",
+            translation_key="liked_songs",
+            translation_params=[self._sp_user["display_name"]],
             owner=self._sp_user["display_name"],
             provider_mappings={
                 ProviderMapping(
@@ -1236,7 +1238,7 @@ class SpotifyProvider(MusicProvider):
                 try:
                     error = await response.json(loads=json_loads)
                     message = error.get("error", {}).get("message") or response.reason
-                except (aiohttp.ContentTypeError, JSONDecodeError):
+                except aiohttp.ContentTypeError, JSONDecodeError:
                     message = (await response.text()) or response.reason
 
                 self.logger.debug(
@@ -1368,5 +1370,5 @@ class SpotifyProvider(MusicProvider):
             if e.status == 403:
                 return False  # Not available
             raise  # Re-raise other HTTP errors
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             return False

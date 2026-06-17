@@ -12,6 +12,7 @@ import pytest
 from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import Album
+from qqmusic_api.modules.song import SongFileType
 
 from music_assistant.providers.qqmusic import (
     SUPPORTED_FEATURES,
@@ -74,44 +75,25 @@ def test_extract_song_id_from_track_payload() -> None:
 
 def test_get_candidate_file_types_hires_with_fallback_chain() -> None:
     """Hi-Res preference should fall back to FLAC -> MP3 320 -> MP3 128."""
-
-    class _SongFileType:
-        MASTER = object()
-        FLAC = object()
-        MP3_320 = object()
-        MP3_128 = object()
-
     provider = QQMusicProvider.__new__(QQMusicProvider)
-    provider._qq_song = SimpleNamespace(SongFileType=_SongFileType)  # type: ignore[attr-defined]
     provider.config = SimpleNamespace(  # type: ignore[attr-defined]
         get_value=lambda key: QUALITY_HI_RES if key == CONF_QUALITY else None
     )
 
     candidates = provider._get_candidate_file_types()
     assert candidates == [
-        _SongFileType.MASTER,
-        _SongFileType.FLAC,
-        _SongFileType.MP3_320,
-        _SongFileType.MP3_128,
+        SongFileType.MASTER,
+        SongFileType.FLAC,
+        SongFileType.MP3_320,
+        SongFileType.MP3_128,
     ]
 
 
 def test_get_stream_audio_format_for_master() -> None:
     """MASTER stream type should map to 24-bit/192kHz FLAC format."""
-
-    class _SongFileType:
-        MASTER = object()
-        FLAC = object()
-        MP3_320 = object()
-        MP3_128 = object()
-        ACC_192 = object()
-        ACC_96 = object()
-        ACC_48 = object()
-
     provider = QQMusicProvider.__new__(QQMusicProvider)
-    provider._qq_song = SimpleNamespace(SongFileType=_SongFileType)  # type: ignore[attr-defined]
 
-    stream_format = provider._get_stream_audio_format(_SongFileType.MASTER)
+    stream_format = provider._get_stream_audio_format(SongFileType.MASTER)
     assert stream_format.content_type.value == "flac"
     assert stream_format.bit_depth == 24
     assert stream_format.sample_rate == 192000
@@ -370,9 +352,14 @@ async def test_get_config_entries_start_qr_auth(monkeypatch: pytest.MonkeyPatch)
     async def get_qrcode(_: QRLoginType) -> QR:
         return QR(data=b"abc", qr_type=QRLoginType.QQ, mimetype="image/png", identifier="sig123")
 
-    login_mod = SimpleNamespace(QRLoginType=QRLoginType, get_qrcode=get_qrcode)
+    class Client:
+        login = SimpleNamespace(get_qrcode=get_qrcode)
 
-    monkeypatch.setattr("music_assistant.providers.qqmusic.qq_login_mod", login_mod)
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("music_assistant.providers.qqmusic.QQClient", Client)
+    monkeypatch.setattr("music_assistant.providers.qqmusic.QRLoginType", QRLoginType)
     mass = _DummyMass()
     values = {"session_id": "sess1"}
     entries = await get_config_entries(mass=mass, action=CONF_ACTION_START_QR_AUTH, values=values)
@@ -399,9 +386,14 @@ async def test_get_config_entries_start_wx_qr_auth(monkeypatch: pytest.MonkeyPat
     async def get_qrcode(login_type: QRLoginType) -> QR:
         return QR(data=b"abc", qr_type=login_type, mimetype="image/jpeg", identifier="wx123")
 
-    login_mod = SimpleNamespace(QRLoginType=QRLoginType, get_qrcode=get_qrcode)
+    class Client:
+        login = SimpleNamespace(get_qrcode=get_qrcode)
 
-    monkeypatch.setattr("music_assistant.providers.qqmusic.qq_login_mod", login_mod)
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("music_assistant.providers.qqmusic.QQClient", Client)
+    monkeypatch.setattr("music_assistant.providers.qqmusic.QRLoginType", QRLoginType)
     mass = _DummyMass()
     values = {"session_id": "sess1"}
     entries = await get_config_entries(
@@ -441,17 +433,24 @@ async def test_get_config_entries_check_qr_auth_done(monkeypatch: pytest.MonkeyP
         musickey: str
         login_type: int
 
-    async def check_qrcode(_: QR):
-        return (QRCodeLoginEvents.DONE, Credential(123456, "mk", 2))
+    @dataclass
+    class QRLoginResult:
+        event: QRCodeLoginEvents
+        credential: Credential | None = None
 
-    login_mod = SimpleNamespace(
-        QR=QR,
-        QRLoginType=QRLoginType,
-        QRCodeLoginEvents=QRCodeLoginEvents,
-        check_qrcode=check_qrcode,
-    )
+    async def check_qrcode(_: QR) -> QRLoginResult:
+        return QRLoginResult(QRCodeLoginEvents.DONE, Credential(123456, "mk", 2))
 
-    monkeypatch.setattr("music_assistant.providers.qqmusic.qq_login_mod", login_mod)
+    class Client:
+        login = SimpleNamespace(check_qrcode=check_qrcode)
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("music_assistant.providers.qqmusic.QQClient", Client)
+    monkeypatch.setattr("music_assistant.providers.qqmusic.QR", QR)
+    monkeypatch.setattr("music_assistant.providers.qqmusic.QRLoginType", QRLoginType)
+    monkeypatch.setattr("music_assistant.providers.qqmusic.QRCodeLoginEvents", QRCodeLoginEvents)
     mass = _DummyMass()
     values = {
         CONF_QR_IDENTIFIER: "sig123",

@@ -625,12 +625,14 @@ class RadiothekProvider(MusicProvider):
                 provider=self.instance_id,
                 path=f"{self.instance_id}://radios",
                 name="Radio Stations",
+                translation_key="radio_stations",
             ),
             BrowseFolder(
                 item_id="podcasts",
                 provider=self.instance_id,
                 path=f"{self.instance_id}://podcasts",
                 name="Podcasts",
+                translation_key="podcasts",
             ),
         ]
 
