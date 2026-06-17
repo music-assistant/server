@@ -8,7 +8,7 @@
     },
     "suffix_version": {
       "label": "Suffix version to track names",
-      "description": "Whether to add the version as suffix to track names,e.g. 'Amazing Track (Live)'."
+      "description": "Whether to add the version as suffix to track names, e.g. 'Amazing Track (Live)'."
     },
     "scrobble_users": {
       "label": "Scrobble for users",

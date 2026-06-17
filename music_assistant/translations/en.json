@@ -165,7 +165,7 @@
   "common.config_entries.smart_fades_mode.options.disabled": "Disabled",
   "common.config_entries.smart_fades_mode.options.smart_crossfade": "Smart Crossfade",
   "common.config_entries.smart_fades_mode.options.standard_crossfade": "Standard Crossfade",
-  "common.config_entries.suffix_version.description": "Whether to add the version as suffix to track names,e.g. 'Amazing Track (Live)'.",
+  "common.config_entries.suffix_version.description": "Whether to add the version as suffix to track names, e.g. 'Amazing Track (Live)'.",
   "common.config_entries.suffix_version.label": "Suffix version to track names",
   "common.config_entries.sync_adjust.description": "If this player is playing audio synced with other players and you always hear the audio too early or late on this player, you can shift the audio a bit.",
   "common.config_entries.sync_adjust.label": "Audio synchronization delay correction",
