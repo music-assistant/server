@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, ClassVar, Final
 import aiohttp
 from libopensonic.errors import SonicError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
-
 from music_assistant_models.enums import EventType, MediaType
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.media_items import Audiobook, PodcastEpisode, Track
