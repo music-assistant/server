@@ -1417,7 +1417,7 @@ class PlexProvider(MusicProvider):
 
         try:
             await self._run_async(plex_album.reload)
-        except (plexapi.exceptions.PlexApiException, requests.exceptions.RequestException):
+        except plexapi.exceptions.PlexApiException, requests.exceptions.RequestException:
             self.logger.warning(
                 "Failed to reload metadata for position check (%s), using cached metadata",
                 item_id,
