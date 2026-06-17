@@ -13,7 +13,11 @@
       "label": "Show local radio stations?"
     },
     "stream_format": {
-      "label": "Preferred stream format"
+      "label": "Preferred stream format",
+      "options": {
+        "hls": "HLS",
+        "dash": "MPEG-DASH"
+      }
     }
   },
   "schedule_programmes": {
