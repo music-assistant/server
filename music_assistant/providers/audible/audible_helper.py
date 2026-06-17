@@ -599,7 +599,7 @@ class AudibleHelper:
         if not response:
             try:
                 response = await self.client.get(path, **kwargs)
-            except audible.exceptions.AudibleError as exc:
+            except audible.exceptions.RequestError as exc:
                 raise ProviderUnavailableError(
                     f"Audible API request failed for '{path}': {exc}"
                 ) from exc
