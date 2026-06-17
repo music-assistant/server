@@ -107,7 +107,8 @@ async def get_config_entries(
 
 
 def _filter_by_explicit(tracks: list[Track], explicit_rule: bool | None) -> list[Track]:
-    """Filter tracks based on the explicit content rule.
+    """
+    Filter tracks based on the explicit content rule.
 
     :param tracks: List of tracks to filter.
     :param explicit_rule: True = only explicit tracks, False = exclude explicit tracks,
