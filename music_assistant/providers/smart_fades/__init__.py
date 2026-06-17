@@ -24,7 +24,9 @@ if TYPE_CHECKING:
 SUPPORTED_FEATURES: set[ProviderFeature] = set()
 
 # Smart Fades runs on-device ML (torch) inference; gate it to capable hardware.
-# 4GB matches the Balanced buffer threshold, the minimum buffer smart crossfade needs.
+# 4GB nominal, matching the Balanced buffer threshold (the minimum buffer smart crossfade
+# needs). The gate applies meets_memory_target()'s tolerance, so a genuine 4GB host (which
+# reports ~3.8GB after the kernel/firmware reservation) still passes.
 MIN_RAM_GB = 4.0
 MIN_CPU_CORES = 2
 # Below the recommended thresholds the provider still runs, but we surface an
@@ -65,10 +67,11 @@ async def get_config_entries(
             key="resource_warning",
             type=ConfigEntryType.ALERT,
             label=(
-                "Only 1 CPU core detected on this system. "
-                "Smart Fades analysis typically takes some CPU time during model inference. "
-                "Enabling it on single-CPU hosts may cause performance issues "
-                "and block normal playback. Enable at your own risk."
+                "Smart Fades is powerful but resource-intensive: it loads a machine-learning "
+                "model into memory to analyze your music. The minimum requirements are 4 GB of "
+                "RAM, 2 CPU cores and (on Intel/AMD CPUs) AVX2 support. For the best experience "
+                "we recommend 6 GB or more of RAM and 4 CPU cores. On systems near the minimum, "
+                "or under heavy load, you may still run into out-of-memory situations."
             ),
             required=False,
             hidden=system_meets_requirements(

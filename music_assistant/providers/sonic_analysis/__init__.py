@@ -70,6 +70,8 @@ CLAP_WINDOW_COUNTS: dict[str, int] = {
 CONF_CLAP_SAMPLING: str = "clap_sampling"
 
 # Sonic Analysis runs on-device CLAP inference; gate it to capable hardware.
+# 4GB nominal; the gate's tolerance (meets_memory_target) admits genuine 4GB hosts,
+# which report ~3.8GB after the kernel/firmware reservation.
 MIN_RAM_GB: float = 4.0
 MIN_CPU_CORES: int = 2
 # Below the recommended thresholds the provider still runs, but we surface an

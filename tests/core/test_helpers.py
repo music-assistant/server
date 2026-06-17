@@ -647,3 +647,21 @@ def test_get_total_system_memory(
         patch("music_assistant.helpers.util.sys.platform", platform),
     ):
         assert util.get_total_system_memory() == expected
+
+
+@pytest.mark.parametrize(
+    ("total_gb", "target_gb", "expected"),
+    [
+        (4.0, 4.0, True),
+        (3.8, 4.0, True),  # a "4GB" host reports ~3.8GB -> still meets a 4GB target
+        (3.7, 4.0, True),  # just above the 8% tolerance floor (3.68GB)
+        (3.6, 4.0, False),  # below the tolerance floor
+        (7.7, 8.0, True),  # an "8GB" host reporting ~7.7GB meets an 8GB target
+        (7.3, 8.0, False),  # below the 8GB tolerance floor (7.36GB)
+        (0.0, 4.0, True),  # unknown memory -> fail open
+        (2.0, 0.0, True),  # no requirement -> always met
+    ],
+)
+def test_meets_memory_target(total_gb: float, target_gb: float, expected: bool) -> None:
+    """A nominal RAM target is met within the reporting tolerance; unknown/zero fail open."""
+    assert util.meets_memory_target(total_gb, target_gb) is expected
