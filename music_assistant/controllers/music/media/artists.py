@@ -948,7 +948,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         artist_type: ArtistType = ArtistType.AUTHOR,
         in_library_only: bool = False,
     ) -> list[Audiobook]:
-        """Return audiobooks for an artist.
+        """
+        Return audiobooks for an artist.
 
         Artist_type can be omitted for in-library artists.
         """
