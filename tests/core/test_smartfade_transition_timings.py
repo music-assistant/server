@@ -220,7 +220,32 @@ class TestStandardCrossFadeBuild:
         assert fade.timing_info.crossfade_duration == pytest.approx(6.0)
         crossfade_filter = fade.filters[0]
         assert isinstance(crossfade_filter, CrossfadeFilter)
-        assert crossfade_filter.crossfade_duration == pytest.approx(6.0)
+        assert crossfade_filter.crossfade_samples == int(6.0 * PCM.sample_rate)
+
+    def test_fractional_overlap_keeps_filter_aligned_to_buffer(self) -> None:
+        """
+        A non-integer clamped overlap keeps acrossfade ``ns=`` aligned to the buffer.
+
+        Regression for the silent "FFmpeg produced no output" fallback: a fractional
+        effective crossfade made the byte slice a fraction of a sample shorter than the
+        ``d=`` the filter requested, so ffmpeg's acrossfade emitted nothing.
+        """
+        frame_size = (PCM.bit_depth // 8) * PCM.channels
+        # ~6.3333s of audible fade-out: a real PCM buffer is frame-aligned, yet still not a
+        # whole number of seconds, so the effective crossfade stays fractional
+        fade_out_len = _seconds(6.3333) // frame_size * frame_size
+        fade = StandardCrossFade(logger=logging.getLogger(), crossfade_duration=10.0)
+        fade._build(fade_out_len, _seconds(45), PCM)
+        crossfade_filter = fade.filters[0]
+        assert isinstance(crossfade_filter, CrossfadeFilter)
+        # the source-of-truth byte size is frame-aligned ...
+        assert fade.crossfade_size % frame_size == 0
+        # ... and the acrossfade sample count is exactly that buffer, in samples
+        assert crossfade_filter.crossfade_samples == fade.crossfade_size // frame_size
+        # the timing duration round-trips from the same integer, never the other way
+        assert fade.timing_info.crossfade_duration == pytest.approx(
+            fade.crossfade_size / PCM.pcm_sample_size
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +282,52 @@ class TestStandardCrossFadeApplySlicing:
         assert len(captured["fade_out"]) == _seconds(6)
         # nothing precedes the crossfade — the 6s buffer is consumed entirely by the overlap
         assert chunks[0] == crossfade_marker
+
+    @pytest.mark.asyncio
+    async def test_apply_feeds_exactly_the_filter_sample_count(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """
+        apply() must feed the base mixer exactly the acrossfade ``ns=`` sample count.
+
+        Otherwise ffmpeg's acrossfade receives fewer samples than requested and emits
+        nothing — the silent crossfade failure this regression guards against.
+        """
+        captured: dict[str, bytes] = {}
+
+        async def fake_base_apply(
+            _self: SmartFade,
+            fade_out_part: bytes,
+            fade_in_part: bytes | AsyncGenerator[bytes],
+            _pcm_format: AudioFormat,
+        ) -> AsyncGenerator[bytes]:
+            captured["fade_out"] = fade_out_part
+            assert isinstance(fade_in_part, bytes)
+            captured["fade_in"] = fade_in_part
+            yield b"crossfade-output"
+
+        monkeypatch.setattr(SmartFade, "apply", fake_base_apply)
+        frame_size = (PCM.bit_depth // 8) * PCM.channels
+        # frame-aligned like a real PCM buffer, but a fractional number of seconds
+        fade_out_len = _seconds(6.3333) // frame_size * frame_size
+        fade = StandardCrossFade(logger=logging.getLogger(), crossfade_duration=10.0)
+        fade._build(fade_out_len, _seconds(45), PCM)
+        crossfade_filter = fade.filters[0]
+        assert isinstance(crossfade_filter, CrossfadeFilter)
+        assert crossfade_filter.crossfade_samples is not None
+        async for _ in fade.apply(b"\x00" * fade_out_len, b"\x11" * _seconds(45), PCM):
+            pass
+        expected_bytes = crossfade_filter.crossfade_samples * frame_size
+        assert len(captured["fade_out"]) == expected_bytes
+        assert len(captured["fade_in"]) == expected_bytes
+
+    @pytest.mark.asyncio
+    async def test_apply_before_build_fails_fast(self) -> None:
+        """apply() without a prior _build() must error, not silently hard-cut."""
+        fade = StandardCrossFade(logger=logging.getLogger(), crossfade_duration=10.0)
+        with pytest.raises(RuntimeError, match="not built"):
+            async for _ in fade.apply(b"\x00" * _seconds(5), b"\x11" * _seconds(5), PCM):
+                pass
 
     @pytest.mark.asyncio
     async def test_zero_crossfade_skips_ffmpeg(self, monkeypatch: pytest.MonkeyPatch) -> None:

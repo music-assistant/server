@@ -13,7 +13,10 @@ import soxr
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ContentType
 
-from music_assistant.helpers.util import verify_system_meets_requirements
+from music_assistant.helpers.util import (
+    system_meets_requirements,
+    verify_system_meets_requirements,
+)
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import (
     AnalysisSessionData,
@@ -67,8 +70,12 @@ CLAP_WINDOW_COUNTS: dict[str, int] = {
 CONF_CLAP_SAMPLING: str = "clap_sampling"
 
 # Sonic Analysis runs on-device CLAP inference; gate it to capable hardware.
-MIN_RAM_GB: float = 8.0
-MIN_CPU_CORES: int = 4
+MIN_RAM_GB: float = 4.0
+MIN_CPU_CORES: int = 2
+# Below the recommended thresholds the provider still runs, but we surface an
+# informational notice (see get_config_entries) as it may be tight under load.
+RECOMMENDED_RAM_GB: float = 6.0
+RECOMMENDED_CPU_CORES: int = 4
 
 
 @dataclass
@@ -118,6 +125,15 @@ async def get_config_entries(
     :param values: the (intermediate) raw values for config entries sent with the action.
     """
     return (
+        ConfigEntry(
+            key="resource_warning",
+            type=ConfigEntryType.ALERT,
+            required=False,
+            hidden=system_meets_requirements(
+                min_memory_gb=RECOMMENDED_RAM_GB,
+                min_cpu_cores=RECOMMENDED_CPU_CORES,
+            ),
+        ),
         ConfigEntry(
             key=CONF_CLAP_SAMPLING,
             type=ConfigEntryType.STRING,
@@ -322,8 +338,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             min_cpu_cores=MIN_CPU_CORES,
             require_ml_inference=True,
         )
-        # Configure torch thread caps before loading the model (see the controller method).
-        self.mass.streams.audio_analysis.ensure_thread_caps_configured()
+        # Configure the inference runtime before loading the model (see the controller method).
+        self.mass.streams.audio_analysis.ensure_inference_runtime_configured()
         (
             self._clap_model,
             self._clap_text_embeddings,

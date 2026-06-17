@@ -239,19 +239,40 @@ class CrossfadeFilter(Filter):
     output_fadeout_label: str = "crossfade"
     output_fadein_label: str = "crossfade"
 
-    def __init__(self, logger: logging.Logger, crossfade_duration: float):
-        """Initialize crossfade filter."""
+    def __init__(
+        self,
+        logger: logging.Logger,
+        crossfade_duration: float | None = None,
+        crossfade_samples: int | None = None,
+    ):
+        """
+        Initialize crossfade filter.
+
+        :param crossfade_duration: Overlap length in seconds (emits acrossfade ``d=``).
+        :param crossfade_samples: Overlap length in PCM samples (emits acrossfade ``ns=``).
+            Prefer this when the inputs are pre-trimmed to exactly the overlap region:
+            acrossfade silently emits nothing when its requested length exceeds the
+            buffer it is fed, and a fractional ``d`` can round just past a
+            frame-aligned buffer. A sample count cannot.
+        """
+        if (crossfade_duration is None) == (crossfade_samples is None):
+            raise ValueError("Provide exactly one of crossfade_duration or crossfade_samples")
         self.crossfade_duration = crossfade_duration
+        self.crossfade_samples = crossfade_samples
         super().__init__(logger)
 
     def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
         """Apply the acrossfade filter."""
+        overlap = (
+            f"ns={self.crossfade_samples}"
+            if self.crossfade_samples is not None
+            else f"d={self.crossfade_duration}"
+        )
         # equal-power qsin curves; the default tri/tri dips ~3dB mid-fade on uncorrelated material
-        return [
-            f"{input_fadeout_label}{input_fadein_label}"
-            f"acrossfade=d={self.crossfade_duration}:c1=qsin:c2=qsin"
-        ]
+        return [f"{input_fadeout_label}{input_fadein_label}acrossfade={overlap}:c1=qsin:c2=qsin"]
 
     def __repr__(self) -> str:
         """Return string representation of CrossfadeFilter."""
+        if self.crossfade_samples is not None:
+            return f"Crossfade(ns={self.crossfade_samples})"
         return f"Crossfade(d={self.crossfade_duration:.1f}s)"

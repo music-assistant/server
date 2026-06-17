@@ -208,7 +208,7 @@ def extract_palette(image_bytes: bytes) -> MediaItemPalette:
     """
     try:
         candidates = _extract_candidates(image_bytes)
-    except (ValueError, OSError):
+    except ValueError, OSError:
         return MediaItemPalette()
     return _derive_palette(candidates)
 
@@ -282,5 +282,5 @@ async def get_palette_for_url(
         path, provider = image_url, "builtin"
     try:
         return await get_palette(mass, path, provider)
-    except (FileNotFoundError, OSError):
+    except FileNotFoundError, OSError:
         return None

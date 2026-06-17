@@ -123,7 +123,11 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
         )
 
         if not create_result:
-            raise MediaNotFoundError(f"Failed to create playlist '{name}' on nicovideo.")
+            raise MediaNotFoundError(
+                f"Failed to create playlist '{name}' on nicovideo.",
+                translation_key="provider.nicovideo.errors.create_playlist_failed",
+                translation_args=[name],
+            )
 
         # Get the created mylist details
         mylist_id = str(create_result.mylist.id_)
@@ -133,7 +137,9 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
 
         if not playlist_with_tracks:
             raise MediaNotFoundError(
-                f"Failed to retrieve created playlist '{name}' from nicovideo."
+                f"Failed to retrieve created playlist '{name}' from nicovideo.",
+                translation_key="provider.nicovideo.errors.retrieve_created_playlist_failed",
+                translation_args=[name],
             )
 
         self.logger.info("Successfully created playlist '%s' with ID %s", name, mylist_id)

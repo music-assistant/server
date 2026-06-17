@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncGenerator
+from contextlib import suppress
 
 import pytest
 from music_assistant_models.enums import ContentType
@@ -584,3 +586,44 @@ async def test_clear_fires_cancel_callbacks() -> None:
     assert cancel_called is True
     assert len(buf._chunk_callbacks) == 0
     assert len(buf._cancel_callbacks) == 0
+
+
+# -- Inactivity monitor --
+
+
+@pytest.mark.asyncio
+async def test_inactivity_monitor_releases_drained_buffer() -> None:
+    """
+    A buffer that has drained to empty is still released by the inactivity monitor.
+
+    Regression test: the monitor previously only cleared when chunks remained, so an
+    abandoned rolling buffer that drained to zero chunks looped forever and leaked it
+    (and its producer/ffmpeg) until the process exited.
+    """
+    buf = AudioBuffer(TEST_PCM_FORMAT, mode=BufferMode.ROLLING)
+    # no chunks buffered and last access long ago -> the buffer is inactive
+    assert buf.size_seconds == 0
+    buf._last_access_time = time.time() - 10_000
+
+    await buf._monitor_inactivity(inactivity_timeout=0.01, check_interval=0.01)
+
+    assert buf.cancelled is True
+
+
+@pytest.mark.asyncio
+async def test_inactivity_monitor_keeps_active_buffer() -> None:
+    """A buffer that is still being accessed is not cleared by the inactivity monitor."""
+    buf = AudioBuffer(TEST_PCM_FORMAT, mode=BufferMode.ROLLING)
+    buf._last_access_time = time.time()
+
+    monitor = asyncio.create_task(
+        buf._monitor_inactivity(inactivity_timeout=5, check_interval=0.01)
+    )
+    await asyncio.sleep(0.05)
+
+    assert not monitor.done()
+    assert buf.cancelled is False
+
+    monitor.cancel()
+    with suppress(asyncio.CancelledError):
+        await monitor

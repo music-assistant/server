@@ -603,7 +603,7 @@ class SonicSimilarityPlugin(PluginProvider):
         # The slider is a 0-10 integer; the engine wants a 0.0-1.0 weight.
         try:
             diversity = int(str(self.config.get_value(CONF_SIMILAR_DIVERSITY) or 0)) / 10.0
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             diversity = 0.0
         self.logger.debug(
             "Traits Similar Tracks: seed=%s/%s preset=%s diversity=%s limit=%d",
@@ -742,7 +742,7 @@ class SonicSimilarityPlugin(PluginProvider):
         # The slider is a 0-10 integer; the engine wants a 0.0-1.0 weight.
         try:
             diversity = int(str(self.config.get_value(CONF_DISCOVER_DIVERSITY) or 0)) / 10.0
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             diversity = 0.0
         self.logger.debug(
             "Discover row: engine=%s seeds=%d preset=%s diversity=%s",
@@ -1264,7 +1264,7 @@ class SonicSimilarityPlugin(PluginProvider):
                     continue
                 try:
                     raw = json.loads(row["analysis_data"])
-                except (json.JSONDecodeError, TypeError):
+                except json.JSONDecodeError, TypeError:
                     continue
                 emb = _parse_clap_embedding(
                     (raw.get("extra_data") or {}).get(EXTRA_DATA_CLAP_EMBEDDING)

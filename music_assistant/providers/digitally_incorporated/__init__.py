@@ -202,7 +202,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
             self.logger.info(
                 "%s: Successfully connected to Digitally Incorporated API", self.domain
             )
-        except (ProviderUnavailableError, MediaNotFoundError):
+        except ProviderUnavailableError, MediaNotFoundError:
             # Re-raise provider/media errors as-is (they already have domain prefix)
             raise
         except (aiohttp.ClientError, aiohttp.ServerTimeoutError) as err:
@@ -642,7 +642,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
 
             return stream_url
 
-        except (ProviderUnavailableError, MediaNotFoundError):
+        except ProviderUnavailableError, MediaNotFoundError:
             # Re-raise provider/media errors as-is (they already have domain prefix)
             raise
         except (aiohttp.ClientError, ValueError, KeyError, IndexError) as err:

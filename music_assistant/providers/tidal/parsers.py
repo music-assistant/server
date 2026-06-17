@@ -131,7 +131,7 @@ def parse_album(provider: TidalProvider, album_obj: dict[str, Any]) -> Album:
     if release_date := album_obj_data.get("releaseDate", ""):
         try:
             album.year = int(release_date.split("-")[0])
-        except (ValueError, IndexError):
+        except ValueError, IndexError:
             provider.logger.debug("Invalid release date format: %s", release_date)
         with suppress(ValueError):
             album.metadata.release_date = datetime.fromisoformat(release_date)
@@ -351,6 +351,7 @@ def parse_favorite_tracks_playlist(provider: TidalProvider) -> Playlist:
         item_id=FAVORITE_TRACKS_PLAYLIST_ID,
         provider=provider.instance_id,
         name="Favorite Tracks",
+        translation_key="favorite_tracks",
         owner=owner_name,
         provider_mappings={
             ProviderMapping(

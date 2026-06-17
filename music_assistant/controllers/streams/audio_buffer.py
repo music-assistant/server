@@ -645,14 +645,22 @@ class AudioBuffer:
             loop = asyncio.get_running_loop()
             self._inactivity_task = loop.create_task(self._monitor_inactivity())
 
-    async def _monitor_inactivity(self) -> None:
-        """Clear the buffer if inactive for 5 minutes."""
-        inactivity_timeout = 60 * 5
-        check_interval = 30
+    async def _monitor_inactivity(
+        self, inactivity_timeout: float = 300, check_interval: float = 30
+    ) -> None:
+        """
+        Clear the buffer once it has been inactive for inactivity_timeout seconds.
+
+        :param inactivity_timeout: Seconds without access before the buffer is released.
+        :param check_interval: Seconds between inactivity checks.
+        """
         while True:
             await asyncio.sleep(check_interval)
             time_since_access = time.time() - self._last_access_time
-            if len(self._chunks) > 0 and time_since_access > inactivity_timeout:
+            # break on inactivity regardless of how many chunks remain: a rolling buffer
+            # that has drained to empty (e.g. an abandoned radio stream) must still release
+            # its resources and stop this monitor, otherwise the task loops forever
+            if time_since_access > inactivity_timeout:
                 LOGGER.log(
                     VERBOSE_LOG_LEVEL,
                     "AudioBuffer: No activity for %.1fs, clearing (%s chunks)",
