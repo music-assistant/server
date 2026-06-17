@@ -114,8 +114,6 @@ async def get_config_entries(
         ConfigEntry(
             key=_Constants.CONF_INTRO,
             type=ConfigEntryType.LABEL,
-            label="A BBC Sounds account is optional, but some UK-only content may not work without"
-            " it",
         ),
         ConfigEntry(
             key=CONF_USERNAME,
@@ -131,13 +129,11 @@ async def get_config_entries(
             key=_Constants.CONF_SHOW_LOCAL,
             advanced=True,
             type=ConfigEntryType.BOOLEAN,
-            label="Show local radio stations?",
             default_value=False,
         ),
         ConfigEntry(
             key=_Constants.CONF_STREAM_FORMAT,
             advanced=True,
-            label="Preferred stream format",
             type=ConfigEntryType.STRING,
             options=[
                 ConfigValueOption(_Constants.CONF_STREAM_FORMAT_HLS, title="HLS"),

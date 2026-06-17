@@ -20,6 +20,15 @@ repos:
         types: [text]
         files: ^(music_assistant/strings\.json|music_assistant/.+/strings\.json|scripts/build_translations\.py)$
 
+      # fail when a ConfigEntry hardcodes label/description text instead of using strings.json
+      - id: check_config_entries
+        name: check_config_entries
+        entry: uv run -m scripts.check_config_entries
+        pass_filenames: false
+        language: system
+        types: [python]
+        files: ^(music_assistant/.+\.py|scripts/check_config_entries\.py)$
+
       - id: check-python-version
         name: Validate pyproject.toml matches .python-version
         entry: uv run -m scripts.check_python_version

@@ -160,10 +160,7 @@ class ScrobblerConfig:
             ConfigEntry(
                 key=CONF_VERSION_SUFFIX,
                 type=ConfigEntryType.BOOLEAN,
-                label="Suffix version to track names",
                 required=True,
-                description="Whether to add the version as suffix to track names,"
-                "e.g. 'Amazing Track (Live)'.",
                 default_value=True,
                 value=values.get(CONF_VERSION_SUFFIX) if values else None,
             ),
@@ -194,10 +191,7 @@ async def create_scrobble_users_config_entry(mass: MusicAssistant) -> ConfigEntr
     return ConfigEntry(
         key=CONF_SCROBBLE_USERS,
         type=ConfigEntryType.STRING,
-        label="Scrobble for users",
         required=False,
-        description="Only register scrobbles for the selected users. "
-        "Leave empty to scrobble for all users.",
         options=user_options,
         multi_value=True,
         default_value=[],
@@ -216,10 +210,7 @@ def create_scrobble_players_config_entry(mass: MusicAssistant) -> ConfigEntry:
     return ConfigEntry(
         key=CONF_SCROBBLE_PLAYERS,
         type=ConfigEntryType.STRING,
-        label="Scrobble for players",
         required=False,
-        description="Only register scrobbles for the selected players. "
-        "Leave empty to scrobble for all players.",
         options=player_options,
         multi_value=True,
         default_value=[],

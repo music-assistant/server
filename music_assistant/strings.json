@@ -6,6 +6,18 @@
     "password": {
       "label": "Password"
     },
+    "suffix_version": {
+      "label": "Suffix version to track names",
+      "description": "Whether to add the version as suffix to track names,e.g. 'Amazing Track (Live)'."
+    },
+    "scrobble_users": {
+      "label": "Scrobble for users",
+      "description": "Only register scrobbles for the selected users. Leave empty to scrobble for all users."
+    },
+    "scrobble_players": {
+      "label": "Scrobble for players",
+      "description": "Only register scrobbles for the selected players. Leave empty to scrobble for all players."
+    },
     "announce_volume": {
       "label": "Volume for Announcements",
       "description": "The percentual, relative or absolute volume level, used with the strategy for announcements."
