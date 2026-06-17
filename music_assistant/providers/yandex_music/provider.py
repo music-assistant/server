@@ -48,8 +48,6 @@ from .api_client import YandexMusicClient
 from .auth import refresh_credentials_via_passport, refresh_music_token
 from .constants import (
     BROWSE_INITIAL_TRACKS,
-    BROWSE_NAMES_EN,
-    BROWSE_NAMES_RU,
     COLLECTION_FOLDER_ID,
     CONF_BASE_URL,
     CONF_LIKED_TRACKS_MAX_TRACKS,
@@ -124,6 +122,23 @@ if TYPE_CHECKING:
 _COLLECTION_SUB_FOLDERS: frozenset[str] = frozenset(
     {"tracks", "artists", "albums", "playlists", "audiobooks", "podcasts"}
 )
+
+# Collection sub-folder rows: (ProviderFeature, browse sub_id, strings.json label key,
+# is_playable). The sub_id ("tracks") and label key ("my_favorites") differ on purpose so the
+# Collection labels stay distinct from the core "media.folder.*" library labels.
+_COLLECTION_SUBFOLDERS: tuple[tuple[ProviderFeature, str, str, bool], ...] = (
+    (ProviderFeature.LIBRARY_TRACKS, "tracks", "my_favorites", True),
+    (ProviderFeature.LIBRARY_ARTISTS, "artists", "my_artists", True),
+    (ProviderFeature.LIBRARY_ALBUMS, "albums", "my_albums", True),
+    (ProviderFeature.LIBRARY_PLAYLISTS, "playlists", "my_playlists", True),
+    (ProviderFeature.LIBRARY_PODCASTS, "podcasts", "my_podcasts", False),
+    (ProviderFeature.LIBRARY_AUDIOBOOKS, "audiobooks", "my_audiobooks", False),
+)
+
+
+def _media_label_key(slug: str) -> str:
+    """Normalize a tag/category slug into its strings.json authoring key (spaces → underscores)."""
+    return slug.replace(" ", "_")
 
 
 def _split_wave_mode(station_id: str) -> tuple[str, dict[str, str]]:
@@ -228,16 +243,25 @@ class YandexMusicProvider(MusicProvider):
             raise ProviderUnavailableError("Provider not initialized")
         return self._streaming
 
-    def _get_browse_names(self) -> dict[str, str]:
-        """Get locale-based browse folder names."""
-        try:
-            locale = (self.mass.metadata.locale or "en_US").lower()
-            use_russian = locale.startswith("ru")
-            self.logger.debug("Locale detection: locale=%s, use_russian=%s", locale, use_russian)
-        except Exception as err:
-            self.logger.debug("Locale detection failed: %s", err)
-            use_russian = False
-        return BROWSE_NAMES_RU if use_russian else BROWSE_NAMES_EN
+    def _media_label(self, group: str, key: str, fallback: str) -> tuple[str, str | None]:
+        """
+        Resolve a media label to its English ``name`` and ``translation_key``.
+
+        The English source string lives in the provider's ``strings.json`` (the single source
+        of truth) and is localized for the connection locale at serialization via the returned
+        key. An unauthored key — e.g. a tag discovered from Yandex's landing API — returns
+        ``(fallback, None)`` so its already-localized name is kept verbatim.
+
+        :param group: Media translation group (``folder``, ``recommendations`` or ``playlist``).
+        :param key: Authoring key within the group; also the item's ``translation_key``.
+        :param fallback: English name to use when no string is authored for *key*.
+        """
+        authored = self.mass.translations.get_translation(
+            f"provider.{self.domain}.media.{group}.{key}.name"
+        )
+        if authored is None:
+            return fallback, None
+        return authored, key
 
     async def _reauth_via_refresh_token(
         self, x_token: str, refresh_token: str, base_url: str, original_err: Exception
@@ -563,8 +587,8 @@ class YandexMusicProvider(MusicProvider):
         if subpath:
             return await super().browse(path)
 
-        names = self._get_browse_names()
-
+        # The English name on each folder doubles as the fallback; translation_key localizes
+        # it for the connection locale at serialization (the server is the single source).
         folders: list[BrowseFolder] = []
         base = path if path.endswith("//") else path.rstrip("/") + "/"
         # My Wave folder (always enabled — Яндекс «Моя волна»)
@@ -573,7 +597,8 @@ class YandexMusicProvider(MusicProvider):
                 item_id=MY_WAVE_PLAYLIST_ID,
                 provider=self.instance_id,
                 path=f"{base}{MY_WAVE_PLAYLIST_ID}",
-                name=names[MY_WAVE_PLAYLIST_ID],
+                name="My Wave",
+                translation_key=MY_WAVE_PLAYLIST_ID,
                 is_playable=True,
             )
         )
@@ -583,7 +608,8 @@ class YandexMusicProvider(MusicProvider):
                 item_id=MY_WAVE_MODES_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{MY_WAVE_MODES_FOLDER_ID}",
-                name=names.get(MY_WAVE_MODES_FOLDER_ID, "Wave Modes"),
+                name="Wave Modes",
+                translation_key=MY_WAVE_MODES_FOLDER_ID,
                 is_playable=False,
             )
         )
@@ -594,7 +620,8 @@ class YandexMusicProvider(MusicProvider):
                     item_id=MY_WAVE_PRESETS_FOLDER_ID,
                     provider=self.instance_id,
                     path=f"{base}{MY_WAVE_PRESETS_FOLDER_ID}",
-                    name=names.get(MY_WAVE_PRESETS_FOLDER_ID, "My Presets"),
+                    name="My Presets",
+                    translation_key=MY_WAVE_PRESETS_FOLDER_ID,
                     is_playable=False,
                 )
             )
@@ -604,7 +631,8 @@ class YandexMusicProvider(MusicProvider):
                 item_id=FOR_YOU_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{FOR_YOU_FOLDER_ID}",
-                name=names.get(FOR_YOU_FOLDER_ID, "For You"),
+                name="For You",
+                translation_key=FOR_YOU_FOLDER_ID,
                 is_playable=False,
             )
         )
@@ -624,17 +652,19 @@ class YandexMusicProvider(MusicProvider):
                     item_id=COLLECTION_FOLDER_ID,
                     provider=self.instance_id,
                     path=f"{base}{COLLECTION_FOLDER_ID}",
-                    name=names.get(COLLECTION_FOLDER_ID, "Collection"),
+                    name="Collection",
+                    translation_key=COLLECTION_FOLDER_ID,
                     is_playable=False,
                 )
             )
-        # Radio folder — rotor stations (Яндекс волны, renamed to Radio)
+        # Radio folder — rotor stations (Яндекс волны, shown as Radio)
         folders.append(
             BrowseFolder(
                 item_id=RADIO_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{RADIO_FOLDER_ID}",
-                name=names.get(RADIO_FOLDER_ID, "Radio"),
+                name="Radio",
+                translation_key=RADIO_FOLDER_ID,
                 is_playable=False,
             )
         )
@@ -644,7 +674,8 @@ class YandexMusicProvider(MusicProvider):
                 item_id=MY_WAVES_SET_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{MY_WAVES_SET_FOLDER_ID}",
-                name=names.get(MY_WAVES_SET_FOLDER_ID, "AI Wave Sets"),
+                name="AI Wave Sets",
+                translation_key=MY_WAVES_SET_FOLDER_ID,
                 is_playable=False,
             )
         )
@@ -654,7 +685,8 @@ class YandexMusicProvider(MusicProvider):
                 item_id=PINNED_ITEMS_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{PINNED_ITEMS_FOLDER_ID}",
-                name=names.get(PINNED_ITEMS_FOLDER_ID, "Pinned"),
+                name="Pinned",
+                translation_key=PINNED_ITEMS_FOLDER_ID,
                 is_playable=False,
             )
         )
@@ -664,7 +696,8 @@ class YandexMusicProvider(MusicProvider):
                 item_id=LISTENING_HISTORY_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{LISTENING_HISTORY_FOLDER_ID}",
-                name=names.get(LISTENING_HISTORY_FOLDER_ID, "Listening History"),
+                name="Listening History",
+                translation_key=LISTENING_HISTORY_FOLDER_ID,
                 is_playable=False,
             )
         )
@@ -759,14 +792,13 @@ class YandexMusicProvider(MusicProvider):
 
         # Only show "Load more" if we haven't reached the limit and there's more data
         if last_batch_id and total_track_count < max_tracks_config:
-            names = self._get_browse_names()
-            next_name = "Ещё" if names == BROWSE_NAMES_RU else "Load more"
             all_tracks.append(
                 BrowseFolder(
                     item_id="next",
                     provider=self.instance_id,
                     path=f"{path.rstrip('/')}/next",
-                    name=next_name,
+                    name="Load more",
+                    translation_key="load_more",
                     is_playable=False,
                 )
             )
@@ -821,17 +853,19 @@ class YandexMusicProvider(MusicProvider):
         :param path: Browse path the user navigated into.
         :return: Ordered list of BrowseFolder entries, one per preset.
         """
-        names = self._get_browse_names()
         base = path if path.endswith("/") else f"{path}/"
         folders: list[BrowseFolder] = []
         for preset in WAVE_MODE_ORDER:
-            name_key = f"wave_mode_{preset}"
+            name, translation_key = self._media_label(
+                "folder", f"wave_mode_{preset}", preset.replace("_", " ").title()
+            )
             folders.append(
                 BrowseFolder(
                     item_id=f"{MY_WAVE_MODES_FOLDER_ID}_{preset}",
                     provider=self.instance_id,
                     path=f"{base}{preset}",
-                    name=names.get(name_key, preset.replace("_", " ").title()),
+                    name=name,
+                    translation_key=translation_key,
                     is_playable=True,
                 )
             )
@@ -903,14 +937,13 @@ class YandexMusicProvider(MusicProvider):
                 break
 
         if last_batch_id and total_track_count < max_tracks_config:
-            names = self._get_browse_names()
-            next_name = "Ещё" if names == BROWSE_NAMES_RU else "Load more"
             all_tracks.append(
                 BrowseFolder(
                     item_id="next",
                     provider=self.instance_id,
                     path=f"{path.rstrip('/')}/next",
-                    name=next_name,
+                    name="Load more",
+                    translation_key="load_more",
                     is_playable=False,
                 )
             )
@@ -995,30 +1028,31 @@ class YandexMusicProvider(MusicProvider):
         return tags
 
     @use_cache(3600, allow_expired_cache=True)
-    async def _get_discovered_tags(self, locale: str) -> list[tuple[str, str]]:
+    async def _get_discovered_tags(self, locale: str) -> list[tuple[str, str, str | None]]:
         """Return all browse-able tags: hardcoded (non-seasonal) + landing-discovered.
 
         Same rationale as :meth:`_get_valid_tags_for_category` — runtime
         validation removed to avoid the per-endpoint concurrency burst that
         triggered Yandex captcha. The locale parameter is part of the cache
-        key so locale changes invalidate the cached result.
+        key so locale changes invalidate the cached landing titles.
 
         :param locale: Current metadata locale (used as part of cache key).
-        :return: List of (slug, title) tuples in hardcoded-then-discovered order.
+        :return: List of (slug, English name, translation_key) tuples in
+            hardcoded-then-discovered order. Landing-discovered tags carry their
+            (already localized) API title and no translation_key.
         """
-        names = self._get_browse_names()
-        all_tags: dict[str, str] = {}
+        all_tags: dict[str, tuple[str, str | None]] = {}
         for slug, cat in TAG_SLUG_CATEGORY.items():
             if cat != "seasonal":
-                all_tags[slug] = names.get(slug, slug.title())
+                all_tags[slug] = self._media_label("folder", _media_label_key(slug), slug.title())
         try:
             landing_tags = await self.client.get_landing_tags()
             for slug, title in landing_tags:
                 if slug not in all_tags:
-                    all_tags[slug] = title
+                    all_tags[slug] = (title, None)
         except Exception as err:
             self.logger.debug("Failed to discover tags from landing API: %s", err)
-        return list(all_tags.items())
+        return [(slug, name, translation_key) for slug, (name, translation_key) in all_tags.items()]
 
     async def _get_discovered_tag_slugs(self) -> set[str]:
         """Get set of all valid tag slugs (cached).
@@ -1026,7 +1060,7 @@ class YandexMusicProvider(MusicProvider):
         :return: Set of tag slug strings that have playlists.
         """
         discovered = await self._get_discovered_tags(self.mass.metadata.locale or "en_US")
-        return {slug for slug, _title in discovered}
+        return {slug for slug, _name, _key in discovered}
 
     async def _browse_for_you(
         self, path: str, path_parts: list[str]
@@ -1037,7 +1071,6 @@ class YandexMusicProvider(MusicProvider):
         :param path_parts: Split path parts after ://.
         :return: List of sub-folders (Picks, Mixes).
         """
-        names = self._get_browse_names()
         # Strip the for_you segment to build child paths that route to picks/mixes
         # Path format: ...//for_you  → child paths should be ...//picks, ...//mixes
         # We build base from the root (before for_you) by dropping the last segment.
@@ -1050,14 +1083,16 @@ class YandexMusicProvider(MusicProvider):
                     item_id="picks",
                     provider=self.instance_id,
                     path=f"{root_base}picks",
-                    name=names.get("picks", "Picks"),
+                    name="Picks",
+                    translation_key="picks",
                     is_playable=False,
                 ),
                 BrowseFolder(
                     item_id="mixes",
                     provider=self.instance_id,
                     path=f"{root_base}mixes",
-                    name=names.get("mixes", "Mixes"),
+                    name="Mixes",
+                    translation_key="mixes",
                     is_playable=False,
                 ),
             ]
@@ -1077,27 +1112,22 @@ class YandexMusicProvider(MusicProvider):
         :param path: Full browse path.
         :return: List of library sub-folders.
         """
-        names = self._get_browse_names()
         base = path if path.endswith("/") else f"{path}/"
 
         folders: list[BrowseFolder] = []
-        feature_map: tuple[tuple[ProviderFeature, str, bool], ...] = (
-            (ProviderFeature.LIBRARY_TRACKS, "tracks", True),
-            (ProviderFeature.LIBRARY_ARTISTS, "artists", True),
-            (ProviderFeature.LIBRARY_ALBUMS, "albums", True),
-            (ProviderFeature.LIBRARY_PLAYLISTS, "playlists", True),
-            (ProviderFeature.LIBRARY_PODCASTS, "podcasts", False),
-            (ProviderFeature.LIBRARY_AUDIOBOOKS, "audiobooks", False),
-        )
-        for feature, sub_id, is_playable in feature_map:
+        for feature, sub_id, label_key, is_playable in _COLLECTION_SUBFOLDERS:
             if feature not in self.supported_features:
                 continue
+            name, translation_key = self._media_label(
+                "folder", label_key, label_key.replace("_", " ").title()
+            )
             folders.append(
                 BrowseFolder(
                     item_id=sub_id,
                     provider=self.instance_id,
                     path=f"{base}{sub_id}",
-                    name=names[sub_id],
+                    name=name,
+                    translation_key=translation_key,
                     is_playable=is_playable,
                 )
             )
@@ -1215,20 +1245,19 @@ class YandexMusicProvider(MusicProvider):
         :param path_parts: Split path parts after ://.
         :return: List of folders or playlists.
         """
-        names = self._get_browse_names()
         base = path.rstrip("/") + "/"
 
         # Get validated tags
         discovered = await self._get_discovered_tags(self.mass.metadata.locale or "en_US")
 
-        # Categorize valid tags
-        categorized: dict[str, list[tuple[str, str]]] = {}
-        for slug, title in discovered:
+        # Categorize valid tags, carrying each tag's (slug, English name, translation_key)
+        categorized: dict[str, list[tuple[str, str, str | None]]] = {}
+        for slug, name, translation_key in discovered:
             cat = TAG_SLUG_CATEGORY.get(slug, "mood")
             # Skip seasonal tags — they belong in mixes, not picks
             if cat == "seasonal":
                 continue
-            categorized.setdefault(cat, []).append((slug, title))
+            categorized.setdefault(cat, []).append((slug, name, translation_key))
 
         # Sort tags within each category by preferred order
         for cat, cat_tags in categorized.items():
@@ -1242,24 +1271,28 @@ class YandexMusicProvider(MusicProvider):
             folders: list[BrowseFolder] = []
             for cat in category_display_order:
                 if cat in categorized:
+                    name, translation_key = self._media_label("folder", cat, cat.title())
                     folders.append(
                         BrowseFolder(
                             item_id=cat,
                             provider=self.instance_id,
                             path=f"{base}{cat}",
-                            name=names.get(cat, cat.title()),
+                            name=name,
+                            translation_key=translation_key,
                             is_playable=False,
                         )
                     )
             # Show any extra categories not in the standard order
             for cat in categorized:
                 if cat not in category_display_order:
+                    name, translation_key = self._media_label("folder", cat, cat.title())
                     folders.append(
                         BrowseFolder(
                             item_id=cat,
                             provider=self.instance_id,
                             path=f"{base}{cat}",
-                            name=names.get(cat, cat.title()),
+                            name=name,
+                            translation_key=translation_key,
                             is_playable=False,
                         )
                     )
@@ -1279,13 +1312,14 @@ class YandexMusicProvider(MusicProvider):
         if category and not tag:
             category_tags = categorized.get(category, [])
             folders = []
-            for slug, title in category_tags:
+            for slug, name, translation_key in category_tags:
                 folders.append(
                     BrowseFolder(
                         item_id=slug,
                         provider=self.instance_id,
                         path=f"{base}{slug}",
-                        name=names.get(slug, title),
+                        name=name,
+                        translation_key=translation_key,
                         is_playable=False,
                     )
                 )
@@ -1294,7 +1328,7 @@ class YandexMusicProvider(MusicProvider):
 
         # picks/category/tag - show playlists for the tag
         if tag:
-            discovered_slugs = {slug for slug, _ in discovered}
+            discovered_slugs = {slug for slug, _name, _key in discovered}
             if tag in discovered_slugs:
                 self.logger.debug("Fetching playlists for tag: %s", tag)
                 return await self._get_tag_playlists_as_browse(tag)
@@ -1318,21 +1352,24 @@ class YandexMusicProvider(MusicProvider):
         :param path_parts: Split path parts after ://.
         :return: List of folders or playlists.
         """
-        names = self._get_browse_names()
         base = path.rstrip("/") + "/"
 
         # mixes/ - show seasonal folders
         if len(path_parts) == 1:
-            return [
-                BrowseFolder(
-                    item_id=t,
-                    provider=self.instance_id,
-                    path=f"{base}{t}",
-                    name=names.get(t, t.title()),
-                    is_playable=False,
+            folders: list[BrowseFolder] = []
+            for t in TAG_MIXES:
+                name, translation_key = self._media_label("folder", t, t.title())
+                folders.append(
+                    BrowseFolder(
+                        item_id=t,
+                        provider=self.instance_id,
+                        path=f"{base}{t}",
+                        name=name,
+                        translation_key=translation_key,
+                        is_playable=False,
+                    )
                 )
-                for t in TAG_MIXES
-            ]
+            return folders
 
         # mixes/tag - show playlists for the tag
         tag = path_parts[1] if len(path_parts) > 1 else None
@@ -1496,7 +1533,6 @@ class YandexMusicProvider(MusicProvider):
         :param path_parts: Split path parts after ://.
         :return: List of folders or tracks.
         """
-        names = self._get_browse_names()
         base = path.rstrip("/") + "/"
 
         locale = (self.mass.metadata.locale or "en_US").lower()
@@ -1506,8 +1542,8 @@ class YandexMusicProvider(MusicProvider):
 
         # Group stations by category, preserving image_url
         categorized: dict[str, list[tuple[str, str, str | None]]] = {}
-        for station_id, cat_key, name, image_url in all_stations:
-            categorized.setdefault(cat_key, []).append((station_id, name, image_url))
+        for station_id, cat_key, station_name, image_url in all_stations:
+            categorized.setdefault(cat_key, []).append((station_id, station_name, image_url))
 
         # waves/ — show category folders
         if len(path_parts) == 1:
@@ -1515,47 +1551,57 @@ class YandexMusicProvider(MusicProvider):
             # Personalized "My Waves" first — only show if dashboard returns stations
             dashboard_stations = await self._get_dashboard_stations_cached()
             if dashboard_stations:
+                name, translation_key = self._media_label("folder", MY_WAVES_FOLDER_ID, "Personal")
                 folders.append(
                     BrowseFolder(
                         item_id=MY_WAVES_FOLDER_ID,
                         provider=self.instance_id,
                         path=f"{base}{MY_WAVES_FOLDER_ID}",
-                        name=names.get(MY_WAVES_FOLDER_ID, "My Waves"),
+                        name=name,
+                        translation_key=translation_key,
                         is_playable=False,
                     )
                 )
             # Featured Waves — only show if landing-blocks/waves returns data
             waves_landing = await self._get_waves_landing_cached()
             if waves_landing:
+                name, translation_key = self._media_label(
+                    "folder", WAVES_LANDING_FOLDER_ID, "Featured Waves"
+                )
                 folders.append(
                     BrowseFolder(
                         item_id=WAVES_LANDING_FOLDER_ID,
                         provider=self.instance_id,
                         path=f"{base}{WAVES_LANDING_FOLDER_ID}",
-                        name=names.get(WAVES_LANDING_FOLDER_ID, "Featured Waves"),
+                        name=name,
+                        translation_key=translation_key,
                         is_playable=False,
                     )
                 )
             for cat in WAVE_CATEGORY_DISPLAY_ORDER:
                 if cat in categorized:
+                    name, translation_key = self._media_label("folder", cat, cat.title())
                     folders.append(
                         BrowseFolder(
                             item_id=cat,
                             provider=self.instance_id,
                             path=f"{base}{cat}",
-                            name=names.get(cat, cat.title()),
+                            name=name,
+                            translation_key=translation_key,
                             is_playable=False,
                         )
                     )
             # Append any categories returned by API that aren't in the predefined order
             for cat in categorized:
                 if cat not in WAVE_CATEGORY_DISPLAY_ORDER:
+                    name, translation_key = self._media_label("folder", cat, cat.title())
                     folders.append(
                         BrowseFolder(
                             item_id=cat,
                             provider=self.instance_id,
                             path=f"{base}{cat}",
-                            name=names.get(cat, cat.title()),
+                            name=name,
+                            translation_key=translation_key,
                             is_playable=False,
                         )
                     )
@@ -1747,8 +1793,6 @@ class YandexMusicProvider(MusicProvider):
             # Append "Load more" sentinel so MA knows to call browse again for next batch.
             # This mirrors the My Wave mechanism and enables continuous radio playback.
             if tracks and len(state.seen_track_ids) < max_tracks and path:
-                names = self._get_browse_names()
-                next_name = "Ещё" if names == BROWSE_NAMES_RU else "Load more"
                 # Append /next to the current path (same pattern as _browse_my_wave).
                 # This makes each "Load more" path unique (e.g. /next/next/next...)
                 # so MA never serves a cached result for subsequent presses.
@@ -1757,7 +1801,8 @@ class YandexMusicProvider(MusicProvider):
                         item_id="next",
                         provider=self.instance_id,
                         path=f"{path.rstrip('/')}/next",
-                        name=next_name,
+                        name="Load more",
+                        translation_key="load_more",
                         is_playable=False,
                     )
                 )
@@ -2201,13 +2246,14 @@ class YandexMusicProvider(MusicProvider):
         :return: Playlist object.
         :raises MediaNotFoundError: If playlist not found.
         """
-        # Virtual playlists - not cached (locale-dependent names)
+        # Virtual playlists - constructed locally (no API call); translation_key localizes
+        # the name for the connection locale at serialization.
         if prov_playlist_id == MY_WAVE_PLAYLIST_ID:
-            names = self._get_browse_names()
             return Playlist(
                 item_id=MY_WAVE_PLAYLIST_ID,
                 provider=self.instance_id,
-                name=names[MY_WAVE_PLAYLIST_ID],
+                name="My Wave",
+                translation_key=MY_WAVE_PLAYLIST_ID,
                 owner=get_canonical_provider_name(self),
                 provider_mappings={
                     ProviderMapping(
@@ -2221,11 +2267,11 @@ class YandexMusicProvider(MusicProvider):
             )
 
         if prov_playlist_id == LIKED_TRACKS_PLAYLIST_ID:
-            names = self._get_browse_names()
             return Playlist(
                 item_id=LIKED_TRACKS_PLAYLIST_ID,
                 provider=self.instance_id,
-                name=names[LIKED_TRACKS_PLAYLIST_ID],
+                name="My Favorites",
+                translation_key=LIKED_TRACKS_PLAYLIST_ID,
                 owner=get_canonical_provider_name(self),
                 provider_mappings={
                     ProviderMapping(
@@ -2635,11 +2681,11 @@ class YandexMusicProvider(MusicProvider):
         if len(items) > initial_tracks_limit:
             items = items[:initial_tracks_limit]
 
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id=MY_WAVE_PLAYLIST_ID,
             provider=self.instance_id,
-            name=names[MY_WAVE_PLAYLIST_ID],
+            name="My Wave",
+            translation_key=MY_WAVE_PLAYLIST_ID,
             items=UniqueList(items),
             icon="mdi-waveform",
         )
@@ -2665,11 +2711,11 @@ class YandexMusicProvider(MusicProvider):
                     self.logger.debug("Error parsing feed playlist: %s", err)
         if not items:
             return None
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id="feed",
             provider=self.instance_id,
-            name=names["feed"],
+            name="Made for You",
+            translation_key="feed",
             items=UniqueList(items),
             icon="mdi-account-music",
         )
@@ -2698,11 +2744,11 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing chart track: %s", err)
         if not tracks:
             return None
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id="chart",
             provider=self.instance_id,
-            name=names["chart"],
+            name="Chart",
+            translation_key="chart",
             items=UniqueList(tracks),
             icon="mdi-chart-line",
         )
@@ -2731,11 +2777,11 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing new release album: %s", err)
         if not albums:
             return None
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id="new_releases",
             provider=self.instance_id,
-            name=names["new_releases"],
+            name="New Releases",
+            translation_key="new_releases",
             items=UniqueList(albums),
             icon="mdi-new-box",
         )
@@ -2768,11 +2814,11 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing new playlist: %s", err)
         if not playlists:
             return None
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id="new_playlists",
             provider=self.instance_id,
-            name=names["new_playlists"],
+            name="New Playlists",
+            translation_key="new_playlists",
             items=UniqueList(playlists),
             icon="mdi-playlist-star",
         )
@@ -2794,11 +2840,11 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing top picks playlist: %s", err)
         if not items:
             return None
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id="top_picks",
             provider=self.instance_id,
-            name=names.get("top_picks", "Top Picks"),
+            name="Top Picks",
+            translation_key="top_picks",
             items=UniqueList(items),
             icon="mdi-star",
         )
@@ -2833,12 +2879,13 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing mood playlist: %s", err)
         if not items:
             return None
-        names = self._get_browse_names()
-        tag_name = names.get(mood_tag, mood_tag.title())
+        tag_name, _ = self._media_label("folder", _media_label_key(mood_tag), mood_tag.title())
         return RecommendationFolder(
             item_id="mood_mix",
             provider=self.instance_id,
-            name=f"{names.get('mood_mix', 'Mood')}: {tag_name}",
+            name=f"Mood Mix: {tag_name}",
+            translation_key="mood_mix",
+            translation_params=[tag_name],
             items=UniqueList(items),
             icon="mdi-emoticon-outline",
         )
@@ -2866,12 +2913,15 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing activity playlist: %s", err)
         if not items:
             return None
-        names = self._get_browse_names()
-        tag_name = names.get(activity_tag, activity_tag.title())
+        tag_name, _ = self._media_label(
+            "folder", _media_label_key(activity_tag), activity_tag.title()
+        )
         return RecommendationFolder(
             item_id="activity_mix",
             provider=self.instance_id,
-            name=f"{names.get('activity_mix', 'Activity')}: {tag_name}",
+            name=f"Activity Mix: {tag_name}",
+            translation_key="activity_mix",
+            translation_params=[tag_name],
             items=UniqueList(items),
             icon="mdi-run",
         )
@@ -2900,12 +2950,15 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing seasonal playlist: %s", err)
         if not items:
             return None
-        names = self._get_browse_names()
-        tag_name = names.get(seasonal_tag, seasonal_tag.title())
+        tag_name, _ = self._media_label(
+            "folder", _media_label_key(seasonal_tag), seasonal_tag.title()
+        )
         return RecommendationFolder(
             item_id="seasonal_mix",
             provider=self.instance_id,
-            name=f"{names.get('seasonal_mix', 'Seasonal')}: {tag_name}",
+            name=f"Seasonal: {tag_name}",
+            translation_key="seasonal_mix",
+            translation_params=[tag_name],
             items=UniqueList(items),
             icon="mdi-weather-sunny",
         )
