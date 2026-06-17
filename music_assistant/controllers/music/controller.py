@@ -77,7 +77,7 @@ from music_assistant.controllers.music.media.podcasts import PodcastsController
 from music_assistant.controllers.music.media.radio import RadioController
 from music_assistant.controllers.music.media.tracks import TracksController
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
-    OptionalImpersonatedUser,
+    ImpersonatedUser,
     get_current_user,
 )
 from music_assistant.helpers.api import api_command
@@ -2436,10 +2436,19 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         username: str | None = None,
     ) -> MediaItemType | ItemMapping | None:
         """Try to find a media item (such as a playlist) by name."""
-        async with OptionalImpersonatedUser(self.mass, username):
-            return await self._handle_item_by_name(name, artist, album, media_type)
+        async with ImpersonatedUser(self.mass, username):
+            return await self._get_item_by_name(name, artist, album, media_type)
 
-    async def _handle_item_by_name(
+    @api_command("music/verify_item_uri")
+    async def verify_item_uri(self, uri: str, username: str | None = None) -> bool:
+        """Verify, if a uri specifies a valid item.
+
+        If username_or_user_id is specified, verifies additionally, if this user may access this item. This requires the requesting (i.e. authorized user) to be able to access this item as well.
+        """
+        async with ImpersonatedUser(self.mass, username):
+            return await self._handle_verify_item_uri(uri)
+
+    async def _get_item_by_name(
         self,
         name: str,
         artist: str | None = None,
@@ -2517,15 +2526,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 # simply return the first item because search is already sorted by best match
                 return _item
         return None
-
-    @api_command("music/verify_item_uri")
-    async def verify_item_uri(self, uri: str, username: str | None = None) -> bool:
-        """Verify, if a uri specifies a valid item.
-
-        If username_or_user_id is specified, verifies additionally, if this user may access this item. This requires the requesting (i.e. authorized user) to be able to access this item as well.
-        """
-        async with OptionalImpersonatedUser(self.mass, username):
-            return await self._handle_verify_item_uri(uri)
 
     async def _handle_verify_item_uri(self, uri: str) -> bool:
         user = get_current_user()

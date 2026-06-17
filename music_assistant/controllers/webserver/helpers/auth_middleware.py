@@ -304,7 +304,7 @@ async def auth_middleware(request: web.Request, handler: Any) -> web.StreamRespo
     return cast("web.StreamResponse", await handler(request))
 
 
-class OptionalImpersonatedUser:
+class ImpersonatedUser:
     """
     Optional impersonated user context manager.
 

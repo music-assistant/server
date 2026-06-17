@@ -18,7 +18,7 @@ from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.webserver.auth import AuthenticationManager
 from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
-    OptionalImpersonatedUser,
+    ImpersonatedUser,
     get_current_user,
     set_current_token,
     set_current_user,
@@ -1218,17 +1218,17 @@ async def test_impersonated_user_context_manager(auth_manager: AuthenticationMan
     # non-authenticated user must raise
     set_current_user(None)
     with pytest.raises(InsufficientPermissions):
-        async with OptionalImpersonatedUser(auth_manager.mass, "user_a"):
+        async with ImpersonatedUser(auth_manager.mass, "user_a"):
             ...
     # non-admin impersonation attempt must raise
     set_current_user(standard_user_a)
     with pytest.raises(InsufficientPermissions):
-        async with OptionalImpersonatedUser(auth_manager.mass, "admin"):
+        async with ImpersonatedUser(auth_manager.mass, "admin"):
             ...
     # invalid username must raise
     set_current_user(admin_user)
     with pytest.raises(InvalidDataError):
-        async with OptionalImpersonatedUser(auth_manager.mass, "wrong_username"):
+        async with ImpersonatedUser(auth_manager.mass, "wrong_username"):
             ...
 
     # verify, that a standard user not attempting personation changes the current user
@@ -1237,10 +1237,10 @@ async def test_impersonated_user_context_manager(auth_manager: AuthenticationMan
     set_impersonated_user(standard_user_b)  # simulate nested use
 
     assert get_current_user() == standard_user_b
-    async with OptionalImpersonatedUser(auth_manager.mass, "user_a"):
+    async with ImpersonatedUser(auth_manager.mass, "user_a"):
         assert get_current_user() == standard_user_a
     assert get_current_user() == standard_user_b
-    async with OptionalImpersonatedUser(auth_manager.mass, None):
+    async with ImpersonatedUser(auth_manager.mass, None):
         assert get_current_user() == standard_user_a
     assert get_current_user() == standard_user_b
 
@@ -1249,12 +1249,12 @@ async def test_impersonated_user_context_manager(auth_manager: AuthenticationMan
 
     set_impersonated_user(None)  # non-nested use
     assert get_current_user() == admin_user
-    async with OptionalImpersonatedUser(auth_manager.mass, "user_a"):
+    async with ImpersonatedUser(auth_manager.mass, "user_a"):
         assert get_current_user() == standard_user_a
     assert get_current_user() == admin_user
 
     set_impersonated_user(standard_user_b)  # nested use
-    async with OptionalImpersonatedUser(auth_manager.mass, "user_a"):
+    async with ImpersonatedUser(auth_manager.mass, "user_a"):
         assert get_current_user() == standard_user_a
     assert get_current_user() == standard_user_b
 
@@ -1262,9 +1262,9 @@ async def test_impersonated_user_context_manager(auth_manager: AuthenticationMan
     set_current_user(admin_user)
     set_impersonated_user(None)
     assert get_current_user() == admin_user
-    async with OptionalImpersonatedUser(auth_manager.mass, "admin"):
+    async with ImpersonatedUser(auth_manager.mass, "admin"):
         assert get_current_user() == admin_user
     assert get_current_user() == admin_user
-    async with OptionalImpersonatedUser(auth_manager.mass, None):
+    async with ImpersonatedUser(auth_manager.mass, None):
         assert get_current_user() == admin_user
     assert get_current_user() == admin_user
