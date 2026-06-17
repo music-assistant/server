@@ -442,11 +442,13 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     thumb_cleanup_task = tasks_controller.get_task(THUMB_CACHE_CLEANUP_TASK_ID)
 
     assert cache_task.translation_key == "background_task.cache_database_cleanup"
+    assert cache_task.translation_owner == "core.cache"
     assert cache_task.schedule == maintenance_schedule
     assert cache_task.metadata == {"task_domain": "cache_database_cleanup"}
 
     assert db_cleanup_task.schedule == cleanup_schedule
     assert provider_mapping_task.translation_key == "background_task.correct_provider_mappings"
+    assert provider_mapping_task.translation_owner == "core.music"
     assert provider_mapping_task.schedule == TaskSchedule.daily(
         every=30,
         hour=maintenance_hour,
@@ -455,16 +457,12 @@ async def test_core_maintenance_tasks_register_nightly_schedules(
     assert provider_mapping_task.metadata == {"task_domain": "music_provider_mapping_correction"}
     assert genre_scan_task.schedule == maintenance_schedule
 
-    assert (
-        artist_scan_task.translation_key
-        == "core.metadata.background_task.scan_missing_artist_metadata"
-    )
+    assert artist_scan_task.translation_key == "background_task.scan_missing_artist_metadata"
+    assert artist_scan_task.translation_owner == "core.metadata"
     assert artist_scan_task.metadata == {"task_domain": "metadata_missing_artist_metadata_scan"}
 
-    assert (
-        playlist_scan_task.translation_key
-        == "core.metadata.background_task.refresh_playlist_metadata"
-    )
+    assert playlist_scan_task.translation_key == "background_task.refresh_playlist_metadata"
+    assert playlist_scan_task.translation_owner == "core.metadata"
     assert playlist_scan_task.metadata == {"task_domain": "metadata_playlist_metadata_scan"}
 
     # Metadata maintenance tasks pick a random time spread across the full day
@@ -595,7 +593,8 @@ async def test_schedule_update_metadata_uses_managed_background_task(
     await lookup_started.wait()
 
     task = tasks_controller.get_task(task_id)
-    assert task.translation_key == "core.metadata.background_task.update_metadata"
+    assert task.translation_key == "background_task.update_metadata"
+    assert task.translation_owner == "core.metadata"
     assert task.metadata == {
         "task_domain": "metadata_lookup",
         "item_uri": resolved_item.uri,

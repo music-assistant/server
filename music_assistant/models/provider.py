@@ -127,6 +127,12 @@ class Provider:
 
     @property
     @final
+    def translation_owner(self) -> str:
+        """Return the "provider.<domain>" namespace this provider's translation strings resolve under."""
+        return f"provider.{self.domain}"
+
+    @property
+    @final
     def name(self) -> str:
         """Return (custom) friendly name for this provider instance."""
         if self.config.name:
