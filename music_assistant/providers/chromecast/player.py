@@ -80,6 +80,7 @@ class ChromecastPlayer(Player):
         self.mz_controller: MultizoneController | None = None
         self.on_app_status_changed: Callable[[str | None], None] | None = None
         self.last_poll = 0.0
+        self.last_multichannel_check = 0.0
         self.flow_meta_checksum: str | None = None
         # set static variables
         self._attr_supported_features = {
