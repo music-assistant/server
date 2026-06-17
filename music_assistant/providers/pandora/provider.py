@@ -6,12 +6,13 @@ import json
 import os
 import time
 from collections import OrderedDict
-from collections.abc import AsyncGenerator, Sequence
-from typing import Any
+from collections.abc import AsyncGenerator, Callable, Sequence
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from music_assistant_models.enums import (
     ContentType,
+    EventType,
     ImageType,
     MediaType,
     StreamType,
@@ -46,6 +47,10 @@ from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 
+if TYPE_CHECKING:
+    from music_assistant_models.event import MassEvent
+
+
 from .constants import (
     ACCOUNT_FLAG_HIGH_QUALITY,
     CONF_QUALITY,
@@ -59,7 +64,9 @@ from .constants import (
 )
 from .helpers import create_auth_headers, get_csrf_token, handle_pandora_error
 
-MAX_CACHE_SIZE = 10
+# Bounded LRU of recently played audio; freeing here (rather than on stream
+# completion) keeps just-played tracks seekable and survives three parallel players.
+MAX_CACHE_SIZE = 24
 
 
 class PandoraStationSession:
@@ -92,6 +99,7 @@ class PandoraProvider(MusicProvider):
     _socks_proxy: bool = False
     _high_quality_available: bool = False
     _audio_cache: OrderedDict[str, bytes]  # musicId → raw audio bytes
+    _unsub_queue_added: Callable[[], None] | None = None
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -115,6 +123,9 @@ class PandoraProvider(MusicProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        if self._unsub_queue_added:
+            self._unsub_queue_added()
+            self._unsub_queue_added = None
         await self.close()
         await super().unload(is_removed)
 
@@ -122,19 +133,28 @@ class PandoraProvider(MusicProvider):
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
         for player in self.mass.players.all_players(return_disabled=True):
-            try:
-                items = self.mass.player_queues.items(player.player_id)
-                if items:
-                    if track := items[-1].media_item:
-                        if track.provider == self.domain:
-                            self.logger.info(
-                                f"Clearing stale Pandora queue for player {player.player_id}"
-                            )
-                            self.mass.player_queues.clear(items[-1].queue_id)
-            except Exception as err:
-                self.logger.warning(
-                    f"Failed to check/clear queue for player {player.player_id}: {err}"
-                )
+            self._clear_stale_queue(player.player_id)
+        if self._unsub_queue_added is None:
+            self._unsub_queue_added = self.mass.subscribe(
+                self._on_queue_added, EventType.QUEUE_ADDED
+            )
+
+    def _on_queue_added(self, event: MassEvent) -> None:
+        """Clear a stale Pandora queue that was added after load."""
+        if queue_id := event.object_id:
+            self._clear_stale_queue(queue_id, check_active=True)
+
+    def _clear_stale_queue(self, player_id: str, check_active: bool = False) -> None:
+        """Clear a player's queue if it ends on a now-unplayable Pandora track."""
+        try:
+            items = self.mass.player_queues.items(player_id)
+            if items and (track := items[-1].media_item) and track.provider == self.domain:
+                if check_active and self._find_track(track.item_id):
+                    return
+                self.logger.info(f"Clearing stale Pandora queue for player {player_id}")
+                self.mass.player_queues.clear(items[-1].queue_id)
+        except Exception as err:
+            self.logger.warning(f"Failed to check/clear queue for player {player_id}: {err}")
 
     async def _authenticate(self, username: str, password: str) -> None:
         """Authenticate with Pandora and get auth token."""
@@ -303,7 +323,7 @@ class PandoraProvider(MusicProvider):
         if not sub_path:
             result: list[MediaItemType | ItemMapping | BrowseFolder] = []
             async for station in self._get_stations():
-                self.logger.info(f"Retrieved {station.name}, {station.is_dynamic}")
+                self.logger.debug(f"Retrieved {station.name}, {station.is_dynamic}")
                 result.append(station)
             return result
         return await super().browse(path)
@@ -351,16 +371,15 @@ class PandoraProvider(MusicProvider):
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes]:
         """Return bytes of track from local _audio_cache."""
-        track_id = streamdetails.item_id.split("_")[-1]
+        track_id = streamdetails.item_id.split("_", 1)[-1]
         if not (audio := self._audio_cache.get(track_id)):
             raise MediaNotFoundError(f"No cached audio for track {streamdetails.item_id}")
+        self._audio_cache.move_to_end(track_id)
         start = 0
         if seek_position and streamdetails.duration:
             start = int(len(audio) / streamdetails.duration * seek_position)
         for i in range(start, len(audio), 65536):
             yield audio[i : i + 65536]
-        # clean up cache after streaming
-        del self._audio_cache[track_id]
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
@@ -407,7 +426,7 @@ class PandoraProvider(MusicProvider):
 
     async def get_stream_details(self, prov_item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
-        station_id, track_id = prov_item_id.split("_")
+        station_id, track_id = prov_item_id.split("_", 1)
         session = self._get_or_create_session(station_id)
 
         if session.fragments:
@@ -438,7 +457,7 @@ class PandoraProvider(MusicProvider):
     def _find_track(self, prov_track_id: str) -> dict[str, Any]:
         """Find track in all station fragments from provider track_id."""
         if "_" in prov_track_id:
-            station_id, track_id = prov_track_id.split("_")
+            station_id, track_id = prov_track_id.split("_", 1)
             session = self._get_or_create_session(station_id)
             for tracks in session.fragments[::-1]:
                 for track in tracks:
@@ -490,6 +509,11 @@ class PandoraProvider(MusicProvider):
             while len(session.fragments) <= fragment_index:
                 session.fragments.append([])
             session.fragments[fragment_index] = tracks
+            # Drop metadata for a fragment that has aged out of the audio cache
+            # window so memory stays bounded over a long listening session.
+            prune_index = fragment_index - int(MAX_CACHE_SIZE / 4)  # each fragment hold 4 songs
+            if prune_index >= 0 and session.fragments[prune_index]:
+                session.fragments[prune_index] = []
             return tracks
 
         except MediaNotFoundError:
@@ -640,7 +664,6 @@ class PandoraProvider(MusicProvider):
         if artist_name := obj.get("artistName"):
             track.artists = UniqueList([self._parse_artist(artist_name)])
         track.album = self._parse_album(obj, track_id)
-        self.logger.info(name)
         return track
 
     def _audio_format(self) -> AudioFormat:
