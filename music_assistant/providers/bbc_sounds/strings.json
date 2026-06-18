@@ -13,23 +13,31 @@
       "label": "Show local radio stations?"
     },
     "stream_format": {
-      "label": "Preferred stream format"
+      "label": "Preferred stream format",
+      "options": {
+        "hls": "HLS",
+        "dash": "MPEG-DASH"
+      }
     }
   },
-  "schedule_programmes": {
-    "name": "Schedule and Programmes"
-  },
-  "schedule": {
-    "name": "Schedule"
-  },
-  "listen_live": {
-    "name": "Listen Live"
-  },
-  "today": {
-    "name": "Today"
-  },
-  "yesterday": {
-    "name": "Yesterday"
+  "media": {
+    "folder": {
+      "schedule_programmes": {
+        "name": "Schedule and Programmes"
+      },
+      "schedule": {
+        "name": "Schedule"
+      },
+      "listen_live": {
+        "name": "Listen Live"
+      },
+      "today": {
+        "name": "Today"
+      },
+      "yesterday": {
+        "name": "Yesterday"
+      }
+    }
   },
   "manifest": {
     "description": "Stream live BBC radio shows, podcast series and on-demand audio."

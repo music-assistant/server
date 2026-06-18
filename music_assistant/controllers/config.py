@@ -2089,7 +2089,7 @@ class ConfigController:
                         key=protocol_enabled_key,
                         type=ConfigEntryType.BOOLEAN,
                         # the key is per-protocol (dynamic), so pin a static catalog key
-                        translation_key="config_entries.protocol_enable",
+                        translation_key="protocol_enable",
                         value=protocol_player_enabled,
                         default_value=True,
                         category=protocol_category,

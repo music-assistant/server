@@ -333,7 +333,8 @@ class SmartPlaylistProvider(PluginProvider):
             msg = f"{name} is not a valid playlist name"
             raise InvalidDataError(
                 msg,
-                translation_key="provider.smart_playlist.errors.invalid_name",
+                translation_key="invalid_name",
+                translation_owner=self.translation_owner,
                 translation_args=[name],
             )
 
@@ -368,7 +369,8 @@ class SmartPlaylistProvider(PluginProvider):
             msg = f"{name} is not a valid playlist name"
             raise InvalidDataError(
                 msg,
-                translation_key="provider.smart_playlist.errors.invalid_name",
+                translation_key="invalid_name",
+                translation_owner=self.translation_owner,
                 translation_args=[name],
             )
 

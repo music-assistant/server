@@ -71,7 +71,7 @@ class CacheController(CoreController):
                     key=CONF_CLEAR_CACHE,
                     type=ConfigEntryType.LABEL,
                     # distinct key so the result label doesn't collide with the action's label
-                    translation_key="config_entries.clear_cache_result",
+                    translation_key="clear_cache_result",
                 ),
             )
         return (
