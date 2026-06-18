@@ -179,15 +179,11 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Email",
-            description="Your Pocket Casts email address",
             required=True,
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
-            description="Your Pocket Casts password",
             required=True,
         ),
     )
