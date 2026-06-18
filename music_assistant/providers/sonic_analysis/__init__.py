@@ -504,7 +504,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         if len(session.pcm_buffer) >= session.block_bytes:
             block_bytes = bytes(session.pcm_buffer[: session.block_bytes])
             del session.pcm_buffer[: session.block_bytes]
-            pre_audio, post_audio, bf = await asyncio.to_thread(
+            pre_audio, post_audio, bf = await self._run_offloaded(
                 _decode_resample_extract,
                 af,
                 block_bytes,
@@ -589,7 +589,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         af = session.audio_format
 
         if session.pcm_buffer:
-            pre_audio, _post_audio, bf = await asyncio.to_thread(
+            pre_audio, _post_audio, bf = await self._run_offloaded(
                 _decode_resample_extract,
                 af,
                 bytes(session.pcm_buffer),
@@ -609,7 +609,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             self.logger.debug("No feature blocks for session %s, skipping", session_id)
             return None
 
-        analysis = await asyncio.to_thread(
+        analysis = await self._run_offloaded(
             collapse_to_analysis, session.accumulated, ANALYSIS_SAMPLE_RATE
         )
 
@@ -664,7 +664,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         if self._clap_model is None:
             return
         try:
-            result = await asyncio.to_thread(
+            result = await self._run_offloaded(
                 self._single_window_inference_sync, window_audio, source_sr
             )
         except Exception as err:
