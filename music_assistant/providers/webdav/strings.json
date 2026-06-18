@@ -14,11 +14,11 @@
       "description": "The base URL of your WebDAV server (e.g., https://example.com/webdav)"
     },
     "username": {
-      "label": "Username",
+      "label": "[%key:common::config_entries::username::label%]",
       "description": "Username for WebDAV authentication (leave empty for no authentication)"
     },
     "password": {
-      "label": "Password",
+      "label": "[%key:common::config_entries::password::label%]",
       "description": "Password for WebDAV authentication"
     },
     "verify_ssl": {

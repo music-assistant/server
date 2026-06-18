@@ -8,11 +8,11 @@
       "description": "The URL of the Audiobookshelf server to connect to. For example https://abs.domain.tld/ or http://192.168.1.4:13378/"
     },
     "username": {
-      "label": "Username",
+      "label": "[%key:common::config_entries::username::label%]",
       "description": "The username to authenticate to the remote server."
     },
     "password": {
-      "label": "Password",
+      "label": "[%key:common::config_entries::password::label%]",
       "description": "The password to authenticate to the remote server."
     },
     "api_token": {

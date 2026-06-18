@@ -11,11 +11,11 @@
       "description": "URL of gPodder instance."
     },
     "username": {
-      "label": "Username",
+      "label": "[%key:common::config_entries::username::label%]",
       "description": "Username of gPodder instance."
     },
     "password": {
-      "label": "Password",
+      "label": "[%key:common::config_entries::password::label%]",
       "description": "Password for gPodder instance."
     },
     "device_id": {

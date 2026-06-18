@@ -4,7 +4,7 @@
       "label": "Email or username"
     },
     "password": {
-      "label": "Password"
+      "label": "[%key:common::config_entries::password::label%]"
     },
     "intro": {
       "label": "A BBC Sounds account is optional, but some UK-only content may not work without it"
