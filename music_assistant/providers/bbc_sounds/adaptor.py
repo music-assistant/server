@@ -658,14 +658,18 @@ class BrowseConverter(BaseConverter):
 
     def _convert_menu_item(self, item: MenuItem) -> BrowseFolder | RecommendationFolder:
         """Convert MenuItem to BrowseFolder or RecommendationFolder."""
-        image_url = ImageProvider.get_icon_url(item.item_id)
-        image = (
-            ImageProvider.create_image(image_url, self.context.provider_domain)
-            if image_url
-            else None
-        )
         if not item or not item.title:
             raise ConversionError(f"No menu item {item}")
+        if not item.image_url:
+            image_url = ImageProvider.get_icon_url(item.item_id)
+            image = (
+                ImageProvider.create_image(image_url, self.context.provider_domain)
+                if image_url
+                else None
+            )
+        elif item.image_url:
+            image = ImageProvider.create_image(item.image_url, self.context.provider_domain)
+
         path = self._build_path(item.item_id)
 
         return_type = BrowseFolder
