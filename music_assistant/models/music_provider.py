@@ -1065,6 +1065,16 @@ class MusicProvider(Provider):
                     library_item = await self.mass.music.playlists.update_item_in_library(
                         library_item.item_id, prov_item
                     )
+                elif not library_item.is_editable and (
+                    prov_item.name != library_item.name
+                    or prov_item.metadata.images != library_item.metadata.images
+                ):
+                    # the provider is the sole source of truth for non-editable playlists
+                    # (e.g. Pandora/personalized-radio stations), so it's safe to overwrite
+                    # name/images here without risking clobbering a user's local customization
+                    library_item = await self.mass.music.playlists.update_item_in_library(
+                        library_item.item_id, prov_item, overwrite=True
+                    )
                 if not library_item.favorite and prov_item.favorite:
                     # existing library item not favorite but should be
                     await self.mass.music.playlists.set_favorite(library_item.item_id, True)
