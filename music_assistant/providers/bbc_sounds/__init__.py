@@ -74,6 +74,7 @@ from sounds import (
 )
 from sounds import PodcastEpisode as SoundsPodcastEpisode
 from music_assistant.providers.bbc_sounds.constants import _Constants
+from music_assistant.providers.bbc_sounds.metadata import _find_segment, _segment_to_metadata
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
