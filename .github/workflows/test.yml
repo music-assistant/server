@@ -37,19 +37,6 @@ jobs:
         with:
           python-version-file: ".python-version"
           check-latest: true
-      # Cache apt .deb files to speed up ffmpeg installation (in home to avoid permission issues).
-      - name: Cache apt packages
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/apt-packages
-          key: apt-ffmpeg-${{ runner.os }}
-      - name: Install ffmpeg
-        run: |
-          # Restore cached .deb files to apt cache (if any)
-          sudo cp ~/.cache/apt-packages/*.deb /var/cache/apt/archives/ 2>/dev/null || true
-          sudo apt-get update && sudo apt-get install -y ffmpeg
-          # Save .deb files for next run
-          mkdir -p ~/.cache/apt-packages && cp /var/cache/apt/archives/*.deb ~/.cache/apt-packages/ 2>/dev/null || true
       - name: Install uv
         run: pip install uv
       - name: Cache uv packages
