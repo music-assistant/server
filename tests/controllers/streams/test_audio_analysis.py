@@ -15,7 +15,10 @@ from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import AudioFormat
 
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
-from music_assistant.constants import DEFAULT_BACKGROUND_SCAN_CONCURRENCY
+from music_assistant.constants import (
+    DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
+    _default_background_scan_concurrency,
+)
 from music_assistant.controllers.streams.audio_analysis import (
     LOUDNESS_ANALYSIS_DOMAIN,
     SMART_FADES_ANALYSIS_DOMAIN,
@@ -60,6 +63,35 @@ def test_ensure_inference_runtime_configured_is_idempotent() -> None:
         controller.ensure_inference_runtime_configured()
     set_threads.assert_called_once()
     blas_limits.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("cpu_count", "expected_permits"),
+    [(2, 1), (4, 2), (8, 4), (16, 8)],
+)
+@pytest.mark.asyncio
+async def test_analysis_concurrency_capped_at_half_cores(
+    cpu_count: int, expected_permits: int
+) -> None:
+    """The analysis concurrency cap is half the cores (min 1) on every host."""
+    controller = _make_controller()
+    with (
+        patch(
+            "music_assistant.controllers.streams.audio_analysis.os.process_cpu_count",
+            return_value=cpu_count,
+        ),
+        patch("torch.set_num_threads"),
+        patch("torch.set_num_interop_threads"),
+        patch("threadpoolctl.threadpool_limits"),
+        patch("torch.backends.nnpack.set_flags"),
+    ):
+        controller.ensure_inference_runtime_configured()
+    semaphore = controller.analysis_semaphore
+    assert isinstance(semaphore, asyncio.Semaphore)
+    # Exactly `expected_permits` acquires exhaust the cap.
+    for _ in range(expected_permits):
+        await semaphore.acquire()
+    assert semaphore.locked()
 
 
 @pytest.mark.asyncio
@@ -113,10 +145,10 @@ def test_get_scan_concurrency_returns_default_on_unset() -> None:
 
 
 def test_get_scan_concurrency_clamps_to_max() -> None:
-    """Values above 8 are clamped to 8."""
+    """Values above 16 are clamped to 16."""
     controller = _make_controller()
     controller.mass.config.get_raw_core_config_value = MagicMock(return_value=99)  # type: ignore[method-assign]
-    assert controller._get_scan_concurrency() == 8
+    assert controller._get_scan_concurrency() == 16
 
 
 def test_get_scan_concurrency_clamps_to_min() -> None:
@@ -126,6 +158,16 @@ def test_get_scan_concurrency_clamps_to_min() -> None:
     # doesn't swap us out for the default before the min-clamp runs.
     controller.mass.config.get_raw_core_config_value = MagicMock(return_value=-1)  # type: ignore[method-assign]
     assert controller._get_scan_concurrency() == 1
+
+
+@pytest.mark.parametrize(
+    ("cpu_count", "expected"),
+    [(1, 1), (2, 1), (3, 1), (4, 2), (8, 2), (16, 2)],
+)
+def test_default_background_scan_concurrency(cpu_count: int, expected: int) -> None:
+    """Background scan defaults to 1 below 4 cores, 2 at/above (never more than 2)."""
+    with patch("music_assistant.constants.os.process_cpu_count", return_value=cpu_count):
+        assert _default_background_scan_concurrency() == expected
 
 
 def _make_stream_mock(chunks: list[bytes]) -> object:

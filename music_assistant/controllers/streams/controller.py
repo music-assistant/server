@@ -299,12 +299,13 @@ class StreamsController(CoreController):
             ConfigEntry(
                 key=CONF_BACKGROUND_SCAN_CONCURRENCY,
                 type=ConfigEntryType.INTEGER,
-                range=(1, 8),
+                range=(1, 16),
                 default_value=DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
                 label="Background analysis concurrency",
                 description="Maximum number of tracks analyzed concurrently during the nightly "
-                "background scan. Default 1 (serial). Increase only if your hardware can handle "
-                "concurrent torch/ffmpeg work.",
+                "background scan (1-16). Defaults to 1, or 2 on machines with 4 or more cores. "
+                "Raise it for faster overnight scans at the cost of more CPU; analysis still "
+                "never uses more than half the cores.",
                 category="audio_analysis",
             ),
         )
@@ -931,7 +932,7 @@ class StreamsController(CoreController):
         ):
             try:
                 await resp.write(chunk)
-            except (BrokenPipeError, ConnectionResetError, ConnectionError):
+            except BrokenPipeError, ConnectionResetError, ConnectionError:
                 # race condition
                 break
 
@@ -1030,7 +1031,7 @@ class StreamsController(CoreController):
         ):
             try:
                 await resp.write(chunk)
-            except (BrokenPipeError, ConnectionResetError):
+            except BrokenPipeError, ConnectionResetError:
                 break
 
         self.logger.debug(
