@@ -2338,7 +2338,12 @@ class PlayerQueuesController(CoreController):
                     return  # guard
                 retries = max(120, (queue.current_item.duration or 0) + 10)
                 for _ in range(retries):
-                    if queue.current_item.queue_item_id == item_id_in_buffer:
+                    # the queue can drain to empty while we sleep (e.g. all remaining
+                    # items skipped as unplayable); stop waiting once it has no current item
+                    current_item = queue.current_item
+                    if current_item is None:
+                        return
+                    if current_item.queue_item_id == item_id_in_buffer:
                         break
                     await asyncio.sleep(1)
                 if next_item := await self.load_next_queue_item(queue_id, item_id_in_buffer):
