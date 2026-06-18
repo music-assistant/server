@@ -9,6 +9,20 @@
       "description": "Your MusicMe account password."
     }
   },
+  "media": {
+    "folder": {
+      "featured": { "name": "Featured" },
+      "new_releases": { "name": "New releases" },
+      "top_artists": { "name": "Top artists" },
+      "themed_radios": { "name": "Themed radios" }
+    },
+    "recommendations": {
+      "featured": { "name": "Featured" },
+      "new_releases": { "name": "New releases" },
+      "top_artists": { "name": "Top artists" },
+      "radios": { "name": "Radios" }
+    }
+  },
   "manifest": {
     "description": "Stream music from MusicMe's catalogue — a French streaming service with 13M+ tracks."
   }

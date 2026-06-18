@@ -18,7 +18,7 @@ def _parse_clap_embedding(raw: Any) -> np.ndarray | None:
         return None
     try:
         arr = np.asarray(raw, dtype=np.float32).reshape(-1)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     if arr.shape != (CLAP_EMBEDDING_DIM,):
         return None
@@ -34,7 +34,7 @@ def _parse_weights(params: dict[str, Any]) -> dict[str, float]:
     def _clamp(val: str, fallback: float) -> float:
         try:
             return max(0.0, min(1.0, float(val)))
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             return fallback
 
     for group, default in result.items():

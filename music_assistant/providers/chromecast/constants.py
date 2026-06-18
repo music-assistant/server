@@ -18,6 +18,10 @@ SENDSPIN_CAST_APP_ID = "DD107DDB"
 SENDSPIN_CAST_NAMESPACE = "urn:x-cast:sendspin"
 CONF_USE_MASS_APP = "use_mass_app"
 
+# Interval (seconds) before an unavailable player is re-evaluated as a possible
+# passive multichannel endpoint that should be removed from the setup.
+MULTICHANNEL_RECHECK_INTERVAL = 600
+
 # Devices known to not work with the Sendspin Cast bridge.
 # Tuple of (manufacturer, model) where "*" is a wildcard.
 # These devices will not get a Sendspin bridge, allowing other protocols

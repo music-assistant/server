@@ -300,7 +300,8 @@ class QobuzProvider(MusicProvider):
             msg = f"Failed to create playlist: {name}"
             raise InvalidDataError(
                 msg,
-                translation_key="provider.qobuz.errors.create_playlist_failed",
+                translation_key="create_playlist_failed",
+                translation_owner=self.translation_owner,
                 translation_args=[name],
             )
         return self._parse_playlist(playlist_obj)

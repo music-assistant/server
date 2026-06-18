@@ -57,6 +57,13 @@
       "action_label": "Complete the auth process via PKCE on Tidal.com"
     }
   },
+  "media": {
+    "playlist": {
+      "favorite_tracks": {
+        "name": "Favorite Tracks"
+      }
+    }
+  },
   "manifest": {
     "description": "Stream music, playlists, and exclusives in lossless FLAC quality."
   }

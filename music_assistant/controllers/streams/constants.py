@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Final
 
-from music_assistant.helpers.util import get_total_system_memory
+from music_assistant.helpers.util import get_total_system_memory, meets_memory_target
 
 
 class BufferMode(StrEnum):
@@ -26,6 +26,13 @@ class BufferSize(StrEnum):
 # Calculate total system memory once at module load time
 TOTAL_SYSTEM_MEMORY_GB: Final[float] = get_total_system_memory()
 
+# RAM thresholds for the buffer-size presets, as NOMINAL targets. Both are checked via
+# meets_memory_target(), which absorbs the gap between a host's nominal size and what it
+# reports (kernel MemTotal reservation plus any integrated-GPU carve-out), so a "4GB" box
+# (reporting ~3.8GB) and an "8GB" box (reporting ~7.4GB) both qualify for their tier.
+BALANCED_MIN_RAM_GB: Final[float] = 4.0
+MAXIMUM_MIN_RAM_GB: Final[float] = 8.0
+
 # Buffer size in seconds for each preset
 BUFFER_SIZE_MAP: Final[dict[str, int]] = {
     BufferSize.MINIMAL: 60,
@@ -45,23 +52,29 @@ def get_available_buffer_sizes() -> list[BufferSize]:
     """
     Return the buffer-size presets allowed for this host's RAM.
 
-    Minimal is always available; Balanced requires >= 4GB and Maximum >= 8GB. When total
-    memory is unknown (0.0, e.g. Windows) all presets are offered (fail open).
+    Minimal is always available; Balanced needs ~4GB and Maximum ~8GB (both within the
+    reporting tolerance). When total memory is unknown (0.0, e.g. Windows) all presets are
+    offered (fail open).
     """
     if TOTAL_SYSTEM_MEMORY_GB == 0.0:
         return [BufferSize.MINIMAL, BufferSize.BALANCED, BufferSize.MAXIMUM]
     sizes = [BufferSize.MINIMAL]
-    if TOTAL_SYSTEM_MEMORY_GB >= 4.0:
+    if meets_memory_target(TOTAL_SYSTEM_MEMORY_GB, BALANCED_MIN_RAM_GB):
         sizes.append(BufferSize.BALANCED)
-    if TOTAL_SYSTEM_MEMORY_GB >= 8.0:
+    if meets_memory_target(TOTAL_SYSTEM_MEMORY_GB, MAXIMUM_MIN_RAM_GB):
         sizes.append(BufferSize.MAXIMUM)
     return sizes
 
 
 def _get_default_buffer_size() -> str:
-    if TOTAL_SYSTEM_MEMORY_GB >= 8.0:
+    # Unknown memory (0.0) picks the conservative Minimal default, unlike the
+    # available-presets list which fails open — meets_memory_target() also fails open,
+    # so the 0.0 case is handled explicitly here before consulting it.
+    if TOTAL_SYSTEM_MEMORY_GB == 0.0:
+        return BufferSize.MINIMAL
+    if meets_memory_target(TOTAL_SYSTEM_MEMORY_GB, MAXIMUM_MIN_RAM_GB):
         return BufferSize.MAXIMUM
-    if TOTAL_SYSTEM_MEMORY_GB >= 4.0:
+    if meets_memory_target(TOTAL_SYSTEM_MEMORY_GB, BALANCED_MIN_RAM_GB):
         return BufferSize.BALANCED
     return BufferSize.MINIMAL
 

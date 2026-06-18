@@ -5,7 +5,7 @@ import enum
 import logging
 import time
 from collections.abc import Callable, Mapping
-from typing import Final, cast
+from typing import TYPE_CHECKING, ClassVar, Final, cast
 
 import pylast
 from music_assistant_models.config_entries import (
@@ -17,8 +17,6 @@ from music_assistant_models.config_entries import (
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
 from music_assistant_models.enums import ConfigEntryType, EventType, MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, SetupFailedError
-from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
-from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
@@ -27,6 +25,10 @@ from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
+
+if TYPE_CHECKING:
+    from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
+    from music_assistant_models.provider import ProviderManifest
 
 # Built-in Last.fm API credentials (not available for Libre.fm)
 _DEFAULT_API_KEY: str = app_var(12)
@@ -172,6 +174,9 @@ class LastFMScrobbleProvider(PluginProvider):
 class LastFMEventHandler(ScrobblerHelper):
     """Handle Last.fm event processing for scrobbling and now-playing updates."""
 
+    # pylast wraps every failure — including network errors — in PyLastError.
+    scrobble_exceptions: ClassVar[tuple[type[Exception], ...]] = (pylast.PyLastError,)
+
     def __init__(
         self, network: pylast._Network, logger: logging.Logger, config: ProviderConfig
     ) -> None:
@@ -242,8 +247,8 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             required=True,
             options=[
-                ConfigValueOption(_NetworkType.LASTFM.value, title="Last.FM"),
-                ConfigValueOption(_NetworkType.LIBREFM.value, title="LibreFM"),
+                ConfigValueOption(_NetworkType.LASTFM.value),
+                ConfigValueOption(_NetworkType.LIBREFM.value),
             ],
             default_value=network_type.value,
             value=network_type.value,
@@ -302,8 +307,7 @@ async def get_config_entries(
                     type=ConfigEntryType.ALERT,
                     required=False,
                     default_value=None,
-                    label=f"Successfully logged in as {username}, "
-                    "don't forget to hit save to complete the setup",
+                    translation_params=[username],
                 ),
             )
 
@@ -312,7 +316,8 @@ async def get_config_entries(
             ConfigEntry(
                 key=CONF_ACTION_AUTH,
                 type=ConfigEntryType.ACTION,
-                label=f"Authorize with {network_type.value}",
+                translation_key="authorize",
+                translation_params=[network_type.value],
                 action=CONF_ACTION_AUTH,
             ),
         )

@@ -63,6 +63,7 @@ from music_assistant.helpers.util import infer_album_type, install_package, pars
 from music_assistant.models.music_provider import MusicProvider
 
 from .helpers import (
+    YTMSearchFilter,
     add_remove_playlist_tracks,
     convert_to_netscape,
     determine_recommendation_icon,
@@ -241,7 +242,7 @@ class YoutubeMusicProvider(MusicProvider):
         :param limit: Number of items to return in the search (per type).
         """
         parsed_results = SearchResults()
-        ytm_filter = None
+        ytm_filter: YTMSearchFilter | None = None
         if len(media_types) == 1:
             # YTM does not support multiple searchtypes, falls back to all if no type given
             if media_types[0] == MediaType.ARTIST:
@@ -746,6 +747,7 @@ class YoutubeMusicProvider(MusicProvider):
         """
         mixed_for_you_folder = RecommendationFolder(
             name="Mixed for you",
+            translation_key="mixed_for_you",
             item_id=f"{self.instance_id}_mixed_for_you",
             provider=self.instance_id,
             icon="mdi:shuffle-variant",

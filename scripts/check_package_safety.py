@@ -183,7 +183,7 @@ def check_package(package_name: str) -> dict[str, Any]:
                             upload_time_str = upload_time_str[:-1] + "+00:00"
                         upload_time = datetime.fromisoformat(upload_time_str)
                         upload_times.append(upload_time)
-                    except (ValueError, AttributeError):
+                    except ValueError, AttributeError:
                         continue
 
     first_upload = min(upload_times) if upload_times else None
