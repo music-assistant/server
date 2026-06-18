@@ -162,7 +162,7 @@ class SqueezelitePlayer(Player):
                 key=f"preset_{index}",
                 type=ConfigEntryType.STRING,
                 options=presets,
-                translation_key="config_entries.preset",
+                translation_key="preset",
                 translation_params=[str(index)],
                 category="presets",
                 required=False,

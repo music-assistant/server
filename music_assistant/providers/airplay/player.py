@@ -445,7 +445,7 @@ class AirPlayPlayer(Player):
                         ConfigEntry(
                             key=CONF_ACTION_FINISH_PAIRING,
                             type=ConfigEntryType.ACTION,
-                            translation_key="config_entries.finish_pairing_pin",
+                            translation_key="finish_pairing_pin",
                             translation_params=[protocol_name],
                             action=CONF_ACTION_FINISH_PAIRING,
                             category="protocol_generic",
@@ -465,7 +465,7 @@ class AirPlayPlayer(Player):
                         ConfigEntry(
                             key=CONF_ACTION_FINISH_PAIRING,
                             type=ConfigEntryType.ACTION,
-                            translation_key="config_entries.finish_pairing_password",
+                            translation_key="finish_pairing_password",
                             translation_params=[protocol_name],
                             action=CONF_ACTION_FINISH_PAIRING,
                             category="protocol_generic",
@@ -488,7 +488,7 @@ class AirPlayPlayer(Player):
                     ConfigEntry(
                         key=CONF_ACTION_START_PAIRING,
                         type=ConfigEntryType.ACTION,
-                        translation_key="config_entries.start_pairing",
+                        translation_key="start_pairing",
                         translation_params=[protocol_name],
                         action=CONF_ACTION_START_PAIRING,
                         category="protocol_generic",
@@ -510,7 +510,7 @@ class AirPlayPlayer(Player):
                 ConfigEntry(
                     key=CONF_ACTION_RESET_PAIRING,
                     type=ConfigEntryType.ACTION,
-                    translation_key="config_entries.reset_pairing",
+                    translation_key="reset_pairing",
                     translation_params=[protocol_name],
                     action=CONF_ACTION_RESET_PAIRING,
                     category="protocol_generic",

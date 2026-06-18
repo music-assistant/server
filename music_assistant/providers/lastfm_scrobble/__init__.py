@@ -316,7 +316,7 @@ async def get_config_entries(
             ConfigEntry(
                 key=CONF_ACTION_AUTH,
                 type=ConfigEntryType.ACTION,
-                translation_key="config_entries.authorize",
+                translation_key="authorize",
                 translation_params=[network_type.value],
                 action=CONF_ACTION_AUTH,
             ),

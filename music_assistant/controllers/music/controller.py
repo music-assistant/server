@@ -167,7 +167,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     key=CONF_RESET_DB,
                     type=ConfigEntryType.LABEL,
                     # distinct key so the result label doesn't collide with the action's label
-                    translation_key="config_entries.reset_db_result",
+                    translation_key="reset_db_result",
                 ),
             )
         return entries

@@ -135,7 +135,7 @@ def _wave_preset_config_entries(values: dict[str, ConfigValueType]) -> list[Conf
         ConfigEntry(
             key="wave_preset_section_label",
             type=ConfigEntryType.LABEL,
-            translation_key="config_entries.wave_preset_section_saved" if has_presets else None,
+            translation_key="wave_preset_section_saved" if has_presets else None,
             translation_params=[str(len(presets))] if has_presets else None,
             advanced=True,
         ),
