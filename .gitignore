@@ -17,6 +17,7 @@ venv/
 .history
 .idea
 .coverage
+.testmondata*
 uv.lock
 /.claude/*
 !/.claude/skills

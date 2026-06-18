@@ -107,8 +107,24 @@ jobs:
         # --index-strategy: allow PyPI packages when also using the PyTorch extra index
         # https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
         run: uv pip install --system --index-strategy unsafe-best-match . .[test] -r requirements_all.txt
+      # testmon only re-runs tests whose covered code changed since the cached baseline.
+      # The baseline is rebuilt on every push to dev/stable; PRs restore it read-only.
+      # The dep hash in the key invalidates the baseline whenever dependencies change.
+      - name: Restore testmon baseline
+        uses: actions/cache/restore@v5
+        with:
+          path: .testmondata
+          key: testmon-${{ runner.os }}-${{ hashFiles('.python-version', 'requirements_all.txt', 'pyproject.toml') }}-${{ github.run_id }}
+          restore-keys: |
+            testmon-${{ runner.os }}-${{ hashFiles('.python-version', 'requirements_all.txt', 'pyproject.toml') }}-
       - name: Pytest
-        run: pytest --durations 10 --cov-report term-missing --cov=music_assistant --cov-report=xml -m "not needs_ffmpeg" tests/
+        run: pytest --durations 10 --testmon -m "not needs_ffmpeg" tests/
+      - name: Save testmon baseline
+        if: github.event_name == 'push'
+        uses: actions/cache/save@v5
+        with:
+          path: .testmondata
+          key: testmon-${{ runner.os }}-${{ hashFiles('.python-version', 'requirements_all.txt', 'pyproject.toml') }}-${{ github.run_id }}
 
   test-ffmpeg:
     needs: changes
