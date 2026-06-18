@@ -24,6 +24,34 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - name: Check out code from GitHub
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      # Skip the test jobs on PRs that only touch docs, translations metadata or
+      # unrelated workflows. Anything under music_assistant/ or tests/ still runs.
+      - name: Detect relevant changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'music_assistant/**'
+              - 'tests/**'
+              - 'pyproject.toml'
+              - 'requirements_all.txt'
+              - 'uv.lock'
+              - '.python-version'
+              - '.github/workflows/test.yml'
+
   lint:
     runs-on: ubuntu-latest
 
@@ -65,6 +93,8 @@ jobs:
         run: SKIP=no-commit-to-branch pre-commit run --all-files
 
   test:
+    needs: changes
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -94,6 +124,8 @@ jobs:
         run: pytest --durations 10 --cov-report term-missing --cov=music_assistant --cov-report=xml -m "not needs_ffmpeg" tests/
 
   test-ffmpeg:
+    needs: changes
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
 
     steps:
