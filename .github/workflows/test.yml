@@ -108,7 +108,7 @@ jobs:
           python-version-file: ".python-version"
           check-latest: true
       - name: Install libchromaprint
-        run: sudo apt-get install -y libchromaprint1
+        run: sudo apt-get update && sudo apt-get install -y libchromaprint1
       - name: Install uv
         run: pip install uv
       - name: Cache uv packages
