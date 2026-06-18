@@ -132,6 +132,11 @@ def score_scalars(
         windows, ordered as SCALAR_PROMPT_PAIRS flattens its (pos, neg) pairs.
     :param calibration: scalar name -> (a, b) Platt coefficients.
     """
+    expected = 2 * len(SCALAR_PROMPT_PAIRS)
+    if mean_similarities.shape != (expected,):
+        raise ValueError(
+            f"mean_similarities must have shape ({expected},), got {mean_similarities.shape}"
+        )
     scores: dict[str, float] = {}
     for idx, scalar_name in enumerate(SCALAR_PROMPT_PAIRS):
         pos_logit = float(mean_similarities[idx * 2])

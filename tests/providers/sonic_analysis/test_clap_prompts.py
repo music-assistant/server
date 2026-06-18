@@ -161,3 +161,9 @@ def test_score_scalars_uses_pos_minus_neg_margin() -> None:
     a, b = CALIBRATION["danceability"]
     expected = 1.0 / (1.0 + math.exp(-(a * 1.0 + b)))
     assert math.isclose(score_scalars(mean)["danceability"], expected, rel_tol=1e-9)
+
+
+def test_score_scalars_rejects_wrong_shape() -> None:
+    """A too-long array would otherwise be silently truncated -> fail fast instead."""
+    with pytest.raises(ValueError, match="must have shape"):
+        score_scalars(np.zeros(2 * len(SCALAR_PROMPT_PAIRS) + 2, dtype=np.float32))
