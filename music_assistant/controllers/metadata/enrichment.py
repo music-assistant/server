@@ -325,9 +325,7 @@ class MetadataEnrichmentMixin:
         """Get/update rich metadata for a playlist."""
         # dynamic playlists (e.g. Pandora stations, Apple Music stations) are
         # provider-driven and endless: scanning "all" tracks for aggregate metadata
-        # doesn't make sense, and for providers with a stateful streaming API
-        # (e.g. Pandora) it can actively interfere with playback by triggering
-        # real, unintended fetches against the provider's API.
+        # doesn't make sense
         if playlist.is_dynamic:
             return
         # collect metadata + create collage images
