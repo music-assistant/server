@@ -19,6 +19,8 @@ from music_assistant.helpers.tags import (
     write_replaygain_track_gain,
 )
 
+pytestmark = pytest.mark.needs_ffmpeg
+
 RESOURCES_DIR = pathlib.Path(__file__).parent.parent.resolve().joinpath("fixtures")
 
 FILE_MP3 = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.mp3"))
