@@ -166,7 +166,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         session = self._session
 
         webdav_items = await webdav_propfind(session, webdav_url, depth=1, auth=self._auth)
-        filesystem_items = self._convert_webdav_items(webdav_items, webdav_url, path)
+        filesystem_items = self._convert_webdav_items(webdav_items, path)
 
         await self.cache.set(
             key=cache_key,
@@ -189,12 +189,10 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
     def _convert_webdav_items(
         self,
         webdav_items: list[WebDAVItem],
-        webdav_url: str,
         scan_path: str,
     ) -> list[FileSystemItem]:
         """Convert WebDAV items to FileSystemItems."""
         base_path = urlparse(self.base_url).path.rstrip("/")
-        current_path = urlparse(webdav_url).path.rstrip("/")
         result: list[FileSystemItem] = []
 
         for item in webdav_items:
@@ -203,13 +201,13 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                 continue
 
             decoded_href = unquote(item.href)
-            href_path = (
-                urlparse(decoded_href).path if decoded_href.startswith("http") else decoded_href
-            )
-
-            # Skip the directory itself
-            if href_path.rstrip("/") == current_path:
-                continue
+            if decoded_href.startswith(("http://", "https://")):
+                # Extract the path by hand: urlparse would treat ; ? # in the path as
+                # params/query/fragment and corrupt names containing those characters.
+                after_scheme = decoded_href.split("://", 1)[1]
+                href_path = after_scheme[after_scheme.find("/") :] if "/" in after_scheme else ""
+            else:
+                href_path = decoded_href
 
             # Calculate relative path
             if href_path.startswith(base_path):
@@ -219,6 +217,13 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                 relative_path = (
                     str(PurePosixPath(scan_path) / decoded_name) if scan_path else decoded_name
                 )
+
+            # Skip the directory being scanned itself (a depth-1 PROPFIND returns it too).
+            # Comparing on the resolved relative path is reliable even when the name holds
+            # characters a URL parser treats specially (e.g. ; ? #), which would otherwise
+            # make the directory list itself and recurse endlessly.
+            if relative_path == scan_path:
+                continue
 
             result.append(
                 FileSystemItem(
@@ -274,7 +279,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
 
         self.sync_running = True
         try:
-            await self._scan_recursive("", cur_filenames, file_checksums)
+            await self._scan_recursive("", cur_filenames, file_checksums, set())
         finally:
             self.sync_running = False
 
@@ -287,8 +292,14 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         path: str,
         cur_filenames: set[str],
         file_checksums: dict[str, str],
+        visited: set[str],
     ) -> None:
         """Recursively scan WebDAV directory."""
+        # Guard against directory cycles (e.g. server-side symlink loops) so a single
+        # bad path can never exhaust the recursion limit and abort the whole sync.
+        if path in visited:
+            return
+        visited.add(path)
         try:
             items = await self._scandir(path)
         except LoginFailed, SetupFailedError, ProviderUnavailableError:
@@ -299,7 +310,9 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
 
         for item in items:
             if item.is_dir:
-                await self._scan_recursive(item.relative_path, cur_filenames, file_checksums)
+                await self._scan_recursive(
+                    item.relative_path, cur_filenames, file_checksums, visited
+                )
             else:
                 prev_checksum = file_checksums.get(item.relative_path)
                 if await self._process_item_async(item, prev_checksum):
