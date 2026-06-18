@@ -193,6 +193,9 @@ class PocketCastsProvider(MusicProvider):
     """Provider for Pocket Casts podcast service."""
 
     _client: PocketCastsClient
+    # episode uuids already mirrored to Pocket Casts Up Next/history this session, keyed as a
+    # set since multi-room playback can have several episodes in progress on one instance
+    _announced_episodes: set[str]
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -200,6 +203,7 @@ class PocketCastsProvider(MusicProvider):
         password = self.config.get_value(CONF_PASSWORD)
         if not email or not password:
             raise LoginFailed("Email and password are required for Pocket Casts")
+        self._announced_episodes = set()
         self._client = PocketCastsClient(self.mass.http_session, self.logger)
         await self._client.login(str(email), str(password))
 
@@ -472,28 +476,12 @@ class PocketCastsProvider(MusicProvider):
         :param item_id: The episode item id (format: podcast_uuid:episode_uuid).
         :param media_type: The media type of the item.
         """
-        podcast_uuid, episode_uuid = item_id.split(":", 1)
+        _, episode_uuid = item_id.split(":", 1)
         episode_data = await self._client.get_episode_details(episode_uuid)
 
         url = episode_data.get("url", "")
         if not url:
             raise MediaNotFoundError(f"No URL found for episode {item_id}")
-
-        # Sync playback start with Pocket Casts: add to Up Next and history
-        await self._client.play_now(
-            episode_uuid=episode_uuid,
-            podcast_uuid=podcast_uuid,
-            title=episode_data.get("title", ""),
-            url=url,
-            published=episode_data.get("published"),
-        )
-        await self._client.add_to_history(
-            episode_uuid=episode_uuid,
-            podcast_uuid=podcast_uuid,
-            title=episode_data.get("title", ""),
-            url=url,
-            published=episode_data.get("published"),
-        )
 
         return StreamDetails(
             item_id=item_id,
@@ -621,12 +609,47 @@ class PocketCastsProvider(MusicProvider):
         duration = media_item.duration or 0
         completed = fully_played and duration > 0 and position >= duration * FULLY_PLAYED_THRESHOLD
         if completed:
+            self._announced_episodes.discard(episode_uuid)
             await self._client.mark_episode_played(podcast_uuid, episode_uuid)
             await self._client.remove_from_up_next(episode_uuid)
             await self._client.archive_episode(podcast_uuid, episode_uuid, archive=True)
         elif position == 0 and not is_playing:
             # the user explicitly marked the episode as unplayed
+            self._announced_episodes.discard(episode_uuid)
             await self._client.mark_episode_unplayed(podcast_uuid, episode_uuid)
             await self._client.archive_episode(podcast_uuid, episode_uuid, archive=False)
         else:
+            # on_played fires every progress tick, so mirror the start to Up Next/history only
+            # once per session - re-announcing each tick would re-bump Up Next and spam the API.
+            # A resume within the same session is intentionally not re-announced.
+            if is_playing and episode_uuid not in self._announced_episodes:
+                self._announced_episodes.add(episode_uuid)
+                await self._announce_playback_start(podcast_uuid, episode_uuid, media_item)
             await self._client.update_episode_progress(podcast_uuid, episode_uuid, position)
+
+    async def _announce_playback_start(
+        self, podcast_uuid: str, episode_uuid: str, episode: PodcastEpisode
+    ) -> None:
+        """
+        Mirror a playback start to Pocket Casts by adding the episode to Up Next and history.
+
+        :param podcast_uuid: The podcast UUID.
+        :param episode_uuid: The episode UUID.
+        :param episode: The episode that started playing.
+        """
+        # source the url from the already-loaded item so no extra API call is needed; filtered
+        # to our own mapping since merged library items can carry other providers' mappings
+        url = next(
+            (
+                mapping.url
+                for mapping in episode.provider_mappings
+                if mapping.provider_instance == self.instance_id and mapping.url
+            ),
+            "",
+        )
+        await self._client.play_now(
+            episode_uuid=episode_uuid, podcast_uuid=podcast_uuid, title=episode.name, url=url
+        )
+        await self._client.add_to_history(
+            episode_uuid=episode_uuid, podcast_uuid=podcast_uuid, title=episode.name, url=url
+        )
