@@ -98,7 +98,12 @@ class ImageProvider:
         "categories": "categories",
         "recommendations": "my_sounds",
         "unmissable_speech": "speech",
+        "podcasts": "speech",
         "unmissable_music": "music",
+        "music": "music",
+        "explore": "categories",
+        "stations": "latest",
+        "news": "news",
     }
 
     @classmethod
