@@ -2337,10 +2337,9 @@ class PlayerQueuesController(CoreController):
                 if not queue.current_item:
                     return  # guard
                 retries = max(120, (queue.current_item.duration or 0) + 10)
-                while retries > 0:
+                for _ in range(retries):
                     if queue.current_item.queue_item_id == item_id_in_buffer:
                         break
-                    retries -= 1
                     await asyncio.sleep(1)
                 if next_item := await self.load_next_queue_item(queue_id, item_id_in_buffer):
                     self.logger.debug(
