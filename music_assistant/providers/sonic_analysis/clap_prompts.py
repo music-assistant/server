@@ -125,7 +125,8 @@ def score_scalars(
     mean_similarities: np.ndarray,
     calibration: dict[str, tuple[float, float]] = CALIBRATION,
 ) -> dict[str, float]:
-    """Map mean per-window CLAP similarity logits to calibrated 0-1 scalars.
+    """
+    Map mean per-window CLAP similarity logits to calibrated 0-1 scalars.
 
     :param mean_similarities: Per-prompt similarity logits averaged across
         windows, ordered as SCALAR_PROMPT_PAIRS flattens its (pos, neg) pairs.
