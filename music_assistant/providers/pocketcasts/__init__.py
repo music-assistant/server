@@ -20,6 +20,8 @@ from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
     ProviderUnavailableError,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
 )
 from music_assistant_models.media_items import (
     AudioFormat,
@@ -324,7 +326,7 @@ class PocketCastsProvider(MusicProvider):
         episode_item.fully_played = completed
         episode_item.resume_position_ms = 0 if completed else played_up_to * 1000
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Get all podcasts from the user's library."""
         for podcast_data in await self._client.get_subscribed_podcasts():
             yield self._convert_podcast(podcast_data)
@@ -366,9 +368,7 @@ class PocketCastsProvider(MusicProvider):
             )
         return self._convert_podcast(podcast_data)
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """
         Get all episodes for a podcast, enriched with playback status.
 
@@ -536,8 +536,6 @@ class PocketCastsProvider(MusicProvider):
         """
         Get full details for a podcast episode.
 
-        The /user/episode endpoint provides the accurate duration and playback status.
-
         :param prov_item_id: The episode item id (format: podcast_uuid:episode_uuid).
         """
         podcast_uuid, episode_uuid = prov_item_id.split(":", 1)
@@ -575,7 +573,7 @@ class PocketCastsProvider(MusicProvider):
 
         try:
             in_progress = await self._client.get_in_progress_episodes()
-        except ProviderUnavailableError as err:
+        except (ProviderUnavailableError, ResourceTemporarilyUnavailable, RetriesExhausted) as err:
             # resume is best-effort; a transient failure should not break playback
             LOGGER.warning("Could not fetch resume position for %s: %s", episode_uuid, err)
             return (False, 0, None)

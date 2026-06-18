@@ -64,7 +64,7 @@ class PocketCastsClient:
             raise LoginFailed("Not logged in to Pocket Casts")
         return {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
 
-    @throttle_with_retries  # type: ignore[type-var]
+    @throttle_with_retries
     async def _request(
         self, method: str, url: str, *, auth: bool = True, **kwargs: Any
     ) -> dict[str, Any]:
