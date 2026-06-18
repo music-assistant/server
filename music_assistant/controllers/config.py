@@ -648,6 +648,13 @@ class ConfigController:
         raw_conf: dict[str, Any]
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             raw_conf = deepcopy(raw_conf)
+            # protocol-prefixed entries are virtual mirrors of the linked protocol player's own
+            # config (the canonical store). Drop any that linger in this player's persisted values
+            # so a stale copy can never shadow the protocol player's current value; the live values
+            # are merged back in from the protocol player(s) below.
+            if stored_values := raw_conf.get("values"):
+                for key in [key for key in stored_values if CONF_PROTOCOL_KEY_SPLITTER in key]:
+                    del stored_values[key]
             if player := self.mass.players.get_player(player_id, False):
                 raw_conf["default_name"] = player.state.name
                 raw_conf["provider"] = player.provider.instance_id
@@ -875,6 +882,12 @@ class ConfigController:
         for key, value in existing_values.items():
             if key not in new_values and key not in config_entry_keys:
                 new_values[key] = value
+        # never persist protocol-prefixed (virtual) entries on this player; the linked protocol
+        # player is the canonical store (handled by _update_output_protocol_config). Storing a copy
+        # here would shadow the protocol player's value once it is reset back to its default.
+        new_values = {
+            key: value for key, value in new_values.items() if CONF_PROTOCOL_KEY_SPLITTER not in key
+        }
         new_raw["values"] = new_values
         self.set(conf_key, new_raw)
         try:
