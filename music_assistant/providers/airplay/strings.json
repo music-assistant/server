@@ -39,6 +39,24 @@
     },
     "pairing_password": {
       "label": "Enter the device password"
+    },
+    "finish_pairing_pin": {
+      "label": "Complete {0} pairing with the PIN"
+    },
+    "finish_pairing_password": {
+      "label": "Complete {0} pairing with the password"
+    },
+    "pairing_instructions": {
+      "label": "This device requires {0} pairing before it can be used. Click the button below to start the pairing process."
+    },
+    "start_pairing": {
+      "label": "Start {0} pairing"
+    },
+    "pairing_status": {
+      "label": "Device is paired ({0}) and ready to use."
+    },
+    "reset_pairing": {
+      "label": "Reset {0} pairing"
     }
   },
   "manifest": {

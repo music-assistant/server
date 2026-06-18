@@ -80,7 +80,8 @@
       "description": "Maximum number of tracks to show in Liked Tracks virtual playlist. Higher values may significantly increase load time and risk triggering Yandex smart-captcha. Lower values load faster. Default: 200."
     },
     "base_url": {
-      "label": "API Base URL"
+      "label": "API Base URL",
+      "description": "API endpoint base URL. Only change if Yandex Music changes their API endpoint. Default: {0}"
     },
     "restrictive_rate_limits": {
       "label": "Restrictive rate limits (datacenter / VPN safe mode)",

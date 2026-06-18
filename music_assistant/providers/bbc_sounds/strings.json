@@ -5,6 +5,15 @@
     },
     "password": {
       "label": "Password"
+    },
+    "intro": {
+      "label": "A BBC Sounds account is optional, but some UK-only content may not work without it"
+    },
+    "show_local": {
+      "label": "Show local radio stations?"
+    },
+    "stream_format": {
+      "label": "Preferred stream format"
     }
   },
   "schedule_programmes": {

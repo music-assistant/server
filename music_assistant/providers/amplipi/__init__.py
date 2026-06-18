@@ -51,11 +51,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_HOST,
             type=ConfigEntryType.STRING,
-            label="Host",
             required=True,
-            description=(
-                "The hostname or IP address of the AmpliPi controller "
-                "(e.g. 'amplipi.local' or '192.168.1.50')."
-            ),
         ),
     )
