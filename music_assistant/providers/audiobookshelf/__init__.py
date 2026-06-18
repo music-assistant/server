@@ -280,7 +280,8 @@ class Audiobookshelf(MusicProvider):
         except AbsLoginError as exc:
             raise LoginFailed(
                 f"Login to abs instance at {base_url} failed.",
-                translation_key="provider.audiobookshelf.errors.login_failed",
+                translation_key="login_failed",
+                translation_owner=self.translation_owner,
                 translation_args=[base_url],
             ) from exc
 

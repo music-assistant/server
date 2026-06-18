@@ -317,7 +317,8 @@ class SonosPlayer(Player):
             )
             raise PlayerCommandFailed(
                 msg,
-                translation_key="provider.sonos.errors.player_synced_cannot_play",
+                translation_key="player_synced_cannot_play",
+                translation_owner=self.translation_owner,
                 translation_args=[self.display_name],
             )
         # for now always reset the active session

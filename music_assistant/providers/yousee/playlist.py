@@ -50,7 +50,8 @@ class YouSeePlaylistManager:
         ):
             raise MediaNotFoundError(
                 f"Could not create playlist {name}",
-                translation_key="provider.yousee.errors.playlist_create_failed",
+                translation_key="playlist_create_failed",
+                translation_owner=self.provider.translation_owner,
                 translation_args=[name],
             )
 

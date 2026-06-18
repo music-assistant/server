@@ -347,7 +347,7 @@ def _resource_shortfall(
     if min_cpu_cores and cpu_cores < min_cpu_cores:
         return (
             f"at least {min_cpu_cores} CPU cores are required ({cpu_cores} detected).",
-            "errors.unsupported_system_cpu_cores",
+            "unsupported_system_cpu_cores",
             [min_cpu_cores, cpu_cores],
         )
     total_memory_gb = get_total_system_memory()
@@ -356,7 +356,7 @@ def _resource_shortfall(
     if min_memory_gb and not meets_memory_target(total_memory_gb, min_memory_gb):
         return (
             f"at least {min_memory_gb:.0f}GB of RAM is required ({total_memory_gb:.1f}GB detected).",
-            "errors.unsupported_system_memory",
+            "unsupported_system_memory",
             [f"{min_memory_gb:.0f}", f"{total_memory_gb:.1f}"],
         )
     return None
@@ -380,7 +380,7 @@ def verify_cpu_supports_ml_inference() -> None:
             "(Intel Haswell / AMD Zen or newer). This CPU does not support AVX2. "
             "If you are running in a virtual machine (e.g. Proxmox), changing the "
             "CPU type to 'host' may expose AVX2 to the guest.",
-            translation_key="errors.unsupported_system_avx2",
+            translation_key="unsupported_system_avx2",
         )
 
 

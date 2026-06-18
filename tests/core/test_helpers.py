@@ -541,7 +541,7 @@ def test_unsupported_system_error_translation() -> None:
         pytest.raises(UnsupportedSystemError) as cpu_err,
     ):
         util.verify_system_meets_requirements(feature_name="Smart Fades", min_cpu_cores=4)
-    assert cpu_err.value.translation_key == "errors.unsupported_system_cpu_cores"
+    assert cpu_err.value.translation_key == "unsupported_system_cpu_cores"
     assert cpu_err.value.translation_args == ["Smart Fades", 4, 2]
 
     with (
@@ -550,7 +550,7 @@ def test_unsupported_system_error_translation() -> None:
         pytest.raises(UnsupportedSystemError) as mem_err,
     ):
         util.verify_system_meets_requirements(feature_name="Smart Fades", min_memory_gb=8.0)
-    assert mem_err.value.translation_key == "errors.unsupported_system_memory"
+    assert mem_err.value.translation_key == "unsupported_system_memory"
     assert mem_err.value.translation_args == ["Smart Fades", "8", "2.0"]
 
     with (
@@ -559,7 +559,7 @@ def test_unsupported_system_error_translation() -> None:
         pytest.raises(UnsupportedSystemError) as avx_err,
     ):
         util.verify_cpu_supports_ml_inference()
-    assert avx_err.value.translation_key == "errors.unsupported_system_avx2"
+    assert avx_err.value.translation_key == "unsupported_system_avx2"
     assert avx_err.value.translation_args == []
 
 

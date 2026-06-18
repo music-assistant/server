@@ -818,6 +818,9 @@
     "insufficient_permissions": "You do not have permission to perform this action.",
     "invalid_token": "The access token is invalid or has expired.",
     "resource_busy": "This resource is currently in use elsewhere.",
-    "rate_limited": "Rate limit reached. Please try again later."
+    "rate_limited": "Rate limit reached. Please try again later.",
+    "host_unresolvable": "Unable to resolve {0}, make sure the address is resolvable.",
+    "connection_timeout": "Connection timed out: {0}.",
+    "connect_failed": "Failed to connect to {0}."
   }
 }

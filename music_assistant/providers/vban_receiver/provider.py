@@ -278,7 +278,8 @@ class VBANReceiverProvider(PluginProvider):
                         raise AudioError(
                             f"VBAN sender {self._sender_host!r} did not send any packets "
                             f"on stream {self._vban_stream_name!r}",
-                            translation_key="provider.vban_receiver.errors.no_packets",
+                            translation_key="no_packets",
+                            translation_owner=self.translation_owner,
                             translation_args=[self._sender_host, self._vban_stream_name],
                         ) from None
                     continue

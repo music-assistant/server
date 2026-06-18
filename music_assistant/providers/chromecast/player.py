@@ -404,7 +404,8 @@ class ChromecastPlayer(Player):
             self.logger.warning("Timed out waiting for app launch on %s", self.display_name)
             raise PlayerUnavailableError(
                 f"Timed out launching app on {self.display_name}",
-                translation_key="provider.chromecast.errors.app_launch_timeout",
+                translation_key="app_launch_timeout",
+                translation_owner=self.translation_owner,
                 translation_args=[self.display_name],
             ) from None
 

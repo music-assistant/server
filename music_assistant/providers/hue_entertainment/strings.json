@@ -36,8 +36,5 @@
   },
   "manifest": {
     "description": "Sync Philips Hue lights to music using Entertainment Mode."
-  },
-  "errors": {
-    "bridge_connect_failed": "Failed to connect to Hue bridge at {0}."
   }
 }

@@ -133,7 +133,8 @@ class OpenSonicProvider(MusicProvider):
             )
             raise LoginFailed(
                 msg,
-                translation_key="provider.opensubsonic.errors.connect_failed",
+                translation_key="connect_failed",
+                translation_owner=self.translation_owner,
                 translation_args=[self.config.get_value(CONF_BASE_URL)],
             ) from e
         self._enable_podcasts = bool(self.config.get_value(CONF_ENABLE_PODCASTS))
@@ -611,7 +612,8 @@ class OpenSonicProvider(MusicProvider):
                 return parse_playlist(self.instance_id, pl)
         raise MediaNotFoundError(
             f"Failed to create playlist with name '{name}'",
-            translation_key="provider.opensubsonic.errors.create_playlist_failed",
+            translation_key="create_playlist_failed",
+            translation_owner=self.translation_owner,
             translation_args=[name],
         )
 
