@@ -2340,6 +2340,9 @@ class PlayerQueuesController(CoreController):
                     return  # guard
                 retries = max(120, (queue.current_item.duration or 0) + 10)
                 while retries > 0:
+                    # current_item can become None while we sleep if the queue drains
+                    if not queue.current_item:
+                        return
                     if queue.current_item.queue_item_id == item_id_in_buffer:
                         break
                     retries -= 1
