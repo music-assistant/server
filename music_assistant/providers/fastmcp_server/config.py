@@ -44,6 +44,7 @@ from .constants import (
     CONF_RES_LIBRARY,
     CONF_RES_PLAYER,
     CONF_RES_PROMPTS,
+    CONF_TRUST_FORWARDED_PROTO,
     DEFAULT_MOUNT_PATH,
 )
 
@@ -138,6 +139,14 @@ def build_config_entries(
             key=CONF_CONNECT_EXTERNAL_URL,
             type=ConfigEntryType.STRING,
             default_value="",
+            category="server",
+            advanced=True,
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_TRUST_FORWARDED_PROTO,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=False,
             category="server",
             advanced=True,
             required=False,
