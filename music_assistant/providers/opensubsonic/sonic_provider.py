@@ -853,7 +853,7 @@ class OpenSonicProvider(MusicProvider):
             item_id="subsonic_starred_albums",
             provider=self.domain,
             name="Starred Items",
-            translation_key="provider.opensubsonic.starred_items",
+            translation_key="starred_items",
         )
         starred = await self.conn.get_starred2()
         if starred.album:

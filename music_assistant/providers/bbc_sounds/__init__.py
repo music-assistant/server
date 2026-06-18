@@ -507,7 +507,7 @@ class BBCSoundsProvider(MusicProvider):
                 item_id="stations",
                 provider=self.domain,
                 name="Schedule and Programmes",
-                translation_key="provider.bbc_sounds.schedule_programmes",
+                translation_key="schedule_programmes",
                 path=f"{self.domain}://stations",
                 image=MediaItemImage(
                     path="https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid/latest.png",
@@ -527,7 +527,7 @@ class BBCSoundsProvider(MusicProvider):
                 item_id="listen_live",
                 provider=self.domain,
                 name="Listen Live",
-                translation_key="provider.bbc_sounds.listen_live",
+                translation_key="listen_live",
                 path=f"{self.domain}://listen_live",
                 image=MediaItemImage(
                     path="https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid/listen_live.png",
@@ -540,7 +540,7 @@ class BBCSoundsProvider(MusicProvider):
                 item_id="stations",
                 provider=self.domain,
                 name="Schedule and Programmes",
-                translation_key="provider.bbc_sounds.schedule_programmes",
+                translation_key="schedule_programmes",
                 path=f"{self.domain}://stations",
                 image=MediaItemImage(
                     path="https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid/latest.png",
@@ -630,14 +630,14 @@ class BBCSoundsProvider(MusicProvider):
                 BrowseFolder(
                     item_id="today",
                     name="Today",
-                    translation_key="provider.bbc_sounds.today",
+                    translation_key="today",
                     provider=self.domain,
                     path="/".join([*path_parts, dt.now().strftime("%Y-%m-%d")]),
                 ),
                 BrowseFolder(
                     item_id="yesterday",
                     name="Yesterday",
-                    translation_key="provider.bbc_sounds.yesterday",
+                    translation_key="yesterday",
                     provider=self.domain,
                     path="/".join(
                         [
