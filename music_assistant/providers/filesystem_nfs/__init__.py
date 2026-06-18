@@ -47,7 +47,7 @@ async def setup(
         msg = f"Unable to resolve {server}, make sure the address is resolvable."
         raise SetupFailedError(
             msg,
-            translation_key="provider.filesystem_nfs.errors.host_unresolvable",
+            translation_key="host_unresolvable",
             translation_args=[server],
         )
     # check if export path is valid

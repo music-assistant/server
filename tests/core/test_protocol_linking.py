@@ -6926,3 +6926,40 @@ class TestDelayedEvalDisabledParentGuard:
             await controller._delayed_protocol_evaluation(protocol_player.player_id)
 
         mock_create_up.assert_called_once()
+
+
+class TestUniversalPlayerCurrentMedia:
+    """Tests for current_media resolution while an output protocol is active."""
+
+    def test_current_media_surfaces_active_output_protocol(self, mock_mass: MagicMock) -> None:
+        """While outputting via a protocol player, surface that player's raw current_media.
+
+        A sync group mirrors its leader's raw current_media to resolve the active queue
+        item. When the leader is a universal player outputting via AirPlay, returning None
+        here strands the group with a frozen current item (regression guard for grouped
+        AirPlay live-metadata never refreshing).
+        """
+        protocol_provider = MockProvider("airplay", mass=mock_mass)
+        protocol_player = MockPlayer(
+            protocol_provider, "ap_1", "AirPlay", player_type=PlayerType.PROTOCOL
+        )
+        media = PlayerMedia(
+            uri="http://x/flow/sess/queue_1/item_1/ap_1.flac", queue_item_id="item_1"
+        )
+        protocol_player._attr_current_media = media
+
+        universal = _create_universal_player(mock_mass, "up_1", "Universal", ["ap_1"])
+        players = {"up_1": universal, "ap_1": protocol_player}
+        mock_mass.players.get_player = MagicMock(side_effect=lambda pid: players.get(pid))
+
+        # without an active output protocol there is nothing to surface
+        assert universal.current_media is None
+
+        universal.set_active_output_protocol("ap_1")
+        assert universal.current_media is media
+
+    def test_current_media_none_for_native_output(self, mock_mass: MagicMock) -> None:
+        """A native output protocol has no separate protocol player to surface."""
+        universal = _create_universal_player(mock_mass, "up_1", "Universal", [])
+        universal.set_active_output_protocol("native")
+        assert universal.current_media is None

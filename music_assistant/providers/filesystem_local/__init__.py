@@ -232,7 +232,8 @@ class LocalFileSystemProvider(MusicProvider):
             msg = f"Music Directory {self.base_path} does not exist"
             raise SetupFailedError(
                 msg,
-                translation_key="provider.filesystem_local.errors.music_directory_not_found",
+                translation_key="music_directory_not_found",
+                translation_owner=self.translation_owner,
                 translation_args=[self.base_path],
             )
         await self.check_write_access()

@@ -711,7 +711,8 @@ class SendspinPlayer(SendspinBasePlayer):
             if isinstance(exc, TimeoutError):
                 raise PlayerCommandFailed(
                     f"Cast app on {self.display_name} did not report ready within 30s",
-                    translation_key="provider.sendspin.errors.cast_app_not_ready",
+                    translation_key="cast_app_not_ready",
+                    translation_owner=self.translation_owner,
                     translation_args=[self.display_name],
                 ) from None
             raise
@@ -826,7 +827,8 @@ class SendspinPlayer(SendspinBasePlayer):
                     stuck = [m.display_name for m, f in pending_cast if not f.done()]
                     raise PlayerCommandFailed(
                         f"Cast app on {', '.join(stuck)} did not report ready within 30s",
-                        translation_key="provider.sendspin.errors.cast_app_members_not_ready",
+                        translation_key="cast_app_members_not_ready",
+                        translation_owner=self.translation_owner,
                         translation_args=[", ".join(stuck)],
                     ) from None
         except BaseException:

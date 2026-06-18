@@ -120,6 +120,7 @@ def _provider_error_from_exc(exc: BaseException) -> ProviderError:
             message=message,
             translation_key=exc.translation_key,
             translation_args=list(exc.translation_args),
+            translation_owner=exc.translation_owner,
         )
     return ProviderError(error_code=999, message=message)
 

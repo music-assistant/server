@@ -390,7 +390,7 @@ class DeezerProvider(MusicProvider):
                 RECOMMENDED_TRACKS_PLAYLIST_ID,
                 "Recommended tracks",
                 image_url=rec_cover,
-                translation_key="common.media.recommendations.recommended_tracks",
+                translation_key="recommended_tracks",
             )
         if prov_playlist_id == TOP_CHARTS_PLAYLIST_ID:
             chart_tracks = await self._get_chart_tracks()
@@ -622,7 +622,7 @@ class DeezerProvider(MusicProvider):
                 RECOMMENDED_TRACKS_PLAYLIST_ID,
                 "Recommended tracks",
                 image_url=recommended_cover,
-                translation_key="common.media.recommendations.recommended_tracks",
+                translation_key="recommended_tracks",
             ),
             # Top Charts - global top tracks
             self._create_virtual_playlist(
@@ -734,7 +734,7 @@ class DeezerProvider(MusicProvider):
                     item_id="radios",
                     provider=self.instance_id,
                     name="Deezer Radios",
-                    translation_key="provider.deezer.radios",
+                    translation_key="radios",
                     items=UniqueList(radio_playlists),
                 )
             )

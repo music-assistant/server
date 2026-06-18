@@ -91,7 +91,7 @@ async def _handle_pair_action(values: dict[str, ConfigValueType]) -> None:
         msg = f"Failed to connect to Hue bridge at {host}: {err}"
         raise LoginFailed(
             msg,
-            translation_key="provider.hue_entertainment.errors.bridge_connect_failed",
+            translation_key="connect_failed",
             translation_args=[host],
         ) from err
     finally:
@@ -150,7 +150,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ACTION_PAIR,
             type=ConfigEntryType.ACTION,
-            label="(Re)Pair with Hue Bridge" if paired else "Pair with Hue Bridge",
+            translation_key="repair_bridge" if paired else None,
             action=CONF_ACTION_PAIR,
             depends_on=CONF_BRIDGE_HOST,
             required=False,

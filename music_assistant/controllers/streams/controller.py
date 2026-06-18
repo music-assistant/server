@@ -263,7 +263,7 @@ class StreamsController(CoreController):
             ConfigEntry(
                 key=CONF_BACKGROUND_SCAN_CONCURRENCY,
                 type=ConfigEntryType.INTEGER,
-                range=(1, 8),
+                range=(1, 16),
                 default_value=DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
                 category="audio_analysis",
             ),

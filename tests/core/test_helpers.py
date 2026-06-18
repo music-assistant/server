@@ -476,6 +476,10 @@ def test_verify_system_meets_requirements_cpu(
         (16.0, 8.0, False),
         (4.0, 6.0, True),
         (3.5, 6.0, True),
+        # the gate applies the reporting tolerance: 3.8GB clears a 4GB minimum (within 8%),
+        # 3.6GB does not (below the 3.68GB floor) -- guards against reverting to strict `<`
+        (3.8, 4.0, False),
+        (3.6, 4.0, True),
         (0.0, 8.0, False),  # 0.0 == unknown memory -> fail open, never block
         (2.0, 0.0, False),  # 0 disables the check
     ],
@@ -483,7 +487,7 @@ def test_verify_system_meets_requirements_cpu(
 def test_verify_system_meets_requirements_memory(
     total_gb: float, min_memory_gb: float, should_raise: bool
 ) -> None:
-    """The RAM gate raises below the minimum but fails open when memory is unknown (0.0)."""
+    """The RAM gate raises below the minimum (within tolerance) but fails open when unknown (0.0)."""
     with (
         patch("music_assistant.helpers.util.os.process_cpu_count", return_value=16),
         patch("music_assistant.helpers.util.get_total_system_memory", return_value=total_gb),
@@ -493,6 +497,24 @@ def test_verify_system_meets_requirements_memory(
                 util.verify_system_meets_requirements(feature_name="X", min_memory_gb=min_memory_gb)
         else:
             util.verify_system_meets_requirements(feature_name="X", min_memory_gb=min_memory_gb)
+
+
+@pytest.mark.parametrize(
+    ("total_gb", "target_gb", "expected"),
+    [
+        (4.0, 4.0, True),
+        (3.8, 4.0, True),  # a "4GB" host reports ~3.8GB -> still meets a 4GB target
+        (3.7, 4.0, True),  # just above the 8% tolerance floor (3.68GB)
+        (3.6, 4.0, False),  # below the tolerance floor
+        (7.7, 8.0, True),  # an "8GB" host reporting ~7.7GB meets an 8GB target
+        (7.3, 8.0, False),  # below the 8GB tolerance floor (7.36GB)
+        (0.0, 4.0, True),  # unknown memory -> fail open
+        (2.0, 0.0, True),  # no requirement -> always met
+    ],
+)
+def test_meets_memory_target(total_gb: float, target_gb: float, expected: bool) -> None:
+    """A nominal RAM target is met within the reporting tolerance; unknown/zero fail open."""
+    assert util.meets_memory_target(total_gb, target_gb) is expected
 
 
 def test_verify_system_meets_requirements_ml_inference() -> None:
@@ -519,7 +541,7 @@ def test_unsupported_system_error_translation() -> None:
         pytest.raises(UnsupportedSystemError) as cpu_err,
     ):
         util.verify_system_meets_requirements(feature_name="Smart Fades", min_cpu_cores=4)
-    assert cpu_err.value.translation_key == "errors.unsupported_system_cpu_cores"
+    assert cpu_err.value.translation_key == "unsupported_system_cpu_cores"
     assert cpu_err.value.translation_args == ["Smart Fades", 4, 2]
 
     with (
@@ -528,7 +550,7 @@ def test_unsupported_system_error_translation() -> None:
         pytest.raises(UnsupportedSystemError) as mem_err,
     ):
         util.verify_system_meets_requirements(feature_name="Smart Fades", min_memory_gb=8.0)
-    assert mem_err.value.translation_key == "errors.unsupported_system_memory"
+    assert mem_err.value.translation_key == "unsupported_system_memory"
     assert mem_err.value.translation_args == ["Smart Fades", "8", "2.0"]
 
     with (
@@ -537,7 +559,7 @@ def test_unsupported_system_error_translation() -> None:
         pytest.raises(UnsupportedSystemError) as avx_err,
     ):
         util.verify_cpu_supports_ml_inference()
-    assert avx_err.value.translation_key == "errors.unsupported_system_avx2"
+    assert avx_err.value.translation_key == "unsupported_system_avx2"
     assert avx_err.value.translation_args == []
 
 

@@ -10,22 +10,21 @@
       "description": "See https://www.dumpmedia.com/deezplus/deezer-arl.html"
     }
   },
-  "radios": {
-    "name": "Deezer Radios"
-  },
   "media": {
     "recommendations": {
       "made_for_you": { "name": "Made for you" },
       "recommended_albums": { "name": "Recommended albums" },
       "recommended_artists": { "name": "Recommended artists" },
       "mood_flows": { "name": "Deezer Mood Flows" },
-      "genre_flows": { "name": "Deezer Genre Flows" }
+      "genre_flows": { "name": "Deezer Genre Flows" },
+      "radios": { "name": "Deezer Radios" }
     },
     "playlist": {
       "flow": { "name": "Flow" },
       "top_charts": { "name": "Top Charts" },
       "radio_station": { "name": "Radio: {0}" },
-      "mood_flow": { "name": "Flow: {0}" }
+      "mood_flow": { "name": "Flow: {0}" },
+      "recommended_tracks": { "name": "Recommended tracks" }
     }
   },
   "manifest": {
