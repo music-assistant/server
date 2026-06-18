@@ -17,9 +17,9 @@
       "description": "Store a long-lived session token (x_token) alongside the music token so this plugin can refresh on its own when the token expires. Disable to keep only the short-lived music token (re-QR required on expiry)."
     },
     "clear_auth": {
-      "label": "Reset authentication",
+      "label": "[%key:common::config_entries::clear_auth::label%]",
       "description": "Clear the current authentication details (music token, session token, and stored login).",
-      "action_label": "Reset authentication"
+      "action_label": "[%key:common::config_entries::clear_auth::action_label%]"
     },
     "token": {
       "label": "Yandex Music Token",
@@ -32,10 +32,10 @@
       "label": "Account login"
     },
     "mass_player_id": {
-      "label": "Connected Music Assistant Player",
+      "label": "[%key:common::config_entries::mass_player_id::label%]",
       "description": "The Music Assistant player connected to this Ynison plugin. When playback is directed to this device in the Yandex Music app, the audio will play on the selected player. Set to 'Auto' to automatically select a currently playing player.",
       "options": {
-        "__auto__": "Auto (prefer playing player)"
+        "__auto__": "[%key:common::config_entries::mass_player_id::options::__auto__%]"
       }
     },
     "allow_player_switch": {

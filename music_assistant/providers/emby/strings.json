@@ -6,11 +6,11 @@
     },
     "username": {
       "label": "[%key:common::config_entries::username::label%]",
-      "description": "The username to authenticate to the remote server."
+      "description": "[%key:common::config_entries::username::description%]"
     },
     "password": {
       "label": "[%key:common::config_entries::password::label%]",
-      "description": "The password to authenticate to the remote server."
+      "description": "[%key:common::config_entries::password::description%]"
     }
   },
   "manifest": {

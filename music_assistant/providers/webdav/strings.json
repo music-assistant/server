@@ -4,9 +4,9 @@
       "label": "Content type",
       "description": "The type of content stored on this WebDAV server",
       "options": {
-        "music": "Music",
-        "audiobooks": "Audiobooks",
-        "podcasts": "Podcasts"
+        "music": "[%key:common::config_entries::content_type::options::music%]",
+        "audiobooks": "[%key:common::config_entries::content_type::options::audiobooks%]",
+        "podcasts": "[%key:common::config_entries::content_type::options::podcasts%]"
       }
     },
     "url": {

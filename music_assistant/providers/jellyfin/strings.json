@@ -10,11 +10,11 @@
     },
     "password": {
       "label": "[%key:common::config_entries::password::label%]",
-      "description": "The password to authenticate to the remote server."
+      "description": "[%key:common::config_entries::password::description%]"
     },
     "verify_ssl": {
-      "label": "Verify SSL",
-      "description": "Whether or not to verify the certificate of SSL/TLS connections."
+      "label": "[%key:common::config_entries::verify_ssl::label%]",
+      "description": "[%key:common::config_entries::verify_ssl::description%]"
     }
   },
   "manifest": {
