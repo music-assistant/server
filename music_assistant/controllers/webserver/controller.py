@@ -743,7 +743,7 @@ class WebserverController(CoreController):
                 "token": token,
                 "user": auth_result.user.to_dict(),
             }
-# If return_url provided, append code parameter and return as redirect_to
+            # If return_url provided, append code parameter and return as redirect_to
             if return_url:
                 # SECURITY FIX (GHSA-j369-4c4w-7qmq): Validate return_url before
                 # appending the JWT token, mirroring the check in _handle_auth_authorize.
