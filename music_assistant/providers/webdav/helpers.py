@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from dataclasses import dataclass
-from urllib.parse import unquote, urljoin
+from urllib.parse import quote, unquote, urljoin
 
 import aiohttp
 from defusedxml import ElementTree
@@ -183,6 +183,16 @@ async def webdav_test_connection(
 
 
 def build_webdav_url(base_url: str, path: str) -> str:
-    """Build a WebDAV URL by joining base URL with path."""
+    """
+    Build a WebDAV URL by joining the base URL with a relative resource path.
+
+    :param base_url: The WebDAV base URL.
+    :param path: A relative resource path, or an absolute URL which is returned as-is.
+    """
+    if path.startswith(("http://", "https://")):
+        return path
     normalized_base = base_url if base_url.endswith("/") else f"{base_url}/"
-    return urljoin(normalized_base, path.removeprefix("/"))
+    # Percent-encode the path so reserved characters (e.g. ; ? # :) survive intact;
+    # left unencoded they would be misread as URL params/query/fragment/scheme.
+    quoted_path = quote(path.removeprefix("/"), safe="/")
+    return urljoin(normalized_base, quoted_path)
