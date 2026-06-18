@@ -44,8 +44,15 @@ BACKGROUND_SCAN_RUN_BUDGET_SECONDS = 4 * 3600
 # Per-chunk dispatch interval bounds. One PCM chunk = one audio-second of decoded data:
 # the floor is the fastest pace allowed; the ceiling is both the slowest pace and the
 # per-chunk processing timeout that evicts unresponsive providers.
-REAL_TIME_PACE_INTERVAL_SECONDS_FLOOR = 0.100
-REAL_TIME_PACE_INTERVAL_SECONDS_CEILING = 1.0
+#
+# Live analysis is paced to ~5x real-time, never faster, on every machine. The buffer fills
+# far ahead of playback (a whole track decodes in seconds), and draining that burst at full
+# speed only spikes CPU — at 5x the analysis still completes well ahead of the crossfade
+# point. The ceiling is generous enough that legitimately slow, serialized per-chunk work on a
+# small box isn't mistaken for a hung provider. A companion half-the-cores concurrency cap
+# (analysis_semaphore) keeps analysis off the rest of the box on every machine.
+REAL_TIME_PACE_INTERVAL_SECONDS_FLOOR = 0.200
+REAL_TIME_PACE_INTERVAL_SECONDS_CEILING = 2.0
 BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR = 0.250
 BACKGROUND_PACE_INTERVAL_SECONDS_CEILING = 4.0
 ANALYSIS_QUEUE_MAXSIZE = 30
@@ -141,6 +148,10 @@ class AudioAnalysisController:
         # Kept alive to persist the process-wide native BLAS thread cap (set in
         # ensure_inference_runtime_configured); never used as a context manager.
         self._blas_limiter: object | None = None
+        # Bounds how many analysis offloads run concurrently to half the cores; created in
+        # ensure_inference_runtime_configured once the core count is known (None until then),
+        # and honored by AudioAnalysisProvider._run_offloaded.
+        self.analysis_semaphore: asyncio.Semaphore | None = None
 
     def setup(self) -> None:
         """Register the nightly background scan task."""
@@ -200,11 +211,17 @@ class AudioAnalysisController:
             # the log spam.
             with contextlib.suppress(Exception):
                 torch.backends.nnpack.set_flags(False)  # type: ignore[no-untyped-call]
+        # Cap concurrent analysis offloads to half the cores so analysis (live or background)
+        # never occupies the whole box and starves playback/the host — slow and steady on any
+        # machine. Applies to every host; honored by AudioAnalysisProvider._run_offloaded.
+        concurrency_cap = max(1, self._cpu_count() // 2)
+        self.analysis_semaphore = asyncio.Semaphore(concurrency_cap)
         self.logger.info(
-            "AudioAnalysis runtime: torch intra=%d interop=%d, blas<=%d, nnpack=%s",
+            "AudioAnalysis runtime: torch intra=%d interop=%d, blas<=%d, analysis concurrency<=%d, nnpack=%s",
             torch.get_num_threads(),
             torch.get_num_interop_threads(),
             budget,
+            concurrency_cap,
             "off" if arm else "on",
         )
         # Only mark done once configuration actually succeeded, so a failure retries.
@@ -1107,12 +1124,16 @@ class AudioAnalysisController:
                 self._workers.pop(session_key, None)
                 break
 
+    def _cpu_count(self) -> int:
+        """Return the CPU core count available to this process (fallback 4 when unknown)."""
+        return os.process_cpu_count() or os.cpu_count() or 4
+
     def _aa_thread_budget(self) -> int:
         """Return the per-op PyTorch intra-op thread budget for inference (~25% of cpu_count)."""
-        return max(1, (os.process_cpu_count() or os.cpu_count() or 4) // 4)
+        return max(1, self._cpu_count() // 4)
 
     def _get_scan_concurrency(self) -> int:
-        """Read background scan concurrency from config, clamped to [1, 8]."""
+        """Read background scan concurrency from config, clamped to [1, 16]."""
         try:
             value = int(
                 self.mass.config.get_raw_core_config_value(
@@ -1124,4 +1145,4 @@ class AudioAnalysisController:
             )
         except Exception:
             value = DEFAULT_BACKGROUND_SCAN_CONCURRENCY
-        return max(1, min(value, 8))
+        return max(1, min(value, 16))

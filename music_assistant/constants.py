@@ -150,10 +150,10 @@ CONF_BACKGROUND_SCAN_CONCURRENCY: Final[str] = "background_scan_concurrency"
 
 
 def _default_background_scan_concurrency() -> int:
+    # Slow and steady by default: at most 2 tracks at once even on big machines. Users who
+    # want faster overnight scans can raise it (up to 16) at the cost of more CPU at night.
     cpu_count = os.process_cpu_count() or os.cpu_count() or 4
-    if cpu_count >= 16:
-        return 4
-    if cpu_count >= 8:
+    if cpu_count >= 4:
         return 2
     return 1
 

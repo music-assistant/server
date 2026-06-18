@@ -29,6 +29,9 @@ def _make_provider(
     p = SonicAnalysisProvider.__new__(SonicAnalysisProvider)
     fake_logger = MagicMock()
     p.logger = fake_logger
+    # _run_offloaded reads mass.streams.audio_analysis.analysis_semaphore; a plain Mock
+    # attribute is not an asyncio.Semaphore, so offloads fall back to a plain worker thread.
+    p.mass = MagicMock()
 
     fake_model = MagicMock()
     sim = similarity_row if similarity_row is not None else [1.0, 2.0, 3.0, 4.0]

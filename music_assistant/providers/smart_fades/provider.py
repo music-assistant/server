@@ -120,7 +120,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
         if not data:
             return
 
-        pcm_mono = await asyncio.to_thread(
+        pcm_mono = await self._run_offloaded(
             decode_pcm_chunk_to_mono, data.input_audio_format, pcm_chunk
         )
         if pcm_mono.size == 0:
@@ -128,7 +128,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         # Per-chunk VQT for key detection (skip short tail chunks)
         if len(pcm_mono) >= data.input_audio_format.sample_rate:
-            await asyncio.to_thread(
+            await self._run_offloaded(
                 self._compute_musical_key_features,
                 pcm_mono,
                 data.input_audio_format.sample_rate,
@@ -174,6 +174,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
             features=AdvancedBeatFeatureExtractor(
                 sample_rate=ANALYSIS_SAMPLE_RATE,
                 device=self._device,
+                offload=self._run_offloaded,
             ),
             resampler=soxr.ResampleStream(
                 in_rate=audio_format.sample_rate,
@@ -215,11 +216,11 @@ class SmartFadesProvider(AudioAnalysisProvider):
             data.musical_key_feature_blocks.clear()
 
         # Run beat and key inference sequentially to keep peak CPU bounded.
-        beats, downbeats = await asyncio.to_thread(self._infer_beat_timings, feats)
+        beats, downbeats = await self._run_offloaded(self._infer_beat_timings, feats)
         if len(beats) < 2:
             self.logger.debug("Not enough beats detected, skipping storage")
             return None
-        key, mode = await asyncio.to_thread(self._infer_musical_key, all_vqt)
+        key, mode = await self._run_offloaded(self._infer_musical_key, all_vqt)
 
         bpm = calculate_overall_bpm(beats)
 
@@ -275,7 +276,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
         data.pcm_samples = 0
 
         if data.resampler is not None:
-            pcm_22k = await asyncio.to_thread(data.resampler.resample_chunk, pcm_raw, last)
+            pcm_22k = await self._run_offloaded(data.resampler.resample_chunk, pcm_raw, last)
         else:
             pcm_22k = pcm_raw
 
@@ -283,7 +284,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         feats, _ = await asyncio.gather(
             data.features.process_pcm(pcm_22k),
-            asyncio.to_thread(self._compute_energy_and_spectral_centroids, pcm_22k, data),
+            self._run_offloaded(self._compute_energy_and_spectral_centroids, pcm_22k, data),
         )
 
         if feats.size:
