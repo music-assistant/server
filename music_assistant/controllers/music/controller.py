@@ -76,7 +76,10 @@ from music_assistant.controllers.music.media.playlists import PlaylistController
 from music_assistant.controllers.music.media.podcasts import PodcastsController
 from music_assistant.controllers.music.media.radio import RadioController
 from music_assistant.controllers.music.media.tracks import TracksController
-from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    ImpersonatedUser,
+    get_current_user,
+)
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.compare import compare_strings, compare_version
 from music_assistant.helpers.database import UNSET, DatabaseConnection
@@ -2488,3 +2491,153 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             for user_id in user_ids:
                 playlog_entry["userid"] = user_id
                 await self.database.execute(upsert_query, playlog_entry)
+
+    @api_command("music/item_by_name")
+    async def get_item_by_name(
+        self,
+        name: str,
+        artist: str | None = None,
+        album: str | None = None,
+        media_type: MediaType | None = None,
+        username: str | None = None,
+    ) -> MediaItemType | ItemMapping | None:
+        """Try to find a media item (such as a playlist) by name."""
+        async with ImpersonatedUser(self.mass, username):
+            return await self._get_item_by_name(name, artist, album, media_type)
+
+    @api_command("music/verify_item_uri")
+    async def verify_item_uri(self, uri: str, username: str | None = None) -> bool:
+        """
+        Verify whether a uri points to a valid, accessible item.
+
+        :param uri: The uri to verify.
+        :param username: Optional user to additionally verify access for. Requires
+            the authenticated caller to also have access to the item.
+        """
+        async with ImpersonatedUser(self.mass, username):
+            return await self._handle_verify_item_uri(uri)
+
+    async def _get_item_by_name(
+        self,
+        name: str,
+        artist: str | None = None,
+        album: str | None = None,
+        media_type: MediaType | None = None,
+    ) -> MediaItemType | ItemMapping | None:
+        """Try to find a media item (such as a playlist) by name."""
+        # Future todo: enhance this method with AI capabilities to allow typos and
+        # natural language.
+        searchname = name.lower()
+        allowed_media_types = [
+            MediaType.PLAYLIST,
+            MediaType.RADIO,
+            MediaType.TRACK,
+            MediaType.ALBUM,
+            MediaType.ARTIST,
+            MediaType.AUDIOBOOK,
+            MediaType.PODCAST,
+        ]
+        if media_type in (None, MediaType.UNKNOWN):
+            media_types = allowed_media_types
+        elif media_type not in allowed_media_types:
+            raise InvalidDataError(
+                f"{media_type} is not a supported media_type. "
+                f"Supported media_types are {allowed_media_types}"
+            )
+        else:
+            media_types = [media_type]
+        library_functions = [
+            self.get_controller(media_type).library_items for media_type in media_types
+        ]
+        # prefer (exact) lookup in the library by name
+        for func in library_functions:
+            result = await func(search=searchname)
+            for item in result:
+                # handle optional artist filter
+                if (
+                    artist
+                    and (artists := getattr(item, "artists", None))
+                    and not any(x for x in artists if x.name.lower() == artist.lower())
+                ):
+                    continue
+                # handle optional album filter
+                if (
+                    album
+                    and (item_album := getattr(item, "album", None))
+                    and item_album.name.lower() != album.lower()
+                ):
+                    continue
+                if searchname == item.name.lower():
+                    return item
+        # nothing found in the library, fallback to global search
+        search_name = name
+        if album and artist:
+            search_name = f"{artist} - {album} - {name}"
+        elif album:
+            search_name = f"{album} - {name}"
+        elif artist:
+            search_name = f"{artist} - {name}"
+        search_results = await self.search(
+            search_query=search_name,
+            media_types=[media_type]
+            if media_type and media_type != MediaType.UNKNOWN
+            else MediaType.ALL,
+            limit=8,
+        )
+        for results in (
+            search_results.tracks,
+            search_results.albums,
+            search_results.playlists,
+            search_results.artists,
+            search_results.radio,
+            search_results.audiobooks,
+            search_results.podcasts,
+        ):
+            for _item in results:
+                # simply return the first item because search is already sorted by best match
+                return _item
+        return None
+
+    async def _handle_verify_item_uri(self, uri: str) -> bool:
+        user = get_current_user()
+
+        try:
+            media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
+        except InvalidProviderURI, InvalidProviderID:
+            return False
+
+        # fast return for a provider uri which is not part of a user with a provider filter
+        if (
+            provider_instance_id_or_domain != "library"
+            and user
+            and user.provider_filter
+            and provider_instance_id_or_domain not in user.provider_filter
+        ):
+            return False
+
+        # verify that item itself exists
+        try:
+            item = await self.get_item(
+                media_type=media_type,
+                item_id=item_id,
+                provider_instance_id_or_domain=provider_instance_id_or_domain,
+                allow_update_metadata=False,  # no need trigger more methods
+            )
+        except MediaNotFoundError:
+            return False
+
+        # non library item handling for users with no filter, or no user at all
+        if (
+            provider_instance_id_or_domain != "library"
+            or not user
+            or (user and not user.provider_filter)
+            or isinstance(item, BrowseFolder)
+        ):
+            return True
+
+        # library item handling for users with provider filter
+        for provider_mapping in item.provider_mappings:
+            if provider_mapping.provider_instance in user.provider_filter:
+                return True
+
+        return False
