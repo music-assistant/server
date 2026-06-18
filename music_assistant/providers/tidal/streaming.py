@@ -70,8 +70,8 @@ class TidalStreamingManager:
         manifest_type = stream_data.get("manifestMimeType", "")
         if "dash+xml" in manifest_type and "manifest" in stream_data:
             # Tidal returns a DASH manifest (MPD) as a base64 data: URI.
-            # ffmpeg re-fetches the MPD during playback to check for
-            # updated segment windows, but a data: URI can only be read
+            # ffmpeg re-fetches the MPD during playback to read the
+            # segment timeline, but a data: URI can only be read
             # once. Decode the manifest and serve it from a real HTTP
             # endpoint on the stream server so re-fetches succeed.
             manifest_bytes = base64.b64decode(stream_data["manifest"])
