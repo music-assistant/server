@@ -201,9 +201,13 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                 continue
 
             decoded_href = unquote(item.href)
-            href_path = (
-                urlparse(decoded_href).path if decoded_href.startswith("http") else decoded_href
-            )
+            if decoded_href.startswith(("http://", "https://")):
+                # Extract the path by hand: urlparse would treat ; ? # in the path as
+                # params/query/fragment and corrupt names containing those characters.
+                after_scheme = decoded_href.split("://", 1)[1]
+                href_path = after_scheme[after_scheme.find("/") :] if "/" in after_scheme else ""
+            else:
+                href_path = decoded_href
 
             # Calculate relative path
             if href_path.startswith(base_path):

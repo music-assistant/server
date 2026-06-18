@@ -43,6 +43,33 @@ def test_convert_skips_scanned_directory_with_special_chars() -> None:
     assert scan_path not in relative_paths
 
 
+def test_convert_handles_absolute_href_with_special_chars() -> None:
+    """
+    Some servers return absolute hrefs; the path must be extracted without a URL parser.
+
+    ``urlparse`` would treat the ``;`` as params and truncate the name, mis-scanning the
+    folder; the resolved relative path must keep reserved characters intact.
+    """
+    provider = _make_provider()
+    scan_path = "Live; Unplugged"
+    webdav_items = [
+        WebDAVItem(
+            href="https://host.example/dav/Live; Unplugged",
+            name="Live; Unplugged",
+            is_dir=True,
+        ),
+        WebDAVItem(
+            href="https://host.example/dav/Live; Unplugged/01 track.mp3",
+            name="01 track.mp3",
+            is_dir=False,
+        ),
+    ]
+
+    result = provider._convert_webdav_items(webdav_items, scan_path)
+
+    assert [item.relative_path for item in result] == ["Live; Unplugged/01 track.mp3"]
+
+
 def test_convert_skips_base_directory_at_root() -> None:
     """The base directory itself must be skipped when scanning the root."""
     provider = _make_provider()
