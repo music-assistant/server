@@ -8,10 +8,11 @@ as literals in code means the text never reaches Lokalise and stays English-only
 pre-commit/CI guard that scans the source tree and prints every offending call so the text can be
 moved into a strings.json.
 
-ConfigEntry text may also be an f-string: a dynamic label must use a strings.json template (with
-``{0}``/``{1}`` placeholders) plus ``translation_params``. ConfigValueOption has no such mechanism,
-so only literal option titles are flagged; genuinely dynamic, data-driven titles (player names,
-sample rates, ...) legitimately pass a value directly.
+ConfigEntry text may also be composed in code (an f-string, concatenation, ``.format()``): a
+dynamic label must instead use a strings.json template (with ``{0}``/``{1}`` placeholders) plus
+``translation_params``. ConfigValueOption has no such mechanism, so a composed title is treated as
+a legitimate data-driven value (player names, sample rates, ...) and left alone — only static
+titles (a string literal, or a literal picked by a conditional) are flagged.
 
 Template/test providers (``_*`` and ``test``) are skipped, matching ``build_translations.py``.
 
@@ -113,29 +114,32 @@ def _is_hardcoded_text(node: ast.AST, flag_fstrings: bool) -> bool:
     """
     Return True when the value is, or embeds, user-facing text written in code.
 
-    Covers a plain string literal, an f-string (when ``flag_fstrings``), and those wrapped in a
-    conditional expression, string concatenation / ``%`` formatting, or a ``.format()``/``.join()``
-    call — all of which keep the text out of strings.json. Text routed only through a variable is
-    not detected (that needs data-flow analysis).
+    A plain string literal always counts, as does a literal selected by a conditional expression
+    (``"A" if x else "B"``). Dynamically *composed* text — an f-string, string concatenation /
+    ``%`` formatting, or a ``.format()``/``.join()`` call — counts only when ``flag_fstrings`` is
+    set: ConfigEntry can move such text to a strings.json template with ``translation_params``,
+    whereas a ConfigValueOption has no params and a composed title is a legitimate data-driven
+    value. Text routed only through a variable is not detected (that needs data-flow analysis).
     """
     if isinstance(node, ast.Constant):
         return isinstance(node.value, str)
-    if isinstance(node, ast.JoinedStr):
-        return flag_fstrings
     if isinstance(node, ast.IfExp):
         return _is_hardcoded_text(node.body, flag_fstrings) or _is_hardcoded_text(
             node.orelse, flag_fstrings
         )
+    if isinstance(node, ast.JoinedStr):
+        return flag_fstrings
     if isinstance(node, ast.BinOp):
-        return _is_hardcoded_text(node.left, flag_fstrings) or _is_hardcoded_text(
-            node.right, flag_fstrings
+        return flag_fstrings and (
+            _is_hardcoded_text(node.left, flag_fstrings)
+            or _is_hardcoded_text(node.right, flag_fstrings)
         )
     if (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr in ("format", "join")
     ):
-        return _is_hardcoded_text(node.func.value, flag_fstrings)
+        return flag_fstrings and _is_hardcoded_text(node.func.value, flag_fstrings)
     return False
 
 
