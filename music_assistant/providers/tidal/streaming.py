@@ -21,13 +21,13 @@ if TYPE_CHECKING:
 
     from .provider import TidalProvider
 
-# Seconds of inactivity after which a DASH manifest route is cleaned up.
-# The cleanup timer resets each time ffmpeg fetches the manifest, so this
-# is only an idle timeout applied AFTER active playback (or seeks) stop.
-# Set to track duration + 300s so that seeks and queue transitions always
-# land on a live route, even when the old ffmpeg process has been dead for
+# Seconds of idle buffer after which a DASH manifest route is cleaned up.
+# Each time ffmpeg fetches the manifest, the cleanup timer resets — so
+# this is only an idle timeout applied AFTER active playback (or seeks)
+# stops. Set to 300s so that seeks and queue transitions always land on
+# a live route, even when the old ffmpeg process has been dead for
 # minutes before the new one starts fetching.
-_MINIMAL_DASH_ROUTE_TTL: int = 300
+_DASH_ROUTE_IDLE_BUFFER: int = 300
 
 
 class TidalStreamingManager:
@@ -69,21 +69,22 @@ class TidalStreamingManager:
         # 4. Parse stream URL
         manifest_type = stream_data.get("manifestMimeType", "")
         if "dash+xml" in manifest_type and "manifest" in stream_data:
-            # Tidal returns a dynamic DASH manifest (MPD) that ffmpeg needs
-            # to re-fetch during playback to get the next segment window.
-            # A data: URI can't be re-fetched, so we serve the decoded
-            # manifest from a real HTTP endpoint on the stream server.
+            # Tidal returns a DASH manifest (MPD) as a base64 data: URI.
+            # ffmpeg re-fetches the MPD during playback to check for
+            # updated segment windows, but a data: URI can only be read
+            # once. Decode the manifest and serve it from a real HTTP
+            # endpoint on the stream server so re-fetches succeed.
             manifest_bytes = base64.b64decode(stream_data["manifest"])
             manifest_hash = hashlib.md5(manifest_bytes, usedforsecurity=False).hexdigest()
             route_path = f"/tidal-dash/{manifest_hash}"
             cleanup_id = f"tidal-dash-cleanup-{manifest_hash}"
 
             # Use track duration + buffer so the route lives through seeks.
-            # ffmpeg's periodic manifest fetches extend the deadline further
-            # via _serve_manifest, but seek kills the old ffmpeg — the new
-            # one may not fetch for many seconds.
-            cleanup_ttl: float = _MINIMAL_DASH_ROUTE_TTL + (
-                track.duration or _MINIMAL_DASH_ROUTE_TTL
+            # ffmpeg's manifest re-fetches extend the deadline further via
+            # _serve_manifest, but seek kills the old ffmpeg — the new one
+            # may not fetch for many seconds so the idle buffer covers that gap.
+            cleanup_ttl: float = _DASH_ROUTE_IDLE_BUFFER + (
+                track.duration or _DASH_ROUTE_IDLE_BUFFER
             )
 
             def _schedule_cleanup() -> None:
