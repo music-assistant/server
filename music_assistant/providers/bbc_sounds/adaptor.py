@@ -48,8 +48,10 @@ from sounds.models import (
 import music_assistant.helpers.datetime as dt
 from music_assistant.helpers.datetime import LOCAL_TIMEZONE
 
+from .constants import _Constants
+
 if TYPE_CHECKING:
-    from music_assistant.providers.bbc_sounds import BBCSoundsProvider
+    from . import BBCSoundsProvider
 
 
 def _date_convertor(
@@ -236,8 +238,6 @@ class StationConverter(BaseConverter):
 
     async def get_stream_details(self, source_obj: Station | LiveStation) -> StreamDetails | None:
         """Convert the source object to a stream."""
-        from music_assistant.providers.bbc_sounds import FEATURES, _Constants  # noqa: PLC0415
-
         # TODO: can't seek this stream
         station = await self.convert(source_obj)
         if not station or not source_obj.stream:
@@ -247,15 +247,12 @@ class StationConverter(BaseConverter):
         programme_name = f"{show_time} • {show_title}"
         stream_details = None
         if station and source_obj.stream:
-            if FEATURES["now_playing"]:
-                stream_metadata = StreamMetadata(
-                    title=programme_name,
-                )
+            stream_metadata = StreamMetadata(
+                title=programme_name,
+            )
 
-                if station.image is not None:
-                    stream_metadata.image_url = station.image.path
-            else:
-                stream_metadata = None
+            if station.image is not None:
+                stream_metadata.image_url = station.image.path
 
             stream_details = StreamDetails(
                 stream_metadata=stream_metadata,
@@ -399,8 +396,6 @@ class PodcastConverter(BaseConverter):
 
     async def get_stream_details(self, source_obj: ConvertableTypes) -> StreamDetails | None:
         """Convert the source object to a stream."""
-        from music_assistant.providers.bbc_sounds import _Constants  # noqa: PLC0415
-
         if isinstance(source_obj, (Podcast, RadioSeries)):
             return None
         stream_details = None
@@ -442,7 +437,8 @@ class PodcastConverter(BaseConverter):
                 title = episode.metadata.description
             elif source_obj.titles:
                 title = source_obj.titles["primary"]
-            else:
+
+            if not title:
                 title = ""
 
             metadata = StreamMetadata(title=title, uri=source_obj.stream)
@@ -504,7 +500,9 @@ class PodcastConverter(BaseConverter):
         # Handle parent podcast
         podcast = None
         if hasattr(episode, "container") and episode.container:
-            podcast = await PodcastConverter(self.context).convert(episode.container)
+            podcast = await PodcastConverter(self.context).convert(
+                cast("Podcast", episode.container)
+            )
 
         if not podcast or not isinstance(podcast, MAPodcast):
             raise ConversionError(f"No podcast for episode {episode}")
@@ -529,8 +527,6 @@ class PodcastConverter(BaseConverter):
         )
 
     async def _convert_radio_show(self, show: RadioShow) -> MAPodcastEpisode | Track:
-        from music_assistant.providers.bbc_sounds import _Constants  # noqa: PLC0415
-
         duration = self._get_attr(show, "duration.value")
         progress_ms = self._get_attr(show, "progress.value")
         resume_position = (progress_ms * 1000) if progress_ms else None
@@ -565,7 +561,7 @@ class PodcastConverter(BaseConverter):
         # Handle as episode
         podcast = None
         if hasattr(show, "container") and show.container:
-            podcast = await PodcastConverter(self.context).convert(show.container)
+            podcast = await PodcastConverter(self.context).convert(cast("Podcast", show.container))
 
         if not podcast or not isinstance(podcast, MAPodcast):
             raise ConversionError(f"No podcast for episode for {show}")
@@ -594,7 +590,9 @@ class PodcastConverter(BaseConverter):
         if self.context.force_type is MAPodcastEpisode:
             podcast = None
             if hasattr(clip, "container") and clip.container:
-                podcast = await PodcastConverter(self.context).convert(clip.container)
+                podcast = await PodcastConverter(self.context).convert(
+                    cast("Podcast", clip.container)
+                )
 
             if not podcast or not isinstance(podcast, MAPodcast):
                 raise ConversionError(f"No podcast for episode for {clip}")

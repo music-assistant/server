@@ -2,9 +2,6 @@
 BBC Sounds music provider support for MusicAssistant.
 
 TODO implement seeking of live stream
-TODO watch for settings change
-TODO add podcast menu to non-UK menu
-FIXME skipping in non-live radio shows restarts the stream but keeps the seek time
 """
 
 from __future__ import annotations
