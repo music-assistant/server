@@ -424,10 +424,12 @@ class PlexProvider(MusicProvider):
                     if self.config.get_value(CONF_LOCAL_SERVER_SSL)
                     else False
                 )
-                # Add Music Assistant client identification headers
+                # Add Music Assistant client identification headers. The client identifier
+                # is announced globally via configure_plex_identity() (plexapi rebuilds it
+                # from BASE_HEADERS per request, overriding any session-level value), so we
+                # only set the per-connection product/platform/version here.
                 session.headers.update(
                     {
-                        "X-Plex-Client-Identifier": self.instance_id,
                         "X-Plex-Product": PLEX_PRODUCT,
                         "X-Plex-Platform": PLEX_PRODUCT,
                         "X-Plex-Version": self.mass.version,
