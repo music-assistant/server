@@ -46,6 +46,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import AudioFormat, Track
 from music_assistant_models.player_queue import PlayLogEntry
 from music_assistant_models.streamdetails import StreamMetadata
+from yarl import URL
 
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
@@ -173,6 +174,17 @@ def _pcm_formats_match(a: AudioFormat, b: AudioFormat) -> bool:
         and a.bit_depth == b.bit_depth
         and a.channels == b.channels
     )
+
+
+def _encoded_request_url(url: str) -> str | URL:
+    """
+    Return a URL safe to pass to aiohttp without altering existing percent-encoding.
+
+    :param url: The raw stream URL.
+    """
+    # already-encoded URLs (e.g. %3F in a query value) must reach the server unchanged or
+    # auth-bearing stream URLs fail with a 401; leave plain URLs for yarl to normalise
+    return URL(url, encoded=True) if "%" in url else url
 
 
 class StreamsAudio:
@@ -880,7 +892,7 @@ class StreamsAudio:
         # fetch master playlist and select (best) child playlist
         # https://datatracker.ietf.org/doc/html/draft-pantos-http-live-streaming-19#section-10
         async with mass.http_session_no_ssl.get(
-            url, allow_redirects=True, headers=HTTP_HEADERS, timeout=timeout
+            _encoded_request_url(url), allow_redirects=True, headers=HTTP_HEADERS, timeout=timeout
         ) as resp:
             resp.raise_for_status()
             raw_data = await resp.read()
@@ -931,7 +943,9 @@ class StreamsAudio:
         # try to get filesize with a head request
         seek_supported = streamdetails.can_seek
         if seek_position or not streamdetails.size:
-            async with http_session.head(url, allow_redirects=True, headers=HTTP_HEADERS) as resp:
+            async with http_session.head(
+                _encoded_request_url(url), allow_redirects=True, headers=HTTP_HEADERS
+            ) as resp:
                 resp.raise_for_status()
                 if size := resp.headers.get("Content-Length"):
                     streamdetails.size = int(size)
@@ -962,7 +976,7 @@ class StreamsAudio:
         # start the streaming from http
         bytes_received = 0
         async with http_session.get(
-            url, allow_redirects=True, headers=headers, timeout=timeout
+            _encoded_request_url(url), allow_redirects=True, headers=headers, timeout=timeout
         ) as resp:
             is_partial = resp.status == 206
             if seek_position and not is_partial:
@@ -2880,8 +2894,9 @@ class StreamsAudio:
         :param url: The radio stream URL to connect to.
         :param kwargs: Additional keyword arguments passed to aiohttp get().
         """
+        request_url = _encoded_request_url(url)
         try:
-            async with self.mass.http_session_no_ssl.get(url, **kwargs) as resp:
+            async with self.mass.http_session_no_ssl.get(request_url, **kwargs) as resp:
                 yield resp
         except ClientConnectorSSLError:
             self.logger.info(
@@ -2891,7 +2906,7 @@ class StreamsAudio:
                 ssl_util.SSLCipherList.INSECURE
             )
             async with self.mass.http_session_no_ssl.get(
-                url, ssl=insecure_ssl_context, **kwargs
+                request_url, ssl=insecure_ssl_context, **kwargs
             ) as resp:
                 yield resp
 
@@ -2931,7 +2946,7 @@ class StreamsAudio:
             timeout = ClientTimeout(total=0, connect=10, sock_read=30)
             try:
                 async with mass.http_session_no_ssl.get(
-                    media_playlist_url, timeout=timeout
+                    _encoded_request_url(media_playlist_url), timeout=timeout
                 ) as resp:
                     resp.raise_for_status()
                     playlist_content = await resp.text()
