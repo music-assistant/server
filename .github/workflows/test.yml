@@ -64,7 +64,7 @@ jobs:
       - name: Lint/test with pre-commit
         run: SKIP=no-commit-to-branch pre-commit run --all-files
 
-  test-fast:
+  test:
     runs-on: ubuntu-latest
 
     steps:
