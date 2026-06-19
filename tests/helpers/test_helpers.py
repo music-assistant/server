@@ -11,9 +11,11 @@ from music_assistant_models.errors import (
     SetupFailedError,
     UnsupportedSystemError,
 )
+from yarl import URL
 from zeroconf import InterfaceChoice, IPVersion
 
 from music_assistant.helpers import uri, util
+from music_assistant.helpers.aiohttp_client import encoded_request_url
 
 
 def test_version_extract() -> None:
@@ -704,3 +706,23 @@ def test_get_total_system_memory(
         patch("music_assistant.helpers.util.sys.platform", platform),
     ):
         assert util.get_total_system_memory() == expected
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        # plain URLs are left as strings for yarl to normalise
+        ("http://host/path", "http://host/path"),
+        ("http://host/path?a=1&b=2", "http://host/path?a=1&b=2"),
+        # already-encoded URLs are wrapped so yarl keeps the escapes verbatim
+        ("http://host/stream?token=ab%2Fcd", URL("http://host/stream?token=ab%2Fcd", encoded=True)),
+        ("http://host/with%20space", URL("http://host/with%20space", encoded=True)),
+    ],
+)
+def test_encoded_request_url(url: str, expected: str | URL) -> None:
+    """A pre-encoded URL is preserved as-is; a plain URL is left untouched."""
+    result = encoded_request_url(url)
+    assert result == expected
+    assert type(result) is type(expected)
+    # the percent-escapes must survive intact for auth-bearing stream URLs
+    assert str(result) == url

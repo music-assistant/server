@@ -247,14 +247,14 @@ async def get_config_entries(
             key=CONF_PARTY_KARAOKE_MODE,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
-            category="Karaoke",
+            category="karaoke",
         ),
         ConfigEntry(
             key=CONF_PARTY_HIGHLIGHT_AHEAD,
             type=ConfigEntryType.BOOLEAN,
             default_value=True,
             depends_on=CONF_PARTY_KARAOKE_MODE,
-            category="Karaoke",
+            category="karaoke",
             advanced=True,
         ),
         ConfigEntry(
@@ -270,7 +270,7 @@ async def get_config_entries(
             default_value=True,
             depends_on=CONF_ENABLE_GUEST_ACCESS,
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         # Add to Queue feature
         ConfigEntry(
@@ -279,7 +279,7 @@ async def get_config_entries(
             default_value=True,
             depends_on=CONF_ENABLE_GUEST_ACCESS,
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         ConfigEntry(
             key=CONF_PREVENT_DUPLICATE_TRACKS,
@@ -287,7 +287,7 @@ async def get_config_entries(
             default_value=True,
             depends_on=CONF_ENABLE_ADD_QUEUE,
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         ConfigEntry(
             key=CONF_PARTY_ADD_QUEUE_LIMIT,
@@ -296,7 +296,7 @@ async def get_config_entries(
             depends_on=CONF_ENABLE_ADD_QUEUE,
             range=(5, 50),
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         ConfigEntry(
             key=CONF_PARTY_ADD_QUEUE_REFILL_MINUTES,
@@ -305,7 +305,7 @@ async def get_config_entries(
             depends_on=CONF_ENABLE_ADD_QUEUE,
             range=(1, 30),
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         # Boost feature (priority queue jumping)
         ConfigEntry(
@@ -314,7 +314,7 @@ async def get_config_entries(
             default_value=True,
             depends_on=CONF_ENABLE_GUEST_ACCESS,
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         ConfigEntry(
             key=CONF_PARTY_BOOST_LIMIT,
@@ -323,7 +323,7 @@ async def get_config_entries(
             depends_on=CONF_ENABLE_BOOST,
             range=(1, 10),
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         ConfigEntry(
             key=CONF_PARTY_BOOST_REFILL_MINUTES,
@@ -332,7 +332,7 @@ async def get_config_entries(
             depends_on=CONF_ENABLE_BOOST,
             range=(5, 120),
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         # Skip Song feature
         ConfigEntry(
@@ -341,7 +341,7 @@ async def get_config_entries(
             default_value=False,
             depends_on=CONF_ENABLE_GUEST_ACCESS,
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         ConfigEntry(
             key=CONF_PARTY_SKIP_SONG_LIMIT,
@@ -350,7 +350,7 @@ async def get_config_entries(
             depends_on=CONF_ENABLE_SKIP_SONG,
             range=(1, 5),
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         ConfigEntry(
             key=CONF_PARTY_SKIP_SONG_REFILL_MINUTES,
@@ -359,7 +359,7 @@ async def get_config_entries(
             depends_on=CONF_ENABLE_SKIP_SONG,
             range=(15, 180),
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         # Badge color configuration
         ConfigEntry(

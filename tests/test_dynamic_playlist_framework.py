@@ -187,7 +187,8 @@ async def test_sync_does_not_overwrite_editable_playlist_on_name_change() -> Non
 
 
 async def test_sync_does_not_overwrite_noneditable_static_playlist_on_name_change() -> None:
-    """Non-editable, non-dynamic playlists (e.g. a provider's "Favorites") are spared.
+    """
+    Non-editable, non-dynamic playlists (e.g. a provider's "Favorites") are spared.
 
     Only non-editable *dynamic* playlists are treated as provider-owned; a static
     non-editable playlist keeps its locally-enriched metadata/images.
