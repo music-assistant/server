@@ -179,9 +179,6 @@ line-ending = "lf"
 [tool.pytest.ini_options]
 addopts = "--cov music_assistant"
 asyncio_mode = "auto"
-markers = [
-    "needs_ffmpeg: mark test as requiring a working ffmpeg installation",
-]
 filterwarnings = [
   # Suppress Python 3.14 AsyncMock internal warnings about unawaited coroutines
   "ignore:coroutine.*was never awaited:RuntimeWarning",
