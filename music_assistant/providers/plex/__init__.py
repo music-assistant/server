@@ -7,6 +7,7 @@ import logging
 import warnings
 from asyncio import Task, TaskGroup
 from collections.abc import Awaitable
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import plexapi.exceptions
@@ -92,9 +93,12 @@ from music_assistant.providers.plex.constants import (
 )
 from music_assistant.providers.plex.helpers import (
     discover_local_servers,
+    get_explicit,
     get_favorite_from_rating,
     get_libraries,
+    get_musicbrainz_id,
     get_thumbnail_images,
+    parse_plex_lyrics_payload,
 )
 
 if TYPE_CHECKING:
@@ -641,6 +645,19 @@ class PlexProvider(MusicProvider):
             album.metadata.description = plex_album.summary
         if plex_album.genres:
             album.metadata.genres = {genre.tag for genre in plex_album.genres if genre.tag}
+        if plex_album.moods:
+            album.metadata.mood = next((mood.tag for mood in plex_album.moods if mood.tag), None)
+        if plex_album.styles:
+            album.metadata.style = next(
+                (style.tag for style in plex_album.styles if style.tag), None
+            )
+        if plex_album.originallyAvailableAt:
+            album.metadata.release_date = plex_album.originallyAvailableAt
+        if (explicit := get_explicit(plex_album)) is not None:
+            album.metadata.explicit = explicit
+        if mbid := get_musicbrainz_id(plex_album):
+            with suppress(InvalidDataError):
+                album.mbid = mbid
 
         album.artists.append(
             self._get_item_mapping(
@@ -675,6 +692,15 @@ class PlexProvider(MusicProvider):
             artist.metadata.images = images
         if plex_artist.genres:
             artist.metadata.genres = {genre.tag for genre in plex_artist.genres if genre.tag}
+        if plex_artist.moods:
+            artist.metadata.mood = next((mood.tag for mood in plex_artist.moods if mood.tag), None)
+        if plex_artist.styles:
+            artist.metadata.style = next(
+                (style.tag for style in plex_artist.styles if style.tag), None
+            )
+        if mbid := get_musicbrainz_id(plex_artist):
+            with suppress(InvalidDataError):
+                artist.mbid = mbid
         return artist
 
     async def _parse_playlist(self, plex_playlist: PlexPlaylist) -> Playlist:
@@ -780,6 +806,13 @@ class PlexProvider(MusicProvider):
             track.metadata.images = images
         if plex_track.genres:
             track.metadata.genres = {genre.tag for genre in plex_track.genres if genre.tag}
+        if plex_track.moods:
+            track.metadata.mood = next((mood.tag for mood in plex_track.moods if mood.tag), None)
+        if (explicit := get_explicit(plex_track)) is not None:
+            track.metadata.explicit = explicit
+        if mbid := get_musicbrainz_id(plex_track):
+            with suppress(InvalidDataError):
+                track.mbid = mbid
         if plex_track.parentKey:
             track.album = self._get_item_mapping(
                 MediaType.ALBUM, plex_track.parentKey, plex_track.parentTitle
@@ -788,6 +821,38 @@ class PlexProvider(MusicProvider):
             track.duration = int(plex_track.duration / 1000)
 
         return track
+
+    async def _add_track_lyrics(self, plex_track: PlexTrack, track: Track) -> None:
+        """
+        Fetch the track's lyric stream from Plex and attach it to the metadata.
+
+        :param plex_track: The fully loaded Plex track to read lyric streams from.
+        :param track: The Music Assistant track to populate with lyrics.
+        """
+
+        def _fetch() -> str | None:
+            stream = next((stream for stream in plex_track.lyricStreams() if stream.key), None)
+            if stream is None:
+                return None
+            url = plex_track._server.url(stream.key, includeToken=True)
+            response: requests.Response = plex_track._server._session.get(
+                url, headers={"Accept": "application/json"}, timeout=30
+            )
+            response.raise_for_status()
+            return response.text
+
+        try:
+            content = await self._run_async(_fetch)
+        except (requests.RequestException, plexapi.exceptions.PlexApiException) as err:
+            self.logger.debug("Failed to fetch lyrics for %s: %s", plex_track.key, err)
+            return
+        if not content or (parsed := parse_plex_lyrics_payload(content)) is None:
+            return
+        lyrics, synced = parsed
+        if synced:
+            track.metadata.lrc_lyrics = lyrics
+        else:
+            track.metadata.lyrics = lyrics
 
     @use_cache(3600)  # Cache for 1 hour
     async def search(
@@ -934,7 +999,9 @@ class PlexProvider(MusicProvider):
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         plex_track = await self._get_data(prov_track_id, PlexTrack)
-        return await self._parse_track(plex_track)
+        track = await self._parse_track(plex_track)
+        await self._add_track_lyrics(plex_track, track)
+        return track
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
