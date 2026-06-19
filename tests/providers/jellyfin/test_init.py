@@ -1,14 +1,17 @@
 """Tests for the Jellyfin provider."""
 
 from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING
 from unittest import mock
 
 import pytest
 from aiojellyfin.testing import FixtureBuilder
-from music_assistant_models.config_entries import ProviderConfig
 
 from music_assistant.mass import MusicAssistant
 from tests.common import get_fixtures_dir, wait_for_sync_completion
+
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ProviderConfig
 
 
 @pytest.fixture

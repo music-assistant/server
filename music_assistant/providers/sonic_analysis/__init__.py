@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -13,6 +12,10 @@ import soxr
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ContentType
 
+from music_assistant.helpers.util import (
+    system_meets_requirements,
+    verify_system_meets_requirements,
+)
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import (
     AnalysisSessionData,
@@ -20,11 +23,11 @@ from music_assistant.models.audio_analysis_provider import (
 )
 
 from .clap_prompts import (
-    CALIBRATION,
     PRECOMPUTED_EMBEDDINGS_PATH,
     SCALAR_PROMPT_PAIRS,
     hash_scalar_prompt_pairs,
     load_precomputed_prompt_embeddings,
+    score_scalars,
 )
 from .helpers import (
     BlockFeatures,
@@ -64,6 +67,16 @@ CLAP_WINDOW_COUNTS: dict[str, int] = {
 }
 
 CONF_CLAP_SAMPLING: str = "clap_sampling"
+
+# Sonic Analysis runs on-device CLAP inference; gate it to capable hardware.
+# 4GB nominal; the gate's tolerance (meets_memory_target) admits genuine 4GB hosts,
+# which report ~3.8GB after the kernel/firmware reservation.
+MIN_RAM_GB: float = 4.0
+MIN_CPU_CORES: int = 2
+# Below the recommended thresholds the provider still runs, but we surface an
+# informational notice (see get_config_entries) as it may be tight under load.
+RECOMMENDED_RAM_GB: float = 6.0
+RECOMMENDED_CPU_CORES: int = 4
 
 
 @dataclass
@@ -114,21 +127,22 @@ async def get_config_entries(
     """
     return (
         ConfigEntry(
+            key="resource_warning",
+            type=ConfigEntryType.ALERT,
+            required=False,
+            hidden=system_meets_requirements(
+                min_memory_gb=RECOMMENDED_RAM_GB,
+                min_cpu_cores=RECOMMENDED_CPU_CORES,
+            ),
+        ),
+        ConfigEntry(
             key=CONF_CLAP_SAMPLING,
             type=ConfigEntryType.STRING,
-            label="CLAP quality (windows per track)",
-            description=(
-                "Number of 7-second windows CLAP analyzes per track. "
-                "More windows produce more representative scalars at "
-                "linear CPU cost. Thorough is most useful for "
-                "instrumentalness, where vocals can be missed by a "
-                "single window."
-            ),
             default_value=CLAP_SAMPLING_FAST,
             options=[
-                ConfigValueOption("Fast (1 window)", CLAP_SAMPLING_FAST),
-                ConfigValueOption("Balanced (3 windows, 2.4x CPU)", CLAP_SAMPLING_BALANCED),
-                ConfigValueOption("Thorough (8 windows, 6.6x CPU)", CLAP_SAMPLING_THOROUGH),
+                ConfigValueOption(CLAP_SAMPLING_FAST),
+                ConfigValueOption(CLAP_SAMPLING_BALANCED),
+                ConfigValueOption(CLAP_SAMPLING_THOROUGH),
             ],
             required=False,
         ),
@@ -319,6 +333,14 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         available=False, which the AudioAnalysisController already honors when
         scheduling work.
         """
+        verify_system_meets_requirements(
+            feature_name="Sonic Analysis",
+            min_memory_gb=MIN_RAM_GB,
+            min_cpu_cores=MIN_CPU_CORES,
+            require_ml_inference=True,
+        )
+        # Configure the inference runtime before loading the model (see the controller method).
+        self.mass.streams.audio_analysis.ensure_inference_runtime_configured()
         (
             self._clap_model,
             self._clap_text_embeddings,
@@ -483,7 +505,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         if len(session.pcm_buffer) >= session.block_bytes:
             block_bytes = bytes(session.pcm_buffer[: session.block_bytes])
             del session.pcm_buffer[: session.block_bytes]
-            pre_audio, post_audio, bf = await asyncio.to_thread(
+            pre_audio, post_audio, bf = await self._run_offloaded(
                 _decode_resample_extract,
                 af,
                 block_bytes,
@@ -536,12 +558,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             mean_emb = mean_emb / norm
         mean_sim = session.clap_sum_similarities / n
 
-        for idx, (scalar_name, _) in enumerate(self._clap_prompt_order):
-            pos_logit = float(mean_sim[idx * 2])
-            neg_logit = float(mean_sim[idx * 2 + 1])
-            a, b = CALIBRATION[scalar_name]
-            margin = pos_logit - neg_logit
-            setattr(analysis, scalar_name, 1.0 / (1.0 + math.exp(-(a * margin + b))))
+        for scalar_name, value in score_scalars(mean_sim).items():
+            setattr(analysis, scalar_name, value)
 
         _store_clap_embedding(analysis, mean_emb)
         self.logger.debug(
@@ -568,7 +586,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         af = session.audio_format
 
         if session.pcm_buffer:
-            pre_audio, _post_audio, bf = await asyncio.to_thread(
+            pre_audio, _post_audio, bf = await self._run_offloaded(
                 _decode_resample_extract,
                 af,
                 bytes(session.pcm_buffer),
@@ -588,7 +606,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             self.logger.debug("No feature blocks for session %s, skipping", session_id)
             return None
 
-        analysis = await asyncio.to_thread(
+        analysis = await self._run_offloaded(
             collapse_to_analysis, session.accumulated, ANALYSIS_SAMPLE_RATE
         )
 
@@ -643,7 +661,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         if self._clap_model is None:
             return
         try:
-            result = await asyncio.to_thread(
+            result = await self._run_offloaded(
                 self._single_window_inference_sync, window_audio, source_sr
             )
         except Exception as err:

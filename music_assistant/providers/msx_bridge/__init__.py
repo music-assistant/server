@@ -61,67 +61,45 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_HTTP_PORT,
             type=ConfigEntryType.INTEGER,
-            label="HTTP Server Port",
             required=True,
             default_value=str(DEFAULT_HTTP_PORT),
-            description="Port for the MSX HTTP server.",
         ),
         ConfigEntry(
             key=CONF_OUTPUT_FORMAT,
             type=ConfigEntryType.STRING,
-            label="Audio Output Format",
             required=True,
             default_value=DEFAULT_OUTPUT_FORMAT,
-            description="Audio format for streaming to MSX (mp3, aac, or flac).",
         ),
         ConfigEntry(
             key=CONF_PLAYER_IDLE_TIMEOUT,
             type=ConfigEntryType.INTEGER,
-            label="Player Idle Timeout (minutes)",
             required=False,
             default_value=str(DEFAULT_PLAYER_IDLE_TIMEOUT),
-            description="Unregister MSX players after this many minutes without activity.",
         ),
         ConfigEntry(
             key=CONF_SHOW_STOP_NOTIFICATION,
             type=ConfigEntryType.BOOLEAN,
-            label="Show notification before closing player",
             required=False,
             default_value=DEFAULT_SHOW_STOP_NOTIFICATION,
-            description="Show confirmation dialog on MSX when stopping playback from MA.",
         ),
         ConfigEntry(
             key=CONF_ENABLE_GROUPING,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable player grouping (experimental)",
             required=False,
             default_value=DEFAULT_ENABLE_GROUPING,
-            description=(
-                "Experimental: allow grouping multiple MSX TVs to play the same track "
-                "simultaneously. Disable if you experience issues with multi-TV setups."
-            ),
         ),
         ConfigEntry(
             key=CONF_GROUP_STREAM_MODE,
             type=ConfigEntryType.STRING,
-            label="Group Stream Mode",
             required=False,
             default_value=DEFAULT_GROUP_STREAM_MODE,
             options=[
                 ConfigValueOption(
-                    "Independent (default) - each TV has own stream",
                     GROUP_STREAM_MODE_INDEPENDENT,
                 ),
                 ConfigValueOption(
-                    "Shared Buffer - one ffmpeg, multiple readers (less CPU)",
                     GROUP_STREAM_MODE_SHARED,
                 ),
             ],
-            description=(
-                "How to stream audio to grouped players. "
-                "'Independent' creates separate streams per TV (more CPU, no sync). "
-                "'Shared Buffer' uses one ffmpeg process for all group members "
-                "(less CPU, better sync)."
-            ),
         ),
     )

@@ -18,6 +18,10 @@ SENDSPIN_CAST_APP_ID = "DD107DDB"
 SENDSPIN_CAST_NAMESPACE = "urn:x-cast:sendspin"
 CONF_USE_MASS_APP = "use_mass_app"
 
+# Interval (seconds) before an unavailable player is re-evaluated as a possible
+# passive multichannel endpoint that should be removed from the setup.
+MULTICHANNEL_RECHECK_INTERVAL = 600
+
 # Devices known to not work with the Sendspin Cast bridge.
 # Tuple of (manufacturer, model) where "*" is a wildcard.
 # These devices will not get a Sendspin bridge, allowing other protocols
@@ -36,13 +40,7 @@ CAST_PLAYER_CONFIG_ENTRIES = (
     ConfigEntry(
         key=CONF_USE_MASS_APP,
         type=ConfigEntryType.BOOLEAN,
-        label="Use Music Assistant Cast App",
         default_value=True,
-        description="By default, Music Assistant will use a special Music Assistant "
-        "Cast Receiver app to play media on cast devices. It is tweaked to provide "
-        "better metadata and future expansion. \\n\\n"
-        "If you want to use the official Google Cast Receiver app instead, disable this option, "
-        "for example if your device has issues with the Music Assistant app.",
         advanced=True,
     ),
 )

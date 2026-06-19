@@ -396,7 +396,10 @@ class MSXPlayer(Player):
         """
         if not self._attr_available:
             raise PlayerUnavailableError(
-                f"MSX TV {self.display_name} is offline (WebSocket disconnected)"
+                f"MSX TV {self.display_name} is offline (WebSocket disconnected)",
+                translation_key="player_offline",
+                translation_owner=self.translation_owner,
+                translation_args=[self.display_name],
             )
         if (
             self._attr_playback_state == PlaybackState.PLAYING

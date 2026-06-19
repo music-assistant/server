@@ -103,23 +103,17 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_IP_ADDRESS,
             type=ConfigEntryType.STRING,
-            label="Server",
             required=True,
-            description="The url of the Emby server to connect to.",
         ),
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Username",
             required=True,
-            description="The username to authenticate to the remote server.",
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=False,
-            description="The password to authenticate to the remote server.",
         ),
     )
 

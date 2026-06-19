@@ -1,0 +1,28 @@
+{
+  "config_entries": {
+    "identity": {
+      "label": "Identity token",
+      "description": "Identity token from Bandcamp cookies for account collection access. Log in https://bandcamp.com and extract browser cookie named 'identity'."
+    },
+    "top_tracks_limit": {
+      "label": "Artist Top Tracks search limit",
+      "description": "Search limit while getting artist top tracks."
+    }
+  },
+  "media": {
+    "recommendations": {
+      "feed": { "name": "Bandcamp Feed" },
+      "wishlist": { "name": "Wishlist" }
+    },
+    "folder": {
+      "collection": { "name": "Collection" },
+      "wishlist": { "name": "Wishlist" },
+      "following": { "name": "Following" },
+      "fans": { "name": "Fans" },
+      "followers": { "name": "Followers" }
+    }
+  },
+  "manifest": {
+    "description": "Stream music from Bandcamp's catalog."
+  }
+}

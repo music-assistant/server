@@ -123,27 +123,22 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Username",
             required=True,
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=True,
         ),
         ConfigEntry(
             key=CONF_QUALITY,
             type=ConfigEntryType.STRING,
-            label="Stream Quality",
-            description="Maximum streaming quality. Lower quality will be used "
-            "if selected quality is unavailable.",
             default_value="27",
             options=[
-                ConfigValueOption("Hi-Res 192kHz/24 bit", "27"),
-                ConfigValueOption("Hi-Res 96kHz/24 bit", "7"),
-                ConfigValueOption("CD Quality 44.1kHz/16 bit", "6"),
-                ConfigValueOption("MP3 320kbps", "5"),
+                ConfigValueOption("27"),
+                ConfigValueOption("7"),
+                ConfigValueOption("6"),
+                ConfigValueOption("5"),
             ],
         ),
     )
@@ -303,7 +298,12 @@ class QobuzProvider(MusicProvider):
         )
         if not playlist_obj or not playlist_obj.get("id"):
             msg = f"Failed to create playlist: {name}"
-            raise InvalidDataError(msg)
+            raise InvalidDataError(
+                msg,
+                translation_key="create_playlist_failed",
+                translation_owner=self.translation_owner,
+                translation_args=[name],
+            )
         return self._parse_playlist(playlist_obj)
 
     @use_cache(3600 * 24 * 30, allow_expired_cache=True)  # Cache for 30 days

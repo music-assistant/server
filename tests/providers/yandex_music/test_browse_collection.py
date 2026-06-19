@@ -8,22 +8,18 @@ import pytest
 from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.media_items import BrowseFolder
 
-from music_assistant.providers.yandex_music.constants import BROWSE_NAMES_EN, BROWSE_NAMES_RU
 from music_assistant.providers.yandex_music.provider import YandexMusicProvider
 
 
-def _make_provider_mock(features: set[ProviderFeature], *, locale: str = "en_US") -> Mock:
+def _make_provider_mock(features: set[ProviderFeature]) -> Mock:
     provider = Mock(spec=YandexMusicProvider)
     provider.instance_id = "yandex_music_instance"
     provider.domain = "yandex_music"
     provider.supported_features = features
     provider.mass = Mock()
-    provider.mass.metadata = Mock()
-    provider.mass.metadata.locale = locale
-    # real method so locale mapping runs
-    provider._get_browse_names = YandexMusicProvider._get_browse_names.__get__(
-        provider, YandexMusicProvider
-    )
+    # _browse_collection resolves each sub-folder label via _media_label; stub it to return
+    # the English fallback name plus the bare translation_key (localized at serialization).
+    provider._media_label = Mock(side_effect=lambda _group, key, fallback: (fallback, key))
     provider.logger = Mock()
     return provider
 
@@ -49,7 +45,7 @@ async def test_collection_shows_audiobooks_folder_when_feature_enabled() -> None
     )
     assert audiobook_folder.is_playable is False
     assert audiobook_folder.path.endswith("audiobooks")
-    assert audiobook_folder.name == BROWSE_NAMES_EN["audiobooks"]
+    assert audiobook_folder.name == "My Audiobooks"
 
 
 @pytest.mark.asyncio
@@ -88,13 +84,13 @@ async def test_collection_hides_audiobooks_folder_when_feature_disabled() -> Non
 
 
 @pytest.mark.asyncio
-async def test_collection_audiobooks_folder_russian_locale() -> None:
-    """Russian locale uses Russian folder names."""
+async def test_collection_audiobooks_and_podcasts_labels() -> None:
+    """Audiobooks/podcasts sub-folders render with their Yandex collection labels."""
     features = {
         ProviderFeature.LIBRARY_AUDIOBOOKS,
         ProviderFeature.LIBRARY_PODCASTS,
     }
-    provider = _make_provider_mock(features, locale="ru_RU")
+    provider = _make_provider_mock(features)
 
     folders = await YandexMusicProvider._browse_collection(
         provider, "yandex_music_instance://collection"
@@ -104,5 +100,5 @@ async def test_collection_audiobooks_folder_russian_locale() -> None:
         f for f in folders if isinstance(f, BrowseFolder) and f.item_id == "audiobooks"
     )
     podcast = next(f for f in folders if isinstance(f, BrowseFolder) and f.item_id == "podcasts")
-    assert audiobook.name == BROWSE_NAMES_RU["audiobooks"]
-    assert podcast.name == BROWSE_NAMES_RU["podcasts"]
+    assert audiobook.name == "My Audiobooks"
+    assert podcast.name == "My Podcasts"

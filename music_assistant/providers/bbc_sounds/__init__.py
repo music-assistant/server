@@ -114,42 +114,30 @@ async def get_config_entries(
         ConfigEntry(
             key=_Constants.CONF_INTRO,
             type=ConfigEntryType.LABEL,
-            label="A BBC Sounds account is optional, but some UK-only content may not work without"
-            " it",
         ),
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Email or username",
             required=False,
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=False,
         ),
         ConfigEntry(
             key=_Constants.CONF_SHOW_LOCAL,
             advanced=True,
             type=ConfigEntryType.BOOLEAN,
-            label="Show local radio stations?",
             default_value=False,
         ),
         ConfigEntry(
             key=_Constants.CONF_STREAM_FORMAT,
             advanced=True,
-            label="Preferred stream format",
             type=ConfigEntryType.STRING,
             options=[
-                ConfigValueOption(
-                    "HLS",
-                    _Constants.CONF_STREAM_FORMAT_HLS,
-                ),
-                ConfigValueOption(
-                    "MPEG-DASH",
-                    _Constants.CONF_STREAM_FORMAT_DASH,
-                ),
+                ConfigValueOption(_Constants.CONF_STREAM_FORMAT_HLS),
+                ConfigValueOption(_Constants.CONF_STREAM_FORMAT_DASH),
             ],
             default_value=_Constants.CONF_STREAM_FORMAT_HLS,
         ),
@@ -206,7 +194,7 @@ class BBCSoundsProvider(MusicProvider):
                 try:
                     await self.client.personal.get_experience_menu()
                     return
-                except (exceptions.UnauthorisedError, exceptions.APIResponseError):
+                except exceptions.UnauthorisedError, exceptions.APIResponseError:
                     await self.client.auth.renew_session()
 
             try:
@@ -519,7 +507,7 @@ class BBCSoundsProvider(MusicProvider):
                 item_id="stations",
                 provider=self.domain,
                 name="Schedule and Programmes",
-                translation_key="provider.bbc_sounds.schedule_programmes",
+                translation_key="schedule_programmes",
                 path=f"{self.domain}://stations",
                 image=MediaItemImage(
                     path="https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid/latest.png",
@@ -539,7 +527,7 @@ class BBCSoundsProvider(MusicProvider):
                 item_id="listen_live",
                 provider=self.domain,
                 name="Listen Live",
-                translation_key="provider.bbc_sounds.listen_live",
+                translation_key="listen_live",
                 path=f"{self.domain}://listen_live",
                 image=MediaItemImage(
                     path="https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid/listen_live.png",
@@ -552,7 +540,7 @@ class BBCSoundsProvider(MusicProvider):
                 item_id="stations",
                 provider=self.domain,
                 name="Schedule and Programmes",
-                translation_key="provider.bbc_sounds.schedule_programmes",
+                translation_key="schedule_programmes",
                 path=f"{self.domain}://stations",
                 image=MediaItemImage(
                     path="https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid/latest.png",
@@ -642,14 +630,14 @@ class BBCSoundsProvider(MusicProvider):
                 BrowseFolder(
                     item_id="today",
                     name="Today",
-                    translation_key="provider.bbc_sounds.today",
+                    translation_key="today",
                     provider=self.domain,
                     path="/".join([*path_parts, dt.now().strftime("%Y-%m-%d")]),
                 ),
                 BrowseFolder(
                     item_id="yesterday",
                     name="Yesterday",
-                    translation_key="provider.bbc_sounds.yesterday",
+                    translation_key="yesterday",
                     provider=self.domain,
                     path="/".join(
                         [

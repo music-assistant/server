@@ -581,7 +581,7 @@ class WebRTCGateway:
                         # Handle HTTP proxy request
                         await self._handle_http_proxy_request(session, msg_data)
                         continue
-                except (json.JSONDecodeError, ValueError):
+                except json.JSONDecodeError, ValueError:
                     pass
 
                 # Regular WebSocket message
@@ -815,7 +815,7 @@ class WebRTCGateway:
                 # Use callback to set sendspin player on the websocket client
                 if self._set_sendspin_player_callback:
                     self._set_sendspin_player_callback(session.session_id, client_id)
-        except (json.JSONDecodeError, TypeError):
+        except json.JSONDecodeError, TypeError:
             pass  # Not valid JSON, ignore
 
     async def _forward_sendspin_from_local(self, session: WebRTCSession) -> None:

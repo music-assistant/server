@@ -20,6 +20,7 @@ import aiofiles
 from aiohttp.client_exceptions import ClientError
 from PIL import Image, UnidentifiedImageError
 
+from music_assistant.constants import APPLICATION_NAME
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.models.metadata_provider import MetadataProvider
@@ -182,7 +183,8 @@ def _extract_imageproxy_id(url: str) -> str | None:
 
 
 def player_image_url(mass: MusicAssistant, url: str | None) -> str | None:
-    """Rewrite a public-webserver imageproxy URL to the internal streams server.
+    """
+    Rewrite an imageproxy URL for consumption by a (physical) player.
 
     :param mass: The MusicAssistant instance.
     :param url: Image URL as produced for frontend/API consumers.
@@ -191,7 +193,14 @@ def player_image_url(mass: MusicAssistant, url: str | None) -> str | None:
         return url
     webserver_base = mass.webserver.base_url
     if webserver_base and url.startswith(f"{webserver_base}/imageproxy"):
-        return mass.streams.base_url + url[len(webserver_base) :]
+        # players may not be able to reach the webserver, so serve from the streams
+        # server, and force jpeg (= flatten transparency) as players such as legacy
+        # AirPlay receivers cannot be assumed to handle PNG alpha
+        url = mass.streams.base_url + url[len(webserver_base) :]
+        parsed = urllib.parse.urlparse(url)
+        query = urllib.parse.parse_qs(parsed.query)
+        query["fmt"] = ["jpeg"]
+        return parsed._replace(query=urllib.parse.urlencode(query, doseq=True)).geturl()
     return url
 
 
@@ -251,8 +260,7 @@ async def get_image_data(
             msg = f"Invalid imageproxy URL (missing path): {path_or_url}"
             raise FileNotFoundError(msg)
         try:
-            async with mass.http_session_no_ssl.get(path_or_url, raise_for_status=True) as resp:
-                return await resp.read()
+            return await _fetch_remote_image(mass, path_or_url)
         except ClientError as err:
             msg = f"Failed to fetch image from {path_or_url}: {err}"
             raise FileNotFoundError(msg) from err
@@ -271,6 +279,24 @@ async def get_image_data(
         return img_data
     msg = f"Image not found: {path_or_url}"
     raise FileNotFoundError(msg)
+
+
+async def _fetch_remote_image(mass: MusicAssistant, url: str) -> bytes:
+    """
+    Fetch raw image bytes over HTTP.
+
+    :param mass: The MusicAssistant instance.
+    :param url: The (http/https) image URL to fetch.
+    """
+    # Bot-protected CDNs (e.g. Akamai) reject our normal self-identifying User-Agent,
+    # and even regular browser User-Agents, while still serving well-known fetch tools.
+    # We keep identifying as Music Assistant but carry a Wget compatibility token, which
+    # such CDNs allowlist, so artwork is served on the first (and only) request.
+    user_agent = f"{APPLICATION_NAME}/{mass.version} (Wget/1.24.5; +https://music-assistant.io)"
+    async with mass.http_session_no_ssl.get(
+        url, raise_for_status=True, headers={"User-Agent": user_agent}
+    ) as resp:
+        return await resp.read()
 
 
 async def get_image_thumb(

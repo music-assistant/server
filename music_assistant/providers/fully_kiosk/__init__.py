@@ -44,14 +44,6 @@ async def get_config_entries(
         ConfigEntry(
             key="manual_discovery_ip_addresses",
             type=ConfigEntryType.STRING,
-            label="Fully Kiosk devices",
-            description=(
-                "List of Fully Kiosk devices to connect to. "
-                "Enter one device per line as host or host:port. "
-                "Port defaults to 2323 if not specified. "
-                "After saving, configure the password (and optional SSL options) "
-                "for each device on the individual player's settings page."
-            ),
             default_value=[],
             required=True,
             multi_value=True,

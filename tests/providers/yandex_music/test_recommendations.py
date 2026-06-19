@@ -21,7 +21,6 @@ from music_assistant_models.media_items import (
 from yandex_music import Track as YandexTrack
 
 from music_assistant.providers.yandex_music.constants import (
-    BROWSE_NAMES_EN,
     MY_WAVE_PLAYLIST_ID,
     RADIO_TRACK_ID_SEP,
     ROTOR_STATION_MY_WAVE,
@@ -55,8 +54,9 @@ def provider_mock() -> Mock:
     provider.mass.cache.get = AsyncMock(return_value=None)  # Cache always misses
     provider.mass.cache.set = AsyncMock()
 
-    # Mock _get_browse_names to return EN names
-    provider._get_browse_names = Mock(return_value=BROWSE_NAMES_EN)
+    # Mix recommendation folders look up a tag's English label via _media_label; stub it to
+    # return the fallback (the title-cased tag slug) plus the bare translation_key.
+    provider._media_label = Mock(side_effect=lambda _group, key, fallback: (fallback, key))
 
     return provider
 
@@ -93,7 +93,7 @@ async def test_get_my_wave_recommendations_success(provider_mock: Mock) -> None:
     assert isinstance(result, RecommendationFolder)
     assert result.item_id == MY_WAVE_PLAYLIST_ID
     assert result.provider == provider_mock.instance_id
-    assert result.name == BROWSE_NAMES_EN[MY_WAVE_PLAYLIST_ID]
+    assert result.name == "My Wave"
     assert result.icon == "mdi-waveform"
     assert len(result.items) > 0
 
@@ -191,7 +191,7 @@ async def test_get_feed_recommendations_success(provider_mock: Mock) -> None:
     assert isinstance(result, RecommendationFolder)
     assert result.item_id == "feed"
     assert result.provider == provider_mock.instance_id
-    assert result.name == BROWSE_NAMES_EN["feed"]
+    assert result.name == "Made for You"
     assert result.icon == "mdi-account-music"
     assert len(result.items) > 0
 
@@ -272,7 +272,7 @@ async def test_get_chart_recommendations_success(provider_mock: Mock) -> None:
     assert isinstance(result, RecommendationFolder)
     assert result.item_id == "chart"
     assert result.provider == provider_mock.instance_id
-    assert result.name == BROWSE_NAMES_EN["chart"]
+    assert result.name == "Chart"
     assert result.icon == "mdi-chart-line"
     assert len(result.items) > 0
 
@@ -356,7 +356,7 @@ async def test_get_new_releases_recommendations_success(provider_mock: Mock) -> 
     assert isinstance(result, RecommendationFolder)
     assert result.item_id == "new_releases"
     assert result.provider == provider_mock.instance_id
-    assert result.name == BROWSE_NAMES_EN["new_releases"]
+    assert result.name == "New Releases"
     assert result.icon == "mdi-new-box"
     assert len(result.items) > 0
 
@@ -435,7 +435,7 @@ async def test_get_new_playlists_recommendations_success(provider_mock: Mock) ->
     assert isinstance(result, RecommendationFolder)
     assert result.item_id == "new_playlists"
     assert result.provider == provider_mock.instance_id
-    assert result.name == BROWSE_NAMES_EN["new_playlists"]
+    assert result.name == "New Playlists"
     assert result.icon == "mdi-playlist-star"
     assert len(result.items) > 0
 
@@ -507,7 +507,7 @@ async def test_get_top_picks_recommendations_success(provider_mock: Mock) -> Non
     assert isinstance(result, RecommendationFolder)
     assert result.item_id == "top_picks"
     assert result.provider == provider_mock.instance_id
-    assert result.name == BROWSE_NAMES_EN["top_picks"]
+    assert result.name == "Top Picks"
     assert result.icon == "mdi-star"
     assert len(result.items) > 0
     # Verify it called with "top" tag

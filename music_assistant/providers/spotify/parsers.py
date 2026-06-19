@@ -294,6 +294,7 @@ def parse_podcast_episode(
             item_id="unknown",
             provider=provider.instance_id,
             name="Unknown Podcast",
+            translation_key="unknown_podcast",
             provider_mappings=set(),
         )
 

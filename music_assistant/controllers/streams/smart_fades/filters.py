@@ -58,17 +58,17 @@ class GradualTimeStretchFilter(Filter):
         return f"GradualTimeStretch(steps={n}, {start:.4f}->{end:.4f})"
 
 
-class TrimFilter(Filter):
+class FadeInTrimFilter(Filter):
     """Filter that trims incoming track to align with downbeats."""
 
     output_fadeout_label: str = "fadeout_beatalign"
     output_fadein_label: str = "fadein_beatalign"
 
     def __init__(self, logger: logging.Logger, fadein_start_pos: float):
-        """Initialize beat align filter.
+        """
+        Initialize beat align filter.
 
-        Args:
-            fadein_start_pos: Position in seconds to trim the incoming track to
+        :param fadein_start_pos: Position in seconds to trim the incoming track to.
         """
         self.fadein_start_pos = fadein_start_pos
         super().__init__(logger)
@@ -81,8 +81,42 @@ class TrimFilter(Filter):
         ]
 
     def __repr__(self) -> str:
-        """Return string representation of TrimFilter."""
-        return f"Trim(trim={self.fadein_start_pos:.2f}s)"
+        """Return string representation of FadeInTrimFilter."""
+        return f"FadeInTrim(start={self.fadein_start_pos:.2f}s)"
+
+
+class FadeOutTrimFilter(Filter):
+    """Filter that trims trailing (silent) audio off the outgoing track's tail."""
+
+    output_fadeout_label: str = "fadeout_tailtrim"
+    output_fadein_label: str = "fadein_tailtrim"
+
+    def __init__(self, logger: logging.Logger, fadeout_end_pos: float, trimmed_seconds: float):
+        """
+        Initialize fade-out trim filter.
+
+        :param fadeout_end_pos: Position in seconds where the outgoing track's
+            audible content ends; everything after it is dropped.
+            Measured on the untrimmed input timeline, so this filter must precede
+            any time-stretching filter in the chain.
+        :param trimmed_seconds: Amount of trailing audio in seconds that the trim
+            drops, for logging/debugging purposes.
+        """
+        self.fadeout_end_pos = fadeout_end_pos
+        self.trimmed_seconds = trimmed_seconds
+        super().__init__(logger)
+
+    def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
+        """Trim the outgoing track's tail at the effective audio end."""
+        return [
+            f"{input_fadeout_label}atrim=end={self.fadeout_end_pos:.3f},"
+            f"asetpts=PTS-STARTPTS[{self.output_fadeout_label}]",
+            f"{input_fadein_label}anull[{self.output_fadein_label}]",  # codespell:ignore anull
+        ]
+
+    def __repr__(self) -> str:
+        """Return string representation of FadeOutTrimFilter."""
+        return f"FadeOutTrim(end={self.fadeout_end_pos:.2f}s, trimmed={self.trimmed_seconds:.2f}s)"
 
 
 class FrequencySweepFilter(Filter):
@@ -205,19 +239,40 @@ class CrossfadeFilter(Filter):
     output_fadeout_label: str = "crossfade"
     output_fadein_label: str = "crossfade"
 
-    def __init__(self, logger: logging.Logger, crossfade_duration: float):
-        """Initialize crossfade filter."""
+    def __init__(
+        self,
+        logger: logging.Logger,
+        crossfade_duration: float | None = None,
+        crossfade_samples: int | None = None,
+    ):
+        """
+        Initialize crossfade filter.
+
+        :param crossfade_duration: Overlap length in seconds (emits acrossfade ``d=``).
+        :param crossfade_samples: Overlap length in PCM samples (emits acrossfade ``ns=``).
+            Prefer this when the inputs are pre-trimmed to exactly the overlap region:
+            acrossfade silently emits nothing when its requested length exceeds the
+            buffer it is fed, and a fractional ``d`` can round just past a
+            frame-aligned buffer. A sample count cannot.
+        """
+        if (crossfade_duration is None) == (crossfade_samples is None):
+            raise ValueError("Provide exactly one of crossfade_duration or crossfade_samples")
         self.crossfade_duration = crossfade_duration
+        self.crossfade_samples = crossfade_samples
         super().__init__(logger)
 
     def apply(self, input_fadein_label: str, input_fadeout_label: str) -> list[str]:
         """Apply the acrossfade filter."""
+        overlap = (
+            f"ns={self.crossfade_samples}"
+            if self.crossfade_samples is not None
+            else f"d={self.crossfade_duration}"
+        )
         # equal-power qsin curves; the default tri/tri dips ~3dB mid-fade on uncorrelated material
-        return [
-            f"{input_fadeout_label}{input_fadein_label}"
-            f"acrossfade=d={self.crossfade_duration}:c1=qsin:c2=qsin"
-        ]
+        return [f"{input_fadeout_label}{input_fadein_label}acrossfade={overlap}:c1=qsin:c2=qsin"]
 
     def __repr__(self) -> str:
         """Return string representation of CrossfadeFilter."""
+        if self.crossfade_samples is not None:
+            return f"Crossfade(ns={self.crossfade_samples})"
         return f"Crossfade(d={self.crossfade_duration:.1f}s)"

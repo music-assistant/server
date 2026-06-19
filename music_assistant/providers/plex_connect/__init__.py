@@ -84,22 +84,18 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_PLEX_PROVIDER_ID,
             type=ConfigEntryType.STRING,
-            label="Plex Music Provider",
-            description="Select the Plex music provider to use for this connection.",
             required=True,
             options=[
-                ConfigValueOption(provider.name, provider.instance_id)
+                ConfigValueOption(provider.instance_id, title=provider.name)
                 for provider in plex_providers
             ],
         ),
         ConfigEntry(
             key=CONF_MASS_PLAYER_ID,
             type=ConfigEntryType.STRING,
-            label="Music Assistant Player",
-            description="Select the MA player to advertise as a Plex remote client.",
             required=True,
             options=[
-                ConfigValueOption(x.display_name, x.player_id)
+                ConfigValueOption(x.player_id, title=x.display_name)
                 for x in sorted(
                     mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
                 )
@@ -108,39 +104,27 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_PLAYER_NAME,
             type=ConfigEntryType.STRING,
-            label="Player Name in Plex",
-            description=(
-                "Custom name for this player as it appears in Plex apps. "
-                "Leave empty to use the player's name."
-            ),
             required=False,
             default_value=player_name_default,
         ),
         ConfigEntry(
             key=CONF_DEVICE_CLASS,
             type=ConfigEntryType.STRING,
-            label="Device Class",
-            description="How this player appears in Plex apps.",
             required=False,
             default_value="speaker",
             options=[
-                ConfigValueOption("Speaker", "speaker"),
-                ConfigValueOption("Phone", "phone"),
-                ConfigValueOption("Tablet", "tablet"),
-                ConfigValueOption("Set-Top Box", "stb"),
-                ConfigValueOption("TV", "tv"),
-                ConfigValueOption("PC", "pc"),
-                ConfigValueOption("Cloud", "cloud"),
+                ConfigValueOption("speaker"),
+                ConfigValueOption("phone"),
+                ConfigValueOption("tablet"),
+                ConfigValueOption("stb"),
+                ConfigValueOption("tv"),
+                ConfigValueOption("pc"),
+                ConfigValueOption("cloud"),
             ],
         ),
         ConfigEntry(
             key=CONF_PORT,
             type=ConfigEntryType.INTEGER,
-            label="Network Port",
-            description=(
-                "TCP port this player is advertised and reachable on in Plex apps. "
-                "Leave empty to auto-assign a free port and remember it for this instance."
-            ),
             required=False,
             default_value=None,
             advanced=True,

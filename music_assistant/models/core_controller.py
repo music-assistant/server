@@ -40,6 +40,11 @@ class CoreController:
             allow_disable=False,
         )
 
+    @property
+    def translation_owner(self) -> str:
+        """Return the "core.<domain>" namespace this module's translation strings resolve under."""
+        return f"core.{self.domain}"
+
     async def get_config_entries(
         self,
         action: str | None = None,

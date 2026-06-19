@@ -95,13 +95,11 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_CLIENT_ID,
             type=ConfigEntryType.SECURE_STRING,
-            label="Client ID",
             required=True,
         ),
         ConfigEntry(
             key=CONF_AUTHORIZATION,
             type=ConfigEntryType.SECURE_STRING,
-            label="Authorization",
             required=True,
         ),
     )
@@ -256,6 +254,7 @@ class SoundcloudMusicProvider(MusicProvider):
         if feed and "collection" in feed:
             folder = RecommendationFolder(
                 name="SoundCloud Feed",
+                translation_key="soundcloud_feed",
                 item_id=f"{self.instance_id}_sc_subscribed_feed",
                 provider=self.instance_id,
                 icon="mdi-rss",

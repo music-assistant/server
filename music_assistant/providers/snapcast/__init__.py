@@ -1,6 +1,7 @@
 """Snapcast Player provider for Music Assistant."""
 
 import re
+from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import (
     ConfigEntry,
@@ -10,7 +11,6 @@ from music_assistant_models.config_entries import (
 )
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from music_assistant_models.errors import SetupFailedError
-from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.helpers.process import check_output
 from music_assistant.mass import MusicAssistant
@@ -32,6 +32,9 @@ from music_assistant.providers.snapcast.constants import (
     DEFAULT_SNAPSTREAM_IDLE_THRESHOLD,
 )
 from music_assistant.providers.snapcast.provider import SnapCastProvider
+
+if TYPE_CHECKING:
+    from music_assistant_models.provider import ProviderManifest
 
 SUPPORTED_FEATURES = {
     ProviderFeature.SYNC_PLAYERS,
@@ -79,7 +82,6 @@ async def get_config_entries(
             type=ConfigEntryType.INTEGER,
             range=(200, 6000),
             default_value=1000,
-            label="Snapserver buffer size",
             required=False,
             category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
@@ -92,7 +94,6 @@ async def get_config_entries(
             type=ConfigEntryType.INTEGER,
             range=(10, 100),
             default_value=26,
-            label="Snapserver chunk size",
             required=False,
             category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
@@ -105,7 +106,6 @@ async def get_config_entries(
             type=ConfigEntryType.INTEGER,
             range=(0, 100),
             default_value=25,
-            label="Snapserver initial volume",
             required=False,
             category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
@@ -117,7 +117,6 @@ async def get_config_entries(
             key=CONF_SERVER_SEND_AUDIO_TO_MUTED,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
-            label="Send audio to muted clients",
             required=False,
             category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
@@ -129,25 +128,12 @@ async def get_config_entries(
             key=CONF_SERVER_TRANSPORT_CODEC,
             type=ConfigEntryType.STRING,
             options=[
-                ConfigValueOption(
-                    title="FLAC",
-                    value="flac",
-                ),
-                ConfigValueOption(
-                    title="OGG",
-                    value="ogg",
-                ),
-                ConfigValueOption(
-                    title="OPUS",
-                    value="opus",
-                ),
-                ConfigValueOption(
-                    title="PCM",
-                    value="pcm",
-                ),
+                ConfigValueOption("flac"),
+                ConfigValueOption("ogg"),
+                ConfigValueOption("opus"),
+                ConfigValueOption("pcm"),
             ],
             default_value="flac",
-            label="Snapserver default transport codec",
             required=False,
             category=CONF_CATEGORY_BUILT_IN,
             hidden=not local_snapserver_present,
@@ -159,7 +145,6 @@ async def get_config_entries(
             key=CONF_USE_EXTERNAL_SERVER,
             type=ConfigEntryType.BOOLEAN,
             default_value=not local_snapserver_present,
-            label="Use existing Snapserver",
             required=False,
             advanced=local_snapserver_present,
         ),
@@ -167,7 +152,6 @@ async def get_config_entries(
             key=CONF_SERVER_HOST,
             type=ConfigEntryType.STRING,
             default_value=DEFAULT_SNAPSERVER_IP,
-            label="Snapcast server ip",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
             advanced=local_snapserver_present,
@@ -176,7 +160,6 @@ async def get_config_entries(
             key=CONF_SERVER_CONTROL_PORT,
             type=ConfigEntryType.INTEGER,
             default_value=DEFAULT_SNAPSERVER_PORT,
-            label="Snapcast control port",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
             advanced=local_snapserver_present,
@@ -185,7 +168,6 @@ async def get_config_entries(
             key=CONF_STREAM_IDLE_THRESHOLD,
             type=ConfigEntryType.INTEGER,
             default_value=DEFAULT_SNAPSTREAM_IDLE_THRESHOLD,
-            label="Snapcast idle threshold stream parameter",
             required=True,
             advanced=local_snapserver_present,
         ),

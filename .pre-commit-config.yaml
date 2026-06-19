@@ -10,6 +10,25 @@ repos:
         types: [text]
         files: ^(music_assistant/.+/manifest\.json|pyproject\.toml|\.pre-commit-config\.yaml|scripts/gen_requirements_all\.py)$
 
+      # build_translations_source regenerates the Lokalise source file from the per-module
+      # strings.json authoring files, so it also modifies files and must run early.
+      - id: build_translations_source
+        name: build_translations_source
+        entry: uv run -m scripts.build_translations
+        pass_filenames: false
+        language: system
+        types: [text]
+        files: ^(music_assistant/strings\.json|music_assistant/.+/strings\.json|scripts/build_translations\.py)$
+
+      # fail when a ConfigEntry hardcodes label/description text instead of using strings.json
+      - id: check_config_entries
+        name: check_config_entries
+        entry: uv run -m scripts.check_config_entries
+        pass_filenames: false
+        language: system
+        types: [python]
+        files: ^(music_assistant/.+\.py|scripts/check_config_entries\.py)$
+
       - id: check-python-version
         name: Validate pyproject.toml matches .python-version
         entry: uv run -m scripts.check_python_version
@@ -17,6 +36,14 @@ repos:
         language: system
         files: ^(\.python-version|pyproject\.toml|scripts/check_python_version\.py)$
         verbose: true  # script overwrites pre-commit's metadata via ANSI escapes
+
+      # fail when a provider/controller test is a flat file instead of living in its own folder
+      - id: check_test_layout
+        name: check_test_layout
+        entry: uv run -m scripts.check_test_layout
+        pass_filenames: false
+        language: system
+        files: ^(tests/(providers|controllers)/.+\.py|scripts/check_test_layout\.py)$
 
       - id: ruff-check
         name: 🐶 Ruff Linter
@@ -100,6 +127,9 @@ repos:
         language: system
         types: [text]
         entry: uv run end-of-file-fixer
+        # downloaded Lokalise locale files don't carry a trailing newline; en.json's is
+        # guaranteed by build_translations (--check), so skip the whole translations dir
+        exclude: ^music_assistant/translations/
         stages: [pre-commit, pre-push, manual]
 
       - id: no-commit-to-branch
