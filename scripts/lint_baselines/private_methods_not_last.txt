@@ -4,9 +4,6 @@
 music_assistant/controllers/music/controller.py	46
 music_assistant/controllers/player_queues/controller.py	43
 music_assistant/controllers/players/controller.py	36
-music_assistant/controllers/streams/audio.py	23
-music_assistant/controllers/streams/ogg_handler.py	1
-music_assistant/controllers/streams/smart_fades/fades.py	3
 music_assistant/controllers/tasks/controller.py	5
 music_assistant/helpers/named_pipe.py	5
 music_assistant/helpers/scrobbler.py	2
