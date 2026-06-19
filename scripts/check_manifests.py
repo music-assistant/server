@@ -111,7 +111,10 @@ def _validate(data: dict[str, object], folder_name: str) -> list[str]:
     for key in MANDATORY_KEYS:
         if key not in data:
             issues.append(f"missing mandatory key '{key}'")
-    if (provider_type := data.get("type")) is not None and provider_type not in VALID_TYPES:
+    provider_type = data.get("type")
+    if provider_type is not None and (
+        not isinstance(provider_type, str) or provider_type not in VALID_TYPES
+    ):
         issues.append(f"type '{provider_type}' is not one of {sorted(VALID_TYPES)}")
     if (domain := data.get("domain")) is not None and domain != folder_name:
         issues.append(f"domain '{domain}' must match the provider folder name '{folder_name}'")
@@ -119,14 +122,13 @@ def _validate(data: dict[str, object], folder_name: str) -> list[str]:
         value = data.get(text_key)
         if value is not None and (not isinstance(value, str) or not value.strip()):
             issues.append(f"'{text_key}' must be a non-empty string")
-    issues.extend(_validate_codeowners(data.get("codeowners")))
+    if "codeowners" in data:
+        issues.extend(_validate_codeowners(data["codeowners"]))
     return issues
 
 
 def _validate_codeowners(codeowners: object) -> list[str]:
     """Return problems with the ``codeowners`` field (must be a non-empty list of ``@`` handles)."""
-    if codeowners is None:
-        return []
     if not isinstance(codeowners, list) or not codeowners:
         return ["'codeowners' must be a non-empty list"]
     return [

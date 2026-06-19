@@ -34,6 +34,14 @@ def test_invalid_type() -> None:
     assert any("is not one of" in issue for issue in _validate(manifest, "demo"))
 
 
+def test_non_string_type_rejected() -> None:
+    """A non-string type (list/dict) is reported instead of crashing the validator."""
+    for bad_type in (["music"], {"type": "music"}):
+        manifest = _valid_manifest()
+        manifest["type"] = bad_type
+        assert any("is not one of" in issue for issue in _validate(manifest, "demo"))
+
+
 def test_domain_must_match_folder() -> None:
     """A domain that differs from the folder name is reported."""
     assert any(
@@ -56,6 +64,15 @@ def test_codeowners_entries_need_at_sign() -> None:
     assert any(
         "must be a string starting with '@'" in issue for issue in _validate(manifest, "demo")
     )
+
+
+def test_codeowners_null_rejected() -> None:
+    """A present-but-null codeowners value is rejected, not silently accepted."""
+    manifest = _valid_manifest()
+    manifest["codeowners"] = None
+    issues = _validate(manifest, "demo")
+    assert [issue for issue in issues if "must be a non-empty list" in issue]
+    assert not [issue for issue in issues if "missing mandatory key 'codeowners'" in issue]
 
 
 def test_empty_text_fields_rejected() -> None:
