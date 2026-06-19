@@ -1,1 +1,1 @@
-"""Tests for helper modules."""
+"""Tests for the helper/utility modules."""
