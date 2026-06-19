@@ -1,12 +1,15 @@
 """
 Decide which pytest targets a CI run should execute based on the changed files.
 
-Reads the changed file paths (one per line) from stdin and writes ``mode`` and
-``test_paths`` to ``$GITHUB_OUTPUT`` (and stdout). ``mode`` is one of:
+Reads the changed file paths (one per line) from stdin and writes ``mode``,
+``test_paths`` and ``cov_paths`` to ``$GITHUB_OUTPUT`` (and stdout). ``mode`` is one of:
 
 - ``full``: run the entire suite (a shared/core file, dependency or the CI itself changed)
 - ``partial``: run only the listed ``test_paths`` (one or more changed providers)
 - ``skip``: nothing testable changed (docs, unrelated workflows, ...)
+
+``cov_paths`` are the coverage sources matching ``test_paths`` so a partial run only
+measures the providers it actually ran (e.g. ``music_assistant.providers.plex``).
 """
 
 # ruff: noqa: T201
@@ -46,6 +49,11 @@ def target_for_provider(name: str, repo_root: Path) -> str | None:
     return None
 
 
+def cov_source(test_path: str) -> str:
+    """Map a provider test dir (``tests/providers/<X>``) to its coverage package."""
+    return f"music_assistant.providers.{test_path.rsplit('/', 1)[-1]}"
+
+
 def decide(changed: list[str], repo_root: Path) -> tuple[str, list[str]]:
     """
     Decide the test scope for a set of changed files.
@@ -80,7 +88,12 @@ def main() -> None:
     """Read changed files from stdin and emit the resolved scope."""
     changed = [line.strip() for line in sys.stdin if line.strip()]
     mode, paths = decide(changed, Path.cwd())
-    lines = [f"mode={mode}", f"test_paths={' '.join(paths)}"]
+    cov_paths = [cov_source(path) for path in paths]
+    lines = [
+        f"mode={mode}",
+        f"test_paths={' '.join(paths)}",
+        f"cov_paths={' '.join(cov_paths)}",
+    ]
     if github_output := os.environ.get("GITHUB_OUTPUT"):
         with open(github_output, "a", encoding="utf-8") as handle:
             handle.write("\n".join(lines) + "\n")
