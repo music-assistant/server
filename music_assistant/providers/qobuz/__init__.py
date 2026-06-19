@@ -521,6 +521,23 @@ class QobuzProvider(MusicProvider):
             allow_seek=True,
         )
 
+    async def on_streamed(
+        self,
+        streamdetails: StreamDetails,
+    ) -> None:
+        """Handle callback when an item completed streaming."""
+        if self._user_auth_info is None:
+            msg = "User auth info not available"
+            raise LoginFailed(msg)
+        user_id = self._user_auth_info["user"]["id"]
+        async with self.throttler.bypass():
+            await self._get_data(
+                "track/reportStreamingEnd",
+                user_id=user_id,
+                track_id=str(streamdetails.item_id),
+                duration=try_parse_int(streamdetails.seconds_streamed),
+            )
+
     async def _report_playback_started(self, streamdata: dict[str, Any]) -> None:
         """Report playback start to qobuz."""
         # TODO: need to figure out if the streamed track is purchased by user
@@ -550,23 +567,6 @@ class QobuzProvider(MusicProvider):
         ]
         async with self.throttler.bypass():
             await self._post_data("track/reportStreamingStart", data=events)
-
-    async def on_streamed(
-        self,
-        streamdetails: StreamDetails,
-    ) -> None:
-        """Handle callback when an item completed streaming."""
-        if self._user_auth_info is None:
-            msg = "User auth info not available"
-            raise LoginFailed(msg)
-        user_id = self._user_auth_info["user"]["id"]
-        async with self.throttler.bypass():
-            await self._get_data(
-                "track/reportStreamingEnd",
-                user_id=user_id,
-                track_id=str(streamdetails.item_id),
-                duration=try_parse_int(streamdetails.seconds_streamed),
-            )
 
     def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:
         """Parse qobuz artist object to generic layout."""

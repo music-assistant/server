@@ -80,8 +80,6 @@ music_assistant/providers/lastfm_recommendations/__init__.py	4
 music_assistant/providers/lastfm_recommendations/api_client.py	12
 music_assistant/providers/lastfm_recommendations/recommendations.py	2
 music_assistant/providers/local_audio/sendspin_bridge.py	2
-music_assistant/providers/loudness_analysis/provider.py	1
-music_assistant/providers/lrclib/__init__.py	1
 music_assistant/providers/mpd/player.py	7
 music_assistant/providers/msx_bridge/http_server.py	10
 music_assistant/providers/msx_bridge/player.py	9
@@ -106,10 +104,7 @@ music_assistant/providers/plex_connect/gdm.py	2
 music_assistant/providers/plex_connect/playback.py	10
 music_assistant/providers/plex_connect/queue_commands.py	3
 music_assistant/providers/plex_connect/server.py	8
-music_assistant/providers/podcastfeed/__init__.py	1
-music_assistant/providers/qobuz/__init__.py	1
 music_assistant/providers/qqmusic/__init__.py	22
-music_assistant/providers/radiobrowser/__init__.py	1
 music_assistant/providers/samsung_wam/features/grouping/coordinator.py	1
 music_assistant/providers/samsung_wam/features/state_sync/handler.py	8
 music_assistant/providers/sendspin/bridge_role.py	7
@@ -122,7 +117,6 @@ music_assistant/providers/smart_playlist/__init__.py	8
 music_assistant/providers/snapcast/control.py	1
 music_assistant/providers/snapcast/player.py	5
 music_assistant/providers/snapcast/provider.py	10
-music_assistant/providers/somafm/__init__.py	1
 music_assistant/providers/sonic_analysis/__init__.py	3
 music_assistant/providers/sonic_analysis/vendored_clap/clap_wrapper.py	4
 music_assistant/providers/sonic_analysis/vendored_clap/models/htsat.py	7
