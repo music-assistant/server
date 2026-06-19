@@ -89,7 +89,8 @@ async def async_aiohttp_proxy_stream(
 
 
 class MassAsyncDNSResolver(AsyncDualMDNSResolver):
-    """Music Assistant AsyncDNSResolver.
+    """
+    Music Assistant AsyncDNSResolver.
 
     This is a wrapper around the AsyncDualMDNSResolver to only
     close the resolver when the Music Assistant instance is closed.
@@ -143,7 +144,8 @@ class ChunkAsyncStreamIterator:
 
 
 class MusicAssistantTCPConnector(aiohttp.TCPConnector):
-    """Music Assistant TCP Connector.
+    """
+    Music Assistant TCP Connector.
 
     Same as aiohttp.TCPConnector but with a longer cleanup_closed timeout.
 

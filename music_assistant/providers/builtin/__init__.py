@@ -582,7 +582,8 @@ class BuiltinProvider(MusicProvider):
             )
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
-        """Create a new playlist on provider with given name.
+        """
+        Create a new playlist on provider with given name.
 
         The playlist name is used as the filename (sanitized for filesystem safety).
         """
@@ -614,7 +615,8 @@ class BuiltinProvider(MusicProvider):
         return generate_m3u("Radio Stations", items)
 
     async def import_playlist(self, m3u_data: str) -> Playlist:
-        """Import a playlist from M3U8 format.
+        """
+        Import a playlist from M3U8 format.
 
         Creates a new playlist and populates it with items from the M3U data.
         Items with valid MA URIs are added directly. Plain URLs or unresolvable
@@ -644,7 +646,8 @@ class BuiltinProvider(MusicProvider):
         return await self.get_playlist(playlist.item_id)
 
     async def import_radios(self, m3u_data: str) -> int:
-        """Import radio stations from M3U8 format.
+        """
+        Import radio stations from M3U8 format.
 
         :param m3u_data: The M3U8 data as a string.
         """
@@ -676,7 +679,8 @@ class BuiltinProvider(MusicProvider):
         prov_playlist_id: str,
         match_providers: list[str] | None = None,
     ) -> None:
-        """Match imported playlist tracks against available providers.
+        """
+        Match imported playlist tracks against available providers.
 
         Iterates through playlist items whose provider is unavailable,
         searching other providers for matches using metadata stored in
@@ -748,7 +752,8 @@ class BuiltinProvider(MusicProvider):
         item: PlaylistItem,
         match_providers: list[str] | None = None,
     ) -> str | None:
-        """Search providers for a track matching the given PlaylistItem metadata.
+        """
+        Search providers for a track matching the given PlaylistItem metadata.
 
         Uses ISRC/MusicBrainz ID for exact matching first, then falls back
         to fuzzy title/artist/duration matching.
@@ -814,7 +819,8 @@ class BuiltinProvider(MusicProvider):
         candidate: Track,
         item: PlaylistItem,
     ) -> int:
-        """Score how well a candidate track matches the PlaylistItem metadata.
+        """
+        Score how well a candidate track matches the PlaylistItem metadata.
 
         Returns 0 for no match, higher scores for better matches.
         ISRC or MusicBrainz Recording ID match returns 10 (maximum).
@@ -856,7 +862,8 @@ class BuiltinProvider(MusicProvider):
         metadata: dict[str, str],
         item: PlaylistItem,
     ) -> int:
-        """Score fuzzy metadata fields (title, artist, album, duration, version).
+        """
+        Score fuzzy metadata fields (title, artist, album, duration, version).
 
         :param candidate: The track from search results.
         :param artist_name: Parsed artist name from EXTINF, or None.
@@ -1005,7 +1012,8 @@ class BuiltinProvider(MusicProvider):
         return path
 
     async def _resolve_url(self, url: str) -> str:
-        """Resolve a URL to the actual stream URL.
+        """
+        Resolve a URL to the actual stream URL.
 
         ffprobe cannot analyze PLS/M3U files directly as it sees them as text.
         This method extracts the actual audio stream URL from playlist files.

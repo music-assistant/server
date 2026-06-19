@@ -216,7 +216,8 @@ class SpotifyProvider(MusicProvider):
                 yield audiobook
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
-        """Retrieve playlists from the provider.
+        """
+        Retrieve playlists from the provider.
 
         Note: We use the global session here because playlists like "Daily Mix"
         are only returned when using the non-dev (global) token.

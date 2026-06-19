@@ -796,7 +796,8 @@ class PlexProvider(MusicProvider):
         media_types: list[MediaType],
         limit: int = 20,
     ) -> SearchResults:
-        """Perform search on the plex library.
+        """
+        Perform search on the plex library.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include.

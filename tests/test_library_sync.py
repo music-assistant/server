@@ -27,7 +27,8 @@ def create_provider_mapping(
     in_library: bool | None = None,
     available: bool = True,
 ) -> ProviderMapping:
-    """Create a ProviderMapping with sensible defaults.
+    """
+    Create a ProviderMapping with sensible defaults.
 
     :param provider_instance: The provider instance ID.
     :param item_id: The item ID on the provider.
@@ -52,7 +53,8 @@ def create_mock_album(
     name: str = "Test Album",
     favorite: bool = False,
 ) -> Mock:
-    """Create a mock Album media item.
+    """
+    Create a mock Album media item.
 
     :param item_id: The library item ID.
     :param provider_mappings: The provider mappings to set.
@@ -74,7 +76,8 @@ def create_mock_album(
 
 
 async def test_add_item_to_library_sets_in_library_true() -> None:
-    """Test that add_item_to_library sets in_library=True on all provider mappings.
+    """
+    Test that add_item_to_library sets in_library=True on all provider mappings.
 
     When a user adds an item from MA search, every mapping should be optimistically
     marked as in_library=True before being stored in the database.
@@ -107,7 +110,8 @@ async def test_add_item_to_library_sets_in_library_true() -> None:
 
 
 async def test_add_item_to_library_sets_in_library_even_when_sync_back_disabled() -> None:
-    """Test that in_library=True is set even when sync back to provider is disabled.
+    """
+    Test that in_library=True is set even when sync back to provider is disabled.
 
     The optimistic set should happen unconditionally, but library_add should NOT be called.
     """
@@ -140,7 +144,8 @@ async def test_add_item_to_library_sets_in_library_even_when_sync_back_disabled(
 
 
 async def test_add_item_to_library_sets_in_library_even_when_edit_not_supported() -> None:
-    """Test that in_library=True is set even when provider doesn't support library edit.
+    """
+    Test that in_library=True is set even when provider doesn't support library edit.
 
     The optimistic set should happen unconditionally, but library_add should NOT be called.
     """
@@ -171,7 +176,8 @@ async def test_add_item_to_library_sets_in_library_even_when_edit_not_supported(
 
 
 async def test_add_album_imports_tracks_when_enabled() -> None:
-    """Test that adding an album imports its tracks when the setting is enabled.
+    """
+    Test that adding an album imports its tracks when the setting is enabled.
 
     The "Import album tracks" behavior previously only triggered during a (scheduled)
     library sync. Adding an album manually should mirror it when the provider has the
@@ -241,7 +247,8 @@ async def test_add_album_does_not_import_tracks_when_disabled() -> None:
 
 
 async def test_add_album_only_imports_tracks_for_added_instance() -> None:
-    """Test that track import skips auto-added mappings for other provider instances.
+    """
+    Test that track import skips auto-added mappings for other provider instances.
 
     match_provider_instances adds extra mappings (in_library=None) for sibling
     instances of the same provider. Those must not trigger a track import; only the
@@ -291,7 +298,8 @@ async def test_add_album_only_imports_tracks_for_added_instance() -> None:
 
 
 async def test_refresh_item_preserves_in_library_state() -> None:
-    """Test that refresh_item restores in_library=True after provider returns None.
+    """
+    Test that refresh_item restores in_library=True after provider returns None.
 
     When refreshing, the provider returns a fresh item with in_library=None.
     The cached value (True) from the original library item should be restored.
@@ -334,7 +342,8 @@ async def test_refresh_item_preserves_in_library_state() -> None:
 
 
 async def test_refresh_item_preserves_in_library_false() -> None:
-    """Test that refresh_item restores in_library=False after provider returns None.
+    """
+    Test that refresh_item restores in_library=False after provider returns None.
 
     If a mapping was previously marked as in_library=False (removed from provider),
     this state should be preserved through a refresh.
@@ -375,7 +384,8 @@ async def test_refresh_item_preserves_in_library_false() -> None:
 
 
 async def test_refresh_item_respects_provider_set_in_library() -> None:
-    """Test that provider-explicit in_library value is not overwritten by cache.
+    """
+    Test that provider-explicit in_library value is not overwritten by cache.
 
     If the provider explicitly sets in_library=False on a refreshed mapping,
     that value should win over the cached True value.
@@ -418,7 +428,8 @@ async def test_refresh_item_respects_provider_set_in_library() -> None:
 
 
 async def test_refresh_item_non_library_item_skips_update() -> None:
-    """Test that refresh_item returns early for non-library items.
+    """
+    Test that refresh_item returns early for non-library items.
 
     When the media_item is not from the library (provider != 'library'),
     update_item_in_library should not be called.
@@ -451,7 +462,8 @@ async def test_refresh_item_non_library_item_skips_update() -> None:
 
 
 async def test_sync_library_marks_removed_item_in_library_false() -> None:
-    """Test that sync marks removed items as in_library=False.
+    """
+    Test that sync marks removed items as in_library=False.
 
     When an item was in the previous sync but is no longer in the current sync,
     its provider mapping should be set to in_library=False.
@@ -501,7 +513,8 @@ async def test_sync_library_marks_removed_item_in_library_false() -> None:
 
 
 async def test_sync_library_deletions_disabled_keeps_item() -> None:
-    """Test that items remain visible when sync deletions is disabled.
+    """
+    Test that items remain visible when sync deletions is disabled.
 
     When library_sync_deletions_enabled returns False, items removed from the provider
     should NOT be marked as in_library=False.
@@ -544,7 +557,8 @@ async def test_sync_library_deletions_disabled_keeps_item() -> None:
 
 
 async def test_sync_library_deletion_unmarks_favorite_when_no_other_providers() -> None:
-    """Test that favorite is unset when no other providers have the item in library.
+    """
+    Test that favorite is unset when no other providers have the item in library.
 
     When an item is removed from the only provider that had it in-library,
     and the item is favorited, favorite should be set to False.
@@ -573,7 +587,8 @@ async def test_sync_library_deletion_unmarks_favorite_when_no_other_providers() 
 
 
 async def test_sync_library_deletion_keeps_favorite_when_other_provider_has_it() -> None:
-    """Test that favorite is kept when another provider still has the item in library.
+    """
+    Test that favorite is kept when another provider still has the item in library.
 
     When an item is removed from one provider but another provider still has
     in_library=True, the favorite status should remain unchanged.
@@ -613,7 +628,8 @@ async def test_sync_library_deletion_keeps_favorite_when_other_provider_has_it()
 
 
 async def test_sync_library_always_stores_cache_regardless_of_deletion_setting() -> None:
-    """Test that cache is always updated with current IDs even when deletions are disabled.
+    """
+    Test that cache is always updated with current IDs even when deletions are disabled.
 
     The cache stores the current set of library item IDs for comparison on the next sync.
     This must happen regardless of whether deletion sync is enabled.
@@ -653,7 +669,8 @@ def _create_controller_for_filter_tests() -> Mock:
 
 
 async def test_apply_filters_in_library_only_without_provider_filter() -> None:
-    """Test that in_library_only adds a JOIN on provider_mappings with in_library=1.
+    """
+    Test that in_library_only adds a JOIN on provider_mappings with in_library=1.
 
     When no provider_filter is set but in_library_only=True, a JOIN on
     provider_mappings should be added with the in_library=1 condition.
@@ -680,7 +697,8 @@ async def test_apply_filters_in_library_only_without_provider_filter() -> None:
 
 
 async def test_apply_filters_in_library_only_with_provider_filter() -> None:
-    """Test that in_library_only with provider_filter adds both conditions to the JOIN.
+    """
+    Test that in_library_only with provider_filter adds both conditions to the JOIN.
 
     When both in_library_only=True and a provider_filter are set, the JOIN should
     include both the provider condition and the in_library=1 condition.
@@ -708,7 +726,8 @@ async def test_apply_filters_in_library_only_with_provider_filter() -> None:
 
 
 async def test_apply_filters_no_in_library_filter_by_default() -> None:
-    """Test that no provider_mappings JOIN is added when in_library_only is False.
+    """
+    Test that no provider_mappings JOIN is added when in_library_only is False.
 
     Without a provider_filter or in_library_only flag, no JOIN on
     provider_mappings should be added.
@@ -733,7 +752,8 @@ async def test_apply_filters_no_in_library_filter_by_default() -> None:
 
 
 async def test_apply_filters_provider_filter_without_in_library() -> None:
-    """Test that provider_filter without in_library_only omits the in_library clause.
+    """
+    Test that provider_filter without in_library_only omits the in_library clause.
 
     When a provider_filter is set but in_library_only is False, the JOIN should
     filter by provider but NOT include the in_library=1 condition.
@@ -777,7 +797,8 @@ def mock_controller() -> Mock:
 async def test_set_provider_mappings_overwrite_deletes_and_reinserts(
     mock_controller: Mock,
 ) -> None:
-    """Test that overwrite=True deletes existing mappings before upserting.
+    """
+    Test that overwrite=True deletes existing mappings before upserting.
 
     :param mock_controller: Mock MediaControllerBase instance.
     """
@@ -792,7 +813,8 @@ async def test_set_provider_mappings_overwrite_deletes_and_reinserts(
 async def test_set_provider_mappings_upsert_preserves_null_in_library(
     mock_controller: Mock,
 ) -> None:
-    """Test that in_library=None is excluded from the upsert dict.
+    """
+    Test that in_library=None is excluded from the upsert dict.
 
     When in_library is None, it should not be included in the dict passed to upsert,
     allowing the database's existing value to be preserved.
@@ -811,7 +833,8 @@ async def test_set_provider_mappings_upsert_preserves_null_in_library(
 async def test_set_provider_mappings_upsert_writes_explicit_in_library(
     mock_controller: Mock,
 ) -> None:
-    """Test that an explicit in_library value is included in the upsert dict.
+    """
+    Test that an explicit in_library value is included in the upsert dict.
 
     When in_library is explicitly True or False, it should be written to the database.
 
@@ -1001,7 +1024,8 @@ def test_select_provider_id_falls_back_to_plugin_when_no_allowed_music() -> None
 
 
 async def test_get_library_item_does_not_filter_in_library() -> None:
-    """Test that get_library_item always passes in_library_only=False.
+    """
+    Test that get_library_item always passes in_library_only=False.
 
     Single-item lookups must find items regardless of in_library state.
     """

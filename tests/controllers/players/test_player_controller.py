@@ -1,4 +1,5 @@
-"""Tests for PlayerController high-level operations.
+"""
+Tests for PlayerController high-level operations.
 
 This module tests:
 - cmd_set_members validation and execution
@@ -366,7 +367,8 @@ class TestUnregisterCleanup:
 
 
 def _set_play_media_override(mock_mass: MagicMock, value: bool) -> None:
-    """Configure get_raw_player_config_value to return ``value`` for the play-media override key.
+    """
+    Configure get_raw_player_config_value to return ``value`` for the play-media override key.
 
     Other keys keep the existing defaults from the shared fixture. Use this in
     tests for ``play_media`` override behavior so the legacy/new branch is
@@ -385,7 +387,8 @@ def _set_play_media_override(mock_mass: MagicMock, value: bool) -> None:
 
 
 class TestCmdUngroupNewBranches:
-    """Regression tests for the post-refactor cmd_ungroup flow.
+    """
+    Regression tests for the post-refactor cmd_ungroup flow.
 
     The refactor changed two things:
 
@@ -486,7 +489,8 @@ class TestCmdUngroupNewBranches:
 
 
 class TestPlayMediaOverride:
-    """Tests for the new CONF_PLAY_MEDIA_OVERRIDES_GROUP behavior.
+    """
+    Tests for the new CONF_PLAY_MEDIA_OVERRIDES_GROUP behavior.
 
     When a captured child player receives an explicit play_media command, the
     default behavior is to *release* it from the active group/sync and play

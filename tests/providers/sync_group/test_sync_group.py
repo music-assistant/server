@@ -613,7 +613,8 @@ class TestPlayerFilters:
         assert "blocked" not in sgp._attr_group_members
 
     def test_can_group_with_current_members_exempt_from_filter(self) -> None:
-        """A current member not listed in allowed_members must still seed candidates.
+        """
+        A current member not listed in allowed_members must still seed candidates.
 
         Regression: filter must constrain JOINERS only, not gate the seed of
         current members. Otherwise enabling a filter that doesn't list a current
@@ -738,7 +739,8 @@ class TestPresetMembersInDynamicGroup:
         assert "preset_b" not in sgp._attr_group_members
 
     def test_preset_member_bypasses_allow_list_filter(self) -> None:
-        """A preset member that was unjoined must still pass the allow-list filter.
+        """
+        A preset member that was unjoined must still pass the allow-list filter.
 
         Regression: after unjoining a preset member, the user must be able to
         re-add it via the OSD even when allowed_members doesn't list it.

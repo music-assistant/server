@@ -1,4 +1,5 @@
-"""The Musicbrainz Metadata provider for Music Assistant.
+"""
+The Musicbrainz Metadata provider for Music Assistant.
 
 At this time only used for retrieval of ID's but to be expanded to fetch metadata too.
 """
@@ -548,7 +549,8 @@ class MusicbrainzProvider(MetadataProvider):
     async def get_release_group_by_track_name(
         self, artist_name: str, track_name: str
     ) -> tuple[MusicBrainzArtist, list[MusicBrainzReleaseGroup]] | None:
-        """Find release groups for a track by searching MusicBrainz recordings.
+        """
+        Find release groups for a track by searching MusicBrainz recordings.
 
         Returns matching release groups sorted by release date,
         prioritizing the earliest original recording to find the correct releases.
@@ -628,7 +630,8 @@ class MusicbrainzProvider(MetadataProvider):
     def _get_release_groups_with_dates(
         self, recording: dict[str, Any], track_name: str
     ) -> list[tuple[MusicBrainzReleaseGroup, str]]:
-        """Collect release groups for a recording with their release dates.
+        """
+        Collect release groups for a recording with their release dates.
 
         Filters out compilations and other secondary-type releases.
         For singles, only includes those where the title matches the track name.

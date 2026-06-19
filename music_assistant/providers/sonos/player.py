@@ -850,7 +850,8 @@ class SonosPlayer(Player):
         )
 
     def _extract_mac_from_player_id(self) -> str | None:
-        """Extract MAC address from Sonos player_id.
+        """
+        Extract MAC address from Sonos player_id.
 
         Sonos player_ids follow the format RINCON_XXXXXXXXXXXX01400 where
         the middle 12 hex characters represent the MAC address.

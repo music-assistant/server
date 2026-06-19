@@ -75,7 +75,8 @@ async def test_compute_image_id_is_deterministic(metadata_controller: MetaDataCo
 async def test_image_id_matches_thumb_and_palette_cache_key(
     metadata_controller: MetaDataController,
 ) -> None:
-    """image_id must equal create_thumb_hash(provider, path).
+    """
+    image_id must equal create_thumb_hash(provider, path).
 
     The thumbnail and color-palette caches both key off
     `create_thumb_hash(provider, path)`. If `compute_image_id` ever diverged

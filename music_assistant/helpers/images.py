@@ -135,7 +135,8 @@ _IMAGEPROXY_V2_PREFIX = "/imageproxy/"
 
 
 def _extract_imageproxy_params(url: str) -> tuple[str, str] | None:
-    """Extract (path, provider) from a *legacy* /imageproxy?... URL.
+    """
+    Extract (path, provider) from a *legacy* /imageproxy?... URL.
 
     :param url: The URL to check for imageproxy format.
     :return: Tuple of (path, provider) if this is an imageproxy URL, None otherwise.
@@ -163,7 +164,8 @@ def _extract_imageproxy_params(url: str) -> tuple[str, str] | None:
 
 
 def _extract_imageproxy_id(url: str) -> str | None:
-    """Return the 64-hex image_id from a /imageproxy/<id> URL, or None.
+    """
+    Return the 64-hex image_id from a /imageproxy/<id> URL, or None.
 
     The path must match the canonical shape `/imageproxy/<id>` (optionally
     with a single trailing slash) — extra segments are rejected so this
@@ -207,7 +209,8 @@ def player_image_url(mass: MusicAssistant, url: str | None) -> str | None:
 async def get_image_data(
     mass: MusicAssistant, path_or_url: str, provider: str, *, _depth: int = 0
 ) -> bytes:
-    """Retrieve image data from a path or URL.
+    """
+    Retrieve image data from a path or URL.
 
     :param mass: The MusicAssistant instance.
     :param path_or_url: The image path, URL, or base64 data URI.
@@ -307,7 +310,8 @@ async def get_image_thumb(
     image_format: str = "PNG",
     flatten_transparency: bool = False,
 ) -> bytes:
-    """Get (optimized) thumbnail from image url.
+    """
+    Get (optimized) thumbnail from image url.
 
     Uses a two-tier cache (in-memory FIFO + on-disk) keyed by a hash of
     provider + path so that repeated requests never trigger ffmpeg or
@@ -381,7 +385,8 @@ async def _generate_and_cache_thumb(
     cache_filepath: str,
     flatten_transparency: bool = False,
 ) -> bytes:
-    """Generate a thumbnail, persist it on disk, and return the bytes.
+    """
+    Generate a thumbnail, persist it on disk, and return the bytes.
 
     :param mass: The MusicAssistant instance.
     :param path_or_url: Path or URL to the source image.
@@ -445,7 +450,8 @@ async def _generate_and_cache_thumb(
 
 
 async def cleanup_thumb_cache(cache_path: str, max_size_bytes: int) -> int:
-    """Remove oldest cached thumbnails when total size exceeds the limit.
+    """
+    Remove oldest cached thumbnails when total size exceeds the limit.
 
     :param cache_path: The base cache directory (mass.cache_path).
     :param max_size_bytes: Maximum allowed total size in bytes.

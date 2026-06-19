@@ -22,7 +22,8 @@ class GroupingHandler(WamPlayerFeatureBase):
     @retry_command()
     @handle_pywam_errors
     async def form_group(self, group_children: list[WamPlayer], group_name: str) -> None:
-        """Instruct the speaker to form a group with specified members.
+        """
+        Instruct the speaker to form a group with specified members.
 
         :param group_children: A list of WamPlayer instances to join.
         :param group_name: The name to apply to the newly formed group.

@@ -228,7 +228,8 @@ class ITunesPodcastsProvider(MusicProvider):
         return podcast_list
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
-        """Get library podcasts.
+        """
+        Get library podcasts.
 
         We use get_library_podcasts to sync all feeds which have been added to the MA library
         by the user via the search function. The provider itself does not offer a real library.
@@ -313,7 +314,8 @@ class ITunesPodcastsProvider(MusicProvider):
         raise MediaNotFoundError("Episode not found")
 
     async def recommendations(self) -> list[RecommendationFolder]:
-        """Get recommendations.
+        """
+        Get recommendations.
 
         This provider uses a list of top podcasts for the configured country.
         """

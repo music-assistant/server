@@ -34,7 +34,8 @@ MAX_RETRY_AFTER = 3600
 
 
 def parse_retry_after(value: str | None) -> int:
-    """Parse a Retry-After header value per RFC 9110 Section 10.2.3.
+    """
+    Parse a Retry-After header value per RFC 9110 Section 10.2.3.
 
     Supports both valid formats: delay-seconds (integer) and HTTP-date.
 
@@ -58,7 +59,8 @@ def parse_retry_after(value: str | None) -> int:
 
 
 class Throttler:
-    """asyncio_throttle (https://github.com/hallazzang/asyncio-throttle).
+    """
+    asyncio_throttle (https://github.com/hallazzang/asyncio-throttle).
 
     With improvements:
     - Accurate sleep without "busy waiting" (PR #4)

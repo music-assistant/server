@@ -400,7 +400,8 @@ for more details.
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
-        """Get supported features.
+        """
+        Get supported features.
 
         ABS supports multiple libraries, but they must be of the same media type. If we only
         have a single library of a media type, mapping the playlist creation is unambiguous.
@@ -535,7 +536,8 @@ for more details.
 
     @handle_refresh_token
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
-        """Create a playlist in ABS.
+        """
+        Create a playlist in ABS.
 
         This method may only be called, if we have not more than one library per media item in ABS.
         """
@@ -623,7 +625,8 @@ for more details.
 
     @handle_refresh_token
     async def library_add(self, item: MediaItemType) -> bool:
-        """Add library item.
+        """
+        Add library item.
 
         This method is only called, if this item in question is not part of your library
         yet, e.g. a "top 500 mix playlist". This doesn't exist in ABS.
@@ -635,7 +638,8 @@ for more details.
         return False
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
-        """Retrieve library/subscribed podcasts from the provider.
+        """
+        Retrieve library/subscribed podcasts from the provider.
 
         Minified podcast information is enough.
         """
@@ -686,7 +690,8 @@ for more details.
         )
 
     async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
-        """Get all podcast episodes of podcast.
+        """
+        Get all podcast episodes of podcast.
 
         Adds progress information.
         """
@@ -750,7 +755,8 @@ for more details.
         raise MediaNotFoundError("Episode not found")
 
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
-        """Get Audiobook libraries.
+        """
+        Get Audiobook libraries.
 
         Need expanded version for chapters.
         """
@@ -789,7 +795,8 @@ for more details.
 
     @handle_refresh_token
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
-        """Get a single audiobook.
+        """
+        Get a single audiobook.
 
         Progress is added here.
         """
@@ -822,7 +829,8 @@ for more details.
         session_helper: SessionHelper,
         media_type: MediaType,
     ) -> StreamDetails:
-        """Streamdetails audiobook.
+        """
+        Streamdetails audiobook.
 
         We always use a custom stream type, also for single file, such
         that we can handle an ffmpeg error and refresh our tokens.
@@ -1204,7 +1212,8 @@ for more details.
         media_item: MediaItemType,
         is_playing: bool = False,
     ) -> None:
-        """Update progress in Audiobookshelf.
+        """
+        Update progress in Audiobookshelf.
 
         In our case media_type may have 3 values:
             - PODCAST
@@ -1323,7 +1332,8 @@ for more details.
 
     @handle_refresh_token
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse for audiobookshelf.
+        """
+        Browse for audiobookshelf.
 
         Generates this view:
         Library_Name_A (Audiobooks)
@@ -1761,7 +1771,8 @@ for more details.
     async def _socket_abs_user_item_progress_updated(
         self, id_: str, progress: MediaProgress
     ) -> None:
-        """To update continue listening.
+        """
+        To update continue listening.
 
         ABS reports every 15s and immediately on play state change.
         This callback is called per item if a progress is changed:
@@ -1866,7 +1877,8 @@ for more details.
         return known_ids
 
     async def _set_playlog_from_user(self, user: User) -> None:
-        """Update on user callback.
+        """
+        Update on user callback.
 
         User holds also all media progresses specific to that user.
 

@@ -133,7 +133,8 @@ class ChromecastPlayer(Player):
 
     @staticmethod
     def _is_google_device(cast_info: ChromecastInfo) -> bool:
-        """Check if a device is a Google device with native Cast support.
+        """
+        Check if a device is a Google device with native Cast support.
 
         Google devices (Chromecast, Nest, Google Home) have native Cast support
         and should be exposed as PlayerType.PLAYER. Non-Google devices with Cast

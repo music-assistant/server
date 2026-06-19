@@ -1,4 +1,5 @@
-"""Play queue command handlers for Plex remote control.
+"""
+Play queue command handlers for Plex remote control.
 
 Handles playMedia, createPlayQueue and refreshPlayQueue HTTP commands.
 """
@@ -66,7 +67,8 @@ class QueueCommandsMixin:
         async def _create_plex_playqueue_from_ma(self) -> None: ...
 
     async def _play_single_track(self, player_id: str, key: str) -> None:
-        """Resolve a single Plex track key and play it as a fresh (replaced) queue.
+        """
+        Resolve a single Plex track key and play it as a fresh (replaced) queue.
 
         Used as the fallback whenever loading a full Plex play queue fails.
 
@@ -81,7 +83,8 @@ class QueueCommandsMixin:
         )
 
     async def _fetch_full_play_queue(self, queue_id: str) -> PlayQueue | None:
-        """Fetch a PlayQueue, paginating past the server's per-request window cap.
+        """
+        Fetch a PlayQueue, paginating past the server's per-request window cap.
 
         The Plex server caps each response to ~200 items regardless of the requested
         window size. We use playQueueTotalCount to detect truncation and keep fetching
@@ -149,7 +152,8 @@ class QueueCommandsMixin:
         return playqueue
 
     def _source_key_from_play_queue_uri(self, source_uri: str) -> str | None:
-        """Extract a Plex library key from a playQueueSourceURI string.
+        """
+        Extract a Plex library key from a playQueueSourceURI string.
 
         Plex encodes the source as ``library:///directory/ENCODED_PATH``. We decode it
         to a plain library path that :meth:`_resolve_plex_item` can use.
@@ -180,7 +184,8 @@ class QueueCommandsMixin:
         source_uri: str,
         offset: int,
     ) -> bool:
-        """Load a shuffled PlayQueue's source in original order, then defer shuffle to MA.
+        """
+        Load a shuffled PlayQueue's source in original order, then defer shuffle to MA.
 
         When Plex reports a shuffled PlayQueue the items are already in Plex's shuffled
         order. Loading them directly would cause MA to shuffle an already-shuffled list.
@@ -222,7 +227,8 @@ class QueueCommandsMixin:
             return False
 
     async def _resolve_plex_item(self, key: str) -> Any:
-        """Resolve a Plex key to a Music Assistant media item.
+        """
+        Resolve a Plex key to a Music Assistant media item.
 
         :param key: The Plex key to resolve.
         """
@@ -255,7 +261,8 @@ class QueueCommandsMixin:
         shuffle: bool,
         offset: int,
     ) -> None:
-        """Fetch a Plex PlayQueue and start playback, loading remaining tracks in the background.
+        """
+        Fetch a Plex PlayQueue and start playback, loading remaining tracks in the background.
 
         :param player_id: The Music Assistant player ID.
         :param container_key: The Plex container key (e.g. /playQueues/123).
@@ -344,7 +351,8 @@ class QueueCommandsMixin:
                 await self._play_single_track(player_id, starting_key)
 
     async def handle_play_media(self, request: web.Request) -> web.Response:
-        """Handle playMedia command from Plex controller.
+        """
+        Handle playMedia command from Plex controller.
 
         Plexamp sends various parameters:
         - key: The item to play (track, album, playlist, etc.)
@@ -426,7 +434,8 @@ class QueueCommandsMixin:
             self._updating_from_plex = False
 
     async def handle_create_play_queue(self, request: web.Request) -> web.Response:
-        """Handle createPlayQueue command from Plex controller.
+        """
+        Handle createPlayQueue command from Plex controller.
 
         Creates a new play queue from a URI (album, playlist, artist tracks, etc.)
         and optionally applies shuffle.
@@ -516,7 +525,8 @@ class QueueCommandsMixin:
             self._updating_from_plex = False
 
     async def handle_refresh_play_queue(self, request: web.Request) -> web.Response:
-        """Handle refreshPlayQueue command from Plex controller.
+        """
+        Handle refreshPlayQueue command from Plex controller.
 
         Called when the play queue is modified (items added, removed, reordered).
         Syncs the updated queue state to MA while preserving current playback.

@@ -319,7 +319,8 @@ def _make_mock_adapter(
     ipv4_addrs: list[str] | None = None,
     ipv6_addrs: list[tuple[str, int, int]] | None = None,
 ) -> MagicMock:
-    """Create a mock ifaddr.Adapter.
+    """
+    Create a mock ifaddr.Adapter.
 
     :param name: Adapter name.
     :param ipv4_addrs: List of IPv4 address strings.

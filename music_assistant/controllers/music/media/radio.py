@@ -51,7 +51,8 @@ class RadioController(MediaControllerBase[Radio]):
         return generate_m3u("Radio Stations", items)
 
     async def import_radios(self, m3u_data: str) -> int:
-        """Import radio stations from M3U8 format.
+        """
+        Import radio stations from M3U8 format.
 
         :param m3u_data: The M3U8 data as a string.
         """
@@ -202,7 +203,8 @@ class RadioController(MediaControllerBase[Radio]):
         return matches
 
     async def match_providers(self, db_radio: Radio) -> None:
-        """Try to find match on all (streaming) providers for the provided (database) radio.
+        """
+        Try to find match on all (streaming) providers for the provided (database) radio.
 
         This is used to link objects of different providers/qualities together.
         """

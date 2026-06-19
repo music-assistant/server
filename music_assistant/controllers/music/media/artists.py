@@ -88,7 +88,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         album_artists_only: bool = False,
         **kwargs: Any,
     ) -> list[Artist]:
-        """Get in-database (album) artists.
+        """
+        Get in-database (album) artists.
 
         :param favorite: Filter by favorite status.
         :param search: Filter by search query.
@@ -841,7 +842,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         return matches
 
     async def match_providers(self, db_artist: Artist) -> None:
-        """Try to find matching artists on all providers for the provided (database) item_id.
+        """
+        Try to find matching artists on all providers for the provided (database) item_id.
 
         This is used to link objects of different providers together.
         """

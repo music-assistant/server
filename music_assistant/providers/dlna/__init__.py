@@ -1,4 +1,5 @@
-"""DLNA/uPNP Player provider for Music Assistant.
+"""
+DLNA/uPNP Player provider for Music Assistant.
 
 Most of this code is based on the implementation within Home Assistant:
 https://github.com/home-assistant/core/blob/dev/homeassistant/components/dlna_dmr

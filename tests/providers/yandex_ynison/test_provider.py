@@ -53,7 +53,8 @@ from music_assistant.providers.yandex_ynison.ynison_client import YnisonSendErro
 
 
 def _arm_play_media_recorder(provider: YandexYnisonProvider) -> list[tuple[str, str]]:
-    """Replace `play_media` with a recorder and run `create_task` coros inline.
+    """
+    Replace `play_media` with a recorder and run `create_task` coros inline.
 
     Returns the list of (target_id, uri) tuples captured during the test.
     The inline create_task lets the scheduled `play_media` coroutine
@@ -914,7 +915,8 @@ class TestYnisonStateHandling:
     async def test_wait_for_track_change_returns_immediately_if_already_advanced(
         self,
     ) -> None:
-        """If Ynison already advanced before the call, return True without waiting.
+        """
+        If Ynison already advanced before the call, return True without waiting.
 
         Regression: _wait_for_track_change used to clear _track_changed_event
         before checking state, so a state update that arrived between
@@ -1199,7 +1201,8 @@ class TestPCMNormalization:
     async def test_stream_track_provider_unloaded_mid_stream_aborts_cleanly(
         self,
     ) -> None:
-        """Unloaded linked provider mid-stream aborts cleanly (no AttributeError).
+        """
+        Unloaded linked provider mid-stream aborts cleanly (no AttributeError).
 
         Regression: the path between `await _get_stream_details_with_retry`
         and the ffmpeg stream builder used to dereference
@@ -1823,7 +1826,8 @@ class TestPausePlayback:
         provider.mass.players.cmd_stop.assert_awaited_once_with("player1")
 
     async def test_rewrites_active_player_id_after_successful_cmd_stop(self) -> None:
-        """On a successful cmd_stop, `_active_player_id` demotes to the queue id.
+        """
+        On a successful cmd_stop, `_active_player_id` demotes to the queue id.
 
         Queues live on the bare ALSA UUID; bridge wrappers (`spb_*`) do
         not own one. Resume's `play_media(_active_player_id, ...)`
@@ -1854,7 +1858,8 @@ class TestPausePlayback:
         assert provider._externally_paused is True
 
     async def test_cmd_stop_failure_keeps_bridge_id_intact(self) -> None:
-        """A cmd_stop failure must not demote `_active_player_id`.
+        """
+        A cmd_stop failure must not demote `_active_player_id`.
 
         If we demoted to the queue id but cmd_stop never reached MA,
         the next `_activate_playback` would try `play_media(bare_uuid)`
@@ -2122,7 +2127,8 @@ class TestGetStreamDetailsWithRetry:
     async def test_unloaded_provider_raises_login_failed_not_attribute_error(
         self,
     ) -> None:
-        """Linked yandex_music unloaded → LoginFailed, not AttributeError.
+        """
+        Linked yandex_music unloaded → LoginFailed, not AttributeError.
 
         Regression: _yandex_provider can be set to None by the background
         _check_yandex_provider_match task between awaits in this function.
@@ -2261,7 +2267,8 @@ class TestActivatePlayback:
         provider.mass.create_task.assert_called()  # type: ignore[unreachable]
 
     async def test_unpause_after_external_pause_fires_play_media(self) -> None:
-        """Resume after pause schedules play_media for the (queue-id) player.
+        """
+        Resume after pause schedules play_media for the (queue-id) player.
 
         Simulates the post-`_pause_playback` state: `_stream_stop_event`
         set, `_active_player_id` already demoted to the queue id (the
@@ -2686,7 +2693,8 @@ class TestPrefetchOrdering:
 
 
 class TestPrefetchFlowsThroughToStreamDetails:
-    """`get_stream_details` returns the *prefetched* AudioFormat.
+    """
+    `get_stream_details` returns the *prefetched* AudioFormat.
 
     Pins the contract that MA's upstream passthrough path (#3969,
     `_select_audio_source_pcm_format`) honors: MA reads
@@ -2744,7 +2752,8 @@ class TestPrefetchFlowsThroughToStreamDetails:
         assert sd.audio_format.channels == 2
 
     async def test_streamdetails_audio_format_is_fresh_copy_per_call(self) -> None:
-        """Each `get_stream_details` returns a fresh AudioFormat instance.
+        """
+        Each `get_stream_details` returns a fresh AudioFormat instance.
 
         `AudioFormat` is mutable (MA's outer ffmpeg sets `codec_type` in
         place). A shared instance across `get_stream_details` calls
@@ -2790,7 +2799,8 @@ class TestAudioStreamPausedReturn:
 
 
 class TestNaturalEndDifferentiation:
-    """`_signal_track_completion` fires only on clean iterator exhaustion.
+    """
+    `_signal_track_completion` fires only on clean iterator exhaustion.
 
     These tests exercise the post-inner-loop branch via
     ``_wait_for_track_change`` as the outer-loop gate. The previous
@@ -2827,7 +2837,8 @@ class TestNaturalEndDifferentiation:
 
     @staticmethod
     def _gate_outer_loop_after_signal(provider: YandexYnisonProvider) -> None:
-        """`_wait_for_track_change` returns False → outer loop exits.
+        """
+        `_wait_for_track_change` returns False → outer loop exits.
 
         ``natural_end`` calls `_wait_for_track_change`; we use its
         return as the gate so the test terminates AFTER natural_end
@@ -2875,7 +2886,8 @@ class TestNaturalEndDifferentiation:
         assert calls == [1]
 
     async def test_track_change_during_chunk_loop_suppresses_signal(self) -> None:
-        """`_track_changed_event` set mid-stream → natural_end False → no signal.
+        """
+        `_track_changed_event` set mid-stream → natural_end False → no signal.
 
         Uses a two-invocation stub: first call arms `_track_changed_event`
         (the natural_end check we want to verify), second call sets
@@ -2911,7 +2923,8 @@ class TestNaturalEndDifferentiation:
         assert invocation_count == 2  # natural_end must have evaluated on pass 1
 
     async def test_session_change_during_chunk_loop_suppresses_signal(self) -> None:
-        """Session-id rotation mid-stream → `broke_for_session_change` → no signal.
+        """
+        Session-id rotation mid-stream → `broke_for_session_change` → no signal.
 
         The session-mismatch breaks both the inner chunk loop's break
         guard AND the outer-loop's session check, so the generator
@@ -3307,7 +3320,8 @@ class TestStrictModeDeliverySignal:
         assert any("Queue-advance dropped" in r.message for r in caplog.records)
 
     async def test_sync_progress_uses_non_strict_send(self) -> None:
-        """`_sync_progress` heartbeat must call into the non-strict send path.
+        """
+        `_sync_progress` heartbeat must call into the non-strict send path.
 
         Regression guard: heartbeats stay fire-and-forget so a single bad
         send tick does not crash the streaming generator. We verify the

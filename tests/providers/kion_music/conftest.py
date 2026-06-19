@@ -11,7 +11,8 @@ from music_assistant_models.media_items import ItemMapping
 
 
 class ProviderStub:
-    """Minimal provider-like object for parser tests (no Mock).
+    """
+    Minimal provider-like object for parser tests (no Mock).
 
     Provides the minimal interface needed by parse_* functions.
     """
@@ -42,7 +43,8 @@ class _StubConfig:
 
 
 class StreamingProviderStub:
-    """Minimal provider stub for streaming tests (no Mock).
+    """
+    Minimal provider stub for streaming tests (no Mock).
 
     Provides the minimal interface needed by KionMusicStreamingManager.
     """
@@ -95,7 +97,8 @@ class TrackingLogger:
 
 
 class StreamingProviderStubWithTracking:
-    """Provider stub with tracking logger for assertions.
+    """
+    Provider stub with tracking logger for assertions.
 
     Use this when you need to verify logging behavior.
     """

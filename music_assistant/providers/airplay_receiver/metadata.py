@@ -27,7 +27,8 @@ class MetadataReader:
         logger: Logger,
         on_metadata: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
-        """Initialize metadata reader.
+        """
+        Initialize metadata reader.
 
         :param metadata_pipe: Path to the metadata pipe.
         :param logger: Logger instance.
@@ -166,7 +167,8 @@ class MetadataReader:
                 break
 
     def _parse_xml_item(self, item_xml: str) -> None:
-        """Parse a single XML metadata item.
+        """
+        Parse a single XML metadata item.
 
         :param item_xml: XML string containing a metadata item.
         """
@@ -218,7 +220,8 @@ class MetadataReader:
     async def _process_metadata_item(
         self, item_type: str, code: str, data: str | bytes | None
     ) -> None:
-        """Process a metadata item and update current metadata.
+        """
+        Process a metadata item and update current metadata.
 
         :param item_type: Type of metadata (e.g., 'core' or 'ssnc').
         :param code: Metadata code identifier.
@@ -262,7 +265,8 @@ class MetadataReader:
             self._parse_ssnc_metadata(code, data)
 
     def _parse_core_metadata(self, code: str, data: str | bytes) -> None:
-        """Parse core metadata from iTunes/iOS.
+        """
+        Parse core metadata from iTunes/iOS.
 
         :param code: Metadata code identifier.
         :param data: Metadata data.
@@ -298,7 +302,8 @@ class MetadataReader:
                     self.logger.debug("Error parsing duration: %s", err)
 
     def _parse_ssnc_metadata(self, code: str, data: str | bytes) -> None:
-        """Parse shairport-sync metadata.
+        """
+        Parse shairport-sync metadata.
 
         :param code: Metadata code identifier.
         :param data: Metadata data.
@@ -334,7 +339,8 @@ class MetadataReader:
             self._current_metadata["paused"] = False
 
     def _parse_volume(self, data: str) -> None:
-        """Parse volume metadata from shairport-sync.
+        """
+        Parse volume metadata from shairport-sync.
 
         Format: airplay_volume,min_volume,max_volume,mute
         AirPlay volume is in dB, typically ranging from -30.0 (silent) to 0.0 (max).
@@ -358,7 +364,8 @@ class MetadataReader:
             self.logger.debug("Error parsing volume: %s", err)
 
     def _parse_progress(self, data: str) -> None:
-        """Parse progress metadata.
+        """
+        Parse progress metadata.
 
         :param data: Progress data string.
         """

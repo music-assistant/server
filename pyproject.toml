@@ -190,7 +190,6 @@ ignore = [
   "ANN003", # Just annoying, not really useful
   "ANN401", # Opinioated warning on disallowing dynamically typed expressions
   "D203", # Conflicts with other rules
-  "D213", # Conflicts with other rules
   "D417", # False positives in some occasions
   "EM101", # Just annoying, not really useful
   "EM102", # Just annoying, not really useful
@@ -263,6 +262,9 @@ ignore = [
 ]
 
 select = ["ALL"]
+# Enforce the multi-line docstring summary on the second line (the pep257 convention disables both
+# D212 and D213; we re-enable D213 so our "summary starts on the next line" style is checked).
+extend-select = ["D213"]
 
 [tool.ruff.lint.flake8-pytest-style]
 fixture-parentheses = false

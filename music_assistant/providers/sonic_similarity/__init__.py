@@ -1,4 +1,5 @@
-"""Sonic Similarity plugin.
+"""
+Sonic Similarity plugin.
 
 Two similarity engines in one plugin, both backed by usearch HNSW:
 
@@ -65,7 +66,8 @@ async def setup(
 async def _collect_status_text(
     mass: MusicAssistant, instance_id: str | None
 ) -> tuple[str, str, str]:
-    """Return (18-dim, CLAP, text-encoder) label-text triples for the plugin page.
+    """
+    Return (18-dim, CLAP, text-encoder) label-text triples for the plugin page.
 
     Each string is single-line, safe to render in a LABEL config entry, and
     degrades gracefully when the provider is not yet loaded.
@@ -133,7 +135,8 @@ async def get_config_entries(
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider.
+    """
+    Return Config entries to setup this provider.
 
     :param mass: MusicAssistant instance.
     :param instance_id: id of an existing provider instance (None if new instance setup).

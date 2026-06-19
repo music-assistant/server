@@ -683,7 +683,8 @@ def _make_audio_source_queue(
 
 
 class TestAudioSourceElapsedTimeOverride:
-    """Verify PlayerState.elapsed_time prefers AudioSource stream_metadata.
+    """
+    Verify PlayerState.elapsed_time prefers AudioSource stream_metadata.
 
     This pins the behavior of the old PluginSource elapsed_time override
     (test_plugin_source_elapsed_time.py, deleted in the refactor) against
