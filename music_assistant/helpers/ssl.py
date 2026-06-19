@@ -161,7 +161,8 @@ def create_no_verify_ssl_context(
 
 
 def server_context_modern() -> ssl.SSLContext:
-    """Return an SSL context following the Mozilla recommendations.
+    """
+    Return an SSL context following the Mozilla recommendations.
 
     TLS configuration follows the best-practice guidelines specified here:
     https://wiki.mozilla.org/Security/Server_Side_TLS
@@ -180,7 +181,8 @@ def server_context_modern() -> ssl.SSLContext:
 
 
 def server_context_intermediate() -> ssl.SSLContext:
-    """Return an SSL context following the Mozilla recommendations.
+    """
+    Return an SSL context following the Mozilla recommendations.
 
     TLS configuration follows the best-practice guidelines specified here:
     https://wiki.mozilla.org/Security/Server_Side_TLS

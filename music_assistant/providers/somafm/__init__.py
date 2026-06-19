@@ -130,68 +130,6 @@ class SomaFMProvider(MusicProvider):
         msg = f"Item {prov_radio_id} not found"
         raise MediaNotFoundError(msg)
 
-    @use_cache(3600 * 24 * 1)  # Cache for 1 day
-    async def _get_stations(self) -> dict[str, dict[str, Any]]:
-        url = "https://somafm.com/channels.json"
-        locale = self.mass.metadata.locale.replace("_", "-")
-        language = locale.split("-")[0]
-        headers = {"Accept-Language": f"{locale}, {language};q=0.9, *;q=0.5"}
-        async with (
-            self.mass.http_session.get(url, headers=headers, ssl=False) as response,
-        ):
-            result: Any = await response.json()
-            if not result or "error" in result:
-                self.logger.error(url)
-            elif isinstance(result, dict):
-                stations = result.get("channels")
-                if stations:
-                    # Reformat into dict by channel id
-                    return {info.get("id"): info for info in stations if info.get("id")}
-            raise MediaNotFoundError("Could not fetch SomaFM stations list")
-
-    def _parse_channel(self, channel_info: dict[str, Any]) -> Radio:
-        """Convert SomaFM channel info into a Radio object."""
-        # Construct radio station information
-        item_id = channel_info.get("id")
-        if not item_id:
-            raise MediaNotFoundError("Soma FM station generation failed")
-
-        radio = Radio(
-            provider=self.instance_id,
-            item_id=item_id,
-            name=f"SomaFM: {channel_info.get('title', 'Unknown Radio')}",
-            metadata=MediaItemMetadata(
-                description=channel_info.get("description", "No description"),
-                genres={channel_info.get("genre", "No genre")},
-                popularity=int(channel_info.get("listeners", "0")),
-                performers={
-                    f"DJ: {channel_info.get('dj', 'No DJ info')}",
-                    f"DJ Email: {channel_info.get('djmail', 'No DJ email')}",
-                },
-            ),
-            provider_mappings={
-                ProviderMapping(
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    item_id=item_id,
-                    available=True,
-                )
-            },
-        )
-
-        # Add station image URL
-        station_icon_url = channel_info.get("largeimage")
-        if station_icon_url:
-            radio.metadata.add_image(
-                MediaItemImage(
-                    provider=self.instance_id,
-                    type=ImageType.THUMB,
-                    path=station_icon_url,
-                    remotely_accessible=True,
-                )
-            )
-        return radio
-
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details for a track/radio."""
 
@@ -264,3 +202,65 @@ class SomaFMProvider(MusicProvider):
             allow_seek=False,
             can_seek=False,
         )
+
+    @use_cache(3600 * 24 * 1)  # Cache for 1 day
+    async def _get_stations(self) -> dict[str, dict[str, Any]]:
+        url = "https://somafm.com/channels.json"
+        locale = self.mass.metadata.locale.replace("_", "-")
+        language = locale.split("-")[0]
+        headers = {"Accept-Language": f"{locale}, {language};q=0.9, *;q=0.5"}
+        async with (
+            self.mass.http_session.get(url, headers=headers, ssl=False) as response,
+        ):
+            result: Any = await response.json()
+            if not result or "error" in result:
+                self.logger.error(url)
+            elif isinstance(result, dict):
+                stations = result.get("channels")
+                if stations:
+                    # Reformat into dict by channel id
+                    return {info.get("id"): info for info in stations if info.get("id")}
+            raise MediaNotFoundError("Could not fetch SomaFM stations list")
+
+    def _parse_channel(self, channel_info: dict[str, Any]) -> Radio:
+        """Convert SomaFM channel info into a Radio object."""
+        # Construct radio station information
+        item_id = channel_info.get("id")
+        if not item_id:
+            raise MediaNotFoundError("Soma FM station generation failed")
+
+        radio = Radio(
+            provider=self.instance_id,
+            item_id=item_id,
+            name=f"SomaFM: {channel_info.get('title', 'Unknown Radio')}",
+            metadata=MediaItemMetadata(
+                description=channel_info.get("description", "No description"),
+                genres={channel_info.get("genre", "No genre")},
+                popularity=int(channel_info.get("listeners", "0")),
+                performers={
+                    f"DJ: {channel_info.get('dj', 'No DJ info')}",
+                    f"DJ Email: {channel_info.get('djmail', 'No DJ email')}",
+                },
+            ),
+            provider_mappings={
+                ProviderMapping(
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    item_id=item_id,
+                    available=True,
+                )
+            },
+        )
+
+        # Add station image URL
+        station_icon_url = channel_info.get("largeimage")
+        if station_icon_url:
+            radio.metadata.add_image(
+                MediaItemImage(
+                    provider=self.instance_id,
+                    type=ImageType.THUMB,
+                    path=station_icon_url,
+                    remotely_accessible=True,
+                )
+            )
+        return radio

@@ -74,6 +74,9 @@
       }
     }
   },
+  "background_task": {
+    "refresh_lastfm_recommendations": "Refresh Last.fm recommendations"
+  },
   "manifest": {
     "description": "Get music recommendations from Last.fm based on your listening history"
   }

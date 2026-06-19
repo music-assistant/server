@@ -42,6 +42,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.helpers.datetime import utc
 from music_assistant.mass import MusicAssistant
 
 CACHE_DOMAIN = "audible"
@@ -61,7 +62,8 @@ _AUTH_CACHE: dict[str, audible.Authenticator] = {}
 async def refresh_access_token_compat(
     refresh_token: str, domain: str, http_session: ClientSession, with_username: bool = False
 ) -> dict[str, Any]:
-    """Refresh tokens with compatibility for new Audible API format.
+    """
+    Refresh tokens with compatibility for new Audible API format.
 
     The Audible API changed from returning 'access_token' to 'actor_access_token'.
     This function handles both formats for backward compatibility.
@@ -90,7 +92,7 @@ async def refresh_access_token_compat(
         resp_dict = await resp.json()
 
     expires_in_sec = int(resp_dict.get("expires_in", 3600))
-    expires = (datetime.now(UTC) + timedelta(seconds=expires_in_sec)).timestamp()
+    expires = (utc() + timedelta(seconds=expires_in_sec)).timestamp()
 
     # Handle new format (actor_access_token) or fall back to legacy (access_token)
     access_token = resp_dict.get("actor_access_token") or resp_dict.get("access_token")
@@ -108,7 +110,8 @@ async def refresh_access_token_compat(
 
 
 async def cached_authenticator_from_file(path: str) -> audible.Authenticator:
-    """Get an authenticator from file with caching and signing auth validation.
+    """
+    Get an authenticator from file with caching and signing auth validation.
 
     :param path: Path to the authenticator JSON file.
     :return: The cached or loaded Authenticator instance.
@@ -254,7 +257,8 @@ class AudibleHelper:
                 yield album
 
     async def get_audiobook(self, asin: str, use_cache: bool = True) -> Audiobook:
-        """Fetch the full audiobook by asin with all details including chapters.
+        """
+        Fetch the full audiobook by asin with all details including chapters.
 
         This method fetches complete audiobook details including chapters and resume position.
         Use this when the user requests full details for a specific audiobook.
@@ -298,7 +302,8 @@ class AudibleHelper:
         return book
 
     async def _enrich_audiobook(self, book: Audiobook, asin: str) -> None:
-        """Enrich audiobook with chapters and resume position.
+        """
+        Enrich audiobook with chapters and resume position.
 
         This makes additional API calls and should only be used for full audiobook details,
         not during library sync.
@@ -324,7 +329,8 @@ class AudibleHelper:
     async def get_stream(
         self, asin: str, media_type: MediaType = MediaType.AUDIOBOOK
     ) -> StreamDetails:
-        """Get stream details for an audiobook or podcast episode.
+        """
+        Get stream details for an audiobook or podcast episode.
 
         :param asin: The ASIN of the content.
         :param media_type: The type of media (audiobook or podcast episode).
@@ -527,7 +533,8 @@ class AudibleHelper:
     async def set_last_position(
         self, asin: str, pos: int, media_type: MediaType = MediaType.AUDIOBOOK
     ) -> None:
-        """Report last position to Audible.
+        """
+        Report last position to Audible.
 
         :param asin: The content ID (audiobook or podcast episode).
         :param pos: Position in seconds.
@@ -666,7 +673,8 @@ class AudibleHelper:
         return MediaItemChapter(position=index, name=chapter_title, start=start, end=start + length)
 
     def _parse_audiobook(self, audiobook_data: dict[str, Any] | None) -> Audiobook:
-        """Parse audiobook data from API response.
+        """
+        Parse audiobook data from API response.
 
         NOTE: This is a pure parser - no API calls allowed here.
         Chapters and resume position are fetched lazily when needed.
@@ -777,7 +785,8 @@ class AudibleHelper:
                 yield podcast
 
     async def get_podcast(self, asin: str, use_cache: bool = True) -> Podcast:
-        """Fetch full podcast details by ASIN.
+        """
+        Fetch full podcast details by ASIN.
 
         :param asin: The ASIN of the podcast.
         :param use_cache: Whether to use cached data if available.
@@ -816,7 +825,8 @@ class AudibleHelper:
         return self._parse_podcast(item_data)
 
     async def get_podcast_episodes(self, podcast_asin: str) -> AsyncGenerator[PodcastEpisode]:
-        """Fetch all episodes for a podcast.
+        """
+        Fetch all episodes for a podcast.
 
         :param podcast_asin: The ASIN of the parent podcast.
         """
@@ -865,7 +875,8 @@ class AudibleHelper:
                 break
 
     async def get_podcast_episode(self, episode_asin: str) -> PodcastEpisode:
-        """Fetch full podcast episode details by ASIN.
+        """
+        Fetch full podcast episode details by ASIN.
 
         :param episode_asin: The ASIN of the podcast episode.
         """
@@ -898,7 +909,8 @@ class AudibleHelper:
         return self._parse_podcast_episode(item_data, podcast, 0)
 
     def _parse_podcast(self, podcast_data: dict[str, Any] | None) -> Podcast:
-        """Parse podcast data from API response.
+        """
+        Parse podcast data from API response.
 
         :param podcast_data: Raw podcast data from the Audible API.
         """
@@ -951,7 +963,8 @@ class AudibleHelper:
         podcast: Podcast | None,
         position: int,
     ) -> PodcastEpisode:
-        """Parse podcast episode data from API response.
+        """
+        Parse podcast episode data from API response.
 
         :param episode_data: Raw episode data from the Audible API.
         :param podcast: Parent podcast object (optional).
@@ -1026,7 +1039,8 @@ class AudibleHelper:
         return episode
 
     async def get_authors(self) -> dict[str, str]:
-        """Get all unique authors from the library.
+        """
+        Get all unique authors from the library.
 
         Returns dict mapping author ASIN to author name.
         """
@@ -1042,7 +1056,8 @@ class AudibleHelper:
         return authors
 
     async def get_series(self) -> dict[str, str]:
-        """Get all unique series from the library.
+        """
+        Get all unique series from the library.
 
         Returns dict mapping series ASIN to series title.
         """
@@ -1058,7 +1073,8 @@ class AudibleHelper:
         return series
 
     async def get_narrators(self) -> dict[str, str]:
-        """Get all unique narrators from the library.
+        """
+        Get all unique narrators from the library.
 
         Returns dict mapping narrator ASIN to narrator name.
         """
@@ -1177,7 +1193,8 @@ def _html_to_txt(html_text: str) -> str:
 
 
 async def audible_get_auth_info(locale: str) -> tuple[str, str, str]:
-    """Generate the login URL and auth info for Audible OAuth flow.
+    """
+    Generate the login URL and auth info for Audible OAuth flow.
 
     :param locale: The locale string (e.g., 'us', 'uk', 'de').
     :return: Tuple of (code_verifier, oauth_url, serial).
@@ -1199,7 +1216,8 @@ async def audible_get_auth_info(locale: str) -> tuple[str, str, str]:
 async def audible_custom_login(
     code_verifier: str, response_url: str, serial: str, locale: str
 ) -> audible.Authenticator:
-    """Complete the authentication using the code_verifier, response_url, and serial.
+    """
+    Complete the authentication using the code_verifier, response_url, and serial.
 
     :param code_verifier: The code verifier string used in OAuth flow.
     :param response_url: The response URL containing the authorization code.

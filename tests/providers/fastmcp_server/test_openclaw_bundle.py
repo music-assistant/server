@@ -1,4 +1,5 @@
-"""Static validation of the OpenClaw distribution bundle.
+"""
+Static validation of the OpenClaw distribution bundle.
 
 The bundle under ``packaging/openclaw/`` is an installable Claude-format
 plugin that pre-declares the Music Assistant MCP server. These tests guard
@@ -58,7 +59,8 @@ def test_mcp_json_declares_streamable_http_server(mcp_json: dict) -> None:
 
 
 def test_mcp_json_uses_env_token_header(mcp_json: dict) -> None:
-    """The bearer token is supplied via the ``${MA_TOKEN}`` env var, never inlined.
+    """
+    The bearer token is supplied via the ``${MA_TOKEN}`` env var, never inlined.
 
     OpenClaw interpolates ``${VAR}`` in ``headers`` values (but not in ``url``),
     so the token stays out of the committed artifact and out of bundle config.
@@ -73,7 +75,8 @@ def test_plugin_manifest_has_name(plugin_json: dict) -> None:
 
 
 def test_plugin_version_tracks_provider_version(plugin_json: dict) -> None:
-    """The bundle manifest version stays in lockstep with ``provider/VERSION``.
+    """
+    The bundle manifest version stays in lockstep with ``provider/VERSION``.
 
     Nothing auto-syncs the two, so this guard forces a version bump to update
     both files together rather than letting the bundle advertise a stale

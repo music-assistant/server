@@ -1,4 +1,5 @@
-"""Party Plugin Provider for Music Assistant.
+"""
+Party Plugin Provider for Music Assistant.
 
 Provides guest access with a shareable URL, allowing guests
 to add songs to the queue with configurable rate limiting.
@@ -145,7 +146,8 @@ async def get_config_entries(
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider.
+    """
+    Return Config entries to setup this provider.
 
     :param mass: MusicAssistant instance.
     :param instance_id: ID of an existing provider instance (None if new instance setup).
@@ -245,14 +247,14 @@ async def get_config_entries(
             key=CONF_PARTY_KARAOKE_MODE,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
-            category="Karaoke",
+            category="karaoke",
         ),
         ConfigEntry(
             key=CONF_PARTY_HIGHLIGHT_AHEAD,
             type=ConfigEntryType.BOOLEAN,
             default_value=True,
             depends_on=CONF_PARTY_KARAOKE_MODE,
-            category="Karaoke",
+            category="karaoke",
             advanced=True,
         ),
         ConfigEntry(
@@ -268,7 +270,7 @@ async def get_config_entries(
             default_value=True,
             depends_on=CONF_ENABLE_GUEST_ACCESS,
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         # Add to Queue feature
         ConfigEntry(
@@ -277,7 +279,7 @@ async def get_config_entries(
             default_value=True,
             depends_on=CONF_ENABLE_GUEST_ACCESS,
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         ConfigEntry(
             key=CONF_PREVENT_DUPLICATE_TRACKS,
@@ -285,7 +287,7 @@ async def get_config_entries(
             default_value=True,
             depends_on=CONF_ENABLE_ADD_QUEUE,
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         ConfigEntry(
             key=CONF_PARTY_ADD_QUEUE_LIMIT,
@@ -294,7 +296,7 @@ async def get_config_entries(
             depends_on=CONF_ENABLE_ADD_QUEUE,
             range=(5, 50),
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         ConfigEntry(
             key=CONF_PARTY_ADD_QUEUE_REFILL_MINUTES,
@@ -303,7 +305,7 @@ async def get_config_entries(
             depends_on=CONF_ENABLE_ADD_QUEUE,
             range=(1, 30),
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         # Boost feature (priority queue jumping)
         ConfigEntry(
@@ -312,7 +314,7 @@ async def get_config_entries(
             default_value=True,
             depends_on=CONF_ENABLE_GUEST_ACCESS,
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         ConfigEntry(
             key=CONF_PARTY_BOOST_LIMIT,
@@ -321,7 +323,7 @@ async def get_config_entries(
             depends_on=CONF_ENABLE_BOOST,
             range=(1, 10),
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         ConfigEntry(
             key=CONF_PARTY_BOOST_REFILL_MINUTES,
@@ -330,7 +332,7 @@ async def get_config_entries(
             depends_on=CONF_ENABLE_BOOST,
             range=(5, 120),
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         # Skip Song feature
         ConfigEntry(
@@ -339,7 +341,7 @@ async def get_config_entries(
             default_value=False,
             depends_on=CONF_ENABLE_GUEST_ACCESS,
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         ConfigEntry(
             key=CONF_PARTY_SKIP_SONG_LIMIT,
@@ -348,7 +350,7 @@ async def get_config_entries(
             depends_on=CONF_ENABLE_SKIP_SONG,
             range=(1, 5),
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         ConfigEntry(
             key=CONF_PARTY_SKIP_SONG_REFILL_MINUTES,
@@ -357,7 +359,7 @@ async def get_config_entries(
             depends_on=CONF_ENABLE_SKIP_SONG,
             range=(15, 180),
             advanced=True,
-            category="Guest Features",
+            category="guest_features",
         ),
         # Badge color configuration
         ConfigEntry(
@@ -418,7 +420,8 @@ class PartyPlugin(PluginProvider):
         )
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Call when the provider is being unloaded.
+        """
+        Call when the provider is being unloaded.
 
         :param is_removed: Whether the provider is being removed (vs just reloaded).
         """
@@ -446,7 +449,8 @@ class PartyPlugin(PluginProvider):
     # ==================== Configuration API Commands ====================
 
     async def _get_or_create_party_guest_user(self) -> User:
-        """Get or create the party guest user.
+        """
+        Get or create the party guest user.
 
         :returns: The party guest User.
         """
@@ -465,7 +469,8 @@ class PartyPlugin(PluginProvider):
         return user
 
     async def _get_join_code(self) -> str:
-        """Get an active join code for party, creating one if needed.
+        """
+        Get an active join code for party, creating one if needed.
 
         Looks up an existing non-expired join code via the auth controller.
         If none exists, generates a new one.
@@ -490,7 +495,8 @@ class PartyPlugin(PluginProvider):
         return code
 
     async def get_party_url(self) -> str | None:
-        """Get the guest access URL for party.
+        """
+        Get the guest access URL for party.
 
         When remote access is enabled, returns a URL that works from anywhere via WebRTC.
         Otherwise, returns a local URL that only works on the same network.
@@ -513,7 +519,8 @@ class PartyPlugin(PluginProvider):
         return f"{base_url}/?join={code}"
 
     async def get_party_player(self) -> str | None:
-        """Get the configured party player/queue ID.
+        """
+        Get the configured party player/queue ID.
 
         When configured to auto, returns the first active playing queue,
         falling back to any paused queue, then any available queue.
@@ -544,7 +551,8 @@ class PartyPlugin(PluginProvider):
         return best_queue
 
     async def get_party_config(self) -> PartyConfig:
-        """Get the party configuration for guest rate limiting.
+        """
+        Get the party configuration for guest rate limiting.
 
         :returns: PartyConfig with feature toggles, token limits, refill rates, and colors.
         """
@@ -586,7 +594,8 @@ class PartyPlugin(PluginProvider):
         uri: str,
         boost: bool = False,
     ) -> dict[str, Any]:
-        """Add a media item to the party queue.
+        """
+        Add a media item to the party queue.
 
         This is the primary API for guests to add songs. The provider handles all
         queue logic including priority positioning for guest items.
@@ -671,7 +680,8 @@ class PartyPlugin(PluginProvider):
         }
 
     async def boost_queue_item(self, queue_item_id: str) -> dict[str, Any]:
-        """Boost an existing queue item by moving it to the boosted section.
+        """
+        Boost an existing queue item by moving it to the boosted section.
 
         Finds the item in the queue, marks it as boosted, and moves it to the
         end of the boosted priority section (right after the currently playing track).
@@ -774,7 +784,8 @@ class PartyPlugin(PluginProvider):
     async def _add_to_priority_section(
         self, queue_id: str, uri: str, extra_attributes: dict[str, Any]
     ) -> None:
-        """Add a media item to the end of a priority section in the queue.
+        """
+        Add a media item to the end of a priority section in the queue.
 
         Resolves the media item, creates a QueueItem with the given extra attributes,
         finds the correct insert position, and loads it into the queue.
@@ -838,7 +849,8 @@ class PartyPlugin(PluginProvider):
 
     @staticmethod
     def _validate_guest_access() -> None:
-        """Validate the current user is an authenticated party guest.
+        """
+        Validate the current user is an authenticated party guest.
 
         :raises InvalidDataError: If the user is not a party guest.
         """
@@ -853,7 +865,8 @@ class PartyPlugin(PluginProvider):
 
     @staticmethod
     def _find_section_end(queue_items: list[QueueItem], current_index: int, attribute: str) -> int:
-        """Find the index where a priority section ends.
+        """
+        Find the index where a priority section ends.
 
         Scans from current_index + 1 forward to find where consecutive items
         with the given attribute end. Returns the position where a new item
@@ -879,7 +892,8 @@ class PartyPlugin(PluginProvider):
         return section_end
 
     async def skip_current(self) -> dict[str, Any]:
-        """Skip the currently playing track.
+        """
+        Skip the currently playing track.
 
         :returns: Result dict with success status.
         """
@@ -916,7 +930,8 @@ class PartyPlugin(PluginProvider):
     # ==================== Helper Methods ====================
 
     async def _revoke_guest_tokens(self) -> None:
-        """Revoke all guest access tokens and codes for party.
+        """
+        Revoke all guest access tokens and codes for party.
 
         This is called when guest access is disabled or the plugin is removed.
         We disconnect WebSocket connections to force the frontend to redirect to login,

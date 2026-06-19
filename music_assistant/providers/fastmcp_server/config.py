@@ -69,7 +69,8 @@ def build_config_entries(
     mass: MusicAssistant,
     values: dict[str, ConfigValueType],
 ) -> tuple[ConfigEntry, ...]:
-    """Return the full ConfigEntry schema for this provider.
+    """
+    Return the full ConfigEntry schema for this provider.
 
     :param mass: MusicAssistant instance, used to compose the info label.
     :param values: Current config values (may be empty on first setup).
@@ -86,7 +87,7 @@ def build_config_entries(
             key="info_label",
             type=ConfigEntryType.LABEL,
             label=info_label,
-            category="Server",
+            category="server",
             required=False,
         ),
         ConfigEntry(
@@ -99,14 +100,14 @@ def build_config_entries(
             key=CONF_REQUIRE_AUTH,
             type=ConfigEntryType.BOOLEAN,
             default_value=True,
-            category="Server",
+            category="server",
             required=False,
         ),
         ConfigEntry(
             key=CONF_MOUNT_PATH,
             type=ConfigEntryType.STRING,
             default_value=DEFAULT_MOUNT_PATH,
-            category="Server",
+            category="server",
             advanced=True,
             required=False,
         ),
@@ -114,14 +115,14 @@ def build_config_entries(
             key=CONF_REQUIRE_CONFIRMATION,
             type=ConfigEntryType.BOOLEAN,
             default_value=True,
-            category="Server",
+            category="server",
             required=False,
         ),
         ConfigEntry(
             key=CONF_ENFORCE_AUDIENCE,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
-            category="Server",
+            category="server",
             advanced=True,
             required=False,
         ),
@@ -129,7 +130,7 @@ def build_config_entries(
             key=CONF_EXTRA_ALLOWED_ORIGINS,
             type=ConfigEntryType.STRING,
             default_value="",
-            category="Server",
+            category="server",
             advanced=True,
             required=False,
         ),
@@ -137,7 +138,7 @@ def build_config_entries(
             key=CONF_CONNECT_EXTERNAL_URL,
             type=ConfigEntryType.STRING,
             default_value="",
-            category="Server",
+            category="server",
             advanced=True,
             required=False,
         ),
@@ -146,28 +147,28 @@ def build_config_entries(
             CONF_QUERY_LIBRARY,
             "Query library",
             True,
-            "Query Permissions",
+            "query_permissions",
             "Search music, browse library, get artists/albums/tracks/playlists.",
         ),
         _bool(
             CONF_QUERY_QUEUE,
             "Query queue",
             True,
-            "Query Permissions",
+            "query_permissions",
             "Read the current queue state for any player.",
         ),
         _bool(
             CONF_QUERY_PLAYERS,
             "Query players",
             True,
-            "Query Permissions",
+            "query_permissions",
             "List players and read their state and capabilities.",
         ),
         _bool(
             CONF_QUERY_METADATA,
             "Query metadata",
             True,
-            "Query Permissions",
+            "query_permissions",
             "Get lyrics, recommendations, and similar tracks.",
         ),
         # Control permissions
@@ -175,28 +176,28 @@ def build_config_entries(
             CONF_CONTROL_PLAYBACK,
             "Control playback",
             False,
-            "Control Permissions",
+            "control_permissions",
             "Play, pause, stop, seek, next/previous, play media.",
         ),
         _bool(
             CONF_CONTROL_VOLUME,
             "Control volume",
             False,
-            "Control Permissions",
+            "control_permissions",
             "Set volume, volume up/down, mute, group volume.",
         ),
         _bool(
             CONF_CONTROL_PLAYERS,
             "Control players",
             False,
-            "Control Permissions",
+            "control_permissions",
             "Power players on/off, select source.",
         ),
         _bool(
             CONF_CONTROL_MEDIA,
             "Play announcements / mark played",
             False,
-            "Control Permissions",
+            "control_permissions",
             "Send TTS announcements, mark items as played.",
         ),
         # Edit permissions
@@ -204,28 +205,28 @@ def build_config_entries(
             CONF_EDIT_LIBRARY,
             "Add items to library",
             False,
-            "Edit Permissions",
+            "edit_permissions",
             "Add tracks, albums, artists, or playlists to the library.",
         ),
         _bool(
             CONF_EDIT_QUEUE,
             "Edit queue",
             False,
-            "Edit Permissions",
+            "edit_permissions",
             "Move queue items, save queue as playlist.",
         ),
         _bool(
             CONF_EDIT_PLAYLISTS,
             "Create / modify playlists",
             False,
-            "Edit Permissions",
+            "edit_permissions",
             "Create playlists, add tracks, reorder.",
         ),
         _bool(
             CONF_EDIT_FAVORITES,
             "Add to favorites",
             False,
-            "Edit Permissions",
+            "edit_permissions",
             "Mark items as favorites.",
         ),
         # Delete permissions
@@ -233,28 +234,28 @@ def build_config_entries(
             CONF_DELETE_LIBRARY,
             "Remove items from library",
             False,
-            "Delete Permissions",
+            "delete_permissions",
             "Remove tracks, albums, artists, or playlists from the library.",
         ),
         _bool(
             CONF_DELETE_QUEUE,
             "Clear queue / remove items",
             False,
-            "Delete Permissions",
+            "delete_permissions",
             "Remove queue items or clear the queue.",
         ),
         _bool(
             CONF_DELETE_PLAYLISTS,
             "Delete playlists / remove tracks",
             False,
-            "Delete Permissions",
+            "delete_permissions",
             "Delete playlists, remove tracks from playlists.",
         ),
         _bool(
             CONF_DELETE_FAVORITES,
             "Remove from favorites",
             False,
-            "Delete Permissions",
+            "delete_permissions",
             "Remove items from favorites.",
         ),
         # Resources / prompts
@@ -262,21 +263,21 @@ def build_config_entries(
             CONF_RES_LIBRARY,
             "Expose library:// resources",
             True,
-            "MCP Resources",
+            "mcp_resources",
             "URI-addressable read-only views of artists, albums, tracks, playlists.",
         ),
         _bool(
             CONF_RES_PLAYER,
             "Expose player:// and queue:// resources",
             True,
-            "MCP Resources",
+            "mcp_resources",
             "URI-addressable views of players and queues.",
         ),
         _bool(
             CONF_RES_PROMPTS,
             "Expose canned prompts",
             True,
-            "MCP Resources",
+            "mcp_resources",
             "Pre-defined prompts: find_and_play, party_playlist, now_playing_summary.",
         ),
         # Debug namespace — all off-by-default. See specs/inprogress/0005-debug-namespace.md.
@@ -284,7 +285,7 @@ def build_config_entries(
             CONF_DEBUG_INSPECT,
             "Debug: inspect raw player/queue/provider state",
             False,
-            "Debug",
+            "debug",
             "Exposes raw runtime state of players, queues, and providers via MCP. "
             "Intended for development and troubleshooting. Disable in production.",
         ),
@@ -292,7 +293,7 @@ def build_config_entries(
             CONF_DEBUG_LOGS,
             "Debug: tail musicassistant.log",
             False,
-            "Debug",
+            "debug",
             "Allows MCP clients to read the tail of MA's log file with filters. "
             "Common token patterns are redacted. Intended for troubleshooting. "
             "Disable in production.",
@@ -301,7 +302,7 @@ def build_config_entries(
             CONF_DEBUG_EVENTS,
             "Debug: read recent MA events",
             False,
-            "Debug",
+            "debug",
             "Subscribes to MA's event bus at provider startup and exposes a "
             "ring buffer over MCP. Memory cost is bounded by the buffer "
             "capacity. Intended for troubleshooting. Disable in production.",
@@ -310,7 +311,7 @@ def build_config_entries(
             CONF_DEBUG_PROVIDERS,
             "Debug: inspect configured providers",
             False,
-            "Debug",
+            "debug",
             "Exposes provider state, masked configuration, registered "
             "webserver routes, installed package versions, and a health "
             "summary roll-up. Intended for troubleshooting. Disable in "
@@ -320,7 +321,7 @@ def build_config_entries(
             CONF_DEBUG_RELOAD,
             "Debug: reload a provider instance",
             False,
-            "Debug",
+            "debug",
             "Allows MCP clients to unload and reload provider instances, "
             "INTERRUPTING ANY ACTIVE STREAMS on the affected provider. "
             "Each call requires elicitation confirmation. Intended for "
@@ -331,7 +332,7 @@ def build_config_entries(
             type=ConfigEntryType.INTEGER,
             default_value=500,
             range=(50, 5000),
-            category="Debug",
+            category="debug",
             required=False,
         ),
         # Config namespace — all off-by-default. See specs/inprogress/0006-config-read-write.md.
@@ -339,7 +340,7 @@ def build_config_entries(
             CONF_CONFIG_READ,
             "Config: read core/provider/player settings",
             False,
-            "Config",
+            "mcp_config",
             "Exposes read access to MA core, provider, and player configuration "
             "over MCP (secrets stay masked). Disable in production unless needed.",
         ),
@@ -347,7 +348,7 @@ def build_config_entries(
             CONF_CONFIG_WRITE_PROVIDER,
             "Config: edit provider settings",
             False,
-            "Config",
+            "mcp_config",
             "Allows MCP clients to change provider configuration and trigger "
             "provider config actions. Changes may reload the provider and "
             "interrupt its streams. Disable in production.",
@@ -356,7 +357,7 @@ def build_config_entries(
             CONF_CONFIG_WRITE_CORE,
             "Config: edit core settings",
             False,
-            "Config",
+            "mcp_config",
             "Allows MCP clients to change MA core controller configuration "
             "(webserver, streams, cache, ...). Core changes may RESTART "
             "subsystems and interrupt ALL playback. Disable in production.",
@@ -365,14 +366,14 @@ def build_config_entries(
             CONF_CONFIG_WRITE_PLAYER,
             "Config: edit player settings",
             False,
-            "Config",
+            "mcp_config",
             "Allows MCP clients to change per-player configuration and DSP. Disable in production.",
         ),
         _bool(
             CONF_CONFIG_WRITE_SECRET,
             "Config: allow writing secret values",
             False,
-            "Config",
+            "mcp_config",
             "Required IN ADDITION to a category write flag before any "
             "SECURE_STRING (password/token) value can be written. With this "
             "off, secret writes are rejected while non-secret edits still "

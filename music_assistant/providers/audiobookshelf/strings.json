@@ -8,12 +8,12 @@
       "description": "The URL of the Audiobookshelf server to connect to. For example https://abs.domain.tld/ or http://192.168.1.4:13378/"
     },
     "username": {
-      "label": "Username",
-      "description": "The username to authenticate to the remote server."
+      "label": "[%key:common::config_entries::username::label%]",
+      "description": "[%key:common::config_entries::username::description%]"
     },
     "password": {
-      "label": "Password",
-      "description": "The password to authenticate to the remote server."
+      "label": "[%key:common::config_entries::password::label%]",
+      "description": "[%key:common::config_entries::password::description%]"
     },
     "api_token": {
       "label": "API key _instead_ of user/ password. (ABS version >= 2.26)",
@@ -23,8 +23,8 @@
       "label": "old token"
     },
     "verify_ssl": {
-      "label": "Verify SSL",
-      "description": "Whether or not to verify the certificate of SSL/TLS connections."
+      "label": "[%key:common::config_entries::verify_ssl::label%]",
+      "description": "[%key:common::config_entries::verify_ssl::description%]"
     },
     "hide_empty_podcasts": {
       "label": "Hide empty podcasts.",

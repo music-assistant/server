@@ -376,7 +376,8 @@ async def test_start_analysis_skips_within_no_match_cooldown(
 
 @pytest.mark.asyncio
 async def test_start_analysis_skips_multichannel(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A multichannel (e.g. 5.1) file is declined before any fingerprinting work.
+    """
+    A multichannel (e.g. 5.1) file is declined before any fingerprinting work.
 
     Feeding chromaprint multichannel audio trips a C-level assertion that aborts the
     process, so the session must be refused up-front rather than risk the crash.

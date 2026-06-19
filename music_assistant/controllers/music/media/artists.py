@@ -107,7 +107,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         artist_type: ArtistType = ArtistType.SINGER,
         **kwargs: Any,
     ) -> list[Artist]:
-        """Get in-database (album) artists.
+        """
+        Get in-database (album) artists.
 
         :param favorite: Filter by favorite status.
         :param search: Filter by search query.
@@ -254,6 +255,135 @@ class ArtistsController(MediaControllerBase[Artist]):
         self._validate_provider_filter(provider_instance_id_or_domain, provider_filter)
         return await self.get_provider_artist_similar_artists(
             item_id, provider_instance_id_or_domain, limit=limit
+        )
+
+    async def audiobooks(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        artist_type: ArtistType = ArtistType.AUTHOR,
+        in_library_only: bool = False,
+    ) -> list[Audiobook]:
+        """
+        Return audiobooks for an artist.
+
+        Artist_type can be omitted for in-library artists.
+        """
+        if artist_type == ArtistType.SINGER:
+            self.logger.warning("Audiobooks not supported for artist_type SINGER.")
+            return []
+        # always check if we have a library item for this artist
+        library_artist = await self.get_library_item_by_prov_id(
+            item_id, provider_instance_id_or_domain
+        )
+        if library_artist and library_artist.artist_type == ArtistType.SINGER:
+            self.logger.debug(
+                "Ignoring audiobook request for artist of type %s", library_artist.artist_type
+            )
+            return []
+        if not library_artist:
+            if artist_type == ArtistType.AUTHOR:
+                return await self.get_provider_author_audiobooks(
+                    item_id, provider_instance_id_or_domain
+                )
+            if artist_type == ArtistType.NARRATOR:
+                return await self.get_provider_narrator_audiobooks(
+                    item_id, provider_instance_id_or_domain
+                )
+            return []
+
+        db_items = await self.get_library_author_narrator_audiobooks(
+            library_artist.item_id, artist_type=library_artist.artist_type
+        )
+        result: list[Audiobook] = db_items
+        if in_library_only:
+            # return in-library items only
+            return result
+        # return all (unique) items from all providers
+        # initialize unique_ids with db_items to prevent duplicates
+        unique_ids: set[str] = {f"{item.name}.{item.version}" for item in db_items}
+        unique_providers = self.mass.music.get_unique_providers()
+        audiobook_method = (
+            self.get_provider_author_audiobooks
+            if artist_type == ArtistType.AUTHOR
+            else self.get_provider_narrator_audiobooks
+        )
+        for provider_mapping in library_artist.provider_mappings:
+            if provider_mapping.provider_instance not in unique_providers:
+                continue
+            provider_audiobooks = await audiobook_method(
+                provider_mapping.item_id, provider_mapping.provider_instance
+            )
+            for provider_audiobook in provider_audiobooks:
+                unique_id = f"{provider_audiobook.name}.{provider_audiobook.version}"
+                if unique_id in unique_ids:
+                    continue
+                unique_ids.add(unique_id)
+                # prefer db item
+                if db_item := await self.mass.music.audiobooks.get_library_item_by_prov_id(
+                    provider_audiobook.item_id, provider_audiobook.provider
+                ):
+                    result.append(db_item)
+                elif not in_library_only:
+                    result.append(provider_audiobook)
+        return result
+
+    async def get_library_author_narrator_audiobooks(
+        self,
+        item_id: str | int,
+        artist_type: ArtistType,
+    ) -> list[Audiobook]:
+        """Return all in-library audiobooks for an author/ narrator."""
+        db_id = int(item_id)  # ensure integer
+        library_item = await self.get_library_item(db_id)
+        if library_item.artist_type != artist_type:
+            self.logger.debug("Audiobooks only available for artists of type %s", artist_type)
+            return []
+        subquery = (
+            f"SELECT audiobook_id FROM {DB_TABLE_AUDIOBOOK_ARTISTS} WHERE artist_id = :artist_id"
+        )
+        query = f"audiobooks.item_id in ({subquery})"
+        return await self.mass.music.audiobooks.get_library_items_by_query(
+            extra_query_parts=[query],
+            extra_query_params={"artist_id": db_id},
+        )
+
+    async def get_provider_author_audiobooks(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+    ) -> list[Audiobook]:
+        """Return audiobooks for an author on given provider."""
+        assert provider_instance_id_or_domain != "library"
+        if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
+            return []
+        prov = cast("MusicProvider", prov)
+        if ProviderFeature.AUTHOR_AUDIOBOOKS in prov.supported_features:
+            return await prov.get_author_audiobooks(item_id)
+        # fallback implementation using the db
+        return await self._get_db_author_narrator_audiobooks(
+            item_id=item_id,
+            provider_instance_id_or_domain=provider_instance_id_or_domain,
+            artist_type=ArtistType.AUTHOR,
+        )
+
+    async def get_provider_narrator_audiobooks(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+    ) -> list[Audiobook]:
+        """Return audiobooks for an author on given provider."""
+        assert provider_instance_id_or_domain != "library"
+        if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
+            return []
+        prov = cast("MusicProvider", prov)
+        if ProviderFeature.NARRATOR_AUDIOBOOKS in prov.supported_features:
+            return await prov.get_narrator_audiobooks(item_id)
+        # fallback implementation using the db
+        return await self._get_db_author_narrator_audiobooks(
+            item_id=item_id,
+            provider_instance_id_or_domain=provider_instance_id_or_domain,
+            artist_type=ArtistType.NARRATOR,
         )
 
     async def get_provider_artist_toptracks(
@@ -665,134 +795,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         # this will raise if the item still has references and recursive is false
         await super().remove_item_from_library(db_id)
 
-    async def _remove_music_artist_from_library(self, db_id: int, recursive: bool) -> None:
-        # recursively also remove artist albums
-        for db_row in await self.mass.music.database.get_rows_from_query(
-            f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id",
-            {"artist_id": db_id},
-            limit=5000,
-        ):
-            if not recursive:
-                raise MusicAssistantError("Artist still has albums linked")
-            with contextlib.suppress(MediaNotFoundError):
-                await self.mass.music.albums.remove_item_from_library(db_row["album_id"])
-        # recursively also remove artist tracks
-        for db_row in await self.mass.music.database.get_rows_from_query(
-            f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = :artist_id",
-            {"artist_id": db_id},
-            limit=5000,
-        ):
-            if not recursive:
-                raise MusicAssistantError("Artist still has tracks linked")
-            with contextlib.suppress(MediaNotFoundError):
-                await self.mass.music.tracks.remove_item_from_library(db_row["track_id"])
-
-    async def _remove_author_narrator_from_library(self, db_id: int, recursive: bool) -> None:
-        # recursively also remove author/ narrator audiobooks
-        for db_row in await self.mass.music.database.get_rows_from_query(
-            f"SELECT audiobook_id FROM {DB_TABLE_AUDIOBOOK_ARTISTS} WHERE artist_id = :artist_id",
-            {"artist_id": db_id},
-            limit=5000,
-        ):
-            if not recursive:
-                raise MusicAssistantError("Artist still has audiobooks linked")
-            with contextlib.suppress(MediaNotFoundError):
-                await self.mass.music.audiobooks.remove_item_from_library(db_row["audiobook_id"])
-
-    def _validate_provider_filter(
-        self, provider_instance_id_or_domain: str, provider_filter: str | None
-    ) -> None:
-        """Raise when a provider filter is set that does not match the requested provider."""
-        if provider_filter is not None and provider_filter != provider_instance_id_or_domain:
-            raise MusicAssistantError(
-                f"provider_filter '{provider_filter}' does not match the requested "
-                f"provider '{provider_instance_id_or_domain}'"
-            )
-
-    async def _add_library_item(
-        self, item: Artist | ItemMapping, overwrite_existing: bool = False
-    ) -> int:
-        """Add a new item record to the database."""
-        # If item is an ItemMapping, convert it
-        if isinstance(item, ItemMapping):
-            item = self.artist_from_item_mapping(item)
-        # enforce various artists name + id
-        if compare_strings(item.name, VARIOUS_ARTISTS_NAME):
-            item.mbid = VARIOUS_ARTISTS_MBID
-        if item.mbid == VARIOUS_ARTISTS_MBID:
-            item.name = VARIOUS_ARTISTS_NAME
-        # no existing item matched: insert item
-        db_id = await self.mass.music.database.insert(
-            self.db_table,
-            {
-                "name": item.name,
-                "sort_name": item.sort_name,
-                "favorite": item.favorite,
-                "external_ids": serialize_to_json(item.external_ids),
-                "metadata": serialize_to_json(item.metadata),
-                "search_name": create_safe_string(item.name, True, True),
-                "search_sort_name": create_safe_string(item.sort_name or "", True, True),
-                "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
-                "artist_type": item.artist_type,
-            },
-        )
-        # update/set provider_mappings table
-        await self.set_provider_mappings(db_id, item.provider_mappings)
-        self.logger.debug("added %s to database (id: %s)", item.name, db_id)
-        return db_id
-
-    async def _update_library_item(
-        self, item_id: str | int, update: Artist | ItemMapping, overwrite: bool = False
-    ) -> None:
-        """Update existing record in the database."""
-        db_id = int(item_id)  # ensure integer
-        cur_item = await self.get_library_item(db_id)
-        if isinstance(update, ItemMapping):
-            # NOTE that artist is the only mediatype where its accepted we
-            # receive an itemmapping from streaming providers
-            update = self.artist_from_item_mapping(update)
-            metadata = cur_item.metadata
-        else:
-            metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
-        cur_item.external_ids.update(update.external_ids)
-        # enforce various artists name + id
-        mbid = cur_item.mbid
-        if (not mbid or overwrite) and getattr(update, "mbid", None):
-            if compare_strings(update.name, VARIOUS_ARTISTS_NAME):
-                update.mbid = VARIOUS_ARTISTS_MBID
-            if update.mbid == VARIOUS_ARTISTS_MBID:
-                update.name = VARIOUS_ARTISTS_NAME
-
-        name = update.name if overwrite else cur_item.name
-        sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
-        await self.mass.music.database.update(
-            self.db_table,
-            {"item_id": db_id},
-            {
-                "name": name,
-                "sort_name": sort_name,
-                "external_ids": serialize_to_json(
-                    update.external_ids if overwrite else cur_item.external_ids
-                ),
-                "metadata": serialize_to_json(metadata),
-                "search_name": create_safe_string(name, True, True),
-                "search_sort_name": create_safe_string(sort_name or "", True, True),
-                "timestamp_added": int(update.date_added.timestamp())
-                if update.date_added
-                else UNSET,
-                "artist_type": update.artist_type,
-            },
-        )
-        self.logger.debug("updated %s in database: %s", update.name, db_id)
-        # update/set provider_mappings table
-        provider_mappings = (
-            update.provider_mappings
-            if overwrite
-            else {*update.provider_mappings, *cur_item.provider_mappings}
-        )
-        await self.set_provider_mappings(db_id, provider_mappings, overwrite)
-        self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
-
     async def radio_mode_base_tracks(
         self,
         item: Artist,
@@ -894,7 +896,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         return matches
 
     async def match_providers(self, db_artist: Artist) -> None:
-        """Try to find matching artists on all providers for the provided (database) item_id.
+        """
+        Try to find matching artists on all providers for the provided (database) item_id.
 
         This is used to link objects of different providers together.
         """
@@ -941,114 +944,133 @@ class ArtistsController(MediaControllerBase[Artist]):
             }
         )
 
-    async def audiobooks(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-        artist_type: ArtistType = ArtistType.AUTHOR,
-        in_library_only: bool = False,
-    ) -> list[Audiobook]:
-        """
-        Return audiobooks for an artist.
-
-        Artist_type can be omitted for in-library artists.
-        """
-        if artist_type == ArtistType.SINGER:
-            self.logger.warning("Audiobooks not supported for artist_type SINGER.")
-            return []
-        # always check if we have a library item for this artist
-        library_artist = await self.get_library_item_by_prov_id(
-            item_id, provider_instance_id_or_domain
-        )
-        if library_artist and library_artist.artist_type == ArtistType.SINGER:
-            self.logger.debug(
-                "Ignoring audiobook request for artist of type %s", library_artist.artist_type
+    def _validate_provider_filter(
+        self, provider_instance_id_or_domain: str, provider_filter: str | None
+    ) -> None:
+        """Raise when a provider filter is set that does not match the requested provider."""
+        if provider_filter is not None and provider_filter != provider_instance_id_or_domain:
+            raise MusicAssistantError(
+                f"provider_filter '{provider_filter}' does not match the requested "
+                f"provider '{provider_instance_id_or_domain}'"
             )
-            return []
-        if not library_artist:
-            if artist_type == ArtistType.AUTHOR:
-                return await self.get_provider_author_audiobooks(
-                    item_id, provider_instance_id_or_domain
-                )
-            if artist_type == ArtistType.NARRATOR:
-                return await self.get_provider_narrator_audiobooks(
-                    item_id, provider_instance_id_or_domain
-                )
-            return []
 
-        db_items = await self.get_library_author_narrator_audiobooks(
-            library_artist.item_id, artist_type=library_artist.artist_type
+    async def _add_library_item(
+        self, item: Artist | ItemMapping, overwrite_existing: bool = False
+    ) -> int:
+        """Add a new item record to the database."""
+        # If item is an ItemMapping, convert it
+        if isinstance(item, ItemMapping):
+            item = self.artist_from_item_mapping(item)
+        # enforce various artists name + id
+        if compare_strings(item.name, VARIOUS_ARTISTS_NAME):
+            item.mbid = VARIOUS_ARTISTS_MBID
+        if item.mbid == VARIOUS_ARTISTS_MBID:
+            item.name = VARIOUS_ARTISTS_NAME
+        # no existing item matched: insert item
+        db_id = await self.mass.music.database.insert(
+            self.db_table,
+            {
+                "name": item.name,
+                "sort_name": item.sort_name,
+                "favorite": item.favorite,
+                "external_ids": serialize_to_json(item.external_ids),
+                "metadata": serialize_to_json(item.metadata),
+                "search_name": create_safe_string(item.name, True, True),
+                "search_sort_name": create_safe_string(item.sort_name or "", True, True),
+                "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
+                "artist_type": item.artist_type,
+            },
         )
-        result: list[Audiobook] = db_items
-        if in_library_only:
-            # return in-library items only
-            return result
-        # return all (unique) items from all providers
-        # initialize unique_ids with db_items to prevent duplicates
-        unique_ids: set[str] = {f"{item.name}.{item.version}" for item in db_items}
-        unique_providers = self.mass.music.get_unique_providers()
-        audiobook_method = (
-            self.get_provider_author_audiobooks
-            if artist_type == ArtistType.AUTHOR
-            else self.get_provider_narrator_audiobooks
-        )
-        for provider_mapping in library_artist.provider_mappings:
-            if provider_mapping.provider_instance not in unique_providers:
-                continue
-            provider_audiobooks = await audiobook_method(
-                provider_mapping.item_id, provider_mapping.provider_instance
-            )
-            for provider_audiobook in provider_audiobooks:
-                unique_id = f"{provider_audiobook.name}.{provider_audiobook.version}"
-                if unique_id in unique_ids:
-                    continue
-                unique_ids.add(unique_id)
-                # prefer db item
-                if db_item := await self.mass.music.audiobooks.get_library_item_by_prov_id(
-                    provider_audiobook.item_id, provider_audiobook.provider
-                ):
-                    result.append(db_item)
-                elif not in_library_only:
-                    result.append(provider_audiobook)
-        return result
+        # update/set provider_mappings table
+        await self.set_provider_mappings(db_id, item.provider_mappings)
+        self.logger.debug("added %s to database (id: %s)", item.name, db_id)
+        return db_id
 
-    async def get_provider_author_audiobooks(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-    ) -> list[Audiobook]:
-        """Return audiobooks for an author on given provider."""
-        assert provider_instance_id_or_domain != "library"
-        if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
-            return []
-        prov = cast("MusicProvider", prov)
-        if ProviderFeature.AUTHOR_AUDIOBOOKS in prov.supported_features:
-            return await prov.get_author_audiobooks(item_id)
-        # fallback implementation using the db
-        return await self._get_db_author_narrator_audiobooks(
-            item_id=item_id,
-            provider_instance_id_or_domain=provider_instance_id_or_domain,
-            artist_type=ArtistType.AUTHOR,
-        )
+    async def _update_library_item(
+        self, item_id: str | int, update: Artist | ItemMapping, overwrite: bool = False
+    ) -> None:
+        """Update existing record in the database."""
+        db_id = int(item_id)  # ensure integer
+        cur_item = await self.get_library_item(db_id)
+        if isinstance(update, ItemMapping):
+            # NOTE that artist is the only mediatype where its accepted we
+            # receive an itemmapping from streaming providers
+            update = self.artist_from_item_mapping(update)
+            metadata = cur_item.metadata
+        else:
+            metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+        cur_item.external_ids.update(update.external_ids)
+        # enforce various artists name + id
+        mbid = cur_item.mbid
+        if (not mbid or overwrite) and getattr(update, "mbid", None):
+            if compare_strings(update.name, VARIOUS_ARTISTS_NAME):
+                update.mbid = VARIOUS_ARTISTS_MBID
+            if update.mbid == VARIOUS_ARTISTS_MBID:
+                update.name = VARIOUS_ARTISTS_NAME
 
-    async def get_provider_narrator_audiobooks(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-    ) -> list[Audiobook]:
-        """Return audiobooks for an author on given provider."""
-        assert provider_instance_id_or_domain != "library"
-        if not (prov := self.mass.get_provider(provider_instance_id_or_domain)):
-            return []
-        prov = cast("MusicProvider", prov)
-        if ProviderFeature.NARRATOR_AUDIOBOOKS in prov.supported_features:
-            return await prov.get_narrator_audiobooks(item_id)
-        # fallback implementation using the db
-        return await self._get_db_author_narrator_audiobooks(
-            item_id=item_id,
-            provider_instance_id_or_domain=provider_instance_id_or_domain,
-            artist_type=ArtistType.NARRATOR,
+        name = update.name if overwrite else cur_item.name
+        sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
+        await self.mass.music.database.update(
+            self.db_table,
+            {"item_id": db_id},
+            {
+                "name": name,
+                "sort_name": sort_name,
+                "external_ids": serialize_to_json(
+                    update.external_ids if overwrite else cur_item.external_ids
+                ),
+                "metadata": serialize_to_json(metadata),
+                "search_name": create_safe_string(name, True, True),
+                "search_sort_name": create_safe_string(sort_name or "", True, True),
+                "timestamp_added": int(update.date_added.timestamp())
+                if update.date_added
+                else UNSET,
+                "artist_type": update.artist_type,
+            },
         )
+        self.logger.debug("updated %s in database: %s", update.name, db_id)
+        # update/set provider_mappings table
+        provider_mappings = (
+            update.provider_mappings
+            if overwrite
+            else {*update.provider_mappings, *cur_item.provider_mappings}
+        )
+        await self.set_provider_mappings(db_id, provider_mappings, overwrite)
+        self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
+
+    async def _remove_music_artist_from_library(self, db_id: int, recursive: bool) -> None:
+        # recursively also remove artist albums
+        for db_row in await self.mass.music.database.get_rows_from_query(
+            f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = :artist_id",
+            {"artist_id": db_id},
+            limit=5000,
+        ):
+            if not recursive:
+                raise MusicAssistantError("Artist still has albums linked")
+            with contextlib.suppress(MediaNotFoundError):
+                await self.mass.music.albums.remove_item_from_library(db_row["album_id"])
+        # recursively also remove artist tracks
+        for db_row in await self.mass.music.database.get_rows_from_query(
+            f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = :artist_id",
+            {"artist_id": db_id},
+            limit=5000,
+        ):
+            if not recursive:
+                raise MusicAssistantError("Artist still has tracks linked")
+            with contextlib.suppress(MediaNotFoundError):
+                await self.mass.music.tracks.remove_item_from_library(db_row["track_id"])
+
+    async def _remove_author_narrator_from_library(self, db_id: int, recursive: bool) -> None:
+        # recursively also remove author/ narrator audiobooks
+        for db_row in await self.mass.music.database.get_rows_from_query(
+            f"SELECT audiobook_id FROM {DB_TABLE_AUDIOBOOK_ARTISTS} WHERE artist_id = :artist_id",
+            {"artist_id": db_id},
+            limit=5000,
+        ):
+            if not recursive:
+                raise MusicAssistantError("Artist still has audiobooks linked")
+            with contextlib.suppress(MediaNotFoundError):
+                await self.mass.music.audiobooks.remove_item_from_library(db_row["audiobook_id"])
 
     async def _get_db_author_narrator_audiobooks(
         self, item_id: str, provider_instance_id_or_domain: str, artist_type: ArtistType
@@ -1069,23 +1091,3 @@ class ArtistsController(MediaControllerBase[Artist]):
                 provider_filter=[provider_instance_id_or_domain],
             )
         return []
-
-    async def get_library_author_narrator_audiobooks(
-        self,
-        item_id: str | int,
-        artist_type: ArtistType,
-    ) -> list[Audiobook]:
-        """Return all in-library audiobooks for an author/ narrator."""
-        db_id = int(item_id)  # ensure integer
-        library_item = await self.get_library_item(db_id)
-        if library_item.artist_type != artist_type:
-            self.logger.debug("Audiobooks only available for artists of type %s", artist_type)
-            return []
-        subquery = (
-            f"SELECT audiobook_id FROM {DB_TABLE_AUDIOBOOK_ARTISTS} WHERE artist_id = :artist_id"
-        )
-        query = f"audiobooks.item_id in ({subquery})"
-        return await self.mass.music.audiobooks.get_library_items_by_query(
-            extra_query_parts=[query],
-            extra_query_params={"artist_id": db_id},
-        )

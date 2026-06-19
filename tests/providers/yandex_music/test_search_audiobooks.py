@@ -102,7 +102,8 @@ async def test_search_album_and_audiobook_split(provider_mock: Mock) -> None:
 async def test_search_audiobook_not_dropped_by_limit_when_music_dominates(
     provider_mock: Mock,
 ) -> None:
-    """Limit applied per bucket after classification, not before.
+    """
+    Limit applied per bucket after classification, not before.
 
     Audiobooks tail-listed by Yandex must still appear when top ``limit``
     results are music albums.

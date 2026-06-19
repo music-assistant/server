@@ -9,7 +9,7 @@
       "description": "The (base) URL to reach this webserver in the network. \nOverride this in advanced scenarios where for example you're running the webserver behind a reverse proxy."
     },
     "bind_port": {
-      "label": "TCP Port",
+      "label": "[%key:common::config_entries::bind_port::label%]",
       "description": "The TCP port to run the webserver."
     },
     "webserver_warn": {
@@ -33,7 +33,7 @@
       "action_label": "Verify"
     },
     "bind_ip": {
-      "label": "Bind to IP/interface",
+      "label": "[%key:common::config_entries::bind_ip::label%]",
       "description": "Bind the (web)server to this specific interface. \nUse 0.0.0.0 to bind to all interfaces (both IPv4 and IPv6). \nSet this address for example to a docker-internal network, when you are running a reverse proxy to enhance security and protect outside access to the webinterface and API. \n\nThis is an advanced setting that should normally not be adjusted in regular setups."
     }
   },

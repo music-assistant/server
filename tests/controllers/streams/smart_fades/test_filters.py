@@ -1,4 +1,5 @@
-"""Tests for the smart fades FFmpeg filter builders.
+"""
+Tests for the smart fades FFmpeg filter builders.
 
 The FrequencySweepFilter must produce a true frequency sweep: an ``asendcmd``
 command sequence that moves the lowpass/highpass cutoff frequency over time,

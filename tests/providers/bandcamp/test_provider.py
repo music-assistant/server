@@ -587,7 +587,8 @@ async def test_fetch_api_track_not_found_error(provider: BandcampProvider) -> No
 
 
 async def test_fetch_api_track_rate_limit_error(provider: BandcampProvider) -> None:
-    """Test _fetch_api_track converts BandcampRateLimitError.
+    """
+    Test _fetch_api_track converts BandcampRateLimitError.
 
     Since @throttle_with_retries is on _fetch_api_track, persistent rate
     limiting exhausts retries and raises RetriesExhausted.
@@ -1983,7 +1984,8 @@ async def test_get_all_collection_items_error_mid_pagination(
 async def test_browse_person_content_returns_only_resolved_items(
     provider: BandcampProvider,
 ) -> None:
-    """Test that _browse_person_content returns only resolved Album/Track objects.
+    """
+    Test that _browse_person_content returns only resolved Album/Track objects.
 
     Regression test: a previous version reused the same list variable for both
     the raw API items and the resolved results, which mixed CollectionItem

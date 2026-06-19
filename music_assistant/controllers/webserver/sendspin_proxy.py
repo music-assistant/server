@@ -1,4 +1,5 @@
-"""Sendspin WebSocket proxy handler for Music Assistant.
+"""
+Sendspin WebSocket proxy handler for Music Assistant.
 
 This module provides an authenticated WebSocket proxy to the internal Sendspin server,
 allowing web clients to connect through the main webserver instead of requiring direct
@@ -35,7 +36,8 @@ class SendspinProxyHandler:
     """Handler for proxying WebSocket connections to the internal Sendspin server."""
 
     def __init__(self, webserver: WebserverController) -> None:
-        """Initialize the Sendspin proxy handler.
+        """
+        Initialize the Sendspin proxy handler.
 
         :param webserver: The webserver controller instance.
         """
@@ -137,7 +139,8 @@ class SendspinProxyHandler:
         return wsock
 
     async def _authenticate(self, wsock: web.WebSocketResponse) -> User | None:
-        """Wait for and validate authentication message.
+        """
+        Wait for and validate authentication message.
 
         :param wsock: The client WebSocket connection.
         :return: The authenticated user, or None if authentication failed.

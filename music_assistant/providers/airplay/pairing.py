@@ -1,4 +1,5 @@
-"""Native pairing implementations for AirPlay devices.
+"""
+Native pairing implementations for AirPlay devices.
 
 This module provides pairing support for:
 - AirPlay 2 (HAP - HomeKit Accessory Protocol) - for Apple TV 4+, HomePod, Mac
@@ -40,7 +41,8 @@ def hkdf_derive(
     info: bytes,
     length: int = 32,
 ) -> bytes:
-    """Derive key using HKDF-SHA512.
+    """
+    Derive key using HKDF-SHA512.
 
     :param input_key: Input keying material.
     :param salt: Salt value.
@@ -74,7 +76,8 @@ TLV_SIGNATURE = 0x0A
 
 
 def tlv_encode(items: list[tuple[int, bytes]]) -> bytes:
-    """Encode items into TLV format.
+    """
+    Encode items into TLV format.
 
     :param items: List of (type, value) tuples.
     :return: TLV-encoded bytes.
@@ -95,7 +98,8 @@ def tlv_encode(items: list[tuple[int, bytes]]) -> bytes:
 
 
 def tlv_decode(data: bytes) -> dict[int, bytes]:
-    """Decode TLV format into dictionary.
+    """
+    Decode TLV format into dictionary.
 
     :param data: TLV-encoded bytes.
     :return: Dictionary mapping type to concatenated value.
@@ -162,7 +166,8 @@ RAOP_SRP_GENERATOR = "02"  # RFC5054-2048bit uses generator 2
 
 
 class AirPlayPairing:
-    """Base class for AirPlay pairing.
+    """
+    Base class for AirPlay pairing.
 
     Handles both HAP (AirPlay 2) and RAOP (AirPlay 1) pairing protocols.
     """
@@ -176,7 +181,8 @@ class AirPlayPairing:
         port: int | None = None,
         device_id: str | None = None,
     ) -> None:
-        """Initialize AirPlay pairing.
+        """
+        Initialize AirPlay pairing.
 
         :param address: IP address of the device.
         :param name: Display name of the device.
@@ -261,7 +267,8 @@ class AirPlayPairing:
         self._is_pairing = True
 
     async def start_pin_pairing(self) -> bool:
-        """Start the pairing process.
+        """
+        Start the pairing process.
 
         :return: True if device provides PIN.
         :raises PlayerCommandFailed: If device connection fails.
@@ -287,7 +294,8 @@ class AirPlayPairing:
             raise PlayerCommandFailed(f"Connection failed: {err}") from err
 
     async def finish_pairing(self, pin: str) -> str:
-        """Complete pairing with the provided PIN or password.
+        """
+        Complete pairing with the provided PIN or password.
 
         :param pin: 4-digit PIN from device screen or device password.
         :return: Credentials string for cliap2/cliraop.
@@ -313,7 +321,8 @@ class AirPlayPairing:
     # ========================================================================
 
     async def _finish_hap_pairing(self, pin: str) -> str:
-        """Complete HAP pairing for AirPlay 2.
+        """
+        Complete HAP pairing for AirPlay 2.
 
         :param pin: 4-digit PIN.
         :return: Credentials (192 hex chars).
@@ -514,7 +523,8 @@ class AirPlayPairing:
             raise PlayerCommandFailed("Invalid M6: missing server public key")
 
     def _generate_hap_credentials(self) -> str:
-        """Generate HAP credentials for cliap2.
+        """
+        Generate HAP credentials for cliap2.
 
         Format: client_private_key(128 hex) + server_public_key(64 hex) = 192 hex chars
 
@@ -558,7 +568,8 @@ class AirPlayPairing:
         client_public: bytes,
         server_public: bytes,
     ) -> bytes:
-        """Compute RAOP SRP premaster secret S.
+        """
+        Compute RAOP SRP premaster secret S.
 
         S = (B - k*v)^(a + u*x) mod N
 
@@ -603,7 +614,8 @@ class AirPlayPairing:
         return s_bytes.rjust(n_len, b"\x00")
 
     def _compute_raop_session_key(self, premaster_secret: bytes) -> bytes:
-        r"""Compute RAOP session key K from premaster secret S.
+        r"""
+        Compute RAOP session key K from premaster secret S.
 
         K = SHA1(S | \x00\x00\x00\x00) | SHA1(S | \x00\x00\x00\x01)
 
@@ -619,7 +631,8 @@ class AirPlayPairing:
     def _compute_raop_m1(
         self, user_id: str, salt: bytes, client_pk: bytes, server_pk: bytes, session_key: bytes
     ) -> bytes:
-        """Compute RAOP SRP M1 proof with padding for A and B (but not g).
+        """
+        Compute RAOP SRP M1 proof with padding for A and B (but not g).
 
         M1 = H(H(N) XOR H(g) | H(I) | s | PAD(A) | PAD(B) | K)
 
@@ -654,7 +667,8 @@ class AirPlayPairing:
         return hashlib.sha1(m1_data).digest()
 
     def _compute_raop_client_public(self, auth_secret: bytes) -> bytes:
-        """Compute RAOP SRP client public key A = g^a mod N.
+        """
+        Compute RAOP SRP client public key A = g^a mod N.
 
         :param auth_secret: 32-byte random secret (used as SRP private key a).
         :return: Client public key A as bytes.
@@ -667,7 +681,8 @@ class AirPlayPairing:
         return a_pub.to_bytes((a_pub.bit_length() + 7) // 8, "big")
 
     async def _finish_raop_pairing(self, pin: str) -> str:
-        """Complete RAOP pairing for AirPlay 1.
+        """
+        Complete RAOP pairing for AirPlay 1.
 
         :param pin: 4-digit PIN.
         :return: Credentials (client_id:auth_secret format).

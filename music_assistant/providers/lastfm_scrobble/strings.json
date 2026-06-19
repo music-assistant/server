@@ -2,7 +2,11 @@
   "config_entries": {
     "_provider": {
       "label": "Provider",
-      "description": "The endpoint to use, defaults to Last.fm"
+      "description": "The endpoint to use, defaults to Last.fm",
+      "options": {
+        "lastfm": "Last.FM",
+        "librefm": "LibreFM"
+      }
     },
     "_api_key": {
       "label": "API Key",
@@ -17,6 +21,12 @@
     },
     "_api_session_key": {
       "label": "Session key"
+    },
+    "save_reminder": {
+      "label": "Successfully logged in as {0}, don't forget to hit save to complete the setup"
+    },
+    "authorize": {
+      "label": "Authorize with {0}"
     }
   },
   "manifest": {

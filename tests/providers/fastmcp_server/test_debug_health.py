@@ -131,7 +131,8 @@ async def test_health_summary_skips_log_read_when_logs_disabled(
     populated_mass: MagicMock,  # noqa: ARG001 -- populates mock_mass providers/queues
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When DEBUG_LOGS is off, health_summary must not touch the log file at all.
+    """
+    When DEBUG_LOGS is off, health_summary must not touch the log file at all.
 
     Reading logs to count errors when the operator disabled log access bypasses
     the permission. The capability is reported as disabled instead.

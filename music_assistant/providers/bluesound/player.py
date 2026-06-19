@@ -425,7 +425,8 @@ class BluesoundPlayer(Player):
         self.update_state()
 
     async def _get_bluesound_sources(self, timeout: float | None = None) -> list[PlayerSource]:
-        """Resolve Bluesound presets and inputs to MA PlayerSource.
+        """
+        Resolve Bluesound presets and inputs to MA PlayerSource.
 
         :param timeout: The timeout for getting inputs and presets.
         """
