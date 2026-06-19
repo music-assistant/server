@@ -37,13 +37,13 @@ repos:
         files: ^(\.python-version|pyproject\.toml|scripts/check_python_version\.py)$
         verbose: true  # script overwrites pre-commit's metadata via ANSI escapes
 
-      # fail when a provider test is a flat file instead of living in its own folder
+      # fail when a provider/controller test is a flat file instead of living in its own folder
       - id: check_test_layout
         name: check_test_layout
         entry: uv run -m scripts.check_test_layout
         pass_filenames: false
         language: system
-        files: ^(tests/providers/.+\.py|scripts/check_test_layout\.py)$
+        files: ^(tests/(providers|controllers)/.+\.py|scripts/check_test_layout\.py)$
 
       - id: ruff-check
         name: 🐶 Ruff Linter
