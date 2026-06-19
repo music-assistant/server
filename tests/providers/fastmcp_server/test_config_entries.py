@@ -67,13 +67,13 @@ def test_categories_match_pr2889_ux(mock_mass: MagicMock) -> None:
     # Spotify provider's ``CONF_ACTION_AUTH`` button (no explicit category).
     assert categories == {
         "server",
-        "Query Permissions",
-        "Control Permissions",
-        "Edit Permissions",
-        "Delete Permissions",
-        "MCP Resources",
+        "query_permissions",
+        "control_permissions",
+        "edit_permissions",
+        "delete_permissions",
+        "mcp_resources",
         "debug",
-        "Config",
+        "mcp_config",
         "generic",
     }
 
