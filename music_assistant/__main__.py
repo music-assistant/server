@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import logging
 import os
+import resource
 import signal
 import subprocess
 import sys
@@ -207,6 +208,13 @@ def main() -> None:
     # parse arguments
     args = get_arguments()
 
+    # Raise the open-file soft limit to the hard limit: concurrent provider
+    # imports at startup can exhaust the default soft limit (1024 in HAOS add-on
+    # containers). Raising soft up to the already-granted hard limit needs no privileges.
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft < hard:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+    
     data_dir = args.data_dir
     cache_dir = args.cache_dir
 
