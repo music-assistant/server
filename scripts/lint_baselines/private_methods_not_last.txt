@@ -8,10 +8,6 @@ music_assistant/controllers/streams/audio.py	23
 music_assistant/controllers/streams/ogg_handler.py	1
 music_assistant/controllers/streams/smart_fades/fades.py	3
 music_assistant/controllers/tasks/controller.py	5
-music_assistant/controllers/webserver/auth.py	42
-music_assistant/controllers/webserver/helpers/auth_providers.py	6
-music_assistant/controllers/webserver/remote_access/__init__.py	7
-music_assistant/controllers/webserver/remote_access/gateway.py	2
 music_assistant/helpers/named_pipe.py	5
 music_assistant/helpers/scrobbler.py	2
 music_assistant/helpers/throttle_retry.py	3
