@@ -88,68 +88,6 @@ class RadioController(MediaControllerBase[Radio]):
         # return the aggregated result
         return list(all_versions.values())
 
-    async def _add_library_item(self, item: Radio, overwrite_existing: bool = False) -> int:
-        """Add a new item record to the database."""
-        assert self.mass.music.database is not None  # For type checking
-        db_id = await self.mass.music.database.insert(
-            self.db_table,
-            {
-                "name": item.name,
-                "sort_name": item.sort_name,
-                "favorite": item.favorite,
-                "metadata": serialize_to_json(item.metadata),
-                "external_ids": serialize_to_json(item.external_ids),
-                "search_name": create_safe_string(item.name, True, True),
-                "search_sort_name": create_safe_string(
-                    item.sort_name if item.sort_name is not None else "", True, True
-                ),
-                "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
-            },
-        )
-        # update/set provider_mappings table
-        await self.set_provider_mappings(db_id, item.provider_mappings)
-        self.logger.debug("added %s to database (id: %s)", item.name, db_id)
-        return db_id
-
-    async def _update_library_item(
-        self, item_id: str | int, update: Radio, overwrite: bool = False
-    ) -> None:
-        """Update existing record in the database."""
-        db_id = int(item_id)  # ensure integer
-        cur_item = await self.get_library_item(db_id)
-        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
-        cur_item.external_ids.update(update.external_ids)
-        match = {"item_id": db_id}
-        name = update.name if overwrite else cur_item.name
-        sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
-        assert self.mass.music.database is not None  # For type checking
-        await self.mass.music.database.update(
-            self.db_table,
-            match,
-            {
-                # always prefer name from updated item here
-                "name": name,
-                "sort_name": sort_name,
-                "metadata": serialize_to_json(metadata),
-                "external_ids": serialize_to_json(
-                    update.external_ids if overwrite else cur_item.external_ids
-                ),
-                "search_name": create_safe_string(name, True, True),
-                "search_sort_name": create_safe_string(sort_name or "", True, True),
-                "timestamp_added": int(update.date_added.timestamp())
-                if update.date_added
-                else UNSET,
-            },
-        )
-        # update/set provider_mappings table
-        provider_mappings = (
-            update.provider_mappings
-            if overwrite
-            else {*update.provider_mappings, *cur_item.provider_mappings}
-        )
-        await self.set_provider_mappings(db_id, provider_mappings, overwrite)
-        self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
-
     async def radio_mode_base_tracks(
         self,
         item: Radio,
@@ -227,3 +165,65 @@ class RadioController(MediaControllerBase[Radio]):
                 # 100% match, we update the db with the additional provider mapping(s)
                 await self.add_provider_mappings(db_radio.item_id, match)
                 cur_provider_domains.add(provider.domain)
+
+    async def _add_library_item(self, item: Radio, overwrite_existing: bool = False) -> int:
+        """Add a new item record to the database."""
+        assert self.mass.music.database is not None  # For type checking
+        db_id = await self.mass.music.database.insert(
+            self.db_table,
+            {
+                "name": item.name,
+                "sort_name": item.sort_name,
+                "favorite": item.favorite,
+                "metadata": serialize_to_json(item.metadata),
+                "external_ids": serialize_to_json(item.external_ids),
+                "search_name": create_safe_string(item.name, True, True),
+                "search_sort_name": create_safe_string(
+                    item.sort_name if item.sort_name is not None else "", True, True
+                ),
+                "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
+            },
+        )
+        # update/set provider_mappings table
+        await self.set_provider_mappings(db_id, item.provider_mappings)
+        self.logger.debug("added %s to database (id: %s)", item.name, db_id)
+        return db_id
+
+    async def _update_library_item(
+        self, item_id: str | int, update: Radio, overwrite: bool = False
+    ) -> None:
+        """Update existing record in the database."""
+        db_id = int(item_id)  # ensure integer
+        cur_item = await self.get_library_item(db_id)
+        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+        cur_item.external_ids.update(update.external_ids)
+        match = {"item_id": db_id}
+        name = update.name if overwrite else cur_item.name
+        sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
+        assert self.mass.music.database is not None  # For type checking
+        await self.mass.music.database.update(
+            self.db_table,
+            match,
+            {
+                # always prefer name from updated item here
+                "name": name,
+                "sort_name": sort_name,
+                "metadata": serialize_to_json(metadata),
+                "external_ids": serialize_to_json(
+                    update.external_ids if overwrite else cur_item.external_ids
+                ),
+                "search_name": create_safe_string(name, True, True),
+                "search_sort_name": create_safe_string(sort_name or "", True, True),
+                "timestamp_added": int(update.date_added.timestamp())
+                if update.date_added
+                else UNSET,
+            },
+        )
+        # update/set provider_mappings table
+        provider_mappings = (
+            update.provider_mappings
+            if overwrite
+            else {*update.provider_mappings, *cur_item.provider_mappings}
+        )
+        await self.set_provider_mappings(db_id, provider_mappings, overwrite)
+        self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
