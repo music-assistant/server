@@ -916,5 +916,5 @@ def parse_date(date_value: str | None) -> datetime | None:
     """Parse a date value from the GQL API to a timezone-aware datetime."""
     try:
         return datetime.fromisoformat(str(date_value))
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None

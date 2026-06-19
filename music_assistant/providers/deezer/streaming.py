@@ -273,7 +273,7 @@ class DeezerStreamingManager:
                     url_details, song_data = await self.provider.gw_client.get_deezer_track_urls(
                         chapter_id
                     )
-                except (DeezerGWError, MediaNotFoundError, KeyError):
+                except DeezerGWError, MediaNotFoundError, KeyError:
                     self.logger.warning("Failed to get URL for audiobook chapter %s", chapter_id)
                     continue
                 url = url_details["sources"][0]["url"]
