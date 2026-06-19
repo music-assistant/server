@@ -5,7 +5,7 @@
       "description": "List of Fully Kiosk devices to connect to. Enter one device per line as host or host:port. Port defaults to 2323 if not specified. After saving, configure the password (and optional SSL options) for each device on the individual player's settings page."
     },
     "password": {
-      "label": "Password",
+      "label": "[%key:common::config_entries::password::label%]",
       "description": "Password to use to connect to the Fully Kiosk API."
     },
     "use_ssl": {

@@ -8,7 +8,7 @@
       "description": "E-Mail address of ARD account."
     },
     "password": {
-      "label": "Password",
+      "label": "[%key:common::config_entries::password::label%]",
       "description": "Password of ARD account."
     },
     "max_num_episodes": {

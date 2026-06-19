@@ -43,6 +43,7 @@ class _TestProvider:
         self.mass = mass
         self.domain = domain
         self.instance_id = domain
+        self.translation_owner = f"provider.{domain}"
         self.name = f"{domain.title()} Provider"
         self.available = True
         self.logger = logging.getLogger(f"test.{domain}")
@@ -188,3 +189,22 @@ async def test_full_form_save_does_not_persist_prefixed_copy_on_parent(
     assert stored.get("volume_normalization") is False
     # protocol-prefixed entries are virtual mirrors of the child and must never live on the parent
     assert not any(CONF_PROTOCOL_KEY_SPLITTER in key for key in stored)
+
+
+async def test_injected_protocol_entry_resolves_under_origin_provider(
+    mass: MusicAssistant,
+) -> None:
+    """Injected protocol entries carry their origin provider's owner + bare key, not the host's."""
+    await _setup_parent_with_protocol_child(mass)
+
+    # config/players/get (parsed PlayerConfig) path
+    config = await mass.config.get_player_config(PARENT_ID)
+    entry = config.values[PREFIXED_KEY]
+    assert entry.translation_owner == "provider.dlna"
+    assert entry.translation_key == CONF_FLOW_MODE_SAMPLE_RATE
+
+    # config/players/get_entries (raw entries) path
+    entries = await mass.config.get_player_config_entries(PARENT_ID)
+    proto_entry = next(entry for entry in entries if entry.key == PREFIXED_KEY)
+    assert proto_entry.translation_owner == "provider.dlna"
+    assert proto_entry.translation_key == CONF_FLOW_MODE_SAMPLE_RATE
