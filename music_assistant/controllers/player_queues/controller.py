@@ -259,22 +259,6 @@ class PlayerQueuesController(CoreController):
         """Return PlayerQueue by queue_id or None if not found."""
         return self._queues.get(queue_id)
 
-    def _check_player_permission(self, queue_id: str) -> None:
-        """
-        Check if the current user has permission to control this player/queue.
-
-        :param queue_id: The queue/player ID to check access for.
-        :raises InsufficientPermissions: If the user lacks access.
-        """
-        current_user = get_current_user()
-        if (
-            current_user
-            and current_user.player_filter
-            and queue_id not in current_user.player_filter
-        ):
-            msg = f"{current_user.username} does not have access to player {queue_id}"
-            raise InsufficientPermissions(msg)
-
     @api_command("player_queues/items")
     def items(self, queue_id: str, limit: int = 500, offset: int = 0) -> list[QueueItem]:
         """Return all QueueItems for given PlayerQueue."""
@@ -1232,6 +1216,546 @@ class PlayerQueuesController(CoreController):
 
         return next_item
 
+    def track_loaded_in_buffer(self, queue_id: str, item_id: str) -> None:
+        """Call when a player has (started) loading a track in the buffer."""
+        queue = self.get(queue_id)
+        if not queue:
+            msg = f"PlayerQueue {queue_id} is not available"
+            raise PlayerUnavailableError(msg)
+        # store the index of the item that is currently (being) loaded in the buffer
+        # which helps us a bit to determine how far the player has buffered ahead
+        current_index = self.index_by_id(queue_id, item_id)
+        queue.index_in_buffer = current_index
+        self.logger.debug("PlayerQueue %s loaded item %s in buffer", queue.display_name, item_id)
+        self.signal_update(queue_id)
+        # preload next streamdetails
+        self._preload_next_item(queue_id, item_id)
+        # clean up stale audio buffers for old queue items to prevent memory leaks
+        if current_index is not None:
+            self.mass.create_task(self._cleanup_stale_queue_buffers(queue_id, current_index))
+
+    def queue_buffer_completed(self, queue_id: str) -> None:
+        """
+        Call when the flow stream has finished generating all audio data for a queue.
+
+        At this point all audio data for the queue has been passed to the encoding pipeline.
+        The player will go idle once it finishes playing the remaining buffered audio.
+
+        We start a background task that waits for the player to go idle and checks if new
+        items have been added to the queue in the meantime, resuming playback if so.
+
+        :param queue_id: The queue ID.
+        """
+        queue = self._queues.get(queue_id)
+        if not queue:
+            return
+        self.logger.debug("Queue flow buffer completed for %s", queue.display_name)
+
+        # capture session_id so we can bail out if playback restarts
+        original_session_id = queue.session_id
+
+        async def _resume_on_idle() -> None:
+            # wait for the player to finish playing the buffered audio and go idle
+            idle_detected = False
+            for _ in range(60):
+                await asyncio.sleep(1)
+                if not queue.active or queue.session_id != original_session_id:
+                    return
+                if queue.state == PlaybackState.IDLE:
+                    idle_detected = True
+                    break
+            if not idle_detected:
+                return
+            # player went idle, give it a brief moment to settle
+            await asyncio.sleep(1)
+            if queue.state != PlaybackState.IDLE or queue.session_id != original_session_id:
+                return
+            # check if new items were added to the queue after the flow stream ended
+            if queue.current_index is not None and (
+                next_item := self.get_next_item(queue_id, queue.current_index)
+            ):
+                next_index = self.index_by_id(queue_id, next_item.queue_item_id)
+                if next_index is not None:
+                    self.logger.info(
+                        "Resuming playback after flow stream completed for %s",
+                        queue.display_name,
+                    )
+                    await self.play_index(queue_id, next_index)
+
+        task_id = f"queue_buffer_completed_{queue_id}"
+        self.mass.create_task(_resume_on_idle(), task_id=task_id)
+
+    # Main queue manipulation methods
+
+    async def load(
+        self,
+        queue_id: str,
+        queue_items: list[QueueItem],
+        insert_at_index: int = 0,
+        keep_remaining: bool = True,
+        keep_played: bool = True,
+        shuffle: bool = False,
+    ) -> None:
+        """
+        Load new items at index.
+
+        - queue_id: id of the queue to process this request.
+        - queue_items: a list of QueueItems
+        - insert_at_index: insert the item(s) at this index
+        - keep_remaining: keep the remaining items after the insert
+        - shuffle: (re)shuffle the items after insert index
+        """
+        prev_items = self._queue_items[queue_id][:insert_at_index] if keep_played else []
+        next_items = queue_items
+
+        # if keep_remaining, append the old 'next' items
+        if keep_remaining:
+            next_items += self._queue_items[queue_id][insert_at_index:]
+
+        # we set the original insert order as attribute so we can un-shuffle
+        for index, item in enumerate(next_items):
+            item.sort_index += insert_at_index + index
+        # (re)shuffle the final batch if needed
+        if shuffle:
+            next_items = await smart_shuffle(next_items)
+        self.update_items(queue_id, prev_items + next_items)
+
+    def update_items(self, queue_id: str, queue_items: list[QueueItem]) -> None:
+        """Update the existing queue items, mostly caused by reordering."""
+        self._queue_items[queue_id] = queue_items
+        queue = self._queues[queue_id]
+        queue.items = len(self._queue_items[queue_id])
+        # to track if the queue items changed we set a timestamp
+        # this is a simple way to detect changes in the list of items
+        # without having to compare the entire list
+        queue.items_last_updated = time.time()
+        self.signal_update(queue_id, True)
+        if (
+            queue.state == PlaybackState.PLAYING
+            and queue.index_in_buffer is not None
+            and queue.index_in_buffer == queue.current_index
+        ):
+            # if the queue is playing,
+            # ensure to (re)queue the next track because it might have changed
+            # note that we only do this if the player has loaded the current track
+            # if not, we wait until it has loaded to prevent conflicts
+            if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
+                self._enqueue_next_item(queue_id, next_item)
+
+    # Helper methods
+
+    def get_item(self, queue_id: str, item_id_or_index: int | str | None) -> QueueItem | None:
+        """Get queue item by index or item_id."""
+        if item_id_or_index is None:
+            return None
+        if (queue_items := self._queue_items.get(queue_id)) is None:
+            return None
+        if isinstance(item_id_or_index, int) and len(queue_items) > item_id_or_index:
+            return queue_items[item_id_or_index]
+        if isinstance(item_id_or_index, str):
+            return next((x for x in queue_items if x.queue_item_id == item_id_or_index), None)
+        return None
+
+    def signal_update(self, queue_id: str, items_changed: bool = False) -> None:
+        """Signal state changed of given queue."""
+        if (queue := self._queues.get(queue_id)) is None:
+            return
+        # set 'active_playlist' in extra attributes as a human readable list
+        # of the enqueued media items for API clients to display if they want to
+        queue.extra_attributes[ATTR_ACTIVE_PLAYLIST] = " / ".join(
+            [x.name for x in queue.enqueued_media_items]
+        )
+        if items_changed:
+            self.mass.signal_event(EventType.QUEUE_ITEMS_UPDATED, object_id=queue_id, data=queue)
+            # save items in cache - only cache items with valid media_item
+            cache_data = [
+                x.to_cache() for x in self._queue_items[queue_id] if x.media_item is not None
+            ]
+            self.mass.create_task(
+                self.mass.cache.set(
+                    key=queue_id,
+                    data=cache_data,
+                    provider=self.domain,
+                    category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
+                )
+            )
+        # always send the base event
+        self.mass.signal_event(EventType.QUEUE_UPDATED, object_id=queue_id, data=queue)
+        # also signal update to the player itself so it can update its current_media
+        self.mass.players.trigger_player_update(queue_id)
+        # save state
+        self.mass.create_task(
+            self.mass.cache.set(
+                key=queue_id,
+                data=queue.to_cache(),
+                provider=self.domain,
+                category=CACHE_CATEGORY_PLAYER_QUEUE_STATE,
+            )
+        )
+
+    def index_by_id(self, queue_id: str, queue_item_id: str) -> int | None:
+        """Get index by queue_item_id."""
+        if (queue_items := self._queue_items.get(queue_id)) is None:
+            return None
+        for index, item in enumerate(queue_items):
+            if item.queue_item_id == queue_item_id:
+                return index
+        return None
+
+    async def player_media_from_queue_item(self, queue_item: QueueItem) -> PlayerMedia:
+        """
+        Parse PlayerMedia from QueueItem.
+
+        :param queue_item: The queue item to create media from.
+        """
+        queue = self._queues[queue_item.queue_id]
+        if queue_item.streamdetails:
+            # prefer netto duration
+            # when seeking, the player only receives the remaining duration
+            duration = queue_item.streamdetails.duration or queue_item.duration
+            if duration and queue_item.streamdetails.seek_position:
+                duration = int(duration - queue_item.streamdetails.seek_position)
+        else:
+            duration = queue_item.duration
+        if queue.session_id is None:
+            raise InvalidDataError("Queue session_id is None")
+        media = PlayerMedia(
+            uri=queue_item.uri,
+            media_type=queue_item.media_type,
+            title=queue_item.name,
+            image_url=MASS_LOGO_ONLINE,
+            duration=duration,
+            source_id=queue_item.queue_id,
+            queue_item_id=queue_item.queue_item_id,
+            custom_data={
+                "session_id": queue.session_id,
+                "original_uri": queue_item.uri,
+            },
+        )
+        if queue_item.media_item:
+            media.title = queue_item.media_item.name
+            media.artist = getattr(queue_item.media_item, "artist_str", "")
+            media.album = (
+                album.name if (album := getattr(queue_item.media_item, "album", None)) else ""
+            )
+            if queue_item.image:
+                # the image format needs to be 512x512 jpeg for maximum compatibility with players
+                # we prefer the imageproxy on the streamserver here because this request is sent
+                # to the player itself which may not be able to reach the regular webserver
+                media.image_url = self.mass.metadata.get_image_url(
+                    queue_item.image, size=512, image_format="jpeg", prefer_stream_server=True
+                )
+        return media
+
+    async def get_artist_tracks(self, artist: Artist) -> list[Track]:
+        """Return the tracks to play for the given artist, based on user preference."""
+        artist_items_conf = self.mass.config.get_raw_core_config_value(
+            self.domain,
+            CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
+            ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
+        )
+        self.logger.info(
+            "Fetching tracks to play for artist %s (selection: %s)", artist.name, artist_items_conf
+        )
+        if artist_items_conf == "top_tracks":
+            tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
+            random.shuffle(tracks)
+            return tracks
+        # legacy "library_album_tracks" also resolves to the in-library tracks
+        if artist_items_conf in ("library_tracks", "library_album_tracks"):
+            tracks = await self._library_artist_tracks(artist)
+            random.shuffle(tracks)
+            return tracks
+        if artist_items_conf == "prefer_library":
+            tracks = await self._library_artist_tracks(artist)
+            if not tracks:
+                tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
+            random.shuffle(tracks)
+            return tracks
+        result: list[Track] = []
+        seen: set[str] = set()
+        sources = await asyncio.gather(
+            self._library_artist_tracks(artist),
+            self._provider_artist_tracks(artist),
+            return_exceptions=True,
+        )
+        for source in sources:
+            if isinstance(source, BaseException):
+                self.logger.warning(
+                    "Error resolving some tracks for artist %s", artist.name, exc_info=source
+                )
+                continue
+            for track in source:
+                unique_id = f"{track.name}.{track.version}"
+                if unique_id in seen:
+                    continue
+                seen.add(unique_id)
+                result.append(track)
+        random.shuffle(result)
+        return result
+
+    async def get_album_tracks(
+        self, album: Album, start_item: str | None, sort_by: str | None = None
+    ) -> list[Track]:
+        """Return tracks for given album, based on user preference."""
+        album_items_conf = self.mass.config.get_raw_core_config_value(
+            self.domain,
+            CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
+            ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
+        )
+        result: list[Track] = []
+        self.logger.info(
+            "Fetching tracks to play for album %s",
+            album.name,
+        )
+        for album_track in await self.mass.music.albums.tracks(
+            item_id=album.item_id,
+            provider_instance_id_or_domain=album.provider,
+            in_library_only=album_items_conf == "library_tracks",
+        ):
+            if not album_track.available:
+                continue
+            result.append(album_track)
+        if sort_by and sort_by != "track_number":
+            result = sort_tracks(result, sort_by)
+        if start_item is not None:
+            for idx, track in enumerate(result):
+                if start_item in (track.item_id, track.uri):
+                    return result[idx:]
+            return []
+        return result
+
+    async def get_genre_tracks(self, genre: Genre, start_item: str | None) -> list[Track]:
+        """
+        Return tracks for given genre, based on alias mappings.
+
+        Limits results to avoid loading thousands of tracks for broad genres.
+        Directly mapped tracks are fetched with random ordering, then supplemented
+        with tracks from a limited set of mapped albums and artists.
+        """
+        result: list[Track] = []
+        start_item_found = False
+        self.logger.info(
+            "Fetching tracks to play for genre %s",
+            genre.name,
+        )
+        tracks, albums, artists = await self.mass.music.genres.mapped_media(
+            genre,
+            track_limit=25,
+            album_limit=5,
+            artist_limit=5,
+            order_by="random",
+        )
+
+        for genre_track in tracks:
+            if not genre_track.available:
+                continue
+            if start_item in (genre_track.item_id, genre_track.uri):
+                start_item_found = True
+            if start_item is not None and not start_item_found:
+                continue
+            result.append(genre_track)
+
+        for album in albums:
+            album_tracks = await self.get_album_tracks(album, None)
+            result.extend(album_tracks[:5])
+
+        for artist in artists:
+            artist_tracks = await self.get_artist_tracks(artist)
+            result.extend(artist_tracks[:5])
+        return result
+
+    async def get_playlist_tracks(
+        self,
+        playlist: Playlist,
+        start_item: str | None,
+        sort_by: str | None = None,
+    ) -> list[PlaylistPlayableItem]:
+        """Return tracks for given playlist, based on user preference."""
+        result: list[PlaylistPlayableItem] = []
+        self.logger.info(
+            "Fetching tracks to play for playlist %s",
+            playlist.name,
+        )
+        force_refresh = playlist.is_dynamic
+        needs_sort = sort_by is not None and sort_by != "position"
+        # Fast path: no re-sort needed, skip-until-found in a single pass
+        # so we don't materialize huge playlists when starting near the end.
+        if not needs_sort:
+            start_item_found = False
+            async for playlist_track in self.mass.music.playlists.tracks(
+                playlist.item_id,
+                playlist.provider,
+                force_refresh=force_refresh,
+                allow_dynamic_tracks=playlist.is_dynamic,
+            ):
+                if not playlist_track.available:
+                    continue
+                if start_item in (playlist_track.item_id, playlist_track.uri):
+                    start_item_found = True
+                if start_item is not None and not start_item_found:
+                    continue
+                result.append(playlist_track)
+            return result
+        # Sort path: must materialize all tracks before sorting, then slice.
+        async for playlist_track in self.mass.music.playlists.tracks(
+            playlist.item_id,
+            playlist.provider,
+            force_refresh=force_refresh,
+            allow_dynamic_tracks=playlist.is_dynamic,
+        ):
+            if not playlist_track.available:
+                continue
+            result.append(playlist_track)
+        result = sort_tracks(result, cast("str", sort_by))
+        if start_item is not None:
+            for idx, track in enumerate(result):
+                if start_item in (track.item_id, track.uri):
+                    return result[idx:]
+            return []
+        return result
+
+    async def get_audiobook_resume_point(
+        self, audio_book: Audiobook, chapter: str | int | None = None, userid: str | None = None
+    ) -> int:
+        """Return resume point (in milliseconds) for given audio book."""
+        self.logger.debug(
+            "Fetching resume point to play for audio book %s",
+            audio_book.name,
+        )
+        if chapter is not None:
+            # user explicitly selected a chapter to play
+            start_chapter = int(chapter) if isinstance(chapter, str) else chapter
+            if chapters := audio_book.metadata.chapters:
+                if _chapter := next((x for x in chapters if x.position == start_chapter), None):
+                    return int(_chapter.start * 1000)
+            raise InvalidDataError(
+                f"Unable to resolve chapter to play for Audiobook {audio_book.name}"
+            )
+        full_played, resume_position_ms = await self.mass.music.get_resume_position(
+            audio_book, userid=userid
+        )
+        return 0 if full_played else resume_position_ms
+
+    async def get_next_podcast_episodes(
+        self,
+        podcast: Podcast | None,
+        episode: PodcastEpisode | str | None,
+        userid: str | None = None,
+    ) -> UniqueList[PodcastEpisode]:
+        """Return (next) episode(s) and resume point for given podcast."""
+        if podcast is None and isinstance(episode, str | NoneType):
+            raise InvalidDataError("Either podcast or episode must be provided")
+        if podcast is None:
+            # single podcast episode requested
+            assert isinstance(episode, PodcastEpisode)  # checked above
+            self.logger.debug(
+                "Fetching resume point to play for Podcast episode %s",
+                episode.name,
+            )
+            (
+                fully_played,
+                resume_position_ms,
+            ) = await self.mass.music.get_resume_position(episode, userid=userid)
+            episode.fully_played = fully_played
+            episode.resume_position_ms = 0 if fully_played else resume_position_ms
+            return UniqueList([episode])
+        # podcast with optional start episode requested
+        self.logger.debug(
+            "Fetching episode(s) and resume point to play for Podcast %s",
+            podcast.name,
+        )
+        all_episodes = [
+            x async for x in self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider)
+        ]
+        all_episodes.sort(key=lambda x: x.position)
+        # if a episode was provided, a user explicitly selected a episode to play
+        # so we need to find the index of the episode in the list
+        resolved_episode: PodcastEpisode | None = None
+        if isinstance(episode, PodcastEpisode):
+            resolved_episode = next((x for x in all_episodes if x.uri == episode.uri), None)
+            if resolved_episode:
+                # ensure we have accurate resume info
+                (
+                    fully_played,
+                    resume_position_ms,
+                ) = await self.mass.music.get_resume_position(resolved_episode, userid=userid)
+                resolved_episode.resume_position_ms = 0 if fully_played else resume_position_ms
+        elif isinstance(episode, str):
+            resolved_episode = next(
+                (x for x in all_episodes if episode in (x.uri, x.item_id)), None
+            )
+            if resolved_episode:
+                # ensure we have accurate resume info
+                (
+                    fully_played,
+                    resume_position_ms,
+                ) = await self.mass.music.get_resume_position(resolved_episode, userid=userid)
+                resolved_episode.resume_position_ms = 0 if fully_played else resume_position_ms
+        else:
+            # get first episode that is not fully played
+            for ep in all_episodes:
+                if ep.fully_played:
+                    continue
+                # ensure we have accurate resume info
+                (
+                    fully_played,
+                    resume_position_ms,
+                ) = await self.mass.music.get_resume_position(ep, userid=userid)
+                if fully_played:
+                    continue
+                ep.resume_position_ms = resume_position_ms
+                resolved_episode = ep
+                break
+            else:
+                # no episodes found that are not fully played, so we start at the beginning
+                resolved_episode = next((x for x in all_episodes), None)
+        if resolved_episode is None:
+            raise InvalidDataError(f"Unable to resolve episode to play for Podcast {podcast.name}")
+        # get the index of the episode
+        episode_index = all_episodes.index(resolved_episode)
+        # return the (remaining) episode(s) to play
+        return UniqueList(all_episodes[episode_index:])
+
+    def get_next_item(self, queue_id: str, cur_index: int | str) -> QueueItem | None:
+        """Return next QueueItem for given queue."""
+        index: int
+        if isinstance(cur_index, str):
+            resolved_index = self.index_by_id(queue_id, cur_index)
+            if resolved_index is None:
+                return None  # guard
+            index = resolved_index
+        else:
+            index = cur_index
+        # At this point index is guaranteed to be int
+        for skip in range(5):
+            if (next_index := self._get_next_index(queue_id, index + skip)) is None:
+                break
+            next_item = self.get_item(queue_id, next_index)
+            if next_item is None:
+                continue
+            if not next_item.available:
+                # ensure that we skip unavailable items (set by load_next track logic)
+                continue
+            return next_item
+        return None
+
+    def _check_player_permission(self, queue_id: str) -> None:
+        """
+        Check if the current user has permission to control this player/queue.
+
+        :param queue_id: The queue/player ID to check access for.
+        :raises InsufficientPermissions: If the user lacks access.
+        """
+        current_user = get_current_user()
+        if (
+            current_user
+            and current_user.player_filter
+            and queue_id not in current_user.player_filter
+        ):
+            msg = f"{current_user.username} does not have access to player {queue_id}"
+            raise InsufficientPermissions(msg)
+
     @handle_play_action
     async def _handle_play_media(
         self,
@@ -1635,237 +2159,6 @@ class PlayerQueuesController(CoreController):
                 reason="prepare",
             )
 
-    def track_loaded_in_buffer(self, queue_id: str, item_id: str) -> None:
-        """Call when a player has (started) loading a track in the buffer."""
-        queue = self.get(queue_id)
-        if not queue:
-            msg = f"PlayerQueue {queue_id} is not available"
-            raise PlayerUnavailableError(msg)
-        # store the index of the item that is currently (being) loaded in the buffer
-        # which helps us a bit to determine how far the player has buffered ahead
-        current_index = self.index_by_id(queue_id, item_id)
-        queue.index_in_buffer = current_index
-        self.logger.debug("PlayerQueue %s loaded item %s in buffer", queue.display_name, item_id)
-        self.signal_update(queue_id)
-        # preload next streamdetails
-        self._preload_next_item(queue_id, item_id)
-        # clean up stale audio buffers for old queue items to prevent memory leaks
-        if current_index is not None:
-            self.mass.create_task(self._cleanup_stale_queue_buffers(queue_id, current_index))
-
-    def queue_buffer_completed(self, queue_id: str) -> None:
-        """
-        Call when the flow stream has finished generating all audio data for a queue.
-
-        At this point all audio data for the queue has been passed to the encoding pipeline.
-        The player will go idle once it finishes playing the remaining buffered audio.
-
-        We start a background task that waits for the player to go idle and checks if new
-        items have been added to the queue in the meantime, resuming playback if so.
-
-        :param queue_id: The queue ID.
-        """
-        queue = self._queues.get(queue_id)
-        if not queue:
-            return
-        self.logger.debug("Queue flow buffer completed for %s", queue.display_name)
-
-        # capture session_id so we can bail out if playback restarts
-        original_session_id = queue.session_id
-
-        async def _resume_on_idle() -> None:
-            # wait for the player to finish playing the buffered audio and go idle
-            idle_detected = False
-            for _ in range(60):
-                await asyncio.sleep(1)
-                if not queue.active or queue.session_id != original_session_id:
-                    return
-                if queue.state == PlaybackState.IDLE:
-                    idle_detected = True
-                    break
-            if not idle_detected:
-                return
-            # player went idle, give it a brief moment to settle
-            await asyncio.sleep(1)
-            if queue.state != PlaybackState.IDLE or queue.session_id != original_session_id:
-                return
-            # check if new items were added to the queue after the flow stream ended
-            if queue.current_index is not None and (
-                next_item := self.get_next_item(queue_id, queue.current_index)
-            ):
-                next_index = self.index_by_id(queue_id, next_item.queue_item_id)
-                if next_index is not None:
-                    self.logger.info(
-                        "Resuming playback after flow stream completed for %s",
-                        queue.display_name,
-                    )
-                    await self.play_index(queue_id, next_index)
-
-        task_id = f"queue_buffer_completed_{queue_id}"
-        self.mass.create_task(_resume_on_idle(), task_id=task_id)
-
-    # Main queue manipulation methods
-
-    async def load(
-        self,
-        queue_id: str,
-        queue_items: list[QueueItem],
-        insert_at_index: int = 0,
-        keep_remaining: bool = True,
-        keep_played: bool = True,
-        shuffle: bool = False,
-    ) -> None:
-        """
-        Load new items at index.
-
-        - queue_id: id of the queue to process this request.
-        - queue_items: a list of QueueItems
-        - insert_at_index: insert the item(s) at this index
-        - keep_remaining: keep the remaining items after the insert
-        - shuffle: (re)shuffle the items after insert index
-        """
-        prev_items = self._queue_items[queue_id][:insert_at_index] if keep_played else []
-        next_items = queue_items
-
-        # if keep_remaining, append the old 'next' items
-        if keep_remaining:
-            next_items += self._queue_items[queue_id][insert_at_index:]
-
-        # we set the original insert order as attribute so we can un-shuffle
-        for index, item in enumerate(next_items):
-            item.sort_index += insert_at_index + index
-        # (re)shuffle the final batch if needed
-        if shuffle:
-            next_items = await smart_shuffle(next_items)
-        self.update_items(queue_id, prev_items + next_items)
-
-    def update_items(self, queue_id: str, queue_items: list[QueueItem]) -> None:
-        """Update the existing queue items, mostly caused by reordering."""
-        self._queue_items[queue_id] = queue_items
-        queue = self._queues[queue_id]
-        queue.items = len(self._queue_items[queue_id])
-        # to track if the queue items changed we set a timestamp
-        # this is a simple way to detect changes in the list of items
-        # without having to compare the entire list
-        queue.items_last_updated = time.time()
-        self.signal_update(queue_id, True)
-        if (
-            queue.state == PlaybackState.PLAYING
-            and queue.index_in_buffer is not None
-            and queue.index_in_buffer == queue.current_index
-        ):
-            # if the queue is playing,
-            # ensure to (re)queue the next track because it might have changed
-            # note that we only do this if the player has loaded the current track
-            # if not, we wait until it has loaded to prevent conflicts
-            if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
-                self._enqueue_next_item(queue_id, next_item)
-
-    # Helper methods
-
-    def get_item(self, queue_id: str, item_id_or_index: int | str | None) -> QueueItem | None:
-        """Get queue item by index or item_id."""
-        if item_id_or_index is None:
-            return None
-        if (queue_items := self._queue_items.get(queue_id)) is None:
-            return None
-        if isinstance(item_id_or_index, int) and len(queue_items) > item_id_or_index:
-            return queue_items[item_id_or_index]
-        if isinstance(item_id_or_index, str):
-            return next((x for x in queue_items if x.queue_item_id == item_id_or_index), None)
-        return None
-
-    def signal_update(self, queue_id: str, items_changed: bool = False) -> None:
-        """Signal state changed of given queue."""
-        if (queue := self._queues.get(queue_id)) is None:
-            return
-        # set 'active_playlist' in extra attributes as a human readable list
-        # of the enqueued media items for API clients to display if they want to
-        queue.extra_attributes[ATTR_ACTIVE_PLAYLIST] = " / ".join(
-            [x.name for x in queue.enqueued_media_items]
-        )
-        if items_changed:
-            self.mass.signal_event(EventType.QUEUE_ITEMS_UPDATED, object_id=queue_id, data=queue)
-            # save items in cache - only cache items with valid media_item
-            cache_data = [
-                x.to_cache() for x in self._queue_items[queue_id] if x.media_item is not None
-            ]
-            self.mass.create_task(
-                self.mass.cache.set(
-                    key=queue_id,
-                    data=cache_data,
-                    provider=self.domain,
-                    category=CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
-                )
-            )
-        # always send the base event
-        self.mass.signal_event(EventType.QUEUE_UPDATED, object_id=queue_id, data=queue)
-        # also signal update to the player itself so it can update its current_media
-        self.mass.players.trigger_player_update(queue_id)
-        # save state
-        self.mass.create_task(
-            self.mass.cache.set(
-                key=queue_id,
-                data=queue.to_cache(),
-                provider=self.domain,
-                category=CACHE_CATEGORY_PLAYER_QUEUE_STATE,
-            )
-        )
-
-    def index_by_id(self, queue_id: str, queue_item_id: str) -> int | None:
-        """Get index by queue_item_id."""
-        if (queue_items := self._queue_items.get(queue_id)) is None:
-            return None
-        for index, item in enumerate(queue_items):
-            if item.queue_item_id == queue_item_id:
-                return index
-        return None
-
-    async def player_media_from_queue_item(self, queue_item: QueueItem) -> PlayerMedia:
-        """
-        Parse PlayerMedia from QueueItem.
-
-        :param queue_item: The queue item to create media from.
-        """
-        queue = self._queues[queue_item.queue_id]
-        if queue_item.streamdetails:
-            # prefer netto duration
-            # when seeking, the player only receives the remaining duration
-            duration = queue_item.streamdetails.duration or queue_item.duration
-            if duration and queue_item.streamdetails.seek_position:
-                duration = int(duration - queue_item.streamdetails.seek_position)
-        else:
-            duration = queue_item.duration
-        if queue.session_id is None:
-            raise InvalidDataError("Queue session_id is None")
-        media = PlayerMedia(
-            uri=queue_item.uri,
-            media_type=queue_item.media_type,
-            title=queue_item.name,
-            image_url=MASS_LOGO_ONLINE,
-            duration=duration,
-            source_id=queue_item.queue_id,
-            queue_item_id=queue_item.queue_item_id,
-            custom_data={
-                "session_id": queue.session_id,
-                "original_uri": queue_item.uri,
-            },
-        )
-        if queue_item.media_item:
-            media.title = queue_item.media_item.name
-            media.artist = getattr(queue_item.media_item, "artist_str", "")
-            media.album = (
-                album.name if (album := getattr(queue_item.media_item, "album", None)) else ""
-            )
-            if queue_item.image:
-                # the image format needs to be 512x512 jpeg for maximum compatibility with players
-                # we prefer the imageproxy on the streamserver here because this request is sent
-                # to the player itself which may not be able to reach the regular webserver
-                media.image_url = self.mass.metadata.get_image_url(
-                    queue_item.image, size=512, image_format="jpeg", prefer_stream_server=True
-                )
-        return media
-
     async def _resolve_library_artist(self, artist: Artist) -> Artist | None:
         """
         Resolve the in-library artist for the given (possibly provider) artist item.
@@ -1904,276 +2197,6 @@ class PlayerQueuesController(CoreController):
             )
         return tracks
 
-    async def get_artist_tracks(self, artist: Artist) -> list[Track]:
-        """Return the tracks to play for the given artist, based on user preference."""
-        artist_items_conf = self.mass.config.get_raw_core_config_value(
-            self.domain,
-            CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
-            ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
-        )
-        self.logger.info(
-            "Fetching tracks to play for artist %s (selection: %s)", artist.name, artist_items_conf
-        )
-        if artist_items_conf == "top_tracks":
-            tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
-            random.shuffle(tracks)
-            return tracks
-        # legacy "library_album_tracks" also resolves to the in-library tracks
-        if artist_items_conf in ("library_tracks", "library_album_tracks"):
-            tracks = await self._library_artist_tracks(artist)
-            random.shuffle(tracks)
-            return tracks
-        if artist_items_conf == "prefer_library":
-            tracks = await self._library_artist_tracks(artist)
-            if not tracks:
-                tracks = await self.mass.music.artists.top_tracks(artist.item_id, artist.provider)
-            random.shuffle(tracks)
-            return tracks
-        result: list[Track] = []
-        seen: set[str] = set()
-        sources = await asyncio.gather(
-            self._library_artist_tracks(artist),
-            self._provider_artist_tracks(artist),
-            return_exceptions=True,
-        )
-        for source in sources:
-            if isinstance(source, BaseException):
-                self.logger.warning(
-                    "Error resolving some tracks for artist %s", artist.name, exc_info=source
-                )
-                continue
-            for track in source:
-                unique_id = f"{track.name}.{track.version}"
-                if unique_id in seen:
-                    continue
-                seen.add(unique_id)
-                result.append(track)
-        random.shuffle(result)
-        return result
-
-    async def get_album_tracks(
-        self, album: Album, start_item: str | None, sort_by: str | None = None
-    ) -> list[Track]:
-        """Return tracks for given album, based on user preference."""
-        album_items_conf = self.mass.config.get_raw_core_config_value(
-            self.domain,
-            CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
-            ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
-        )
-        result: list[Track] = []
-        self.logger.info(
-            "Fetching tracks to play for album %s",
-            album.name,
-        )
-        for album_track in await self.mass.music.albums.tracks(
-            item_id=album.item_id,
-            provider_instance_id_or_domain=album.provider,
-            in_library_only=album_items_conf == "library_tracks",
-        ):
-            if not album_track.available:
-                continue
-            result.append(album_track)
-        if sort_by and sort_by != "track_number":
-            result = sort_tracks(result, sort_by)
-        if start_item is not None:
-            for idx, track in enumerate(result):
-                if start_item in (track.item_id, track.uri):
-                    return result[idx:]
-            return []
-        return result
-
-    async def get_genre_tracks(self, genre: Genre, start_item: str | None) -> list[Track]:
-        """
-        Return tracks for given genre, based on alias mappings.
-
-        Limits results to avoid loading thousands of tracks for broad genres.
-        Directly mapped tracks are fetched with random ordering, then supplemented
-        with tracks from a limited set of mapped albums and artists.
-        """
-        result: list[Track] = []
-        start_item_found = False
-        self.logger.info(
-            "Fetching tracks to play for genre %s",
-            genre.name,
-        )
-        tracks, albums, artists = await self.mass.music.genres.mapped_media(
-            genre,
-            track_limit=25,
-            album_limit=5,
-            artist_limit=5,
-            order_by="random",
-        )
-
-        for genre_track in tracks:
-            if not genre_track.available:
-                continue
-            if start_item in (genre_track.item_id, genre_track.uri):
-                start_item_found = True
-            if start_item is not None and not start_item_found:
-                continue
-            result.append(genre_track)
-
-        for album in albums:
-            album_tracks = await self.get_album_tracks(album, None)
-            result.extend(album_tracks[:5])
-
-        for artist in artists:
-            artist_tracks = await self.get_artist_tracks(artist)
-            result.extend(artist_tracks[:5])
-        return result
-
-    async def get_playlist_tracks(
-        self,
-        playlist: Playlist,
-        start_item: str | None,
-        sort_by: str | None = None,
-    ) -> list[PlaylistPlayableItem]:
-        """Return tracks for given playlist, based on user preference."""
-        result: list[PlaylistPlayableItem] = []
-        self.logger.info(
-            "Fetching tracks to play for playlist %s",
-            playlist.name,
-        )
-        force_refresh = playlist.is_dynamic
-        needs_sort = sort_by is not None and sort_by != "position"
-        # Fast path: no re-sort needed, skip-until-found in a single pass
-        # so we don't materialize huge playlists when starting near the end.
-        if not needs_sort:
-            start_item_found = False
-            async for playlist_track in self.mass.music.playlists.tracks(
-                playlist.item_id,
-                playlist.provider,
-                force_refresh=force_refresh,
-                allow_dynamic_tracks=playlist.is_dynamic,
-            ):
-                if not playlist_track.available:
-                    continue
-                if start_item in (playlist_track.item_id, playlist_track.uri):
-                    start_item_found = True
-                if start_item is not None and not start_item_found:
-                    continue
-                result.append(playlist_track)
-            return result
-        # Sort path: must materialize all tracks before sorting, then slice.
-        async for playlist_track in self.mass.music.playlists.tracks(
-            playlist.item_id,
-            playlist.provider,
-            force_refresh=force_refresh,
-            allow_dynamic_tracks=playlist.is_dynamic,
-        ):
-            if not playlist_track.available:
-                continue
-            result.append(playlist_track)
-        result = sort_tracks(result, cast("str", sort_by))
-        if start_item is not None:
-            for idx, track in enumerate(result):
-                if start_item in (track.item_id, track.uri):
-                    return result[idx:]
-            return []
-        return result
-
-    async def get_audiobook_resume_point(
-        self, audio_book: Audiobook, chapter: str | int | None = None, userid: str | None = None
-    ) -> int:
-        """Return resume point (in milliseconds) for given audio book."""
-        self.logger.debug(
-            "Fetching resume point to play for audio book %s",
-            audio_book.name,
-        )
-        if chapter is not None:
-            # user explicitly selected a chapter to play
-            start_chapter = int(chapter) if isinstance(chapter, str) else chapter
-            if chapters := audio_book.metadata.chapters:
-                if _chapter := next((x for x in chapters if x.position == start_chapter), None):
-                    return int(_chapter.start * 1000)
-            raise InvalidDataError(
-                f"Unable to resolve chapter to play for Audiobook {audio_book.name}"
-            )
-        full_played, resume_position_ms = await self.mass.music.get_resume_position(
-            audio_book, userid=userid
-        )
-        return 0 if full_played else resume_position_ms
-
-    async def get_next_podcast_episodes(
-        self,
-        podcast: Podcast | None,
-        episode: PodcastEpisode | str | None,
-        userid: str | None = None,
-    ) -> UniqueList[PodcastEpisode]:
-        """Return (next) episode(s) and resume point for given podcast."""
-        if podcast is None and isinstance(episode, str | NoneType):
-            raise InvalidDataError("Either podcast or episode must be provided")
-        if podcast is None:
-            # single podcast episode requested
-            assert isinstance(episode, PodcastEpisode)  # checked above
-            self.logger.debug(
-                "Fetching resume point to play for Podcast episode %s",
-                episode.name,
-            )
-            (
-                fully_played,
-                resume_position_ms,
-            ) = await self.mass.music.get_resume_position(episode, userid=userid)
-            episode.fully_played = fully_played
-            episode.resume_position_ms = 0 if fully_played else resume_position_ms
-            return UniqueList([episode])
-        # podcast with optional start episode requested
-        self.logger.debug(
-            "Fetching episode(s) and resume point to play for Podcast %s",
-            podcast.name,
-        )
-        all_episodes = [
-            x async for x in self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider)
-        ]
-        all_episodes.sort(key=lambda x: x.position)
-        # if a episode was provided, a user explicitly selected a episode to play
-        # so we need to find the index of the episode in the list
-        resolved_episode: PodcastEpisode | None = None
-        if isinstance(episode, PodcastEpisode):
-            resolved_episode = next((x for x in all_episodes if x.uri == episode.uri), None)
-            if resolved_episode:
-                # ensure we have accurate resume info
-                (
-                    fully_played,
-                    resume_position_ms,
-                ) = await self.mass.music.get_resume_position(resolved_episode, userid=userid)
-                resolved_episode.resume_position_ms = 0 if fully_played else resume_position_ms
-        elif isinstance(episode, str):
-            resolved_episode = next(
-                (x for x in all_episodes if episode in (x.uri, x.item_id)), None
-            )
-            if resolved_episode:
-                # ensure we have accurate resume info
-                (
-                    fully_played,
-                    resume_position_ms,
-                ) = await self.mass.music.get_resume_position(resolved_episode, userid=userid)
-                resolved_episode.resume_position_ms = 0 if fully_played else resume_position_ms
-        else:
-            # get first episode that is not fully played
-            for ep in all_episodes:
-                if ep.fully_played:
-                    continue
-                # ensure we have accurate resume info
-                (
-                    fully_played,
-                    resume_position_ms,
-                ) = await self.mass.music.get_resume_position(ep, userid=userid)
-                if fully_played:
-                    continue
-                ep.resume_position_ms = resume_position_ms
-                resolved_episode = ep
-                break
-            else:
-                # no episodes found that are not fully played, so we start at the beginning
-                resolved_episode = next((x for x in all_episodes), None)
-        if resolved_episode is None:
-            raise InvalidDataError(f"Unable to resolve episode to play for Podcast {podcast.name}")
-        # get the index of the episode
-        episode_index = all_episodes.index(resolved_episode)
-        # return the (remaining) episode(s) to play
-        return UniqueList(all_episodes[episode_index:])
-
     def _get_next_index(
         self,
         queue_id: str,
@@ -2202,29 +2225,6 @@ class PlayerQueuesController(CoreController):
             return None
         # all other: just the next index
         return cur_index + 1
-
-    def get_next_item(self, queue_id: str, cur_index: int | str) -> QueueItem | None:
-        """Return next QueueItem for given queue."""
-        index: int
-        if isinstance(cur_index, str):
-            resolved_index = self.index_by_id(queue_id, cur_index)
-            if resolved_index is None:
-                return None  # guard
-            index = resolved_index
-        else:
-            index = cur_index
-        # At this point index is guaranteed to be int
-        for skip in range(5):
-            if (next_index := self._get_next_index(queue_id, index + skip)) is None:
-                break
-            next_item = self.get_item(queue_id, next_index)
-            if next_item is None:
-                continue
-            if not next_item.available:
-                # ensure that we skip unavailable items (set by load_next track logic)
-                continue
-            return next_item
-        return None
 
     async def _fill_radio_tracks(self, queue_id: str) -> None:
         """Fill a Queue with (additional) Radio tracks."""
