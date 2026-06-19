@@ -1065,13 +1065,20 @@ class MusicProvider(Provider):
                     library_item = await self.mass.music.playlists.update_item_in_library(
                         library_item.item_id, prov_item
                     )
-                elif not library_item.is_editable and (
-                    prov_item.name != library_item.name
-                    or prov_item.metadata.images != library_item.metadata.images
+                elif (
+                    prov_item.is_dynamic
+                    and not library_item.is_editable
+                    and (
+                        prov_item.name != library_item.name
+                        or prov_item.metadata.images != library_item.metadata.images
+                    )
                 ):
-                    # the provider is the sole source of truth for non-editable playlists
-                    # (e.g. Pandora/personalized-radio stations), so it's safe to overwrite
-                    # name/images here without risking clobbering a user's local customization
+                    # the provider is the sole source of truth for non-editable dynamic
+                    # playlists (e.g. Pandora/personalized-radio stations): overwrite=True
+                    # replaces the full stored record (not just name/images), which is fine
+                    # here since there's no local customization on these to lose. Restricted
+                    # to is_dynamic so static non-editable playlists (e.g. provider
+                    # "favorites") keep their locally-enriched metadata/images.
                     library_item = await self.mass.music.playlists.update_item_in_library(
                         library_item.item_id, prov_item, overwrite=True
                     )

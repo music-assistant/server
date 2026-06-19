@@ -68,7 +68,7 @@ async def test_refresh_playlist_metadata_batch_query_excludes_dynamic_playlists(
 
 
 # --------------------------------------------------------------------------- #
-#  Provider sync overwrites name/images for non-editable dynamic playlists    #
+#  Provider sync overwrites name/images for non-editable *dynamic* playlists  #
 # --------------------------------------------------------------------------- #
 
 
@@ -79,6 +79,7 @@ def _build_sync_fixture(
     prov_name: str,
     library_images: list[str],
     prov_images: list[str],
+    is_dynamic: bool = True,
 ) -> tuple[MusicProvider, AsyncMock, Mock]:
     """Build a MusicProvider + mocked playlists controller wired for one sync pass."""
     mapping = _provider_mapping()
@@ -91,6 +92,7 @@ def _build_sync_fixture(
     library_item.date_added = None
     library_item.supported_mediatypes = [MediaType.TRACK]
     library_item.favorite = True
+    library_item.is_dynamic = is_dynamic
 
     prov_item = Mock()
     prov_item.item_id = "station_1"
@@ -101,6 +103,7 @@ def _build_sync_fixture(
     prov_item.favorite = True
     prov_item.provider_mappings = UniqueList([mapping])
     prov_item.uri = "pandora://station_1"
+    prov_item.is_dynamic = is_dynamic
 
     updated_item = Mock()
     updated_item.item_id = "1"
@@ -176,6 +179,26 @@ async def test_sync_does_not_overwrite_editable_playlist_on_name_change() -> Non
         prov_name="New Name",
         library_images=["same.jpg"],
         prov_images=["same.jpg"],
+    )
+
+    await _run_sync(provider, prov_item)
+
+    playlists_ctrl.update_item_in_library.assert_not_called()
+
+
+async def test_sync_does_not_overwrite_noneditable_static_playlist_on_name_change() -> None:
+    """Non-editable, non-dynamic playlists (e.g. a provider's "Favorites") are spared.
+
+    Only non-editable *dynamic* playlists are treated as provider-owned; a static
+    non-editable playlist keeps its locally-enriched metadata/images.
+    """
+    provider, playlists_ctrl, prov_item = _build_sync_fixture(
+        library_is_editable=False,
+        library_name="Old Name",
+        prov_name="New Name",
+        library_images=["same.jpg"],
+        prov_images=["same.jpg"],
+        is_dynamic=False,
     )
 
     await _run_sync(provider, prov_item)
