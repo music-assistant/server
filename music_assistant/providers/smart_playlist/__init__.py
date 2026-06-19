@@ -852,10 +852,16 @@ class SmartPlaylistProvider(PluginProvider):
         if not track_id_to_tracks:
             return
 
-        for track_id, tracks_list in track_id_to_tracks.items():
-            genres = await self.mass.music.genres.get_genres_for_media_item(
-                MediaType.TRACK, track_id
+        # Fetch genres for all track IDs in parallel
+        genre_results = await asyncio.gather(
+            *(
+                self.mass.music.genres.get_genres_for_media_item(MediaType.TRACK, track_id)
+                for track_id in track_id_to_tracks
             )
+        )
+
+        # Apply genres to tracks
+        for (track_id, tracks_list), genres in zip(track_id_to_tracks.items(), genre_results):
             if not genres:
                 continue
             for track in tracks_list:
