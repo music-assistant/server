@@ -324,6 +324,21 @@ def get_parts_from_position(
     raise IndexError(f"Could not find any candidate part for position {seek_position}")
 
 
+def build_concat_filelist(paths: list[str]) -> str:
+    """
+    Build the file list content for ffmpeg's concat demuxer.
+
+    :param paths: The file paths to include, in playback order.
+    """
+    lines = []
+    for path in paths:
+        # The concat demuxer uses single quotes as delimiters, so a literal quote in the
+        # path must be written as '\'' to prevent the path being truncated at the quote.
+        escaped_path = path.replace("'", "'\\''")
+        lines.append(f"file '{escaped_path}'\n")
+    return "".join(lines)
+
+
 async def realtime_pcm_pacer(
     inner: AsyncGenerator[bytes],
     pcm_format: AudioFormat,

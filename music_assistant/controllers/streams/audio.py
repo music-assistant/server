@@ -89,6 +89,7 @@ from music_assistant.helpers.aiohttp_client import encoded_request_url
 from music_assistant.helpers.audio import (
     HTTP_HEADERS,
     HTTP_HEADERS_ICY,
+    build_concat_filelist,
     calculate_content_length,
     get_bit_rate,
     get_normalization_mode,
@@ -1043,8 +1044,7 @@ class StreamsAudio:
         # concat input files
         temp_file = f"/tmp/{shortuuid.random(20)}.txt"  # noqa: S108
         async with aiofiles.open(temp_file, "w") as f:
-            for path in files_list:
-                await f.write(f"file '{path}'\n")
+            await f.write(build_concat_filelist(files_list))
 
         try:
             async for chunk in get_ffmpeg_stream(

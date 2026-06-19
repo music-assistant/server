@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.ci_test_scope import decide, provider_name
+from scripts.ci_test_scope import cov_source, decide, provider_name
 
 
 @pytest.fixture(name="repo")
@@ -24,6 +24,11 @@ def test_provider_name() -> None:
     assert provider_name("tests/providers/spotify/test_init.py") == "spotify"
     assert provider_name("music_assistant/helpers/util.py") is None
     assert provider_name("tests/providers/__init__.py") is None
+
+
+def test_cov_source() -> None:
+    """cov_source maps a provider test dir to its coverage package."""
+    assert cov_source("tests/providers/plex") == "music_assistant.providers.plex"
 
 
 def test_single_provider(repo: Path) -> None:
