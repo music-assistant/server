@@ -1,6 +1,6 @@
 """Tests for cleaning radio streamtitle."""
 
-from music_assistant.helpers.util import clean_stream_title
+from music_assistant.helpers.util import clean_stream_title, parse_quoted_stream_title
 
 
 def test_cleaning_streamtitle() -> None:
@@ -80,3 +80,55 @@ def test_cleaning_streamtitle_german_format() -> None:
     line = '"Closer to the Edge" von "Thirty Seconds To Mars"'
     stream_title = clean_stream_title(line)
     assert stream_title == "Thirty Seconds To Mars - Closer to the Edge"
+
+
+def test_cleaning_streamtitle_english_format() -> None:
+    """Test normalisation of the English "Track" by Artist from "Album" format."""
+    line = '"Nickel Wound" by Texas Is The Reason from "Do You Know Who You Are?"'
+    assert clean_stream_title(line) == "Texas Is The Reason - Nickel Wound"
+
+    # album is optional
+    line = '"Cornflake Girl" by Tori Amos'
+    assert clean_stream_title(line) == "Tori Amos - Cornflake Girl"
+
+
+def test_parse_quoted_stream_title() -> None:
+    """Test structured parsing of quoted stream titles, including album extraction."""
+    # English format with album
+    assert parse_quoted_stream_title(
+        '"Nickel Wound" by Texas Is The Reason from "Do You Know Who You Are?: '
+        'The Complete Collection"'
+    ) == (
+        "Nickel Wound",
+        "Texas Is The Reason",
+        "Do You Know Who You Are?: The Complete Collection",
+    )
+
+    # English format without album
+    assert parse_quoted_stream_title('"Cornflake Girl" by Tori Amos') == (
+        "Cornflake Girl",
+        "Tori Amos",
+        None,
+    )
+
+    # "by" and "from" appearing inside the artist name must not be mis-split
+    assert parse_quoted_stream_title('"Romeo" by Death From Above 1979 from "Heads Up"') == (
+        "Romeo",
+        "Death From Above 1979",
+        "Heads Up",
+    )
+    assert parse_quoted_stream_title('"Romeo" by Death From Above 1979') == (
+        "Romeo",
+        "Death From Above 1979",
+        None,
+    )
+
+    # German format yields no album
+    assert parse_quoted_stream_title('"Cornflake Girl" von Tori Amos') == (
+        "Cornflake Girl",
+        "Tori Amos",
+        None,
+    )
+
+    # conventional "Artist - Track" is not a quoted format
+    assert parse_quoted_stream_title("Tori Amos - Cornflake Girl") is None
