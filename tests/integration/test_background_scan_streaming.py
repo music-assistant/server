@@ -25,7 +25,6 @@ if TYPE_CHECKING:
 
     from music_assistant_models.streamdetails import StreamDetails
 
-pytestmark = pytest.mark.needs_ffmpeg
 
 FIXTURE_AUDIO = Path(__file__).parent.parent / "fixtures" / "audio" / "short_test.flac"
 

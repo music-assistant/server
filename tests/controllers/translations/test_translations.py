@@ -573,7 +573,8 @@ def test_media_names_are_keyed_by_media_type() -> None:
     """Media names live under media.<media_type>.*; folders/recommendations are namespaced apart."""
     source = build_translations_source()
     assert source["common.media.genre.jazz.name"] == "Jazz"
-    assert source["common.media.playlist.random_album.name"]  # built-in playlists -> playlist.*
+    # built-in playlists are provider-specific, so they live under the builtin provider
+    assert source["provider.builtin.media.playlist.random_album.name"]
     assert source["common.media.folder.albums.name"] == "Albums"  # browse-folder titles
     assert source["common.media.recommendations.recommended_tracks.name"] == "Recommended tracks"
     # the old flat keys are gone (would silently break localization if left behind)
@@ -582,6 +583,7 @@ def test_media_names_are_keyed_by_media_type() -> None:
         "common.media.albums.name",  # browse noun was flat
         "common.media.recently_played.name",  # loose recommendation key was flat
         "common.media.builtin_playlist.random_album.name",  # built-in playlist sub-dict
+        "common.media.playlist.random_album.name",  # built-in playlists moved to provider.builtin
     ):
         assert stale not in source
 

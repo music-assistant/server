@@ -286,6 +286,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
             {
                 "name": item.name,
                 "sort_name": item.sort_name,
+                # persist the localizable name key + its params so the localized name survives
+                # the library round-trip (e.g. builtin playlists, Spotify's per-account
+                # "Liked Songs {0}"). params are re-stamped from the provider on each sync.
+                "translation_key": item.translation_key,
+                "translation_params": serialize_to_json(item.translation_params)
+                if item.translation_params
+                else None,
                 "owner": item.owner,
                 "is_editable": item.is_editable,
                 "favorite": item.favorite,
@@ -314,6 +321,15 @@ class PlaylistController(MediaControllerBase[Playlist]):
         cur_item.external_ids.update(update.external_ids)
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
+        # adopt the synced item's translation_key + params (as a unit) when it supplies a key, so
+        # the localized name follows the provider, existing rows backfill, and a stale param (e.g.
+        # a renamed Spotify account) self-heals; otherwise keep what we have (unless overwriting).
+        if overwrite or update.translation_key is not None:
+            translation_key = update.translation_key
+            translation_params = update.translation_params
+        else:
+            translation_key = cur_item.translation_key
+            translation_params = cur_item.translation_params
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
@@ -321,6 +337,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 # always prefer name/owner from updated item here
                 "name": name,
                 "sort_name": sort_name,
+                "translation_key": translation_key,
+                "translation_params": serialize_to_json(translation_params)
+                if translation_params
+                else None,
                 "owner": update.owner or cur_item.owner,
                 "is_editable": update.is_editable,
                 "metadata": serialize_to_json(metadata),
