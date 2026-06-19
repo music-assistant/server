@@ -68,6 +68,7 @@ JSON_KEYS = (
     "authors",
     "genre_aliases",
     "supported_mediatypes",
+    "translation_params",
 )
 
 # When set (task-local), per-item MEDIA_ITEM_UPDATED events are suppressed.
