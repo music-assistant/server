@@ -47,11 +47,10 @@ from sounds.models import (
 
 import music_assistant.helpers.datetime as dt
 from music_assistant.helpers.datetime import LOCAL_TIMEZONE
-
-from .constants import _Constants
+from music_assistant.providers.bbc_sounds.constants import _Constants
 
 if TYPE_CHECKING:
-    from . import BBCSoundsProvider
+    from music_assistant.providers.bbc_sounds import BBCSoundsProvider
 
 
 def _date_convertor(
