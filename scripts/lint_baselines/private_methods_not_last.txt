@@ -44,8 +44,10 @@ music_assistant/providers/bluesound/player.py	3
 music_assistant/providers/builtin/__init__.py	13
 music_assistant/providers/chromecast/player.py	17
 music_assistant/providers/chromecast/sendspin_bridge.py	9
-music_assistant/providers/deezer/__init__.py	41
-music_assistant/providers/deezer/gw_client.py	6
+music_assistant/providers/deezer/browse.py	4
+music_assistant/providers/deezer/gw_client.py	5
+music_assistant/providers/deezer/media.py	27
+music_assistant/providers/deezer/streaming.py	2
 music_assistant/providers/digitally_incorporated/__init__.py	2
 music_assistant/providers/dlna/helpers.py	1
 music_assistant/providers/dlna/player.py	13
