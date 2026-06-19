@@ -31,28 +31,18 @@ FULL_TRIGGER_FILES = {
 
 def provider_name(path: str) -> str | None:
     """Return the provider a path belongs to, or None if it is not provider-scoped."""
-    parts = path.split("/")
     # Provider package or provider test dir: <root>/providers/<X>/...
+    # Provider tests must live in their own folder (enforced by check_test_layout).
+    parts = path.split("/")
     if len(parts) >= 4 and parts[0] in ("music_assistant", "tests") and parts[1] == "providers":
         return parts[2]
-    # Flat provider test file: tests/providers/test_<X>.py
-    if (
-        len(parts) == 3
-        and parts[0] == "tests"
-        and parts[1] == "providers"
-        and parts[2].startswith("test_")
-        and parts[2].endswith(".py")
-    ):
-        return parts[2][len("test_") : -len(".py")]
     return None
 
 
 def target_for_provider(name: str, repo_root: Path) -> str | None:
-    """Return the pytest target for a provider (test dir or flat test file), or None."""
+    """Return the pytest target dir for a provider, or None if it has no tests."""
     if (repo_root / "tests" / "providers" / name).is_dir():
         return f"tests/providers/{name}"
-    if (repo_root / "tests" / "providers" / f"test_{name}.py").is_file():
-        return f"tests/providers/test_{name}.py"
     return None
 
 
