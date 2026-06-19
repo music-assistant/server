@@ -110,7 +110,7 @@ class WebsocketClientHandler:
         if not self.webserver.auth.has_users and not self._is_ingress:
             await self._send_message(
                 ErrorResultMessage(
-                    "connection", 503, "Setup required", translation_key="errors.setup_required"
+                    "connection", 503, "Setup required", translation_key="setup_required"
                 )
             )
             await wsock.close()
@@ -198,7 +198,7 @@ class WebsocketClientHandler:
                     msg.message_id,
                     InvalidCommand.error_code,
                     f"Invalid command: {msg.command}",
-                    translation_key="errors.invalid_command",
+                    translation_key="invalid_command",
                 )
             )
             self._logger.warning("Invalid command: %s", msg.command)
@@ -214,7 +214,7 @@ class WebsocketClientHandler:
                         msg.message_id,
                         AuthenticationRequired.error_code,
                         "Authentication required. Please send auth command first.",
-                        translation_key="errors.authentication_required",
+                        translation_key="authentication_required",
                     )
                 )
                 return
@@ -232,7 +232,7 @@ class WebsocketClientHandler:
                             msg.message_id,
                             InsufficientPermissions.error_code,
                             "Admin access required",
-                            translation_key="errors.insufficient_permissions",
+                            translation_key="insufficient_permissions",
                         )
                     )
                     return
@@ -273,6 +273,7 @@ class WebsocketClientHandler:
                     err_msg,
                     translation_key=err.translation_key,
                     translation_args=err.translation_args,
+                    translation_owner=err.translation_owner,
                 )
             )
         except Exception as err:
@@ -380,7 +381,7 @@ class WebsocketClientHandler:
                     msg.message_id,
                     InvalidToken.error_code,
                     "Invalid or expired token",
-                    translation_key="errors.invalid_token",
+                    translation_key="invalid_token",
                 )
             )
             return

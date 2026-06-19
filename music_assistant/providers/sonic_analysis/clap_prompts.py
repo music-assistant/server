@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -118,3 +119,29 @@ CALIBRATION: dict[str, tuple[float, float]] = {
     "instrumentalness": (0.761, -3.538),
     "acousticness": (0.549, +0.453),
 }
+
+
+def score_scalars(
+    mean_similarities: np.ndarray,
+    calibration: dict[str, tuple[float, float]] = CALIBRATION,
+) -> dict[str, float]:
+    """
+    Map mean per-window CLAP similarity logits to calibrated 0-1 scalars.
+
+    :param mean_similarities: Per-prompt similarity logits averaged across
+        windows, ordered as SCALAR_PROMPT_PAIRS flattens its (pos, neg) pairs.
+    :param calibration: scalar name -> (a, b) Platt coefficients.
+    """
+    expected = 2 * len(SCALAR_PROMPT_PAIRS)
+    if mean_similarities.shape != (expected,):
+        raise ValueError(
+            f"mean_similarities must have shape ({expected},), got {mean_similarities.shape}"
+        )
+    scores: dict[str, float] = {}
+    for idx, scalar_name in enumerate(SCALAR_PROMPT_PAIRS):
+        pos_logit = float(mean_similarities[idx * 2])
+        neg_logit = float(mean_similarities[idx * 2 + 1])
+        a, b = calibration[scalar_name]
+        margin = pos_logit - neg_logit
+        scores[scalar_name] = 1.0 / (1.0 + math.exp(-(a * margin + b)))
+    return scores

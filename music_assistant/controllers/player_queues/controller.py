@@ -101,6 +101,7 @@ from music_assistant.controllers.player_queues.helpers import (
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    ImpersonatedUser,
     get_current_user,
     set_current_user,
 )
@@ -134,7 +135,6 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from music_assistant_models import BackgroundTask
-    from music_assistant_models.auth import User
     from music_assistant_models.media_items.metadata import MediaItemImage
 
     from music_assistant import MusicAssistant
@@ -470,9 +470,8 @@ class PlayerQueuesController(CoreController):
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         # Lock is acquired by the @handle_play_action decorator on the internal handler
-        await self._handle_play_media(
-            queue_id, media, option, radio_mode, start_item, username, sort_by
-        )
+        async with ImpersonatedUser(self.mass, username):
+            await self._handle_play_media(queue_id, media, option, radio_mode, start_item, sort_by)
 
     @api_command("player_queues/move_item")
     def move_item(self, queue_id: str, queue_item_id: str, pos_shift: int = 1) -> None:
@@ -897,6 +896,21 @@ class PlayerQueuesController(CoreController):
             ):
                 seek_position = max(0, int((resume_position_ms - 500) / 1000))
 
+            # restore the persisted playback speed for a freshly queued audiobook/episode
+            # (an in-session item already carries its speed in extra_attributes)
+            if (
+                (queue_item := self.get_item(queue_id, index))
+                and queue_item.media_item is not None
+                and queue_item.media_type in (MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE)
+                and "playback_speed" not in queue_item.extra_attributes
+            ):
+                stored_speed = await self.mass.music.get_playback_speed(
+                    cast("Audiobook | PodcastEpisode", queue_item.media_item),
+                    userid=queue.userid,
+                )
+                if stored_speed != 1.0:
+                    queue_item.extra_attributes["playback_speed"] = stored_speed
+
             # try to load the item, retry with next item if it fails
             for attempt in range(5):
                 try:
@@ -1246,7 +1260,6 @@ class PlayerQueuesController(CoreController):
         option: QueueOption | None = None,
         radio_mode: bool = False,
         start_item: PlayableMediaItemType | str | None = None,
-        username: str | None = None,
         sort_by: str | None = None,
     ) -> None:
         """Handle play media without acquiring the queue lock."""
@@ -1267,13 +1280,13 @@ class PlayerQueuesController(CoreController):
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
 
-        # save the user requesting the playback
-        playback_user: User | None
-        if username and (user := await self.mass.webserver.auth.get_user_by_username(username)):
-            playback_user = user
-        else:
-            playback_user = get_current_user()
+        # save the user requesting the playback (clear it for anonymous playback)
+        playback_user = get_current_user()
         queue.userid = playback_user.user_id if playback_user else None
+        if playback_user:
+            self.logger.debug(
+                "User %s requested playback.", playback_user.display_name or playback_user.username
+            )
 
         # a single item or list of items may be provided
         media_list = media if isinstance(media, list) else [media]
@@ -2368,13 +2381,18 @@ class PlayerQueuesController(CoreController):
                 # wait for the item that was loaded in the buffer is the actually playing item
                 # this prevents a race condition when we preload the next item too soon
                 # while the player is actually preloading the previously enqueued item.
-                if not queue.current_item:
+                current_item = queue.current_item
+                if current_item is None:
                     return  # guard
-                retries = max(120, (queue.current_item.duration or 0) + 10)
-                while retries > 0:
-                    if queue.current_item.queue_item_id == item_id_in_buffer:
+                retries = max(120, (current_item.duration or 0) + 10)
+                for _ in range(retries):
+                    # the queue can drain to empty while we sleep (e.g. all remaining
+                    # items skipped as unplayable); stop waiting once it has no current item
+                    current_item = queue.current_item
+                    if current_item is None:
+                        return
+                    if current_item.queue_item_id == item_id_in_buffer:
                         break
-                    retries -= 1
                     await asyncio.sleep(1)
                 if next_item := await self.load_next_queue_item(queue_id, item_id_in_buffer):
                     self.logger.debug(
@@ -3242,6 +3260,11 @@ class PlayerQueuesController(CoreController):
                     userid=queue.userid,
                     queue_id=queue.queue_id,
                     user_initiated=self._is_user_initiated_play(queue, media_item),
+                    playback_speed=float(
+                        item_to_report.extra_attributes.get("playback_speed") or 1.0
+                    )
+                    if item_to_report.media_type in (MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE)
+                    else None,
                 )
             )
             if fully_played and not is_playing:

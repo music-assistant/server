@@ -1036,13 +1036,18 @@ class NeteaseCloudMusicProvider(MusicProvider):
         return playlist
 
     def _build_dynamic_playlist(
-        self, item_id: str, name: str, image_url: str | None = None
+        self,
+        item_id: str,
+        name: str,
+        translation_key: str | None = None,
+        image_url: str | None = None,
     ) -> Playlist:
         """Create a dynamic playlist entry for radio-like flows."""
         playlist = Playlist(
             item_id=item_id,
             provider=self.instance_id,
             name=name,
+            translation_key=translation_key,
             provider_mappings={
                 ProviderMapping(
                     item_id=item_id,
@@ -1468,12 +1473,15 @@ class NeteaseCloudMusicProvider(MusicProvider):
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         if prov_playlist_id == _PLAYLIST_PERSONAL_FM_ID:
-            return self._build_dynamic_playlist(_PLAYLIST_PERSONAL_FM_ID, "Personal FM")
+            return self._build_dynamic_playlist(
+                _PLAYLIST_PERSONAL_FM_ID, "Personal FM", translation_key="personal_fm"
+            )
         if heart_parts := self._parse_heart_mode_playlist_id(prov_playlist_id):
             seed_song_id, source_playlist_id = heart_parts
             return self._build_dynamic_playlist(
                 f"{_PLAYLIST_HEART_MODE_PREFIX}:{seed_song_id}:{source_playlist_id}",
                 "Heart Mode",
+                translation_key="heart_mode",
             )
         if prov_playlist_id == _PLAYLIST_HEART_MODE_PREFIX:
             if playlist := await self._build_heart_mode_dynamic_playlist():
@@ -1797,6 +1805,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         return self._build_dynamic_playlist(
             f"{_PLAYLIST_HEART_MODE_PREFIX}:{seed_song_id}:{playlist_id}",
             "Heart Mode",
+            translation_key="heart_mode",
             image_url=image_url,
         )
 
@@ -1842,6 +1851,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             item_id="recommended_radios",
             provider=self.instance_id,
             name="Personal Radio",
+            translation_key="personal_radio",
             icon="mdi:radio",
         )
         personal_fm_image_url: str | None = None
@@ -1873,6 +1883,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             self._build_dynamic_playlist(
                 _PLAYLIST_PERSONAL_FM_ID,
                 "Personal FM",
+                translation_key="personal_fm",
                 image_url=personal_fm_image_url,
             )
         )

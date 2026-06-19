@@ -351,6 +351,7 @@ def parse_favorite_tracks_playlist(provider: TidalProvider) -> Playlist:
         item_id=FAVORITE_TRACKS_PLAYLIST_ID,
         provider=provider.instance_id,
         name="Favorite Tracks",
+        translation_key="favorite_tracks",
         owner=owner_name,
         provider_mappings={
             ProviderMapping(

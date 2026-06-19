@@ -254,6 +254,7 @@ class SoundcloudMusicProvider(MusicProvider):
         if feed and "collection" in feed:
             folder = RecommendationFolder(
                 name="SoundCloud Feed",
+                translation_key="soundcloud_feed",
                 item_id=f"{self.instance_id}_sc_subscribed_feed",
                 provider=self.instance_id,
                 icon="mdi-rss",

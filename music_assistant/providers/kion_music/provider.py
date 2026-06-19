@@ -40,8 +40,6 @@ from music_assistant.models.music_provider import MusicProvider
 from .api_client import KionMusicClient
 from .constants import (
     BROWSE_INITIAL_TRACKS,
-    BROWSE_NAMES_EN,
-    BROWSE_NAMES_RU,
     COLLECTION_FOLDER_ID,
     CONF_BASE_URL,
     CONF_LIKED_TRACKS_MAX_TRACKS,
@@ -108,6 +106,22 @@ def _parse_radio_item_id(item_id: str) -> tuple[str, str | None]:
     return (item_id, None)
 
 
+# Collection sub-folder browse ids -> (ProviderFeature, library sub_id, label key, English name).
+# The library sub_id ("tracks") and label key ("my_favorites") differ on purpose so the Collection
+# labels stay distinct from the core "media.folder.*" library labels.
+_COLLECTION_SUBFOLDERS: tuple[tuple[ProviderFeature, str, str, str], ...] = (
+    (ProviderFeature.LIBRARY_TRACKS, "tracks", "my_favorites", "My Favorites"),
+    (ProviderFeature.LIBRARY_ARTISTS, "artists", "my_artists", "My Artists"),
+    (ProviderFeature.LIBRARY_ALBUMS, "albums", "my_albums", "My Albums"),
+    (ProviderFeature.LIBRARY_PLAYLISTS, "playlists", "my_playlists", "My Playlists"),
+)
+
+
+def _media_label_key(slug: str) -> str:
+    """Normalize a tag/category slug into its strings.json authoring key (spaces → underscores)."""
+    return slug.replace(" ", "_")
+
+
 class _WaveState:
     """Per-station mutable state for rotor wave playback."""
 
@@ -147,16 +161,34 @@ class KionMusicProvider(MusicProvider):
             raise ProviderUnavailableError("Provider not initialized")
         return self._streaming
 
-    def _get_browse_names(self) -> dict[str, str]:
-        """Get locale-based browse folder names."""
-        try:
-            locale = (self.mass.metadata.locale or "en_US").lower()
-            use_russian = locale.startswith("ru")
-            self.logger.debug("Locale detection: locale=%s, use_russian=%s", locale, use_russian)
-        except Exception as err:
-            self.logger.debug("Locale detection failed: %s", err)
-            use_russian = False
-        return BROWSE_NAMES_RU if use_russian else BROWSE_NAMES_EN
+    def _media_source_name(self, group: str, key: str) -> str | None:
+        """
+        Return the authored English ``name`` for *key* in *group*, or None when not authored.
+
+        :param group: Media translation group (``folder``, ``recommendations`` or ``playlist``).
+        :param key: Authoring key within the group.
+        """
+        return self.mass.translations.get_translation(
+            f"provider.{self.domain}.media.{group}.{key}.name"
+        )
+
+    def _media_label(self, group: str, key: str, fallback: str) -> tuple[str, str | None]:
+        """
+        Map a browse label to the in-code ``name`` and ``translation_key`` for its media item.
+
+        Authored keys return ``(English source name, key)`` — the English name from the
+        provider's ``strings.json`` plus a ``translation_key`` so the server localizes it for
+        the connection locale at serialization. An unauthored key — e.g. a tag discovered from
+        KION's landing API — returns ``(fallback, None)`` so its already-localized name is kept.
+
+        :param group: Media translation group (``folder``, ``recommendations`` or ``playlist``).
+        :param key: Authoring key within the group; also the item's ``translation_key``.
+        :param fallback: English name to use when no string is authored for *key*.
+        """
+        source = self._media_source_name(group, key)
+        if source is None:
+            return fallback, None
+        return source, key
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -207,13 +239,13 @@ class KionMusicProvider(MusicProvider):
         )
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse provider items with locale-based folder names.
+        """Browse provider items.
 
         Root level shows My Mix (personalised radio), For You (picks & mixes),
         Collection (liked tracks/albums/artists/playlists), Radio (rotor stations
-        by genre/mood/activity/era/local) and AI Mix Sets. Names are in Russian
-        when MA locale is ru_*, otherwise in English. My Mix tracks use item_id
-        format track_id@station_id for rotor feedback.
+        by genre/mood/activity/era/local) and AI Mix Sets. Folder labels carry a
+        translation_key so the server localizes them for the connection locale.
+        My Mix tracks use item_id format track_id@station_id for rotor feedback.
 
         :param path: The path to browse (e.g. provider_id:// or provider_id://waves).
         """
@@ -299,8 +331,8 @@ class KionMusicProvider(MusicProvider):
         if subpath:
             return await super().browse(path)
 
-        names = self._get_browse_names()
-
+        # Each folder carries an English name plus a translation_key; the server localizes the
+        # name for the connection locale at serialization, falling back to the English name.
         folders: list[BrowseFolder] = []
         base = path if path.endswith("//") else path.rstrip("/") + "/"
         # My Mix folder (always enabled — Яндекс «Мой микс»)
@@ -309,7 +341,8 @@ class KionMusicProvider(MusicProvider):
                 item_id=MY_WAVE_PLAYLIST_ID,
                 provider=self.instance_id,
                 path=f"{base}{MY_WAVE_PLAYLIST_ID}",
-                name=names[MY_WAVE_PLAYLIST_ID],
+                name="My Mix",
+                translation_key=MY_WAVE_PLAYLIST_ID,
                 is_playable=True,
             )
         )
@@ -319,7 +352,8 @@ class KionMusicProvider(MusicProvider):
                 item_id=FOR_YOU_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{FOR_YOU_FOLDER_ID}",
-                name=names.get(FOR_YOU_FOLDER_ID, "For You"),
+                name="For You",
+                translation_key=FOR_YOU_FOLDER_ID,
                 is_playable=False,
             )
         )
@@ -339,17 +373,19 @@ class KionMusicProvider(MusicProvider):
                     item_id=COLLECTION_FOLDER_ID,
                     provider=self.instance_id,
                     path=f"{base}{COLLECTION_FOLDER_ID}",
-                    name=names.get(COLLECTION_FOLDER_ID, "Collection"),
+                    name="Collection",
+                    translation_key=COLLECTION_FOLDER_ID,
                     is_playable=False,
                 )
             )
-        # Radio folder — rotor stations (Яндекс волны, renamed to Radio)
+        # Radio folder — rotor stations (reuses the shared "Radio" label)
         folders.append(
             BrowseFolder(
                 item_id=RADIO_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{RADIO_FOLDER_ID}",
-                name=names.get(RADIO_FOLDER_ID, "Radio"),
+                name="Radio",
+                translation_key="radios",
                 is_playable=False,
             )
         )
@@ -359,7 +395,8 @@ class KionMusicProvider(MusicProvider):
                 item_id=MY_WAVES_SET_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{MY_WAVES_SET_FOLDER_ID}",
-                name=names.get(MY_WAVES_SET_FOLDER_ID, "AI Mix Sets"),
+                name="AI Mix Sets",
+                translation_key=MY_WAVES_SET_FOLDER_ID,
                 is_playable=False,
             )
         )
@@ -369,7 +406,8 @@ class KionMusicProvider(MusicProvider):
                 item_id=PINNED_ITEMS_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{PINNED_ITEMS_FOLDER_ID}",
-                name=names.get(PINNED_ITEMS_FOLDER_ID, "Pinned"),
+                name="Pinned",
+                translation_key=PINNED_ITEMS_FOLDER_ID,
                 is_playable=False,
             )
         )
@@ -379,7 +417,8 @@ class KionMusicProvider(MusicProvider):
                 item_id=LISTENING_HISTORY_FOLDER_ID,
                 provider=self.instance_id,
                 path=f"{base}{LISTENING_HISTORY_FOLDER_ID}",
-                name=names.get(LISTENING_HISTORY_FOLDER_ID, "Listening History"),
+                name="Listening History",
+                translation_key=LISTENING_HISTORY_FOLDER_ID,
                 is_playable=False,
             )
         )
@@ -472,14 +511,13 @@ class KionMusicProvider(MusicProvider):
 
         # Only show "Load more" if we haven't reached the limit and there's more data
         if last_batch_id and total_track_count < max_tracks_config:
-            names = self._get_browse_names()
-            next_name = "Ещё" if names == BROWSE_NAMES_RU else "Load more"
             all_tracks.append(
                 BrowseFolder(
                     item_id="next",
                     provider=self.instance_id,
                     path=f"{path.rstrip('/')}/next",
-                    name=next_name,
+                    name="Load more",
+                    translation_key="load_more",
                     is_playable=False,
                 )
             )
@@ -578,18 +616,19 @@ class KionMusicProvider(MusicProvider):
         Starts with all hardcoded tags from category lists, adds landing-discovered
         tags, validates each via client.tags(), and returns only those with playlists.
         Results are cached for 1 hour. The locale parameter is included in the cache
-        key so that a locale change invalidates the cached result.
+        key so that a locale change invalidates the cached landing titles.
 
         :param locale: Current metadata locale (used as part of cache key).
-        :return: List of (slug, title) tuples for tags that have playlists.
+        :return: List of (slug, fallback display name) tuples for tags that have playlists.
+            Hardcoded tags use a derived fallback; landing-discovered tags carry their
+            (already localized) API title. Folder sites attach the translation_key via
+            ``_media_label`` so authored tags localize and discovered ones keep their title.
         """
-        names = self._get_browse_names()
-
         # Collect all hardcoded tags (non-seasonal)
         all_tags: dict[str, str] = {}
         for slug, cat in TAG_SLUG_CATEGORY.items():
             if cat != "seasonal":
-                all_tags[slug] = names.get(slug, slug.title())
+                all_tags[slug] = slug.title()
 
         # Add landing-discovered tags
         try:
@@ -610,7 +649,7 @@ class KionMusicProvider(MusicProvider):
         tag_items = list(all_tags.items())
         results = await asyncio.gather(*[_check(slug) for slug, _ in tag_items])
         return [
-            (slug, title) for (slug, title), valid in zip(tag_items, results, strict=True) if valid
+            (slug, name) for (slug, name), valid in zip(tag_items, results, strict=True) if valid
         ]
 
     async def _get_discovered_tag_slugs(self) -> set[str]:
@@ -619,7 +658,7 @@ class KionMusicProvider(MusicProvider):
         :return: Set of tag slug strings that have playlists.
         """
         discovered = await self._get_discovered_tags(self.mass.metadata.locale or "en_US")
-        return {slug for slug, _title in discovered}
+        return {slug for slug, _name in discovered}
 
     async def _browse_for_you(
         self, path: str, path_parts: list[str]
@@ -630,7 +669,6 @@ class KionMusicProvider(MusicProvider):
         :param path_parts: Split path parts after ://.
         :return: List of sub-folders (Picks, Mixes).
         """
-        names = self._get_browse_names()
         # Strip the for_you segment to build child paths that route to picks/mixes
         # Path format: ...//for_you  → child paths should be ...//picks, ...//mixes
         # We build base from the root (before for_you) by dropping the last segment.
@@ -643,14 +681,16 @@ class KionMusicProvider(MusicProvider):
                     item_id="picks",
                     provider=self.instance_id,
                     path=f"{root_base}picks",
-                    name=names.get("picks", "Picks"),
+                    name="Picks",
+                    translation_key="picks",
                     is_playable=False,
                 ),
                 BrowseFolder(
                     item_id="mixes",
                     provider=self.instance_id,
                     path=f"{root_base}mixes",
-                    name=names.get("mixes", "Mixes"),
+                    name="Mixes",
+                    translation_key="mixes",
                     is_playable=False,
                 ),
             ]
@@ -665,48 +705,20 @@ class KionMusicProvider(MusicProvider):
         :param path: Full browse path.
         :return: List of library sub-folders.
         """
-        names = self._get_browse_names()
         base_parts = path.split("//", 1)
         root_base = (base_parts[0] + "//") if len(base_parts) > 1 else path.rstrip("/") + "/"
 
         folders: list[BrowseFolder] = []
-        if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
+        for feature, sub_id, label_key, label_name in _COLLECTION_SUBFOLDERS:
+            if feature not in self.supported_features:
+                continue
             folders.append(
                 BrowseFolder(
-                    item_id="tracks",
+                    item_id=sub_id,
                     provider=self.instance_id,
-                    path=f"{root_base}tracks",
-                    name=names["tracks"],
-                    is_playable=True,
-                )
-            )
-        if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
-            folders.append(
-                BrowseFolder(
-                    item_id="artists",
-                    provider=self.instance_id,
-                    path=f"{root_base}artists",
-                    name=names["artists"],
-                    is_playable=True,
-                )
-            )
-        if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
-            folders.append(
-                BrowseFolder(
-                    item_id="albums",
-                    provider=self.instance_id,
-                    path=f"{root_base}albums",
-                    name=names["albums"],
-                    is_playable=True,
-                )
-            )
-        if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
-            folders.append(
-                BrowseFolder(
-                    item_id="playlists",
-                    provider=self.instance_id,
-                    path=f"{root_base}playlists",
-                    name=names["playlists"],
+                    path=f"{root_base}{sub_id}",
+                    name=label_name,
+                    translation_key=label_key,
                     is_playable=True,
                 )
             )
@@ -813,20 +825,19 @@ class KionMusicProvider(MusicProvider):
         :param path_parts: Split path parts after ://.
         :return: List of folders or playlists.
         """
-        names = self._get_browse_names()
         base = path.rstrip("/") + "/"
 
         # Get validated tags
         discovered = await self._get_discovered_tags(self.mass.metadata.locale or "en_US")
 
-        # Categorize valid tags
+        # Categorize valid tags, carrying each tag's (slug, fallback display name)
         categorized: dict[str, list[tuple[str, str]]] = {}
-        for slug, title in discovered:
+        for slug, fallback_name in discovered:
             cat = TAG_SLUG_CATEGORY.get(slug, "mood")
             # Skip seasonal tags — they belong in mixes, not picks
             if cat == "seasonal":
                 continue
-            categorized.setdefault(cat, []).append((slug, title))
+            categorized.setdefault(cat, []).append((slug, fallback_name))
 
         # Sort tags within each category by preferred order
         for cat, cat_tags in categorized.items():
@@ -840,24 +851,28 @@ class KionMusicProvider(MusicProvider):
             folders: list[BrowseFolder] = []
             for cat in category_display_order:
                 if cat in categorized:
+                    name, translation_key = self._media_label("folder", cat, cat.title())
                     folders.append(
                         BrowseFolder(
                             item_id=cat,
                             provider=self.instance_id,
                             path=f"{base}{cat}",
-                            name=names.get(cat, cat.title()),
+                            name=name,
+                            translation_key=translation_key,
                             is_playable=False,
                         )
                     )
             # Show any extra categories not in the standard order
             for cat in categorized:
                 if cat not in category_display_order:
+                    name, translation_key = self._media_label("folder", cat, cat.title())
                     folders.append(
                         BrowseFolder(
                             item_id=cat,
                             provider=self.instance_id,
                             path=f"{base}{cat}",
-                            name=names.get(cat, cat.title()),
+                            name=name,
+                            translation_key=translation_key,
                             is_playable=False,
                         )
                     )
@@ -877,13 +892,17 @@ class KionMusicProvider(MusicProvider):
         if category and not tag:
             category_tags = categorized.get(category, [])
             folders = []
-            for slug, title in category_tags:
+            for slug, fallback_name in category_tags:
+                name, translation_key = self._media_label(
+                    "folder", _media_label_key(slug), fallback_name
+                )
                 folders.append(
                     BrowseFolder(
                         item_id=slug,
                         provider=self.instance_id,
                         path=f"{base}{slug}",
-                        name=names.get(slug, title),
+                        name=name,
+                        translation_key=translation_key,
                         is_playable=False,
                     )
                 )
@@ -892,7 +911,7 @@ class KionMusicProvider(MusicProvider):
 
         # picks/category/tag - show playlists for the tag
         if tag:
-            discovered_slugs = {slug for slug, _ in discovered}
+            discovered_slugs = {slug for slug, _name in discovered}
             if tag in discovered_slugs:
                 self.logger.debug("Fetching playlists for tag: %s", tag)
                 return await self._get_tag_playlists_as_browse(tag)
@@ -912,7 +931,6 @@ class KionMusicProvider(MusicProvider):
         :param path_parts: Split path parts after ://.
         :return: List of folders or playlists.
         """
-        names = self._get_browse_names()
         base = path.rstrip("/") + "/"
 
         # Validate seasonal tags in parallel (no landing dependency)
@@ -929,12 +947,14 @@ class KionMusicProvider(MusicProvider):
         if len(path_parts) == 1:
             folders = []
             for t in available_mixes:
+                name, translation_key = self._media_label("folder", t, t.title())
                 folders.append(
                     BrowseFolder(
                         item_id=t,
                         provider=self.instance_id,
                         path=f"{base}{t}",
-                        name=names.get(t, t.title()),
+                        name=name,
+                        translation_key=translation_key,
                         is_playable=False,
                     )
                 )
@@ -966,9 +986,10 @@ class KionMusicProvider(MusicProvider):
         :param path_parts: Split path parts after ://.
         :return: List of folders or tracks.
         """
-        names = self._get_browse_names()
         base = path.rstrip("/") + "/"
 
+        # Station names come back from the rotor API already localized; the metadata locale
+        # selects the API content language (not the folder labels, which use translation_key).
         locale = (self.mass.metadata.locale or "en_US").lower()
         language = "ru" if locale.startswith("ru") else "en"
 
@@ -976,56 +997,66 @@ class KionMusicProvider(MusicProvider):
 
         # Group stations by category, preserving image_url
         categorized: dict[str, list[tuple[str, str, str | None]]] = {}
-        for station_id, cat_key, name, image_url in all_stations:
-            categorized.setdefault(cat_key, []).append((station_id, name, image_url))
+        for station_id, cat_key, station_name, image_url in all_stations:
+            categorized.setdefault(cat_key, []).append((station_id, station_name, image_url))
 
         # waves/ — show category folders
         if len(path_parts) == 1:
             folders: list[BrowseFolder] = []
-            # Personalized "My Mixes" first — only show if dashboard returns stations
+            # Personalized stations first — only show if dashboard returns stations
             dashboard_stations = await self._get_dashboard_stations_cached()
             if dashboard_stations:
+                name, translation_key = self._media_label("folder", MY_WAVES_FOLDER_ID, "Personal")
                 folders.append(
                     BrowseFolder(
                         item_id=MY_WAVES_FOLDER_ID,
                         provider=self.instance_id,
                         path=f"{base}{MY_WAVES_FOLDER_ID}",
-                        name=names.get(MY_WAVES_FOLDER_ID, "My Mixes"),
+                        name=name,
+                        translation_key=translation_key,
                         is_playable=False,
                     )
                 )
             # Featured Mixes — only show if landing-blocks/waves returns data
             waves_landing = await self._get_waves_landing_cached()
             if waves_landing:
+                name, translation_key = self._media_label(
+                    "folder", WAVES_LANDING_FOLDER_ID, "Featured Mixes"
+                )
                 folders.append(
                     BrowseFolder(
                         item_id=WAVES_LANDING_FOLDER_ID,
                         provider=self.instance_id,
                         path=f"{base}{WAVES_LANDING_FOLDER_ID}",
-                        name=names.get(WAVES_LANDING_FOLDER_ID, "Featured Mixes"),
+                        name=name,
+                        translation_key=translation_key,
                         is_playable=False,
                     )
                 )
             for cat in WAVE_CATEGORY_DISPLAY_ORDER:
                 if cat in categorized:
+                    name, translation_key = self._media_label("folder", cat, cat.title())
                     folders.append(
                         BrowseFolder(
                             item_id=cat,
                             provider=self.instance_id,
                             path=f"{base}{cat}",
-                            name=names.get(cat, cat.title()),
+                            name=name,
+                            translation_key=translation_key,
                             is_playable=False,
                         )
                     )
             # Append any categories returned by API that aren't in the predefined order
             for cat in categorized:
                 if cat not in WAVE_CATEGORY_DISPLAY_ORDER:
+                    name, translation_key = self._media_label("folder", cat, cat.title())
                     folders.append(
                         BrowseFolder(
                             item_id=cat,
                             provider=self.instance_id,
                             path=f"{base}{cat}",
-                            name=names.get(cat, cat.title()),
+                            name=name,
+                            translation_key=translation_key,
                             is_playable=False,
                         )
                     )
@@ -1220,8 +1251,6 @@ class KionMusicProvider(MusicProvider):
             # Append "Load more" sentinel so MA knows to call browse again for next batch.
             # This mirrors the My Mix mechanism and enables continuous radio playback.
             if tracks and len(state.seen_track_ids) < max_tracks and path:
-                names = self._get_browse_names()
-                next_name = "Ещё" if names == BROWSE_NAMES_RU else "Load more"
                 # Append /next to the current path (same pattern as _browse_my_wave).
                 # This makes each "Load more" path unique (e.g. /next/next/next...)
                 # so MA never serves a cached result for subsequent presses.
@@ -1230,7 +1259,8 @@ class KionMusicProvider(MusicProvider):
                         item_id="next",
                         provider=self.instance_id,
                         path=f"{path.rstrip('/')}/next",
-                        name=next_name,
+                        name="Load more",
+                        translation_key="load_more",
                         is_playable=False,
                     )
                 )
@@ -1554,13 +1584,16 @@ class KionMusicProvider(MusicProvider):
         :return: Playlist object.
         :raises MediaNotFoundError: If playlist not found.
         """
-        # Virtual playlists - not cached (locale-dependent names)
+        # Virtual playlists - constructed locally (no API call). translation_key localizes
+        # the name for the connection locale at serialization; the English name is kept (not
+        # dropped like browse/recommendation folders) because a playable item's name is also
+        # read outside outbound API serialization (e.g. queue / now-playing metadata).
         if prov_playlist_id == MY_WAVE_PLAYLIST_ID:
-            names = self._get_browse_names()
             return Playlist(
                 item_id=MY_WAVE_PLAYLIST_ID,
                 provider=self.instance_id,
-                name=names[MY_WAVE_PLAYLIST_ID],
+                name="My Mix",
+                translation_key=MY_WAVE_PLAYLIST_ID,
                 owner=get_canonical_provider_name(self),
                 provider_mappings={
                     ProviderMapping(
@@ -1574,11 +1607,11 @@ class KionMusicProvider(MusicProvider):
             )
 
         if prov_playlist_id == LIKED_TRACKS_PLAYLIST_ID:
-            names = self._get_browse_names()
             return Playlist(
                 item_id=LIKED_TRACKS_PLAYLIST_ID,
                 provider=self.instance_id,
-                name=names[LIKED_TRACKS_PLAYLIST_ID],
+                name="My Favorites",
+                translation_key=LIKED_TRACKS_PLAYLIST_ID,
                 owner=get_canonical_provider_name(self),
                 provider_mappings={
                     ProviderMapping(
@@ -1910,11 +1943,15 @@ class KionMusicProvider(MusicProvider):
         if len(items) > initial_tracks_limit:
             items = items[:initial_tracks_limit]
 
-        names = self._get_browse_names()
+        # Recommendation folders keep their English name (not dropped like browse folders):
+        # MusicProvider.browse() re-wraps them into plain BrowseFolders for the
+        # "<provider>://recommendations" listing, where a bare translation_key would resolve
+        # under the wrong media group. translation_key still localizes the recommendations view.
         return RecommendationFolder(
             item_id=MY_WAVE_PLAYLIST_ID,
             provider=self.instance_id,
-            name=names[MY_WAVE_PLAYLIST_ID],
+            name="My Mix",
+            translation_key=MY_WAVE_PLAYLIST_ID,
             items=UniqueList(items),
             icon="mdi-waveform",
         )
@@ -1937,11 +1974,11 @@ class KionMusicProvider(MusicProvider):
                     self.logger.debug("Error parsing feed playlist: %s", err)
         if not items:
             return None
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id="feed",
             provider=self.instance_id,
-            name=names["feed"],
+            name="Made for you",
+            translation_key="made_for_you",
             items=UniqueList(items),
             icon="mdi-account-music",
         )
@@ -1970,11 +2007,11 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing chart track: %s", err)
         if not tracks:
             return None
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id="chart",
             provider=self.instance_id,
-            name=names["chart"],
+            name="Chart",
+            translation_key="chart",
             items=UniqueList(tracks),
             icon="mdi-chart-line",
         )
@@ -2003,11 +2040,11 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing new release album: %s", err)
         if not albums:
             return None
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id="new_releases",
             provider=self.instance_id,
-            name=names["new_releases"],
+            name="New Releases",
+            translation_key="new_releases",
             items=UniqueList(albums),
             icon="mdi-new-box",
         )
@@ -2040,11 +2077,11 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing new playlist: %s", err)
         if not playlists:
             return None
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id="new_playlists",
             provider=self.instance_id,
-            name=names["new_playlists"],
+            name="New Playlists",
+            translation_key="new_playlists",
             items=UniqueList(playlists),
             icon="mdi-playlist-star",
         )
@@ -2066,11 +2103,11 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing top picks playlist: %s", err)
         if not items:
             return None
-        names = self._get_browse_names()
         return RecommendationFolder(
             item_id="top_picks",
             provider=self.instance_id,
-            name=names.get("top_picks", "Top Picks"),
+            name="Top Picks",
+            translation_key="top_picks",
             items=UniqueList(items),
             icon="mdi-star",
         )
@@ -2105,12 +2142,13 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing mood playlist: %s", err)
         if not items:
             return None
-        names = self._get_browse_names()
-        tag_name = names.get(mood_tag, mood_tag.title())
+        tag_name = self._media_source_name("folder", _media_label_key(mood_tag)) or mood_tag.title()
         return RecommendationFolder(
             item_id="mood_mix",
             provider=self.instance_id,
-            name=f"{names.get('mood_mix', 'Mood')}: {tag_name}",
+            name=f"Mood Mix: {tag_name}",
+            translation_key="mood_mix",
+            translation_params=[tag_name],
             items=UniqueList(items),
             icon="mdi-emoticon-outline",
         )
@@ -2138,12 +2176,16 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing activity playlist: %s", err)
         if not items:
             return None
-        names = self._get_browse_names()
-        tag_name = names.get(activity_tag, activity_tag.title())
+        tag_name = (
+            self._media_source_name("folder", _media_label_key(activity_tag))
+            or activity_tag.title()
+        )
         return RecommendationFolder(
             item_id="activity_mix",
             provider=self.instance_id,
-            name=f"{names.get('activity_mix', 'Activity')}: {tag_name}",
+            name=f"Activity Mix: {tag_name}",
+            translation_key="activity_mix",
+            translation_params=[tag_name],
             items=UniqueList(items),
             icon="mdi-run",
         )
@@ -2173,12 +2215,16 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing seasonal playlist: %s", err)
         if not items:
             return None
-        names = self._get_browse_names()
-        tag_name = names.get(seasonal_tag, seasonal_tag.title())
+        tag_name = (
+            self._media_source_name("folder", _media_label_key(seasonal_tag))
+            or seasonal_tag.title()
+        )
         return RecommendationFolder(
             item_id="seasonal_mix",
             provider=self.instance_id,
-            name=f"{names.get('seasonal_mix', 'Seasonal')}: {tag_name}",
+            name=f"Seasonal: {tag_name}",
+            translation_key="seasonal_mix",
+            translation_params=[tag_name],
             items=UniqueList(items),
             icon="mdi-weather-sunny",
         )
