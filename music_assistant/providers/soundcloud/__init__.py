@@ -125,7 +125,8 @@ class SoundcloudMusicProvider(MusicProvider):
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
     ) -> SearchResults:
-        """Perform search on musicprovider.
+        """
+        Perform search on musicprovider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include.
@@ -411,7 +412,8 @@ class SoundcloudMusicProvider(MusicProvider):
         return tracks
 
     async def _get_stream_url(self, item_id: str) -> str | None:
-        """Get stream URL, preferring progressive (HTTP) over HLS.
+        """
+        Get stream URL, preferring progressive (HTTP) over HLS.
 
         SoundCloud HLS playlists can have limited content windows (~10 min) which
         cause seeking failures mid-track. Progressive HTTP URLs support full

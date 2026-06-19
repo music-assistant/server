@@ -241,7 +241,8 @@ class SmartCrossFade(SmartFade):
         fade_out_analysis: AudioAnalysisData,
         fade_in_analysis: AudioAnalysisData,
     ) -> None:
-        """Initialize SmartFades with analysis data.
+        """
+        Initialize SmartFades with analysis data.
 
         :param logger: Logger for debug output.
         :param fade_out_analysis: Analysis data for the outgoing track.

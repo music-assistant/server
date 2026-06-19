@@ -162,9 +162,8 @@ class SqueezelitePlayer(Player):
                 key=f"preset_{index}",
                 type=ConfigEntryType.STRING,
                 options=presets,
-                label=f"Preset {index}",
-                description="Assign a playable item to the player's preset. "
-                "Only supported on real squeezebox hardware or jive(lite) based emulators.",
+                translation_key="preset",
+                translation_params=[str(index)],
                 category="presets",
                 required=False,
             )
@@ -756,7 +755,8 @@ class SqueezelitePlayer(Player):
 
 
 async def pause_and_unpause(slim_client: SlimClient, pause_duration_ms: int) -> None:
-    """Pause player and schedule unpause after specified duration.
+    """
+    Pause player and schedule unpause after specified duration.
 
     This is used instead of pause_for because WiiM devices
     don't properly auto-unpause after pause_for interval.

@@ -125,7 +125,8 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
         if not create_result:
             raise MediaNotFoundError(
                 f"Failed to create playlist '{name}' on nicovideo.",
-                translation_key="provider.nicovideo.errors.create_playlist_failed",
+                translation_key="create_playlist_failed",
+                translation_owner=self.translation_owner,
                 translation_args=[name],
             )
 
@@ -138,7 +139,8 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
         if not playlist_with_tracks:
             raise MediaNotFoundError(
                 f"Failed to retrieve created playlist '{name}' from nicovideo.",
-                translation_key="provider.nicovideo.errors.retrieve_created_playlist_failed",
+                translation_key="retrieve_created_playlist_failed",
+                translation_owner=self.translation_owner,
                 translation_args=[name],
             )
 

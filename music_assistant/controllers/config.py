@@ -160,7 +160,9 @@ def _with_translation_owner(
     result: list[ConfigEntry] = []
     for entry in entries:
         # replace() returns a copy so we never mutate the shared (often module-level) entry defs.
-        copied = replace(entry, translation_owner=owner)
+        # An entry that already declares an owner (e.g. an injected protocol entry that belongs to
+        # its origin provider, not the host player) keeps it; everything else gets the passed owner.
+        copied = replace(entry, translation_owner=entry.translation_owner or owner)
         if populate and values is not None and copied.value is None:
             copied.value = values.get(copied.key, copied.default_value)
         result.append(copied)
@@ -648,6 +650,13 @@ class ConfigController:
         raw_conf: dict[str, Any]
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             raw_conf = deepcopy(raw_conf)
+            # protocol-prefixed entries are virtual mirrors of the linked protocol player's own
+            # config (the canonical store). Drop any that linger in this player's persisted values
+            # so a stale copy can never shadow the protocol player's current value; the live values
+            # are merged back in from the protocol player(s) below.
+            if stored_values := raw_conf.get("values"):
+                for key in [key for key in stored_values if CONF_PROTOCOL_KEY_SPLITTER in key]:
+                    del stored_values[key]
             if player := self.mass.players.get_player(player_id, False):
                 raw_conf["default_name"] = player.state.name
                 raw_conf["provider"] = player.provider.instance_id
@@ -668,7 +677,16 @@ class ConfigController:
                 )
                 raw_conf.setdefault("player_id", player_id)
 
-            return cast("PlayerConfig", PlayerConfig.parse(config_entries, raw_conf))
+            conf = cast("PlayerConfig", PlayerConfig.parse(config_entries, raw_conf))
+            # parse() stamps every entry with this player's owner; injected protocol entries
+            # belong to their own protocol provider, so restore that owner for string resolution.
+            for entry in conf.values.values():
+                if CONF_PROTOCOL_KEY_SPLITTER not in entry.key:
+                    continue
+                protocol_player_id = entry.key.split(CONF_PROTOCOL_KEY_SPLITTER, 1)[0]
+                if protocol_player := self.mass.players.get_player(protocol_player_id, False):
+                    entry.translation_owner = protocol_player.translation_owner
+            return conf
         msg = f"No config found for player id {player_id}"
         raise KeyError(msg)
 
@@ -875,6 +893,12 @@ class ConfigController:
         for key, value in existing_values.items():
             if key not in new_values and key not in config_entry_keys:
                 new_values[key] = value
+        # never persist protocol-prefixed (virtual) entries on this player; the linked protocol
+        # player is the canonical store (handled by _update_output_protocol_config). Storing a copy
+        # here would shadow the protocol player's value once it is reset back to its default.
+        new_values = {
+            key: value for key, value in new_values.items() if CONF_PROTOCOL_KEY_SPLITTER not in key
+        }
         new_raw["values"] = new_values
         self.set(conf_key, new_raw)
         try:
@@ -2069,14 +2093,14 @@ class ConfigController:
             protocol_prefix = f"{protocol.output_protocol_id}{CONF_PROTOCOL_KEY_SPLITTER}"
             protocol_enabled_key = f"{protocol_prefix}enabled"
             protocol_category = f"{CONF_PROTOCOL_CATEGORY_PREFIX}_{domain}"
-            category_translation_key = "config_categories.protocol_output_settings"
+            category_translation_key = "protocol_output_settings"
             if not protocol.is_native:
                 all_entries.append(
                     ConfigEntry(
                         key=protocol_enabled_key,
                         type=ConfigEntryType.BOOLEAN,
                         # the key is per-protocol (dynamic), so pin a static catalog key
-                        translation_key="config_entries.protocol_enable",
+                        translation_key="protocol_enable",
                         value=protocol_player_enabled,
                         default_value=True,
                         category=protocol_category,
@@ -2125,8 +2149,10 @@ class ConfigController:
                     entry.category_translation_key = category_translation_key
                     entry.category_translation_params = [protocol_name]
                     # the key gets prefixed below to avoid collisions; pin the catalog key to the
-                    # original so the label still resolves against config_entries.<original_key>
-                    entry.translation_key = entry.translation_key or f"config_entries.{entry.key}"
+                    # original (bare) slug and the protocol's own provider so the label still
+                    # resolves against provider.<domain>.config_entries.<original_key>
+                    entry.translation_key = entry.translation_key or entry.key
+                    entry.translation_owner = protocol_player.translation_owner
                     entry.key = f"{protocol_prefix}{entry.key}"
                     entry.depends_on = None if protocol.is_native else protocol_enabled_key
                     entry.action = f"{protocol_prefix}{entry.action}" if entry.action else None

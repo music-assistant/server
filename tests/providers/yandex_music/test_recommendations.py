@@ -664,12 +664,12 @@ async def test_get_seasonal_mix_recommendations_winter(provider_mock: Mock) -> N
     mock_parsed_playlist.item_id = "playlist_1"
     mock_parsed_playlist.name = "Winter Playlist"
 
-    # Patch datetime to return January (month 1)
-    mock_datetime = Mock()
-    mock_datetime.now.return_value.month = 1
+    # Patch utc() to return January (month 1)
+    mock_utc = Mock()
+    mock_utc.return_value.month = 1
 
     with (
-        patch("music_assistant.providers.yandex_music.provider.datetime", mock_datetime),
+        patch("music_assistant.providers.yandex_music.provider.utc", mock_utc),
         patch(
             "music_assistant.providers.yandex_music.provider.parse_playlist",
             return_value=mock_parsed_playlist,
@@ -699,12 +699,12 @@ async def test_get_seasonal_mix_recommendations_summer(provider_mock: Mock) -> N
     mock_parsed_playlist.item_id = "playlist_1"
     mock_parsed_playlist.name = "Summer Playlist"
 
-    # Patch datetime to return July (month 7)
-    mock_datetime = Mock()
-    mock_datetime.now.return_value.month = 7
+    # Patch utc() to return July (month 7)
+    mock_utc = Mock()
+    mock_utc.return_value.month = 7
 
     with (
-        patch("music_assistant.providers.yandex_music.provider.datetime", mock_datetime),
+        patch("music_assistant.providers.yandex_music.provider.utc", mock_utc),
         patch(
             "music_assistant.providers.yandex_music.provider.parse_playlist",
             return_value=mock_parsed_playlist,
@@ -730,12 +730,12 @@ async def test_get_seasonal_mix_recommendations_spring_fallback(provider_mock: M
     mock_parsed_playlist.item_id = "playlist_1"
     mock_parsed_playlist.name = "Autumn Playlist"
 
-    # Patch datetime to return March (month 3 - spring)
-    mock_datetime = Mock()
-    mock_datetime.now.return_value.month = 3
+    # Patch utc() to return March (month 3 - spring)
+    mock_utc = Mock()
+    mock_utc.return_value.month = 3
 
     with (
-        patch("music_assistant.providers.yandex_music.provider.datetime", mock_datetime),
+        patch("music_assistant.providers.yandex_music.provider.utc", mock_utc),
         patch(
             "music_assistant.providers.yandex_music.provider.parse_playlist",
             return_value=mock_parsed_playlist,
@@ -754,10 +754,10 @@ async def test_get_seasonal_mix_recommendations_empty(provider_mock: Mock) -> No
     """Test _get_seasonal_mix_recommendations returns None when API returns empty."""
     provider_mock.client.get_tag_playlists = AsyncMock(return_value=[])
 
-    mock_datetime = Mock()
-    mock_datetime.now.return_value.month = 6
+    mock_utc = Mock()
+    mock_utc.return_value.month = 6
 
-    with patch("music_assistant.providers.yandex_music.provider.datetime", mock_datetime):
+    with patch("music_assistant.providers.yandex_music.provider.utc", mock_utc):
         result = await YandexMusicProvider._get_seasonal_mix_recommendations(provider_mock)
 
     assert result is None
@@ -768,11 +768,11 @@ async def test_get_seasonal_mix_recommendations_invalid_data_error(provider_mock
     """Test _get_seasonal_mix_recommendations handles InvalidDataError gracefully."""
     provider_mock.client.get_tag_playlists = AsyncMock(return_value=[Mock()])
 
-    mock_datetime = Mock()
-    mock_datetime.now.return_value.month = 9
+    mock_utc = Mock()
+    mock_utc.return_value.month = 9
 
     with (
-        patch("music_assistant.providers.yandex_music.provider.datetime", mock_datetime),
+        patch("music_assistant.providers.yandex_music.provider.utc", mock_utc),
         patch(
             "music_assistant.providers.yandex_music.provider.parse_playlist",
             side_effect=InvalidDataError("Parse error"),
@@ -938,7 +938,8 @@ def _real_yandex_track() -> Any:
 
 @pytest.mark.asyncio
 async def test_get_my_wave_recommendations_with_real_parser(provider_mock: Mock) -> None:
-    """End-to-end: real ``_parse_my_wave_track`` against a real Yandex track fixture.
+    """
+    End-to-end: real ``_parse_my_wave_track`` against a real Yandex track fixture.
 
     Mocking ``_parse_my_wave_track`` directly (as the success/duplicate/error
     tests above do) cannot catch a regression where ``parse_track`` returns a

@@ -1,4 +1,5 @@
-"""Low-level client for the undocumented dialogs.yandex.ru developer API.
+"""
+Low-level client for the undocumented dialogs.yandex.ru developer API.
 
 Implements the 8-step sequence captured from Chrome DevTools HAR for
 creating a Smart Home skill with account-linking:
@@ -136,7 +137,8 @@ class DialogsDuplicateSkillError(DialogsApiError):
 
 
 class DialogsSkillCreator:
-    """Thin async wrapper over dialogs.yandex.ru developer-console API.
+    """
+    Thin async wrapper over dialogs.yandex.ru developer-console API.
 
     Every method is idempotent on the transport layer: a single call
     either succeeds or raises. Retry / state-machine logic lives in the
@@ -159,7 +161,8 @@ class DialogsSkillCreator:
     # -----------------------------------------------------------------------
 
     async def fetch_csrf(self) -> str:
-        """Fetch the developer page HTML and extract the CSRF ``secretkey``.
+        """
+        Fetch the developer page HTML and extract the CSRF ``secretkey``.
 
         Caller uses the returned value as the ``x-csrf-token`` header on
         all mutating requests. Returns a fresh token on every call; the
@@ -212,7 +215,8 @@ class DialogsSkillCreator:
     # -----------------------------------------------------------------------
 
     async def list_existing_skills(self, csrf: str) -> list[dict[str, Any]]:
-        """Return the user's existing skills from the snapshot endpoint.
+        """
+        Return the user's existing skills from the snapshot endpoint.
 
         The dashboard uses this to populate its skill list; we use it to
         warn the user before they hit a duplicate-name 4xx on create_app.
@@ -232,7 +236,8 @@ class DialogsSkillCreator:
     # -----------------------------------------------------------------------
 
     async def create_app(self, csrf: str, name: str) -> str:
-        """Create a Smart Home skill with the given name.
+        """
+        Create a Smart Home skill with the given name.
 
         Returns the newly-minted ``skill_id`` (UUID). Raises
         :class:`DialogsDuplicateSkillError` if the name is already taken
@@ -266,7 +271,8 @@ class DialogsSkillCreator:
     # -----------------------------------------------------------------------
 
     async def upload_logo(self, csrf: str, skill_id: str, png: bytes) -> str:
-        """Upload a PNG logo for the skill.
+        """
+        Upload a PNG logo for the skill.
 
         Returns a ``logo_id`` that must be referenced in ``update_draft``.
         The logo file is sent as multipart with the field name ``file``
@@ -328,7 +334,8 @@ class DialogsSkillCreator:
         token_url: str,
         refresh_url: str,
     ) -> str:
-        """Create the OAuth app that powers account-linking in the skill.
+        """
+        Create the OAuth app that powers account-linking in the skill.
 
         Returns the OAuth-app UUID which is then bound to the skill via
         ``attach_oauth``.
@@ -374,7 +381,8 @@ class DialogsSkillCreator:
     # -----------------------------------------------------------------------
 
     async def request_deploy(self, csrf: str, skill_id: str) -> None:
-        """Send the draft to moderation / publish.
+        """
+        Send the draft to moderation / publish.
 
         Body is empty; all params are in the query string. Returns on
         2xx; otherwise raises.
@@ -514,7 +522,8 @@ def _extract_error_code(body: str) -> str | None:
 
 
 def derive_backend_uri(mass: MusicAssistant, connection_type: str) -> str:
-    """Return the Backend URL the skill should point at for *connection_type*.
+    """
+    Return the Backend URL the skill should point at for *connection_type*.
 
     cloud_plus → yaha-cloud.ru relay (fixed URL).
     direct     → ``{mass.webserver.base_url}`` + our API path (requires
@@ -530,7 +539,8 @@ def derive_backend_uri(mass: MusicAssistant, connection_type: str) -> str:
 
 
 def derive_auth_urls(mass: MusicAssistant, connection_type: str) -> tuple[str, str]:
-    """Return (authorize_url, token_url) for the OAuth app.
+    """
+    Return (authorize_url, token_url) for the OAuth app.
 
     cloud_plus uses the yaha-cloud relay's OAuth endpoints; direct
     uses the MA webserver's own authorize/token endpoints (served by
@@ -549,7 +559,8 @@ def derive_auth_urls(mass: MusicAssistant, connection_type: str) -> tuple[str, s
 
 
 def derive_client_id(connection_type: str, cloud_instance_id: str) -> str:
-    """Return the OAuth client_id to register in the skill's account linking.
+    """
+    Return the OAuth client_id to register in the skill's account linking.
 
     cloud_plus uses ``yandex_smart_home:{instance_id}`` (yaha-cloud
     protocol); direct uses the fixed Yandex social redirect base URL
@@ -574,7 +585,8 @@ def build_draft_payload(
     logo_id: str | None,
     developer_name: str = "Music Assistant user",
 ) -> dict[str, Any]:
-    """Compose the PATCH /draft/update body for a Smart Home skill.
+    """
+    Compose the PATCH /draft/update body for a Smart Home skill.
 
     Matches the HAR sample field-for-field; every key that the
     dashboard UI sends on save is reproduced so Yandex's validator
@@ -634,7 +646,8 @@ def build_oauth_app_payload(
     authorize_url: str,
     token_url: str,
 ) -> dict[str, Any]:
-    """Compose the POST /oauth/apps body for account-linking.
+    """
+    Compose the POST /oauth/apps body for account-linking.
 
     Values come from :func:`derive_client_id`, :func:`derive_auth_urls`,
     and :func:`derive_backend_uri`'s caller context. ``refreshTokenUrl``
@@ -660,7 +673,8 @@ def check_preconditions(
     cloud_instance_id: str,
     direct_client_secret: str,
 ) -> None:
-    """Validate that auto-create can run for the given connection type.
+    """
+    Validate that auto-create can run for the given connection type.
 
     Raises :class:`ValueError` with a human-readable message on failure.
     Called before any network I/O so the UI can surface the error
@@ -721,7 +735,8 @@ _SAFE_SESSION_ID_RE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
 
 
 def _build_device_code_page(user_code: str, verification_url: str, status_url: str) -> str:
-    """Render the HTML page shown during Device Flow login.
+    """
+    Render the HTML page shown during Device Flow login.
 
     Yandex's ya.ru/device page does not pre-fill from query params and
     strips them on redirect-to-login, so the only reliable way to show
@@ -861,7 +876,8 @@ async def _default_authenticator(
     session_id: str,
     timeout: float,
 ) -> AsyncIterator[aiohttp.ClientSession]:
-    """Real-world authentication path — runs Device Flow and yields a session.
+    """
+    Real-world authentication path — runs Device Flow and yields a session.
 
     Serves an intermediate HTML page through MA's webserver so the user
     sees the short ``user_code`` (Yandex's ya.ru/device does not pre-fill
@@ -976,7 +992,8 @@ def _build_authenticator_cm(
     session_id: str,
     timeout: float,
 ) -> Any:
-    """Wrap *authenticator* so it supports ``async with`` uniformly.
+    """
+    Wrap *authenticator* so it supports ``async with`` uniformly.
 
     The default implementation is a plain async generator, but callers
     may inject an already-decorated ``@asynccontextmanager``. Re-wrapping
@@ -1026,7 +1043,8 @@ async def auto_create_skill(  # noqa: PLR0913
     timeout: float = DEVICE_FLOW_TIMEOUT_SECONDS,
     developer_name: str = "Music Assistant user",
 ) -> SkillCreationArtifacts:
-    """End-to-end flow: Device Flow → passport cookies → skill pipeline.
+    """
+    End-to-end flow: Device Flow → passport cookies → skill pipeline.
 
     Resumes from ``artifacts.state`` — steps that already completed
     (skill_id present, etc.) are skipped. On any exception, returns
@@ -1093,7 +1111,8 @@ async def _run_pipeline_with_recovery(
     developer_name: str,
     progress_cb: Callable[[SkillCreationArtifacts], Awaitable[None]] | None,
 ) -> SkillCreationArtifacts:
-    """Fetch CSRF and run the pipeline, preserving partial state on failure.
+    """
+    Fetch CSRF and run the pipeline, preserving partial state on failure.
 
     Holds a ``current`` reference that ``_execute_pipeline`` updates via
     ``progress_cb``, so a mid-pipeline raise lets us surface whatever
@@ -1255,7 +1274,8 @@ _FALLBACK_LOGO_PNG = bytes.fromhex(
 
 
 def load_default_logo_bytes() -> bytes:
-    """Return PNG bytes for the skill logo.
+    """
+    Return PNG bytes for the skill logo.
 
     Reads ``provider/auto_skill_logo.png`` if it exists; otherwise
     returns a 1x1 transparent PNG so tests can run without the asset.

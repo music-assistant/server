@@ -1,4 +1,5 @@
-"""Tool sub-server factories.
+"""
+Tool sub-server factories.
 
 Each ``build_*_server`` function returns its own :class:`fastmcp.FastMCP`
 instance, which is then ``mount()``-ed under a namespace by

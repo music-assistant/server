@@ -19,7 +19,8 @@ if TYPE_CHECKING:
 
 
 class MetadataProvider(Provider):
-    """Base representation of a Metadata Provider (controller).
+    """
+    Base representation of a Metadata Provider (controller).
 
     Metadata Provider implementations should inherit from this base model.
     """

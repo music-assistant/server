@@ -166,17 +166,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             )
         return result
 
-    async def _authors_narrators(self, column: str) -> UniqueList[str]:
-        """Return all available authors."""
-        assert self.mass.music.database is not None  # for type checking
-        rows = await self.mass.music.database.get_rows_from_query(
-            query=f"SELECT DISTINCT {column} FROM {DB_TABLE_AUDIOBOOKS}"
-        )
-        result: set[str] = set()
-        for row in rows:
-            result.update(json_loads(row[column]))
-        return UniqueList(sorted(result))
-
     async def versions(
         self,
         item_id: str,
@@ -199,6 +188,133 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 # make sure that the 'base' version is NOT included
                 and not audiobook.provider_mappings.intersection(prov_item.provider_mappings)
             )
+        return result
+
+    async def radio_mode_base_tracks(
+        self,
+        item: Audiobook,
+        preferred_provider_instances: list[str] | None = None,
+    ) -> list[Track]:
+        """
+        Get the list of base tracks from the controller used to calculate the dynamic radio.
+
+        :param item: The Audiobook to get base tracks for.
+        :param preferred_provider_instances: List of preferred provider instance IDs to use.
+        """
+        msg = "Dynamic tracks not supported for Audiobook MediaItem"
+        raise NotImplementedError(msg)
+
+    async def match_provider(
+        self, db_audiobook: Audiobook, provider: MusicProvider, strict: bool = True
+    ) -> list[ProviderMapping]:
+        """
+        Try to find match on (streaming) provider for the provided (database) audiobook.
+
+        This is used to link objects of different providers/qualities together.
+        """
+        self.logger.debug(
+            "Trying to match audiobook %s on provider %s",
+            db_audiobook.name,
+            provider.name,
+        )
+        matches: list[ProviderMapping] = []
+        author_name = db_audiobook.authors[0] if db_audiobook.authors else ""
+        search_str = f"{author_name} - {db_audiobook.name}" if author_name else db_audiobook.name
+        search_result = await self.search(search_str, provider.instance_id)
+        for search_result_item in search_result:
+            if not search_result_item.available:
+                continue
+            if not compare_media_item(db_audiobook, search_result_item, strict=strict):
+                continue
+            # we must fetch the full audiobook version, search results can be simplified objects
+            prov_audiobook = await self.get_provider_item(
+                search_result_item.item_id,
+                search_result_item.provider,
+                fallback=search_result_item,
+            )
+            if compare_audiobook(db_audiobook, prov_audiobook, strict=strict):
+                # 100% match
+                matches.extend(prov_audiobook.provider_mappings)
+        if not matches:
+            self.logger.debug(
+                "Could not find match for Audiobook %s on provider %s",
+                db_audiobook.name,
+                provider.name,
+            )
+        return matches
+
+    async def match_providers(self, db_audiobook: Audiobook) -> None:
+        """
+        Try to find match on all (streaming) providers for the provided (database) audiobook.
+
+        This is used to link objects of different providers/qualities together.
+        """
+        if db_audiobook.provider != "library":
+            return  # Matching only supported for database items
+
+        # try to find match on all providers
+        cur_provider_domains = {x.provider_domain for x in db_audiobook.provider_mappings}
+        for provider in self.mass.music.providers:
+            if provider.domain in cur_provider_domains:
+                continue
+            if ProviderFeature.SEARCH not in provider.supported_features:
+                continue
+            if not self.mass.music.library_supported(provider, MediaType.AUDIOBOOK):
+                continue
+            if not provider.is_streaming_provider:
+                # matching on unique providers is pointless as they push (all) their content to MA
+                continue
+            if match := await self.match_provider(db_audiobook, provider):
+                # 100% match, we update the db with the additional provider mapping(s)
+                await self.add_provider_mappings(db_audiobook.item_id, match)
+                cur_provider_domains.add(provider.domain)
+
+    async def collections(
+        self,
+    ) -> list[AudiobookCollection]:
+        """Get all available audiobook collections."""
+        # key is the collections' title
+        collections_dict: dict[str, list[Audiobook]] = {}
+        audiobooks_with_collections = await self.get_library_items_by_query(
+            extra_query_parts=[
+                "WHERE json_extract(audiobooks.metadata, '$.collections') IS NOT NULL "
+                "AND json_extract(audiobooks.metadata, '$.collections') != '[]'",
+            ],
+        )
+        for audiobook in audiobooks_with_collections:
+            if audiobook.metadata.collections is None:
+                # this should never happen
+                continue
+            for collection_info in audiobook.metadata.collections:
+                audiobook_list = collections_dict.get(collection_info.title, [])
+                audiobook_list.append(audiobook)
+                collections_dict[collection_info.title] = audiobook_list
+
+        result: list[AudiobookCollection] = []
+        # Sort collections, first by number then alphabetically
+        for collection_title, audiobook_list in collections_dict.items():
+            audiobooks_with_number: list[tuple[Audiobook, float]] = []
+            audiobooks_with_string: list[tuple[Audiobook, str]] = []
+            audiobooks_with_none: list[Audiobook] = []
+            for audiobook in audiobook_list:
+                assert audiobook.metadata.collections is not None  # for type checking
+                collection_info = next(
+                    x for x in audiobook.metadata.collections if x.title == collection_title
+                )
+                if collection_info.sequence is None:
+                    audiobooks_with_none.append(audiobook)
+                    continue
+                try:
+                    sort_by = float(collection_info.sequence)
+                    audiobooks_with_number.append((audiobook, sort_by))
+                except ValueError:
+                    audiobooks_with_string.append((audiobook, str(collection_info.sequence)))
+            final_list = [x[0] for x in sorted(audiobooks_with_number, key=lambda x: x[1])]
+            final_list.extend([x[0] for x in sorted(audiobooks_with_string, key=lambda x: x[1])])
+            final_list.extend(audiobooks_with_none)
+
+            result.append(AudiobookCollection(title=collection_title, audiobooks=final_list))
+
         return result
 
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
@@ -237,9 +353,23 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         await self.set_provider_mappings(db_id, item.provider_mappings)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
         await self._set_playlog(db_id, item)
+        await self._set_artist_mappings(item, db_id)
 
+        return db_id
+
+    async def _set_artist_mappings(
+        self, item: Audiobook, db_id: int, overwrite: bool = False
+    ) -> None:
         # update artist mappings - the sync method in the provider model raises an exception
         # if not all entries are either of type str or Artist
+        if overwrite:
+            # on overwrite, clear the audiobook_artists table first
+            await self.mass.music.database.delete(
+                DB_TABLE_AUDIOBOOK_ARTISTS,
+                {
+                    "audiobook_id": db_id,
+                },
+            )
         if item.authors and isinstance(item.authors[0], Artist):
             # only for type checking
             authors = [author for author in item.authors if isinstance(author, Artist)]
@@ -254,7 +384,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 # just to be sure
                 narrator.artist_type = ArtistType.NARRATOR
             await self._set_audiobook_authors_narrators(db_id, narrators)
-        return db_id
 
     async def _set_audiobook_authors_narrators(
         self,
@@ -262,15 +391,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         artists: Iterable[Artist | ItemMapping],
         overwrite: bool = False,
     ) -> None:
-        """Write audiobook id and author/ narrator id to DB_TABLE_ALBUM_ARTISTS."""
-        if overwrite:
-            # on overwrite, clear the album_artists table first
-            await self.mass.music.database.delete(
-                DB_TABLE_AUDIOBOOK_ARTISTS,
-                {
-                    "audiobook_id": db_id,
-                },
-            )
+        """Write audiobook id and author/ narrator id to DB_TABLE_AUDIOBOOK_ARTISTS."""
         for artist in artists:
             await self._set_audiobook_author_narrator(db_id, artist=artist, overwrite=overwrite)
 
@@ -358,85 +479,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
         await self._set_playlog(db_id, update)
-
-    async def radio_mode_base_tracks(
-        self,
-        item: Audiobook,
-        preferred_provider_instances: list[str] | None = None,
-    ) -> list[Track]:
-        """
-        Get the list of base tracks from the controller used to calculate the dynamic radio.
-
-        :param item: The Audiobook to get base tracks for.
-        :param preferred_provider_instances: List of preferred provider instance IDs to use.
-        """
-        msg = "Dynamic tracks not supported for Audiobook MediaItem"
-        raise NotImplementedError(msg)
-
-    async def match_provider(
-        self, db_audiobook: Audiobook, provider: MusicProvider, strict: bool = True
-    ) -> list[ProviderMapping]:
-        """
-        Try to find match on (streaming) provider for the provided (database) audiobook.
-
-        This is used to link objects of different providers/qualities together.
-        """
-        self.logger.debug(
-            "Trying to match audiobook %s on provider %s",
-            db_audiobook.name,
-            provider.name,
-        )
-        matches: list[ProviderMapping] = []
-        author_name = db_audiobook.authors[0] if db_audiobook.authors else ""
-        search_str = f"{author_name} - {db_audiobook.name}" if author_name else db_audiobook.name
-        search_result = await self.search(search_str, provider.instance_id)
-        for search_result_item in search_result:
-            if not search_result_item.available:
-                continue
-            if not compare_media_item(db_audiobook, search_result_item, strict=strict):
-                continue
-            # we must fetch the full audiobook version, search results can be simplified objects
-            prov_audiobook = await self.get_provider_item(
-                search_result_item.item_id,
-                search_result_item.provider,
-                fallback=search_result_item,
-            )
-            if compare_audiobook(db_audiobook, prov_audiobook, strict=strict):
-                # 100% match
-                matches.extend(prov_audiobook.provider_mappings)
-        if not matches:
-            self.logger.debug(
-                "Could not find match for Audiobook %s on provider %s",
-                db_audiobook.name,
-                provider.name,
-            )
-        return matches
-
-    async def match_providers(self, db_audiobook: Audiobook) -> None:
-        """
-        Try to find match on all (streaming) providers for the provided (database) audiobook.
-
-        This is used to link objects of different providers/qualities together.
-        """
-        if db_audiobook.provider != "library":
-            return  # Matching only supported for database items
-
-        # try to find match on all providers
-        cur_provider_domains = {x.provider_domain for x in db_audiobook.provider_mappings}
-        for provider in self.mass.music.providers:
-            if provider.domain in cur_provider_domains:
-                continue
-            if ProviderFeature.SEARCH not in provider.supported_features:
-                continue
-            if not self.mass.music.library_supported(provider, MediaType.AUDIOBOOK):
-                continue
-            if not provider.is_streaming_provider:
-                # matching on unique providers is pointless as they push (all) their content to MA
-                continue
-            if match := await self.match_provider(db_audiobook, provider):
-                # 100% match, we update the db with the additional provider mapping(s)
-                await self.add_provider_mappings(db_audiobook.item_id, match)
-                cur_provider_domains.add(provider.domain)
+        await self._set_artist_mappings(update, db_id)
 
     async def _set_playlog(self, db_id: int, media_item: Audiobook) -> None:
         """Update/set the playlog table for the given audiobook db item_id."""
@@ -509,55 +552,13 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 allow_replace=True,
             )
 
-    async def collections(
-        self,
-    ) -> list[AudiobookCollection]:
-        """
-        Get all available audiobook collections.
-
-        :param limit: Maximum number of items to return.
-        :param offset: Number of items to skip.
-        """
-        # key is the collections' title
-        collections_dict: dict[str, list[Audiobook]] = {}
-        audiobooks_with_collections = await self.get_library_items_by_query(
-            extra_query_parts=[
-                "WHERE json_extract(audiobooks.metadata, '$.collections') IS NOT NULL "
-                "AND json_extract(audiobooks.metadata, '$.collections') != '[]'",
-            ],
+    async def _authors_narrators(self, column: str) -> UniqueList[str]:
+        """Return all available authors."""
+        assert self.mass.music.database is not None  # for type checking
+        rows = await self.mass.music.database.get_rows_from_query(
+            query=f"SELECT DISTINCT {column} FROM {DB_TABLE_AUDIOBOOKS}"
         )
-        for audiobook in audiobooks_with_collections:
-            if audiobook.metadata.collections is None:
-                # this should never happen
-                continue
-            for collection_info in audiobook.metadata.collections:
-                audiobook_list = collections_dict.get(collection_info.title, [])
-                audiobook_list.append(audiobook)
-                collections_dict[collection_info.title] = audiobook_list
-
-        result: list[AudiobookCollection] = []
-        # Sort collections, first by number then alphabetically
-        for collection_title, audiobook_list in collections_dict.items():
-            audiobooks_with_number: list[tuple[Audiobook, float]] = []
-            audiobooks_with_string: list[tuple[Audiobook, str]] = []
-            audiobooks_with_none: list[Audiobook] = []
-            for audiobook in audiobook_list:
-                assert audiobook.metadata.collections is not None  # for type checking
-                collection_info = next(
-                    x for x in audiobook.metadata.collections if x.title == collection_title
-                )
-                if collection_info.sequence is None:
-                    audiobooks_with_none.append(audiobook)
-                    continue
-                try:
-                    sort_by = float(collection_info.sequence)
-                    audiobooks_with_number.append((audiobook, sort_by))
-                except ValueError:
-                    audiobooks_with_string.append((audiobook, str(collection_info.sequence)))
-            final_list = [x[0] for x in sorted(audiobooks_with_number, key=lambda x: x[1])]
-            final_list.extend([x[0] for x in sorted(audiobooks_with_string, key=lambda x: x[1])])
-            final_list.extend(audiobooks_with_none)
-
-            result.append(AudiobookCollection(title=collection_title, audiobooks=final_list))
-
-        return result
+        result: set[str] = set()
+        for row in rows:
+            result.update(json_loads(row[column]))
+        return UniqueList(sorted(result))

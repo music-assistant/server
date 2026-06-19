@@ -96,7 +96,8 @@ def format_to_option_value(fmt: SupportedAudioFormat) -> str:
 
 
 def option_value_to_format(value: str) -> tuple[AudioCodec, SendspinAudioFormat] | None:
-    """Parse option value back to (AudioCodec, SendspinAudioFormat).
+    """
+    Parse option value back to (AudioCodec, SendspinAudioFormat).
 
     :param value: Option value in format "codec:sample_rate:bit_depth:channels".
     :return: Tuple of (AudioCodec, SendspinAudioFormat) or None if parsing fails.
@@ -711,7 +712,8 @@ class SendspinPlayer(SendspinBasePlayer):
             if isinstance(exc, TimeoutError):
                 raise PlayerCommandFailed(
                     f"Cast app on {self.display_name} did not report ready within 30s",
-                    translation_key="provider.sendspin.errors.cast_app_not_ready",
+                    translation_key="cast_app_not_ready",
+                    translation_owner=self.translation_owner,
                     translation_args=[self.display_name],
                 ) from None
             raise
@@ -826,7 +828,8 @@ class SendspinPlayer(SendspinBasePlayer):
                     stuck = [m.display_name for m, f in pending_cast if not f.done()]
                     raise PlayerCommandFailed(
                         f"Cast app on {', '.join(stuck)} did not report ready within 30s",
-                        translation_key="provider.sendspin.errors.cast_app_members_not_ready",
+                        translation_key="cast_app_members_not_ready",
+                        translation_owner=self.translation_owner,
                         translation_args=[", ".join(stuck)],
                     ) from None
         except BaseException:

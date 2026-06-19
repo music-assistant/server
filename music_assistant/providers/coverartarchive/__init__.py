@@ -49,7 +49,8 @@ async def setup(
 
 
 class CoverArtArchiveMetadataProvider(MetadataProvider):
-    """Cover Art Archive Metadata provider.
+    """
+    Cover Art Archive Metadata provider.
 
     Fetches album artwork from the Cover Art Archive using MusicBrainz release group IDs.
     """
@@ -60,7 +61,8 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
         return 40
 
     async def get_album_metadata(self, album: Album) -> MediaItemMetadata | None:
-        """Retrieve metadata for an album.
+        """
+        Retrieve metadata for an album.
 
         :param album: Album to retrieve metadata for.
         """
@@ -88,7 +90,8 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
 
     @use_cache(86400 * 30)
     async def _get_cover_art_url(self, release_group_id: str) -> str | None:
-        """Retrieve cover art URL for a release group.
+        """
+        Retrieve cover art URL for a release group.
 
         :param release_group_id: MusicBrainz release group ID.
         """

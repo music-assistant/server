@@ -169,7 +169,8 @@ class AirPlayPlayer(Player):
 
     @property
     def can_group_with(self) -> set[str]:
-        """Return player IDs this player can group with.
+        """
+        Return player IDs this player can group with.
 
         RAOP and AP2 players can group with other RAOP and/or AP2 players.
         """
@@ -245,15 +246,11 @@ class AirPlayPlayer(Player):
                 options=[
                     opt
                     for opt in (
-                        ConfigValueOption(0, title="Automatically select"),
-                        ConfigValueOption(
-                            StreamingProtocol.RAOP.value, title="Prefer AirPlay 1 (RAOP)"
-                        )
+                        ConfigValueOption(0),
+                        ConfigValueOption(StreamingProtocol.RAOP.value)
                         if self.raop_discovery_info
                         else None,
-                        ConfigValueOption(
-                            StreamingProtocol.AIRPLAY2.value, title="Prefer AirPlay 2"
-                        )
+                        ConfigValueOption(StreamingProtocol.AIRPLAY2.value)
                         if self.airplay_discovery_info
                         else None,
                     )
@@ -367,14 +364,16 @@ class AirPlayPlayer(Player):
         return flags
 
     def _requires_pin_pairing(self) -> bool:
-        """Check if this device requires pairing.
+        """
+        Check if this device requires pairing.
 
         Adapted from pyatv.protocols.airplay.utils.get_pairing_requirement.
         """
         return bool(self._get_flags() & (LEGACY_PAIRING_BIT | PIN_REQUIRED))
 
     def _requires_password_pairing(self) -> bool:
-        """Check if this device requires password authentication.
+        """
+        Check if this device requires password authentication.
 
         Password can be used for pairing instead of interactive PIN entry.
         """
@@ -449,7 +448,8 @@ class AirPlayPlayer(Player):
                         ConfigEntry(
                             key=CONF_ACTION_FINISH_PAIRING,
                             type=ConfigEntryType.ACTION,
-                            label=f"Complete {protocol_name} pairing with the PIN",
+                            translation_key="finish_pairing_pin",
+                            translation_params=[protocol_name],
                             action=CONF_ACTION_FINISH_PAIRING,
                             category="protocol_generic",
                         )
@@ -468,7 +468,8 @@ class AirPlayPlayer(Player):
                         ConfigEntry(
                             key=CONF_ACTION_FINISH_PAIRING,
                             type=ConfigEntryType.ACTION,
-                            label=f"Complete {protocol_name} pairing with the password",
+                            translation_key="finish_pairing_password",
+                            translation_params=[protocol_name],
                             action=CONF_ACTION_FINISH_PAIRING,
                             category="protocol_generic",
                         )
@@ -482,10 +483,7 @@ class AirPlayPlayer(Player):
                     ConfigEntry(
                         key="pairing_instructions",
                         type=ConfigEntryType.LABEL,
-                        label=(
-                            f"This device requires {protocol_name} pairing before it can be used. "
-                            "Click the button below to start the pairing process."
-                        ),
+                        translation_params=[protocol_name],
                         category="protocol_generic",
                     )
                 )
@@ -493,7 +491,8 @@ class AirPlayPlayer(Player):
                     ConfigEntry(
                         key=CONF_ACTION_START_PAIRING,
                         type=ConfigEntryType.ACTION,
-                        label=f"Start {protocol_name} pairing",
+                        translation_key="start_pairing",
+                        translation_params=[protocol_name],
                         action=CONF_ACTION_START_PAIRING,
                         category="protocol_generic",
                     )
@@ -505,7 +504,7 @@ class AirPlayPlayer(Player):
                 ConfigEntry(
                     key="pairing_status",
                     type=ConfigEntryType.LABEL,
-                    label=f"Device is paired ({protocol_name}) and ready to use.",
+                    translation_params=[protocol_name],
                     category="protocol_generic",
                 )
             )
@@ -514,7 +513,8 @@ class AirPlayPlayer(Player):
                 ConfigEntry(
                     key=CONF_ACTION_RESET_PAIRING,
                     type=ConfigEntryType.ACTION,
-                    label=f"Reset {protocol_name} pairing",
+                    translation_key="reset_pairing",
+                    translation_params=[protocol_name],
                     action=CONF_ACTION_RESET_PAIRING,
                     category="protocol_generic",
                 )
@@ -619,7 +619,8 @@ class AirPlayPlayer(Player):
         protocol: StreamingProtocol,
         protocol_name: str,
     ) -> None:
-        """Complete an in-progress pairing session.
+        """
+        Complete an in-progress pairing session.
 
         ``values`` may contain a PIN or a password supplied by the user when required.
         """
@@ -928,7 +929,8 @@ class AirPlayPlayer(Player):
         elapsed_time: float | None = None,
         stream: AirPlayProtocol | None = None,
     ) -> None:
-        """Set the playback state from stream (RAOP or AirPlay2).
+        """
+        Set the playback state from stream (RAOP or AirPlay2).
 
         :param state: New playback state (or None to keep current).
         :param elapsed_time: New elapsed time (or None to keep current).

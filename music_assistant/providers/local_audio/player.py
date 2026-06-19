@@ -28,7 +28,8 @@ if TYPE_CHECKING:
 
 
 def get_device_uuid(device_name: str, hostapi_index: int) -> str:
-    """Generate a stable UUID for a local audio device.
+    """
+    Generate a stable UUID for a local audio device.
 
     :param device_name: The device name reported by PortAudio.
     :param hostapi_index: The host API index (e.g. CoreAudio=0, ALSA=0).
@@ -100,7 +101,8 @@ class LocalAudioPlayer(Player):
         self.update_state()
 
     async def _set_hardware_volume(self, volume: int) -> None:
-        """Set the OS-level volume for this device.
+        """
+        Set the OS-level volume for this device.
 
         :param volume: Volume level 0-100.
         """
@@ -130,7 +132,8 @@ class LocalAudioPlayer(Player):
             self._hardware_volume_fallback = True
 
     async def _set_hardware_mute(self, muted: bool) -> None:
-        """Set the OS-level mute state for this device.
+        """
+        Set the OS-level mute state for this device.
 
         :param muted: Whether to mute or unmute.
         """

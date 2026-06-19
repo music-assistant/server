@@ -4,23 +4,40 @@
       "label": "Email or username"
     },
     "password": {
-      "label": "Password"
+      "label": "[%key:common::config_entries::password::label%]"
+    },
+    "intro": {
+      "label": "A BBC Sounds account is optional, but some UK-only content may not work without it"
+    },
+    "show_local": {
+      "label": "Show local radio stations?"
+    },
+    "stream_format": {
+      "label": "Preferred stream format",
+      "options": {
+        "hls": "HLS",
+        "dash": "MPEG-DASH"
+      }
     }
   },
-  "schedule_programmes": {
-    "name": "Schedule and Programmes"
-  },
-  "schedule": {
-    "name": "Schedule"
-  },
-  "listen_live": {
-    "name": "Listen Live"
-  },
-  "today": {
-    "name": "Today"
-  },
-  "yesterday": {
-    "name": "Yesterday"
+  "media": {
+    "folder": {
+      "schedule_programmes": {
+        "name": "Schedule and Programmes"
+      },
+      "schedule": {
+        "name": "Schedule"
+      },
+      "listen_live": {
+        "name": "Listen Live"
+      },
+      "today": {
+        "name": "Today"
+      },
+      "yesterday": {
+        "name": "Yesterday"
+      }
+    }
   },
   "manifest": {
     "description": "Stream live BBC radio shows, podcast series and on-demand audio."
