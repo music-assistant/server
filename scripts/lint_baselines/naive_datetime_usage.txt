@@ -1,0 +1,18 @@
+# Direct datetime.now()/utcnow() call sites that predate the helpers check.
+# New code must use music_assistant.helpers.datetime (utc(), now(), ...).
+# Regenerate with: uv run -m scripts.check_datetime_helpers --update-baseline
+music_assistant/controllers/tasks/helpers.py	1
+music_assistant/helpers/throttle_retry.py	1
+music_assistant/helpers/webrtc_certificate.py	2
+music_assistant/providers/audible/audible_helper.py	1
+music_assistant/providers/fastmcp_server/debug/event_buffer.py	1
+music_assistant/providers/fastmcp_server/debug/log_reader.py	1
+music_assistant/providers/fastmcp_server/tools/debug.py	1
+music_assistant/providers/gpodder/client.py	1
+music_assistant/providers/kion_music/api_client.py	1
+music_assistant/providers/kion_music/provider.py	1
+music_assistant/providers/lastfm_recommendations/recommendations.py	2
+music_assistant/providers/orf_radiothek/__init__.py	1
+music_assistant/providers/spotify_connect/events.py	1
+music_assistant/providers/yandex_music/api_client.py	2
+music_assistant/providers/yandex_music/provider.py	1
