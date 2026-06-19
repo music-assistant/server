@@ -90,6 +90,15 @@ repos:
         types: [text]
         files: ^(music_assistant/.+\.py|scripts/check_blocking_io\.py|scripts/lint_baseline(s/blocking_io_in_async\.txt|\.py))$
 
+      # fail when a class puts a public/dunder method below a private one (existing classes baselined)
+      - id: check_method_order
+        name: check_method_order
+        entry: uv run -m scripts.check_method_order
+        pass_filenames: false
+        language: system
+        types: [text]
+        files: ^(music_assistant/.+\.py|scripts/check_method_order\.py|scripts/lint_baseline(s/private_methods_not_last\.txt|\.py))$
+
       - id: ruff-check
         name: 🐶 Ruff Linter
         language: system
