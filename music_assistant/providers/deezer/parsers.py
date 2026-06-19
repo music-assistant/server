@@ -523,8 +523,8 @@ def parse_audiobook(provider: DeezerProvider, audiobook: AudiobookFields) -> Aud
     if audiobook.fans_count:
         metadata.popularity = int(audiobook.fans_count)
 
-    authors: UniqueList[str | Artist] = UniqueList()
-    narrators: UniqueList[str | Artist] = UniqueList()
+    authors: UniqueList[str | Artist | ItemMapping] = UniqueList()
+    narrators: UniqueList[str | Artist | ItemMapping] = UniqueList()
     for edge in audiobook.contributors.edges:
         if AudiobookContributorRoles.NARRATOR in edge.roles:
             narrators.append(edge.node.name)
@@ -561,7 +561,7 @@ def parse_audiobook_from_album(
     if img := _cover_image(provider, album.cover):
         images.append(img)
 
-    authors: UniqueList[str | Artist] = UniqueList()
+    authors: UniqueList[str | Artist | ItemMapping] = UniqueList()
     for edge in album.contributors.edges:
         if edge.node is not None:
             authors.append(edge.node.name)
@@ -683,7 +683,7 @@ def parse_gw_audiobook(provider: DeezerProvider, data: dict[str, Any]) -> Audiob
             )
         )
 
-    authors: UniqueList[str | Artist] = UniqueList()
+    authors: UniqueList[str | Artist | ItemMapping] = UniqueList()
     if art_name := data.get("ART_NAME"):
         authors.append(art_name)
 
