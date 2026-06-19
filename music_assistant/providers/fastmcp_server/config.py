@@ -285,7 +285,7 @@ def build_config_entries(
             CONF_DEBUG_INSPECT,
             "Debug: inspect raw player/queue/provider state",
             False,
-            "Debug",
+            "debug",
             "Exposes raw runtime state of players, queues, and providers via MCP. "
             "Intended for development and troubleshooting. Disable in production.",
         ),
@@ -293,7 +293,7 @@ def build_config_entries(
             CONF_DEBUG_LOGS,
             "Debug: tail musicassistant.log",
             False,
-            "Debug",
+            "debug",
             "Allows MCP clients to read the tail of MA's log file with filters. "
             "Common token patterns are redacted. Intended for troubleshooting. "
             "Disable in production.",
@@ -302,7 +302,7 @@ def build_config_entries(
             CONF_DEBUG_EVENTS,
             "Debug: read recent MA events",
             False,
-            "Debug",
+            "debug",
             "Subscribes to MA's event bus at provider startup and exposes a "
             "ring buffer over MCP. Memory cost is bounded by the buffer "
             "capacity. Intended for troubleshooting. Disable in production.",
@@ -311,7 +311,7 @@ def build_config_entries(
             CONF_DEBUG_PROVIDERS,
             "Debug: inspect configured providers",
             False,
-            "Debug",
+            "debug",
             "Exposes provider state, masked configuration, registered "
             "webserver routes, installed package versions, and a health "
             "summary roll-up. Intended for troubleshooting. Disable in "
@@ -321,7 +321,7 @@ def build_config_entries(
             CONF_DEBUG_RELOAD,
             "Debug: reload a provider instance",
             False,
-            "Debug",
+            "debug",
             "Allows MCP clients to unload and reload provider instances, "
             "INTERRUPTING ANY ACTIVE STREAMS on the affected provider. "
             "Each call requires elicitation confirmation. Intended for "

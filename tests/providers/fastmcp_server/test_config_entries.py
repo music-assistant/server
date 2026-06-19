@@ -140,4 +140,4 @@ def test_config_entries_present_with_off_defaults(mock_mass: MagicMock) -> None:
     ):
         assert key in entries, f"missing {key}"
         assert entries[key].default_value is False, f"{key} must be off by default"
-        assert entries[key].category == "Config"
+        assert entries[key].category == "mcp_config"
