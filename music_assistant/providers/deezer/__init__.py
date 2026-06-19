@@ -245,7 +245,8 @@ class DeezerProvider(MusicProvider):
 
     @use_cache(3600)  # Cache for 1 hour
     async def _get_mood_flow_tracks(self, config_id: str) -> list[dict[str, Any]]:
-        """Get cached mood/genre Flow tracks from the GW API.
+        """
+        Get cached mood/genre Flow tracks from the GW API.
 
         :param config_id: The Flow config identifier (e.g. "happy", "chill", "genre-rock").
         """
@@ -253,7 +254,8 @@ class DeezerProvider(MusicProvider):
 
     @use_cache(3600 * 24, cache_checksum="v2")  # Cache for 24 hours
     async def _get_available_flows(self) -> list[tuple[str, str, str | None]]:
-        """Discover available mood/genre Flow variants from the Deezer home page.
+        """
+        Discover available mood/genre Flow variants from the Deezer home page.
 
         Genre flows have config_ids starting with 'genre-'.
         Returns a list of (config_id, flow_title, cover_url) tuples, where flow_title is the
@@ -275,7 +277,8 @@ class DeezerProvider(MusicProvider):
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
-        """Perform search on music provider.
+        """
+        Perform search on music provider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include. All types if None.
@@ -1004,7 +1007,8 @@ class DeezerProvider(MusicProvider):
         translation_key: str | None = None,
         translation_params: list[str] | None = None,
     ) -> Playlist:
-        """Create a virtual playlist for Flow, Recommended tracks, or Radios.
+        """
+        Create a virtual playlist for Flow, Recommended tracks, or Radios.
 
         :param item_id: The unique identifier (e.g., "flow", "radio_37151").
         :param name: Display name for the playlist.

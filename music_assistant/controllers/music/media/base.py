@@ -68,6 +68,7 @@ JSON_KEYS = (
     "authors",
     "genre_aliases",
     "supported_mediatypes",
+    "translation_params",
 )
 
 # When set (task-local), per-item MEDIA_ITEM_UPDATED events are suppressed.
@@ -192,35 +193,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             library_item,
         )
         return library_item
-
-    @final
-    async def _get_library_item_by_match(self, item: ItemCls | ItemMapping) -> int | None:
-        if item.provider == "library":
-            return int(item.item_id)
-        # search by provider mappings if item is ItemMapping
-        if isinstance(item, ItemMapping):
-            if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
-                return int(cur_item.item_id)
-
-        # for all other items that are MediaItemType, check provider_mappings if it exists
-        provider_mappings = getattr(item, "provider_mappings", None)
-        if provider_mappings:
-            if cur_item := await self.get_library_item_by_prov_mappings(provider_mappings):
-                return int(cur_item.item_id)
-        if cur_item := await self.get_library_item_by_external_ids(item.external_ids):
-            # existing item match by external id
-            # Double check external IDs - if MBID exists, regards that as overriding
-            if compare_media_item(item, cur_item):
-                return int(cur_item.item_id)
-        # search by (exact) name match
-        query = f"{self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
-        query_params = {"name": item.name, "sort_name": item.sort_name}
-        for db_item in await self.get_library_items_by_query(
-            extra_query_parts=[query], extra_query_params=query_params
-        ):
-            if compare_media_item(db_item, item, True):
-                return int(db_item.item_id)
-        return None
 
     @final
     async def update_item_in_library(
@@ -353,36 +325,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 genre=genre,
             )
         return items
-
-    async def _localized_search_fallback(
-        self, search_query: str, limit: int, offset: int = 0, **call_kwargs: Any
-    ) -> list[ItemCls]:
-        """
-        Retry a library search using the canonical names behind a localized query.
-
-        For genre/playlist searches that return nothing literally, reverse-resolve the query to the
-        canonical (English) names of matching localized items and search those, so an item is
-        findable by the localized name the user sees. The caller's other filters (favorite,
-        order_by, provider and any controller-specific kwargs) are forwarded unchanged so the retry
-        behaves like the literal search; results are merged, de-duplicated and paginated here. See
-        ``TranslationController.reverse_lookup_media_names``.
-        """
-        seen: set[Any] = set()
-        merged: list[ItemCls] = []
-        # iterate the canonical names in a stable order, and fetch each from the start so the
-        # offset/limit window can be applied to the merged, de-duplicated result set
-        for name in sorted(await self.mass.translations.reverse_lookup_media_names(search_query)):
-            for item in await self.library_items(
-                search=name,
-                limit=limit + offset,
-                offset=0,
-                _localized_fallback=False,
-                **call_kwargs,
-            ):
-                if item.item_id not in seen:
-                    seen.add(item.item_id)
-                    merged.append(item)
-        return merged[offset : offset + limit]
 
     async def iter_library_items(
         self,
@@ -976,20 +918,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             )
 
     @abstractmethod
-    async def _add_library_item(
-        self,
-        item: ItemCls,
-        overwrite_existing: bool = False,
-    ) -> int:
-        """Add artist to library and return the database id."""
-
-    @abstractmethod
-    async def _update_library_item(
-        self, item_id: str | int, update: ItemCls, overwrite: bool = False
-    ) -> None:
-        """Update existing library record in the database."""
-
-    @abstractmethod
     async def match_providers(self, db_item: ItemCls) -> None:
         """
         Try to find match on all (streaming) providers for the provided (database) item.
@@ -1067,6 +995,79 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 sql_query, query_params, limit=limit, offset=offset
             )
         ]
+
+    @final
+    async def _get_library_item_by_match(self, item: ItemCls | ItemMapping) -> int | None:
+        if item.provider == "library":
+            return int(item.item_id)
+        # search by provider mappings if item is ItemMapping
+        if isinstance(item, ItemMapping):
+            if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
+                return int(cur_item.item_id)
+
+        # for all other items that are MediaItemType, check provider_mappings if it exists
+        provider_mappings = getattr(item, "provider_mappings", None)
+        if provider_mappings:
+            if cur_item := await self.get_library_item_by_prov_mappings(provider_mappings):
+                return int(cur_item.item_id)
+        if cur_item := await self.get_library_item_by_external_ids(item.external_ids):
+            # existing item match by external id
+            # Double check external IDs - if MBID exists, regards that as overriding
+            if compare_media_item(item, cur_item):
+                return int(cur_item.item_id)
+        # search by (exact) name match
+        query = f"{self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
+        query_params = {"name": item.name, "sort_name": item.sort_name}
+        for db_item in await self.get_library_items_by_query(
+            extra_query_parts=[query], extra_query_params=query_params
+        ):
+            if compare_media_item(db_item, item, True):
+                return int(db_item.item_id)
+        return None
+
+    async def _localized_search_fallback(
+        self, search_query: str, limit: int, offset: int = 0, **call_kwargs: Any
+    ) -> list[ItemCls]:
+        """
+        Retry a library search using the canonical names behind a localized query.
+
+        For genre/playlist searches that return nothing literally, reverse-resolve the query to the
+        canonical (English) names of matching localized items and search those, so an item is
+        findable by the localized name the user sees. The caller's other filters (favorite,
+        order_by, provider and any controller-specific kwargs) are forwarded unchanged so the retry
+        behaves like the literal search; results are merged, de-duplicated and paginated here. See
+        ``TranslationController.reverse_lookup_media_names``.
+        """
+        seen: set[Any] = set()
+        merged: list[ItemCls] = []
+        # iterate the canonical names in a stable order, and fetch each from the start so the
+        # offset/limit window can be applied to the merged, de-duplicated result set
+        for name in sorted(await self.mass.translations.reverse_lookup_media_names(search_query)):
+            for item in await self.library_items(
+                search=name,
+                limit=limit + offset,
+                offset=0,
+                _localized_fallback=False,
+                **call_kwargs,
+            ):
+                if item.item_id not in seen:
+                    seen.add(item.item_id)
+                    merged.append(item)
+        return merged[offset : offset + limit]
+
+    @abstractmethod
+    async def _add_library_item(
+        self,
+        item: ItemCls,
+        overwrite_existing: bool = False,
+    ) -> int:
+        """Add item to library and return the database id."""
+
+    @abstractmethod
+    async def _update_library_item(
+        self, item_id: str | int, update: ItemCls, overwrite: bool = False
+    ) -> None:
+        """Update existing library record in the database."""
 
     @property
     def _search_filter_clause(self) -> str:

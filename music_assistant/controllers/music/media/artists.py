@@ -88,7 +88,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         album_artists_only: bool = False,
         **kwargs: Any,
     ) -> list[Artist]:
-        """Get in-database (album) artists.
+        """
+        Get in-database (album) artists.
 
         :param favorite: Filter by favorite status.
         :param search: Filter by search query.
@@ -650,98 +651,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         # this will raise if the item still has references and recursive is false
         await super().remove_item_from_library(db_id)
 
-    def _validate_provider_filter(
-        self, provider_instance_id_or_domain: str, provider_filter: str | None
-    ) -> None:
-        """Raise when a provider filter is set that does not match the requested provider."""
-        if provider_filter is not None and provider_filter != provider_instance_id_or_domain:
-            raise MusicAssistantError(
-                f"provider_filter '{provider_filter}' does not match the requested "
-                f"provider '{provider_instance_id_or_domain}'"
-            )
-
-    async def _add_library_item(
-        self, item: Artist | ItemMapping, overwrite_existing: bool = False
-    ) -> int:
-        """Add a new item record to the database."""
-        # If item is an ItemMapping, convert it
-        if isinstance(item, ItemMapping):
-            item = self.artist_from_item_mapping(item)
-        # enforce various artists name + id
-        if compare_strings(item.name, VARIOUS_ARTISTS_NAME):
-            item.mbid = VARIOUS_ARTISTS_MBID
-        if item.mbid == VARIOUS_ARTISTS_MBID:
-            item.name = VARIOUS_ARTISTS_NAME
-        # no existing item matched: insert item
-        db_id = await self.mass.music.database.insert(
-            self.db_table,
-            {
-                "name": item.name,
-                "sort_name": item.sort_name,
-                "favorite": item.favorite,
-                "external_ids": serialize_to_json(item.external_ids),
-                "metadata": serialize_to_json(item.metadata),
-                "search_name": create_safe_string(item.name, True, True),
-                "search_sort_name": create_safe_string(item.sort_name or "", True, True),
-                "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
-            },
-        )
-        # update/set provider_mappings table
-        await self.set_provider_mappings(db_id, item.provider_mappings)
-        self.logger.debug("added %s to database (id: %s)", item.name, db_id)
-        return db_id
-
-    async def _update_library_item(
-        self, item_id: str | int, update: Artist | ItemMapping, overwrite: bool = False
-    ) -> None:
-        """Update existing record in the database."""
-        db_id = int(item_id)  # ensure integer
-        cur_item = await self.get_library_item(db_id)
-        if isinstance(update, ItemMapping):
-            # NOTE that artist is the only mediatype where its accepted we
-            # receive an itemmapping from streaming providers
-            update = self.artist_from_item_mapping(update)
-            metadata = cur_item.metadata
-        else:
-            metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
-        cur_item.external_ids.update(update.external_ids)
-        # enforce various artists name + id
-        mbid = cur_item.mbid
-        if (not mbid or overwrite) and getattr(update, "mbid", None):
-            if compare_strings(update.name, VARIOUS_ARTISTS_NAME):
-                update.mbid = VARIOUS_ARTISTS_MBID
-            if update.mbid == VARIOUS_ARTISTS_MBID:
-                update.name = VARIOUS_ARTISTS_NAME
-
-        name = update.name if overwrite else cur_item.name
-        sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
-        await self.mass.music.database.update(
-            self.db_table,
-            {"item_id": db_id},
-            {
-                "name": name,
-                "sort_name": sort_name,
-                "external_ids": serialize_to_json(
-                    update.external_ids if overwrite else cur_item.external_ids
-                ),
-                "metadata": serialize_to_json(metadata),
-                "search_name": create_safe_string(name, True, True),
-                "search_sort_name": create_safe_string(sort_name or "", True, True),
-                "timestamp_added": int(update.date_added.timestamp())
-                if update.date_added
-                else UNSET,
-            },
-        )
-        self.logger.debug("updated %s in database: %s", update.name, db_id)
-        # update/set provider_mappings table
-        provider_mappings = (
-            update.provider_mappings
-            if overwrite
-            else {*update.provider_mappings, *cur_item.provider_mappings}
-        )
-        await self.set_provider_mappings(db_id, provider_mappings, overwrite)
-        self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
-
     async def radio_mode_base_tracks(
         self,
         item: Artist,
@@ -841,7 +750,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         return matches
 
     async def match_providers(self, db_artist: Artist) -> None:
-        """Try to find matching artists on all providers for the provided (database) item_id.
+        """
+        Try to find matching artists on all providers for the provided (database) item_id.
 
         This is used to link objects of different providers together.
         """
@@ -887,3 +797,95 @@ class ArtistsController(MediaControllerBase[Artist]):
                 ],
             }
         )
+
+    def _validate_provider_filter(
+        self, provider_instance_id_or_domain: str, provider_filter: str | None
+    ) -> None:
+        """Raise when a provider filter is set that does not match the requested provider."""
+        if provider_filter is not None and provider_filter != provider_instance_id_or_domain:
+            raise MusicAssistantError(
+                f"provider_filter '{provider_filter}' does not match the requested "
+                f"provider '{provider_instance_id_or_domain}'"
+            )
+
+    async def _add_library_item(
+        self, item: Artist | ItemMapping, overwrite_existing: bool = False
+    ) -> int:
+        """Add a new item record to the database."""
+        # If item is an ItemMapping, convert it
+        if isinstance(item, ItemMapping):
+            item = self.artist_from_item_mapping(item)
+        # enforce various artists name + id
+        if compare_strings(item.name, VARIOUS_ARTISTS_NAME):
+            item.mbid = VARIOUS_ARTISTS_MBID
+        if item.mbid == VARIOUS_ARTISTS_MBID:
+            item.name = VARIOUS_ARTISTS_NAME
+        # no existing item matched: insert item
+        db_id = await self.mass.music.database.insert(
+            self.db_table,
+            {
+                "name": item.name,
+                "sort_name": item.sort_name,
+                "favorite": item.favorite,
+                "external_ids": serialize_to_json(item.external_ids),
+                "metadata": serialize_to_json(item.metadata),
+                "search_name": create_safe_string(item.name, True, True),
+                "search_sort_name": create_safe_string(item.sort_name or "", True, True),
+                "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
+            },
+        )
+        # update/set provider_mappings table
+        await self.set_provider_mappings(db_id, item.provider_mappings)
+        self.logger.debug("added %s to database (id: %s)", item.name, db_id)
+        return db_id
+
+    async def _update_library_item(
+        self, item_id: str | int, update: Artist | ItemMapping, overwrite: bool = False
+    ) -> None:
+        """Update existing record in the database."""
+        db_id = int(item_id)  # ensure integer
+        cur_item = await self.get_library_item(db_id)
+        if isinstance(update, ItemMapping):
+            # NOTE that artist is the only mediatype where its accepted we
+            # receive an itemmapping from streaming providers
+            update = self.artist_from_item_mapping(update)
+            metadata = cur_item.metadata
+        else:
+            metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+        cur_item.external_ids.update(update.external_ids)
+        # enforce various artists name + id
+        mbid = cur_item.mbid
+        if (not mbid or overwrite) and getattr(update, "mbid", None):
+            if compare_strings(update.name, VARIOUS_ARTISTS_NAME):
+                update.mbid = VARIOUS_ARTISTS_MBID
+            if update.mbid == VARIOUS_ARTISTS_MBID:
+                update.name = VARIOUS_ARTISTS_NAME
+
+        name = update.name if overwrite else cur_item.name
+        sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
+        await self.mass.music.database.update(
+            self.db_table,
+            {"item_id": db_id},
+            {
+                "name": name,
+                "sort_name": sort_name,
+                "external_ids": serialize_to_json(
+                    update.external_ids if overwrite else cur_item.external_ids
+                ),
+                "metadata": serialize_to_json(metadata),
+                "search_name": create_safe_string(name, True, True),
+                "search_sort_name": create_safe_string(sort_name or "", True, True),
+                "timestamp_added": int(update.date_added.timestamp())
+                if update.date_added
+                else UNSET,
+            },
+        )
+        self.logger.debug("updated %s in database: %s", update.name, db_id)
+        # update/set provider_mappings table
+        provider_mappings = (
+            update.provider_mappings
+            if overwrite
+            else {*update.provider_mappings, *cur_item.provider_mappings}
+        )
+        await self.set_provider_mappings(db_id, provider_mappings, overwrite)
+        self.logger.debug("updated %s in database: (id %s)", update.name, db_id)

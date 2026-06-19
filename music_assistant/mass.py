@@ -414,7 +414,8 @@ class MusicAssistant:
         return_unavailable: bool = False,
         provider_type: type[_ProviderT] | None = None,
     ) -> ProviderInstanceType | _ProviderT | None:
-        """Return provider by instance id or domain.
+        """
+        Return provider by instance id or domain.
 
         :param provider_instance_or_domain: Instance ID or domain of the provider.
         :param return_unavailable: Also return unavailable providers.
@@ -532,7 +533,8 @@ class MusicAssistant:
         event_filter: EventType | tuple[EventType, ...] | None = None,
         id_filter: str | tuple[str, ...] | None = None,
     ) -> Callable[[], None]:
-        """Add callback to event listeners.
+        """
+        Add callback to event listeners.
 
         Returns function to remove the listener.
             :param cb_func: callback function or coroutine
@@ -562,7 +564,8 @@ class MusicAssistant:
         eager_start: bool = True,
         **kwargs: Any,
     ) -> asyncio.Task[_R]:
-        """Create Task on (main) event loop from Coroutine(function).
+        """
+        Create Task on (main) event loop from Coroutine(function).
 
         Tasks created by this helper will be properly cancelled on stop.
 
@@ -691,7 +694,8 @@ class MusicAssistant:
         required_role: str | None = None,
         alias: bool = False,
     ) -> Callable[[], None]:
-        """Dynamically register a command on the API.
+        """
+        Dynamically register a command on the API.
 
         :param command: The command name/path.
         :param handler: The function to handle the command.

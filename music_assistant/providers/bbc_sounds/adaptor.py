@@ -1,4 +1,5 @@
-"""Adaptor for converting BBC Sounds objects to Music Assistant media items.
+"""
+Adaptor for converting BBC Sounds objects to Music Assistant media items.
 
 Many Sounds API endpoints return containers of "PlayableObjects" which can be a
 range of different types. The auntie-sounds library detects these differing
@@ -200,7 +201,8 @@ class BaseConverter(ABC):
         return self.context.provider._get_provider_mapping(item_id)
 
     def _get_attr(self, obj: Any, attr_path: str, default: Any = None) -> Any:
-        """Get (optionally-nested) attribute from object.
+        """
+        Get (optionally-nested) attribute from object.
 
         Supports e.g. _get_attr(object, "thing.other_thing")
         """

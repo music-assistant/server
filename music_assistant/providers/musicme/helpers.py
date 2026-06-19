@@ -2,7 +2,8 @@
 
 
 def decrypt(encrypted: str) -> str:
-    """Decrypt a MusicMe API response or ticket string.
+    """
+    Decrypt a MusicMe API response or ticket string.
 
     Reverse-engineered from audioFrame-bundle.min.js (apache_crypto module).
     Algorithm: strip padding, find marker, rearrange halves, hex-decode XOR 0xAA.

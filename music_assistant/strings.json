@@ -1,10 +1,12 @@
 {
   "config_entries": {
     "username": {
-      "label": "Username"
+      "label": "Username",
+      "description": "The username to authenticate to the remote server."
     },
     "password": {
-      "label": "Password"
+      "label": "Password",
+      "description": "The password to authenticate to the remote server."
     },
     "suffix_version": {
       "label": "Suffix version to track names",
@@ -304,6 +306,28 @@
     "bind_ip": {
       "label": "Bind to IP/interface",
       "description": "Start the stream server on this specific interface. \nUse 0.0.0.0 to bind to all interfaces (both IPv4 and IPv6), which is the default. \nThis is an advanced setting that should normally not be adjusted in regular setups."
+    },
+    "content_type": {
+      "options": {
+        "audiobooks": "Audiobooks",
+        "music": "Music",
+        "podcasts": "Podcasts"
+      }
+    },
+    "mass_player_id": {
+      "options": {
+        "__auto__": "Auto (prefer playing player)"
+      },
+      "label": "Connected Music Assistant Player"
+    },
+    "clear_auth": {
+      "label": "Reset authentication",
+      "action_label": "Reset authentication",
+      "description": "Clear the current authentication details."
+    },
+    "verify_ssl": {
+      "label": "Verify SSL",
+      "description": "Whether or not to verify the certificate of SSL/TLS connections."
     }
   },
   "config_categories": {
@@ -327,7 +351,13 @@
     "protocol_general": "General",
     "audio_analysis": "Audio Analysis",
     "presets": "Presets",
-    "settings": "Settings"
+    "settings": "Settings",
+    "features": "Features",
+    "status": "Status",
+    "discover": "Discover",
+    "debug": "Debug",
+    "server": "Server",
+    "recommendations": "Recommendations"
   },
   "media": {
     "genre": {
@@ -568,32 +598,6 @@
         "description": "Meditation music is music performed to aid in the practice of meditation. It can have a specific religious content, but also more recently has been associated with modern composers who use meditation techniques in their process of composition, or who compose such music with no particular religious group as a focus. The concept also includes music performed as an act of meditation."
       }
     },
-    "playlist": {
-      "all_favorite_tracks": {
-        "name": "All favorited tracks"
-      },
-      "random_artist": {
-        "name": "Random Artist (from library)"
-      },
-      "random_album": {
-        "name": "Random Album (from library)"
-      },
-      "random_tracks": {
-        "name": "500 Random tracks (from library)"
-      },
-      "recently_played": {
-        "name": "Recently played tracks"
-      },
-      "recently_added_tracks": {
-        "name": "Recently added tracks"
-      },
-      "infinite_mix": {
-        "name": "Infinite Mix (library)"
-      },
-      "infinite_mix_favorites": {
-        "name": "Infinite Mix (favorites)"
-      }
-    },
     "folder": {
       "artists": {
         "name": "Artists"
@@ -627,6 +631,87 @@
       },
       "recommendations": {
         "name": "Recommendations"
+      },
+      "rock": {
+        "name": "Rock"
+      },
+      "jazz": {
+        "name": "Jazz"
+      },
+      "classical": {
+        "name": "Classical"
+      },
+      "electronic": {
+        "name": "Electronic"
+      },
+      "hiphop": {
+        "name": "Hip-Hop"
+      },
+      "rnb": {
+        "name": "R&B"
+      },
+      "chill": {
+        "name": "Chill"
+      },
+      "party": {
+        "name": "Party"
+      },
+      "relax": {
+        "name": "Relax"
+      },
+      "romantic": {
+        "name": "Romantic"
+      },
+      "sad": {
+        "name": "Sad"
+      },
+      "in_the_mood": {
+        "name": "In the Mood"
+      },
+      "workout": {
+        "name": "Workout"
+      },
+      "focus": {
+        "name": "Focus"
+      },
+      "background": {
+        "name": "Background"
+      },
+      "driving": {
+        "name": "Driving"
+      },
+      "morning": {
+        "name": "Morning"
+      },
+      "evening": {
+        "name": "Evening"
+      },
+      "80s": {
+        "name": "80s"
+      },
+      "90s": {
+        "name": "90s"
+      },
+      "2000s": {
+        "name": "2000s"
+      },
+      "retro": {
+        "name": "Retro"
+      },
+      "winter": {
+        "name": "Winter"
+      },
+      "summer": {
+        "name": "Summer"
+      },
+      "autumn": {
+        "name": "Autumn"
+      },
+      "spring": {
+        "name": "Spring"
+      },
+      "newyear": {
+        "name": "New Year"
       }
     },
     "recommendations": {

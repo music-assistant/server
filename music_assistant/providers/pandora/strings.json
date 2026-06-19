@@ -1,11 +1,11 @@
 {
   "config_entries": {
     "username": {
-      "label": "Username",
+      "label": "[%key:common::config_entries::username::label%]",
       "description": "Your Pandora username or email address"
     },
     "password": {
-      "label": "Password",
+      "label": "[%key:common::config_entries::password::label%]",
       "description": "Your Pandora password"
     },
     "quality": {

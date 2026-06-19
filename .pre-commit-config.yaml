@@ -37,6 +37,68 @@ repos:
         files: ^(\.python-version|pyproject\.toml|scripts/check_python_version\.py)$
         verbose: true  # script overwrites pre-commit's metadata via ANSI escapes
 
+      # fail when a provider/controller test is a flat file instead of living in its own folder
+      - id: check_test_layout
+        name: check_test_layout
+        entry: uv run -m scripts.check_test_layout
+        pass_filenames: false
+        language: system
+        files: ^(tests/(providers|controllers)/.+\.py|scripts/check_test_layout\.py)$
+
+      # fail when a provider manifest.json misses a mandatory key or is internally inconsistent
+      - id: check_manifests
+        name: check_manifests
+        entry: uv run -m scripts.check_manifests
+        pass_filenames: true
+        language: system
+        types: [json]
+        files: ^music_assistant/providers/[^/]+/manifest\.json$
+
+      # fail when a provider icon SVG exceeds the 5 KB budget (existing offenders are baselined)
+      - id: check_provider_icons
+        name: check_provider_icons
+        entry: uv run -m scripts.check_provider_icons
+        pass_filenames: false
+        language: system
+        types: [text]
+        files: ^(music_assistant/providers/.+\.svg|scripts/check_provider_icons\.py|scripts/lint_baseline(s/oversized_provider_icons\.txt|\.py))$
+
+      # fail when a browse/recommendation folder hardcodes a label instead of using translation_key
+      - id: check_translatable_labels
+        name: check_translatable_labels
+        entry: uv run -m scripts.check_translatable_labels
+        pass_filenames: true
+        language: system
+        types: [python]
+        files: ^music_assistant/providers/.+\.py$
+
+      # fail when code calls datetime.now()/utcnow() directly (existing call sites are baselined)
+      - id: check_datetime_helpers
+        name: check_datetime_helpers
+        entry: uv run -m scripts.check_datetime_helpers
+        pass_filenames: false
+        language: system
+        types: [text]
+        files: ^(music_assistant/.+\.py|scripts/check_datetime_helpers\.py|scripts/lint_baseline(s/naive_datetime_usage\.txt|\.py))$
+
+      # fail when async code makes a known-blocking call (existing call sites are baselined)
+      - id: check_blocking_io
+        name: check_blocking_io
+        entry: uv run -m scripts.check_blocking_io
+        pass_filenames: false
+        language: system
+        types: [text]
+        files: ^(music_assistant/.+\.py|scripts/check_blocking_io\.py|scripts/lint_baseline(s/blocking_io_in_async\.txt|\.py))$
+
+      # fail when a class puts a public/dunder method below a private one (existing classes baselined)
+      - id: check_method_order
+        name: check_method_order
+        entry: uv run -m scripts.check_method_order
+        pass_filenames: false
+        language: system
+        types: [text]
+        files: ^(music_assistant/.+\.py|scripts/check_method_order\.py|scripts/lint_baseline(s/private_methods_not_last\.txt|\.py))$
+
       - id: ruff-check
         name: 🐶 Ruff Linter
         language: system

@@ -1,4 +1,5 @@
-"""Helper module for parsing the Youtube Music API.
+"""
+Helper module for parsing the Youtube Music API.
 
 This helpers file is an async wrapper around the excellent ytmusicapi package.
 While the ytmusicapi package does an excellent job at parsing the Youtube Music results,

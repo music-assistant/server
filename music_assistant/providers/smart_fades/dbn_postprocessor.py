@@ -11,7 +11,8 @@ if TYPE_CHECKING:
 
 
 class DBNDownBeatTracker:
-    """Pure numpy DBN postprocessor for beat and downbeat tracking.
+    """
+    Pure numpy DBN postprocessor for beat and downbeat tracking.
 
     Drop-in replacement for madmom's DBNDownBeatTrackingProcessor.
 
@@ -73,7 +74,8 @@ class DBNDownBeatTracker:
         min_interval: int,
         max_interval: int,
     ) -> tuple[NDArray[np.float32], NDArray[np.int32]]:
-        """Build a bar-pointer state space for the given tempo range.
+        """
+        Build a bar-pointer state space for the given tempo range.
 
         Each state represents a position within a bar at a specific tempo.
         For each tempo interval i (in frames), there are i discrete positions
@@ -105,7 +107,8 @@ class DBNDownBeatTracker:
         num_beats: int,
         transition_lambda: float,
     ) -> tuple[NDArray[np.int32], NDArray[np.int32], NDArray[np.float32]]:
-        """Build a sparse CSR transition model for the bar state space.
+        """
+        Build a sparse CSR transition model for the bar state space.
 
         Within a beat, each state transitions deterministically to the next
         (constant tempo). At beat boundaries, transitions follow an exponential
@@ -214,7 +217,8 @@ class DBNDownBeatTracker:
         positions: NDArray[np.float32],
         observation_lambda: int = 16,
     ) -> NDArray[np.int32]:
-        """Build observation model pointers mapping states to observation classes.
+        """
+        Build observation model pointers mapping states to observation classes.
 
         Class 0 = no-beat, class 1 = beat, class 2 = downbeat.
 
@@ -232,7 +236,8 @@ class DBNDownBeatTracker:
         return pointers
 
     def __call__(self, activations: NDArray[np.float64]) -> NDArray[np.float64]:
-        """Run DBN decoding on beat/downbeat activations.
+        """
+        Run DBN decoding on beat/downbeat activations.
 
         :param activations: Shape (T, 2), columns [beat_act, downbeat_act].
             Values should be probabilities in (0, 1).
@@ -290,7 +295,8 @@ class DBNDownBeatTracker:
         activations: NDArray[np.float64],
         observation_lambda: int = 16,
     ) -> NDArray[np.float32]:
-        """Compute log observation densities from beat/downbeat activations.
+        """
+        Compute log observation densities from beat/downbeat activations.
 
         :param activations: Shape (T, 2), columns [beat_act, downbeat_act].
         :param observation_lambda: Beat subdivision granularity.
@@ -315,7 +321,8 @@ class DBNDownBeatTracker:
         tm_pointers: NDArray[np.int32],
         tm_log_probs: NDArray[np.float32],
     ) -> tuple[NDArray[np.int32], float]:
-        """Run Viterbi decoding on the HMM.
+        """
+        Run Viterbi decoding on the HMM.
 
         :param log_densities: Shape (T, 3), per-frame log observation densities.
         :param om_pointers: Shape (S,), observation class per state.

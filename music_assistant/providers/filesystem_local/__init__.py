@@ -287,7 +287,8 @@ class LocalFileSystemProvider(MusicProvider):
         return result
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse this provider's items.
+        """
+        Browse this provider's items.
 
         :param path: The path to browse, (e.g. provid://artists).
         """
@@ -487,7 +488,8 @@ class LocalFileSystemProvider(MusicProvider):
         self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
 
     async def _process_item_async(self, item: FileSystemItem, prev_checksum: str | None) -> bool:
-        """Process a single item asynchronously.
+        """
+        Process a single item asynchronously.
 
         :param item: The filesystem item to process.
         :param prev_checksum: Previous checksum from the database, or None for new items.
@@ -1349,7 +1351,8 @@ class LocalFileSystemProvider(MusicProvider):
         return artist
 
     async def _parse_audiobook(self, file_item: FileSystemItem, tags: AudioTags) -> Audiobook:
-        """Parse Audiobook details from file tags.
+        """
+        Parse Audiobook details from file tags.
 
         Audiobooks can be single files with embedded chapters or multiple files per folder.
         Only the first file (by track number or alphabetically) is processed as the audiobook.
@@ -1615,7 +1618,8 @@ class LocalFileSystemProvider(MusicProvider):
     async def _parse_album(
         self, track_path: str, track_tags: AudioTags, track_created_at: int | None = None
     ) -> Album:
-        """Parse Album metadata from Track tags.
+        """
+        Parse Album metadata from Track tags.
 
         :param track_path: Path to the track file.
         :param track_tags: Audio tags from the track.
@@ -2018,7 +2022,8 @@ class LocalFileSystemProvider(MusicProvider):
     async def _get_chapters_for_audiobook(
         self, audiobook_file_item: FileSystemItem, tags: AudioTags
     ) -> tuple[int, list[MediaItemChapter]]:
-        """Return chapters for an audiobook.
+        """
+        Return chapters for an audiobook.
 
         Chapter sources in order of preference:
         1. Multiple files with track tags - sorted by track number

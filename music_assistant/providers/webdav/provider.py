@@ -64,10 +64,10 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         return parsed.netloc
 
     @property
-    def _auth(self) -> aiohttp.BasicAuth | None:
-        """Get BasicAuth for WebDAV requests."""
+    def _auth_header(self) -> str | None:
+        """Return the WebDAV Authorization header value, or None when no credentials are set."""
         if self.username:
-            return aiohttp.BasicAuth(self.username, self.password or "")
+            return aiohttp.encode_basic_auth(self.username, self.password or "")
         return None
 
     @property
@@ -117,7 +117,9 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         webdav_url = build_webdav_url(self.base_url, file_path)
         session = self._session
         try:
-            items = await webdav_propfind(session, webdav_url, depth=0, auth=self._auth)
+            items = await webdav_propfind(
+                session, webdav_url, depth=0, auth_header=self._auth_header
+            )
             return len(items) > 0 or webdav_url.rstrip("/") == self.base_url.rstrip("/")
         except LoginFailed, SetupFailedError, ProviderUnavailableError:
             raise
@@ -129,7 +131,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         webdav_url = build_webdav_url(self.base_url, file_path)
         session = self._session
 
-        items = await webdav_propfind(session, webdav_url, depth=0, auth=self._auth)
+        items = await webdav_propfind(session, webdav_url, depth=0, auth_header=self._auth_header)
         if not items:
             # Handle root directory case
             if webdav_url.rstrip("/") == self.base_url.rstrip("/"):
@@ -165,7 +167,9 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         webdav_url = build_webdav_url(self.base_url, path)
         session = self._session
 
-        webdav_items = await webdav_propfind(session, webdav_url, depth=1, auth=self._auth)
+        webdav_items = await webdav_propfind(
+            session, webdav_url, depth=1, auth_header=self._auth_header
+        )
         filesystem_items = self._convert_webdav_items(webdav_items, path)
 
         await self.cache.set(
@@ -181,7 +185,9 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         """Read file contents over HTTP."""
         webdav_url = build_webdav_url(self.base_url, path)
         session = self._session
-        async with session.get(webdav_url, auth=self._auth) as resp:
+        auth_header = self._auth_header
+        headers = {"Authorization": auth_header} if auth_header else None
+        async with session.get(webdav_url, headers=headers) as resp:
             if resp.status != 200:
                 raise MediaNotFoundError(f"File not found: {path}")
             return await resp.read()
@@ -251,7 +257,9 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         # For actual image files, fetch the raw bytes
         webdav_url = build_webdav_url(self.base_url, path)
         session = self._session
-        async with session.get(webdav_url, auth=self._auth) as resp:
+        auth_header = self._auth_header
+        headers = {"Authorization": auth_header} if auth_header else None
+        async with session.get(webdav_url, headers=headers) as resp:
             if resp.status != 200:
                 raise MediaNotFoundError(f"Image not found: {path}")
             return await resp.read()

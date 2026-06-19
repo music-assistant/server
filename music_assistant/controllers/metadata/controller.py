@@ -417,8 +417,9 @@ class MetaDataController(
         update_current_task_progress_text("Searching for playlists needing metadata refresh")
         refresh_before = int(time() - REFRESH_INTERVAL)
         query = (
+            f"{DB_TABLE_PLAYLISTS}.is_dynamic = 0 AND ("
             f"json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') ISNULL "
-            f"OR json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') < {refresh_before}"
+            f"OR json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') < {refresh_before})"
         )
         playlists = await self.mass.music.playlists.get_library_items_by_query(
             limit=METADATA_SCAN_BATCH_SIZE,

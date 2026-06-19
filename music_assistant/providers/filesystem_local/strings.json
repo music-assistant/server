@@ -15,9 +15,9 @@
       "label": "Content type in media folder(s)",
       "description": "The type of content to expect in the media folder(s)",
       "options": {
-        "music": "Music",
-        "audiobooks": "Audiobooks",
-        "podcasts": "Podcasts"
+        "music": "[%key:common::config_entries::content_type::options::music%]",
+        "audiobooks": "[%key:common::config_entries::content_type::options::audiobooks%]",
+        "podcasts": "[%key:common::config_entries::content_type::options::podcasts%]"
       }
     },
     "library_sync_tracks": {

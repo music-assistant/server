@@ -1,4 +1,5 @@
-"""Universal Player Provider implementation.
+"""
+Universal Player Provider implementation.
 
 This provider manages UniversalPlayer instances that are auto-created for devices
 that have no native (vendor-specific) provider in Music Assistant but support one

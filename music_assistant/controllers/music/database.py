@@ -310,6 +310,8 @@ class MusicDatabaseSetupMixin:
             [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
             [name] TEXT NOT NULL,
             [sort_name] TEXT NOT NULL,
+            [translation_key] TEXT,
+            [translation_params] json,
             [owner] TEXT NOT NULL,
             [is_editable] BOOLEAN NOT NULL,
             [favorite] BOOLEAN NOT NULL DEFAULT 0,

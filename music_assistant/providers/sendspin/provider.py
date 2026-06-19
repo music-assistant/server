@@ -162,7 +162,8 @@ class SendspinProvider(PlayerProvider):
     def register_bridge_identifiers(
         self, client_id: str, identifiers: dict[IdentifierType, str]
     ) -> None:
-        """Pre-register extra identifiers for a bridge client.
+        """
+        Pre-register extra identifiers for a bridge client.
 
         Called by bridge managers (Chromecast, AirPlay) before registering an
         external player, so that the resulting SendspinPlayer carries the parent
@@ -174,7 +175,8 @@ class SendspinProvider(PlayerProvider):
         self._bridge_identifiers[client_id] = identifiers
 
     def register_bridge_static_delay_default(self, client_id: str, default_ms: int) -> None:
-        """Register a protocol-specific default static delay for a bridge client.
+        """
+        Register a protocol-specific default static delay for a bridge client.
 
         If the SendspinPlayer already exists, the default is applied immediately;
         otherwise it is stashed and picked up when the player is created.

@@ -54,7 +54,8 @@ class Webserver:
         app_state: dict[str, Any] | None = None,
         ssl_context: Any | None = None,
     ) -> None:
-        """Async initialize of module.
+        """
+        Async initialize of module.
 
         :param bind_ip: IP address to bind to.
         :param bind_port: Port to bind to.

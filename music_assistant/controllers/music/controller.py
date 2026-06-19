@@ -303,7 +303,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         limit: int = 25,
         library_only: bool = False,
     ) -> SearchResults:
-        """Perform global search for media items on all providers.
+        """
+        Perform global search for media items on all providers.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include.
@@ -473,7 +474,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         limit: int = 10,
         skip_item_ids: set[tuple[MediaType, str, str]] | None = None,
     ) -> SearchResults:
-        """Perform search on given provider.
+        """
+        Perform search on given provider.
 
         :param search_query: Search query
         :param provider_instance_id_or_domain: instance_id or domain of the provider
@@ -538,7 +540,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         media_types: list[MediaType],
         limit: int = 10,
     ) -> SearchResults:
-        """Perform search on the library.
+        """
+        Perform search on the library.
 
         :param search_query: Search query
         :param media_types: A list of media_types to include.
@@ -659,7 +662,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         user_initiated_only: bool = False,
         played_after_timestamp: int | None = None,
     ) -> list[ItemMapping]:
-        """Return a list of the last played items.
+        """
+        Return a list of the last played items.
 
         :param limit: Maximum number of items to return.
         :param media_types: Filter by media types.
@@ -1205,7 +1209,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             self.mass.create_task(provider.import_album_tracks(prov_mapping.item_id, album.name))
 
     async def refresh_items(self, items: list[MediaItemType]) -> None:
-        """Refresh MediaItems to force retrieval of full info and matches.
+        """
+        Refresh MediaItems to force retrieval of full info and matches.
 
         Creates background tasks to process the action.
         """
@@ -1939,7 +1944,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     def unschedule_provider_sync(
         self, provider_instance_id: str, clear_persisted_state: bool = True
     ) -> None:
-        """Unschedule Library sync for given provider.
+        """
+        Unschedule Library sync for given provider.
 
         :param provider_instance_id: The provider instance id to unschedule.
         :param clear_persisted_state: Whether to remove persisted schedule state from config.

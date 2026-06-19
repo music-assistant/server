@@ -19,7 +19,7 @@
       "label": "You are authenticated with Tidal"
     },
     "clear_auth": {
-      "label": "Reset authentication",
+      "label": "[%key:common::config_entries::clear_auth::label%]",
       "description": "Reset the authentication for Tidal"
     },
     "quality": {
