@@ -52,13 +52,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_STATIONS,
             type=ConfigEntryType.STRING,
-            label="Stations",
-            description=(
-                "One station per line. Each station appears as a virtual MA "
-                "player with its own queue, served on its own HTTP URL. The "
-                "URL is shown on each station's player settings page. "
-                "Renaming a station changes its URL."
-            ),
             default_value=[],
             required=False,
             multi_value=True,

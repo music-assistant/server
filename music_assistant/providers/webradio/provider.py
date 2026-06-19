@@ -652,7 +652,7 @@ class WebRadioProvider(PlayerProvider):
                     break
                 try:
                     await resp.write(chunk)
-                except (BrokenPipeError, ConnectionResetError, ConnectionError):
+                except BrokenPipeError, ConnectionResetError, ConnectionError:
                     break
 
                 if not enable_icy:
@@ -666,7 +666,7 @@ class WebRadioProvider(PlayerProvider):
                     frame = _ICY_NO_CHANGE_FRAME
                 try:
                     await resp.write(frame)
-                except (BrokenPipeError, ConnectionResetError, ConnectionError):
+                except BrokenPipeError, ConnectionResetError, ConnectionError:
                     break
         finally:
             self.logger.debug("Listener unsubscribed: station=%s", station.slug)
@@ -825,11 +825,7 @@ class WebRadioPlayer(Player):
             ConfigEntry(
                 key=CONF_STREAM_URL_LABEL,
                 type=ConfigEntryType.LABEL,
-                label=(
-                    f"Stream URL: {self._stream_url}"
-                    if self._stream_url
-                    else "Stream URL: (unavailable)"
-                ),
+                translation_params=[self._stream_url or "(unavailable)"],
             ),
         ]
 
