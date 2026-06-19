@@ -372,22 +372,6 @@ class TasksController(CoreController):
         """
         self._unregister_task(task_id, clear_persisted_state)
 
-    def _unregister_task(self, task_id: str, clear_persisted_state: bool = True) -> None:
-        """Unregister a managed task and cancel any active work."""
-        if not (managed := self._tasks.get(task_id)):
-            return
-        managed.removed = True
-        managed.clear_persisted_state_on_remove = clear_persisted_state
-        self.mass.cancel_timer(get_task_timer_id(task_id))
-        self._remove_from_pending(task_id)
-        if managed.current_task and not managed.current_task.done():
-            managed.current_task.cancel()
-            return
-        self._tasks.pop(task_id, None)
-        if clear_persisted_state:
-            self._clear_scheduled_task_state(task_id)
-        self._schedule_task_update(force=True)
-
     def update_task_progress(
         self, task_id: str, progress: int | None, text: str | None = None
     ) -> None:
@@ -470,6 +454,22 @@ class TasksController(CoreController):
             if all(managed.task_info.metadata.get(key) == value for key, value in metadata.items()):
                 result.append(managed.task_info)
         return result
+
+    def _unregister_task(self, task_id: str, clear_persisted_state: bool = True) -> None:
+        """Unregister a managed task and cancel any active work."""
+        if not (managed := self._tasks.get(task_id)):
+            return
+        managed.removed = True
+        managed.clear_persisted_state_on_remove = clear_persisted_state
+        self.mass.cancel_timer(get_task_timer_id(task_id))
+        self._remove_from_pending(task_id)
+        if managed.current_task and not managed.current_task.done():
+            managed.current_task.cancel()
+            return
+        self._tasks.pop(task_id, None)
+        if clear_persisted_state:
+            self._clear_scheduled_task_state(task_id)
+        self._schedule_task_update(force=True)
 
     def _get_managed_task(self, task_id: str) -> ManagedTask:
         """Return runtime state for a managed task."""
