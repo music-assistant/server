@@ -142,9 +142,7 @@ async def get_config_entries(  # noqa: PLR0915 — flow naturally returns ~12 Co
     source_options = [
         ConfigValueOption(inst_id, title=f"Yandex Music: {name}") for inst_id, name in ym_instances
     ]
-    source_options.append(
-        ConfigValueOption(YM_INSTANCE_OWN, title="Use own credentials (QR or token)")
-    )
+    source_options.append(ConfigValueOption(YM_INSTANCE_OWN))
 
     # `selected` is normalized above, so it is always either a known instance
     # id (borrowing) or YM_INSTANCE_OWN — safe to use directly as the default.

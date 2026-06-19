@@ -60,7 +60,8 @@ def catch_request_errors[DLNAPlayerT: "DLNAPlayer", **P, R](
 
 
 class DLNAPlayer(Player):
-    """DLNA Player.
+    """
+    DLNA Player.
 
     All DLNA players are considered generic protocol endpoints (PlayerType.PROTOCOL)
     and will be wrapped in a UniversalPlayer. Devices with native provider support
@@ -78,7 +79,8 @@ class DLNAPlayer(Player):
         description_url: str,
         device: DmrDevice | None = None,
     ) -> None:
-        """Init Player.
+        """
+        Init Player.
 
         The player_id is the udn.
         """
@@ -231,7 +233,8 @@ class DLNAPlayer(Player):
         self._attr_supported_features = supported_features
 
     async def setup(self) -> bool:
-        """Set up player in MA.
+        """
+        Set up player in MA.
 
         :return: True if setup was successful, False if device should be ignored.
         """
@@ -250,7 +253,8 @@ class DLNAPlayer(Player):
         return True
 
     async def _is_sonos_passive_speaker(self) -> bool:
-        """Check if this is a Sonos passive stereo pair speaker.
+        """
+        Check if this is a Sonos passive stereo pair speaker.
 
         Queries the device's own topology. If that returns 403, the device is
         considered passive (passive satellites and speakers with UPnP disabled
@@ -276,7 +280,8 @@ class DLNAPlayer(Player):
     async def _check_invisible_in_topology(
         self, upnp_device: UpnpDevice, our_uuid: str
     ) -> bool | None:
-        """Check if our UUID is marked as Invisible in the topology.
+        """
+        Check if our UUID is marked as Invisible in the topology.
 
         :param upnp_device: UPnP device to query
         :param our_uuid: Our device UUID to search for
@@ -522,7 +527,8 @@ class DLNAPlayer(Player):
         await self._poll_volume_state()
 
     async def _poll_volume_state(self) -> None:
-        """Poll the device for current volume/mute state and update player.
+        """
+        Poll the device for current volume/mute state and update player.
 
         Some DLNA devices don't send RenderingControl events for
         volume/mute changes initiated via UPnP actions, and the library

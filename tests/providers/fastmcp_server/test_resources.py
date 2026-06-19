@@ -1,4 +1,5 @@
-"""Tests for ``provider/resources/*`` handler return-value serialisation.
+"""
+Tests for ``provider/resources/*`` handler return-value serialisation.
 
 FastMCP's resource read API requires handlers to return ``str | bytes |
 list[ResourceContents]``; returning an MA domain object or a provider Brief
@@ -105,7 +106,8 @@ async def test_player_resource_returns_json_text_for_brief(mock_mass: MagicMock)
 
 
 async def test_player_resource_reports_synced_state(mock_mass: MagicMock) -> None:
-    """A sync follower fetched by URI carries the synthesised ``state="synced"``.
+    """
+    A sync follower fetched by URI carries the synthesised ``state="synced"``.
 
     The Connect Wizard / clients reading ``player://{id}`` should see
     the same usability signal that ``list_players`` synthesises — the
@@ -166,7 +168,8 @@ async def test_player_resource_reports_needs_setup_state(mock_mass: MagicMock) -
 async def test_player_resource_reflects_external_source_playback(
     mock_mass: MagicMock,
 ) -> None:
-    """``player://`` resource passes the active queue so external-source state is visible.
+    """
+    ``player://`` resource passes the active queue so external-source state is visible.
 
     When a player is idle at the MA layer but Yandex Ynison is streaming through
     it (Spotify Connect / AirPlay / Ynison), ``get_active_queue`` returns a queue

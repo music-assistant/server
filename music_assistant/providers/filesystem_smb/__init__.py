@@ -51,7 +51,7 @@ async def setup(
         msg = f"Unable to resolve {server}, make sure the address is resolvable."
         raise LoginFailed(
             msg,
-            translation_key="provider.filesystem_smb.errors.unresolvable_host",
+            translation_key="host_unresolvable",
             translation_args=[server],
         )
     # check if share is valid
@@ -271,7 +271,8 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         subfolder: str,
         env_vars: dict[str, str],
     ) -> tuple[list[str], dict[str, str]]:
-        """Build mount command for Linux.
+        """
+        Build mount command for Linux.
 
         Uses the PASSWD environment variable to handle passwords with special characters
         (commas, etc.) that cannot be escaped on the command line.

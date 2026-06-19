@@ -491,7 +491,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     @api_command("players/cmd/stop")
     @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def cmd_stop(self, player_id: str) -> None:
-        """Send STOP command to given player.
+        """
+        Send STOP command to given player.
 
         - player_id: player_id of the player to handle the command.
         """
@@ -506,7 +507,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     @api_command("players/cmd/play")
     @handle_player_command
     async def cmd_play(self, player_id: str) -> None:
-        """Send PLAY (unpause) command to given player.
+        """
+        Send PLAY (unpause) command to given player.
 
         - player_id: player_id of the player to handle the command.
         """
@@ -529,7 +531,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     @api_command("players/cmd/pause")
     @handle_player_command
     async def cmd_pause(self, player_id: str) -> None:
-        """Send PAUSE command to given player.
+        """
+        Send PAUSE command to given player.
 
         - player_id: player_id of the player to handle the command.
         """
@@ -543,7 +546,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
     @api_command("players/cmd/play_pause")
     async def cmd_play_pause(self, player_id: str) -> None:
-        """Toggle play/pause on given player.
+        """
+        Toggle play/pause on given player.
 
         - player_id: player_id of the player to handle the command.
         """
@@ -558,7 +562,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     async def cmd_resume(
         self, player_id: str, source: str | None = None, media: PlayerMedia | None = None
     ) -> None:
-        """Send RESUME command to given player.
+        """
+        Send RESUME command to given player.
 
         Resume (or restart) playback on the player.
 
@@ -571,7 +576,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     @api_command("players/cmd/seek")
     @handle_player_command
     async def cmd_seek(self, player_id: str, position: int) -> None:
-        """Handle SEEK command for given player.
+        """
+        Handle SEEK command for given player.
 
         - player_id: player_id of the player to handle the command.
         - position: position in seconds to seek to in the current playing item.
@@ -666,7 +672,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     @api_command("players/cmd/power")
     @handle_player_command(lock=PlayerLockPurpose.PLAYBACK)
     async def cmd_power(self, player_id: str, powered: bool) -> None:
-        """Send POWER command to given player.
+        """
+        Send POWER command to given player.
 
         :param player_id: player_id of the player to handle the command.
         :param powered: bool if player should be powered on or off.
@@ -679,7 +686,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     @api_command("players/cmd/volume_set")
     @handle_player_command(lock=PlayerLockPurpose.VOLUME)
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
-        """Send VOLUME_SET command to given player.
+        """
+        Send VOLUME_SET command to given player.
 
         :param player_id: player_id of the player to handle the command.
         :param volume_level: volume level (0..100) to set on the player.
@@ -694,7 +702,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     @api_command("players/cmd/volume_up")
     @handle_player_command
     async def cmd_volume_up(self, player_id: str) -> None:
-        """Send VOLUME_UP command to given player.
+        """
+        Send VOLUME_UP command to given player.
 
         - player_id: player_id of the player to handle the command.
         """
@@ -716,7 +725,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     @api_command("players/cmd/volume_down")
     @handle_player_command
     async def cmd_volume_down(self, player_id: str) -> None:
-        """Send VOLUME_DOWN command to given player.
+        """
+        Send VOLUME_DOWN command to given player.
 
         - player_id: player_id of the player to handle the command.
         """
@@ -766,7 +776,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     @api_command("players/cmd/group_volume_up")
     @handle_player_command
     async def cmd_group_volume_up(self, player_id: str) -> None:
-        """Send VOLUME_UP command to given playergroup.
+        """
+        Send VOLUME_UP command to given playergroup.
 
         - player_id: player_id of the player to handle the command.
         """
@@ -787,7 +798,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     @api_command("players/cmd/group_volume_down")
     @handle_player_command
     async def cmd_group_volume_down(self, player_id: str) -> None:
-        """Send VOLUME_DOWN command to given playergroup.
+        """
+        Send VOLUME_DOWN command to given playergroup.
 
         - player_id: player_id of the player to handle the command.
         """
@@ -808,7 +820,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     @api_command("players/cmd/group_volume_mute")
     @handle_player_command
     async def cmd_group_volume_mute(self, player_id: str, muted: bool) -> None:
-        """Send VOLUME_MUTE command to all players in a group.
+        """
+        Send VOLUME_MUTE command to all players in a group.
 
         - player_id: player_id of the group player or sync leader.
         - muted: bool if group should be muted.
@@ -827,7 +840,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     @api_command("players/cmd/volume_mute")
     @handle_player_command(lock=PlayerLockPurpose.VOLUME)
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
-        """Send VOLUME_MUTE command to given player.
+        """
+        Send VOLUME_MUTE command to given player.
 
         - player_id: player_id of the player to handle the command.
         - muted: bool if player should be muted.
@@ -1296,7 +1310,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     @api_command("players/cmd/group")
     @handle_player_command
     async def cmd_group(self, player_id: str, target_player: str) -> None:
-        """Handle GROUP command for given player.
+        """
+        Handle GROUP command for given player.
 
         Join/add the given player(id) to the given (leader) player/sync group.
         If the target player itself is already synced to another player, this may fail.
@@ -1661,7 +1676,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
     def _schedule_palette_fetch(
         self, player_id: str, image_url: str | None, *, trigger_update: bool = True
     ) -> None:
-        """Kick off an async palette extraction for an image URL.
+        """
+        Kick off an async palette extraction for an image URL.
 
         :param player_id: Player the palette is scoped to (used for task dedup).
         :param image_url: Image URL to extract from. No-op when empty or already cached.
@@ -2589,7 +2605,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         announcement: PlayerMedia,
         volume_level: int | None = None,
     ) -> None:
-        """Handle (default/fallback) implementation of the play announcement feature.
+        """
+        Handle (default/fallback) implementation of the play announcement feature.
 
         This default implementation will;
         - stop playback of the current media (if needed)
@@ -2763,7 +2780,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             await self._handle_cmd_resume(player.player_id, prev_source, prev_media)
 
     def _cleanup_stale_protocol_parent_ids(self) -> None:
-        """Clean up stale protocol_parent_id values in config on startup.
+        """
+        Clean up stale protocol_parent_id values in config on startup.
 
         Scans protocol player configs and clears parent_ids that point to
         player configs that no longer exist (e.g., deleted universal players).
@@ -2788,7 +2806,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 self.mass.config.set(conf_key, None)
 
     async def _fix_group_member_configs(self) -> None:
-        """Fix stale protocol player IDs in sync group member configs.
+        """
+        Fix stale protocol player IDs in sync group member configs.
 
         When a sync group references a protocol player ID instead of
         the parent player ID, correct it using the cached protocol parent mapping.

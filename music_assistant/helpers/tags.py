@@ -1361,7 +1361,8 @@ def get_apev2_image(input_file: str) -> bytes | None:
 
 
 async def get_embedded_image(input_file: str) -> bytes | None:
-    """Return embedded image data.
+    """
+    Return embedded image data.
 
     Input_file may be a (local) filename or URL accessible by ffmpeg.
     """

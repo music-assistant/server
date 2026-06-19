@@ -82,7 +82,7 @@ rename = wrap(os.rename)
 
 EventCallBackType = Callable[[MassEvent], None] | Callable[[MassEvent], Coroutine[Any, Any, None]]
 EventSubscriptionType = tuple[
-    EventCallBackType, tuple[EventType, ...] | None, tuple[str, ...] | None
+    EventCallBackType, tuple[EventType, ...] | None, tuple[str, ...] | None, bool
 ]
 
 LOGGER = logging.getLogger(MASS_LOGGER_NAME)
@@ -120,6 +120,7 @@ def _provider_error_from_exc(exc: BaseException) -> ProviderError:
             message=message,
             translation_key=exc.translation_key,
             translation_args=list(exc.translation_args),
+            translation_owner=exc.translation_owner,
         )
     return ProviderError(error_code=999, message=message)
 
@@ -413,7 +414,8 @@ class MusicAssistant:
         return_unavailable: bool = False,
         provider_type: type[_ProviderT] | None = None,
     ) -> ProviderInstanceType | _ProviderT | None:
-        """Return provider by instance id or domain.
+        """
+        Return provider by instance id or domain.
 
         :param provider_instance_or_domain: Instance ID or domain of the provider.
         :param return_unavailable: Also return unavailable providers.
@@ -511,12 +513,12 @@ class MusicAssistant:
             LOGGER.getChild("event").log(VERBOSE_LOG_LEVEL, "%s %s", event.value, object_id or "")
 
         event_obj = MassEvent(event=event, object_id=object_id, data=data)
-        for cb_func, event_filter, id_filter in list(self._subscribers):
+        for cb_func, event_filter, id_filter, is_coro in list(self._subscribers):
             if not (event_filter is None or event in event_filter):
                 continue
             if not (id_filter is None or object_id in id_filter):
                 continue
-            if inspect.iscoroutinefunction(cb_func):
+            if is_coro:
                 if TYPE_CHECKING:
                     cb_func = cast("Callable[[MassEvent], Coroutine[Any, Any, None]]", cb_func)
                 self.create_task(cb_func, event_obj)
@@ -531,7 +533,8 @@ class MusicAssistant:
         event_filter: EventType | tuple[EventType, ...] | None = None,
         id_filter: str | tuple[str, ...] | None = None,
     ) -> Callable[[], None]:
-        """Add callback to event listeners.
+        """
+        Add callback to event listeners.
 
         Returns function to remove the listener.
             :param cb_func: callback function or coroutine
@@ -542,7 +545,9 @@ class MusicAssistant:
             event_filter = (event_filter,)
         if isinstance(id_filter, str):
             id_filter = (id_filter,)
-        listener = (cb_func, event_filter, id_filter)
+        # precompute whether the callback is a coroutine so signal_event does not have to
+        # re-derive it via reflection for every subscriber on every (high-frequency) event
+        listener = (cb_func, event_filter, id_filter, inspect.iscoroutinefunction(cb_func))
         self._subscribers.add(listener)
 
         def remove_listener() -> None:
@@ -559,7 +564,8 @@ class MusicAssistant:
         eager_start: bool = True,
         **kwargs: Any,
     ) -> asyncio.Task[_R]:
-        """Create Task on (main) event loop from Coroutine(function).
+        """
+        Create Task on (main) event loop from Coroutine(function).
 
         Tasks created by this helper will be properly cancelled on stop.
 
@@ -688,7 +694,8 @@ class MusicAssistant:
         required_role: str | None = None,
         alias: bool = False,
     ) -> Callable[[], None]:
-        """Dynamically register a command on the API.
+        """
+        Dynamically register a command on the API.
 
         :param command: The command name/path.
         :param handler: The function to handle the command.

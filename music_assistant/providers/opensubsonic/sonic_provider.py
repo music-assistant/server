@@ -133,7 +133,8 @@ class OpenSonicProvider(MusicProvider):
             )
             raise LoginFailed(
                 msg,
-                translation_key="provider.opensubsonic.errors.connect_failed",
+                translation_key="connect_failed",
+                translation_owner=self.translation_owner,
                 translation_args=[self.config.get_value(CONF_BASE_URL)],
             ) from e
         self._enable_podcasts = bool(self.config.get_value(CONF_ENABLE_PODCASTS))
@@ -611,12 +612,14 @@ class OpenSonicProvider(MusicProvider):
                 return parse_playlist(self.instance_id, pl)
         raise MediaNotFoundError(
             f"Failed to create playlist with name '{name}'",
-            translation_key="provider.opensubsonic.errors.create_playlist_failed",
+            translation_key="create_playlist_failed",
+            translation_owner=self.translation_owner,
             translation_args=[name],
         )
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
-        """Append the listed tracks to the selected playlist.
+        """
+        Append the listed tracks to the selected playlist.
 
         Note that the configured user must own the playlist to edit this way.
         """
@@ -853,7 +856,7 @@ class OpenSonicProvider(MusicProvider):
             item_id="subsonic_starred_albums",
             provider=self.domain,
             name="Starred Items",
-            translation_key="provider.opensubsonic.starred_items",
+            translation_key="starred_items",
         )
         starred = await self.conn.get_starred2()
         if starred.album:
@@ -897,7 +900,8 @@ class OpenSonicProvider(MusicProvider):
 
     @use_cache(3600 * 3, cache_checksum="v2")  # cache for 3 hours
     async def recommendations(self) -> list[RecommendationFolder]:
-        """Provide recommendations.
+        """
+        Provide recommendations.
 
         These can provide favorited items, recently added albums, newest podcast episodes,
         and most played albums.  What is included is configured with the provider.
@@ -930,7 +934,8 @@ class OpenSonicProvider(MusicProvider):
         return recos
 
     async def get_track_lyrics(self, track: SonicItem) -> tuple[str, bool] | None:
-        """Get lyrics for a track.
+        """
+        Get lyrics for a track.
 
         Fetches lyrics from Subsonic server. Returns the lyrics text in LRC format
         if the Lyrics are synced (have time stamp info) or raw text if not

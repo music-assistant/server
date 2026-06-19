@@ -208,7 +208,8 @@ class AirPlayReceiverProvider(PluginProvider):
         self._setup_shairport_daemon()
 
     async def _stop_shairport_daemon(self) -> None:
-        """Stop the shairport-sync daemon without unloading the provider.
+        """
+        Stop the shairport-sync daemon without unloading the provider.
 
         This allows the provider to restart shairport-sync later when needed.
         """
@@ -244,7 +245,8 @@ class AirPlayReceiverProvider(PluginProvider):
         return [self._audio_source]
 
     async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
-        """Return StreamDetails for streaming the AirPlay audio to a queue.
+        """
+        Return StreamDetails for streaming the AirPlay audio to a queue.
 
         Side-effect-free: ownership is claimed in on_source_selected (which the
         streams controller fires before this method on the actual stream
@@ -278,7 +280,8 @@ class AirPlayReceiverProvider(PluginProvider):
         action: SourceControl,
         value: int | None = None,
     ) -> None:
-        """Handle source control commands (no-op: AirPlay receiver is passive).
+        """
+        Handle source control commands (no-op: AirPlay receiver is passive).
 
         The AudioSource advertises no control capabilities, so MA will not invoke
         any actions here. Override exists only to satisfy the contract.
@@ -467,7 +470,8 @@ class AirPlayReceiverProvider(PluginProvider):
         await asyncio.to_thread(_write_config)
 
     async def _setup_pipes_and_config(self) -> None:
-        """Set up named pipes and configuration file for shairport-sync.
+        """
+        Set up named pipes and configuration file for shairport-sync.
 
         :raises: OSError if pipe or config file creation fails.
         """
@@ -488,7 +492,8 @@ class AirPlayReceiverProvider(PluginProvider):
         await check_output("rm", "-f", self.config_file)
 
     async def _write_silence_to_unblock_stream(self) -> None:
-        """Write silence to the audio pipe to unblock ffmpeg.
+        """
+        Write silence to the audio pipe to unblock ffmpeg.
 
         When shairport-sync stops writing but ffmpeg is still reading,
         writing silence will cause ffmpeg to output a chunk, which lets the
@@ -504,7 +509,8 @@ class AirPlayReceiverProvider(PluginProvider):
         await self.audio_pipe.write(silence)
 
     def _process_shairport_log_line(self, line: str) -> None:
-        """Process a log line from shairport-sync stderr.
+        """
+        Process a log line from shairport-sync stderr.
 
         :param line: The log line to process.
         """
@@ -589,7 +595,8 @@ class AirPlayReceiverProvider(PluginProvider):
         self._runner_task = self.mass.create_task(self._shairport_runner())
 
     def _on_metadata_update(self, metadata: dict[str, Any]) -> None:
-        """Handle metadata updates from shairport-sync.
+        """
+        Handle metadata updates from shairport-sync.
 
         :param metadata: Dictionary containing metadata updates.
         """
@@ -624,7 +631,8 @@ class AirPlayReceiverProvider(PluginProvider):
             )
 
     def _handle_play_state_change(self, play_state: str) -> None:
-        """Handle play state changes from sessioncontrol hooks.
+        """
+        Handle play state changes from sessioncontrol hooks.
 
         :param play_state: The new play state ("playing" or "stopped").
         """
@@ -663,7 +671,8 @@ class AirPlayReceiverProvider(PluginProvider):
                 self.mass.create_task(self.mass.players.cmd_stop(current_player_id))
 
     def _handle_volume_change(self, volume: int) -> None:
-        """Handle volume changes from AirPlay client (iOS/macOS device).
+        """
+        Handle volume changes from AirPlay client (iOS/macOS device).
 
         ignore_volume_control = "yes" means shairport-sync doesn't do software volume control,
         but we still receive volume level changes from the client to apply to the player.
@@ -696,7 +705,8 @@ class AirPlayReceiverProvider(PluginProvider):
             self.logger.debug("Player %s does not support volume control", player_id)
 
     def _update_source_metadata(self, metadata: dict[str, Any]) -> None:
-        """Update source metadata fields from AirPlay metadata.
+        """
+        Update source metadata fields from AirPlay metadata.
 
         :param metadata: Dictionary containing metadata updates.
         """
@@ -719,7 +729,8 @@ class AirPlayReceiverProvider(PluginProvider):
             self._stream_metadata.elapsed_time_last_updated = time.time()
 
     def _update_cover_art(self, metadata: dict[str, Any]) -> None:
-        """Update cover art image URL from AirPlay metadata.
+        """
+        Update cover art image URL from AirPlay metadata.
 
         :param metadata: Dictionary containing metadata updates.
         """
@@ -754,7 +765,8 @@ class AirPlayReceiverProvider(PluginProvider):
                 self._stream_metadata.image_url = self.mass.metadata.get_image_url(image)
 
     async def resolve_image(self, path: str) -> bytes:
-        """Resolve an image from an image path.
+        """
+        Resolve an image from an image path.
 
         This returns raw bytes of the cover art image received from AirPlay metadata.
 

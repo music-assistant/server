@@ -768,6 +768,12 @@ class Player(ABC):
 
     @property
     @final
+    def translation_owner(self) -> str:
+        """Return the translation owner namespace ("provider.<domain>") of the player's provider."""
+        return self._provider.translation_owner
+
+    @property
+    @final
     def config(self) -> PlayerConfig:
         """Return the config of the player."""
         return self._config

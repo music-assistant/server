@@ -33,7 +33,8 @@ if TYPE_CHECKING:
 
 @dataclass(kw_only=True)
 class MusicCastPlayerHelper:
-    """MusicCastPlayerHelper.
+    """
+    MusicCastPlayerHelper.
 
     Helper class to store MA player alongside physical device.
     """
