@@ -665,8 +665,6 @@ class SmartPlaylistProvider(PluginProvider):
     ) -> list[Track]:
         """Apply post-filters (popularity, favorites, genre, year) to a seed-derived track list."""
         has_genre_filter = bool(rules.genre_ids or rules.excluded_genre_ids)
-        if has_genre_filter:
-            await self._enrich_tracks_with_db_genres(tracks)
 
         if rules.min_popularity is not None:
             tracks = [
@@ -678,6 +676,10 @@ class SmartPlaylistProvider(PluginProvider):
             ]
         if rules.favorites_only:
             tracks = [t for t in tracks if t.favorite]
+
+        if has_genre_filter:
+            await self._enrich_tracks_with_db_genres(tracks)
+
         if has_genre_filter and rules.logic == LOGIC_AND:
             # Genre filter: resolve names and match against track genre metadata.
             # Note: Library tracks have been enriched with DB genres above.
@@ -853,17 +855,17 @@ class SmartPlaylistProvider(PluginProvider):
             return
 
         # Fetch genres for all track IDs in parallel
+        track_ids = list(track_id_to_tracks.keys())
         genre_results = await asyncio.gather(
             *(
                 self.mass.music.genres.get_genres_for_media_item(MediaType.TRACK, track_id)
-                for track_id in track_id_to_tracks
+                for track_id in track_ids
             )
         )
 
         # Apply genres to tracks
-        for (track_id, tracks_list), genres in zip(
-            track_id_to_tracks.items(), genre_results, strict=True
-        ):
+        for track_id, genres in zip(track_ids, genre_results, strict=True):
+            tracks_list = track_id_to_tracks[track_id]
             if not genres:
                 continue
             for track in tracks_list:
