@@ -208,13 +208,6 @@ def main() -> None:
     # parse arguments
     args = get_arguments()
 
-    # Raise the open-file soft limit to the hard limit: concurrent provider
-    # imports at startup can exhaust the default soft limit (1024 in HAOS add-on
-    # containers). Raising soft up to the already-granted hard limit needs no privileges.
-    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    if soft < hard:
-        resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
-
     data_dir = args.data_dir
     cache_dir = args.cache_dir
 
@@ -239,6 +232,17 @@ def main() -> None:
 
     # setup logger
     logger = setup_logger(data_dir, log_level)
+
+    # Raise the open-file soft limit to the hard limit so the concurrent provider
+    # imports at startup can't exhaust it (default soft=1024 in HAOS add-on containers).
+    # Skip when the hard limit is unlimited (e.g. macOS), which setrlimit won't apply.
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if hard != resource.RLIM_INFINITY and soft < hard:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+        except (ValueError, OSError) as err:
+            LOGGER.warning("Could not raise open-file limit: %s", err)
+
     mass = MusicAssistant(data_dir, cache_dir, safe_mode)
 
     # enable alpine subprocess workaround
