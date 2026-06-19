@@ -353,9 +353,23 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         await self.set_provider_mappings(db_id, item.provider_mappings)
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
         await self._set_playlog(db_id, item)
+        await self._set_artist_mappings(item, db_id)
 
+        return db_id
+
+    async def _set_artist_mappings(
+        self, item: Audiobook, db_id: int, overwrite: bool = False
+    ) -> None:
         # update artist mappings - the sync method in the provider model raises an exception
         # if not all entries are either of type str or Artist
+        if overwrite:
+            # on overwrite, clear the audiobook_artists table first
+            await self.mass.music.database.delete(
+                DB_TABLE_AUDIOBOOK_ARTISTS,
+                {
+                    "audiobook_id": db_id,
+                },
+            )
         if item.authors and isinstance(item.authors[0], Artist):
             # only for type checking
             authors = [author for author in item.authors if isinstance(author, Artist)]
@@ -370,7 +384,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 # just to be sure
                 narrator.artist_type = ArtistType.NARRATOR
             await self._set_audiobook_authors_narrators(db_id, narrators)
-        return db_id
 
     async def _set_audiobook_authors_narrators(
         self,
@@ -378,15 +391,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         artists: Iterable[Artist | ItemMapping],
         overwrite: bool = False,
     ) -> None:
-        """Write audiobook id and author/ narrator id to DB_TABLE_ALBUM_ARTISTS."""
-        if overwrite:
-            # on overwrite, clear the album_artists table first
-            await self.mass.music.database.delete(
-                DB_TABLE_AUDIOBOOK_ARTISTS,
-                {
-                    "audiobook_id": db_id,
-                },
-            )
+        """Write audiobook id and author/ narrator id to DB_TABLE_AUDIOBOOK_ARTISTS."""
         for artist in artists:
             await self._set_audiobook_author_narrator(db_id, artist=artist, overwrite=overwrite)
 
@@ -474,6 +479,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         await self.set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
         await self._set_playlog(db_id, update)
+        await self._set_artist_mappings(update, db_id)
 
     async def _set_playlog(self, db_id: int, media_item: Audiobook) -> None:
         """Update/set the playlog table for the given audiobook db item_id."""
