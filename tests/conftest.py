@@ -76,8 +76,8 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
             "music_assistant.controllers.discovery.controller.AsyncServiceBrowser",
             return_value=mock_browser,
         ),
-        # Booting the server runs an ffmpeg presence check; mock it so tests don't
-        # require the binary. Tests that genuinely exercise ffmpeg are marked needs_ffmpeg.
+        # Booting the server runs an ffmpeg presence check; mock it so tests can boot
+        # without the binary. Tests that actually spawn ffmpeg still use the real one.
         patch(
             "music_assistant.controllers.streams.controller.check_ffmpeg_version",
             new=AsyncMock(),
