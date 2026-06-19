@@ -257,7 +257,8 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         # For actual image files, fetch the raw bytes
         webdav_url = build_webdav_url(self.base_url, path)
         session = self._session
-        headers = {"Authorization": self._auth_header} if self._auth_header else None
+        auth_header = self._auth_header
+        headers = {"Authorization": auth_header} if auth_header else None
         async with session.get(webdav_url, headers=headers) as resp:
             if resp.status != 200:
                 raise MediaNotFoundError(f"Image not found: {path}")
