@@ -9,6 +9,8 @@ collage images.
 
 from __future__ import annotations
 
+import asyncio
+import ipaddress
 import os
 import random
 import threading
@@ -344,6 +346,25 @@ class ImageProxyMixin:
             path = decoded
         if not _is_safe_imageproxy_request_path(path):
             return web.Response(status=400)
+        # _is_safe_imageproxy_request_path blocks IP-literal private addresses but cannot
+        # stop a hostname that *resolves* to a private IP (DNS-rebinding / DNS-based SSRF).
+        # Resolve here and re-check before we hand the URL to aiohttp.
+        if path.startswith(("http://", "https://")):
+            parsed = urllib.parse.urlparse(path)
+            host = parsed.hostname
+            if not host:
+                return web.Response(status=400)
+            try:
+                infos = await asyncio.get_running_loop().getaddrinfo(host, None)
+            except OSError:
+                return web.Response(status=400)
+            for *_, sockaddr in infos:
+                try:
+                    ip = ipaddress.ip_address(sockaddr[0])
+                except ValueError:
+                    continue
+                if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_multicast:
+                    return web.Response(status=403)
         if not self.mass.get_provider(provider) and not path.startswith("http"):
             return web.Response(status=404)
         return await self._serve_thumbnail(path, provider, size, image_format)
