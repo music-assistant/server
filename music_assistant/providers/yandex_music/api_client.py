@@ -12,7 +12,7 @@ import re
 import time
 from collections import OrderedDict, defaultdict, deque
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final, Literal, TypeVar, cast
 
 from music_assistant_models.errors import (
@@ -29,6 +29,7 @@ from yandex_music import Track as YandexTrack
 from yandex_music.exceptions import BadRequestError, NetworkError, UnauthorizedError
 from yandex_music.utils.sign_request import DEFAULT_SIGN_KEY
 
+from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER, Throttler
 
 if TYPE_CHECKING:
@@ -654,7 +655,7 @@ class YandexMusicClient:
         :param total_played_seconds: Seconds played (for trackFinished, skip).
         :return: True if the request succeeded.
         """
-        timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        timestamp = utc().isoformat().replace("+00:00", "Z")
 
         async def _send(c: ClientAsync) -> bool:
             if feedback_type == "radioStarted":
@@ -902,7 +903,7 @@ class YandexMusicClient:
             response; anchors the event to a specific batch.
         :return: True if the POST succeeded.
         """
-        timestamp = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        timestamp = utc().isoformat().replace("+00:00", "Z")
         event: dict[str, Any] = {"type": event_type, "timestamp": timestamp}
         if event_type == "radioStarted":
             if track_id is not None:

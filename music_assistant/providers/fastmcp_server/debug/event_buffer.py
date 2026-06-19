@@ -18,6 +18,8 @@ from collections import Counter, deque
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from music_assistant.helpers.datetime import now
+
 from ..models import EventBufferStats, EventRecord
 from .inspect_serializer import dump
 
@@ -33,7 +35,7 @@ def _now() -> datetime:
     template-generated (cannot be hand-edited). Tests replace this
     module-level callable to control timestamps deterministically.
     """
-    return datetime.now().astimezone()
+    return now()
 
 
 class EventBuffer:

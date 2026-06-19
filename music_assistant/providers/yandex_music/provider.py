@@ -7,7 +7,6 @@ import logging
 import random
 import uuid
 from collections.abc import AsyncGenerator, Sequence
-from datetime import UTC, datetime
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
@@ -42,6 +41,7 @@ from PIL import Image as PilImage
 from ya_passport_auth import SecretStr
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.datetime import utc
 from music_assistant.models.music_provider import MusicProvider
 
 from .api_client import YandexMusicClient
@@ -3000,7 +3000,7 @@ class YandexMusicProvider(MusicProvider):
         """
         # Determine current season tag; fall back to autumn if the seasonal
         # endpoint returns nothing (e.g. spring/autumn handover gap).
-        current_month = datetime.now(tz=UTC).month
+        current_month = utc().month
         seasonal_tag = TAG_SEASONAL_MAP.get(current_month, "autumn")
         playlists = await self.client.get_tag_playlists(seasonal_tag)
         if not playlists and seasonal_tag != "autumn":

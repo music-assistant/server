@@ -11,7 +11,7 @@ from __future__ import annotations
 import base64
 import logging
 import stat
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -19,6 +19,8 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
+
+from music_assistant.helpers.datetime import utc
 
 if TYPE_CHECKING:
     from aiortc import RTCConfiguration, RTCPeerConnection
@@ -43,7 +45,7 @@ def _generate_certificate() -> tuple[ec.EllipticCurvePrivateKey, x509.Certificat
     # Generate ECDSA key (SECP256R1 - same as aiortc default)
     private_key = ec.generate_private_key(ec.SECP256R1())
 
-    now = datetime.now(UTC)
+    now = utc()
     not_before = now - timedelta(days=1)
     not_after = now + timedelta(days=CERT_VALIDITY_DAYS)
 
@@ -131,7 +133,7 @@ def _is_certificate_valid(cert: x509.Certificate) -> bool:
     :param cert: The X.509 certificate to check.
     :return: True if certificate is valid and has sufficient time remaining.
     """
-    now = datetime.now(UTC)
+    now = utc()
     not_after = cert.not_valid_after_utc
 
     if now >= not_after:

@@ -1,7 +1,6 @@
 """Context manager using asyncio_throttle that catches and re-raises RetriesExhausted."""
 
 import asyncio
-import datetime
 import functools
 import logging
 import random
@@ -21,6 +20,7 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.constants import MASS_LOGGER_NAME
+from music_assistant.helpers.datetime import utc
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.throttle_retry")
 
@@ -52,7 +52,7 @@ def parse_retry_after(value: str | None) -> int:
     # Try HTTP-date format (e.g., "Fri, 31 Dec 1999 23:59:59 GMT")
     try:
         target = parsedate_to_datetime(value)
-        delta = (target - datetime.datetime.now(tz=datetime.UTC)).total_seconds()
+        delta = (target - utc()).total_seconds()
         return max(0, int(delta))
     except ValueError, TypeError:
         return 0
