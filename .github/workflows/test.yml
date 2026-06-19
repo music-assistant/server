@@ -24,12 +24,40 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - name: Check out code from GitHub
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      # Skip the test jobs on PRs that only touch docs, translations metadata or
+      # unrelated workflows. Anything under music_assistant/ or tests/ still runs.
+      - name: Detect relevant changes
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'music_assistant/**'
+              - 'tests/**'
+              - 'pyproject.toml'
+              - 'requirements_all.txt'
+              - 'uv.lock'
+              - '.python-version'
+              - '.github/workflows/test.yml'
+
   lint:
     runs-on: ubuntu-latest
 
     steps:
       - name: Check out code from GitHub
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
       - name: Set up Python
@@ -37,19 +65,6 @@ jobs:
         with:
           python-version-file: ".python-version"
           check-latest: true
-      # Cache apt .deb files to speed up ffmpeg installation (in home to avoid permission issues).
-      - name: Cache apt packages
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/apt-packages
-          key: apt-ffmpeg-${{ runner.os }}
-      - name: Install ffmpeg
-        run: |
-          # Restore cached .deb files to apt cache (if any)
-          sudo cp ~/.cache/apt-packages/*.deb /var/cache/apt/archives/ 2>/dev/null || true
-          sudo apt-get update && sudo apt-get install -y ffmpeg
-          # Save .deb files for next run
-          mkdir -p ~/.cache/apt-packages && cp /var/cache/apt/archives/*.deb ~/.cache/apt-packages/ 2>/dev/null || true
       - name: Install uv
         run: pip install uv
       - name: Cache uv packages
@@ -65,11 +80,44 @@ jobs:
         run: SKIP=no-commit-to-branch pre-commit run --all-files
 
   test:
+    needs: changes
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
 
     steps:
       - name: Check out code from GitHub
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version-file: ".python-version"
+          check-latest: true
+      - name: Install libchromaprint
+        run: sudo apt-get update && sudo apt-get install -y libchromaprint1
+      - name: Install uv
+        run: pip install uv
+      - name: Cache uv packages
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/uv
+          key: uv-${{ runner.os }}-${{ hashFiles('.python-version') }}-${{ hashFiles('requirements_all.txt', 'pyproject.toml') }}
+      - name: Install dependencies
+        # --index-strategy: allow PyPI packages when also using the PyTorch extra index
+        # https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
+        run: uv pip install --system --index-strategy unsafe-best-match . .[test] -r requirements_all.txt
+      - name: Pytest
+        run: pytest --durations 10 --cov-report term-missing --cov=music_assistant --cov-report=xml -m "not needs_ffmpeg" tests/
+
+  test-ffmpeg:
+    needs: changes
+    if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out code from GitHub
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
       - name: Set up Python
@@ -102,4 +150,4 @@ jobs:
         # https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
         run: uv pip install --system --index-strategy unsafe-best-match . .[test] -r requirements_all.txt
       - name: Pytest
-        run: pytest --durations 10 --cov-report term-missing --cov=music_assistant --cov-report=xml tests/
+        run: pytest --durations 10 -m needs_ffmpeg tests/

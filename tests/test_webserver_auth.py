@@ -11,15 +11,18 @@ from sqlite3 import IntegrityError
 
 import pytest
 from music_assistant_models.auth import AuthProviderType, UserRole
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.webserver.auth import AuthenticationManager
 from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    ImpersonatedUser,
+    get_current_user,
     set_current_token,
     set_current_user,
+    set_impersonated_user,
 )
 from music_assistant.controllers.webserver.helpers.auth_providers import BuiltinLoginProvider
 from music_assistant.helpers.datetime import utc
@@ -1204,3 +1207,86 @@ async def test_revoke_join_code_api_not_found(auth_manager: AuthenticationManage
 
     with pytest.raises(InvalidDataError, match="Join code not found"):
         await auth_manager.revoke_join_code("nonexistent-code-id")
+
+
+async def test_impersonated_user_context_manager(auth_manager: AuthenticationManager) -> None:
+    """Test the ImpersonatedUser context manager."""
+    admin_user = await auth_manager.create_user(username="admin", role=UserRole.ADMIN)
+    standard_user_a = await auth_manager.create_user(username="user_a", role=UserRole.USER)
+    standard_user_b = await auth_manager.create_user(username="user_b", role=UserRole.USER)
+
+    # non-authenticated user must raise
+    set_current_user(None)
+    with pytest.raises(InsufficientPermissions):
+        async with ImpersonatedUser(auth_manager.mass, "user_a"):
+            ...
+    # non-admin impersonation attempt must raise
+    set_current_user(standard_user_a)
+    with pytest.raises(InsufficientPermissions):
+        async with ImpersonatedUser(auth_manager.mass, "admin"):
+            ...
+    # invalid username must raise
+    set_current_user(admin_user)
+    with pytest.raises(InvalidDataError):
+        async with ImpersonatedUser(auth_manager.mass, "wrong_username"):
+            ...
+
+    # verify, that a standard user not attempting personation changes the current user
+    # to the caller temporarily and restores the impersonated user afterwards
+    set_current_user(standard_user_a)
+    set_impersonated_user(standard_user_b)  # simulate nested use
+
+    assert get_current_user() == standard_user_b
+    async with ImpersonatedUser(auth_manager.mass, "user_a"):
+        assert get_current_user() == standard_user_a
+    assert get_current_user() == standard_user_b
+    async with ImpersonatedUser(auth_manager.mass, None):
+        assert get_current_user() == standard_user_a
+    assert get_current_user() == standard_user_b
+
+    # verify, that an admin user may impersonate another user
+    set_current_user(admin_user)
+
+    set_impersonated_user(None)  # non-nested use
+    assert get_current_user() == admin_user
+    async with ImpersonatedUser(auth_manager.mass, "user_a"):
+        assert get_current_user() == standard_user_a
+    assert get_current_user() == admin_user
+
+    set_impersonated_user(standard_user_b)  # nested use
+    async with ImpersonatedUser(auth_manager.mass, "user_a"):
+        assert get_current_user() == standard_user_a
+    assert get_current_user() == standard_user_b
+
+    # verify, that an admin user not attempting impersonation is treated normally
+    set_current_user(admin_user)
+    set_impersonated_user(None)
+    assert get_current_user() == admin_user
+    async with ImpersonatedUser(auth_manager.mass, "admin"):
+        assert get_current_user() == admin_user
+    assert get_current_user() == admin_user
+    async with ImpersonatedUser(auth_manager.mass, None):
+        assert get_current_user() == admin_user
+    assert get_current_user() == admin_user
+
+
+async def test_impersonated_user_anonymous_playback_is_noop(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Verify an unauthenticated call without a username is a no-op.
+
+    Regression: play_media wraps every call in ImpersonatedUser, so protocol/hardware
+    triggered playback (presets, Spotify Connect, ...) - which has no authenticated user
+    and passes no username - must not raise.
+    """
+    set_current_user(None)
+    set_impersonated_user(None)
+    async with ImpersonatedUser(auth_manager.mass, None):
+        assert get_current_user() is None
+    assert get_current_user() is None
+
+    # an unauthenticated caller may still not impersonate another user
+    with pytest.raises(InsufficientPermissions):
+        async with ImpersonatedUser(auth_manager.mass, "user_a"):
+            ...

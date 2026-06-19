@@ -10,7 +10,6 @@ from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailabl
 from music_assistant_models.media_items import Podcast, PodcastEpisode, ProviderMapping, UniqueList
 
 from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PODCASTS
-from music_assistant.controllers.media.base import MediaControllerBase
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
     compare_media_item,
@@ -21,6 +20,8 @@ from music_assistant.helpers.compare import (
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
+
+from .base import MediaControllerBase
 
 if TYPE_CHECKING:
     from music_assistant_models.auth import User

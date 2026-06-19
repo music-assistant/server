@@ -7,10 +7,12 @@ from unittest.mock import MagicMock
 import pytest
 from PIL import Image
 
-from music_assistant.controllers.metadata import (
+from music_assistant.controllers.metadata import MetaDataController
+from music_assistant.controllers.metadata.constants import (
     _IMAGEPROXY_CONTENT_TYPES,
     CACHE_CATEGORY_IMAGE_IDS,
-    MetaDataController,
+)
+from music_assistant.controllers.metadata.helpers import (
     _is_safe_imageproxy_request_path,
     _normalize_imageproxy_format,
 )

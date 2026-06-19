@@ -22,7 +22,7 @@ def _make_prov(
     return prov
 
 
-@patch("music_assistant.controllers.music.get_current_user")
+@patch("music_assistant.controllers.music.controller.get_current_user")
 def test_apply_user_provider_filter_filters_music_providers_for_admin(
     mock_get_user: Mock,
 ) -> None:
@@ -37,7 +37,7 @@ def test_apply_user_provider_filter_filters_music_providers_for_admin(
     assert [p.instance_id for p in result] == ["m_a"]
 
 
-@patch("music_assistant.controllers.music.get_current_user")
+@patch("music_assistant.controllers.music.controller.get_current_user")
 def test_apply_user_provider_filter_passes_non_music_providers(
     mock_get_user: Mock,
 ) -> None:
@@ -53,7 +53,7 @@ def test_apply_user_provider_filter_passes_non_music_providers(
     assert [p.instance_id for p in result] == ["m_a", "meta_a", "plug_a"]
 
 
-@patch("music_assistant.controllers.music.get_current_user")
+@patch("music_assistant.controllers.music.controller.get_current_user")
 def test_apply_user_provider_filter_no_filter_returns_all(
     mock_get_user: Mock,
 ) -> None:
@@ -68,7 +68,7 @@ def test_apply_user_provider_filter_no_filter_returns_all(
     assert [p.instance_id for p in result] == ["m_a", "m_b"]
 
 
-@patch("music_assistant.controllers.music.get_current_user")
+@patch("music_assistant.controllers.music.controller.get_current_user")
 async def test_browse_root_honors_admin_provider_filter(mock_get_user: Mock) -> None:
     """Regression for issue #5509: browse must honor an admin's provider_filter."""
     mock_get_user.return_value = Mock(role=UserRole.ADMIN, provider_filter=["m_a"])

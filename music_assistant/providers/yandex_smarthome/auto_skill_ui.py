@@ -365,14 +365,7 @@ def _create_skill_step_entries(
             ConfigEntry(
                 key="label_direct_https_warning",
                 type=ConfigEntryType.LABEL,
-                label=(
-                    f"⚠️ MA's Base URL is {base_url or '<unset>'}. "
-                    "Direct mode requires a **publicly reachable HTTPS URL** — "
-                    "Yandex refuses to talk to a non-HTTPS backend. "
-                    "Set a reverse proxy with a real certificate and "
-                    "update Settings → Core → Webserver → Base URL, then "
-                    "reopen these settings."
-                ),
+                translation_params=[base_url or "<unset>"],
                 depends_on=CONF_CONNECTION_TYPE,
                 depends_on_value=connection_type,
                 category=category,

@@ -1,4 +1,9 @@
 {
+  "media": {
+    "recommendations": {
+      "nicovideo_following_activities": { "name": "New Tracks from Followed Users" }
+    }
+  },
   "manifest": {
     "description": "Support for niconico video(nicovideo) in Music Assistant"
   },

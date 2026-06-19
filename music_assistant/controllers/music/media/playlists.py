@@ -16,9 +16,6 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import Playlist, Track
 
 from music_assistant.constants import DB_TABLE_PLAYLISTS, PLAYLIST_MEDIA_TYPES, PlaylistPlayableItem
-from music_assistant.controllers.media.audiobooks import AudiobooksController
-from music_assistant.controllers.media.radio import RadioController
-from music_assistant.controllers.media.tracks import TracksController
 from music_assistant.controllers.tasks.context import (
     update_current_task_progress,
     update_current_task_progress_text,
@@ -37,7 +34,10 @@ from music_assistant.helpers.uri import create_uri, parse_uri
 from music_assistant.helpers.util import guard_single_request
 from music_assistant.models.music_provider import MusicProvider
 
+from .audiobooks import AudiobooksController
 from .base import MediaControllerBase
+from .radio import RadioController
+from .tracks import TracksController
 
 if TYPE_CHECKING:
     from music_assistant_models.background_task import BackgroundTask
@@ -229,7 +229,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         return self.mass.tasks.run_background_task(
             name=f"Add items to playlist {playlist_name}",
             handler=lambda: self._handle_add_playlist_tracks(db_playlist_id, uris),
-            translation_key="background_task.add_playlist_tracks",
+            translation_key="add_playlist_tracks",
+            translation_owner=self.translation_owner,
             translation_args=[playlist_name],
             user_id=user.user_id if user else None,
             metadata={
@@ -265,7 +266,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
             handler=lambda: self._handle_remove_playlist_tracks(
                 db_playlist_id, positions_to_remove
             ),
-            translation_key="background_task.remove_playlist_tracks",
+            translation_key="remove_playlist_tracks",
+            translation_owner=self.translation_owner,
             translation_args=[playlist_name],
             user_id=user.user_id if user else None,
             metadata={
@@ -709,7 +711,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 handler=lambda: builtin_prov.match_imported_playlist_tracks(
                     prov_playlist_id, match_providers
                 ),
-                translation_key="background_task.import_playlist_matching",
+                translation_key="import_playlist_matching",
+                translation_owner=self.translation_owner,
                 translation_args=[db_playlist.name],
                 user_id=user.user_id if user else None,
                 metadata={

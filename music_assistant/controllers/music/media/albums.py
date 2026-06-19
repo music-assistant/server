@@ -19,7 +19,6 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import DB_TABLE_ALBUM_ARTISTS, DB_TABLE_ALBUM_TRACKS, DB_TABLE_ALBUMS
-from music_assistant.controllers.media.base import MediaControllerBase
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.compare import (
     compare_album,
@@ -31,6 +30,8 @@ from music_assistant.helpers.compare import (
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json
 from music_assistant.models.music_provider import MusicProvider
+
+from .base import MediaControllerBase
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant

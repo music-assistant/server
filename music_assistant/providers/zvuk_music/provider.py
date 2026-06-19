@@ -447,34 +447,35 @@ class ZvukMusicProvider(MusicProvider):
         """Return personalized and editorial playlist recommendations.
 
         Returns two folders:
-        - «Плейлисты для вас»: Zvuk's AI-generated personalized playlists.
-        - «Подборки»: Editorial genre-themed curated playlists.
+        - "Made for you": Zvuk's AI-generated personalized playlists.
+        - "Collections": Editorial genre-themed curated playlists.
         """
         folders: list[RecommendationFolder] = []
 
-        # Folder 1: Personalized synthesis playlists («Плейлисты для вас»)
+        # Folder 1: Personalized synthesis playlists ("Made for you")
         for_you_items = await self._get_for_you_playlists()
         if for_you_items:
             folders.append(
                 RecommendationFolder(
                     item_id="for_you",
                     provider=self.instance_id,
-                    name="Плейлисты для вас",
-                    subtitle="Персональные плейлисты от Звук",
+                    name="Made for you",
+                    translation_key="made_for_you",
                     icon="mdi-playlist-music",
                     items=for_you_items,  # type: ignore[arg-type]
                 )
             )
 
-        # Folder 2: Editorial curated playlists («Подборки»)
+        # Folder 2: Editorial curated playlists ("Collections")
         editorial_items = await self._get_editorial_playlists()
         if editorial_items:
             folders.append(
                 RecommendationFolder(
                     item_id="editorial",
                     provider=self.instance_id,
-                    name="Подборки",
-                    subtitle="Плейлисты от редакции Звук по жанрам",
+                    name="Collections",
+                    subtitle="Editorial playlists from Zvuk by genre",
+                    translation_key="editorial",
                     icon="mdi-music-box-multiple",
                     items=editorial_items,  # type: ignore[arg-type]
                 )
@@ -486,8 +487,8 @@ class ZvukMusicProvider(MusicProvider):
         """Browse provider content as a hierarchical folder tree.
 
         Root level exposes two folders:
-        - «Плейлисты для вас»: Zvuk AI-generated personalized playlists.
-        - «Подборки»: Editorial genre-themed curated playlists.
+        - "Made for you": Zvuk AI-generated personalized playlists.
+        - "Collections": Editorial genre-themed curated playlists.
 
         :param path: Browse path (e.g. ``provider_id://`` or ``provider_id://for_you``).
         :return: List of playlists or BrowseFolders.
@@ -517,13 +518,15 @@ class ZvukMusicProvider(MusicProvider):
                 item_id="for_you",
                 provider=self.instance_id,
                 path=f"{base}for_you",
-                name="Плейлисты для вас",
+                name="Made for you",
+                translation_key="made_for_you",
             ),
             BrowseFolder(
                 item_id="editorial",
                 provider=self.instance_id,
                 path=f"{base}editorial",
-                name="Подборки",
+                name="Collections",
+                translation_key="editorial",
             ),
         ]
 

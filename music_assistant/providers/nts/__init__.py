@@ -136,12 +136,14 @@ class NTSProvider(MusicProvider):
                     provider=self.domain,
                     path=path + "live",
                     name="Live Channels",
+                    translation_key="live_channels",
                 ),
                 BrowseFolder(
                     item_id="mixtapes",
                     provider=self.domain,
                     path=path + "mixtapes",
                     name="Infinite Mixtapes",
+                    translation_key="infinite_mixtapes",
                 ),
             ]
 

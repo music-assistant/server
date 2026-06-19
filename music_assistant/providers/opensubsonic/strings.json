@@ -1,11 +1,11 @@
 {
   "config_entries": {
     "username": {
-      "label": "Username",
+      "label": "[%key:common::config_entries::username::label%]",
       "description": "Your username for this Open Subsonic server"
     },
     "password": {
-      "label": "Password",
+      "label": "[%key:common::config_entries::password::label%]",
       "description": "The password associated with the username"
     },
     "baseURL": {
@@ -57,8 +57,12 @@
       "description": "When enumerating items from the server, how many should be in each request. Smaller will require more requests but is better for low bandwidth connections. The Open Subsonic spec says the max value for this is 500 items."
     }
   },
-  "starred_items": {
-    "name": "Starred Items"
+  "media": {
+    "recommendations": {
+      "starred_items": {
+        "name": "Starred Items"
+      }
+    }
   },
   "manifest": {
     "description": "Stream music from your OpenSubsonic compatible server — your own cloud jukebox."

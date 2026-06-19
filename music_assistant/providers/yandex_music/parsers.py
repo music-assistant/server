@@ -17,6 +17,7 @@ from music_assistant_models.media_items import (
     Artist,
     Audiobook,
     AudioFormat,
+    ItemMapping,
     MediaItemImage,
     Playlist,
     Podcast,
@@ -656,7 +657,7 @@ def parse_audiobook(provider: YandexMusicProvider, album_obj: YandexAlbum) -> Au
         if label_name:
             publisher = label_name
 
-    authors: UniqueList[str | Artist] = UniqueList()
+    authors: UniqueList[str | Artist | ItemMapping] = UniqueList()
     if album_obj.artists:
         for artist in album_obj.artists:
             if artist.name:

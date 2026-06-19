@@ -29,6 +29,7 @@ FILE_FLAC_SEMICOLON = str(RESOURCES_DIR.joinpath("ArtistWithSemicolon.flac"))
 FILE_WV = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.wv"))
 
 
+@pytest.mark.needs_ffmpeg
 async def test_parse_metadata_from_id3tags() -> None:
     """Test parsing of parsing metadata from ID3 tags."""
     filename = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.mp3"))
@@ -63,6 +64,7 @@ async def test_parse_metadata_from_id3tags() -> None:
     assert _tags.year is None
 
 
+@pytest.mark.needs_ffmpeg
 async def test_parse_id3v24_null_separated_artists() -> None:
     """Test parsing ID3v2.4 tags with null-separated multi-value TPE1/TPE2."""
     _tags = await tags.async_parse_tags(FILE_MP3_ID3V24_MULTIVALUE)
@@ -75,6 +77,7 @@ async def test_parse_id3v24_null_separated_artists() -> None:
     assert _tags.musicbrainz_albumartistids == ("mb-albumartist-1", "mb-albumartist-2")
 
 
+@pytest.mark.needs_ffmpeg
 async def test_parse_metadata_from_mp4tags() -> None:
     """Test parsing of metadata from MP4/AAC tags."""
     filename = FILE_M4A
@@ -132,6 +135,7 @@ def test_parse_metadata_from_apev2tags() -> None:
     assert result.get("albumartistsort") == ["MyAlbumArtist Sort"]
 
 
+@pytest.mark.needs_ffmpeg
 async def test_parse_metadata_from_flac_with_multiple_artist_fields() -> None:
     """Test parsing of FLAC file with multiple ARTIST fields (per Vorbis spec)."""
     _tags = await tags.async_parse_tags(FILE_FLAC)
@@ -152,6 +156,7 @@ async def test_parse_metadata_from_flac_with_multiple_artist_fields() -> None:
     assert _tags.disc == 1
 
 
+@pytest.mark.needs_ffmpeg
 async def test_parse_metadata_from_filename() -> None:
     """Test parsing of parsing metadata from filename."""
     filename = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle without Tags.mp3"))
@@ -168,6 +173,7 @@ async def test_parse_metadata_from_filename() -> None:
     assert _tags.musicbrainz_recordingid is None
 
 
+@pytest.mark.needs_ffmpeg
 async def test_parse_metadata_from_invalid_filename() -> None:
     """Test parsing of parsing metadata from (invalid) filename."""
     filename = str(RESOURCES_DIR.joinpath("test.mp3"))
@@ -582,6 +588,7 @@ def test_vorbis_multiple_artist_fields_semicolon_in_name() -> None:
     assert len(audio_tags.artists) == len(audio_tags.musicbrainz_artistids)
 
 
+@pytest.mark.needs_ffmpeg
 async def test_flac_multiple_artist_fields_semicolon_e2e() -> None:
     """End-to-end test: FLAC with multiple ARTIST fields, one containing semicolon.
 

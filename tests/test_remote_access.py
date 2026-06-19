@@ -1,5 +1,6 @@
 """Tests for remote access feature."""
 
+import base64
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -13,8 +14,8 @@ from music_assistant.controllers.webserver.remote_access.gateway import (
 )
 from music_assistant.helpers.webrtc_certificate import (
     _generate_certificate,
+    _remote_id_from_certificate,
     create_peer_connection_with_certificate,
-    get_remote_id_from_certificate,
 )
 
 
@@ -32,15 +33,32 @@ def mock_certificate() -> Mock:
     return cert
 
 
-async def test_get_remote_id_from_certificate(mock_certificate: Mock) -> None:
-    """Test remote ID generation from certificate fingerprint."""
-    remote_id = get_remote_id_from_certificate(mock_certificate)
+async def test_remote_id_from_certificate() -> None:
+    """Test deterministic remote ID generation from a certificate."""
+    _, cert = _generate_certificate()
+    remote_id = _remote_id_from_certificate(cert)
 
     # Should be base32 encoded, uppercase, no padding
     assert remote_id.isalnum()
     assert remote_id == remote_id.upper()
     # 128 bits = 16 bytes -> 26 base32 chars (without padding)
     assert len(remote_id) == 26
+    # deterministic: the same certificate always yields the same id
+    assert _remote_id_from_certificate(cert) == remote_id
+
+
+async def test_remote_id_matches_aiortc_fingerprint() -> None:
+    """The aiortc-free remote ID must match aiortc's own certificate fingerprint derivation."""
+    private_key, cert = _generate_certificate()
+    rtc_cert = RTCCertificate(key=private_key, cert=cert)
+    fingerprint = next(fp.value for fp in rtc_cert.getFingerprints() if fp.algorithm == "sha-256")
+    expected = (
+        base64.b32encode(bytes.fromhex(fingerprint.replace(":", ""))[:16])
+        .decode("ascii")
+        .rstrip("=")
+        .replace("2", "9")
+    )
+    assert _remote_id_from_certificate(cert) == expected
 
 
 async def test_remote_access_info_dataclass() -> None:

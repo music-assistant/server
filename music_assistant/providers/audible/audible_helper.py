@@ -17,13 +17,18 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 import audible
+import audible.exceptions
 import audible.register
 from audible import AsyncClient
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession
 from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
-from music_assistant_models.errors import LoginFailed, MediaNotFoundError
+from music_assistant_models.errors import (
+    LoginFailed,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import (
     Audiobook,
     AudioFormat,
@@ -314,7 +319,7 @@ class AudibleHelper:
                 self.logger.warning(f"Error calculating duration from chapters for {asin}: {exc}")
 
         # Fetch resume position
-        book.resume_position_ms = await self.get_last_postion(asin=asin)
+        book.resume_position_ms = await self.get_last_position(asin=asin)
 
     async def get_stream(
         self, asin: str, media_type: MediaType = MediaType.AUDIOBOOK
@@ -453,39 +458,71 @@ class AudibleHelper:
 
         return chapters_data
 
-    async def get_last_postion(self, asin: str) -> int:
-        """Fetch last position of asin."""
+    @staticmethod
+    def _parse_audible_timestamp(raw_ts: Any) -> datetime | None:
+        """
+        Parse an Audible timestamp value into a timezone-aware datetime.
+
+        :param raw_ts: The raw timestamp value from the Audible annotation payload.
+        """
+        if not raw_ts:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(raw_ts))
+        except ValueError, TypeError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed
+
+    async def _fetch_last_position(self, asin: str) -> tuple[int, datetime | None] | None:
+        """
+        Fetch the last-heard position for a single ASIN from Audible.
+
+        :param asin: The audiobook ASIN to query.
+        """
+        response = await self._call_api("annotations/lastpositions", asins=asin)
+        if not response:
+            return None
+
+        annotations = response.get("asin_last_position_heard_annots")
+        if not annotations or not isinstance(annotations, list):
+            return None
+
+        annotation = annotations[0]
+        if not isinstance(annotation, dict):
+            return None
+
+        last_position = annotation.get("last_position_heard")
+        if not isinstance(last_position, dict):
+            return None
+
+        position_ms = int(last_position.get("position_ms", 0))
+
+        timestamp: datetime | None = None
+        for field in ("last_updated", "reported_time", "last_updated_time", "timestamp"):
+            timestamp = self._parse_audible_timestamp(
+                last_position.get(field) or annotation.get(field)
+            )
+            if timestamp is not None:
+                break
+
+        return position_ms, timestamp
+
+    async def get_last_position(self, asin: str) -> int:
+        """
+        Fetch the last-heard position in milliseconds for the given ASIN.
+
+        :param asin: The audiobook ASIN to query.
+        """
         if not asin or asin == "error":
             return 0
-
         try:
-            response = await self._call_api("annotations/lastpositions", asins=asin)
-
-            if not response:
-                self.logger.debug(f"No last position data available for ASIN {asin}")
-                return 0
-
-            annotations = response.get("asin_last_position_heard_annots")
-            if not annotations or not isinstance(annotations, list) or len(annotations) == 0:
-                self.logger.debug(f"No annotations found for ASIN {asin}")
-                return 0
-
-            annotation = annotations[0]
-            if not annotation or not isinstance(annotation, dict):
-                self.logger.debug(f"Invalid annotation for ASIN {asin}")
-                return 0
-
-            last_position = annotation.get("last_position_heard")
-            if not last_position or not isinstance(last_position, dict):
-                self.logger.debug(f"Invalid last_position for ASIN {asin}")
-                return 0
-
-            position_ms = last_position.get("position_ms", 0)
-            return int(position_ms)
-
-        except Exception as exc:
-            self.logger.error(f"Error getting last position for ASIN {asin}: {exc}")
+            result = await self._fetch_last_position(asin)
+        except (ProviderUnavailableError, KeyError, TypeError, ValueError) as exc:
+            self.logger.error("Error getting last position for ASIN %s: %s", asin, exc)
             return 0
+        return result[0] if result else 0
 
     async def set_last_position(
         self, asin: str, pos: int, media_type: MediaType = MediaType.AUDIOBOOK
@@ -529,6 +566,24 @@ class AudibleHelper:
         except Exception as exc:
             self.logger.error(f"Unexpected error reporting position for ASIN {asin}: {exc}")
 
+    async def get_audible_resume_position(self, asin: str) -> tuple[bool, int, datetime | None]:
+        """
+        Return resume state for the given ASIN from Audible.
+
+        :param asin: The audiobook ASIN to query.
+        """
+        if not asin or asin == "error":
+            raise NotImplementedError
+        try:
+            result = await self._fetch_last_position(asin)
+        except (ProviderUnavailableError, KeyError, TypeError, ValueError) as exc:
+            self.logger.debug("Audible lastpositions fetch failed for %s: %s", asin, exc)
+            raise NotImplementedError from exc
+        if not result or result[0] == 0:
+            raise NotImplementedError
+        position_ms, timestamp = result
+        return False, position_ms, timestamp
+
     async def _call_api(self, path: str, **kwargs: Any) -> Any:
         response = None
         use_cache = kwargs.pop("use_cache", False)
@@ -542,7 +597,12 @@ class AudibleHelper:
                 category=CACHE_CATEGORY_API,
             )
         if not response:
-            response = await self.client.get(path, **kwargs)
+            try:
+                response = await self.client.get(path, **kwargs)
+            except audible.exceptions.RequestError as exc:
+                raise ProviderUnavailableError(
+                    f"Audible API request failed for '{path}': {exc}"
+                ) from exc
             await self.mass.cache.set(
                 key=cache_key_with_params, provider=self.provider_instance, data=response
             )

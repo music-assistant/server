@@ -225,7 +225,8 @@ class SonosPlayer(Player):
             )
             raise PlayerCommandFailed(
                 msg,
-                translation_key="provider.sonos_s1.errors.play_media_synced",
+                translation_key="play_media_synced",
+                translation_owner=self.translation_owner,
                 translation_args=[self.display_name],
             )
 
@@ -253,7 +254,8 @@ class SonosPlayer(Player):
             )
             raise PlayerCommandFailed(
                 msg,
-                translation_key="provider.sonos_s1.errors.enqueue_synced",
+                translation_key="enqueue_synced",
+                translation_owner=self.translation_owner,
                 translation_args=[self.display_name],
             )
 

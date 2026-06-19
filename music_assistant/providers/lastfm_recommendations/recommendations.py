@@ -415,6 +415,7 @@ class LastFMRecommendationManager:
                     item_id=f"{self.provider.instance_id}_similar_artists",
                     name="Discover Similar Artists",
                     translation_key="discover_similar_artists",
+                    translation_params=[str(len(top_artists))],
                     provider=self.provider.instance_id,
                     items=UniqueList(similar_artists[:TARGET_ITEM_COUNT]),
                     subtitle=f"Based on your top {len(top_artists)} artists",
@@ -436,6 +437,7 @@ class LastFMRecommendationManager:
                     item_id=f"{self.provider.instance_id}_similar_tracks",
                     name="Discover Similar Tracks",
                     translation_key="discover_similar_tracks",
+                    translation_params=[str(len(top_tracks))],
                     provider=self.provider.instance_id,
                     items=UniqueList(similar_tracks[:TARGET_ITEM_COUNT]),
                     subtitle=f"Based on your top {len(top_tracks)} tracks",
@@ -532,6 +534,8 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_genre_artists",
                     name=f"Discover {tag_name.title()} Artists",
+                    translation_key="genre_artists",
+                    translation_params=[tag_name.title()],
                     provider=self.provider.instance_id,
                     items=UniqueList(genre_artists),
                     subtitle="Top artists in your top genres",
@@ -566,6 +570,8 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_genre_albums",
                     name=f"Discover {tag_name.title()} Albums",
+                    translation_key="genre_albums",
+                    translation_params=[tag_name.title()],
                     provider=self.provider.instance_id,
                     items=UniqueList(genre_albums),
                     subtitle="Top albums in your top genres",
@@ -600,6 +606,8 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_genre_tracks",
                     name=f"Discover {tag_name.title()} Tracks",
+                    translation_key="genre_tracks",
+                    translation_params=[tag_name.title()],
                     provider=self.provider.instance_id,
                     items=UniqueList(genre_tracks),
                     subtitle="Top tracks in your top genres",
@@ -694,6 +702,8 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_geo_artists",
                     name=f"Top artists for {country}",
+                    translation_key="geo_artists",
+                    translation_params=[country],
                     provider=self.provider.instance_id,
                     items=UniqueList(geo_artists),
                     subtitle=f"Most popular artists in {country}",
@@ -712,6 +722,8 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_geo_tracks",
                     name=f"Top tracks for {country}",
+                    translation_key="geo_tracks",
+                    translation_params=[country],
                     provider=self.provider.instance_id,
                     items=UniqueList(geo_tracks),
                     subtitle=f"Most popular tracks in {country}",

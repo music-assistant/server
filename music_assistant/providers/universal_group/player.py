@@ -408,7 +408,8 @@ class UniversalGroupPlayer(Player):
         if not self.is_dynamic:
             raise UnsupportedFeaturedException(
                 f"Group {self.display_name} does not allow dynamically adding/removing members!",
-                translation_key="provider.universal_group.errors.group_not_dynamic",
+                translation_key="group_not_dynamic",
+                translation_owner=self.translation_owner,
                 translation_args=[self.display_name],
             )
         # handle additions
@@ -418,7 +419,8 @@ class UniversalGroupPlayer(Player):
             if player_id == self.player_id:
                 raise UnsupportedFeaturedException(
                     f"Cannot add {self.display_name} to itself as a member!",
-                    translation_key="provider.universal_group.errors.cannot_add_group_to_itself",
+                    translation_key="cannot_add_group_to_itself",
+                    translation_owner=self.translation_owner,
                     translation_args=[self.display_name],
                 )
             child_player = self.mass.players.get_player(player_id, True)

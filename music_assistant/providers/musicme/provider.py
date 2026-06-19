@@ -155,25 +155,29 @@ class MusicMeProvider(MusicProvider):
                     item_id="home",
                     provider=self.instance_id,
                     path=f"{self.instance_id}://home",
-                    name="A l'affiche",
+                    name="Featured",
+                    translation_key="featured",
                 ),
                 BrowseFolder(
                     item_id="news",
                     provider=self.instance_id,
                     path=f"{self.instance_id}://news",
-                    name="Nouveautés",
+                    name="New releases",
+                    translation_key="new_releases",
                 ),
                 BrowseFolder(
                     item_id="tops",
                     provider=self.instance_id,
                     path=f"{self.instance_id}://tops",
-                    name="Top artistes",
+                    name="Top artists",
+                    translation_key="top_artists",
                 ),
                 BrowseFolder(
                     item_id="radios",
                     provider=self.instance_id,
                     path=f"{self.instance_id}://radios",
-                    name="Radios par thème",
+                    name="Themed radios",
+                    translation_key="themed_radios",
                 ),
             ]
 
@@ -305,7 +309,8 @@ class MusicMeProvider(MusicProvider):
 
         if home_data:
             folder = RecommendationFolder(
-                name="A l'affiche",
+                name="Featured",
+                translation_key="featured",
                 item_id=f"{self.instance_id}_home",
                 provider=self.instance_id,
                 icon="mdi-star",
@@ -318,7 +323,8 @@ class MusicMeProvider(MusicProvider):
 
         if news_data:
             folder = RecommendationFolder(
-                name="Nouveautés",
+                name="New releases",
+                translation_key="new_releases",
                 item_id=f"{self.instance_id}_news",
                 provider=self.instance_id,
                 icon="mdi-new-box",
@@ -331,7 +337,8 @@ class MusicMeProvider(MusicProvider):
 
         if tops_data:
             folder = RecommendationFolder(
-                name="Top artistes",
+                name="Top artists",
+                translation_key="top_artists",
                 item_id=f"{self.instance_id}_tops",
                 provider=self.instance_id,
                 icon="mdi-trending-up",
@@ -345,6 +352,7 @@ class MusicMeProvider(MusicProvider):
         if radio_data:
             folder = RecommendationFolder(
                 name="Radios",
+                translation_key="radios",
                 item_id=f"{self.instance_id}_radios",
                 provider=self.instance_id,
                 icon="mdi-radio",

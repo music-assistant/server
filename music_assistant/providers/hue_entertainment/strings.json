@@ -8,6 +8,11 @@
       "label": "Bridge ID"
     },
     "pair": {
+      "label": "Pair with Hue Bridge",
+      "description": "Connects to the bridge and retrieves the API credentials."
+    },
+    "repair_bridge": {
+      "label": "(Re)Pair with Hue Bridge",
       "description": "Connects to the bridge and retrieves the API credentials."
     },
     "hue_username": {
@@ -31,8 +36,5 @@
   },
   "manifest": {
     "description": "Sync Philips Hue lights to music using Entertainment Mode."
-  },
-  "errors": {
-    "bridge_connect_failed": "Failed to connect to Hue bridge at {0}."
   }
 }
