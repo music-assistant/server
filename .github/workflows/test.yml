@@ -38,9 +38,10 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
       # On PRs, run only the tests affected by the changed files: a PR touching a
-      # single provider runs just that provider's tests. A change to shared code,
-      # dependencies or the CI itself runs the full suite, as do pushes, manual
-      # runs and reusable-workflow calls. Pure docs/translation PRs run nothing.
+      # single provider runs just that provider's tests. A change to shared code
+      # (incl. translations under music_assistant/), dependencies or the CI itself
+      # runs the full suite, as do pushes, manual runs and reusable-workflow calls.
+      # PRs that only touch docs or other non-code files run nothing.
       - name: Determine test scope
         id: scope
         env:
@@ -53,9 +54,11 @@ jobs:
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          # Emit both the new and (for renames) the previous path so a file moved
+          # between providers runs the source provider's tests too.
           gh api --paginate \
             "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
-            --jq '.[].filename' | python3 scripts/ci_test_scope.py
+            --jq '.[] | .filename, (.previous_filename // empty)' | python3 scripts/ci_test_scope.py
 
   lint:
     runs-on: ubuntu-latest

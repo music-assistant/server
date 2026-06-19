@@ -32,8 +32,27 @@ FULL_TRIGGER_FILES = {
 def provider_name(path: str) -> str | None:
     """Return the provider a path belongs to, or None if it is not provider-scoped."""
     parts = path.split("/")
+    # Provider package or provider test dir: <root>/providers/<X>/...
     if len(parts) >= 4 and parts[0] in ("music_assistant", "tests") and parts[1] == "providers":
         return parts[2]
+    # Flat provider test file: tests/providers/test_<X>.py
+    if (
+        len(parts) == 3
+        and parts[0] == "tests"
+        and parts[1] == "providers"
+        and parts[2].startswith("test_")
+        and parts[2].endswith(".py")
+    ):
+        return parts[2][len("test_") : -len(".py")]
+    return None
+
+
+def target_for_provider(name: str, repo_root: Path) -> str | None:
+    """Return the pytest target for a provider (test dir or flat test file), or None."""
+    if (repo_root / "tests" / "providers" / name).is_dir():
+        return f"tests/providers/{name}"
+    if (repo_root / "tests" / "providers" / f"test_{name}.py").is_file():
+        return f"tests/providers/test_{name}.py"
     return None
 
 
@@ -42,7 +61,7 @@ def decide(changed: list[str], repo_root: Path) -> tuple[str, list[str]]:
     Decide the test scope for a set of changed files.
 
     :param changed: Changed file paths, relative to the repo root.
-    :param repo_root: Repository root, used to confirm a provider has a test dir.
+    :param repo_root: Repository root, used to resolve a provider's tests.
     """
     providers: set[str] = set()
     for path in changed:
@@ -56,13 +75,14 @@ def decide(changed: list[str], repo_root: Path) -> tuple[str, list[str]]:
     if not providers:
         return "skip", []
 
-    # Only providers changed: target their test dirs. If any changed provider has
-    # no tests we cannot get a targeted signal, so fall back to the full suite.
+    # Only providers changed: target their tests. If any changed provider has no
+    # tests we cannot get a targeted signal, so fall back to the full suite.
     paths: list[str] = []
     for name in sorted(providers):
-        if not (repo_root / "tests" / "providers" / name).is_dir():
+        target = target_for_provider(name, repo_root)
+        if target is None:
             return "full", []
-        paths.append(f"tests/providers/{name}")
+        paths.append(target)
     return "partial", paths
 
 
