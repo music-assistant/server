@@ -641,7 +641,7 @@ class GenreController(MediaControllerBase[Genre]):
             DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION, {"genre_id": db_id}
         )
         if exclude_globally:
-            # Fetch the item while it is still visible (base_query filters is_excluded=1).
+            # Fetch the item while it is still visible (base_query hides is_excluded=1 rows).
             library_item = await self.get_library_item(db_id)
             await self.mass.music.database.update(
                 DB_TABLE_GENRES, {"item_id": db_id}, {"is_excluded": 1}

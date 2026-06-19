@@ -1061,7 +1061,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         item: ItemCls,
         overwrite_existing: bool = False,
     ) -> int:
-        """Add artist to library and return the database id."""
+        """Add item to library and return the database id."""
 
     @abstractmethod
     async def _update_library_item(
