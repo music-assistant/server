@@ -96,7 +96,8 @@ def format_to_option_value(fmt: SupportedAudioFormat) -> str:
 
 
 def option_value_to_format(value: str) -> tuple[AudioCodec, SendspinAudioFormat] | None:
-    """Parse option value back to (AudioCodec, SendspinAudioFormat).
+    """
+    Parse option value back to (AudioCodec, SendspinAudioFormat).
 
     :param value: Option value in format "codec:sample_rate:bit_depth:channels".
     :return: Tuple of (AudioCodec, SendspinAudioFormat) or None if parsing fails.

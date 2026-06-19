@@ -185,7 +185,8 @@ class TracksController(MediaControllerBase[Track]):
         genre: int | list[int] | None = None,
         **kwargs: Any,
     ) -> list[Track]:
-        """Get in-database tracks.
+        """
+        Get in-database tracks.
 
         :param favorite: Filter by favorite status.
         :param search: Filter by search query.

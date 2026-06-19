@@ -52,7 +52,8 @@ CACHE_CATEGORY_PREV_LIBRARY_IDS: Final[int] = 1
 
 
 class MusicProvider(Provider):
-    """Base representation of a Music Provider (controller).
+    """
+    Base representation of a Music Provider (controller).
 
     Music Provider implementations should inherit from this base model.
     """
@@ -81,7 +82,8 @@ class MusicProvider(Provider):
         media_types: list[MediaType],
         limit: int = 5,
     ) -> SearchResults:
-        """Perform search on musicprovider.
+        """
+        Perform search on musicprovider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include.
@@ -356,7 +358,8 @@ class MusicProvider(Provider):
             raise NotImplementedError
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
-        """Add track(s) to playlist.
+        """
+        Add track(s) to playlist.
 
         Only called if provider supports ProviderFeature.PLAYLIST_TRACKS_EDIT.
         """
@@ -492,7 +495,8 @@ class MusicProvider(Provider):
         return path
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911
-        """Browse this provider's items.
+        """
+        Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
         """

@@ -124,7 +124,8 @@ class AlbumsController(MediaControllerBase[Album]):
         album_types: list[AlbumType] | None = None,
         **kwargs: Any,
     ) -> list[Album]:
-        """Get in-database albums.
+        """
+        Get in-database albums.
 
         :param favorite: Filter by favorite status.
         :param search: Filter by search query.
@@ -615,7 +616,8 @@ class AlbumsController(MediaControllerBase[Album]):
         return matches
 
     async def match_providers(self, db_album: Album) -> None:
-        """Try to find match on all (streaming) providers for the provided (database) album.
+        """
+        Try to find match on all (streaming) providers for the provided (database) album.
 
         This is used to link objects of different providers/qualities together.
         """

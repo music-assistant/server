@@ -85,7 +85,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         self.mass.register_api_command("music/playlists/import_playlist", self.import_playlist)
 
     def _verify_update_allowed(self, current_item: Playlist, update: Playlist) -> None:
-        """Verify that the update is allowed from a security perspective.
+        """
+        Verify that the update is allowed from a security perspective.
 
         Prevents updating item_id for non-streaming providers to prevent path traversal attacks.
         """
@@ -400,7 +401,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         ]
 
     async def match_providers(self, db_item: Playlist) -> None:
-        """Try to find match on all (streaming) providers for the provided (database) item.
+        """
+        Try to find match on all (streaming) providers for the provided (database) item.
 
         This is used to link objects of different providers/qualities together.
         """
@@ -680,7 +682,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         await self.update_item_in_library(db_playlist_id, playlist)
 
     async def export_playlist(self, db_playlist_id: str | int) -> str:
-        """Export a playlist to M3U8 format.
+        """
+        Export a playlist to M3U8 format.
 
         :param db_playlist_id: The library database ID of the playlist.
         """
@@ -704,7 +707,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         library_matching: bool = False,
         match_providers: list[str] | None = None,
     ) -> Playlist:
-        """Import a playlist from M3U8 format.
+        """
+        Import a playlist from M3U8 format.
 
         Creates a new builtin playlist from the provided M3U data.
 

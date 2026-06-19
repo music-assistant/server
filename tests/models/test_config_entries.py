@@ -23,7 +23,8 @@ class TestRequiresReload:
     """Tests to verify requires_reload is set correctly on config entries."""
 
     def test_zeroconf_interfaces_requires_reload(self) -> None:
-        """Test that CONF_ENTRY_ZEROCONF_INTERFACES has requires_reload=True.
+        """
+        Test that CONF_ENTRY_ZEROCONF_INTERFACES has requires_reload=True.
 
         This entry is read at MusicAssistant startup to configure the zeroconf instance,
         so changes require a reload.
@@ -52,7 +53,8 @@ class TestStreamsControllerConfigEntries:
     """Tests for streams controller config entries."""
 
     def test_streams_bind_port_requires_reload(self) -> None:
-        """Test that CONF_BIND_PORT in streams controller has requires_reload=True.
+        """
+        Test that CONF_BIND_PORT in streams controller has requires_reload=True.
 
         The bind port is used when starting the webserver in setup(),
         so changes require a reload.
@@ -73,7 +75,8 @@ class TestWebserverControllerConfigEntries:
     """Tests for webserver controller config entries."""
 
     def test_webserver_bind_entries_require_reload(self) -> None:
-        """Test that webserver bind/SSL entries have requires_reload=True.
+        """
+        Test that webserver bind/SSL entries have requires_reload=True.
 
         Entries that affect the webserver's network binding or SSL configuration
         must trigger a reload when changed.
@@ -244,7 +247,8 @@ async def test_core_controller_reload_runs_post_setup(mock_mass: MockMass) -> No
 
 
 def test_config_entry_default_requires_reload_is_false() -> None:
-    """Test that ConfigEntry defaults requires_reload to False.
+    """
+    Test that ConfigEntry defaults requires_reload to False.
 
     This documents the expected default behavior from the models package.
     Config entries must explicitly set requires_reload=True if they need it.

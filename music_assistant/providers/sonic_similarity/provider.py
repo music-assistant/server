@@ -1,4 +1,5 @@
-"""SonicSimilarityPlugin — the provider class for the Sonic Similarity plugin.
+"""
+SonicSimilarityPlugin — the provider class for the Sonic Similarity plugin.
 
 See the package ``__init__.py`` docstring for an overview of the two
 engines this plugin hosts (18-dim weighted-Euclidean + optional 1024-dim
@@ -118,7 +119,8 @@ class SonicSimilarityPlugin(PluginProvider):
         self._last_seen_row_count: int = 0
 
     async def _safe_rebuild(self, label: str, rebuild_fn: Callable[[], Awaitable[None]]) -> None:
-        """Run a rebuild fn from a background task, swallowing failures into status state.
+        """
+        Run a rebuild fn from a background task, swallowing failures into status state.
 
         :param label: Engine label used as the status-row error key (e.g. "Traits", "Character").
         :param rebuild_fn: Zero-arg coroutine-returning callable to execute.
@@ -157,7 +159,8 @@ class SonicSimilarityPlugin(PluginProvider):
             await self._safe_rebuild("Character", self._rebuild_clap_index_from_database)
 
     async def handle_async_init(self) -> None:
-        """Build the 18-dim search index before the provider is registered.
+        """
+        Build the 18-dim search index before the provider is registered.
 
         Failures here raise SetupFailedError so the loader surfaces them through
         MA's standard provider-failure UI (a silent failure in loaded_in_mass
@@ -355,7 +358,8 @@ class SonicSimilarityPlugin(PluginProvider):
     def _lookup_seed_signatures(
         self, item_ids: list[str], seed_provider: str | None = None
     ) -> tuple[list[list[float]], list[str]]:
-        """Look up signatures by item_id; warn on misses; return (sigs, valid_ids) in input order.
+        """
+        Look up signatures by item_id; warn on misses; return (sigs, valid_ids) in input order.
 
         :param item_ids: Seed item ids to resolve.
         :param seed_provider: When set, disambiguates id collisions via the
@@ -552,7 +556,8 @@ class SonicSimilarityPlugin(PluginProvider):
     # ------------------------------------------------------------------
 
     async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
-        """Implement ProviderFeature.SIMILAR_TRACKS via the configured engine.
+        """
+        Implement ProviderFeature.SIMILAR_TRACKS via the configured engine.
 
         Routes to the 1024-dim CLAP engine when it is selected and its index
         loaded, otherwise the 18-dim weighted-Euclidean engine. There is no
@@ -667,7 +672,8 @@ class SonicSimilarityPlugin(PluginProvider):
     # ------------------------------------------------------------------
 
     def _find_discover_seed(self, track: Track, use_clap: bool) -> tuple[str | None, str | None]:
-        """Return (seed_id, seed_provider) for the first mapping the chosen engine indexes.
+        """
+        Return (seed_id, seed_provider) for the first mapping the chosen engine indexes.
 
         :param track: Recently-played track to walk into an indexed seed.
         :param use_clap: Test CLAP-index membership when True, else the 18-dim
@@ -690,7 +696,8 @@ class SonicSimilarityPlugin(PluginProvider):
 
     @use_cache(60, base_class=RecommendationFolder, allow_expired_cache=True)
     async def recommendations(self) -> list[RecommendationFolder]:
-        """Yield an 'Inspired by recently played' folder for the discover page.
+        """
+        Yield an 'Inspired by recently played' folder for the discover page.
 
         Returns [] when the engine isn't ready or when no recent tracks
         intersect the index — the cross-provider dispatcher then simply
@@ -895,7 +902,8 @@ class SonicSimilarityPlugin(PluginProvider):
         return Index(ndim=VECTOR_DIMENSIONS, metric=MetricKind.Cos, dtype=ScalarKind.F32)
 
     def _query_index(self, normalized_features: list[float], k: int) -> list[tuple[int, float]]:
-        """Search the index for the k nearest neighbors.
+        """
+        Search the index for the k nearest neighbors.
 
         :param normalized_features: Z-score normalized query vector.
         :param k: Number of neighbors to return.
@@ -1067,7 +1075,8 @@ class SonicSimilarityPlugin(PluginProvider):
     async def _resolve_candidate_tracks(
         self, candidates: list[Candidate], log_context: str
     ) -> list[tuple[Candidate, Track | None]]:
-        """Resolve every candidate's Track concurrently; None marks a lookup miss.
+        """
+        Resolve every candidate's Track concurrently; None marks a lookup miss.
 
         Used by metadata-driven filters and rerank — bulk scoring, never
         display. allow_update_metadata=False prevents this from queuing
@@ -1128,7 +1137,8 @@ class SonicSimilarityPlugin(PluginProvider):
         results: list[Candidate],
         weights: dict[str, float],
     ) -> list[Candidate]:
-        """Apply genre and year bonuses to re-rank candidates.
+        """
+        Apply genre and year bonuses to re-rank candidates.
 
         :param seed_item_ids: All seed track ids — genres are unioned across
             seeds, year is averaged. With one seed this collapses to the
@@ -1180,7 +1190,8 @@ class SonicSimilarityPlugin(PluginProvider):
         return scored
 
     async def _resolve_seed_track(self, seed_item_id: str) -> Track | None:
-        """Resolve a seed track from its item_id, falling back to the 'library' provider.
+        """
+        Resolve a seed track from its item_id, falling back to the 'library' provider.
 
         Used by metadata rerank to read seed genres/year — scoring, not display.
         """
@@ -1198,7 +1209,8 @@ class SonicSimilarityPlugin(PluginProvider):
         items: list[tuple[str, str, float, int]],
         debug_breakdown_map: dict[str, dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
-        """Resolve track metadata for result items.
+        """
+        Resolve track metadata for result items.
 
         :param items: List of (item_id, provider, distance, generation) tuples to resolve.
         :param debug_breakdown_map: Optional per-track debug breakdown (weighted_distance,
@@ -1241,7 +1253,8 @@ class SonicSimilarityPlugin(PluginProvider):
     # ------------------------------------------------------------------
 
     async def _rebuild_clap_index_from_database(self) -> None:
-        """Add any audio_analysis rows with clap_embedding that aren't yet indexed.
+        """
+        Add any audio_analysis rows with clap_embedding that aren't yet indexed.
 
         Idempotent and incremental: existing entries are skipped via the
         index's contains() check, so a rebuild after no new analyses is
@@ -1288,7 +1301,8 @@ class SonicSimilarityPlugin(PluginProvider):
     async def _handle_similar_clap(
         self, item_id: str, limit: int = 25, seed_provider: str | None = None
     ) -> dict[str, Any]:
-        """Return tracks whose CLAP audio embedding is closest to the seed track's.
+        """
+        Return tracks whose CLAP audio embedding is closest to the seed track's.
 
         :param item_id: Seed track identifier.
         :param limit: Max number of neighbours to return.
@@ -1336,7 +1350,8 @@ class SonicSimilarityPlugin(PluginProvider):
     # ------------------------------------------------------------------
 
     async def _get_text_encoder(self) -> Any:
-        """Return a CLAP wrapper with the text encoder loaded; lazy-load on first call.
+        """
+        Return a CLAP wrapper with the text encoder loaded; lazy-load on first call.
 
         Re-entrancy is guarded by self._text_encoder_lock so that two concurrent
         first-callers can't both pay the ~30s download + load cost.
@@ -1358,7 +1373,8 @@ class SonicSimilarityPlugin(PluginProvider):
 
     @staticmethod
     def _load_text_encoder() -> Any:
-        """Construct a CLAP wrapper with the GPT2 text encoder enabled.
+        """
+        Construct a CLAP wrapper with the GPT2 text encoder enabled.
 
         Runs on a worker thread (see _get_text_encoder). First call may block
         for tens of seconds while ~500MB of GPT2 weights download into the
@@ -1373,7 +1389,8 @@ class SonicSimilarityPlugin(PluginProvider):
     async def _handle_text_search(
         self, query: str, limit: int = 25, resolve: bool = False
     ) -> dict[str, Any]:
-        """Return tracks closest to a natural-language query in CLAP's joint space.
+        """
+        Return tracks closest to a natural-language query in CLAP's joint space.
 
         :param query: Free-text query (e.g. "super dancy disco track").
         :param limit: Max matches to return.

@@ -1,4 +1,5 @@
-"""Tests for crossfade transition timing math.
+"""
+Tests for crossfade transition timing math.
 
 Covers the ``CrossfadeTimingInfo`` contract that drives lyrics-sync correctness:
 

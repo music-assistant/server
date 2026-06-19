@@ -195,7 +195,8 @@ class LastFMRecommendationsProvider(MetadataProvider):
         return self._recommendation_folders
 
     async def get_similar_artists(self, artist: Artist, limit: int = 25) -> list[Artist]:
-        """Retrieve similar artists from Last.fm.
+        """
+        Retrieve similar artists from Last.fm.
 
         :param artist: The reference artist.
         :param limit: Maximum number of similar artists to return.
@@ -211,7 +212,8 @@ class LastFMRecommendationsProvider(MetadataProvider):
         return [a for a in resolved if a is not None]
 
     async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
-        """Retrieve similar tracks from Last.fm.
+        """
+        Retrieve similar tracks from Last.fm.
 
         :param track: The reference track.
         :param limit: Maximum number of similar tracks to return.
@@ -228,7 +230,8 @@ class LastFMRecommendationsProvider(MetadataProvider):
         return [t for t in resolved if t is not None]
 
     async def get_artist_toptracks(self, artist: Artist, limit: int = 25) -> list[Track]:
-        """Retrieve an artist's top tracks from Last.fm.
+        """
+        Retrieve an artist's top tracks from Last.fm.
 
         :param artist: The reference artist.
         :param limit: Maximum number of top tracks to return.

@@ -49,7 +49,8 @@ class WamPlayer(Player):
         mac: str,
         speaker: Speaker,
     ) -> None:
-        """Initialize the WamPlayer.
+        """
+        Initialize the WamPlayer.
 
         :param prov: The parent provider instance.
         :param ip_address: The IP address of the speaker.
@@ -123,7 +124,8 @@ class WamPlayer(Player):
     async def get_config_entries(
         self, action: str | None = None, values: dict[str, Any] | None = None
     ) -> list[ConfigEntry]:
-        """Return player-specific configuration entries.
+        """
+        Return player-specific configuration entries.
 
         :param action: Action trigger from config UI.
         :param values: The current configuration values.
@@ -161,7 +163,8 @@ class WamPlayer(Player):
         await self.playback.stop()
 
     async def play_media(self, media: PlayerMedia) -> None:
-        """Play media.
+        """
+        Play media.
 
         :param media: The media item to play.
         """
@@ -170,7 +173,8 @@ class WamPlayer(Player):
     async def play_announcement(
         self, announcement: PlayerMedia, volume_level: int | None = None
     ) -> None:
-        """Play an announcement on the player.
+        """
+        Play an announcement on the player.
 
         :param announcement: The announcement media item to play.
         :param volume_level: The volume level to play the announcement at (0..100).
@@ -221,21 +225,24 @@ class WamPlayer(Player):
             await self.mass.player_queues.resume(self.player_id)
 
     async def select_source(self, source: str) -> None:
-        """Select source.
+        """
+        Select source.
 
         :param source: The source identifier to select.
         """
         await self.playback.select_source(source)
 
     async def volume_set(self, volume_level: int) -> None:
-        """Set volume level.
+        """
+        Set volume level.
 
         :param volume_level: The volume level to set.
         """
         await self.volume.set_volume(volume_level)
 
     async def volume_mute(self, muted: bool) -> None:
-        """Set mute state.
+        """
+        Set mute state.
 
         :param muted: True to mute, False to unmute.
         """
@@ -246,7 +253,8 @@ class WamPlayer(Player):
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
-        """Handle group membership changes.
+        """
+        Handle group membership changes.
 
         :param player_ids_to_add: List of player IDs to add to the group.
         :param player_ids_to_remove: List of player IDs to remove from the group.
@@ -264,7 +272,8 @@ class WamPlayer(Player):
         self._state_update_event.set()
 
     async def await_state_change(self, check: Callable[[], bool], timeout: float) -> None:
-        """Wait for a specific condition in the state.
+        """
+        Wait for a specific condition in the state.
 
         :param check: A callable returning a boolean indicating if the condition is met.
         :param timeout: Maximum time in seconds to wait.

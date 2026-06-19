@@ -1,4 +1,5 @@
-"""Simplest client for gPodder.
+"""
+Simplest client for gPodder.
 
 Should be compatible with Nextcloud App GPodder Sync, and the original api
 of gpodder.net (mygpo) or drop-in replacements like opodsync.
@@ -36,7 +37,8 @@ class SubscriptionsGet(SubscriptionsChangeRequest):
 
 
 def action_tagger(cls: type[EpisodeAction]) -> list[str]:
-    """Use action field to distinguish classes.
+    """
+    Use action field to distinguish classes.
 
     NC Gpodder uses upper case values, opodsync lower case.
     This however does not work with a StrEnum, so plain string as action.
@@ -47,7 +49,8 @@ def action_tagger(cls: type[EpisodeAction]) -> list[str]:
 
 @dataclass(kw_only=True)
 class EpisodeAction(DataClassJSONMixin):
-    """General EpisodeAction.
+    """
+    General EpisodeAction.
 
     See https://gpoddernet.readthedocs.io/en/latest/api/reference/events.html
     """
@@ -198,7 +201,8 @@ class GPodderClient:
         raise RuntimeError(f"API GET call to {endpoint} failed.")
 
     async def get_subscriptions(self, since: int = 0) -> SubscriptionsGet | None:
-        """Get subscriptions.
+        """
+        Get subscriptions.
 
         since is unix time epoch - this may return none if there are no
         subscriptions.
@@ -216,7 +220,8 @@ class GPodderClient:
     async def get_episode_actions(
         self, since: int = 0
     ) -> tuple[list[EpisodeActionPlay | EpisodeActionNew | EpisodeActionDelete], int | None]:
-        """Get progresses or deletions. Timestamp is second return value.
+        """
+        Get progresses or deletions. Timestamp is second return value.
 
         gpodder net may filter by podcast
         https://gpoddernet.readthedocs.io/en/latest/api/reference/events.html

@@ -1,4 +1,5 @@
-"""Remote Access subcomponent for the Webserver Controller.
+"""
+Remote Access subcomponent for the Webserver Controller.
 
 This module manages WebRTC-based remote access to Music Assistant instances.
 It connects to a signaling server and handles incoming WebRTC connections,
@@ -153,7 +154,8 @@ class RemoteAccessManager:
             self.gateway = None
 
     async def _on_providers_updated(self, event: MassEvent) -> None:
-        """Handle providers updated event to detect HA Cloud status changes.
+        """
+        Handle providers updated event to detect HA Cloud status changes.
 
         :param event: The providers updated event.
         """
@@ -169,7 +171,8 @@ class RemoteAccessManager:
             await self._schedule_start()
 
     async def _get_ha_cloud_status(self) -> tuple[bool, list[dict[str, str]] | None]:
-        """Get Home Assistant Cloud status and ICE servers.
+        """
+        Get Home Assistant Cloud status and ICE servers.
 
         :return: Tuple of (ha_cloud_available, ice_servers).
         """
@@ -203,7 +206,8 @@ class RemoteAccessManager:
         return False, None
 
     async def get_ice_servers(self) -> list[dict[str, str]]:
-        """Get ICE servers for WebRTC connections.
+        """
+        Get ICE servers for WebRTC connections.
 
         Returns HA Cloud TURN servers if available, otherwise returns public STUN servers.
         This method can be called regardless of whether remote access is enabled.
@@ -264,7 +268,8 @@ class RemoteAccessManager:
             )
 
         async def configure_remote_access(enabled: bool) -> RemoteAccessInfo:
-            """Configure remote access settings.
+            """
+            Configure remote access settings.
 
             :param enabled: Enable or disable remote access.
             """

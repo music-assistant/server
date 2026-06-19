@@ -57,7 +57,8 @@ class PodcastsController(MediaControllerBase[Podcast]):
         genre: int | list[int] | None = None,
         **kwargs: Any,
     ) -> list[Podcast]:
-        """Get in-database podcasts.
+        """
+        Get in-database podcasts.
 
         :param favorite: Filter by favorite status.
         :param search: Filter by search query.
@@ -322,7 +323,8 @@ class PodcastsController(MediaControllerBase[Podcast]):
         return matches
 
     async def match_providers(self, db_podcast: Podcast) -> None:
-        """Try to find match on all (streaming) providers for the provided (database) podcast.
+        """
+        Try to find match on all (streaming) providers for the provided (database) podcast.
 
         This is used to link objects of different providers/qualities together.
         """

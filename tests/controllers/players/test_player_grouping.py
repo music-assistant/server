@@ -1,4 +1,5 @@
-"""Tests for player grouping logic (independent of protocols).
+"""
+Tests for player grouping logic (independent of protocols).
 
 This module tests the core grouping behavior including:
 - can_group_with filtering logic
@@ -103,7 +104,8 @@ class TestCanGroupWithBasics:
         assert "player_b" not in player_a.state.can_group_with
 
     def test_playing_players_with_different_source_excluded(self, mock_mass: MagicMock) -> None:
-        """Test that players playing different sources are NOT excluded (behavior changed).
+        """
+        Test that players playing different sources are NOT excluded (behavior changed).
 
         Note: Previously, players with different active sources were excluded from grouping,
         but this was removed as it was difficult to track reliably.
@@ -337,7 +339,8 @@ class TestProviderInstanceIdExpansion:
 
 
 class TestFinalActiveGroupNewModel:
-    """The active_group derivation respects is_active_session and the powered signal.
+    """
+    The active_group derivation respects is_active_session and the powered signal.
 
     Verifies the post-refactor contract:
 

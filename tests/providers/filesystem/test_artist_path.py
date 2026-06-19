@@ -95,7 +95,8 @@ def music_tree(tmp_path: Path) -> str:
 
 
 async def test_stale_artist_path_does_not_fail_track_parse(music_tree: str) -> None:
-    """A stale artist path stored in the library must not fail parsing the track.
+    """
+    A stale artist path stored in the library must not fail parsing the track.
 
     Regression test: the artist folder was renamed from display-name style
     ("Nina Simone") to sort-name style ("Simone, Nina"), but the library still

@@ -302,7 +302,8 @@ class WebsocketClientHandler:
                 await self.wsock.send_str(message)
 
     async def _send_message(self, message: MessageType) -> None:
-        """Send a message to the client (for large response messages).
+        """
+        Send a message to the client (for large response messages).
 
         Runs JSON serialization in executor to avoid blocking for large messages.
         Closes connection if the client is not reading the messages.
@@ -333,7 +334,8 @@ class WebsocketClientHandler:
             self._cancel()
 
     def _send_message_sync(self, message: MessageType) -> None:
-        """Send a message from a sync context (for small messages like events).
+        """
+        Send a message from a sync context (for small messages like events).
 
         Serializes inline without executor overhead since events are typically small.
         """
@@ -355,7 +357,8 @@ class WebsocketClientHandler:
             self._cancel()
 
     async def _handle_auth_command(self, msg: CommandMessage) -> None:
-        """Handle WebSocket authentication command.
+        """
+        Handle WebSocket authentication command.
 
         :param msg: The auth command message with access token.
         """
@@ -426,7 +429,8 @@ class WebsocketClientHandler:
         self.webserver.register_websocket_client(self)
 
     async def _handle_set_locale_command(self, msg: CommandMessage) -> None:
-        """Handle the WebSocket set_locale command (updates the connection's UI locale).
+        """
+        Handle the WebSocket set_locale command (updates the connection's UI locale).
 
         :param msg: The set_locale command message; expects a "locale" arg.
         """

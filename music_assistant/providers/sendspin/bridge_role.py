@@ -1,4 +1,5 @@
-"""Reusable bridge player role for external player bridges.
+"""
+Reusable bridge player role for external player bridges.
 
 Provides a BridgePlayerRole that receives audio from Sendspin's PushStream
 and forwards it to an external player via callbacks. This role can be used
@@ -31,7 +32,8 @@ BRIDGE_ROLE_ID = "player@_bridge"
 
 
 class BridgePlayerRole(Role):
-    """Custom Sendspin player role for external player bridges.
+    """
+    Custom Sendspin player role for external player bridges.
 
     This role receives audio from Sendspin's PushStream and forwards it
     to an external player via callbacks. It bypasses the normal WebSocket
@@ -42,7 +44,8 @@ class BridgePlayerRole(Role):
     """
 
     def __init__(self, client: SendspinClient) -> None:
-        """Initialize the bridge player role.
+        """
+        Initialize the bridge player role.
 
         :param client: The Sendspin client this role belongs to.
         """
@@ -70,7 +73,8 @@ class BridgePlayerRole(Role):
         on_stream_end: Callable[[], None],
         initial_volume: int = 100,
     ) -> None:
-        """Wire up bridge callbacks after role creation.
+        """
+        Wire up bridge callbacks after role creation.
 
         :param on_audio_chunk: Callback to receive audio chunks.
         :param on_volume_change: Callback when volume level changes.

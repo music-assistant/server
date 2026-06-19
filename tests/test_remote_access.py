@@ -358,7 +358,8 @@ async def test_webrtc_gateway_handle_ice_candidate_without_session(mock_certific
 
 
 async def test_create_peer_connection_with_certificate() -> None:
-    """Test that create_peer_connection_with_certificate correctly sets the custom certificate.
+    """
+    Test that create_peer_connection_with_certificate correctly sets the custom certificate.
 
     This verifies the fragile name-mangled private attribute access works correctly
     and that our custom certificate fully replaces the auto-generated one, which is

@@ -199,7 +199,8 @@ class TestRecommendations:
     async def test_requests_partial_plays_from_recently_played(
         self, make_plugin: Callable[..., Any], mock_mass: MagicMock
     ) -> None:
-        """recommendations() asks for partial plays and does NOT filter on user_initiated.
+        """
+        recommendations() asks for partial plays and does NOT filter on user_initiated.
 
         MA sets user_initiated=True only for items the user explicitly chose (a
         container such as an album, artist, playlist or genre, or a single track played

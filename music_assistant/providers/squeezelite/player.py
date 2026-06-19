@@ -755,7 +755,8 @@ class SqueezelitePlayer(Player):
 
 
 async def pause_and_unpause(slim_client: SlimClient, pause_duration_ms: int) -> None:
-    """Pause player and schedule unpause after specified duration.
+    """
+    Pause player and schedule unpause after specified duration.
 
     This is used instead of pause_for because WiiM devices
     don't properly auto-unpause after pause_for interval.

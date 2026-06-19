@@ -25,7 +25,8 @@ if TYPE_CHECKING:
 
 
 class TrackedPlayerState(TypedDict, total=False):
-    """Tracked state for the Snapcast MA player.
+    """
+    Tracked state for the Snapcast MA player.
 
     It is used for change detection and state synchronization, and may be
     partially populated depending on which information is
@@ -393,7 +394,8 @@ class SnapCastPlayer(Player):
                 break
 
     async def _process_snapcast_client_state(self) -> bool:
-        """Process the latest Snapcast client state and apply changes to this player.
+        """
+        Process the latest Snapcast client state and apply changes to this player.
 
         Returns:
         True if changes were applied and a state update should be emitted via

@@ -89,7 +89,8 @@ def test_info_label_includes_base_url(mock_mass: MagicMock) -> None:
 def test_info_label_normalises_mount_path_without_leading_slash(
     mock_mass: MagicMock,
 ) -> None:
-    """A user-typed ``mcp/v1`` (no leading slash) must still render a valid URL.
+    """
+    A user-typed ``mcp/v1`` (no leading slash) must still render a valid URL.
 
     Regression for upstream PR #3858 Copilot comment: the runtime normalises
     the mount path, but the info label did not — so the displayed endpoint

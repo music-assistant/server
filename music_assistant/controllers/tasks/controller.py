@@ -234,7 +234,8 @@ class TasksController(CoreController):
         priority: bool = False,
         max_log_lines: int = DEFAULT_TASK_LOG_LINES,
     ) -> BackgroundTask:
-        """Create and queue a long running background task.
+        """
+        Create and queue a long running background task.
 
         :param name: Human-readable display name for the task.
         :param handler: Async callable that performs the actual work.
@@ -297,7 +298,8 @@ class TasksController(CoreController):
         allow_retry: bool = False,
         allow_cancel: bool = True,
     ) -> BackgroundTask:
-        """Register or update a recurring scheduled task.
+        """
+        Register or update a recurring scheduled task.
 
         :param task_id: Deterministic id for the scheduled task.
         :param name: Human-readable display name for the task.
@@ -359,7 +361,8 @@ class TasksController(CoreController):
         return task_info
 
     def unregister_scheduled_task(self, task_id: str, clear_persisted_state: bool = True) -> None:
-        """Unregister a recurring scheduled task and cancel any active work.
+        """
+        Unregister a recurring scheduled task and cancel any active work.
 
         If a stale ad-hoc task exists with the same deterministic task id,
         remove that too so provider/task re-registration can recover cleanly.
@@ -388,7 +391,8 @@ class TasksController(CoreController):
     def update_task_progress(
         self, task_id: str, progress: int | None, text: str | None = None
     ) -> None:
-        """Update progress for a task.
+        """
+        Update progress for a task.
 
         :param task_id: The id of the task to update.
         :param progress: Progress percentage (0-100) or None to clear.
@@ -405,7 +409,8 @@ class TasksController(CoreController):
         self._schedule_task_update()
 
     def update_task_progress_text(self, task_id: str, text: str | None) -> None:
-        """Update progress text for a task without changing the percentage.
+        """
+        Update progress text for a task without changing the percentage.
 
         :param task_id: The id of the task to update.
         :param text: Progress description text or None to clear.
@@ -420,7 +425,8 @@ class TasksController(CoreController):
         self._schedule_task_update()
 
     def update_current_task_progress(self, progress: int | None, text: str | None = None) -> None:
-        """Update progress for the task active in the current async context.
+        """
+        Update progress for the task active in the current async context.
 
         :param progress: Progress percentage (0-100) or None to clear.
         :param text: Optional progress description text.
@@ -430,7 +436,8 @@ class TasksController(CoreController):
         self.update_task_progress(task_id, progress, text)
 
     def add_task_failure(self, task_id: str, message: str) -> None:
-        """Record a non-fatal failure for a task.
+        """
+        Record a non-fatal failure for a task.
 
         :param task_id: The id of the task to record the failure on.
         :param message: Human-readable failure description.
@@ -453,7 +460,8 @@ class TasksController(CoreController):
         self._schedule_task_update()
 
     def get_tasks_by_metadata(self, **metadata: TaskMetadataValue) -> list[BackgroundTask]:
-        """Return tasks matching the given metadata key/value pairs.
+        """
+        Return tasks matching the given metadata key/value pairs.
 
         :param metadata: Key/value pairs that must all match on a task's metadata.
         """

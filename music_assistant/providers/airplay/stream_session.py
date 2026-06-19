@@ -35,7 +35,8 @@ class AirPlayStreamSession:
         sync_clients: list[AirPlayPlayer],
         pcm_format: AudioFormat,
     ) -> None:
-        """Initialize AirPlayStreamSession.
+        """
+        Initialize AirPlayStreamSession.
 
         :param airplay_provider: The AirPlay provider instance.
         :param sync_clients: List of AirPlay players to stream to.
@@ -151,7 +152,8 @@ class AirPlayStreamSession:
             await airplay_player.stream.stop(force=True)
 
     async def add_client(self, airplay_player: AirPlayPlayer) -> None:
-        """Add a sync client to the session as a late joiner.
+        """
+        Add a sync client to the session as a late joiner.
 
         Uses the PCM ring buffer to prime the late joiner's pipeline so it
         starts playing quickly. All work happens under the lock to ensure
@@ -315,7 +317,8 @@ class AirPlayStreamSession:
             )
 
     async def _write_chunk_to_all_players(self, chunk: bytes) -> bool:
-        """Write a chunk to all connected players.
+        """
+        Write a chunk to all connected players.
 
         :return: True if there are still running clients, False otherwise.
         """

@@ -1,4 +1,5 @@
-"""Tests for the crossfade volume-normalization pinning (get_queue_item_stream override).
+"""
+Tests for the crossfade volume-normalization pinning (get_queue_item_stream override).
 
 In per-item crossfade mode the next track is streamed twice: once as the crossfade fade-in
 (at prep time) and once as its own body. If the track's loudness measurement lands between

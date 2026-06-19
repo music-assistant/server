@@ -1,4 +1,5 @@
-"""Smart Playlist Plugin Provider for Music Assistant.
+"""
+Smart Playlist Plugin Provider for Music Assistant.
 
 Allows creating rule-based playlists (dynamic or fixed) from library tracks,
 filtered by genres, artists, albums, favorites, popularity and similar tracks.
@@ -227,7 +228,8 @@ class SmartPlaylistProvider(PluginProvider):
         return self._build_playlist(resolved_id, rules)
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
-        """Evaluate rules and return tracks.
+        """
+        Evaluate rules and return tracks.
 
         Returns a full batch on page 0; empty list on subsequent pages. Dynamic playlists
         return a bounded buffer (``DYNAMIC_PLAYLIST_SAMPLE_SIZE``) cached for
@@ -322,7 +324,8 @@ class SmartPlaylistProvider(PluginProvider):
         rules: dict[str, Any],
         is_dynamic: bool = True,
     ) -> Playlist:
-        """Create a new smart playlist with the given rules.
+        """
+        Create a new smart playlist with the given rules.
 
         :param name: Name for the new playlist.
         :param rules: Dictionary of SmartPlaylistRules fields.
@@ -358,7 +361,8 @@ class SmartPlaylistProvider(PluginProvider):
         rules: dict[str, Any],
         count: int | None = None,
     ) -> Playlist:
-        """Evaluate rules once and create a static (non-dynamic) builtin playlist.
+        """
+        Evaluate rules once and create a static (non-dynamic) builtin playlist.
 
         :param name: Name for the new playlist.
         :param rules: Dictionary of SmartPlaylistRules fields.
@@ -402,7 +406,8 @@ class SmartPlaylistProvider(PluginProvider):
         return final_playlist
 
     async def get_smart_playlist_rules(self, playlist_id: str) -> dict[str, Any] | None:
-        """Return the smart playlist rules for the given playlist id.
+        """
+        Return the smart playlist rules for the given playlist id.
 
         :param playlist_id: Provider playlist id (UUID) or library DB id (integer string).
         :return: Rules dict or None if not found.
@@ -420,7 +425,8 @@ class SmartPlaylistProvider(PluginProvider):
         playlist_id: str,
         rules: dict[str, Any],
     ) -> None:
-        """Update the rules for an existing smart playlist.
+        """
+        Update the rules for an existing smart playlist.
 
         :param playlist_id: Provider playlist id (UUID) or library DB id (integer string).
         :param rules: Updated SmartPlaylistRules fields as dict.
@@ -461,7 +467,8 @@ class SmartPlaylistProvider(PluginProvider):
         ]
 
     async def count_tracks(self, rules: dict[str, Any]) -> dict[str, Any]:
-        """Return the track count and approximate total duration for the given rules.
+        """
+        Return the track count and approximate total duration for the given rules.
 
         :param rules: SmartPlaylistRules fields as dict.
         :return: Dict with ``count`` (int) and ``duration_seconds`` (int).
@@ -479,7 +486,8 @@ class SmartPlaylistProvider(PluginProvider):
         rules: dict[str, Any],
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """Return a preview of tracks matching the given rules.
+        """
+        Return a preview of tracks matching the given rules.
 
         :param rules: SmartPlaylistRules fields as dict.
         :param limit: Maximum number of preview tracks to return.
