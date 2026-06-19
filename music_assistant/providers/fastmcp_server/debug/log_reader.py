@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING
 
 from fastmcp.exceptions import ToolError
 
+from music_assistant.helpers.datetime import now
+
 from ..models import LogLine, LogTailResult
 
 if TYPE_CHECKING:
@@ -113,7 +115,7 @@ class SafeLogTail:
             raise ToolError(f"log file {name!r} not found")
 
         component_filter = re.compile(component_regex) if component_regex else None
-        now = datetime.now().astimezone()
+        current_time = now()
 
         raw_lines, bytes_scanned, truncated = self._read_last_lines(path, lines)
 
@@ -131,7 +133,7 @@ class SafeLogTail:
                     when = datetime.fromisoformat(parsed.timestamp)
                 except ValueError:
                     continue
-                if (now - when).total_seconds() > since_seconds:
+                if (current_time - when).total_seconds() > since_seconds:
                     continue
             out.append(parsed)
 

@@ -42,6 +42,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.helpers.datetime import utc
 from music_assistant.mass import MusicAssistant
 
 CACHE_DOMAIN = "audible"
@@ -91,7 +92,7 @@ async def refresh_access_token_compat(
         resp_dict = await resp.json()
 
     expires_in_sec = int(resp_dict.get("expires_in", 3600))
-    expires = (datetime.now(UTC) + timedelta(seconds=expires_in_sec)).timestamp()
+    expires = (utc() + timedelta(seconds=expires_in_sec)).timestamp()
 
     # Handle new format (actor_access_token) or fall back to legacy (access_token)
     access_token = resp_dict.get("actor_access_token") or resp_dict.get("access_token")

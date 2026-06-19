@@ -6,7 +6,6 @@ import asyncio
 import logging
 import random
 from collections.abc import AsyncGenerator, Coroutine, Sequence
-from datetime import UTC, datetime
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
@@ -35,6 +34,7 @@ from music_assistant_models.media_items import (
 from PIL import Image as PilImage
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.datetime import utc
 from music_assistant.models.music_provider import MusicProvider
 
 from .api_client import KionMusicClient
@@ -2248,7 +2248,7 @@ class KionMusicProvider(MusicProvider):
         :return: RecommendationFolder with seasonal playlists, or None if unavailable.
         """
         # Determine current season tag
-        current_month = datetime.now(tz=UTC).month
+        current_month = utc().month
         seasonal_tag = TAG_SEASONAL_MAP.get(current_month, "autumn")
 
         # Validate the seasonal tag; fall back to autumn if not available

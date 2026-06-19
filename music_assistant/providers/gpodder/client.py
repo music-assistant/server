@@ -18,6 +18,8 @@ from mashumaro.config import BaseConfig
 from mashumaro.mixins.json import DataClassJSONMixin
 from mashumaro.types import Discriminator
 
+from music_assistant.helpers.datetime import utc
+
 
 # https://gpoddernet.readthedocs.io/en/latest/api/reference/subscriptions.html#upload-subscription-changes
 @dataclass(kw_only=True)
@@ -284,9 +286,7 @@ class GPodderClient:
         duration_s: float,
     ) -> None:
         """Update progress."""
-        utc_timestamp = (
-            datetime.datetime.now(datetime.UTC).replace(microsecond=0, tzinfo=None).isoformat()
-        )
+        utc_timestamp = utc().replace(microsecond=0, tzinfo=None).isoformat()
 
         episode_action: EpisodeActionNew | EpisodeActionPlay
         if position_s == 0:

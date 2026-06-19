@@ -21,6 +21,8 @@ from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
+from music_assistant.helpers.datetime import now
+
 from ..debug.event_buffer import EventBuffer
 from ..debug.inspect_serializer import dump
 from ..debug.log_reader import SafeLogTail
@@ -600,7 +602,7 @@ def _register_health_tool(
                 subscribed_at = datetime.fromisoformat(stats.subscribed_since)
                 elapsed_min = max(
                     1.0 / 60,
-                    (datetime.now().astimezone() - subscribed_at).total_seconds() / 60.0,
+                    (now() - subscribed_at).total_seconds() / 60.0,
                 )
                 events_per_min = {
                     et: round(count / elapsed_min, 2) for et, count in stats.by_type.items()
