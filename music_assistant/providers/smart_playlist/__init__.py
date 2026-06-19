@@ -861,7 +861,9 @@ class SmartPlaylistProvider(PluginProvider):
         )
 
         # Apply genres to tracks
-        for (track_id, tracks_list), genres in zip(track_id_to_tracks.items(), genre_results):
+        for (track_id, tracks_list), genres in zip(
+            track_id_to_tracks.items(), genre_results, strict=True
+        ):
             if not genres:
                 continue
             for track in tracks_list:
