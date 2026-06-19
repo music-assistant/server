@@ -250,12 +250,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
     async def collections(
         self,
     ) -> list[AudiobookCollection]:
-        """
-        Get all available audiobook collections.
-
-        :param limit: Maximum number of items to return.
-        :param offset: Number of items to skip.
-        """
+        """Get all available audiobook collections."""
         # key is the collections' title
         collections_dict: dict[str, list[Audiobook]] = {}
         audiobooks_with_collections = await self.get_library_items_by_query(
