@@ -214,7 +214,7 @@ def main() -> None:
     soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     if soft < hard:
         resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
-    
+
     data_dir = args.data_dir
     cache_dir = args.cache_dir
 
