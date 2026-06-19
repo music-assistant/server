@@ -178,7 +178,7 @@ async def webdav_test_connection(
     :raises LoginFailed: Authentication failed.
     :raises SetupFailedError: Connection or configuration error.
     """
-    auth_header = aiohttp.encode_basic_auth(username, password) if username and password else None
+    auth_header = aiohttp.encode_basic_auth(username, password or "") if username else None
 
     try:
         await webdav_propfind(session, base_url, depth=0, timeout=timeout, auth_header=auth_header)
