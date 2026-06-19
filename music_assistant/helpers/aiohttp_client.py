@@ -17,6 +17,7 @@ from aiohttp.hdrs import USER_AGENT
 from aiohttp_asyncmdnsresolver.api import AsyncDualMDNSResolver
 from aiohttp_socks import ProxyConnector
 from music_assistant_models.enums import EventType
+from yarl import URL
 
 from music_assistant.constants import APPLICATION_NAME
 
@@ -32,6 +33,17 @@ if TYPE_CHECKING:
 
 MAXIMUM_CONNECTIONS = 4096
 MAXIMUM_CONNECTIONS_PER_HOST = 100
+
+
+def encoded_request_url(url: str) -> str | URL:
+    """
+    Return a URL safe to pass to aiohttp without altering existing percent-encoding.
+
+    :param url: The raw request URL.
+    """
+    # already-encoded URLs (e.g. %3F in a query value) must reach the server unchanged or
+    # auth-bearing stream URLs fail with a 401; leave plain URLs for yarl to normalise
+    return URL(url, encoded=True) if "%" in url else url
 
 
 def create_clientsession(

@@ -28,6 +28,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.helpers.aiohttp_client import encoded_request_url
 from music_assistant.helpers.util import detect_charset, try_parse_int
 
 if TYPE_CHECKING:
@@ -295,7 +296,7 @@ async def fetch_playlist(
     """Fetch and parse a remote M3U or PLS playlist."""
     try:
         async with mass.http_session.get(
-            url, allow_redirects=True, timeout=ClientTimeout(total=5)
+            encoded_request_url(url), allow_redirects=True, timeout=ClientTimeout(total=5)
         ) as resp:
             try:
                 raw_data = await resp.content.read(64 * 1024)
