@@ -6,7 +6,7 @@
     },
     "clear_auth": {
       "label": "Clear authentication",
-      "description": "Clear the current authentication details.",
+      "description": "[%key:common::config_entries::clear_auth::description%]",
       "action_label": "Clear authentication"
     },
     "client_id": {

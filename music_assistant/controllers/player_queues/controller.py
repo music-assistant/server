@@ -2334,13 +2334,18 @@ class PlayerQueuesController(CoreController):
                 # wait for the item that was loaded in the buffer is the actually playing item
                 # this prevents a race condition when we preload the next item too soon
                 # while the player is actually preloading the previously enqueued item.
-                if not queue.current_item:
+                current_item = queue.current_item
+                if current_item is None:
                     return  # guard
-                retries = max(120, (queue.current_item.duration or 0) + 10)
-                while retries > 0:
-                    if queue.current_item.queue_item_id == item_id_in_buffer:
+                retries = max(120, (current_item.duration or 0) + 10)
+                for _ in range(retries):
+                    # the queue can drain to empty while we sleep (e.g. all remaining
+                    # items skipped as unplayable); stop waiting once it has no current item
+                    current_item = queue.current_item
+                    if current_item is None:
+                        return
+                    if current_item.queue_item_id == item_id_in_buffer:
                         break
-                    retries -= 1
                     await asyncio.sleep(1)
                 if next_item := await self.load_next_queue_item(queue_id, item_id_in_buffer):
                     self.logger.debug(
