@@ -6,7 +6,7 @@ import asyncio
 import inspect
 from collections.abc import AsyncGenerator, Mapping
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.audio_analysis import AudioAnalysisCoverage
@@ -15,7 +15,10 @@ from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import AudioFormat
 
 import music_assistant.controllers.streams.audio_analysis as audio_analysis_mod
-from music_assistant.constants import DEFAULT_BACKGROUND_SCAN_CONCURRENCY
+from music_assistant.constants import (
+    DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
+    _default_background_scan_concurrency,
+)
 from music_assistant.controllers.streams.audio_analysis import (
     LOUDNESS_ANALYSIS_DOMAIN,
     SMART_FADES_ANALYSIS_DOMAIN,
@@ -45,6 +48,50 @@ async def test_distribute_chunk_calls_all_providers() -> None:
 
     p1.process_pcm_chunk.assert_awaited_once_with(session_key, b"\x00" * 1024)
     p2.process_pcm_chunk.assert_awaited_once_with(session_key, b"\x00" * 1024)
+
+
+def test_ensure_inference_runtime_configured_is_idempotent() -> None:
+    """The inference runtime (torch + native BLAS caps) is configured once per controller."""
+    controller = _make_controller()
+    with (
+        patch("torch.set_num_threads") as set_threads,
+        patch("torch.set_num_interop_threads"),
+        patch("threadpoolctl.threadpool_limits") as blas_limits,
+        patch("torch.backends.nnpack.set_flags"),
+    ):
+        controller.ensure_inference_runtime_configured()
+        controller.ensure_inference_runtime_configured()
+    set_threads.assert_called_once()
+    blas_limits.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("cpu_count", "expected_permits"),
+    [(2, 1), (4, 2), (8, 4), (16, 8)],
+)
+@pytest.mark.asyncio
+async def test_analysis_concurrency_capped_at_half_cores(
+    cpu_count: int, expected_permits: int
+) -> None:
+    """The analysis concurrency cap is half the cores (min 1) on every host."""
+    controller = _make_controller()
+    with (
+        patch(
+            "music_assistant.controllers.streams.audio_analysis.os.process_cpu_count",
+            return_value=cpu_count,
+        ),
+        patch("torch.set_num_threads"),
+        patch("torch.set_num_interop_threads"),
+        patch("threadpoolctl.threadpool_limits"),
+        patch("torch.backends.nnpack.set_flags"),
+    ):
+        controller.ensure_inference_runtime_configured()
+    semaphore = controller.analysis_semaphore
+    assert isinstance(semaphore, asyncio.Semaphore)
+    # Exactly `expected_permits` acquires exhaust the cap.
+    for _ in range(expected_permits):
+        await semaphore.acquire()
+    assert semaphore.locked()
 
 
 @pytest.mark.asyncio
@@ -98,10 +145,10 @@ def test_get_scan_concurrency_returns_default_on_unset() -> None:
 
 
 def test_get_scan_concurrency_clamps_to_max() -> None:
-    """Values above 8 are clamped to 8."""
+    """Values above 16 are clamped to 16."""
     controller = _make_controller()
     controller.mass.config.get_raw_core_config_value = MagicMock(return_value=99)  # type: ignore[method-assign]
-    assert controller._get_scan_concurrency() == 8
+    assert controller._get_scan_concurrency() == 16
 
 
 def test_get_scan_concurrency_clamps_to_min() -> None:
@@ -113,12 +160,22 @@ def test_get_scan_concurrency_clamps_to_min() -> None:
     assert controller._get_scan_concurrency() == 1
 
 
+@pytest.mark.parametrize(
+    ("cpu_count", "expected"),
+    [(1, 1), (2, 1), (3, 1), (4, 2), (8, 2), (16, 2)],
+)
+def test_default_background_scan_concurrency(cpu_count: int, expected: int) -> None:
+    """Background scan defaults to 1 below 4 cores, 2 at/above (never more than 2)."""
+    with patch("music_assistant.constants.os.process_cpu_count", return_value=cpu_count):
+        assert _default_background_scan_concurrency() == expected
+
+
 def _make_stream_mock(chunks: list[bytes]) -> object:
     """Return a get_media_stream mock that yields the given chunks."""
 
     async def _stream(
         _streamdetails: object, _pcm_format: object, **_kwargs: object
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         for chunk in chunks:
             yield chunk
 
@@ -212,7 +269,7 @@ async def test_background_streaming_ffmpeg_startup_failure() -> None:
     p.start_analysis = AsyncMock(return_value=True)
     controller.mass.get_provider = MagicMock(return_value=p)  # type: ignore[method-assign]
 
-    def _failing_stream(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes, None]:
+    def _failing_stream(*_args: object, **_kwargs: object) -> AsyncGenerator[bytes]:
         raise RuntimeError("ffmpeg startup failed")
 
     controller.mass.streams.audio.get_media_stream = _failing_stream  # type: ignore[method-assign]
@@ -366,11 +423,54 @@ async def test_find_candidates_handles_sqlite_row_without_get(
     ]
     controller.mass.music.database.get_rows_from_query = AsyncMock(return_value=rows)  # type: ignore[method-assign]
 
-    result = await controller._find_candidates_missing_analysis(["loudness_analysis"], 100)
+    result = await controller._find_candidates_missing_analysis({"loudness_analysis": 1}, 100)
 
     assert len(result) == 1
     assert result[0]["item_id"] == "track-1"
     assert result[0]["missing_domains"] == ["loudness_analysis"]
+
+
+@pytest.mark.asyncio
+async def test_find_candidates_query_gates_on_current_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    The candidate query must treat stale-version rows as needing re-analysis.
+
+    The NOT EXISTS gate may only count a stored analysis row as up-to-date when
+    its analysis_version is non-NULL and >= the provider's current version, so a
+    provider bumping analysis_version re-surfaces previously analyzed tracks.
+    """
+    controller = _make_controller()
+    p1 = _make_aa_provider("prov-1", available=True)
+    p1.domain = "sonic_analysis"
+    monkeypatch.setattr(
+        controller.__class__,
+        "providers",
+        property(lambda _self: [p1]),
+    )
+
+    fs_prov = MagicMock()
+    fs_prov.domain = "filesystem_local"
+    fs_prov.available = True
+    controller.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
+
+    captured: dict[str, Any] = {}
+
+    async def _capture(query: str, params: dict[str, Any], limit: int) -> list[Any]:  # noqa: ARG001
+        captured["query"] = query
+        captured["params"] = params
+        return []
+
+    controller.mass.music.database.get_rows_from_query = AsyncMock(side_effect=_capture)  # type: ignore[method-assign]
+
+    await controller._find_candidates_missing_analysis({"sonic_analysis": 3}, 0)
+
+    sql = captured["query"]
+    assert "aa.analysis_version IS NOT NULL" in sql
+    assert "aa.analysis_version >= possible.current_version" in sql
+    assert captured["params"]["ver_0"] == 3
+    assert captured["params"]["aa_0"] == "sonic_analysis"
 
 
 @pytest.mark.asyncio
@@ -1032,7 +1132,7 @@ async def test_count_candidates_missing_analysis_zero_without_filesystem() -> No
     c, _ = _stub_controller()
     c.mass.get_providers = MagicMock(return_value=[])  # type: ignore[method-assign]
 
-    assert await c._count_candidates_missing_analysis("sonic_analysis") == 0
+    assert await c._count_candidates_missing_analysis("sonic_analysis", 1) == 0
 
 
 @pytest.mark.asyncio
@@ -1045,14 +1145,20 @@ async def test_count_candidates_missing_analysis_queries_with_available_filesyst
     fs_prov.available = True
     c.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
 
-    result = await c._count_candidates_missing_analysis("sonic_analysis")
+    result = await c._count_candidates_missing_analysis("sonic_analysis", 2)
 
     assert result == 7
     db.get_count_from_query.assert_awaited_once()
     sql, params = db.get_count_from_query.await_args.args
     assert "NOT EXISTS" in sql
+    assert "aa.analysis_version IS NOT NULL" in sql
+    assert "aa.analysis_version >= :current_version" in sql
     assert f"'{domain}'" in sql
-    assert params == {"media_type": MediaType.TRACK.value, "aa_domain": "sonic_analysis"}
+    assert params == {
+        "media_type": MediaType.TRACK.value,
+        "aa_domain": "sonic_analysis",
+        "current_version": 2,
+    }
 
 
 def test_controller_has_no_provider_specific_extra_data_keys() -> None:

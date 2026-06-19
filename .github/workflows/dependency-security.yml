@@ -33,7 +33,7 @@ jobs:
       license: ${{ steps.safety_check.outputs.license }}
     steps:
       - name: Check out code from GitHub
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0 # Need full history for diff

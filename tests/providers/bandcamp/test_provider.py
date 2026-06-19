@@ -750,7 +750,7 @@ async def test_get_library_tracks_success(provider: BandcampProvider) -> None:
         patch.object(provider, "get_album_tracks", new_callable=AsyncMock) as mock_get_tracks,
     ):
         # Make get_library_albums an async generator
-        async def mock_albums_gen() -> AsyncGenerator[Mock, None]:
+        async def mock_albums_gen() -> AsyncGenerator[Mock]:
             yield Mock(item_id="123-456")
 
         mock_get_albums.return_value = mock_albums_gen()

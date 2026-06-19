@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
@@ -25,10 +26,13 @@ from .constants import (
     CONF_ENTRY_SGP_NOTE,
     EXTRA_FEATURES_FROM_MEMBERS,
     IDLE_GRACE_SECONDS,
+    PLAYBACK_START_TIMEOUT,
     PROVIDERS_WITH_DYNAMIC_LEADER_SWITCH,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from music_assistant_models.player import PlayerSource
 
     from .provider import SyncGroupProvider
@@ -269,7 +273,7 @@ class SyncGroupPlayer(Player):
         }
         possible_players = sorted(
             [
-                ConfigValueOption(x.display_name, x.player_id)
+                ConfigValueOption(x.player_id, title=x.display_name)
                 for x in self.mass.players.all_players(True, False)
                 if x.type != PlayerType.GROUP
                 and (
@@ -280,7 +284,7 @@ class SyncGroupPlayer(Player):
                     )
                 )
             ],
-            key=lambda x: x.title,
+            key=lambda x: x.title or "",
         )
         entries: list[ConfigEntry] = [
             # syncgroup specific entries
@@ -289,19 +293,13 @@ class SyncGroupPlayer(Player):
                 key=CONF_GROUP_MEMBERS,
                 type=ConfigEntryType.STRING,
                 multi_value=True,
-                label="Group members",
                 default_value=[],
-                description="Select the members of this sync group. ",
                 required=False,  # needed for dynamic members (which allows empty members list)
                 options=possible_players,
             ),
             ConfigEntry(
                 key=CONF_DYNAMIC_GROUP_MEMBERS,
                 type=ConfigEntryType.BOOLEAN,
-                label="Enable dynamic members",
-                description="Allow (un)joining members dynamically, so the group more or less "
-                "behaves the same like manually syncing players together, "
-                "with the main difference being that the group player will hold the queue.",
                 default_value=False,
                 required=False,
             ),
@@ -309,11 +307,6 @@ class SyncGroupPlayer(Player):
                 key=CONF_ALLOWED_MEMBERS,
                 type=ConfigEntryType.STRING,
                 multi_value=True,
-                label="Allowed members",
-                description="Limit which players can join this group. "
-                "Leave empty to allow any sync-compatible player. "
-                "This can be used to reduce the list of players that show up for joining "
-                "in case you have a lot of players.",
                 default_value=[],
                 required=False,
                 options=possible_players,
@@ -395,9 +388,13 @@ class SyncGroupPlayer(Player):
         # formed (e.g. after _dissolve_and_reform left us powered with no leader).
         # _form_syncgroup is idempotent so calling it here is cheap when already formed.
         await self._form_syncgroup()
-        await self.mass.players.cmd_resume(
-            self.player_id, self._attr_active_source, self._attr_current_media
-        )
+        # Hold the group's playback lock until the leader actually reports playing
+        # so a concurrent (un)group command can't race the in-flight start — which
+        # would otherwise leave a player streaming outside the group.
+        async with self._await_leader_playback():
+            await self.mass.players.cmd_resume(
+                self.player_id, self._attr_active_source, self._attr_current_media
+            )
 
     async def poll(self) -> None:
         """Poll player for state updates."""
@@ -415,7 +412,10 @@ class SyncGroupPlayer(Player):
         if sync_leader := self.sync_leader:
             # Use internal handler to target the sync leader directly,
             # bypassing group/sync redirect that would loop back to this player.
-            await self.mass.players._handle_play_media(sync_leader.player_id, media)
+            # Hold the group's playback lock until the leader confirms playback
+            # (see play()) so a concurrent (un)group command can't race the start.
+            async with self._await_leader_playback():
+                await self.mass.players._handle_play_media(sync_leader.player_id, media)
         else:
             raise RuntimeError("An empty group cannot play media, consider adding members first")
 
@@ -437,7 +437,10 @@ class SyncGroupPlayer(Player):
         """Handle SET_MEMBERS command on the player."""
         if not self.is_dynamic:
             raise UnsupportedFeaturedException(
-                f"Group {self.display_name} does not allow dynamically adding/removing members!"
+                f"Group {self.display_name} does not allow dynamically adding/removing members!",
+                translation_key="not_dynamic",
+                translation_owner=self.translation_owner,
+                translation_args=[self.display_name],
             )
         sync_leader = self.sync_leader or self._select_sync_leader(new_members=player_ids_to_add)
         was_playing = self.playback_state == PlaybackState.PLAYING
@@ -496,7 +499,10 @@ class SyncGroupPlayer(Player):
                 continue
             if member_id == self.player_id:
                 raise PlayerCommandFailed(
-                    f"Cannot remove {self.display_name} from itself as a member!"
+                    f"Cannot remove {self.display_name} from itself as a member!",
+                    translation_key="remove_self",
+                    translation_owner=self.translation_owner,
+                    translation_args=[self.display_name],
                 )
             self._attr_group_members.remove(member_id)
             final_players_to_remove.append(member_id)
@@ -643,6 +649,28 @@ class SyncGroupPlayer(Player):
                 await self.mass.players._handle_set_members(
                     self.sync_leader, player_ids_to_add=members_to_sync
                 )
+
+    @asynccontextmanager
+    async def _await_leader_playback(self) -> AsyncIterator[None]:
+        """
+        Wait for the sync leader to confirm playback for the command run in the body.
+
+        Wrap the play/resume call that targets the leader in this context manager.
+        The group's playback lock (held by the caller) then stays acquired until the
+        leader actually reports playing, so a concurrent (un)group command cannot
+        race a start that has not yet taken effect at the device. A no-op when there
+        is no leader to wait on.
+        """
+        if (leader := self.sync_leader) is None:
+            yield
+            return
+        async with self.mass.players.wait_for_player_update(
+            leader.player_id,
+            attribute_name="playback_state",
+            attribute_value=PlaybackState.PLAYING,
+            timeout=PLAYBACK_START_TIMEOUT,
+        ):
+            yield
 
     async def _dissolve_syncgroup(self) -> None:
         """Dissolve the current syncgroup by ungrouping all members."""

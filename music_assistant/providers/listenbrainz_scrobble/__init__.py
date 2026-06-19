@@ -8,21 +8,25 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
-from typing import Final
+from typing import TYPE_CHECKING, ClassVar, Final
 
+import requests.exceptions
 from liblistenbrainz import Listen, ListenBrainz
+from liblistenbrainz.errors import ListenBrainzException
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
 from music_assistant_models.enums import ConfigEntryType, EventType, MediaType, ProviderFeature
 from music_assistant_models.errors import SetupFailedError
-from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
-from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers.scrobbler import ScrobblerConfig, ScrobblerHelper
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
+
+if TYPE_CHECKING:
+    from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
+    from music_assistant_models.provider import ProviderManifest
 
 CONF_USER_TOKEN = "_user_token"
 CONF_API_BASE_URL = "api_base_url"
@@ -90,6 +94,13 @@ class ListenBrainzScrobbleProvider(PluginProvider):
 class ListenBrainzEventHandler(ScrobblerHelper):
     """Handles the event handling."""
 
+    # The client raises ListenBrainzException for API/payload errors and lets raw
+    # requests network errors (RequestException) propagate.
+    scrobble_exceptions: ClassVar[tuple[type[Exception], ...]] = (
+        ListenBrainzException,
+        requests.exceptions.RequestException,
+    )
+
     def __init__(
         self, client: ListenBrainz, logger: logging.Logger, config: ProviderConfig
     ) -> None:
@@ -124,13 +135,8 @@ class ListenBrainzEventHandler(ScrobblerHelper):
 
     async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
         def handler() -> None:
-            try:
-                listen = self._make_listen(report)
-                self._client.submit_playing_now(listen)
-                self.logger.debug(f"track {report.uri} marked as 'now playing'")
-                self._currently_playing = report.uri
-            except Exception as err:
-                self.logger.exception(err)
+            listen = self._make_listen(report)
+            self._client.submit_playing_now(listen)
 
         # the listenbrainz client is not async friendly,
         # so we need to run it in a executor thread
@@ -138,14 +144,9 @@ class ListenBrainzEventHandler(ScrobblerHelper):
 
     async def _scrobble(self, report: MediaItemPlaybackProgressReport) -> None:
         def handler() -> None:
-            try:
-                listen = self._make_listen(report)
-                listen.listened_at = int(time.time())
-                self._client.submit_single_listen(listen)
-                self.logger.debug(f"track {report.uri} scrobbled")
-                self._last_scrobbled = report.uri
-            except Exception as err:
-                self.logger.exception(err)
+            listen = self._make_listen(report)
+            listen.listened_at = int(time.time())
+            self._client.submit_single_listen(listen)
 
         # the listenbrainz client is not async friendly,
         # so we need to run it in a executor thread
@@ -164,18 +165,14 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_USER_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="User Token",
             required=True,
             value=values.get(CONF_USER_TOKEN) if values else None,
         ),
         ConfigEntry(
             key=CONF_API_BASE_URL,
             type=ConfigEntryType.STRING,
-            label="Base URL",
             required=False,
             value=values.get(CONF_API_BASE_URL) if values else None,
-            description="URL for listenbrainz endpoint. Leave blank to default "
-            "to the public listenbrainz API.",
             advanced=True,
         ),
     )

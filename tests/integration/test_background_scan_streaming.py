@@ -25,12 +25,13 @@ if TYPE_CHECKING:
 
     from music_assistant_models.streamdetails import StreamDetails
 
+
 FIXTURE_AUDIO = Path(__file__).parent.parent / "fixtures" / "audio" / "short_test.flac"
 
 
 async def _real_get_media_stream(
     sd: StreamDetails, pcm_format: AudioFormat, **_kwargs: object
-) -> AsyncGenerator[bytes, None]:
+) -> AsyncGenerator[bytes]:
     """Real-ffmpeg stand-in for mass.streams.audio.get_media_stream.
 
     Mirrors the wait-then-close pattern in audio.py:466-528 so close() doesn't

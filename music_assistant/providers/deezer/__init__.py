@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from math import ceil
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import deezer
 from aiohttp import ClientSession, ClientTimeout
@@ -45,10 +45,10 @@ from music_assistant_models.media_items import (
     Track,
     UniqueList,
 )
-from music_assistant_models.provider import ProviderManifest
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant import MusicAssistant
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
 from music_assistant.helpers.auth import AuthenticationHelper
@@ -58,6 +58,9 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.music_provider import MusicProvider
 
 from .gw_client import DeezerGWError, GWClient
+
+if TYPE_CHECKING:
+    from music_assistant_models.provider import ProviderManifest
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -175,22 +178,18 @@ async def get_config_entries(
             )
 
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=CONF_ACCESS_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Access token",
             required=True,
             action=CONF_ACTION_AUTH,
-            description="You need to authenticate on Deezer.",
-            action_label="Authenticate with Deezer",
             value=values.get(CONF_ACCESS_TOKEN) if values else None,
         ),
         ConfigEntry(
             key=CONF_ARL_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Arl token",
             required=True,
-            description="See https://www.dumpmedia.com/deezplus/deezer-arl.html",
             value=values.get(CONF_ARL_TOKEN) if values else None,
         ),
     )
@@ -252,12 +251,13 @@ class DeezerProvider(MusicProvider):
         """
         return await self.gw_client.get_user_radio(config_id)
 
-    @use_cache(3600 * 24)  # Cache for 24 hours
+    @use_cache(3600 * 24, cache_checksum="v2")  # Cache for 24 hours
     async def _get_available_flows(self) -> list[tuple[str, str, str | None]]:
         """Discover available mood/genre Flow variants from the Deezer home page.
 
         Genre flows have config_ids starting with 'genre-'.
-        Returns a list of (config_id, display_name, cover_url) tuples.
+        Returns a list of (config_id, flow_title, cover_url) tuples, where flow_title is the
+        bare mood/genre name (e.g. "Happy") without the "Flow:" prefix so it can be localized.
         """
         items = await self.gw_client.get_home_flows()
         flows: list[tuple[str, str, str | None]] = []
@@ -265,11 +265,10 @@ class DeezerProvider(MusicProvider):
             config_id = item["data"]["id"]
             if config_id == "default":
                 continue
-            title = f"Flow: {item['title']}"
             cover_url = None
             if pictures := item.get("pictures"):
                 cover_url = f"https://e-cdns-images.dzcdn.net/images/misc/{pictures[0]['md5']}/264x264-000000-80-0-0.jpg"
-            flows.append((config_id, title, cover_url))
+            flows.append((config_id, item["title"], cover_url))
         return flows
 
     @use_cache(3600 * 24 * 7)  # Cache for 7 days
@@ -321,7 +320,7 @@ class DeezerProvider(MusicProvider):
 
         return results
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Deezer."""
         async for artist in await self.client.get_user_artists():
             item = self.parse_artist(artist=artist)
@@ -329,7 +328,7 @@ class DeezerProvider(MusicProvider):
                 item.date_added = datetime.fromtimestamp(int(time_add), tz=UTC)
             yield item
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve all library albums from Deezer."""
         async for album in await self.client.get_user_albums():
             item = self.parse_album(album=album)
@@ -337,7 +336,7 @@ class DeezerProvider(MusicProvider):
                 item.date_added = datetime.fromtimestamp(int(time_add), tz=UTC)
             yield item
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from Deezer."""
         async for playlist in await self.user.get_playlists():
             item = self.parse_playlist(playlist=playlist)
@@ -345,7 +344,7 @@ class DeezerProvider(MusicProvider):
                 item.date_added = datetime.fromtimestamp(int(time_add), tz=UTC)
             yield item
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve all library tracks from Deezer."""
         async for track in await self.client.get_user_tracks():
             yield self.parse_track(track=track, user_country=self.gw_client.user_country)
@@ -379,14 +378,19 @@ class DeezerProvider(MusicProvider):
             flow_cover = None
             if flow_tracks and hasattr(flow_tracks[0], "album"):
                 flow_cover = getattr(flow_tracks[0].album, "cover_medium", None)
-            return self._create_virtual_playlist(FLOW_PLAYLIST_ID, "Flow", image_url=flow_cover)
+            return self._create_virtual_playlist(
+                FLOW_PLAYLIST_ID, "Flow", image_url=flow_cover, translation_key="flow"
+            )
         if prov_playlist_id == RECOMMENDED_TRACKS_PLAYLIST_ID:
             rec_tracks = await self._get_recommended_tracks()
             rec_cover = None
             if rec_tracks and hasattr(rec_tracks[0], "album"):
                 rec_cover = getattr(rec_tracks[0].album, "cover_medium", None)
             return self._create_virtual_playlist(
-                RECOMMENDED_TRACKS_PLAYLIST_ID, "Recommended tracks", image_url=rec_cover
+                RECOMMENDED_TRACKS_PLAYLIST_ID,
+                "Recommended tracks",
+                image_url=rec_cover,
+                translation_key="recommended_tracks",
             )
         if prov_playlist_id == TOP_CHARTS_PLAYLIST_ID:
             chart_tracks = await self._get_chart_tracks()
@@ -394,7 +398,10 @@ class DeezerProvider(MusicProvider):
             if chart_tracks and hasattr(chart_tracks[0], "album"):
                 chart_cover = getattr(chart_tracks[0].album, "cover_medium", None)
             return self._create_virtual_playlist(
-                TOP_CHARTS_PLAYLIST_ID, "Top Charts", image_url=chart_cover
+                TOP_CHARTS_PLAYLIST_ID,
+                "Top Charts",
+                image_url=chart_cover,
+                translation_key="top_charts",
             )
         if prov_playlist_id.startswith(RADIO_PLAYLIST_PREFIX):
             radio_id = int(prov_playlist_id.replace(RADIO_PLAYLIST_PREFIX, ""))
@@ -404,6 +411,8 @@ class DeezerProvider(MusicProvider):
                     prov_playlist_id,
                     f"Radio: {radio.title}",
                     image_url=getattr(radio, "picture_medium", None),
+                    translation_key="radio_station",
+                    translation_params=[radio.title],
                 )
             except Exception as err:
                 self.logger.warning("Failed getting radio %s: %s", radio_id, err)
@@ -411,9 +420,15 @@ class DeezerProvider(MusicProvider):
         if prov_playlist_id.startswith(MOOD_FLOW_PREFIX):
             config_id = prov_playlist_id.removeprefix(MOOD_FLOW_PREFIX)
             all_flows = await self._get_available_flows()
-            flow_info = {cid: (name, cover) for cid, name, cover in all_flows}
-            name, cover_url = flow_info.get(config_id, (f"Flow: {config_id}", None))
-            return self._create_virtual_playlist(prov_playlist_id, name, image_url=cover_url)
+            flow_info = {cid: (title, cover) for cid, title, cover in all_flows}
+            flow_title, cover_url = flow_info.get(config_id, (config_id, None))
+            return self._create_virtual_playlist(
+                prov_playlist_id,
+                f"Flow: {flow_title}",
+                image_url=cover_url,
+                translation_key="mood_flow",
+                translation_params=[flow_title],
+            )
         try:
             return self.parse_playlist(
                 playlist=await self.client.get_playlist(playlist_id=int(prov_playlist_id)),
@@ -442,7 +457,6 @@ class DeezerProvider(MusicProvider):
             self.parse_track(
                 track=deezer_track,
                 user_country=self.gw_client.user_country,
-                # TODO: doesn't Deezer have disc and track number in the api ?
                 position=0,
             )
             for deezer_track in await album.get_tracks()
@@ -600,14 +614,22 @@ class DeezerProvider(MusicProvider):
 
         made_for_you_items: list[Playlist] = [
             # Flow - personalized endless radio
-            self._create_virtual_playlist(FLOW_PLAYLIST_ID, "Flow", image_url=flow_cover),
+            self._create_virtual_playlist(
+                FLOW_PLAYLIST_ID, "Flow", image_url=flow_cover, translation_key="flow"
+            ),
             # Recommended tracks
             self._create_virtual_playlist(
-                RECOMMENDED_TRACKS_PLAYLIST_ID, "Recommended tracks", image_url=recommended_cover
+                RECOMMENDED_TRACKS_PLAYLIST_ID,
+                "Recommended tracks",
+                image_url=recommended_cover,
+                translation_key="recommended_tracks",
             ),
             # Top Charts - global top tracks
             self._create_virtual_playlist(
-                TOP_CHARTS_PLAYLIST_ID, "Top Charts", image_url=chart_cover
+                TOP_CHARTS_PLAYLIST_ID,
+                "Top Charts",
+                image_url=chart_cover,
+                translation_key="top_charts",
             ),
         ]
         # Add recommended playlists from Deezer
@@ -619,6 +641,7 @@ class DeezerProvider(MusicProvider):
                 item_id="made_for_you",
                 provider=self.instance_id,
                 name="Made for you",
+                translation_key="made_for_you",
                 items=UniqueList(made_for_you_items),
             )
         )
@@ -632,6 +655,7 @@ class DeezerProvider(MusicProvider):
                         item_id="recommended_albums",
                         provider=self.instance_id,
                         name="Recommended albums",
+                        translation_key="recommended_albums",
                         items=UniqueList(
                             [self.parse_album(album=album) for album in recommended_albums]
                         ),
@@ -649,6 +673,7 @@ class DeezerProvider(MusicProvider):
                         item_id="recommended_artists",
                         provider=self.instance_id,
                         name="Recommended artists",
+                        translation_key="recommended_artists",
                         items=UniqueList(
                             [self.parse_artist(artist=artist) for artist in recommended_artists]
                         ),
@@ -668,10 +693,12 @@ class DeezerProvider(MusicProvider):
             flow_playlists = [
                 self._create_virtual_playlist(
                     item_id=f"{MOOD_FLOW_PREFIX}{config_id}",
-                    name=display_name,
+                    name=f"Flow: {flow_title}",
                     image_url=cover_url,
+                    translation_key="mood_flow",
+                    translation_params=[flow_title],
                 )
-                for config_id, display_name, cover_url in flows
+                for config_id, flow_title, cover_url in flows
             ]
             if flow_playlists:
                 result.append(
@@ -679,6 +706,7 @@ class DeezerProvider(MusicProvider):
                         item_id=folder_id,
                         provider=self.instance_id,
                         name=folder_name,
+                        translation_key=folder_id,
                         items=UniqueList(flow_playlists),
                     )
                 )
@@ -693,6 +721,8 @@ class DeezerProvider(MusicProvider):
                         item_id=f"{RADIO_PLAYLIST_PREFIX}{radio_id}",
                         name=f"Radio: {radio.title}",
                         image_url=getattr(radio, "picture_medium", None),
+                        translation_key="radio_station",
+                        translation_params=[radio.title],
                     )
                 )
             except Exception as err:
@@ -704,6 +734,7 @@ class DeezerProvider(MusicProvider):
                     item_id="radios",
                     provider=self.instance_id,
                     name="Deezer Radios",
+                    translation_key="radios",
                     items=UniqueList(radio_playlists),
                 )
             )
@@ -773,7 +804,7 @@ class DeezerProvider(MusicProvider):
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """Return the audio stream for the provider item."""
         blowfish_key = self.get_blowfish_key(streamdetails.data["track_id"])
         chunk_index = 0
@@ -970,12 +1001,16 @@ class DeezerProvider(MusicProvider):
         item_id: str,
         name: str,
         image_url: str | None = None,
+        translation_key: str | None = None,
+        translation_params: list[str] | None = None,
     ) -> Playlist:
         """Create a virtual playlist for Flow, Recommended tracks, or Radios.
 
         :param item_id: The unique identifier (e.g., "flow", "radio_37151").
         :param name: Display name for the playlist.
         :param image_url: Optional image URL.
+        :param translation_key: Optional key to localize the display name per locale.
+        :param translation_params: Optional positional values for placeholders in the translation.
         """
         images: UniqueList[MediaItemImage] = UniqueList()
         if image_url:
@@ -991,6 +1026,8 @@ class DeezerProvider(MusicProvider):
             item_id=item_id,
             provider=self.instance_id,
             name=name,
+            translation_key=translation_key,
+            translation_params=translation_params,
             media_type=MediaType.PLAYLIST,
             provider_mappings={
                 ProviderMapping(

@@ -161,50 +161,43 @@ async def get_config_entries(
         ConfigEntry(
             key="label_text",
             type=ConfigEntryType.LABEL,
-            label=f"Successfully signed in as {values.get(CONF_DISPLAY_NAME)} {str(values.get(CONF_EMAIL, '')).replace('@', '(at)')}.",
+            translation_params=[
+                str(values.get(CONF_DISPLAY_NAME)),
+                str(values.get(CONF_EMAIL, "")).replace("@", "(at)"),
+            ],
             hidden=not authenticated,
         ),
         ConfigEntry(
             key=CONF_EMAIL,
             type=ConfigEntryType.STRING,
-            label="E-Mail",
             required=False,
-            description="E-Mail address of ARD account.",
             hidden=authenticated,
             value=values.get(CONF_EMAIL),
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=False,
-            description="Password of ARD account.",
             hidden=authenticated,
             value=values.get(CONF_PASSWORD),
         ),
         ConfigEntry(
             key=CONF_MAX_BITRATE,
             type=ConfigEntryType.INTEGER,
-            label="Maximum bitrate for streams (0 for unlimited)",
             required=False,
-            description="Maximum bitrate for streams. Use 0 for unlimited",
             default_value=0,
             value=values.get(CONF_MAX_BITRATE),
         ),
         ConfigEntry(
             key=CONF_PODCAST_FINISHED,
             type=ConfigEntryType.INTEGER,
-            label="Percentage required before podcast episode is marked as fully played",
             required=False,
-            description="This setting defines how much of a podcast must be listened to before an "
-            "episode is marked as fully played",
             default_value=95,
             value=values.get(CONF_PODCAST_FINISHED),
         ),
         ConfigEntry(
             key=CONF_TOKEN_BEARER,
             type=ConfigEntryType.SECURE_STRING,
-            label="token",
             hidden=True,
             required=False,
             value=values.get(CONF_TOKEN_BEARER),
@@ -212,7 +205,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_USERID,
             type=ConfigEntryType.SECURE_STRING,
-            label="uid",
             hidden=True,
             required=False,
             value=values.get(CONF_USERID),
@@ -220,7 +212,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_EXPIRY_TIME,
             type=ConfigEntryType.SECURE_STRING,
-            label="token_expiry",
             hidden=True,
             required=False,
             default_value=0,
@@ -229,7 +220,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_DISPLAY_NAME,
             type=ConfigEntryType.STRING,
-            label="username",
             hidden=True,
             required=False,
             value=values.get(CONF_DISPLAY_NAME),
@@ -425,7 +415,7 @@ class ARDAudiothek(MusicProvider):
             prov_radio_id,
         )
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library/subscribed podcasts from the provider.
 
         Minified podcast information is enough.
@@ -479,9 +469,7 @@ class ARDAudiothek(MusicProvider):
             prov_podcast_id,
         )
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get podcast episodes."""
         await self._update_progress()
         depublished_filter = {"isPublished": {"equalTo": True}}

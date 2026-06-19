@@ -168,7 +168,7 @@ class PandoraProvider(MusicProvider):
                 try:
                     flags: list[str] = response_data.get("config", {}).get("flags", [])
                     self._high_quality_available = ACCOUNT_FLAG_HIGH_QUALITY in flags
-                except (AttributeError, TypeError):
+                except AttributeError, TypeError:
                     self._high_quality_available = False
 
                 self.logger.info(
@@ -279,6 +279,8 @@ class PandoraProvider(MusicProvider):
             item_id=prov_radio_id,
             provider=self.domain,
             name=f"Pandora Station {prov_radio_id}",
+            translation_key="pandora_station",
+            translation_params=[prov_radio_id],
             provider_mappings={
                 ProviderMapping(
                     item_id=prov_radio_id,
@@ -288,7 +290,7 @@ class PandoraProvider(MusicProvider):
             },
         )
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
         response = await self._api_request(
             "POST",

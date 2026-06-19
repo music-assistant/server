@@ -416,6 +416,7 @@ class SendspinChromecastBridge:
             fut.set_result(None)
         else:
             fut.set_exception(error)
+            fut.exception()
 
     def on_cast_status_changed(self, app_id: str | None) -> None:
         """Handle Cast app id change / connection loss (called from socket thread).
@@ -466,7 +467,10 @@ class SendspinChromecastBridge:
         )
         self.ensure_cast_app_ready()
         if not self.cast_player.available:
-            self.logger.warning("Cannot start Sendspin stream for %s: player not available")
+            self.logger.warning(
+                "Cannot start Sendspin stream for %s: player not available",
+                self.cast_player.display_name,
+            )
             return
         # Cancel any previous launch task
         if self._launch_task and not self._launch_task.done():

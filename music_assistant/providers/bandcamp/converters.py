@@ -2,17 +2,8 @@
 
 from contextlib import suppress
 from datetime import UTC, datetime
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
-from bandcamp_async_api.models import BCAlbum as APIAlbum
-from bandcamp_async_api.models import BCArtist as APIArtist
-from bandcamp_async_api.models import BCTrack as APITrack
-from bandcamp_async_api.models import (
-    FeedTrack,
-    SearchResultAlbum,
-    SearchResultArtist,
-    SearchResultTrack,
-)
 from music_assistant_models.enums import ContentType, ImageType, MediaType
 from music_assistant_models.media_items import Album as MAAlbum
 from music_assistant_models.media_items import Artist as MAArtist
@@ -24,6 +15,17 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 from music_assistant_models.media_items import Track as MATrack
+
+if TYPE_CHECKING:
+    from bandcamp_async_api.models import BCAlbum as APIAlbum
+    from bandcamp_async_api.models import BCArtist as APIArtist
+    from bandcamp_async_api.models import BCTrack as APITrack
+    from bandcamp_async_api.models import (
+        FeedTrack,
+        SearchResultAlbum,
+        SearchResultArtist,
+        SearchResultTrack,
+    )
 
 
 class DiscographyItem(TypedDict, total=False):

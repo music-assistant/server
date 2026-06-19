@@ -84,7 +84,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Username",
             required=True,
         ),
     )
@@ -199,12 +198,12 @@ class TuneInProvider(MusicProvider):
                         result.append(self._parse_radio_lazy(child))
         return result
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
 
         async def parse_items(
             items: list[dict[str, Any]], folder: str | None = None
-        ) -> AsyncGenerator[Radio, None]:
+        ) -> AsyncGenerator[Radio]:
             for item in items:
                 item_type = item.get("type", "")
                 if "unavailable" in item.get("key", ""):

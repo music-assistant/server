@@ -31,6 +31,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 from soundcloudpy import SoundcloudAsyncAPI
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
@@ -90,16 +91,15 @@ async def get_config_entries(
     """
     # ruff: noqa: ARG001
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=CONF_CLIENT_ID,
             type=ConfigEntryType.SECURE_STRING,
-            label="Client ID",
             required=True,
         ),
         ConfigEntry(
             key=CONF_AUTHORIZATION,
             type=ConfigEntryType.SECURE_STRING,
-            label="Authorization",
             required=True,
         ),
     )
@@ -157,7 +157,7 @@ class SoundcloudMusicProvider(MusicProvider):
 
         return result
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve all library artists from Soundcloud."""
         time_start = time.time()
 
@@ -173,7 +173,7 @@ class SoundcloudMusicProvider(MusicProvider):
                 self.logger.debug("Parse artist failed: %s", artist, exc_info=error)
                 continue
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve all library playlists from Soundcloud."""
         time_start = time.time()
         async for item in self._soundcloud.get_account_playlists():
@@ -205,7 +205,7 @@ class SoundcloudMusicProvider(MusicProvider):
             round(time.time() - time_start, 2),
         )
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from Soundcloud."""
         time_start = time.time()
         async for track in self._soundcloud.get_track_details_liked(self._user_id):
@@ -254,6 +254,7 @@ class SoundcloudMusicProvider(MusicProvider):
         if feed and "collection" in feed:
             folder = RecommendationFolder(
                 name="SoundCloud Feed",
+                translation_key="soundcloud_feed",
                 item_id=f"{self.instance_id}_sc_subscribed_feed",
                 provider=self.instance_id,
                 icon="mdi-rss",

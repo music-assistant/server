@@ -80,6 +80,7 @@ class ChromecastPlayer(Player):
         self.mz_controller: MultizoneController | None = None
         self.on_app_status_changed: Callable[[str | None], None] | None = None
         self.last_poll = 0.0
+        self.last_multichannel_check = 0.0
         self.flow_meta_checksum: str | None = None
         # set static variables
         self._attr_supported_features = {
@@ -402,7 +403,10 @@ class ChromecastPlayer(Player):
         except TimeoutError:
             self.logger.warning("Timed out waiting for app launch on %s", self.display_name)
             raise PlayerUnavailableError(
-                f"Timed out launching app on {self.display_name}"
+                f"Timed out launching app on {self.display_name}",
+                translation_key="app_launch_timeout",
+                translation_owner=self.translation_owner,
+                translation_args=[self.display_name],
             ) from None
 
     ### Callbacks from Chromecast Statuslistener

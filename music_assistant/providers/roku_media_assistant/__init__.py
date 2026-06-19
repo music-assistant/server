@@ -46,20 +46,14 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ROKU_APP_ID,
             type=ConfigEntryType.STRING,
-            label="App ID of Media Assistant",
             default_value="782875",
-            description="By default, Music Assistant will use the Roku Channel Store version "
-            "of Media Assistant (ID: 782875). If you sideloaded the App on your Roku "
-            "this will need to be set to (ID: dev).",
             required=False,
             advanced=True,
         ),
         ConfigEntry(
             key=CONF_AUTO_DISCOVER,
             type=ConfigEntryType.BOOLEAN,
-            label="Allow automatic Roku discovery",
             default_value=True,
-            description="Enable automatic discovery of Roku players.",
             advanced=True,
         ),
     )

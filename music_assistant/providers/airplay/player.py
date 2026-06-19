@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import time
 from typing import TYPE_CHECKING, cast
 
@@ -44,6 +45,7 @@ from .constants import (
     CONF_PAIRING_PIN,
     CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
+    CONF_RAOP_LATENCY,
     CONF_SESSION_ESTABLISHMENT_LATENCY,
     CONF_STORED_VOLUME,
     FALLBACK_VOLUME,
@@ -52,6 +54,8 @@ from .constants import (
     PIN_REQUIRED,
     RAOP_CONNECT_TIME_MS,
     RAOP_DISCOVERY_TYPE,
+    RAOP_OUTPUT_BUFFER_MAX_DURATION_MS,
+    RAOP_OUTPUT_BUFFER_MIN_DURATION_MS,
     StreamingProtocol,
 )
 from .helpers import (
@@ -70,6 +74,9 @@ if TYPE_CHECKING:
     from .protocols.airplay2 import AirPlay2Stream
     from .protocols.raop import RaopStream
     from .provider import AirPlayProvider
+
+# Docker bridge subnet, sometimes wrongly advertised via mDNS by containerized devices.
+_DOCKER_SUBNET = ipaddress.ip_network("172.16.0.0/12")
 
 
 class AirPlayPlayer(Player):
@@ -174,6 +181,13 @@ class AirPlayPlayer(Player):
     @property
     def output_buffer_duration_ms(self) -> int:
         """Get the output buffer duration in milliseconds."""
+        # Only the RAOP (AirPlay 1) path exposes a configurable read-ahead buffer;
+        # AirPlay 2 uses the fixed default to avoid interfering with sync.
+        if self.protocol == StreamingProtocol.RAOP:
+            return cast(
+                "int",
+                self.config.get_value(CONF_RAOP_LATENCY, AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS),
+            )
         return AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS
 
     @property
@@ -228,24 +242,14 @@ class AirPlayPlayer(Player):
                 key=CONF_AIRPLAY_PROTOCOL,
                 type=ConfigEntryType.INTEGER,
                 required=False,
-                label="AirPlay protocol version to use for streaming",
-                description="AirPlay version 1 protocol uses RAOP.\n"
-                "AirPlay version 2 is an extension of RAOP.\n"
-                "Some newer devices do not fully support RAOP and "
-                "will only work with AirPlay version 2, "
-                "while older devices may only support RAOP.\n\n"
-                "In most cases the default automatic selection will work fine.\n\n"
-                "NOTE: AirPlay 2 currently does not support audio synchronization. "
-                "Grouping/syncing with other players is only available when "
-                "using AirPlay 1 (RAOP).",
                 options=[
                     opt
                     for opt in (
-                        ConfigValueOption("Automatically select", 0),
-                        ConfigValueOption("Prefer AirPlay 1 (RAOP)", StreamingProtocol.RAOP.value)
+                        ConfigValueOption(0),
+                        ConfigValueOption(StreamingProtocol.RAOP.value)
                         if self.raop_discovery_info
                         else None,
-                        ConfigValueOption("Prefer AirPlay 2", StreamingProtocol.AIRPLAY2.value)
+                        ConfigValueOption(StreamingProtocol.AIRPLAY2.value)
                         if self.airplay_discovery_info
                         else None,
                     )
@@ -258,9 +262,6 @@ class AirPlayPlayer(Player):
                 key=CONF_ENCRYPTION,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
-                label="Enable encryption",
-                description="Enable encrypted communication with the player, "
-                "some (3rd party) players require this to be disabled.",
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
                 hidden=not is_raop,
@@ -271,9 +272,6 @@ class AirPlayPlayer(Player):
                 key=CONF_ALAC_ENCODE,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=True,
-                label="Enable compression",
-                description="Save some network bandwidth by sending the audio as "
-                "(lossless) ALAC at the cost of a bit of CPU.",
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
                 hidden=not is_raop,
@@ -286,8 +284,27 @@ class AirPlayPlayer(Player):
                 type=ConfigEntryType.SECURE_STRING,
                 default_value=None,
                 required=False,
-                label="Device password",
-                description="Some devices require a password to connect/play.",
+                depends_on=CONF_AIRPLAY_PROTOCOL,
+                depends_on_value=StreamingProtocol.RAOP.value,
+                hidden=not is_raop,
+                category="protocol_generic",
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_IGNORE_VOLUME,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                category="protocol_generic",
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_RAOP_LATENCY,
+                type=ConfigEntryType.INTEGER,
+                default_value=AIRPLAY_OUTPUT_BUFFER_DEFAULT_DURATION_MS,
+                range=(
+                    RAOP_OUTPUT_BUFFER_MIN_DURATION_MS,
+                    RAOP_OUTPUT_BUFFER_MAX_DURATION_MS,
+                ),
                 depends_on=CONF_AIRPLAY_PROTOCOL,
                 depends_on_value=StreamingProtocol.RAOP.value,
                 hidden=not is_raop,
@@ -302,9 +319,6 @@ class AirPlayPlayer(Player):
                     AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MIN_MS,
                     AIRPLAY_SESSION_ESTABLISHMENT_LATENCY_MAX_MS,
                 ),
-                label="Expected milliseconds to establish streaming session with the AirPlay device.",
-                description="Adjust this value only if playback is out of sync or does not work.\n"
-                "The log will contain a WARNING entry showing a recommendation.",
                 hidden=is_raop,
                 category="protocol_generic",
                 advanced=True,
@@ -325,11 +339,6 @@ class AirPlayPlayer(Player):
                             type=ConfigEntryType.ALERT,
                             default_value=None,
                             required=False,
-                            label="Music Assistant support for the AirPlay2 protocol "
-                            "does support audio synchronisation, but it is fragile. "
-                            "If playback or synchronisation does not work, try adjusting the "
-                            "session establishment latency. This is an interim advanced configuration "
-                            "setting. It will be removed when a robust synchronisation method is implemented.",
                         ),
                     )
                     break
@@ -428,7 +437,6 @@ class AirPlayPlayer(Player):
                         ConfigEntry(
                             key=CONF_PAIRING_PIN,
                             type=ConfigEntryType.STRING,
-                            label="Enter the 4-digit PIN shown on the device",
                             required=True,
                             category="protocol_generic",
                         )
@@ -437,7 +445,8 @@ class AirPlayPlayer(Player):
                         ConfigEntry(
                             key=CONF_ACTION_FINISH_PAIRING,
                             type=ConfigEntryType.ACTION,
-                            label=f"Complete {protocol_name} pairing with the PIN",
+                            translation_key="finish_pairing_pin",
+                            translation_params=[protocol_name],
                             action=CONF_ACTION_FINISH_PAIRING,
                             category="protocol_generic",
                         )
@@ -449,7 +458,6 @@ class AirPlayPlayer(Player):
                             key=CONF_PAIRING_PASSWORD,
                             type=ConfigEntryType.SECURE_STRING,
                             required=True,
-                            label="Enter the device password",
                             category="protocol_generic",
                         )
                     )
@@ -457,7 +465,8 @@ class AirPlayPlayer(Player):
                         ConfigEntry(
                             key=CONF_ACTION_FINISH_PAIRING,
                             type=ConfigEntryType.ACTION,
-                            label=f"Complete {protocol_name} pairing with the password",
+                            translation_key="finish_pairing_password",
+                            translation_params=[protocol_name],
                             action=CONF_ACTION_FINISH_PAIRING,
                             category="protocol_generic",
                         )
@@ -471,10 +480,7 @@ class AirPlayPlayer(Player):
                     ConfigEntry(
                         key="pairing_instructions",
                         type=ConfigEntryType.LABEL,
-                        label=(
-                            f"This device requires {protocol_name} pairing before it can be used. "
-                            "Click the button below to start the pairing process."
-                        ),
+                        translation_params=[protocol_name],
                         category="protocol_generic",
                     )
                 )
@@ -482,7 +488,8 @@ class AirPlayPlayer(Player):
                     ConfigEntry(
                         key=CONF_ACTION_START_PAIRING,
                         type=ConfigEntryType.ACTION,
-                        label=f"Start {protocol_name} pairing",
+                        translation_key="start_pairing",
+                        translation_params=[protocol_name],
                         action=CONF_ACTION_START_PAIRING,
                         category="protocol_generic",
                     )
@@ -494,7 +501,7 @@ class AirPlayPlayer(Player):
                 ConfigEntry(
                     key="pairing_status",
                     type=ConfigEntryType.LABEL,
-                    label=f"Device is paired ({protocol_name}) and ready to use.",
+                    translation_params=[protocol_name],
                     category="protocol_generic",
                 )
             )
@@ -503,7 +510,8 @@ class AirPlayPlayer(Player):
                 ConfigEntry(
                     key=CONF_ACTION_RESET_PAIRING,
                     type=ConfigEntryType.ACTION,
-                    label=f"Reset {protocol_name} pairing",
+                    translation_key="reset_pairing",
+                    translation_params=[protocol_name],
                     action=CONF_ACTION_RESET_PAIRING,
                     category="protocol_generic",
                 )
@@ -890,6 +898,22 @@ class AirPlayPlayer(Player):
             # should always be set, but guard against None
             return
         if cur_address != new_address:
+            # Ignore mDNS updates that replace a routable address with a Docker bridge one.
+            try:
+                if (
+                    cur_address
+                    and ipaddress.ip_address(new_address) in _DOCKER_SUBNET
+                    and ipaddress.ip_address(cur_address) not in _DOCKER_SUBNET
+                ):
+                    self.logger.warning(
+                        "Ignoring mDNS update from %s to Docker address %s",
+                        cur_address,
+                        new_address,
+                    )
+                    self.update_state()
+                    return
+            except ValueError:
+                pass
             self.logger.debug("Address updated from %s to %s", cur_address, new_address)
             self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, new_address)
             self.address = new_address

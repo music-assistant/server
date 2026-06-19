@@ -130,7 +130,7 @@ class StateSyncHandler(WamPlayerFeatureBase):
                 playtime = float(response.data["playtime"])
                 self.player._attr_elapsed_time = playtime
                 self.player._attr_elapsed_time_last_updated = time.time()
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 self.logger.debug("Failed to parse playtime from response: %s", response.data)
 
     def on_speaker_event(self, event: Any = None) -> None:
@@ -151,7 +151,7 @@ class StateSyncHandler(WamPlayerFeatureBase):
                 playtime = float(event.data["playtime"])
                 self.player._attr_elapsed_time = playtime
                 self.player._attr_elapsed_time_last_updated = time.time()
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 pass
 
         self.refresh_state(notify_provider=True)

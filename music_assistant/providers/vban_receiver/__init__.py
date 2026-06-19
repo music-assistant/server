@@ -79,20 +79,11 @@ async def get_config_entries(
             key=CONF_BIND_PORT,
             type=ConfigEntryType.INTEGER,
             default_value=DEFAULT_UDP_PORT,
-            label="Receiver: UDP Port",
-            description="The UDP port the VBAN receiver will listen on for connections. "
-            "Make sure that this server can be reached "
-            "on the given IP and UDP port by remote VBAN senders.",
         ),
         ConfigEntry(
             key=CONF_VBAN_STREAM_NAME,
             type=ConfigEntryType.STRING,
-            label="Sender: VBAN Stream Name",
             default_value="Network AUX",
-            description="Max 16 ASCII chars.\n"
-            "The VBAN stream name to expect from the remote VBAN sender.\n"
-            "This MUST match what the remote VBAN sender has set for the session name "
-            "otherwise audio streaming will not work.",
             required=True,
             validate=_validate_stream_name,  # type: ignore[arg-type]
         ),
@@ -100,51 +91,34 @@ async def get_config_entries(
             key=CONF_SENDER_HOST,
             type=ConfigEntryType.STRING,
             default_value="127.0.0.1",
-            label="Sender: VBAN Sender hostname/IP address",
-            description="The hostname/IP Address of the remote VBAN SENDER.",
             required=True,
         ),
         ConfigEntry(
             key=CONF_PCM_AUDIO_FORMAT,
             type=ConfigEntryType.STRING,
             default_value=DEFAULT_PCM_AUDIO_FORMAT,
-            options=[ConfigValueOption(x, x) for x in get_supported_pcm_formats()],
-            label="PCM audio format",
-            description="The VBAN PCM audio format to expect from the remote VBAN sender. "
-            "This MUST match what the remote VBAN sender has set otherwise audio streaming "
-            "will not work.",
+            options=[ConfigValueOption(x, title=x) for x in get_supported_pcm_formats()],
             required=True,
         ),
         ConfigEntry(
             key=CONF_PCM_SAMPLE_RATE,
             type=ConfigEntryType.INTEGER,
             default_value=DEFAULT_PCM_SAMPLE_RATE,
-            options=[ConfigValueOption(str(x), x) for x in _get_vban_sample_rates()],
-            label="PCM sample rate",
-            description="The VBAN PCM sample rate to expect from the remote VBAN sender. "
-            "This MUST match what the remote VBAN sender has set otherwise audio streaming "
-            "will not work.",
+            options=[ConfigValueOption(x, title=str(x)) for x in _get_vban_sample_rates()],
             required=True,
         ),
         ConfigEntry(
             key=CONF_AUDIO_CHANNELS,
             type=ConfigEntryType.INTEGER,
             default_value=DEFAULT_AUDIO_CHANNELS,
-            options=[ConfigValueOption(str(x), x) for x in list(range(1, 9))],
-            label="Channels",
-            description="The number of audio channels",
+            options=[ConfigValueOption(x, title=str(x)) for x in list(range(1, 9))],
             required=True,
         ),
         ConfigEntry(
             key=CONF_BIND_IP,
             type=ConfigEntryType.STRING,
             default_value="0.0.0.0",
-            options=[ConfigValueOption(x, x) for x in {"0.0.0.0", *ip_addresses}],
-            label="Receiver: Bind to IP/interface",
-            description="Start the VBAN receiver on this specific interface. \n"
-            "Use 0.0.0.0 to bind to all interfaces, which is the default. \n"
-            "This is an advanced setting that should normally "
-            "not be adjusted in regular setups.",
+            options=[ConfigValueOption(x, title=x) for x in {"0.0.0.0", *ip_addresses}],
             advanced=True,
             required=True,
         ),
@@ -152,9 +126,7 @@ async def get_config_entries(
             key=CONF_VBAN_QUEUE_STRATEGY,
             type=ConfigEntryType.STRING,
             default_value=next(iter(VBAN_QUEUE_STRATEGIES)),
-            options=[ConfigValueOption(x, x) for x in VBAN_QUEUE_STRATEGIES],
-            label="Receiver: VBAN queue strategy",
-            description="What should happen if the receiving queue fills up?",
+            options=[ConfigValueOption(x, title=x) for x in VBAN_QUEUE_STRATEGIES],
             advanced=True,
             required=True,
         ),
@@ -162,9 +134,6 @@ async def get_config_entries(
             key=CONF_VBAN_QUEUE_SIZE,
             type=ConfigEntryType.INTEGER,
             default_value=AsyncVBANClientMod.default_queue_size,
-            label="Receiver: VBAN packets queue size",
-            description="This can be increased if MA is running on a very low power device, "
-            "otherwise this should not need to be changed.",
             advanced=True,
             required=True,
         ),
@@ -172,10 +141,6 @@ async def get_config_entries(
             key=CONF_LOG_VBAN_STREAM_STATS,
             type=ConfigEntryType.BOOLEAN,
             default_value=False,
-            label="Log VBAN stream statistics",
-            description="Log VBAN stream statistics when DEBUG/VERBOSE logging is enabled. "
-            "Target numbers not being hit will result in audio glitches/dropouts and is "
-            "indicative of a low power device unable to keep up with the incoming stream rate.",
             advanced=True,
             required=True,
         ),

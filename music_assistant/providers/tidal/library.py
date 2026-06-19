@@ -42,28 +42,28 @@ class TidalLibraryManager:
         self.auth = provider.auth
         self.logger = provider.logger
 
-    async def get_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists."""
         path = f"users/{self.auth.user_id}/{FAVORITES_ARTISTS}"
         async for item in self.api.paginate(path):
             if item and item.get("item") and item["item"].get("id"):
                 yield parse_artist(self.provider, item)
 
-    async def get_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums."""
         path = f"users/{self.auth.user_id}/{FAVORITES_ALBUMS}"
         async for item in self.api.paginate(path):
             if item and item.get("item") and item["item"].get("id"):
                 yield parse_album(self.provider, item)
 
-    async def get_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks."""
         path = f"users/{self.auth.user_id}/{FAVORITES_TRACKS}"
         async for item in self.api.paginate(path):
             if item and item.get("item") and item["item"].get("id"):
                 yield parse_track(self.provider, item)
 
-    async def get_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library playlists."""
         # 1. Get favorite mixes
         async for item in self.api.paginate(
@@ -95,7 +95,7 @@ class TidalLibraryManager:
                     f"users/{self.auth.user_id}/{endpoint}", data=data, as_form=True
                 )
             return True
-        except (ClientError, MediaNotFoundError, ResourceTemporarilyUnavailable):
+        except ClientError, MediaNotFoundError, ResourceTemporarilyUnavailable:
             return False
 
     async def remove_item(self, prov_item_id: str, media_type: MediaType) -> bool:
@@ -110,7 +110,7 @@ class TidalLibraryManager:
             else:
                 await self.api.delete(f"users/{self.auth.user_id}/{endpoint}")
             return True
-        except (ClientError, MediaNotFoundError, ResourceTemporarilyUnavailable):
+        except ClientError, MediaNotFoundError, ResourceTemporarilyUnavailable:
             return False
 
     def _get_endpoint_data(

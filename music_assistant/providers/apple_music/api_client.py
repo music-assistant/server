@@ -186,7 +186,7 @@ class AppleMusicAPIClient:
 
     async def iter_all_items(
         self, endpoint: str, key: str = "data", page_size: int = _LIBRARY_PAGE_SIZE, **kwargs: Any
-    ) -> AsyncGenerator[dict[str, Any], None]:
+    ) -> AsyncGenerator[dict[str, Any]]:
         """
         Yield items from a paged list one page at a time.
 

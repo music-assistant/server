@@ -155,25 +155,29 @@ class MusicMeProvider(MusicProvider):
                     item_id="home",
                     provider=self.instance_id,
                     path=f"{self.instance_id}://home",
-                    name="A l'affiche",
+                    name="Featured",
+                    translation_key="featured",
                 ),
                 BrowseFolder(
                     item_id="news",
                     provider=self.instance_id,
                     path=f"{self.instance_id}://news",
-                    name="Nouveautés",
+                    name="New releases",
+                    translation_key="new_releases",
                 ),
                 BrowseFolder(
                     item_id="tops",
                     provider=self.instance_id,
                     path=f"{self.instance_id}://tops",
-                    name="Top artistes",
+                    name="Top artists",
+                    translation_key="top_artists",
                 ),
                 BrowseFolder(
                     item_id="radios",
                     provider=self.instance_id,
                     path=f"{self.instance_id}://radios",
-                    name="Radios par thème",
+                    name="Themed radios",
+                    translation_key="themed_radios",
                 ),
             ]
 
@@ -305,7 +309,8 @@ class MusicMeProvider(MusicProvider):
 
         if home_data:
             folder = RecommendationFolder(
-                name="A l'affiche",
+                name="Featured",
+                translation_key="featured",
                 item_id=f"{self.instance_id}_home",
                 provider=self.instance_id,
                 icon="mdi-star",
@@ -318,7 +323,8 @@ class MusicMeProvider(MusicProvider):
 
         if news_data:
             folder = RecommendationFolder(
-                name="Nouveautés",
+                name="New releases",
+                translation_key="new_releases",
                 item_id=f"{self.instance_id}_news",
                 provider=self.instance_id,
                 icon="mdi-new-box",
@@ -331,7 +337,8 @@ class MusicMeProvider(MusicProvider):
 
         if tops_data:
             folder = RecommendationFolder(
-                name="Top artistes",
+                name="Top artists",
+                translation_key="top_artists",
                 item_id=f"{self.instance_id}_tops",
                 provider=self.instance_id,
                 icon="mdi-trending-up",
@@ -345,6 +352,7 @@ class MusicMeProvider(MusicProvider):
         if radio_data:
             folder = RecommendationFolder(
                 name="Radios",
+                translation_key="radios",
                 item_id=f"{self.instance_id}_radios",
                 provider=self.instance_id,
                 icon="mdi-radio",
@@ -359,7 +367,7 @@ class MusicMeProvider(MusicProvider):
 
     # ---- library ----
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library playlists from MusicMe."""
         data = await self._api_get('/playlists?resources=home{details:"list"}')
         if not data:
@@ -626,7 +634,7 @@ class MusicMeProvider(MusicProvider):
                 disc_track_parts = disc_track.split("_")
                 track.disc_number = int(disc_track_parts[0])
                 track.track_number = int(disc_track_parts[1])
-            except (ValueError, IndexError):
+            except ValueError, IndexError:
                 pass
         for art_obj in track_obj.get("artists", []):
             if art_obj.get("id"):
@@ -843,7 +851,7 @@ class MusicMeProvider(MusicProvider):
                 if response.status == 429:
                     try:
                         backoff = min(int(response.headers.get("Retry-After", 10)), 300)
-                    except (ValueError, TypeError):
+                    except ValueError, TypeError:
                         backoff = 10
                     raise RateLimited("Rate limited", backoff_time=backoff)
                 if response.status in (502, 503):

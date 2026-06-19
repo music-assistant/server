@@ -110,7 +110,7 @@ def option_value_to_format(value: str) -> tuple[AudioCodec, SendspinAudioFormat]
             channels=int(channels_str),
         )
         return (codec, audio_format)
-    except (ValueError, KeyError):
+    except ValueError, KeyError:
         return None
 
 
@@ -647,6 +647,10 @@ class SendspinPlayer(SendspinBasePlayer):
         roles = self.api.roles_by_family("player")
         for role in roles:
             role.set_player_mute(muted)
+        # Native clients don't always emit a VolumeChangedEvent in response to a
+        # mute command, so update our state directly to keep MA in sync.
+        self._attr_volume_muted = muted
+        self.update_state()
 
     async def stop(self) -> None:
         """Stop command."""
@@ -706,7 +710,10 @@ class SendspinPlayer(SendspinBasePlayer):
                 await self.playback_session.cancel("cast app readiness failed")
             if isinstance(exc, TimeoutError):
                 raise PlayerCommandFailed(
-                    f"Cast app on {self.display_name} did not report ready within 30s"
+                    f"Cast app on {self.display_name} did not report ready within 30s",
+                    translation_key="cast_app_not_ready",
+                    translation_owner=self.translation_owner,
+                    translation_args=[self.display_name],
                 ) from None
             raise
 
@@ -794,6 +801,7 @@ class SendspinPlayer(SendspinBasePlayer):
             await self.api.group.remove_client(member_player.api)
         # Cast-only: reset futures before add so a fatal error on a Cast-bridged
         # member (e.g. AudioContext unsupported) raises PlayerCommandFailed.
+        # Only track readiness while streaming, only then add_client launches the app.
         bridge_manager = self._get_cast_bridge_manager()
         pending_cast: list[tuple[SendspinPlayer, asyncio.Future[None]]] = []
         try:
@@ -801,7 +809,11 @@ class SendspinPlayer(SendspinBasePlayer):
                 member_player = cast(
                     "SendspinPlayer", self.mass.players.get_player(player_id, True)
                 )
-                if bridge_manager and (bridge := bridge_manager.get_bridge_by_client_id(player_id)):
+                if (
+                    self.api.group.has_active_stream
+                    and bridge_manager
+                    and (bridge := bridge_manager.get_bridge_by_client_id(player_id))
+                ):
                     pending_cast.append((member_player, bridge.reset_cast_app_ready()))
                 await self.api.group.add_client(member_player.api)
 
@@ -814,7 +826,10 @@ class SendspinPlayer(SendspinBasePlayer):
                 except TimeoutError:
                     stuck = [m.display_name for m, f in pending_cast if not f.done()]
                     raise PlayerCommandFailed(
-                        f"Cast app on {', '.join(stuck)} did not report ready within 30s"
+                        f"Cast app on {', '.join(stuck)} did not report ready within 30s",
+                        translation_key="cast_app_members_not_ready",
+                        translation_owner=self.translation_owner,
+                        translation_args=[", ".join(stuck)],
                     ) from None
         except BaseException:
             # Roll back Cast members we just added so a failed group operation
@@ -829,29 +844,26 @@ class SendspinPlayer(SendspinBasePlayer):
                     f.cancel()
         # self.group_members will be updated by the group event callback
 
-    async def _send_album_artwork(self, current_item: QueueItem) -> str | None:
+    async def _send_album_artwork(self, current_media: PlayerMedia) -> str | None:
         """
         Send album artwork to the sendspin group.
 
         Args:
-            current_item: The current queue item.
+            current_media: The current player media.
         """
-        artwork_url = None
-        if current_item.image is not None:
-            artwork_url = self.mass.metadata.get_image_url(current_item.image)
-
+        # image_url is resolved per-source upstream (radio / Spotify Connect / queue items).
+        artwork_url = current_media.image_url
         if artwork_url != self.last_sent_artwork_url:
-            # Image changed, resend the artwork
             self.last_sent_artwork_url = artwork_url
-            if artwork_url is not None and current_item.media_item is not None:
-                image_data = await self.mass.metadata.get_image_data_for_item(
-                    current_item.media_item
-                )
-                if image_data is not None:
-                    image = await asyncio.to_thread(Image.open, BytesIO(image_data))
-                    if (artwork_role := self._artwork_role) is not None:
+            if artwork_url is not None:
+                # Fetch from the resolved URL so the bytes match artwork_url, even when
+                # radio now-playing art differs from the queue item's own image.
+                image_data = await self.mass.metadata.get_thumbnail(artwork_url, provider="builtin")
+                if isinstance(image_data, bytes):
+                    # decode through the guard so undecodable art (e.g. SVG) is skipped, not crashed
+                    image = await self._decode_artwork(image_data)
+                    if image is not None and (artwork_role := self._artwork_role) is not None:
                         await artwork_role.set_album_artwork(image)
-            # Clear artwork if none available
             elif (artwork_role := self._artwork_role) is not None:
                 await artwork_role.set_album_artwork(None)
 
@@ -884,11 +896,32 @@ class SendspinPlayer(SendspinBasePlayer):
                     artist_artwork_url, provider="builtin"
                 )
                 if isinstance(artist_image_data, bytes):
-                    artist_image = await asyncio.to_thread(Image.open, BytesIO(artist_image_data))
-                    if (artwork_role := self._artwork_role) is not None:
+                    artist_image = await self._decode_artwork(artist_image_data)
+                    if (
+                        artist_image is not None
+                        and (artwork_role := self._artwork_role) is not None
+                    ):
                         await artwork_role.set_artist_artwork(artist_image)
             elif (artwork_role := self._artwork_role) is not None:
                 await artwork_role.set_artist_artwork(None)
+
+    async def _decode_artwork(self, image_data: bytes) -> Image.Image | None:
+        """
+        Decode artwork bytes into a Pillow image, returning None if undecodable.
+
+        :param image_data: Raw image bytes to decode.
+        """
+
+        def _open() -> Image.Image:
+            img = Image.open(BytesIO(image_data))
+            img.load()
+            return img
+
+        try:
+            return await asyncio.to_thread(_open)
+        except OSError as err:
+            self.logger.debug("Skipping undecodable artwork: %s", err)
+            return None
 
     def _on_player_media_updated(self) -> None:
         """Handle callback when the current media of the player is updated."""
@@ -986,9 +1019,9 @@ class SendspinPlayer(SendspinBasePlayer):
                 current_media.source_id, current_media.queue_item_id
             )
 
-        # Send album and artist artwork
+        # Runs even without a queue item so radio / Spotify Connect streams still get art.
+        await self._send_album_artwork(current_media)
         if queue_item:
-            await self._send_album_artwork(queue_item)
             await self._send_artist_artwork(queue_item)
 
         track_number: int | None = None
@@ -1254,8 +1287,6 @@ class SendspinPlayer(SendspinBasePlayer):
                 ConfigEntry(
                     key="cast_audio_unsupported",
                     type=ConfigEntryType.ALERT,
-                    label="Sendspin isn't supported on this Cast device. "
-                    "Use the standard Cast protocol instead.",
                     required=False,
                 )
             )
@@ -1265,24 +1296,18 @@ class SendspinPlayer(SendspinBasePlayer):
             supported_formats = player_role.get_supported_formats()
             if supported_formats:
                 format_options = [
-                    ConfigValueOption(
-                        title="Automatic (let client decide)",
-                        value=SENDSPIN_FORMAT_AUTOMATIC,
-                    ),
+                    ConfigValueOption(SENDSPIN_FORMAT_AUTOMATIC),
                 ]
                 for fmt in supported_formats:
                     format_options.append(
                         ConfigValueOption(
-                            title=format_to_display_string(fmt),
-                            value=format_to_option_value(fmt),
+                            format_to_option_value(fmt), title=format_to_display_string(fmt)
                         )
                     )
                 entries.append(
                     ConfigEntry(
                         key=CONF_PREFERRED_SENDSPIN_FORMAT,
                         type=ConfigEntryType.STRING,
-                        label="Preferred audio format",
-                        description="Select the audio format to use for playback on this player.",
                         category="protocol_generic",
                         default_value=SENDSPIN_FORMAT_AUTOMATIC,
                         options=format_options,
@@ -1298,12 +1323,6 @@ class SendspinPlayer(SendspinBasePlayer):
                 ConfigEntry(
                     key=CONF_SENDSPIN_STATIC_DELAY,
                     type=ConfigEntryType.INTEGER,
-                    label="Static playback delay (ms)",
-                    description=(
-                        "Offset in milliseconds to keep this player in sync with other players. "
-                        "Increase if audio plays too late, for example to compensate for latency "
-                        "from an amp, active speakers, or the OS."
-                    ),
                     required=False,
                     default_value=self.static_delay_default_ms,
                     range=(0, 5000),

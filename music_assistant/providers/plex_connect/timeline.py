@@ -300,7 +300,7 @@ class TimelineMixin:
                 last_update = float(sub["last_update"])  # type: ignore[arg-type]
                 if current_time - last_update > 90:
                     stale_clients.append(client_id)
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 LOGGER.debug(f"Invalid last_update for client {client_id}, treating as stale")
                 stale_clients.append(client_id)
 

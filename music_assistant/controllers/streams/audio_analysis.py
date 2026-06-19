@@ -12,7 +12,6 @@ from collections.abc import AsyncGenerator, Iterable, Mapping
 from math import inf
 from typing import TYPE_CHECKING, Any
 
-import torch
 from music_assistant_models.audio_analysis import AudioAnalysisCoverage
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
@@ -29,6 +28,7 @@ from music_assistant.constants import (
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.datetime import local_clock_time_to_utc
 from music_assistant.helpers.json import json_dumps, json_loads
+from music_assistant.helpers.util import is_arm
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 from music_assistant.models.music_provider import MusicProvider
@@ -44,8 +44,15 @@ BACKGROUND_SCAN_RUN_BUDGET_SECONDS = 4 * 3600
 # Per-chunk dispatch interval bounds. One PCM chunk = one audio-second of decoded data:
 # the floor is the fastest pace allowed; the ceiling is both the slowest pace and the
 # per-chunk processing timeout that evicts unresponsive providers.
-REAL_TIME_PACE_INTERVAL_SECONDS_FLOOR = 0.100
-REAL_TIME_PACE_INTERVAL_SECONDS_CEILING = 1.0
+#
+# Live analysis is paced to ~5x real-time, never faster, on every machine. The buffer fills
+# far ahead of playback (a whole track decodes in seconds), and draining that burst at full
+# speed only spikes CPU — at 5x the analysis still completes well ahead of the crossfade
+# point. The ceiling is generous enough that legitimately slow, serialized per-chunk work on a
+# small box isn't mistaken for a hung provider. A companion half-the-cores concurrency cap
+# (analysis_semaphore) keeps analysis off the rest of the box on every machine.
+REAL_TIME_PACE_INTERVAL_SECONDS_FLOOR = 0.200
+REAL_TIME_PACE_INTERVAL_SECONDS_CEILING = 2.0
 BACKGROUND_PACE_INTERVAL_SECONDS_FLOOR = 0.250
 BACKGROUND_PACE_INTERVAL_SECONDS_CEILING = 4.0
 ANALYSIS_QUEUE_MAXSIZE = 30
@@ -137,10 +144,17 @@ class AudioAnalysisController:
         self.logger = self.mass.logger.getChild("audio_analysis")
         self._active_sessions: dict[str, set[str]] = {}
         self._workers: dict[str, asyncio.Task[None]] = {}
+        self._inference_runtime_configured = False
+        # Kept alive to persist the process-wide native BLAS thread cap (set in
+        # ensure_inference_runtime_configured); never used as a context manager.
+        self._blas_limiter: object | None = None
+        # Bounds how many analysis offloads run concurrently to half the cores; created in
+        # ensure_inference_runtime_configured once the core count is known (None until then),
+        # and honored by AudioAnalysisProvider._run_offloaded.
+        self.analysis_semaphore: asyncio.Semaphore | None = None
 
     def setup(self) -> None:
-        """Register the nightly background scan task and apply CPU caps."""
-        self._configure_thread_caps()
+        """Register the nightly background scan task."""
         utc_hour, utc_minute = local_clock_time_to_utc(0, 0)
         self.mass.tasks.register_scheduled_task(
             task_id=BACKGROUND_SCAN_TASK_ID,
@@ -163,18 +177,55 @@ class AudioAnalysisController:
         if workers:
             await asyncio.gather(*workers, return_exceptions=True)
 
-    def _configure_thread_caps(self) -> None:
-        """Cap PyTorch threading so Audio Analysis inference stays around a quarter of cpu_count."""
+    def ensure_inference_runtime_configured(self) -> None:
+        """
+        Configure the on-device inference runtime for analysis (process-wide, applied once).
+
+        Torch-backed analysis providers call this at the start of their handle_async_init,
+        before loading their models.
+        """
+        if self._inference_runtime_configured:
+            return
+        # Lazy imports: only torch-backed providers call this, so a host running no such
+        # provider never imports torch/threadpoolctl. Running before the first model load
+        # also lets set_num_interop_threads take effect (only settable before the first op).
+        import threadpoolctl  # noqa: PLC0415
+        import torch  # noqa: PLC0415
+
         budget = self._aa_thread_budget()
         torch.set_num_threads(budget)
         with contextlib.suppress(RuntimeError):
             # set_num_interop_threads can only be called before the first torch op
             torch.set_num_interop_threads(1)
+        # torch.set_num_threads only governs torch's own ops. The per-block librosa/numpy
+        # feature extraction runs through the native BLAS pool (OpenBLAS), which otherwise
+        # spawns a thread per core per worker and, across concurrent sessions, saturates
+        # every core and starves playback. Cap it to the same budget; the limiter is kept
+        # alive on the controller so the cap persists for the process.
+        self._blas_limiter = threadpoolctl.threadpool_limits(limits=budget, user_api="blas")
+        arm = is_arm()
+        if arm:
+            # NNPACK frequently fails to initialize on ARM SBCs (e.g. Raspberry Pi); torch
+            # then re-logs "Could not initialize NNPACK" to stderr on every conv op. The fp32
+            # conv fallback is used on those hosts regardless, so disabling it only removes
+            # the log spam.
+            with contextlib.suppress(Exception):
+                torch.backends.nnpack.set_flags(False)  # type: ignore[no-untyped-call]
+        # Cap concurrent analysis offloads to half the cores so analysis (live or background)
+        # never occupies the whole box and starves playback/the host — slow and steady on any
+        # machine. Applies to every host; honored by AudioAnalysisProvider._run_offloaded.
+        concurrency_cap = max(1, self._cpu_count() // 2)
+        self.analysis_semaphore = asyncio.Semaphore(concurrency_cap)
         self.logger.info(
-            "AudioAnalysis thread caps: torch intra=%d, torch interop=%d",
+            "AudioAnalysis runtime: torch intra=%d interop=%d, blas<=%d, analysis concurrency<=%d, nnpack=%s",
             torch.get_num_threads(),
             torch.get_num_interop_threads(),
+            budget,
+            concurrency_cap,
+            "off" if arm else "on",
         )
+        # Only mark done once configuration actually succeeded, so a failure retries.
+        self._inference_runtime_configured = True
 
     @property
     def providers(self) -> list[AudioAnalysisProvider]:
@@ -244,7 +295,7 @@ class AudioAnalysisController:
                 await asyncio.wait_for(
                     queue.put(pcm_data), timeout=REAL_TIME_PACE_INTERVAL_SECONDS_CEILING
                 )
-            except (TimeoutError, asyncio.QueueFull):
+            except TimeoutError, asyncio.QueueFull:
                 return
 
         async def _finalize_session() -> None:
@@ -427,7 +478,7 @@ class AudioAnalysisController:
         for row in rows:
             try:
                 data = json_loads(row["analysis_data"])
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 continue
             if not isinstance(data, dict):
                 continue
@@ -598,7 +649,9 @@ class AudioAnalysisController:
             raise ProviderUnavailableError(f"{aa_domain} is not available")
 
         analyzed = await self.get_audio_analysis_count(aa_domain)
-        pending = await self._count_candidates_missing_analysis(aa_domain)
+        pending = await self._count_candidates_missing_analysis(
+            aa_domain, provider.analysis_version
+        )
         # NULL analysis_version (pre-versioning rows) is treated as stale: SQLite
         # evaluates `NULL < N` as NULL (falsy), so it must be matched explicitly.
         stale_query = (
@@ -628,8 +681,8 @@ class AudioAnalysisController:
         if not providers:
             return
 
-        domains = [p.domain for p in providers]
-        candidates = await self._find_candidates_missing_analysis(domains, limit=0)
+        provider_versions = {p.domain: p.analysis_version for p in providers}
+        candidates = await self._find_candidates_missing_analysis(provider_versions, limit=0)
         if not candidates:
             return
 
@@ -836,27 +889,48 @@ class AudioAnalysisController:
 
     async def _find_candidates_missing_analysis(
         self,
-        aa_provider_domains: list[str],
+        aa_provider_versions: Mapping[str, int],
         limit: int,
     ) -> list[dict[str, Any]]:
-        """Return rows {item_id, provider_instance, missing_domains} for tracks lacking analysis."""
-        if not aa_provider_domains:
+        """
+        Return tracks that need (re)analysis for one or more AA providers.
+
+        A track is a candidate for a given AA provider domain when it has no
+        analysis row for that domain, or when its stored row predates the
+        provider's current analysis_version (a NULL stored version, from
+        pre-versioning rows, is also treated as stale). This mirrors the
+        per-track version gate in AudioAnalysisProvider.start_analysis so a
+        provider bumping its analysis_version triggers a background re-scan.
+
+        :param aa_provider_versions: Mapping of AA provider domain to the
+            provider's current analysis_version.
+        :param limit: Maximum number of candidate rows to return (0 for no limit).
+        :returns: Rows {item_id, provider_instance, missing_domains} where
+            missing_domains lists the AA provider domains needing analysis.
+        """
+        if not aa_provider_versions:
             return []
 
         filesystem_domains = self._available_filesystem_domains()
         if not filesystem_domains:
             return []
 
-        # CROSS JOIN (track x possible domain), keep pairs with no analysis row,
-        # GROUP_CONCAT the missing domains per track.
+        # CROSS JOIN (track x possible domain), keep pairs with no up-to-date analysis
+        # row, GROUP_CONCAT the missing domains per track.
+        aa_domains = list(aa_provider_versions)
         fs_inline = ", ".join(f"'{d}'" for d in filesystem_domains)
         aa_select_terms = " UNION ALL ".join(
-            f"SELECT :aa_{i} AS aa_provider_domain" for i in range(len(aa_provider_domains))
+            f"SELECT :aa_{i} AS aa_provider_domain, :ver_{i} AS current_version"
+            for i in range(len(aa_domains))
         )
         params: dict[str, Any] = {
             "media_type": MediaType.TRACK.value,
-            **{f"aa_{i}": d for i, d in enumerate(aa_provider_domains)},
+            **{f"aa_{i}": d for i, d in enumerate(aa_domains)},
+            **{f"ver_{i}": aa_provider_versions[d] for i, d in enumerate(aa_domains)},
         }
+        # The NOT EXISTS gate only counts an analysis row as up-to-date when its
+        # analysis_version is non-NULL and >= the provider's current version, so
+        # missing rows and stale-version rows both surface as candidates.
         query = (
             f"SELECT pm.provider_item_id AS item_id, "
             f"       pm.provider_instance AS provider_instance, "
@@ -870,7 +944,9 @@ class AudioAnalysisController:
             f"    WHERE aa.item_id = pm.provider_item_id "
             f"      AND aa.provider = pm.provider_instance "
             f"      AND aa.aa_provider_domain = possible.aa_provider_domain "
-            f"      AND aa.media_type = :media_type"
+            f"      AND aa.media_type = :media_type "
+            f"      AND aa.analysis_version IS NOT NULL "
+            f"      AND aa.analysis_version >= possible.current_version"
             f"  ) "
             f"GROUP BY pm.provider_item_id, pm.provider_instance"
         )
@@ -889,8 +965,12 @@ class AudioAnalysisController:
             )
         return results
 
-    async def _count_candidates_missing_analysis(self, aa_domain: str) -> int:
-        """Count filesystem candidate tracks with no analysis row for aa_domain."""
+    async def _count_candidates_missing_analysis(self, aa_domain: str, current_version: int) -> int:
+        """Count filesystem candidate tracks needing (re)analysis for aa_domain.
+
+        A track is counted when it has no analysis row for the domain, or when
+        its stored analysis_version is NULL or less than current_version.
+        """
         filesystem_domains = self._available_filesystem_domains()
         if not filesystem_domains:
             return 0
@@ -904,12 +984,18 @@ class AudioAnalysisController:
             f"    WHERE aa.item_id = pm.provider_item_id "
             f"      AND aa.provider = pm.provider_instance "
             f"      AND aa.aa_provider_domain = :aa_domain "
-            f"      AND aa.media_type = :media_type"
+            f"      AND aa.media_type = :media_type "
+            f"      AND aa.analysis_version IS NOT NULL "
+            f"      AND aa.analysis_version >= :current_version"
             f"  )"
         )
         return await self.mass.music.database.get_count_from_query(
             query,
-            {"media_type": MediaType.TRACK.value, "aa_domain": aa_domain},
+            {
+                "media_type": MediaType.TRACK.value,
+                "aa_domain": aa_domain,
+                "current_version": current_version,
+            },
         )
 
     async def _start_analysis_on_providers(
@@ -1038,12 +1124,16 @@ class AudioAnalysisController:
                 self._workers.pop(session_key, None)
                 break
 
+    def _cpu_count(self) -> int:
+        """Return the CPU core count available to this process (fallback 4 when unknown)."""
+        return os.process_cpu_count() or os.cpu_count() or 4
+
     def _aa_thread_budget(self) -> int:
         """Return the per-op PyTorch intra-op thread budget for inference (~25% of cpu_count)."""
-        return max(1, (os.process_cpu_count() or os.cpu_count() or 4) // 4)
+        return max(1, self._cpu_count() // 4)
 
     def _get_scan_concurrency(self) -> int:
-        """Read background scan concurrency from config, clamped to [1, 8]."""
+        """Read background scan concurrency from config, clamped to [1, 16]."""
         try:
             value = int(
                 self.mass.config.get_raw_core_config_value(
@@ -1055,4 +1145,4 @@ class AudioAnalysisController:
             )
         except Exception:
             value = DEFAULT_BACKGROUND_SCAN_CONCURRENCY
-        return max(1, min(value, 8))
+        return max(1, min(value, 16))

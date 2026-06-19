@@ -171,64 +171,44 @@ async def get_config_entries(
         ConfigEntry(
             key="label",
             type=ConfigEntryType.LABEL,
-            label="Please provide the address of your Audiobookshelf instance. To authenticate "
-            "you have two options: "
-            "a) Provide username AND password. Leave the API key empty. "
-            "b) Provide ONLY an API key.",
         ),
         ConfigEntry(
             key=CONF_URL,
             type=ConfigEntryType.STRING,
-            label="Server",
             required=True,
-            description="The URL of the Audiobookshelf server to connect to. For example "
-            "https://abs.domain.tld/ or http://192.168.1.4:13378/",
         ),
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Username",
             required=False,
-            description="The username to authenticate to the remote server.",
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=False,
-            description="The password to authenticate to the remote server.",
         ),
         ConfigEntry(
             key=CONF_API_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="API key _instead_ of user/ password. (ABS version >= 2.26)",
             required=False,
-            description="Instead of using a username and password, "
-            "you may provide an API key (ABS version >= 2.26). "
-            "Please consult the docs.",
         ),
         ConfigEntry(
             key=CONF_OLD_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="old token",
             required=False,
             hidden=True,
         ),
         ConfigEntry(
             key=CONF_VERIFY_SSL,
             type=ConfigEntryType.BOOLEAN,
-            label="Verify SSL",
             required=False,
-            description="Whether or not to verify the certificate of SSL/TLS connections.",
             advanced=True,
             default_value=True,
         ),
         ConfigEntry(
             key=CONF_HIDE_EMPTY_PODCASTS,
             type=ConfigEntryType.BOOLEAN,
-            label="Hide empty podcasts.",
             required=False,
-            description="This will skip podcasts with no episodes associated.",
             advanced=True,
             default_value=False,
         ),
@@ -298,7 +278,12 @@ class Audiobookshelf(MusicProvider):
                 )
             await self._client_socket.init_client()
         except AbsLoginError as exc:
-            raise LoginFailed(f"Login to abs instance at {base_url} failed.") from exc
+            raise LoginFailed(
+                f"Login to abs instance at {base_url} failed.",
+                translation_key="login_failed",
+                translation_owner=self.translation_owner,
+                translation_args=[base_url],
+            ) from exc
 
         if token_old is not None and token_api is None:
             # Log Message that the old token won't work
@@ -458,7 +443,7 @@ for more details.
         user = await self._client.get_my_user()
         await self._set_playlog_from_user(user)
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve playlists from abs."""
         for playlist_dict, media_type in zip(
             [
@@ -649,7 +634,7 @@ for more details.
         )
         return False
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve library/subscribed podcasts from the provider.
 
         Minified podcast information is enough.
@@ -700,9 +685,7 @@ for more details.
             base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
         )
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get all podcast episodes of podcast.
 
         Adds progress information.
@@ -766,7 +749,7 @@ for more details.
             episode_cnt += 1
         raise MediaNotFoundError("Episode not found")
 
-    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Get Audiobook libraries.
 
         Need expanded version for chapters.

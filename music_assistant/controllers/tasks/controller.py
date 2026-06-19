@@ -226,6 +226,7 @@ class TasksController(CoreController):
         task_id: str | None = None,
         translation_key: str | None = None,
         translation_args: list[Any] | None = None,
+        translation_owner: str | None = None,
         user_id: str | None = None,
         metadata: TaskMetadata | None = None,
         allow_retry: bool = False,
@@ -242,6 +243,8 @@ class TasksController(CoreController):
             the existing task is returned as-is. If inactive, it is replaced.
         :param translation_key: Optional translation key for localised task names.
         :param translation_args: Optional arguments for the translation key.
+        :param translation_owner: Owner namespace the (relative) translation_key resolves under,
+            e.g. the calling module's ``translation_owner`` ("core.<domain>"/"provider.<domain>").
         :param user_id: Optional user id that initiated the task.
         :param metadata: Optional key/value metadata attached to the task.
         :param allow_retry: Whether the task can be retried after failure.
@@ -261,8 +264,9 @@ class TasksController(CoreController):
             id=resolved_task_id,
             name=name,
             status=TaskStatus.IDLE,
-            translation_key=translation_key,
+            translation_key=_namespaced_translation_key(translation_key),
             translation_args=translation_args or [],
+            translation_owner=translation_owner,
             user_id=user_id,
             metadata=metadata or {},
             allow_retry=allow_retry,
@@ -278,7 +282,7 @@ class TasksController(CoreController):
         self._queue_task(managed, reset_logs=True, run_user_id=user_id)
         return task_info
 
-    def register_scheduled_task(
+    def register_scheduled_task(  # noqa: PLR0913
         self,
         *,
         task_id: str,
@@ -288,6 +292,7 @@ class TasksController(CoreController):
         initial_delay: float | None = None,
         translation_key: str | None = None,
         translation_args: list[Any] | None = None,
+        translation_owner: str | None = None,
         metadata: TaskMetadata | None = None,
         allow_retry: bool = False,
         allow_cancel: bool = True,
@@ -301,6 +306,8 @@ class TasksController(CoreController):
         :param initial_delay: Optional delay in seconds before the first run.
         :param translation_key: Optional translation key for localised task names.
         :param translation_args: Optional arguments for the translation key.
+        :param translation_owner: Owner namespace the (relative) translation_key resolves under,
+            e.g. the calling module's ``translation_owner`` ("core.<domain>"/"provider.<domain>").
         :param metadata: Optional key/value metadata attached to the task.
         :param allow_retry: Whether the task can be retried after failure.
         :param allow_cancel: Whether the task can be cancelled by a user.
@@ -309,8 +316,9 @@ class TasksController(CoreController):
         if existing := self._tasks.get(task_id):
             task_info = existing.task_info
             task_info.name = name
-            task_info.translation_key = translation_key
+            task_info.translation_key = _namespaced_translation_key(translation_key)
             task_info.translation_args = translation_args or []
+            task_info.translation_owner = translation_owner
             task_info.metadata = metadata or {}
             if task_info.schedule is not None:
                 task_info.schedule = merge_task_schedule_state(
@@ -334,8 +342,9 @@ class TasksController(CoreController):
             id=task_id,
             name=name,
             status=TaskStatus.IDLE,
-            translation_key=translation_key,
+            translation_key=_namespaced_translation_key(translation_key),
             translation_args=translation_args or [],
+            translation_owner=translation_owner,
             metadata=metadata or {},
             schedule=resolved_schedule,
             allow_retry=allow_retry,
@@ -794,3 +803,16 @@ class TasksController(CoreController):
         self._scheduled_task_update_at = None
         self._last_task_update_signal = self.mass.loop.time()
         self.mass.signal_event(EventType.TASKS_UPDATED, data=self.list_tasks_for_user(None))
+
+
+def _namespaced_translation_key(translation_key: str | None) -> str | None:
+    """
+    Namespace a bare task key under the shared ``background_task`` group.
+
+    Callers pass just the task key (e.g. ``database_cleanup``); the ``background_task`` group is
+    implicit for tasks and added here. A key that already carries a namespace (anything containing
+    a ``.``, e.g. a fully-qualified key) is returned unchanged.
+    """
+    if translation_key and "." not in translation_key:
+        return f"background_task.{translation_key}"
+    return translation_key

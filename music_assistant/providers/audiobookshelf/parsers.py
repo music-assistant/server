@@ -2,6 +2,7 @@
 
 from contextlib import suppress
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from aioaudiobookshelf.schema.library import (
     LibraryItemExpandedBook as AbsLibraryItemExpandedBook,
@@ -18,8 +19,6 @@ from aioaudiobookshelf.schema.library import (
 from aioaudiobookshelf.schema.library import (
     LibraryItemPodcast as AbsLibraryItemPodcast,
 )
-from aioaudiobookshelf.schema.media_progress import MediaProgress as AbsMediaProgress
-from aioaudiobookshelf.schema.playlist import PlaylistExpanded as AbsPlaylistExpanded
 from aioaudiobookshelf.schema.podcast import PodcastEpisode as AbsPodcastEpisode
 from aioaudiobookshelf.schema.podcast import (
     PodcastEpisodeExpanded as AbsPodcastEpisodeExpanded,
@@ -30,6 +29,7 @@ from music_assistant_models.media_items import (
     AudioFormat,
     ItemMapping,
     MediaItemChapter,
+    MediaItemCollection,
     MediaItemImage,
     ProviderMapping,
     UniqueList,
@@ -39,6 +39,10 @@ from music_assistant_models.media_items import Podcast as MassPodcast
 from music_assistant_models.media_items import PodcastEpisode as MassPodcastEpisode
 
 from music_assistant.helpers.datetime import from_utc_timestamp
+
+if TYPE_CHECKING:
+    from aioaudiobookshelf.schema.media_progress import MediaProgress as AbsMediaProgress
+    from aioaudiobookshelf.schema.playlist import PlaylistExpanded as AbsPlaylistExpanded
 
 
 def _build_cover_url(*, base_url: str, item_id: str, token: str, version: int | None = None) -> str:
@@ -254,7 +258,7 @@ def parse_podcast_episode(
 
 def parse_audiobook(
     *,
-    abs_audiobook: AbsLibraryItemExpandedBook | AbsLibraryItemMinifiedBook,
+    abs_audiobook: AbsLibraryItemExpandedBook,
     instance_id: str,
     domain: str,
     token: str | None,
@@ -298,6 +302,17 @@ def parse_audiobook(
             mass_audiobook.metadata.release_date = datetime(
                 year=int(abs_audiobook.media.metadata.published_year), month=1, day=1
             )
+
+    book_series: list[MediaItemCollection] = []
+    for abs_series_sequence in abs_audiobook.media.metadata.series:
+        book_series.append(
+            MediaItemCollection(
+                title=abs_series_sequence.name, sequence=abs_series_sequence.sequence
+            )
+        )
+
+    if book_series:
+        mass_audiobook.metadata.collections = UniqueList(book_series)
 
     if abs_audiobook.media.metadata.genres is not None:
         mass_audiobook.metadata.genres = set(abs_audiobook.media.metadata.genres)
