@@ -58,6 +58,16 @@ def test_parse_lyrics_malformed_json_as_plain() -> None:
     assert parse_plex_lyrics_payload("{not valid json") == ("{not valid json", False)
 
 
+def test_parse_lyrics_long_offset_no_minute_wrap() -> None:
+    """Offsets beyond one hour keep counting minutes instead of wrapping at 60."""
+    payload = (
+        '{"MediaContainer": {"Lyrics": [{"Line": ['
+        '{"Span": [{"text": "late line", "startOffset": 3661230}]}'
+        "]}]}}"
+    )
+    assert parse_plex_lyrics_payload(payload) == ("[61:01.23]late line", True)
+
+
 def _guid_elem(guid_id: str) -> Mock:
     elem = Mock()
     elem.attrib = {"id": guid_id}

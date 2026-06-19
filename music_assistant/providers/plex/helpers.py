@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
 import requests
@@ -146,13 +145,13 @@ def get_favorite_from_rating(plex_media: PlexObject, threshold: float) -> bool |
 
 def get_explicit(plex_media: PlexObject) -> bool | None:
     """
-    Derive explicit status from a Plex object's content rating, if present.
+    Derive explicit status from a Plex object's content rating.
 
-    plexapi does not expose ``contentRating`` on audio items, so the value is
-    read from the raw payload. Returns None when no content rating is set.
+    Returns True or False based on the content rating, or None when it is unset.
 
     :param plex_media: The Plex object to read the content rating from.
     """
+    # contentRating is not typed by plexapi on audio items, so read it from the raw payload.
     content_rating = plex_media._data.attrib.get("contentRating")
     if not content_rating or not isinstance(content_rating, str):
         return None
@@ -163,12 +162,9 @@ def get_musicbrainz_id(plex_media: PlexObject) -> str | None:
     """
     Get the MusicBrainz identifier from a Plex object's guids, if available.
 
-    The guids are read straight from the cached payload so that partial
-    library-listing objects (whose guids are not loaded) never trigger a
-    synchronous Plex reload.
-
     :param plex_media: The Plex object (artist, album or track) to read from.
     """
+    # Read guids from the cached payload so partial listing objects don't trigger a reload.
     for guid in plex_media._data.findall("Guid"):
         guid_id = str(guid.attrib.get("id") or "")
         if guid_id.startswith("mbid://"):
@@ -180,17 +176,14 @@ def parse_plex_lyrics_payload(content: str) -> tuple[str, bool] | None:
     """
     Parse a Plex lyric stream payload into ``(lyrics, is_synced)``.
 
-    Plex serves lyrics either as a structured JSON document
-    (``MediaContainer > Lyrics > Line > Span``) for embedded/online timed
-    lyrics, or as a raw ``.lrc`` / ``.txt`` sidecar. The shape is sniffed:
-    structured JSON first, then timestamped LRC text, then plain text. Returns
-    the lyrics as an LRC string when synced and plain text otherwise, or None
-    when no usable lyrics are found.
+    Returns the lyrics as an LRC string when synced, plain text when not, or
+    None when no usable lyrics are found.
 
     :param content: The raw lyric stream body returned by Plex.
     """
     if not content or not content.strip():
         return None
+    # Sniff the payload shape: structured JSON, then timestamped LRC, then plain text.
     if (parsed := _lyrics_from_plex_json(content)) is not None:
         return parsed
     if _LRC_TIMESTAMP_RE.search(content):
@@ -248,5 +241,6 @@ def _ms_to_lrc_timestamp(milliseconds: int) -> str:
 
     :param milliseconds: The offset from the start of the track, in milliseconds.
     """
-    timestamp = datetime.fromtimestamp(milliseconds / 1000, tz=UTC)
-    return timestamp.strftime("%M:%S.%f")[:-4]
+    minutes, remainder = divmod(max(milliseconds, 0), 60000)
+    seconds, remainder = divmod(remainder, 1000)
+    return f"{minutes:02d}:{seconds:02d}.{remainder // 10:02d}"
