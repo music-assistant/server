@@ -39,6 +39,7 @@ PRESET_IDS = range(1, 7)
 SEARCH_RESULT_LIMIT = 25
 SEARCH_TIMEOUT = 10
 RECONNECT_DELAY = 10
+INSTANCE_POSTFIX_TARGET_LIMIT = 5
 
 BOSE_SUBPROTOCOLS = ("gabbo",)
 
@@ -138,7 +139,7 @@ def _target_player_option_title(player: BosePlayerInfo) -> str:
 
 def _target_player_detail_entries(
     player: BosePlayerInfo,
-    player_index: int | None = None,
+    player_index: int,
 ) -> tuple[ConfigEntry, ...]:
     """Return read-only detail rows for the selected target player."""
     details = (
@@ -146,11 +147,8 @@ def _target_player_detail_entries(
         ("MAC address", player.mac_address),
         ("Bose UUID", player.bose_uuid),
     )
-    key_prefix = (
-        f"target_player_detail_{player_index}_" if player_index else "target_player_detail_"
-    )
-    label_prefix = f"{player.name} - " if player_index else ""
-    category = "Target players" if player_index else "Target player"
+    key_prefix = f"target_player_detail_{player_index}_"
+    label_prefix = f"{player.name} - "
 
     return tuple(
         ConfigEntry(
@@ -158,7 +156,7 @@ def _target_player_detail_entries(
             type=ConfigEntryType.LABEL,
             label=f"{label_prefix}{label}: {_unknown_if_empty(value)}",
             required=False,
-            category=category,
+            category="Target players",
             advanced=True,
         )
         for index, (label, value) in enumerate(details, start=1)
@@ -506,14 +504,10 @@ class BoseSoundTouchFavoritesProvider(PluginProvider):
 
     _listener_tasks: dict[str, asyncio.Task[None]] | None = None
     _stop_event: asyncio.Event | None = None
-    _bose_player: BosePlayerInfo | None = None
 
     @property
     def instance_name_postfix(self) -> str | None:
-        """Return the target player name to identify multi-instance configs."""
-        if self._bose_player:
-            return self._bose_player.name
-
+        """Return the target player names to identify multi-instance configs."""
         target_player_ids = _string_list_config_value(
             self.config.get_value("target_players"),
             [],
@@ -521,12 +515,19 @@ class BoseSoundTouchFavoritesProvider(PluginProvider):
         if not target_player_ids:
             return None
 
-        target_player_id = target_player_ids[0]
-        player = self.mass.players.get_player(target_player_id)
-        if player is None:
-            return target_player_id
+        target_player_names = [
+            player.display_name
+            if (player := self.mass.players.get_player(player_id))
+            else player_id
+            for player_id in target_player_ids
+        ]
+        if len(target_player_names) <= INSTANCE_POSTFIX_TARGET_LIMIT:
+            return ", ".join(target_player_names)
 
-        return player.display_name
+        remaining_count = len(target_player_names) - INSTANCE_POSTFIX_TARGET_LIMIT
+        remaining_label = "other" if remaining_count == 1 else "others"
+        visible_names = target_player_names[:INSTANCE_POSTFIX_TARGET_LIMIT]
+        return f"{', '.join(visible_names)} + {remaining_count} {remaining_label}"
 
     async def loaded_in_mass(self) -> None:
         """Start listening after Music Assistant loads the provider."""
@@ -537,7 +538,6 @@ class BoseSoundTouchFavoritesProvider(PluginProvider):
         if not target_player_ids:
             raise SetupFailedError("No Bose SoundTouch speaker has been configured")
 
-        self._listener_tasks = {}
         bose_players: list[BosePlayerInfo] = []
         for target_player_id in target_player_ids:
             player = self.mass.players.get_player(target_player_id)
@@ -556,6 +556,9 @@ class BoseSoundTouchFavoritesProvider(PluginProvider):
 
             bose_players.append(bose_player)
 
+        self._stop_event = asyncio.Event()
+        self._listener_tasks = {}
+        for bose_player in bose_players:
             self.logger.info(
                 (
                     "Bose SoundTouch Favorites target loaded: name=%s player_id=%s "
@@ -569,10 +572,6 @@ class BoseSoundTouchFavoritesProvider(PluginProvider):
                 bose_player.mac_address,
             )
 
-        self._bose_player = bose_players[0]
-
-        self._stop_event = asyncio.Event()
-        for bose_player in bose_players:
             self._listener_tasks[bose_player.player_id] = asyncio.create_task(
                 self._listen_to_bose(bose_player),
                 name=f"bose_soundtouch_favorites_listener_{bose_player.player_id}",
@@ -595,7 +594,6 @@ class BoseSoundTouchFavoritesProvider(PluginProvider):
             self._listener_tasks = None
 
         self._stop_event = None
-        self._bose_player = None
 
     async def _listen_to_bose(self, bose_player: BosePlayerInfo) -> None:
         """Connect to Bose WebSocket and handle physical favorite button presses."""
