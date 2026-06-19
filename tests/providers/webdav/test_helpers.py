@@ -2,11 +2,47 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
+import aiohttp
 import pytest
 
-from music_assistant.providers.webdav.helpers import build_webdav_url
+from music_assistant.providers.webdav.helpers import build_webdav_url, webdav_propfind
 
 BASE_URL = "https://host.example/remote.php/dav/files/user/Music"
+
+EMPTY_MULTISTATUS = (
+    '<?xml version="1.0" encoding="utf-8"?>\n<d:multistatus xmlns:d="DAV:"></d:multistatus>'
+)
+
+
+class _FakeResponse:
+    """Minimal async-context-manager stand-in for an aiohttp response."""
+
+    def __init__(self, status: int, body: str) -> None:
+        self.status = status
+        self._body = body
+
+    async def __aenter__(self) -> _FakeResponse:
+        return self
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        return False
+
+    async def text(self) -> str:
+        return self._body
+
+
+class _FakeSession:
+    """Capture the headers passed to session.request for assertion."""
+
+    def __init__(self, response: _FakeResponse) -> None:
+        self._response = response
+        self.last_headers: dict[str, str] | None = None
+
+    def request(self, _method: str, _url: str, *, headers: dict[str, str], **_kwargs: Any) -> Any:
+        self.last_headers = headers
+        return self._response
 
 
 @pytest.mark.parametrize(
@@ -33,3 +69,34 @@ def test_build_webdav_url_passes_through_absolute_urls() -> None:
     """An absolute URL (e.g. from a playlist line) must be returned unchanged."""
     absolute = "http://other.example/song.mp3"
     assert build_webdav_url(BASE_URL, absolute) == absolute
+
+
+async def test_webdav_propfind_sends_authorization_header() -> None:
+    """A provided auth_header must be sent as the Authorization request header."""
+    session = _FakeSession(_FakeResponse(207, EMPTY_MULTISTATUS))
+    auth_header = aiohttp.encode_basic_auth("user", "pass")
+
+    await webdav_propfind(
+        cast("aiohttp.ClientSession", session),
+        BASE_URL,
+        depth=0,
+        auth_header=auth_header,
+    )
+
+    assert session.last_headers is not None
+    assert session.last_headers["Authorization"] == auth_header
+
+
+async def test_webdav_propfind_omits_authorization_header_when_unset() -> None:
+    """Without credentials no Authorization header must be sent."""
+    session = _FakeSession(_FakeResponse(207, EMPTY_MULTISTATUS))
+
+    await webdav_propfind(
+        cast("aiohttp.ClientSession", session),
+        BASE_URL,
+        depth=0,
+        auth_header=None,
+    )
+
+    assert session.last_headers is not None
+    assert "Authorization" not in session.last_headers

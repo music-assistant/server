@@ -42,7 +42,7 @@ async def webdav_propfind(
     url: str,
     depth: int = 1,
     timeout: int = 30,
-    auth: aiohttp.BasicAuth | None = None,
+    auth_header: str | None = None,
 ) -> list[WebDAVItem]:
     """
     Execute a PROPFIND request on a WebDAV resource.
@@ -51,13 +51,15 @@ async def webdav_propfind(
     :param url: WebDAV URL to query.
     :param depth: Depth level (0=properties only, 1=immediate children).
     :param timeout: Request timeout in seconds.
-    :param auth: Optional BasicAuth credentials.
+    :param auth_header: Optional pre-encoded Authorization header value (e.g. "Basic ...").
     :returns: List of WebDAVItem objects.
     :raises LoginFailed: Authentication failed (401/403).
     :raises SetupFailedError: Server error during setup.
     :raises ProviderUnavailableError: Connection or timeout error.
     """
     headers = {"Depth": str(depth), "Content-Type": "application/xml; charset=utf-8"}
+    if auth_header:
+        headers["Authorization"] = auth_header
 
     try:
         async with session.request(
@@ -65,7 +67,6 @@ async def webdav_propfind(
             url,
             headers=headers,
             data=PROPFIND_BODY,
-            auth=auth,
             timeout=aiohttp.ClientTimeout(total=timeout),
         ) as resp:
             if resp.status == 401:
@@ -177,10 +178,10 @@ async def webdav_test_connection(
     :raises LoginFailed: Authentication failed.
     :raises SetupFailedError: Connection or configuration error.
     """
-    auth = aiohttp.BasicAuth(username, password) if username and password else None
+    auth_header = aiohttp.encode_basic_auth(username, password or "") if username else None
 
     try:
-        await webdav_propfind(session, base_url, depth=0, timeout=timeout, auth=auth)
+        await webdav_propfind(session, base_url, depth=0, timeout=timeout, auth_header=auth_header)
     except ProviderUnavailableError as err:
         # During setup, connection errors should be SetupFailedError
         raise SetupFailedError(str(err)) from err
