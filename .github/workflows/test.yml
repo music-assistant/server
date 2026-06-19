@@ -151,7 +151,7 @@ jobs:
           pytest -o addopts="" --durations 10 $cov --cov-report=term-missing --cov-report=xml $targets
       - name: Upload coverage to Codecov
         if: ${{ !github.event.pull_request.head.repo.fork }}
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: ./coverage.xml
           flags: ${{ needs.changes.outputs.mode }}
