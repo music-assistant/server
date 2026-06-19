@@ -189,10 +189,10 @@ class WikipediaMetadataProvider(MetadataProvider):
                         return None
                     try:
                         return cast("dict[str, Any]", await response.json())
-                    except (aiohttp.ContentTypeError, JSONDecodeError):
+                    except aiohttp.ContentTypeError, JSONDecodeError:
                         return None
             # ClientError covers every fetch failure; TimeoutError is raised separately
-            except (aiohttp.ClientError, TimeoutError):
+            except aiohttp.ClientError, TimeoutError:
                 return None
 
 

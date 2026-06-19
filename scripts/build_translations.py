@@ -6,6 +6,13 @@ per-provider/per-controller strings.json) into one flat, fully-qualified ``key -
 JSON at ``music_assistant/translations/en.json``. ``lokalise-upload.yml`` pushes that file to
 Lokalise; ``lokalise-download.yml`` pulls the translated languages back into translations/.
 
+A string value may reference another (typically shared ``common.``) string with the Home
+Assistant style token ``[%key:owner::path::to::key%]`` (``::`` separates the dotted key
+segments). Such a reference declares that an owner reuses a shared string: the target is
+validated to exist and the referencing key is omitted from the generated source, so Lokalise
+translates the shared string once while the server resolves the owner's key at runtime via its
+owner -> common fallback.
+
 Standalone (no ``music_assistant`` imports) so it runs under any music-assistant-models version
 and without the full server import chain.
 
@@ -17,6 +24,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import re
 import sys
 from typing import Any
 
@@ -36,16 +44,18 @@ ROOT_STRINGS_FILE = os.path.join(PACKAGE_ROOT, "strings.json")
 SOURCE_LANGUAGE = "en"
 SOURCE_FILE = os.path.join(TRANSLATIONS_PATH, f"{SOURCE_LANGUAGE}.json")
 COMMON_PREFIX = "common."
+# Home Assistant style reference token: [%key:owner::path::to::key%] -> owner.path.to.key
+REFERENCE_PATTERN = re.compile(r"^\[%key:(.+)%\]$")
 
 
 def build_translations_source() -> dict[str, str]:
     """Assemble the flat English source from all authoring strings.json files."""
-    source: dict[str, str] = {}
+    raw: dict[str, str] = {}
     for prefix, path in _collect_source_files():
         with open(path, "rb") as file:
             data = orjson.loads(file.read())
-        _flatten_into(data, prefix, source)
-    return source
+        _flatten_into(data, prefix, raw)
+    return _resolve_references(raw)
 
 
 def _collect_source_files() -> list[tuple[str, str]]:
@@ -91,6 +101,33 @@ def _flatten_into(data: dict[str, Any], prefix: str, out: dict[str, str]) -> Non
             out[full_key] = value
 
 
+def _resolve_references(raw: dict[str, str]) -> dict[str, str]:
+    """
+    Drop reference-valued keys after validating each points at an existing concrete string.
+
+    A reference value ``[%key:owner::path::to::key%]`` declares that this key reuses a shared
+    string defined elsewhere; the referenced key stays the single translatable source, so the
+    referencing key is left out of the generated catalog (the server resolves it at runtime via
+    its owner -> common fallback).
+
+    :param raw: The flattened catalog, still containing any reference-valued keys.
+    :raises ValueError: When a reference points at a key that is not a concrete string.
+    """
+    concrete = {key: value for key, value in raw.items() if not REFERENCE_PATTERN.match(value)}
+    unresolved: list[str] = []
+    for key, value in raw.items():
+        if not (match := REFERENCE_PATTERN.match(value)):
+            continue
+        target = match.group(1).replace("::", ".")
+        if target not in concrete:
+            unresolved.append(f"{key} -> {target}")
+    if unresolved:
+        raise ValueError(
+            "Unresolved translation reference target(s): " + ", ".join(sorted(unresolved))
+        )
+    return concrete
+
+
 def _render(catalog: dict[str, str]) -> bytes:
     """Render the catalog as deterministic, sorted, indented JSON."""
     return orjson.dumps(
@@ -101,7 +138,12 @@ def _render(catalog: dict[str, str]) -> bytes:
 
 def main() -> int:
     """Generate (or, with --check, validate) the Lokalise source file."""
-    rendered = _render(build_translations_source())
+    try:
+        source = build_translations_source()
+    except ValueError as err:
+        print(str(err), file=sys.stderr)
+        return 1
+    rendered = _render(source)
     if "--check" in sys.argv[1:]:
         existing = b""
         if os.path.isfile(SOURCE_FILE):
@@ -118,7 +160,7 @@ def main() -> int:
     os.makedirs(TRANSLATIONS_PATH, exist_ok=True)
     with open(SOURCE_FILE, "wb") as file:
         file.write(rendered)
-    print(f"Wrote {len(build_translations_source())} source strings to {SOURCE_FILE}")
+    print(f"Wrote {len(source)} source strings to {SOURCE_FILE}")
     return 0
 
 

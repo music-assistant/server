@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Check PyPI package metadata for security and supply chain concerns.
+"""
+Check PyPI package metadata for security and supply chain concerns.
 
 This script checks new or updated Python dependencies for suspicious indicators
 that might suggest supply chain attacks or unmaintained packages.
@@ -53,7 +54,8 @@ POPULAR_PACKAGES = {
 
 
 def check_typosquatting(package_name: str) -> str | None:
-    """Check if package name might be typosquatting a popular package.
+    """
+    Check if package name might be typosquatting a popular package.
 
     :param package_name: The package name to check.
     """
@@ -90,7 +92,8 @@ def check_typosquatting(package_name: str) -> str | None:
 
 
 def check_license_compatibility(license_str: str) -> tuple[bool, str]:
-    """Check if license is compatible with the project.
+    """
+    Check if license is compatible with the project.
 
     :param license_str: The license string from PyPI.
     """
@@ -115,7 +118,8 @@ def check_license_compatibility(license_str: str) -> tuple[bool, str]:
 
 
 def parse_requirement(line: str) -> str | None:
-    """Extract package name from a requirement line.
+    """
+    Extract package name from a requirement line.
 
     :param line: A line from requirements.txt (e.g., "package==1.0.0" or "package>=1.0")
     """
@@ -132,7 +136,8 @@ def parse_requirement(line: str) -> str | None:
 
 
 def get_pypi_metadata(package_name: str) -> dict[str, Any] | None:
-    """Fetch package metadata from PyPI JSON API.
+    """
+    Fetch package metadata from PyPI JSON API.
 
     :param package_name: The name of the package to check.
     """
@@ -153,7 +158,8 @@ def get_pypi_metadata(package_name: str) -> dict[str, Any] | None:
 
 
 def check_package(package_name: str) -> dict[str, Any]:
-    """Check a single package for security concerns.
+    """
+    Check a single package for security concerns.
 
     :param package_name: The name of the package to check.
     """
@@ -183,7 +189,7 @@ def check_package(package_name: str) -> dict[str, Any]:
                             upload_time_str = upload_time_str[:-1] + "+00:00"
                         upload_time = datetime.fromisoformat(upload_time_str)
                         upload_times.append(upload_time)
-                    except (ValueError, AttributeError):
+                    except ValueError, AttributeError:
                         continue
 
     first_upload = min(upload_times) if upload_times else None
@@ -278,7 +284,8 @@ def check_package(package_name: str) -> dict[str, Any]:
 
 
 def format_check_result(result: dict[str, Any]) -> str:
-    """Format a check result for display.
+    """
+    Format a check result for display.
 
     :param result: The check result dictionary.
     """

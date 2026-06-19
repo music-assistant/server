@@ -768,6 +768,12 @@ class Player(ABC):
 
     @property
     @final
+    def translation_owner(self) -> str:
+        """Return the translation owner namespace ("provider.<domain>") of the player's provider."""
+        return self._provider.translation_owner
+
+    @property
+    @final
     def config(self) -> PlayerConfig:
         """Return the config of the player."""
         return self._config
@@ -832,7 +838,7 @@ class Player(ABC):
                 try:
                     sample_rate_str, bit_depth_str = item.split(MULTI_VALUE_SPLITTER, 1)
                     config_rates.append((int(sample_rate_str.strip()), int(bit_depth_str.strip())))
-                except (ValueError, TypeError):
+                except ValueError, TypeError:
                     self.logger.warning(
                         "Ignoring malformed CONF_SAMPLE_RATES entry %r for player %s",
                         item,

@@ -17,5 +17,9 @@
   },
   "manifest": {
     "description": "Sendspin is an audio playback, control and synchronization protocol developed by the Open Home Foundation and is the native playback protocol built into Music Assistant, used for playback to supported clients like the Music Assistant Web interface, supported (mobile) clients and supported hardware"
+  },
+  "errors": {
+    "cast_app_not_ready": "Cast app on {0} did not report ready within 30 seconds.",
+    "cast_app_members_not_ready": "Cast app on {0} did not report ready within 30 seconds."
   }
 }

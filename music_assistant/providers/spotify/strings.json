@@ -6,7 +6,7 @@
     },
     "clear_auth": {
       "label": "Clear authentication",
-      "description": "Clear the current authentication details.",
+      "description": "[%key:common::config_entries::clear_auth::description%]",
       "action_label": "Clear authentication"
     },
     "client_id": {
@@ -30,6 +30,21 @@
       "label": "Sync Audiobook Progress from Spotify",
       "description": "Automatically sync audiobook progress from Spotify to Music Assistant. Progress from Spotify app will sync to MA when audiobooks are accessed. Only enable this if you use both the Spotify app and Music Assistant for audiobook playback."
     }
+  },
+  "media": {
+    "playlist": {
+      "liked_songs": {
+        "name": "Liked Songs {0}"
+      }
+    },
+    "podcast": {
+      "unknown_podcast": {
+        "name": "Unknown Podcast"
+      }
+    }
+  },
+  "config_categories": {
+    "developer_token": "Developer Token"
   },
   "manifest": {
     "description": "Stream music, playlists, podcasts, and discover new songs via Spotify’s ecosystem."

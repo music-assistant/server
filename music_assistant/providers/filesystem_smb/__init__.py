@@ -48,8 +48,12 @@ async def setup(
     # check if valid dns name is given for the host
     server = str(config.get_value(CONF_HOST))
     if not await get_ip_from_host(server):
-        msg = f"Unable to resolve {server}, make sure the address is resolveable."
-        raise LoginFailed(msg)
+        msg = f"Unable to resolve {server}, make sure the address is resolvable."
+        raise LoginFailed(
+            msg,
+            translation_key="host_unresolvable",
+            translation_args=[server],
+        )
     # check if share is valid
     share = str(config.get_value(CONF_SHARE))
     if not share or "/" in share or "\\" in share:
@@ -267,7 +271,8 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         subfolder: str,
         env_vars: dict[str, str],
     ) -> tuple[list[str], dict[str, str]]:
-        """Build mount command for Linux.
+        """
+        Build mount command for Linux.
 
         Uses the PASSWD environment variable to handle passwords with special characters
         (commas, etc.) that cannot be escaped on the command line.

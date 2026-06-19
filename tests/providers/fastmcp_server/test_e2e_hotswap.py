@@ -1,4 +1,5 @@
-"""End-to-end test for the permission-tag hot-swap on a live FastMCP root.
+"""
+End-to-end test for the permission-tag hot-swap on a live FastMCP root.
 
 ``MCPServerRuntime.apply_permission_change`` has unit-level routing tests
 (in ``test_apply_permission_change.py``) and a tag-filter middleware test
@@ -29,7 +30,8 @@ from music_assistant.providers.fastmcp_server.server import MCPServerRuntime, bu
 def _build_runtime_with_mounted_server(
     mock_mass: MagicMock, mock_config: MagicMock
 ) -> tuple[MCPServerRuntime, FastMCP]:
-    """Construct a real ``MCPServerRuntime`` with a small FastMCP mounted.
+    """
+    Construct a real ``MCPServerRuntime`` with a small FastMCP mounted.
 
     We skip the full ``start()`` (which would mount into MA's webserver) and
     build the FastMCP root by hand — same shape as the production start path,
@@ -66,7 +68,8 @@ def _set_config_values(cfg: MagicMock, **overrides: Any) -> None:
 async def test_hot_swap_makes_disabled_tool_visible_without_restart(
     mock_mass: MagicMock, mock_config: MagicMock
 ) -> None:
-    """Enabling a permission via ``apply_permission_change`` exposes its tools.
+    """
+    Enabling a permission via ``apply_permission_change`` exposes its tools.
 
     With ``control_volume=False`` (the default in ``mock_config``), the
     ``volume_*`` tools are invisible to clients. Flipping the bit to True
@@ -99,7 +102,8 @@ async def test_hot_swap_makes_disabled_tool_visible_without_restart(
 async def test_hot_swap_hides_previously_visible_tool(
     mock_mass: MagicMock, mock_config: MagicMock
 ) -> None:
-    """The reverse direction also works: disabling a permission hides its tools.
+    """
+    The reverse direction also works: disabling a permission hides its tools.
 
     Start with ``query_library=True`` (default), confirm library_* is visible,
     flip to ``False``, confirm it's hidden on the next list — same FastMCP

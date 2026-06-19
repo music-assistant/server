@@ -167,7 +167,8 @@ class QobuzProvider(MusicProvider):
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 5
     ) -> SearchResults:
-        """Perform search on musicprovider.
+        """
+        Perform search on musicprovider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include. All types if None.
@@ -298,7 +299,12 @@ class QobuzProvider(MusicProvider):
         )
         if not playlist_obj or not playlist_obj.get("id"):
             msg = f"Failed to create playlist: {name}"
-            raise InvalidDataError(msg)
+            raise InvalidDataError(
+                msg,
+                translation_key="create_playlist_failed",
+                translation_owner=self.translation_owner,
+                translation_args=[name],
+            )
         return self._parse_playlist(playlist_obj)
 
     @use_cache(3600 * 24 * 30, allow_expired_cache=True)  # Cache for 30 days
@@ -515,6 +521,23 @@ class QobuzProvider(MusicProvider):
             allow_seek=True,
         )
 
+    async def on_streamed(
+        self,
+        streamdetails: StreamDetails,
+    ) -> None:
+        """Handle callback when an item completed streaming."""
+        if self._user_auth_info is None:
+            msg = "User auth info not available"
+            raise LoginFailed(msg)
+        user_id = self._user_auth_info["user"]["id"]
+        async with self.throttler.bypass():
+            await self._get_data(
+                "track/reportStreamingEnd",
+                user_id=user_id,
+                track_id=str(streamdetails.item_id),
+                duration=try_parse_int(streamdetails.seconds_streamed),
+            )
+
     async def _report_playback_started(self, streamdata: dict[str, Any]) -> None:
         """Report playback start to qobuz."""
         # TODO: need to figure out if the streamed track is purchased by user
@@ -544,23 +567,6 @@ class QobuzProvider(MusicProvider):
         ]
         async with self.throttler.bypass():
             await self._post_data("track/reportStreamingStart", data=events)
-
-    async def on_streamed(
-        self,
-        streamdetails: StreamDetails,
-    ) -> None:
-        """Handle callback when an item completed streaming."""
-        if self._user_auth_info is None:
-            msg = "User auth info not available"
-            raise LoginFailed(msg)
-        user_id = self._user_auth_info["user"]["id"]
-        async with self.throttler.bypass():
-            await self._get_data(
-                "track/reportStreamingEnd",
-                user_id=user_id,
-                track_id=str(streamdetails.item_id),
-                duration=try_parse_int(streamdetails.seconds_streamed),
-            )
 
     def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:
         """Parse qobuz artist object to generic layout."""

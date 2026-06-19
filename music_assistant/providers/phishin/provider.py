@@ -187,7 +187,7 @@ class PhishInProvider(MusicProvider):
 
             return albums
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get artist albums: %s", err)
@@ -345,7 +345,7 @@ class PhishInProvider(MusicProvider):
                 can_seek=True,
             )
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get stream details for %s: %s", item_id, err)
@@ -371,7 +371,7 @@ class PhishInProvider(MusicProvider):
             for playlist_data in await self._get_playlists():
                 if playlist_data.get("tracks_count", 0) > 0:
                     yield playlist_to_ma_playlist(self, playlist_data)
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get library playlists: %s", err)
@@ -412,7 +412,7 @@ class PhishInProvider(MusicProvider):
 
             return tracks
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get playlist tracks for %s: %s", prov_playlist_id, err)
@@ -461,54 +461,63 @@ class PhishInProvider(MusicProvider):
                 provider=self.domain,
                 path=path + "years",
                 name="Browse by Year",
+                translation_key="browse_by_year",
             ),
             BrowseFolder(
                 item_id="today",
                 provider=self.domain,
                 path=path + "today",
                 name="This Day in Phish History",
+                translation_key="this_day_in_history",
             ),
             BrowseFolder(
                 item_id="recent",
                 provider=self.domain,
                 path=path + "recent",
                 name="Recent Shows",
+                translation_key="recent_shows",
             ),
             BrowseFolder(
                 item_id="venues",
                 provider=self.domain,
                 path=path + "venues",
                 name="Browse by Venue",
+                translation_key="browse_by_venue",
             ),
             BrowseFolder(
                 item_id="tags",
                 provider=self.domain,
                 path=path + "tags",
                 name="Browse by Tag",
+                translation_key="browse_by_tag",
             ),
             BrowseFolder(
                 item_id="playlists",
                 provider=self.domain,
                 path=path + "playlists",
                 name="User Playlists",
+                translation_key="user_playlists",
             ),
             BrowseFolder(
                 item_id="top_shows",
                 provider=self.domain,
                 path=path + "top_shows",
                 name="Top 46 Shows",
+                translation_key="top_shows",
             ),
             BrowseFolder(
                 item_id="top_tracks",
                 provider=self.domain,
                 path=path + "top_tracks",
                 name="Top 46 Tracks",
+                translation_key="top_tracks",
             ),
             BrowseFolder(
                 item_id="random",
                 provider=self.domain,
                 path=path + "random",
                 name="Random Show",
+                translation_key="random_show",
             ),
         ]
 
@@ -529,12 +538,14 @@ class PhishInProvider(MusicProvider):
                                 provider=self.domain,
                                 path=f"phishin://years/{period}",
                                 name=f"{period} ({show_count} shows)",
+                                translation_key="year",
+                                translation_params=[str(period), str(show_count)],
                             )
                         )
 
                 return sorted(folders, key=lambda x: x.name, reverse=True)
 
-            except (MediaNotFoundError, ProviderUnavailableError):
+            except MediaNotFoundError, ProviderUnavailableError:
                 raise
             except Exception as err:
                 self.logger.error("Failed to browse years: %s", err)
@@ -555,7 +566,7 @@ class PhishInProvider(MusicProvider):
 
             return albums
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to browse recent shows: %s", err)
@@ -570,7 +581,7 @@ class PhishInProvider(MusicProvider):
                 return [album]
             return []
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get random show: %s", err)
@@ -627,12 +638,14 @@ class PhishInProvider(MusicProvider):
                                 provider=self.domain,
                                 path=f"phishin://venues/{venue.get('slug')}",
                                 name=f"{venue.get('name')} ({audio_count} shows)",
+                                translation_key="venue",
+                                translation_params=[str(venue.get("name")), str(audio_count)],
                             )
                         )
 
                 return folders[:50]
 
-            except (MediaNotFoundError, ProviderUnavailableError):
+            except MediaNotFoundError, ProviderUnavailableError:
                 raise
             except Exception as err:
                 self.logger.error("Failed to browse venues: %s", err)
@@ -652,23 +665,32 @@ class PhishInProvider(MusicProvider):
                     track_count = tag.get("tracks_count", 0)
                     show_count = tag.get("shows_count", 0)
                     if track_count > 0 or show_count > 0:
-                        count_str = (
-                            f"{show_count} shows, {track_count} tracks"
-                            if show_count > 0
-                            else f"{track_count} tracks"
-                        )
+                        if show_count > 0:
+                            count_str = f"{show_count} shows, {track_count} tracks"
+                            translation_key = "tag_summary_shows_tracks"
+                            translation_params = [
+                                str(tag.get("name")),
+                                str(show_count),
+                                str(track_count),
+                            ]
+                        else:
+                            count_str = f"{track_count} tracks"
+                            translation_key = "tag_summary_tracks"
+                            translation_params = [str(tag.get("name")), str(track_count)]
                         folders.append(
                             BrowseFolder(
                                 item_id=f"tag_{tag.get('slug')}",
                                 provider=self.domain,
                                 path=f"phishin://tags/{tag.get('slug')}",
                                 name=f"{tag.get('name')} ({count_str})",
+                                translation_key=translation_key,
+                                translation_params=translation_params,
                             )
                         )
 
                 return sorted(folders, key=lambda x: x.name)
 
-            except (MediaNotFoundError, ProviderUnavailableError):
+            except MediaNotFoundError, ProviderUnavailableError:
                 raise
             except Exception as err:
                 self.logger.error("Failed to browse tags: %s", err)
@@ -694,6 +716,8 @@ class PhishInProvider(MusicProvider):
                             provider=self.domain,
                             path=f"phishin://tags/{tag_slug}/shows",
                             name=f"Shows with {tag_name} ({show_count})",
+                            translation_key="tag_shows",
+                            translation_params=[str(tag_name), str(show_count)],
                         )
                     )
 
@@ -704,12 +728,14 @@ class PhishInProvider(MusicProvider):
                             provider=self.domain,
                             path=f"phishin://tags/{tag_slug}/tracks",
                             name=f"All {tag_name} Tracks ({track_count})",
+                            translation_key="tag_tracks",
+                            translation_params=[str(tag_name), str(track_count)],
                         )
                     )
 
                 return subfolders
 
-            except (MediaNotFoundError, ProviderUnavailableError):
+            except MediaNotFoundError, ProviderUnavailableError:
                 raise
             except Exception as err:
                 self.logger.error("Failed to get tag subfolders: %s", err)
@@ -745,7 +771,7 @@ class PhishInProvider(MusicProvider):
 
             return tracks
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get tracks for tag %s: %s", tag_slug, err)
@@ -772,7 +798,7 @@ class PhishInProvider(MusicProvider):
 
             return albums
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get top shows: %s", err)
@@ -799,7 +825,7 @@ class PhishInProvider(MusicProvider):
 
             return tracks
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get top tracks: %s", err)
@@ -832,7 +858,7 @@ class PhishInProvider(MusicProvider):
 
             return sorted(albums, key=lambda x: x.name)
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to browse period %s: %s", period, err)
@@ -861,7 +887,7 @@ class PhishInProvider(MusicProvider):
 
             return albums
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get shows for venue %s: %s", venue_slug, err)
@@ -890,7 +916,7 @@ class PhishInProvider(MusicProvider):
 
             return albums
 
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             raise
         except Exception as err:
             self.logger.error("Failed to get shows for tag %s: %s", tag_slug, err)

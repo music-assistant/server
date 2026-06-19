@@ -1,4 +1,5 @@
-"""Optional 1024-dim CLAP audio-embedding ANN index for sonic_similarity.
+"""
+Optional 1024-dim CLAP audio-embedding ANN index for sonic_similarity.
 
 A usearch-backed on-disk index mapping a deterministic u64 label
 (derived from provider+item_id) to a 1024-dim CLAP audio embedding.
@@ -46,7 +47,8 @@ SAVE_MIN_INTERVAL_SECONDS: float = 60.0
 
 
 def derive_label(provider: str, item_id: str) -> int:
-    """Deterministic 64-bit label for a (provider, item_id) pair.
+    """
+    Deterministic 64-bit label for a (provider, item_id) pair.
 
     :param provider: Music provider domain (e.g. 'spotify').
     :param item_id: Provider-specific track identifier.
@@ -152,7 +154,8 @@ class ClapIndex:
         return derive_label(provider, item_id) in self._reverse
 
     async def add(self, provider: str, item_id: str, embedding: np.ndarray) -> None:
-        """Insert or replace a track's CLAP embedding.
+        """
+        Insert or replace a track's CLAP embedding.
 
         :param provider: Music provider domain.
         :param item_id: Provider-specific track identifier.
@@ -200,7 +203,8 @@ class ClapIndex:
         return arr
 
     def get_embedding(self, provider: str, item_id: str) -> np.ndarray | None:
-        """Return the stored embedding for a (provider, item_id), or None if absent.
+        """
+        Return the stored embedding for a (provider, item_id), or None if absent.
 
         O(1) via the derived label; prefer this on hot paths where the provider
         is known. Use get_embedding_by_item_id only when it isn't.
@@ -216,7 +220,8 @@ class ClapIndex:
         return self._embedding_for_label(label)
 
     def get_embedding_by_item_id(self, item_id: str) -> tuple[str, np.ndarray] | None:
-        """Return (provider, embedding) for a stored track, or None if absent.
+        """
+        Return (provider, embedding) for a stored track, or None if absent.
 
         O(n) scan over the reverse map; used when only the item_id is known.
 
@@ -234,7 +239,8 @@ class ClapIndex:
         return None
 
     async def search(self, embedding: np.ndarray, k: int) -> list[ScoredCandidate]:
-        """Return the top-k nearest ScoredCandidate results.
+        """
+        Return the top-k nearest ScoredCandidate results.
 
         :param embedding: 1024-dim query embedding (from CLAP text encoder).
         :param k: Max number of neighbors to return.

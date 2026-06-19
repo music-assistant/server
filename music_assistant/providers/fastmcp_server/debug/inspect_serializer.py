@@ -1,4 +1,5 @@
-"""Recursive JSON-safe converter for raw MA dataclass inspection.
+"""
+Recursive JSON-safe converter for raw MA dataclass inspection.
 
 Caller contract — :func:`dump` never raises for user-visible cases:
 
@@ -60,7 +61,8 @@ def dump(
     max_total_bytes: int | None = None,
     return_truncated: bool = False,
 ) -> Any:
-    """Convert ``obj`` to a JSON-safe structure.
+    """
+    Convert ``obj`` to a JSON-safe structure.
 
     :param obj: Any Python object.
     :param max_depth: Maximum recursion depth before fields collapse to
@@ -198,7 +200,7 @@ def _convert_dict(obj: dict[Any, Any], depth: int, seen: set[int], state: _State
                 key_bytes = len(json.dumps(key).encode("utf-8"))
                 val_bytes = len(json.dumps(conv_v, default=str).encode("utf-8"))
                 state.bytes_used += key_bytes + val_bytes + 4  # ": ," overhead
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 state.bytes_used += 64
         if state.budget_exceeded():
             state.truncated = True

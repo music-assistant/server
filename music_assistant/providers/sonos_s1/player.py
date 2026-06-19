@@ -103,7 +103,8 @@ class SonosPlayer(Player):
         return SUBSCRIPTION_SERVICES - subscribed_services
 
     def _extract_mac_from_player_id(self) -> str | None:
-        """Extract MAC address from Sonos player_id.
+        """
+        Extract MAC address from Sonos player_id.
 
         Sonos player_ids follow the format RINCON_XXXXXXXXXXXX01400 where
         the middle 12 hex characters represent the MAC address.
@@ -223,7 +224,12 @@ class SonosPlayer(Player):
                 f"Player {self.display_name} can not "
                 "accept play_media command, it is synced to another player."
             )
-            raise PlayerCommandFailed(msg)
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="play_media_synced",
+                translation_owner=self.translation_owner,
+                translation_args=[self.display_name],
+            )
 
         stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         if not media.duration:
@@ -247,7 +253,12 @@ class SonosPlayer(Player):
                 f"Player {self.display_name} can not "
                 "accept enqueue command, it is synced to another player."
             )
-            raise PlayerCommandFailed(msg)
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="enqueue_synced",
+                translation_owner=self.translation_owner,
+                translation_args=[self.display_name],
+            )
 
         didl_metadata = create_didl_metadata(media)
         stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
@@ -380,7 +391,8 @@ class SonosPlayer(Player):
 
     @soco_error()
     def _poll_track_info(self) -> dict[str, Any]:
-        """Poll the speaker for current track info.
+        """
+        Poll the speaker for current track info.
 
         Add converted position values (NOT async fiendly).
         """
@@ -416,7 +428,8 @@ class SonosPlayer(Player):
         self._subscriptions.append(subscription)
 
     async def _renew_failed(self, exception: Exception) -> None:
-        """Mark the speaker as offline after a subscription renewal failure.
+        """
+        Mark the speaker as offline after a subscription renewal failure.
 
         This is to reset the state to allow a future clean subscription attempt.
         """

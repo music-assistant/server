@@ -124,7 +124,7 @@ class AuthenticationManager:
                 prev_version = int(db_row["value"])
             else:
                 prev_version = DB_SCHEMA_VERSION
-        except (KeyError, ValueError, Exception):
+        except KeyError, ValueError, Exception:
             # settings table doesn't exist yet or other error
             prev_version = 0
 
@@ -246,7 +246,8 @@ class AuthenticationManager:
         )
 
     async def _migrate_database(self, from_version: int) -> None:
-        """Perform database migration.
+        """
+        Perform database migration.
 
         :param from_version: The schema version to migrate from.
         """
@@ -302,7 +303,8 @@ class AuthenticationManager:
             await self.database.commit()
 
     async def _get_or_create_jwt_secret(self) -> str:
-        """Get or create JWT secret key from database.
+        """
+        Get or create JWT secret key from database.
 
         :return: JWT secret key for signing tokens.
         """
@@ -950,7 +952,8 @@ class AuthenticationManager:
         )
 
     async def revoke_tokens_for_user(self, user: User) -> int:
-        """Revoke all auth tokens for a user.
+        """
+        Revoke all auth tokens for a user.
 
         This is an internal method for programmatic use (e.g., when disabling guest access).
         Unlike revoke_token(), this does not require an authenticated user context.
@@ -1128,7 +1131,8 @@ class AuthenticationManager:
         device_name: str | None = None,
         **extra_credentials: Any,
     ) -> dict[str, Any]:
-        """Authenticate user with credentials via WebSocket.
+        """
+        Authenticate user with credentials via WebSocket.
 
         This command allows clients to authenticate over the WebSocket connection
         using username/password or other provider-specific credentials.
@@ -1194,7 +1198,8 @@ class AuthenticationManager:
 
     @api_command("auth/providers", authenticated=False)
     async def get_providers(self) -> list[dict[str, Any]]:
-        """Get list of available authentication providers.
+        """
+        Get list of available authentication providers.
 
         Returns information about all available login providers including
         whether they require OAuth redirect flow.
@@ -1207,7 +1212,8 @@ class AuthenticationManager:
         provider_id: str,
         return_url: str | None = None,
     ) -> dict[str, str | None]:
-        """Get OAuth authorization URL for authentication.
+        """
+        Get OAuth authorization URL for authentication.
 
         For OAuth providers (like Home Assistant), this returns the URL that
         the user should visit in their browser to authorize the application.
@@ -1613,7 +1619,8 @@ class AuthenticationManager:
         max_uses: int = 1,
         device_name: str = "Short Code Login",
     ) -> tuple[str, datetime]:
-        """Generate a short join code for link/QR-based login.
+        """
+        Generate a short join code for link/QR-based login.
 
         This creates a short alphanumeric code that can be exchanged for a JWT token.
         Used for features like the party provider guest access, device pairing,
@@ -1664,7 +1671,8 @@ class AuthenticationManager:
         raise RuntimeError("Failed to generate a unique join code after 3 attempts")
 
     async def _exchange_join_code(self, code: str) -> str | None:
-        """Exchange a join code for a JWT access token.
+        """
+        Exchange a join code for a JWT access token.
 
         The token is created for the user associated with the join code.
 
@@ -1713,7 +1721,8 @@ class AuthenticationManager:
         return token
 
     async def revoke_join_codes(self, user: User) -> int:
-        """Revoke all join codes for a user.
+        """
+        Revoke all join codes for a user.
 
         :param user: The user whose join codes should be revoked.
         :return: Number of codes revoked.
@@ -1730,7 +1739,8 @@ class AuthenticationManager:
         return count
 
     async def get_active_join_code(self, user: User) -> str | None:
-        """Get the most recently created, non-expired join code for a user.
+        """
+        Get the most recently created, non-expired join code for a user.
 
         :param user: The user to look up codes for.
         :return: The join code string if found, None otherwise.
@@ -1773,7 +1783,8 @@ class AuthenticationManager:
 
     @api_command("auth/join_code/exchange", authenticated=False)
     async def exchange_join_code(self, code: str) -> dict[str, Any]:
-        """Exchange a join code for an access token (public API).
+        """
+        Exchange a join code for an access token (public API).
 
         This is the public API endpoint for short-code authentication.
         Clients call this with a code (e.g., from QR scan or link) to receive a JWT token.
@@ -1809,7 +1820,8 @@ class AuthenticationManager:
 
     @api_command("auth/join_codes", required_role="admin")
     async def list_join_codes(self, user_id: str | None = None) -> list[dict[str, Any]]:
-        """List join codes, optionally filtered by user (admin only).
+        """
+        List join codes, optionally filtered by user (admin only).
 
         :param user_id: Optional user ID to filter codes for.
         :return: List of join code records.
@@ -1820,7 +1832,8 @@ class AuthenticationManager:
 
     @api_command("auth/join_code/revoke", required_role="admin")
     async def revoke_join_code(self, code_id: str) -> None:
-        """Revoke a specific join code (admin only).
+        """
+        Revoke a specific join code (admin only).
 
         :param code_id: The code ID to revoke.
         """

@@ -111,6 +111,12 @@ class UniversalPlayer(Player):
         """Return the current media being played by the player."""
         if ext_player := self._get_external_source_protocol_player():
             return ext_player.current_media
+        if protocol_player := self._get_active_output_protocol_player():
+            # while playing through an output protocol player, surface its raw current_media
+            # so consumers of this player's raw value (e.g. a sync group mirroring its leader)
+            # can resolve the active queue item. Reading the protocol player's .state here would
+            # route back through this player's __final_current_media and lose the queue item id.
+            return protocol_player.current_media
         return None
 
     @property
@@ -165,6 +171,12 @@ class UniversalPlayer(Player):
         """Remove a protocol player from this universal player."""
         if protocol_player_id in self._protocol_player_ids:
             self._protocol_player_ids.remove(protocol_player_id)
+
+    def _get_active_output_protocol_player(self) -> Player | None:
+        """Return the protocol player currently selected as this player's output, if any."""
+        if self.active_output_protocol and self.active_output_protocol != "native":
+            return self.mass.players.get_player(self.active_output_protocol)
+        return None
 
     def _get_external_source_protocol_player(self) -> Player | None:
         """

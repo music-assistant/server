@@ -1,4 +1,5 @@
-"""Adaptor for converting BBC Sounds objects to Music Assistant media items.
+"""
+Adaptor for converting BBC Sounds objects to Music Assistant media items.
 
 Many Sounds API endpoints return containers of "PlayableObjects" which can be a
 range of different types. The auntie-sounds library detects these differing
@@ -146,18 +147,20 @@ class ImageProvider:
 class Context:
     """Context information for object conversion."""
 
-    provider: "BBCSoundsProvider"
+    provider: BBCSoundsProvider
     provider_domain: str
     path_parts: list[str] | None = None
     force_type: (
-        type[Track]
-        | type[LiveStation]
-        | type[Radio]
-        | type[MAPodcast]
-        | type[MAPodcastEpisode]
-        | type[BrowseFolder]
-        | type[RecommendationFolder]
-        | type[RecommendedMenuItem]
+        type[
+            Track
+            | LiveStation
+            | Radio
+            | MAPodcast
+            | MAPodcastEpisode
+            | BrowseFolder
+            | RecommendationFolder
+            | RecommendedMenuItem
+        ]
         | None
     ) = None
 
@@ -198,7 +201,8 @@ class BaseConverter(ABC):
         return self.context.provider._get_provider_mapping(item_id)
 
     def _get_attr(self, obj: Any, attr_path: str, default: Any = None) -> Any:
-        """Get (optionally-nested) attribute from object.
+        """
+        Get (optionally-nested) attribute from object.
 
         Supports e.g. _get_attr(object, "thing.other_thing")
         """
@@ -213,7 +217,7 @@ class BaseConverter(ABC):
                 else:
                     return default
             return current
-        except (AttributeError, KeyError, TypeError):
+        except AttributeError, KeyError, TypeError:
             return default
 
 
@@ -696,6 +700,7 @@ class BrowseConverter(BaseConverter):
         return BrowseFolder(
             item_id="schedule",
             name="Schedule",
+            translation_key="schedule",
             provider=self.context.provider_domain,
             path=self._build_path("schedule"),
         )
@@ -734,7 +739,7 @@ class BrowseConverter(BaseConverter):
 class Adaptor:
     """An adaptor object to convert Sounds API objects into MA ones."""
 
-    def __init__(self, provider: "BBCSoundsProvider"):
+    def __init__(self, provider: BBCSoundsProvider):
         """Create new adaptor."""
         self.provider = provider
         self.logger = self.provider.logger
@@ -744,13 +749,9 @@ class Adaptor:
         self,
         path_parts: list[str] | None = None,
         force_type: (
-            type[Track]
-            | type[Any]
-            | type[Radio]
-            | type[Podcast]
-            | type[PodcastEpisode]
-            | type[BrowseFolder]
-            | type[RecommendationFolder]
+            type[
+                Track | Any | Radio | Podcast | PodcastEpisode | BrowseFolder | RecommendationFolder
+            ]
             | None
         ) = None,
     ) -> Context:
@@ -764,7 +765,7 @@ class Adaptor:
     async def new_streamable_object(
         self,
         source_obj: SoundsTypes,
-        force_type: type[Track] | type[Radio] | type[MAPodcastEpisode] | None = None,
+        force_type: type[Track | Radio | MAPodcastEpisode] | None = None,
         path_parts: list[str] | None = None,
     ) -> StreamDetails | None:
         """
