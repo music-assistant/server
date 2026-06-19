@@ -83,6 +83,8 @@ jobs:
     needs: changes
     if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
+    # Backstop: a hung test process should fail in minutes, not sit at the 6h job cap.
+    timeout-minutes: 30
 
     steps:
       - name: Check out code from GitHub
@@ -114,6 +116,7 @@ jobs:
     needs: changes
     if: ${{ github.event_name != 'pull_request' || needs.changes.outputs.code == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Check out code from GitHub
