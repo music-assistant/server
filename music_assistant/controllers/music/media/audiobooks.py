@@ -257,7 +257,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
     ) -> list[AudiobookCollection]:
         """Get all available audiobook collections."""
         # key is the collections' title
-        collections_dict: dict[str, list[Audiobook]] = {}
         audiobooks_with_collections = await self.get_library_items_by_query(
             extra_query_parts=[
                 "WHERE json_extract(audiobooks.metadata, '$.collections') IS NOT NULL "
@@ -265,67 +264,53 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             ],
         )
 
-        for audiobook in audiobooks_with_collections:
-            if audiobook.metadata.collections is None:
-                # this should never happen
-                continue
-            for collection_info in audiobook.metadata.collections:
-                audiobook_list = collections_dict.get(collection_info.title, [])
-                audiobook_list.append(audiobook)
-                collections_dict[collection_info.title] = audiobook_list
-
-        result: list[AudiobookCollection] = []
-        # Sort collections, first by number then alphabetically
-        for collection_title, audiobook_list in collections_dict.items():
-            audiobooks_with_number: list[tuple[Audiobook, float]] = []
-            audiobooks_with_string: list[tuple[Audiobook, str]] = []
-            audiobooks_with_none: list[Audiobook] = []
-            for audiobook in audiobook_list:
-                assert audiobook.metadata.collections is not None  # for type checking
-                collection_info = next(
-                    x for x in audiobook.metadata.collections if x.title == collection_title
-                )
-                if collection_info.sequence is None:
-                    audiobooks_with_none.append(audiobook)
-                    continue
-                try:
-                    sort_by = float(collection_info.sequence)
-                    audiobooks_with_number.append((audiobook, sort_by))
-                except ValueError:
-                    audiobooks_with_string.append((audiobook, str(collection_info.sequence)))
-            final_list = [x[0] for x in sorted(audiobooks_with_number, key=lambda x: x[1])]
-            final_list.extend([x[0] for x in sorted(audiobooks_with_string, key=lambda x: x[1])])
-            final_list.extend(audiobooks_with_none)
-
-            result.append(AudiobookCollection(title=collection_title, audiobooks=final_list))
-
-        return result
+        return self._sort_collections(audiobooks_with_collections)
 
     async def collection_folders(self, search: str | None = None) -> Sequence[BrowseFolder]:
         """Get BrowseFolder with collections."""
+        # The query gives distinct titles, and a provider mappings column to ensure user filtering
         query = """
-            SELECT distinct json_extract(metadata_outer.value, '$.title') AS title FROM (
-                SELECT json_extract("metadata", "$.collections") as metadata FROM(
-                    SELECT * FROM audiobooks WHERE json_extract(audiobooks.metadata, '$.collections') IS NOT NULL AND json_extract(audiobooks.metadata, '$.collections') != '[]'
-                )
-            ), json_each(metadata) as metadata_outer
-            """
-        folders: list[BrowseFolder] = []
+            SELECT distinct json_extract(metadata_iter.value, '$.title') AS title, pm as provider_mappings FROM (
+                SELECT pm, json_extract("metadata", "$.collections") as md FROM(
+                    SELECT
+                        * from audiobooks,
+                        (SELECT JSON_GROUP_ARRAY(
+                            json_object(
+                                    'provider_instance', audiobook_pm.provider_instance
+                            )
+                        )as pm FROM provider_mappings audiobook_pm WHERE audiobook_pm.item_id = item_id AND audiobook_pm.media_type = 'audiobook') AS provider_mappings
+                 )
+            ), json_each(md) as metadata_iter
+        """
         rows = await self.mass.music.database.get_rows_from_query(query)
+        titles: list[str] = []
+        provider_mapping_dict: dict[str, str]
+        # ensure provider filter if present
         for row in rows:
-            folders.append(
-                BrowseFolder(
-                    item_id=row["title"],
-                    provider="",
-                    name=row["title"],
-                    folder_type=BrowseFolderType.AUDIOBOOK_COLLECTION,
-                )
+            if (user := get_current_user()) and user.provider_filter:
+                for provider_mapping_dict in row["provider_mappings"]:
+                    if provider_mapping_dict.get("provider_instance") in user.provider_filter:
+                        titles.append(row["title"])
+                        break
+                continue
+            # no provider filter
+            titles.append(row["title"])
+
+        folders = [
+            BrowseFolder(
+                item_id=title,
+                provider="",
+                name=title,
+                folder_type=BrowseFolderType.AUDIOBOOK_COLLECTION,
             )
+            for title in titles
+        ]
+
         if search is not None:
             return [folder for folder in folders if search.lower() in folder.name.lower()]
         return folders
 
-    async def get_collection(self, title: str, search: str | None = None) -> Sequence[Audiobook]:
+    async def get_collection(self, title: str, search: str | None = None) -> AudiobookCollection:
         """Get a single, sorted collection."""
         # The query yields all possible item_ids
         query = f"""
@@ -340,8 +325,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             item_ids.append(int(row["item_id"]))
 
         books: list[Audiobook] = []
-        extra_query = f"WHERE {self.db_table}.item_id in {tuple(item_ids)}"
-        # the standard query yields the full item, and ensures the provider filter
+        extra_query = f"WHERE {self.db_table}.item_id in ({', '.join(str(x) for x in item_ids)})"
         for db_item in await self.get_library_items_by_query(
             extra_query_parts=[extra_query],
             extra_query_params={"item_ids": item_ids},
@@ -349,14 +333,21 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         ):
             books.append(db_item)
 
+        # ensure provider filter
+        if (user := get_current_user()) and user.provider_filter:
+            for book in books:
+                for pm in book.provider_mappings:
+                    if pm.provider_instance not in user.provider_filter:
+                        books.remove(book)
+
         collections = self._sort_collections(books)
         audiobooks: list[Audiobook] = []
         for collection in collections:
             if collection.title == title:
                 audiobooks = collection.audiobooks
         if search:
-            return [book for book in audiobooks if search.lower() in book.name.lower()]
-        return audiobooks
+            audiobooks = [book for book in audiobooks if search.lower() in book.name.lower()]
+        return AudiobookCollection(title=title, audiobooks=audiobooks)
 
     async def _add_library_item(self, item: Audiobook, overwrite_existing: bool = False) -> int:
         """Add a new record to the database."""
