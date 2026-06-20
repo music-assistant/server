@@ -1,0 +1,11 @@
+{
+  "type": "music",
+  "domain": "ytmusic_native",
+  "stage": "experimental",
+  "name": "YouTube Music (Native)",
+  "description": "Experimental YouTube Music provider that drives the real InnerTube API directly (no ytmusicapi / yt-dlp / deno). Streams premium 256k audio (itag 141) by solving the WEB_REMIX player cipher in-process via an embedded V8 (mini-racer).",
+  "codeowners": ["@rathlinus"],
+  "requirements": ["mini-racer==0.14.1"],
+  "documentation": "https://music-assistant.io/music-providers/youtube-music/",
+  "multi_instance": true
+}

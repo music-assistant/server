@@ -1,0 +1,15 @@
+{
+  "config_entries": {
+    "cookie": {
+      "label": "Login Cookie",
+      "description": "The full 'cookie' request header from a logged-in music.youtube.com session. Open DevTools → Network, pick any request to music.youtube.com and copy its cookie header."
+    },
+    "visitor_data": {
+      "label": "Visitor Data (optional)",
+      "description": "Optional override for X-Goog-Visitor-Id. Leave empty to auto-detect from the home page."
+    }
+  },
+  "manifest": {
+    "description": "Experimental YouTube Music provider that drives the real InnerTube API directly (no ytmusicapi / yt-dlp / deno). Streams premium 256k audio (itag 141) by solving the WEB_REMIX player cipher natively in Node."
+  }
+}
