@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import MediaType, ProviderFeature
-from music_assistant_models.media_items import Audiobook, ProviderMapping, UniqueList
+from music_assistant_models.enums import BrowseFolderType, MediaType, ProviderFeature
+from music_assistant_models.media_items import Audiobook, BrowseFolder, ProviderMapping, UniqueList
 from music_assistant_models.media_items.helpers import AudiobookCollection
 
 from music_assistant.constants import DB_TABLE_AUDIOBOOKS, DB_TABLE_PLAYLOG
@@ -45,6 +46,10 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         api_base = self.api_base
         self.mass.register_api_command(f"music/{api_base}/audiobook_versions", self.versions)
         self.mass.register_api_command(f"music/{api_base}/collections", self.collections)
+        self.mass.register_api_command(f"music/{api_base}/get_collection", self.get_collection)
+        self.mass.register_api_command(
+            f"music/{api_base}/collection_folders", self.collection_folders
+        )
 
     @property
     def base_query(self) -> tuple[str, dict[str, Any]]:
@@ -259,6 +264,7 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 "AND json_extract(audiobooks.metadata, '$.collections') != '[]'",
             ],
         )
+
         for audiobook in audiobooks_with_collections:
             if audiobook.metadata.collections is None:
                 # this should never happen
@@ -294,6 +300,63 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             result.append(AudiobookCollection(title=collection_title, audiobooks=final_list))
 
         return result
+
+    async def collection_folders(self, search: str | None = None) -> Sequence[BrowseFolder]:
+        """Get BrowseFolder with collections."""
+        query = """
+            SELECT distinct json_extract(metadata_outer.value, '$.title') AS title FROM (
+                SELECT json_extract("metadata", "$.collections") as metadata FROM(
+                    SELECT * FROM audiobooks WHERE json_extract(audiobooks.metadata, '$.collections') IS NOT NULL AND json_extract(audiobooks.metadata, '$.collections') != '[]'
+                )
+            ), json_each(metadata) as metadata_outer
+            """
+        folders: list[BrowseFolder] = []
+        rows = await self.mass.music.database.get_rows_from_query(query)
+        for row in rows:
+            folders.append(
+                BrowseFolder(
+                    item_id=row["title"],
+                    provider="",
+                    name=row["title"],
+                    folder_type=BrowseFolderType.AUDIOBOOK_COLLECTION,
+                )
+            )
+        if search is not None:
+            return [folder for folder in folders if search.lower() in folder.name.lower()]
+        return folders
+
+    async def get_collection(self, title: str, search: str | None = None) -> Sequence[Audiobook]:
+        """Get a single, sorted collection."""
+        # The query yields all possible item_ids
+        query = f"""
+        SELECT item_id FROM (
+            SELECT * FROM audiobooks WHERE json_extract(audiobooks.metadata, '$.collections') IS NOT NULL AND json_extract(audiobooks.metadata, '$.collections') != '[]'
+            ),
+        json_each(json_extract("metadata", "$.collections")) WHERE json_extract(json_each.value, '$.title') = '{title}'
+        """
+        rows = await self.mass.music.database.get_rows_from_query(query, params={"title": title})
+        item_ids: list[int] = []
+        for row in rows:
+            item_ids.append(int(row["item_id"]))
+
+        books: list[Audiobook] = []
+        extra_query = f"WHERE {self.db_table}.item_id in {tuple(item_ids)}"
+        # the standard query yields the full item, and ensures the provider filter
+        for db_item in await self.get_library_items_by_query(
+            extra_query_parts=[extra_query],
+            extra_query_params={"item_ids": item_ids},
+            in_library_only=True,
+        ):
+            books.append(db_item)
+
+        collections = self._sort_collections(books)
+        audiobooks: list[Audiobook] = []
+        for collection in collections:
+            if collection.title == title:
+                audiobooks = collection.audiobooks
+        if search:
+            return [book for book in audiobooks if search.lower() in book.name.lower()]
+        return audiobooks
 
     async def _add_library_item(self, item: Audiobook, overwrite_existing: bool = False) -> int:
         """Add a new record to the database."""
@@ -441,3 +504,42 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 },
                 allow_replace=True,
             )
+
+    def _sort_collections(self, audiobooks: Sequence[Audiobook]) -> list[AudiobookCollection]:
+        """Get all present sorted collections in audiobooks."""
+        collections_dict: dict[str, list[Audiobook]] = {}
+        for audiobook in audiobooks:
+            if audiobook.metadata.collections is None:
+                # this should never happen
+                continue
+            for collection_info in audiobook.metadata.collections:
+                audiobook_list = collections_dict.get(collection_info.title, [])
+                audiobook_list.append(audiobook)
+                collections_dict[collection_info.title] = audiobook_list
+
+        result: list[AudiobookCollection] = []
+        # Sort collections, first by number then alphabetically
+        for collection_title, audiobook_list in collections_dict.items():
+            audiobooks_with_number: list[tuple[Audiobook, float]] = []
+            audiobooks_with_string: list[tuple[Audiobook, str]] = []
+            audiobooks_with_none: list[Audiobook] = []
+            for audiobook in audiobook_list:
+                assert audiobook.metadata.collections is not None  # for type checking
+                collection_info = next(
+                    x for x in audiobook.metadata.collections if x.title == collection_title
+                )
+                if collection_info.sequence is None:
+                    audiobooks_with_none.append(audiobook)
+                    continue
+                try:
+                    sort_by = float(collection_info.sequence)
+                    audiobooks_with_number.append((audiobook, sort_by))
+                except ValueError:
+                    audiobooks_with_string.append((audiobook, str(collection_info.sequence)))
+            final_list = [x[0] for x in sorted(audiobooks_with_number, key=lambda x: x[1])]
+            final_list.extend([x[0] for x in sorted(audiobooks_with_string, key=lambda x: x[1])])
+            final_list.extend(audiobooks_with_none)
+
+            result.append(AudiobookCollection(title=collection_title, audiobooks=final_list))
+
+        return result
