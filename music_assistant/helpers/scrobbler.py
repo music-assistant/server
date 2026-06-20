@@ -45,16 +45,29 @@ class ScrobblerHelper:
         self.config = config or ScrobblerConfig(suffix_version=False)
         self.supported_media_types = supported_media_types
 
-    def _is_configured(self) -> bool:
-        """Override if subclass needs specific configuration."""
-        return True
-
     def get_name(self, report: MediaItemPlaybackProgressReport) -> str:
         """Get the track name to use for scrobbling, possibly appended with version info."""
         if self.config.suffix_version and report.version:
             return f"{report.name} ({report.version})"
 
         return report.name
+
+    def should_scrobble(self, report: MediaItemPlaybackProgressReport) -> bool:
+        """Determine if a track should be scrobbled, to be extended later."""
+        if self.last_scrobbled == report.uri:
+            self.logger.debug("skipped scrobbling due to duplicate event")
+            return False
+
+        # ideally we want more precise control
+        # but because the event is triggered every 30s
+        # and we don't have full queue details to determine
+        # the exact context in which the event was fired
+        # we can only rely on fully_played for now
+        return bool(report.fully_played)
+
+    def _is_configured(self) -> bool:
+        """Override if subclass needs specific configuration."""
+        return True
 
     async def _update_now_playing(self, report: MediaItemPlaybackProgressReport) -> None:
         """Send a Now Playing update to the scrobbling service."""
@@ -117,19 +130,6 @@ class ScrobblerHelper:
 
         if self.should_scrobble(report):
             await scrobble()
-
-    def should_scrobble(self, report: MediaItemPlaybackProgressReport) -> bool:
-        """Determine if a track should be scrobbled, to be extended later."""
-        if self.last_scrobbled == report.uri:
-            self.logger.debug("skipped scrobbling due to duplicate event")
-            return False
-
-        # ideally we want more precise control
-        # but because the event is triggered every 30s
-        # and we don't have full queue details to determine
-        # the exact context in which the event was fired
-        # we can only rely on fully_played for now
-        return bool(report.fully_played)
 
 
 CONF_VERSION_SUFFIX = "suffix_version"
