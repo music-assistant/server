@@ -310,7 +310,10 @@ class RadioArtworkMixin:
         if any(phrase in artist_name.lower() for phrase in AD_DETECTION_PHRASES):
             return fallback_image_url, None, None
 
-        cache_key = f"{artist_name.lower()}|{track_name.lower()}"
+        # album_name influences which release group's artwork is chosen, so it must be
+        # part of the cache key, else two albums for the same track would alias.
+        album_key = create_safe_string(album_name) if album_name else ""
+        cache_key = f"{artist_name.lower()}|{track_name.lower()}|{album_key}"
         cached_result = await self.mass.cache.get(
             key=cache_key,
             category=CACHE_CATEGORY_RADIO_ARTWORK,
