@@ -68,6 +68,9 @@ jobs:
   preflight-checks:
     name: Run tests and linting before release
     needs: determine-branch
+    permissions:
+      contents: read
+      pull-requests: read
     uses: ./.github/workflows/test.yml
     with:
       ref: ${{ needs.determine-branch.outputs.branch }}
