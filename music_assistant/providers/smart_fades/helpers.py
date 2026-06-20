@@ -13,7 +13,8 @@ if TYPE_CHECKING:
 
 
 def calculate_overall_bpm(beats: np.ndarray, n_segments: int = 5) -> float:
-    """Calculate overall BPM.
+    """
+    Calculate overall BPM.
 
     Splits the beat array into N segments, computes a BPM per segment, then
     discards outlier segments (those deviating more than 3 BPM from the median)
@@ -47,7 +48,8 @@ def calculate_overall_bpm(beats: np.ndarray, n_segments: int = 5) -> float:
 
 
 def decode_pcm_chunk_to_mono(audio_format: AudioFormat, pcm_chunk: bytes) -> np.ndarray:
-    """Decode a raw PCM chunk to a mono float32 numpy array.
+    """
+    Decode a raw PCM chunk to a mono float32 numpy array.
 
     :param audio_format: The audio format describing the PCM data.
     :param pcm_chunk: Raw PCM audio data.

@@ -1,4 +1,5 @@
-"""Integration tests for the GenreController (V3 schema).
+"""
+Integration tests for the GenreController (V3 schema).
 
 Uses the ``mass`` fixture from ``tests/conftest.py`` which creates a full
 MusicAssistant instance with a real SQLite database in a temporary directory.
@@ -268,7 +269,8 @@ class TestGenreCRUD:
     async def test_library_items_hide_empty_none_returns_default_genres(
         self, genre_ctrl: GenreController
     ) -> None:
-        """hide_empty=None (default) returns only default genres (translation_key IS NOT NULL).
+        """
+        hide_empty=None (default) returns only default genres (translation_key IS NOT NULL).
 
         Default genres are seeded via restore_default_genres (translation_key IS NOT NULL).
         Non-default genres created via _find_genres_for_alias mirror the library scan path
@@ -306,7 +308,8 @@ class TestGenreCRUD:
     async def test_library_items_media_type_filter(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """media_type filter returns all non-empty genres for that type, including non-defaults.
+        """
+        media_type filter returns all non-empty genres for that type, including non-defaults.
 
         Verifies:
         - Non-default genres (no translation_key) with mappings ARE returned — the default
@@ -1330,7 +1333,8 @@ class TestGenreLookupAndScanner:
     async def test_find_genres_for_alias_primary_name_takes_priority(
         self, genre_ctrl: GenreController
     ) -> None:
-        """Primary name match returns only that genre, ignoring secondary alias matches.
+        """
+        Primary name match returns only that genre, ignoring secondary alias matches.
 
         Regression test: a bare "pop" tag must not fan out to Rock/Punk/etc. that
         accumulated "pop" as a side-effect alias, when a dedicated Pop genre exists.
@@ -1608,7 +1612,8 @@ class TestCleanupStaleMappings:
     async def test_manual_mapping_preserved_when_alias_not_in_metadata(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """Manually-added mappings survive cleanup when alias is not in metadata.
+        """
+        Manually-added mappings survive cleanup when alias is not in metadata.
 
         Regression for music-assistant/support#5310: a user creates a custom
         ("music type") genre via the UI and links an album to it. The album's
@@ -1809,7 +1814,8 @@ class TestGenreExclusion:
     async def test_cleanup_preserves_genre_with_exclusion(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """_cleanup_stale_genre_mappings keeps a genre that has an exclusion but no mappings.
+        """
+        _cleanup_stale_genre_mappings keeps a genre that has an exclusion but no mappings.
 
         Verifies both that the genre row survives and that a playlog entry for it is
         also preserved (the playlog DELETE uses the same exclusion guard).
@@ -2149,7 +2155,8 @@ class TestPropagateGenreMappings:
     async def test_derived_mapping_replaced_by_direct_when_album_gains_genres(
         self, mass: MusicAssistant, genre_ctrl: GenreController
     ) -> None:
-        """Derived mapping is replaced by direct when album gains own genre metadata.
+        """
+        Derived mapping is replaced by direct when album gains own genre metadata.
 
         Verifies the mapping becomes a direct one instead of leaving the album with no mapping.
         """

@@ -1,4 +1,5 @@
-"""State model for experimental auto-create-skill feature.
+"""
+State model for experimental auto-create-skill feature.
 
 Tracks progress of the multi-step skill creation flow against
 dialogs.yandex.ru so partial failures can be retried from the
@@ -24,7 +25,8 @@ __all__ = [
 
 
 class SkillCreationState(StrEnum):
-    """Progress marker for the skill-creation pipeline.
+    """
+    Progress marker for the skill-creation pipeline.
 
     Linear states advance through the 6 HAR-captured API calls.
     ``FAILED`` replaces the stored linear state in the artifact;
@@ -45,7 +47,8 @@ class SkillCreationState(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class SkillCreationArtifacts:
-    """Persistent state for a skill-creation attempt.
+    """
+    Persistent state for a skill-creation attempt.
 
     Stored as a JSON blob in the ``CONF_AUTO_CREATE_ARTIFACTS``
     config entry and round-tripped through every call to
@@ -74,7 +77,8 @@ def dump_artifacts(artifacts: SkillCreationArtifacts) -> str:
 
 
 def load_artifacts(raw: str | None) -> SkillCreationArtifacts:
-    """Deserialise artifacts from a config-stored JSON string.
+    """
+    Deserialise artifacts from a config-stored JSON string.
 
     Returns a fresh ``SkillCreationArtifacts`` on any parse error
     or missing input — the feature is optional so config stays

@@ -241,7 +241,8 @@ class WiimPlayer(Player):
         self._update_ma_state_from_sdk_cache()
 
     async def select_source(self, source: str) -> None:
-        """Handle SELECT SOURCE command on the player.
+        """
+        Handle SELECT SOURCE command on the player.
 
         :param source: The source(id) to select, as defined in the source_list.
         """

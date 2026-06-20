@@ -966,7 +966,8 @@ class AudioAnalysisController:
         return results
 
     async def _count_candidates_missing_analysis(self, aa_domain: str, current_version: int) -> int:
-        """Count filesystem candidate tracks needing (re)analysis for aa_domain.
+        """
+        Count filesystem candidate tracks needing (re)analysis for aa_domain.
 
         A track is counted when it has no analysis row for the domain, or when
         its stored analysis_version is NULL or less than current_version.

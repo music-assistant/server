@@ -291,7 +291,8 @@ class TidalPageParser:
         type_counts: dict[MediaType, int],
         item_type: str = "",
     ) -> Playlist | Album | Track | Artist | None:
-        """Parse a single item from Tidal data into a media item.
+        """
+        Parse a single item from Tidal data into a media item.
 
         Args:
             item: Dictionary containing item data

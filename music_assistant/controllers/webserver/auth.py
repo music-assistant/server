@@ -113,274 +113,6 @@ class AuthenticationManager:
         """Check if any users exist in the system."""
         return self._has_users
 
-    async def _setup_database(self) -> None:
-        """Set up database schema and handle migrations."""
-        # Always create tables if they don't exist
-        await self._create_database_tables()
-
-        # Check current schema version
-        try:
-            if db_row := await self.database.get_row("settings", {"key": "schema_version"}):
-                prev_version = int(db_row["value"])
-            else:
-                prev_version = DB_SCHEMA_VERSION
-        except KeyError, ValueError, Exception:
-            # settings table doesn't exist yet or other error
-            prev_version = 0
-
-        # Perform migration if needed
-        if prev_version < DB_SCHEMA_VERSION:
-            self.logger.warning(
-                "Performing database migration from schema version %s to %s",
-                prev_version,
-                DB_SCHEMA_VERSION,
-            )
-            await self._migrate_database(prev_version)
-
-        # Store current schema version
-        await self.database.insert_or_replace(
-            "settings",
-            {"key": "schema_version", "value": str(DB_SCHEMA_VERSION), "type": "int"},
-        )
-
-        # Create indexes
-        await self._create_database_indexes()
-        await self.database.commit()
-
-    async def _create_database_tables(self) -> None:
-        """Create database tables."""
-        # Settings table (for schema version and other settings)
-        await self.database.execute(
-            """
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT,
-                type TEXT
-            )
-            """
-        )
-        # Users table
-        await self.database.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                user_id TEXT PRIMARY KEY,
-                username TEXT NOT NULL UNIQUE,
-                role TEXT NOT NULL,
-                enabled INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL,
-                display_name TEXT,
-                avatar_url TEXT,
-                preferences json NOT NULL DEFAULT '{}',
-                player_filter json NOT NULL DEFAULT '[]',
-                provider_filter json NOT NULL DEFAULT '[]'
-            )
-            """
-        )
-        # User auth provider links (many-to-many)
-        await self.database.execute(
-            """
-            CREATE TABLE IF NOT EXISTS user_auth_providers (
-                link_id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                provider_type TEXT NOT NULL,
-                provider_user_id TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                UNIQUE(provider_type, provider_user_id),
-                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-            )
-            """
-        )
-        # Auth tokens table
-        await self.database.execute(
-            """
-            CREATE TABLE IF NOT EXISTS auth_tokens (
-                token_id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                token_hash TEXT NOT NULL UNIQUE,
-                name TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                expires_at TEXT,
-                last_used_at TEXT,
-                is_long_lived INTEGER NOT NULL DEFAULT 0,
-                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-            )
-            """
-        )
-        # Join codes table (for short code to JWT exchange, used by providers like party)
-        await self.database.execute(
-            """
-            CREATE TABLE IF NOT EXISTS join_codes (
-                code_id TEXT PRIMARY KEY,
-                code TEXT NOT NULL UNIQUE,
-                user_id TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
-                max_uses INTEGER DEFAULT 0,
-                use_count INTEGER DEFAULT 0,
-                last_used_at TEXT,
-                device_name TEXT,
-                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-            )
-            """
-        )
-        await self.database.commit()
-
-    async def _create_database_indexes(self) -> None:
-        """Create database indexes."""
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS idx_user_auth_providers_user "
-            "ON user_auth_providers(user_id)"
-        )
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS idx_user_auth_providers_provider "
-            "ON user_auth_providers(provider_type, provider_user_id)"
-        )
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tokens_user ON auth_tokens(user_id)"
-        )
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tokens_hash ON auth_tokens(token_hash)"
-        )
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS idx_join_codes_user ON join_codes(user_id)"
-        )
-
-    async def _migrate_database(self, from_version: int) -> None:
-        """Perform database migration.
-
-        :param from_version: The schema version to migrate from.
-        """
-        self.logger.info(
-            "Migrating auth database from version %s to %s", from_version, DB_SCHEMA_VERSION
-        )
-        # Migration to version 2: Recreate tables due to password salt breaking change
-        if from_version < 2:
-            # Drop all auth-related tables
-            await self.database.execute("DROP TABLE IF EXISTS auth_tokens")
-            await self.database.execute("DROP TABLE IF EXISTS user_auth_providers")
-            await self.database.execute("DROP TABLE IF EXISTS users")
-            await self.database.commit()
-
-            # Recreate tables with current schema
-            await self._create_database_tables()
-
-        # Migration to version 3: Add player_filter and provider_filter columns
-        if from_version < 3:
-            with contextlib.suppress(OperationalError):
-                # Column(s) may already exist
-                await self.database.execute(
-                    "ALTER TABLE users ADD COLUMN player_filter json NOT NULL DEFAULT '[]'"
-                )
-                await self.database.execute(
-                    "ALTER TABLE users ADD COLUMN provider_filter json NOT NULL DEFAULT '[]'"
-                )
-            await self.database.commit()
-
-        # Migration to version 4: Make usernames case-insensitive by converting to lowercase
-        if from_version < 4:
-            await self.database.execute("UPDATE users SET username = LOWER(username)")
-            await self.database.commit()
-
-        # Migration to version 5: Add join codes table
-        if from_version < 5:
-            await self.database.execute(
-                """
-                CREATE TABLE IF NOT EXISTS join_codes (
-                    code_id TEXT PRIMARY KEY,
-                    code TEXT NOT NULL UNIQUE,
-                    user_id TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    expires_at TEXT NOT NULL,
-                    max_uses INTEGER DEFAULT 0,
-                    use_count INTEGER DEFAULT 0,
-                    last_used_at TEXT,
-                    device_name TEXT,
-                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
-                )
-                """
-            )
-            await self.database.commit()
-
-    async def _get_or_create_jwt_secret(self) -> str:
-        """Get or create JWT secret key from database.
-
-        :return: JWT secret key for signing tokens.
-        """
-        # Try to get existing secret
-        if secret_row := await self.database.get_row("settings", {"key": "jwt_secret"}):
-            return str(secret_row["value"])
-
-        # Generate new secret
-        jwt_secret = JWTHelper.generate_secret_key()
-
-        # Store in database
-        await self.database.insert_or_replace(
-            "settings",
-            {"key": "jwt_secret", "value": jwt_secret, "type": "string"},
-        )
-        await self.database.commit()
-
-        self.logger.info("Generated new JWT secret key")
-        return jwt_secret
-
-    async def _setup_login_providers(self) -> None:
-        """Set up available login providers based on configuration."""
-        # Always enable built-in provider
-        self.login_providers["builtin"] = BuiltinLoginProvider(self.mass, "builtin", {})
-
-        # Home Assistant OAuth provider
-        # Automatically enabled if HA provider (plugin) is configured
-        ha_provider = None
-        for provider in self.mass.providers:
-            if provider.domain == "hass" and provider.available:
-                ha_provider = provider
-                break
-
-        if ha_provider:
-            # Get URL from the HA provider config
-            ha_url = ha_provider.config.get_value("url")
-            assert isinstance(ha_url, str)
-            ha_config: HomeAssistantProviderConfig = {"ha_url": ha_url}
-            self.login_providers["homeassistant"] = HomeAssistantOAuthProvider(
-                self.mass, "homeassistant", ha_config
-            )
-            self.logger.info(
-                "Home Assistant OAuth provider enabled (using URL from HA provider: %s)",
-                ha_url,
-            )
-
-    async def _sync_ha_oauth_provider(self) -> None:
-        """
-        Sync HA OAuth provider with HA provider availability (dynamic check).
-
-        Adds the provider if HA is available, removes it if HA is not available.
-        """
-        # Find HA provider
-        ha_provider = None
-        for provider in self.mass.providers:
-            if provider.domain == "hass" and provider.available:
-                ha_provider = provider
-                break
-
-        if ha_provider:
-            # HA provider exists and is available - ensure OAuth provider is registered
-            if "homeassistant" not in self.login_providers:
-                # Get URL from the HA provider config
-                ha_url = ha_provider.config.get_value("url")
-                assert isinstance(ha_url, str)
-                ha_config: HomeAssistantProviderConfig = {"ha_url": ha_url}
-                self.login_providers["homeassistant"] = HomeAssistantOAuthProvider(
-                    self.mass, "homeassistant", ha_config
-                )
-                self.logger.info(
-                    "Home Assistant OAuth provider dynamically enabled (using URL: %s)",
-                    ha_url,
-                )
-        # HA provider not available - remove OAuth provider if present
-        elif "homeassistant" in self.login_providers:
-            del self.login_providers["homeassistant"]
-            self.logger.info("Home Assistant OAuth provider removed (HA provider not available)")
-
     async def authenticate_with_credentials(
         self, provider_id: str, credentials: dict[str, Any]
     ) -> AuthResult:
@@ -634,32 +366,6 @@ class AuthenticationManager:
             await self._migrate_playlog_to_first_user(user_id)
 
         return user
-
-    async def _has_non_system_users(self) -> bool:
-        """Check if any non-system users exist."""
-        user_rows = await self.database.get_rows("users", limit=10)
-        return any(row["username"] != HOMEASSISTANT_SYSTEM_USER for row in user_rows)
-
-    async def _migrate_playlog_to_first_user(self, user_id: str) -> None:
-        """
-        Migrate all existing playlog entries to the first user.
-
-        This is called automatically when the first non-system user is created.
-        All existing playlog entries (which have NULL userid) will be updated
-        to belong to this first user.
-
-        :param user_id: The user ID of the first user.
-        """
-        try:
-            # Update all playlog entries with NULL userid to this user
-            await self.mass.music.database.execute(
-                f"UPDATE {DB_TABLE_PLAYLOG} SET userid = :userid WHERE userid IS NULL",
-                {"userid": user_id},
-            )
-            await self.mass.music.database.commit()
-            self.logger.info("Migrated existing playlog entries to first user: %s", user_id)
-        except Exception as err:
-            self.logger.warning("Failed to migrate playlog entries: %s", err)
 
     async def get_homeassistant_system_user(self) -> User:
         """
@@ -950,7 +656,8 @@ class AuthenticationManager:
         )
 
     async def revoke_tokens_for_user(self, user: User) -> int:
-        """Revoke all auth tokens for a user.
+        """
+        Revoke all auth tokens for a user.
 
         This is an internal method for programmatic use (e.g., when disabling guest access).
         Unlike revoke_token(), this does not require an authenticated user context.
@@ -1128,7 +835,8 @@ class AuthenticationManager:
         device_name: str | None = None,
         **extra_credentials: Any,
     ) -> dict[str, Any]:
-        """Authenticate user with credentials via WebSocket.
+        """
+        Authenticate user with credentials via WebSocket.
 
         This command allows clients to authenticate over the WebSocket connection
         using username/password or other provider-specific credentials.
@@ -1194,7 +902,8 @@ class AuthenticationManager:
 
     @api_command("auth/providers", authenticated=False)
     async def get_providers(self) -> list[dict[str, Any]]:
-        """Get list of available authentication providers.
+        """
+        Get list of available authentication providers.
 
         Returns information about all available login providers including
         whether they require OAuth redirect flow.
@@ -1207,7 +916,8 @@ class AuthenticationManager:
         provider_id: str,
         return_url: str | None = None,
     ) -> dict[str, str | None]:
-        """Get OAuth authorization URL for authentication.
+        """
+        Get OAuth authorization URL for authentication.
 
         For OAuth providers (like Home Assistant), this returns the URL that
         the user should visit in their browser to authorize the application.
@@ -1399,33 +1109,6 @@ class AuthenticationManager:
             raise AuthenticationRequired("Not authenticated")
         return current_user_obj
 
-    async def _update_profile_password(
-        self,
-        target_user: User,
-        password: str,
-        is_admin_update: bool,
-        current_user: User,
-    ) -> None:
-        """Update user password (helper method)."""
-        if len(password) < 8:
-            raise InvalidDataError("Password must be at least 8 characters")
-
-        builtin_provider = self.login_providers.get("builtin")
-        if not builtin_provider or not isinstance(builtin_provider, BuiltinLoginProvider):
-            raise InvalidDataError("Built-in auth not available")
-
-        # Update password (used for both admin resets and user password changes)
-        await builtin_provider.reset_password(target_user, password)
-
-        if is_admin_update:
-            self.logger.info(
-                "Password reset for user %s by admin %s",
-                target_user.username,
-                current_user.username,
-            )
-        else:
-            self.logger.info("Password changed for user %s", target_user.username)
-
     async def update_user_filters(
         self,
         target_user: User,
@@ -1613,7 +1296,8 @@ class AuthenticationManager:
         max_uses: int = 1,
         device_name: str = "Short Code Login",
     ) -> tuple[str, datetime]:
-        """Generate a short join code for link/QR-based login.
+        """
+        Generate a short join code for link/QR-based login.
 
         This creates a short alphanumeric code that can be exchanged for a JWT token.
         Used for features like the party provider guest access, device pairing,
@@ -1663,8 +1347,436 @@ class AuthenticationManager:
 
         raise RuntimeError("Failed to generate a unique join code after 3 attempts")
 
+    async def revoke_join_codes(self, user: User) -> int:
+        """
+        Revoke all join codes for a user.
+
+        :param user: The user whose join codes should be revoked.
+        :return: Number of codes revoked.
+        """
+        cursor = await self.database.execute(
+            "DELETE FROM join_codes WHERE user_id = :user_id",
+            {"user_id": user.user_id},
+        )
+        await self.database.commit()
+
+        count = int(cursor.rowcount)
+        if count > 0:
+            self.logger.info("Revoked %d join code(s) for user %s", count, user.username)
+        return count
+
+    async def get_active_join_code(self, user: User) -> str | None:
+        """
+        Get the most recently created, non-expired join code for a user.
+
+        :param user: The user to look up codes for.
+        :return: The join code string if found, None otherwise.
+        """
+        now = utc()
+        cursor = await self.database.execute(
+            """
+            SELECT code FROM join_codes
+            WHERE user_id = :user_id
+            AND expires_at > :now
+            AND (max_uses = 0 OR use_count < max_uses)
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            {"user_id": user.user_id, "now": now.isoformat()},
+        )
+        row = await cursor.fetchone()
+        return str(row["code"]) if row else None
+
+    @api_command("auth/join_code/exchange", authenticated=False)
+    async def exchange_join_code(self, code: str) -> dict[str, Any]:
+        """
+        Exchange a join code for an access token (public API).
+
+        This is the public API endpoint for short-code authentication.
+        Clients call this with a code (e.g., from QR scan or link) to receive a JWT token.
+
+        :param code: The short join code.
+        :return: Authentication result with access token if successful.
+        """
+        token = await self._exchange_join_code(code)
+
+        if not token:
+            return {
+                "success": False,
+                "error": "Invalid or expired join code",
+            }
+
+        # Decode token to get user info
+        try:
+            payload = self.jwt_helper.decode_token(token)
+            return {
+                "success": True,
+                "access_token": token,
+                "user": {
+                    "user_id": payload.get("sub"),
+                    "username": payload.get("username"),
+                    "role": payload.get("role"),
+                },
+            }
+        except pyjwt.InvalidTokenError:
+            return {
+                "success": False,
+                "error": "Failed to create access token",
+            }
+
+    @api_command("auth/join_codes", required_role="admin")
+    async def list_join_codes(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        """
+        List join codes, optionally filtered by user (admin only).
+
+        :param user_id: Optional user ID to filter codes for.
+        :return: List of join code records.
+        """
+        filter_args = {"user_id": user_id} if user_id else None
+        rows = await self.database.get_rows("join_codes", filter_args, limit=100)
+        return [dict(row) for row in rows]
+
+    @api_command("auth/join_code/revoke", required_role="admin")
+    async def revoke_join_code(self, code_id: str) -> None:
+        """
+        Revoke a specific join code (admin only).
+
+        :param code_id: The code ID to revoke.
+        """
+        code_row = await self.database.get_row("join_codes", {"code_id": code_id})
+        if not code_row:
+            raise InvalidDataError("Join code not found")
+
+        await self.database.delete("join_codes", {"code_id": code_id})
+        await self.database.commit()
+        self.logger.info("Join code revoked (code_id=%s)", code_id)
+
+    async def _setup_database(self) -> None:
+        """Set up database schema and handle migrations."""
+        # Always create tables if they don't exist
+        await self._create_database_tables()
+
+        # Check current schema version
+        try:
+            if db_row := await self.database.get_row("settings", {"key": "schema_version"}):
+                prev_version = int(db_row["value"])
+            else:
+                prev_version = DB_SCHEMA_VERSION
+        except KeyError, ValueError, Exception:
+            # settings table doesn't exist yet or other error
+            prev_version = 0
+
+        # Perform migration if needed
+        if prev_version < DB_SCHEMA_VERSION:
+            self.logger.warning(
+                "Performing database migration from schema version %s to %s",
+                prev_version,
+                DB_SCHEMA_VERSION,
+            )
+            await self._migrate_database(prev_version)
+
+        # Store current schema version
+        await self.database.insert_or_replace(
+            "settings",
+            {"key": "schema_version", "value": str(DB_SCHEMA_VERSION), "type": "int"},
+        )
+
+        # Create indexes
+        await self._create_database_indexes()
+        await self.database.commit()
+
+    async def _create_database_tables(self) -> None:
+        """Create database tables."""
+        # Settings table (for schema version and other settings)
+        await self.database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                type TEXT
+            )
+            """
+        )
+        # Users table
+        await self.database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                role TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                display_name TEXT,
+                avatar_url TEXT,
+                preferences json NOT NULL DEFAULT '{}',
+                player_filter json NOT NULL DEFAULT '[]',
+                provider_filter json NOT NULL DEFAULT '[]'
+            )
+            """
+        )
+        # User auth provider links (many-to-many)
+        await self.database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_auth_providers (
+                link_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                provider_type TEXT NOT NULL,
+                provider_user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(provider_type, provider_user_id),
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+            """
+        )
+        # Auth tokens table
+        await self.database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auth_tokens (
+                token_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                token_hash TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT,
+                last_used_at TEXT,
+                is_long_lived INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+            """
+        )
+        # Join codes table (for short code to JWT exchange, used by providers like party)
+        await self.database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS join_codes (
+                code_id TEXT PRIMARY KEY,
+                code TEXT NOT NULL UNIQUE,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                max_uses INTEGER DEFAULT 0,
+                use_count INTEGER DEFAULT 0,
+                last_used_at TEXT,
+                device_name TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+            )
+            """
+        )
+        await self.database.commit()
+
+    async def _create_database_indexes(self) -> None:
+        """Create database indexes."""
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS idx_user_auth_providers_user "
+            "ON user_auth_providers(user_id)"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS idx_user_auth_providers_provider "
+            "ON user_auth_providers(provider_type, provider_user_id)"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tokens_user ON auth_tokens(user_id)"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tokens_hash ON auth_tokens(token_hash)"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS idx_join_codes_user ON join_codes(user_id)"
+        )
+
+    async def _migrate_database(self, from_version: int) -> None:
+        """
+        Perform database migration.
+
+        :param from_version: The schema version to migrate from.
+        """
+        self.logger.info(
+            "Migrating auth database from version %s to %s", from_version, DB_SCHEMA_VERSION
+        )
+        # Migration to version 2: Recreate tables due to password salt breaking change
+        if from_version < 2:
+            # Drop all auth-related tables
+            await self.database.execute("DROP TABLE IF EXISTS auth_tokens")
+            await self.database.execute("DROP TABLE IF EXISTS user_auth_providers")
+            await self.database.execute("DROP TABLE IF EXISTS users")
+            await self.database.commit()
+
+            # Recreate tables with current schema
+            await self._create_database_tables()
+
+        # Migration to version 3: Add player_filter and provider_filter columns
+        if from_version < 3:
+            with contextlib.suppress(OperationalError):
+                # Column(s) may already exist
+                await self.database.execute(
+                    "ALTER TABLE users ADD COLUMN player_filter json NOT NULL DEFAULT '[]'"
+                )
+                await self.database.execute(
+                    "ALTER TABLE users ADD COLUMN provider_filter json NOT NULL DEFAULT '[]'"
+                )
+            await self.database.commit()
+
+        # Migration to version 4: Make usernames case-insensitive by converting to lowercase
+        if from_version < 4:
+            await self.database.execute("UPDATE users SET username = LOWER(username)")
+            await self.database.commit()
+
+        # Migration to version 5: Add join codes table
+        if from_version < 5:
+            await self.database.execute(
+                """
+                CREATE TABLE IF NOT EXISTS join_codes (
+                    code_id TEXT PRIMARY KEY,
+                    code TEXT NOT NULL UNIQUE,
+                    user_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    max_uses INTEGER DEFAULT 0,
+                    use_count INTEGER DEFAULT 0,
+                    last_used_at TEXT,
+                    device_name TEXT,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+                )
+                """
+            )
+            await self.database.commit()
+
+    async def _get_or_create_jwt_secret(self) -> str:
+        """
+        Get or create JWT secret key from database.
+
+        :return: JWT secret key for signing tokens.
+        """
+        # Try to get existing secret
+        if secret_row := await self.database.get_row("settings", {"key": "jwt_secret"}):
+            return str(secret_row["value"])
+
+        # Generate new secret
+        jwt_secret = JWTHelper.generate_secret_key()
+
+        # Store in database
+        await self.database.insert_or_replace(
+            "settings",
+            {"key": "jwt_secret", "value": jwt_secret, "type": "string"},
+        )
+        await self.database.commit()
+
+        self.logger.info("Generated new JWT secret key")
+        return jwt_secret
+
+    async def _setup_login_providers(self) -> None:
+        """Set up available login providers based on configuration."""
+        # Always enable built-in provider
+        self.login_providers["builtin"] = BuiltinLoginProvider(self.mass, "builtin", {})
+
+        # Home Assistant OAuth provider
+        # Automatically enabled if HA provider (plugin) is configured
+        ha_provider = None
+        for provider in self.mass.providers:
+            if provider.domain == "hass" and provider.available:
+                ha_provider = provider
+                break
+
+        if ha_provider:
+            # Get URL from the HA provider config
+            ha_url = ha_provider.config.get_value("url")
+            assert isinstance(ha_url, str)
+            ha_config: HomeAssistantProviderConfig = {"ha_url": ha_url}
+            self.login_providers["homeassistant"] = HomeAssistantOAuthProvider(
+                self.mass, "homeassistant", ha_config
+            )
+            self.logger.info(
+                "Home Assistant OAuth provider enabled (using URL from HA provider: %s)",
+                ha_url,
+            )
+
+    async def _sync_ha_oauth_provider(self) -> None:
+        """
+        Sync HA OAuth provider with HA provider availability (dynamic check).
+
+        Adds the provider if HA is available, removes it if HA is not available.
+        """
+        # Find HA provider
+        ha_provider = None
+        for provider in self.mass.providers:
+            if provider.domain == "hass" and provider.available:
+                ha_provider = provider
+                break
+
+        if ha_provider:
+            # HA provider exists and is available - ensure OAuth provider is registered
+            if "homeassistant" not in self.login_providers:
+                # Get URL from the HA provider config
+                ha_url = ha_provider.config.get_value("url")
+                assert isinstance(ha_url, str)
+                ha_config: HomeAssistantProviderConfig = {"ha_url": ha_url}
+                self.login_providers["homeassistant"] = HomeAssistantOAuthProvider(
+                    self.mass, "homeassistant", ha_config
+                )
+                self.logger.info(
+                    "Home Assistant OAuth provider dynamically enabled (using URL: %s)",
+                    ha_url,
+                )
+        # HA provider not available - remove OAuth provider if present
+        elif "homeassistant" in self.login_providers:
+            del self.login_providers["homeassistant"]
+            self.logger.info("Home Assistant OAuth provider removed (HA provider not available)")
+
+    async def _has_non_system_users(self) -> bool:
+        """Check if any non-system users exist."""
+        user_rows = await self.database.get_rows("users", limit=10)
+        return any(row["username"] != HOMEASSISTANT_SYSTEM_USER for row in user_rows)
+
+    async def _migrate_playlog_to_first_user(self, user_id: str) -> None:
+        """
+        Migrate all existing playlog entries to the first user.
+
+        This is called automatically when the first non-system user is created.
+        All existing playlog entries (which have NULL userid) will be updated
+        to belong to this first user.
+
+        :param user_id: The user ID of the first user.
+        """
+        try:
+            # Update all playlog entries with NULL userid to this user
+            await self.mass.music.database.execute(
+                f"UPDATE {DB_TABLE_PLAYLOG} SET userid = :userid WHERE userid IS NULL",
+                {"userid": user_id},
+            )
+            await self.mass.music.database.commit()
+            self.logger.info("Migrated existing playlog entries to first user: %s", user_id)
+        except Exception as err:
+            self.logger.warning("Failed to migrate playlog entries: %s", err)
+
+    async def _update_profile_password(
+        self,
+        target_user: User,
+        password: str,
+        is_admin_update: bool,
+        current_user: User,
+    ) -> None:
+        """Update user password (helper method)."""
+        if len(password) < 8:
+            raise InvalidDataError("Password must be at least 8 characters")
+
+        builtin_provider = self.login_providers.get("builtin")
+        if not builtin_provider or not isinstance(builtin_provider, BuiltinLoginProvider):
+            raise InvalidDataError("Built-in auth not available")
+
+        # Update password (used for both admin resets and user password changes)
+        await builtin_provider.reset_password(target_user, password)
+
+        if is_admin_update:
+            self.logger.info(
+                "Password reset for user %s by admin %s",
+                target_user.username,
+                current_user.username,
+            )
+        else:
+            self.logger.info("Password changed for user %s", target_user.username)
+
     async def _exchange_join_code(self, code: str) -> str | None:
-        """Exchange a join code for a JWT access token.
+        """
+        Exchange a join code for a JWT access token.
 
         The token is created for the user associated with the join code.
 
@@ -1712,44 +1824,6 @@ class AuthenticationManager:
         )
         return token
 
-    async def revoke_join_codes(self, user: User) -> int:
-        """Revoke all join codes for a user.
-
-        :param user: The user whose join codes should be revoked.
-        :return: Number of codes revoked.
-        """
-        cursor = await self.database.execute(
-            "DELETE FROM join_codes WHERE user_id = :user_id",
-            {"user_id": user.user_id},
-        )
-        await self.database.commit()
-
-        count = int(cursor.rowcount)
-        if count > 0:
-            self.logger.info("Revoked %d join code(s) for user %s", count, user.username)
-        return count
-
-    async def get_active_join_code(self, user: User) -> str | None:
-        """Get the most recently created, non-expired join code for a user.
-
-        :param user: The user to look up codes for.
-        :return: The join code string if found, None otherwise.
-        """
-        now = utc()
-        cursor = await self.database.execute(
-            """
-            SELECT code FROM join_codes
-            WHERE user_id = :user_id
-            AND expires_at > :now
-            AND (max_uses = 0 OR use_count < max_uses)
-            ORDER BY created_at DESC
-            LIMIT 1
-            """,
-            {"user_id": user.user_id, "now": now.isoformat()},
-        )
-        row = await cursor.fetchone()
-        return str(row["code"]) if row else None
-
     async def _cleanup_expired_join_codes(self) -> None:
         """Delete expired and exhausted join codes from the database."""
         now = utc()
@@ -1770,64 +1844,3 @@ class AuthenticationManager:
         """Schedule periodic cleanup of expired join codes."""
         self.mass.create_task(self._cleanup_expired_join_codes())
         self.mass.call_later(86400, self._schedule_join_code_cleanup)
-
-    @api_command("auth/join_code/exchange", authenticated=False)
-    async def exchange_join_code(self, code: str) -> dict[str, Any]:
-        """Exchange a join code for an access token (public API).
-
-        This is the public API endpoint for short-code authentication.
-        Clients call this with a code (e.g., from QR scan or link) to receive a JWT token.
-
-        :param code: The short join code.
-        :return: Authentication result with access token if successful.
-        """
-        token = await self._exchange_join_code(code)
-
-        if not token:
-            return {
-                "success": False,
-                "error": "Invalid or expired join code",
-            }
-
-        # Decode token to get user info
-        try:
-            payload = self.jwt_helper.decode_token(token)
-            return {
-                "success": True,
-                "access_token": token,
-                "user": {
-                    "user_id": payload.get("sub"),
-                    "username": payload.get("username"),
-                    "role": payload.get("role"),
-                },
-            }
-        except pyjwt.InvalidTokenError:
-            return {
-                "success": False,
-                "error": "Failed to create access token",
-            }
-
-    @api_command("auth/join_codes", required_role="admin")
-    async def list_join_codes(self, user_id: str | None = None) -> list[dict[str, Any]]:
-        """List join codes, optionally filtered by user (admin only).
-
-        :param user_id: Optional user ID to filter codes for.
-        :return: List of join code records.
-        """
-        filter_args = {"user_id": user_id} if user_id else None
-        rows = await self.database.get_rows("join_codes", filter_args, limit=100)
-        return [dict(row) for row in rows]
-
-    @api_command("auth/join_code/revoke", required_role="admin")
-    async def revoke_join_code(self, code_id: str) -> None:
-        """Revoke a specific join code (admin only).
-
-        :param code_id: The code ID to revoke.
-        """
-        code_row = await self.database.get_row("join_codes", {"code_id": code_id})
-        if not code_row:
-            raise InvalidDataError("Join code not found")
-
-        await self.database.delete("join_codes", {"code_id": code_id})
-        await self.database.commit()
-        self.logger.info("Join code revoked (code_id=%s)", code_id)

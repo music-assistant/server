@@ -350,36 +350,6 @@ class RadioBrowserProvider(MusicProvider):
                 f"Failed to fetch radio station {prov_radio_id}: {err}"
             ) from err
 
-    async def _parse_radio(self, radio_obj: Station) -> Radio:
-        """Parse Radio object from json obj returned from api."""
-        radio = Radio(
-            item_id=radio_obj.uuid,
-            provider=self.domain,
-            name=radio_obj.name,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=radio_obj.uuid,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                )
-            },
-        )
-        radio.metadata.popularity = radio_obj.click_count
-        if radio_obj.homepage:
-            radio.metadata.links = {MediaItemLink(type=LinkType.WEBSITE, url=radio_obj.homepage)}
-        if radio_obj.favicon:
-            radio.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=radio_obj.favicon,
-                        provider=self.instance_id,
-                        remotely_accessible=True,
-                    )
-                ]
-            )
-        return radio
-
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a radio station."""
         try:
@@ -410,3 +380,33 @@ class RadioBrowserProvider(MusicProvider):
             raise ProviderUnavailableError(
                 f"Failed to get stream details for {item_id}: {err}"
             ) from err
+
+    async def _parse_radio(self, radio_obj: Station) -> Radio:
+        """Parse Radio object from json obj returned from api."""
+        radio = Radio(
+            item_id=radio_obj.uuid,
+            provider=self.domain,
+            name=radio_obj.name,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=radio_obj.uuid,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
+        radio.metadata.popularity = radio_obj.click_count
+        if radio_obj.homepage:
+            radio.metadata.links = {MediaItemLink(type=LinkType.WEBSITE, url=radio_obj.homepage)}
+        if radio_obj.favicon:
+            radio.metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=radio_obj.favicon,
+                        provider=self.instance_id,
+                        remotely_accessible=True,
+                    )
+                ]
+            )
+        return radio

@@ -108,7 +108,8 @@ async def test_selected_own_shows_token() -> None:
 
 
 async def test_upgrade_with_existing_token_preserves_own_mode() -> None:
-    """Upgrade from own-mode (CONF_TOKEN set, CONF_YM_INSTANCE absent) stays OWN.
+    """
+    Upgrade from own-mode (CONF_TOKEN set, CONF_YM_INSTANCE absent) stays OWN.
 
     Even if exactly one yandex_music instance exists, we must not silently
     switch the user's auth source on a no-op Save after upgrade.
@@ -287,7 +288,8 @@ async def test_own_mode_with_only_x_token_marks_token_optional() -> None:
 
 
 async def test_stale_ym_selection_normalizes_to_own() -> None:
-    """A saved selection pointing at a removed YM instance is normalized to OWN.
+    """
+    A saved selection pointing at a removed YM instance is normalized to OWN.
 
     Guards against the dropdown rendering with a default_value that is not in
     its options, AND ensures the in-memory `values` dict is rewritten so a

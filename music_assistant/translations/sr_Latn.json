@@ -2102,5 +2102,15 @@
   "common.media.folder.spring.name": "Proleće",
   "common.media.folder.summer.name": "Leto",
   "common.media.folder.winter.name": "Zima",
-  "common.media.folder.workout.name": "Trening"
+  "common.media.folder.workout.name": "Trening",
+  "provider.builtin.media.playlist.all_favorite_tracks.name": "Sve omiljene numere",
+  "provider.builtin.media.playlist.infinite_mix.description": "Beskrajna plejlista koja se stalno menja i povlači 25 nasumičnih numera iz vaše cele biblioteke svaki put kada je red za reprodukciju pri kraju. Bez unapred učitavanja — potrošnja memorije ostaje ista bez obzira na veličinu biblioteke.",
+  "provider.builtin.media.playlist.infinite_mix.name": "Beskonačni miks (biblioteka)",
+  "provider.builtin.media.playlist.infinite_mix_favorites.description": "Kao Beskonačni miks, ali ograničeno na vaše omiljene numere. 25 novih nasumičnih omiljenih numera dodaje se kada je red za reprodukciju skoro prazan.",
+  "provider.builtin.media.playlist.infinite_mix_favorites.name": "Beskonačni miks (omiljeno)",
+  "provider.builtin.media.playlist.random_album.name": "Nasumični album (iz biblioteke)",
+  "provider.builtin.media.playlist.random_artist.name": "Nasumični izvođač (iz biblioteke)",
+  "provider.builtin.media.playlist.random_tracks.name": "500 nasumičnih numera (iz biblioteke)",
+  "provider.builtin.media.playlist.recently_added_tracks.name": "Nedavno dodate numere",
+  "provider.builtin.media.playlist.recently_played.name": "Nedavno reprodukovane numere"
 }

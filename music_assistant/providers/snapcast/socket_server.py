@@ -1,4 +1,5 @@
-"""Unix socket server for Snapcast control script communication.
+"""
+Unix socket server for Snapcast control script communication.
 
 This module provides a secure communication channel between the Snapcast control script
 and Music Assistant, avoiding the need to expose the WebSocket API to the control script.
@@ -30,7 +31,8 @@ LOOP_STATUS_MAP_REVERSE = {v: k for k, v in LOOP_STATUS_MAP.items()}
 
 
 class SnapcastSocketServer:
-    """Unix socket server for a single Snapcast control script connection.
+    """
+    Unix socket server for a single Snapcast control script connection.
 
     Each stream gets its own socket server instance to handle control script communication.
     The socket provides a secure IPC channel that doesn't require authentication since
@@ -45,7 +47,8 @@ class SnapcastSocketServer:
         streamserver_ip: str,
         streamserver_port: int,
     ) -> None:
-        """Initialize the socket server.
+        """
+        Initialize the socket server.
 
         :param mass: The MusicAssistant instance.
         :param queue_id: The queue ID this socket serves.
@@ -149,7 +152,8 @@ class SnapcastSocketServer:
             self._logger.debug("Control script disconnected")
 
     async def _handle_message(self, message: dict[str, Any]) -> None:
-        """Handle a message from the control script.
+        """
+        Handle a message from the control script.
 
         :param message: The JSON message from the control script.
         """
@@ -169,7 +173,8 @@ class SnapcastSocketServer:
             await self._send_error(msg_id, str(err))
 
     async def _execute_command(self, command: str, args: dict[str, Any]) -> Any:
-        """Execute a Music Assistant API command.
+        """
+        Execute a Music Assistant API command.
 
         :param command: The API command to execute.
         :param args: The arguments for the command.
@@ -186,7 +191,8 @@ class SnapcastSocketServer:
         return result
 
     async def _send_result(self, msg_id: str | None, result: Any) -> None:
-        """Send a success result to the control script.
+        """
+        Send a success result to the control script.
 
         :param msg_id: The message ID from the request.
         :param result: The result data.
@@ -205,7 +211,8 @@ class SnapcastSocketServer:
         await self._send_message(response)
 
     async def _send_error(self, msg_id: str | None, error: str) -> None:
-        """Send an error result to the control script.
+        """
+        Send an error result to the control script.
 
         :param msg_id: The message ID from the request.
         :param error: The error message.
@@ -220,7 +227,8 @@ class SnapcastSocketServer:
         await self._send_message(response)
 
     async def _send_message(self, message: dict[str, Any]) -> None:
-        """Send a message to the control script.
+        """
+        Send a message to the control script.
 
         :param message: The message to send.
         """
@@ -236,7 +244,8 @@ class SnapcastSocketServer:
             self._client_writer = None
 
     def _handle_mass_event(self, event: Any) -> None:
-        """Handle Music Assistant events and forward to control script.
+        """
+        Handle Music Assistant events and forward to control script.
 
         :param event: The Music Assistant event.
         """

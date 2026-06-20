@@ -321,7 +321,7 @@ async def _get_config_entries(hass: HomeAssistantClient) -> tuple[ConfigEntry, .
             required=False,
             options=tts_entities,
             default_value=tts_entities[0].value if tts_entities else None,
-            category="Features",
+            category="features",
         ),
         ConfigEntry(
             key=CONF_AI_TASK_ENTITY,
@@ -329,7 +329,7 @@ async def _get_config_entries(hass: HomeAssistantClient) -> tuple[ConfigEntry, .
             required=False,
             options=ai_task_entities,
             default_value=ai_task_entities[0].value if ai_task_entities else None,
-            category="Features",
+            category="features",
         ),
     ]
     return tuple(entries)

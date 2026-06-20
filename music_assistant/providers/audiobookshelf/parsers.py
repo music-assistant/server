@@ -174,7 +174,8 @@ def parse_podcast_episode(
     cover_path: str | None = None,
     cover_version: int | None = None,
 ) -> MassPodcastEpisode:
-    """Translate ABSPodcastEpisode to MassPodcastEpisode.
+    """
+    Translate ABSPodcastEpisode to MassPodcastEpisode.
 
     For an episode the id is set to f"{podcast_id} {episode_id}".
     ABS ids have no spaces, so we can split at a space to retrieve both

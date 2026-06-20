@@ -724,7 +724,8 @@ def test_merged_from_rows_priority_domain_not_available_is_excluded() -> None:
 
 
 def test_merged_from_rows_regression_sonic_does_not_clobber_loudness() -> None:
-    """Regression: sonic_analysis' RMS loudness must not overwrite the EBU R128 value.
+    """
+    Regression: sonic_analysis' RMS loudness must not overwrite the EBU R128 value.
 
     Reproduces the volume-jump bug: a newer sonic_analysis row carries an RMS-proxy
     loudness_integrated that wins under last-write-wins, but scoping to loudness_analysis

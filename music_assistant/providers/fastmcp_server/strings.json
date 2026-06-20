@@ -33,6 +33,14 @@
       "description": "Maximum number of recent events kept in memory when `Debug: read recent MA events` is enabled. Older events are dropped FIFO. Has no effect when events are off."
     }
   },
+  "config_categories": {
+    "query_permissions": "Query Permissions",
+    "control_permissions": "Control Permissions",
+    "edit_permissions": "Edit Permissions",
+    "delete_permissions": "Delete Permissions",
+    "mcp_resources": "MCP Resources",
+    "mcp_config": "Config"
+  },
   "manifest": {
     "description": "Exposes Music Assistant as a Model Context Protocol (MCP) server for Claude, Codex, and other MCP-aware LLM clients."
   }

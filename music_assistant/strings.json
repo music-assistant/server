@@ -351,7 +351,13 @@
     "protocol_general": "General",
     "audio_analysis": "Audio Analysis",
     "presets": "Presets",
-    "settings": "Settings"
+    "settings": "Settings",
+    "features": "Features",
+    "status": "Status",
+    "discover": "Discover",
+    "debug": "Debug",
+    "server": "Server",
+    "recommendations": "Recommendations"
   },
   "media": {
     "genre": {

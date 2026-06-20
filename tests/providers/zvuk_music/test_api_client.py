@@ -35,7 +35,8 @@ def _make_client(token: str = "test-token") -> ZvukMusicClient:  # noqa: S107
 
 
 def _make_connected_client() -> tuple[ZvukMusicClient, MagicMock]:
-    """Create a ZvukMusicClient with _client already set (simulates post-connect state).
+    """
+    Create a ZvukMusicClient with _client already set (simulates post-connect state).
 
     :return: Tuple of (client, inner_mock) where inner_mock is the mocked ClientAsync.
     """

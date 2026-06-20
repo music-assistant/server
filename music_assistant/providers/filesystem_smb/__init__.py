@@ -271,7 +271,8 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         subfolder: str,
         env_vars: dict[str, str],
     ) -> tuple[list[str], dict[str, str]]:
-        """Build mount command for Linux.
+        """
+        Build mount command for Linux.
 
         Uses the PASSWD environment variable to handle passwords with special characters
         (commas, etc.) that cannot be escaped on the command line.

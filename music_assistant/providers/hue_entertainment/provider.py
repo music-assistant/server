@@ -108,7 +108,8 @@ class HueEntertainmentProvider(PluginProvider):
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
-        """Handle mDNS service discovery for Hue bridges.
+        """
+        Handle mDNS service discovery for Hue bridges.
 
         Updates the bridge IP address if it changes (e.g. DHCP renewal).
         """

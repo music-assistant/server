@@ -170,7 +170,8 @@ async def test_perform_device_auth_serves_intermediate_page_and_cleans_up() -> N
 
 
 async def test_perform_device_auth_status_endpoint_reports_done_after_success() -> None:
-    """The status endpoint reports state=done after the device flow completes.
+    """
+    The status endpoint reports state=done after the device flow completes.
 
     Without this the popup window (opened via target=_blank) has no signal to
     close itself after the user confirms the code.
@@ -214,7 +215,8 @@ async def test_perform_device_auth_status_endpoint_reports_done_after_success() 
 async def test_perform_device_auth_status_reports_failed_on_error(
     skip_grace_sleep: mock.AsyncMock,
 ) -> None:
-    """When poll fails, status endpoint reports failed and grace sleep still fires.
+    """
+    When poll fails, status endpoint reports failed and grace sleep still fires.
 
     Otherwise the page would race with route teardown and only ever see 404s
     instead of the 'failed' message.
@@ -703,7 +705,8 @@ async def test_validate_x_token_invalid_returns_false() -> None:
     ids=["network", "rate_limited"],
 )
 async def test_validate_x_token_transient_error_propagates(exc: Exception) -> None:
-    """Transient Passport failures must not masquerade as "token invalid".
+    """
+    Transient Passport failures must not masquerade as "token invalid".
 
     A network blip or 429 should not cause callers to clear the stored
     credential — re-raise so the caller can distinguish the two.

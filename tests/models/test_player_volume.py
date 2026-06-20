@@ -1,4 +1,5 @@
-"""Tests for Player model final volume/mute state fallback logic.
+"""
+Tests for Player model final volume/mute state fallback logic.
 
 Covers the fallback-to-native behavior in __final_volume_level and
 __final_volume_muted_state when a configured volume/mute control is

@@ -288,7 +288,8 @@ def _extract_cookie(payload: dict[str, Any]) -> str:
 
 
 def _with_pc_os_cookie(cookie: str) -> str:
-    """Return cookie string with os=pc for quality URL consistency.
+    """
+    Return cookie string with os=pc for quality URL consistency.
 
     Netease API may return lower-tier URLs for non-pc `os` cookies even for
     entitled accounts. This hint only stabilizes server-side format selection;

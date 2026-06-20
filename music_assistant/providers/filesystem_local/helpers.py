@@ -27,7 +27,8 @@ IGNORE_DIRS = (
 
 @dataclass
 class FileSystemItem:
-    """Representation of an item (file or directory) on the filesystem.
+    """
+    Representation of an item (file or directory) on the filesystem.
 
     - filename: Name (not path) of the file (or directory).
     - relative_path: Relative path to the item on this filesystem provider.
@@ -78,7 +79,8 @@ class FileSystemItem:
 
     @classmethod
     def from_dir_entry(cls, entry: os.DirEntry[str], base_path: str) -> FileSystemItem:
-        """Create FileSystemItem from os.DirEntry. NOT Async friendly.
+        """
+        Create FileSystemItem from os.DirEntry. NOT Async friendly.
 
         :raises OSError: If the file cannot be stat'd (e.g., invalid filename encoding).
         """
@@ -136,7 +138,8 @@ def tokenize(input_str: str, delimiters: str) -> list[str]:
 
 
 def _dir_contains_album_name(id3_album_name: str, directory_name: str) -> bool:
-    """Check if a directory name contains an album name.
+    """
+    Check if a directory name contains an album name.
 
     This function tokenizes both input strings using different delimiters and
     checks if the album name is a substring of the directory name.

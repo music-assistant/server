@@ -1,4 +1,5 @@
-"""Generated converter tests using fixture test mappings.
+"""
+Generated converter tests using fixture test mappings.
 
 This module provides automated converter testing for the Nicovideo provider.
 The test system is type-safe with automatic fixture updates and parameterized

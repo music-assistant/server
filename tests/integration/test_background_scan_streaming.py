@@ -32,7 +32,8 @@ FIXTURE_AUDIO = Path(__file__).parent.parent / "fixtures" / "audio" / "short_tes
 async def _real_get_media_stream(
     sd: StreamDetails, pcm_format: AudioFormat, **_kwargs: object
 ) -> AsyncGenerator[bytes]:
-    """Real-ffmpeg stand-in for mass.streams.audio.get_media_stream.
+    """
+    Real-ffmpeg stand-in for mass.streams.audio.get_media_stream.
 
     Mirrors the wait-then-close pattern in audio.py:466-528 so close() doesn't
     hit the SIGINT path on Windows when the process is still running.

@@ -1,4 +1,5 @@
-"""Tests for Player control auto-select and explicit config logic.
+"""
+Tests for Player control auto-select and explicit config logic.
 
 Covers the power_control, volume_control, and mute_control properties
 on the Player model, including:

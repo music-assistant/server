@@ -1,4 +1,5 @@
-"""Tests for __final_playback_state when an output protocol is active.
+"""
+Tests for __final_playback_state when an output protocol is active.
 
 Covers the propagation of the protocol player's state (including IDLE) up to
 the parent player that has it set as ``active_output_protocol``.
@@ -78,7 +79,8 @@ class TestFinalPlaybackStateWithActiveProtocol:
         provider: MockProvider,
         controller: PlayerController,
     ) -> None:
-        """An IDLE protocol player makes the parent report IDLE (regression guard).
+        """
+        An IDLE protocol player makes the parent report IDLE (regression guard).
 
         Previously the parent would fall through to the parent/group state when
         the protocol was IDLE, which could create a circular state inheritance

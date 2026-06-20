@@ -1,4 +1,5 @@
-"""Tests for type[X] parameter handling in API argument parsing.
+"""
+Tests for type[X] parameter handling in API argument parsing.
 
 The type[X] parameters (e.g. return_type: type[ConfigValueType]) exist only for
 static type checking via @overload. They must be skipped by parse_arguments so
