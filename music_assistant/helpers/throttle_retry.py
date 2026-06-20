@@ -73,14 +73,6 @@ class Throttler:
         self.period = period
         self._task_logs: deque[float] = deque()
 
-    def _flush(self) -> None:
-        now = time.monotonic()
-        while self._task_logs:
-            if now - self._task_logs[0] > self.period:
-                self._task_logs.popleft()
-            else:
-                break
-
     async def acquire(self) -> float:
         """Acquire a free slot from the Throttler, returns the throttled time."""
         cur_time = time.monotonic()
@@ -108,6 +100,14 @@ class Throttler:
         exc_tb: TracebackType | None,
     ) -> bool | None:
         """Nothing to do on exit."""
+
+    def _flush(self) -> None:
+        now = time.monotonic()
+        while self._task_logs:
+            if now - self._task_logs[0] > self.period:
+                self._task_logs.popleft()
+            else:
+                break
 
 
 class ThrottlerManager:
