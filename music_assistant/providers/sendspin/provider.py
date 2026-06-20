@@ -122,28 +122,6 @@ class SendspinProvider(PlayerProvider):
             self.server_api.add_event_listener(self.event_cb),
         ]
 
-    def _begin_client_event(self, client_id: str) -> int:
-        """Increment version and in-flight task count for a client event."""
-        version = self._client_event_versions.get(client_id, 0) + 1
-        self._client_event_versions[client_id] = version
-        self._client_event_task_counts[client_id] = (
-            self._client_event_task_counts.get(client_id, 0) + 1
-        )
-        return version
-
-    def _finish_client_event(self, client_id: str) -> None:
-        """Drop in-flight bookkeeping and prune version state when idle."""
-        task_count = self._client_event_task_counts.get(client_id, 0)
-        if task_count <= 1:
-            self._client_event_task_counts.pop(client_id, None)
-            self._client_event_versions.pop(client_id, None)
-            return
-        self._client_event_task_counts[client_id] = task_count - 1
-
-    def _is_current_client_event(self, client_id: str, event_version: int) -> bool:
-        """Return True if the event version is still the latest for the client."""
-        return self._client_event_versions.get(client_id) == event_version
-
     def event_cb(self, server: SendspinServer, event: SendspinEvent) -> None:
         """Event callback registered to the sendspin server."""
         match event:
@@ -261,6 +239,103 @@ class SendspinProvider(PlayerProvider):
         )
         await self.mass.players.register_or_update(player)
         return True
+
+    @property
+    def supported_features(self) -> set[ProviderFeature]:
+        """Return the features supported by this Provider."""
+        return {
+            ProviderFeature.SYNC_PLAYERS,
+        }
+
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        await super().loaded_in_mass()
+        # Start server for handling incoming Sendspin connections from clients
+        # and mDNS discovery of new clients
+        await self.server_api.start_server(
+            port=8927,
+            host=self.mass.streams.bind_ip,
+            advertise_addresses=[cast("str", self.mass.streams.publish_ip)],
+        )
+        for address in self._manual_ip_config:
+            try:
+                url = _manual_client_url(address)
+            except ValueError as err:
+                self.logger.warning(
+                    "Ignoring invalid manual Sendspin client address %s: %s", address, err
+                )
+                continue
+            self.logger.debug("Connecting to manually configured Sendspin client at %s", url)
+            self.server_api.connect_to_client(
+                url,
+                retry_initial_connection=True,
+                retry_indefinitely=True,
+            )
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """
+        Handle unload/close of the provider.
+
+        Called when provider is deregistered (e.g. MA exiting or config reloading).
+
+        :param is_removed: True when the provider is removed from the configuration.
+        """
+        self._unloading = True
+        player_ids = [player.player_id for player in self.players]
+        # Disconnect all clients before stopping the server
+        clients = list(self.server_api.clients)
+        connected_clients = []
+        disconnect_tasks = []
+        for client in clients:
+            if client.connection is None:
+                continue
+            connected_clients.append(client)
+            disconnect_tasks.append(client.connection.disconnect(retry_connection=False))
+        if disconnect_tasks:
+            results = await asyncio.gather(*disconnect_tasks, return_exceptions=True)
+            for client, result in zip(connected_clients, results, strict=True):
+                if isinstance(result, Exception):
+                    self.logger.warning(
+                        "Error disconnecting client %s: %s", client.client_id, result
+                    )
+
+        # Stop the Sendspin server
+        await self.server_api.close()
+
+        for cb in self.unregister_cbs:
+            cb()
+        self.unregister_cbs = []
+        self._client_event_task_counts.clear()
+        self._client_event_versions.clear()
+        await asyncio.gather(
+            *(
+                self.mass.players.unregister(player_id, permanent=is_removed)
+                for player_id in player_ids
+            ),
+            return_exceptions=True,
+        )
+
+    def _begin_client_event(self, client_id: str) -> int:
+        """Increment version and in-flight task count for a client event."""
+        version = self._client_event_versions.get(client_id, 0) + 1
+        self._client_event_versions[client_id] = version
+        self._client_event_task_counts[client_id] = (
+            self._client_event_task_counts.get(client_id, 0) + 1
+        )
+        return version
+
+    def _finish_client_event(self, client_id: str) -> None:
+        """Drop in-flight bookkeeping and prune version state when idle."""
+        task_count = self._client_event_task_counts.get(client_id, 0)
+        if task_count <= 1:
+            self._client_event_task_counts.pop(client_id, None)
+            self._client_event_versions.pop(client_id, None)
+            return
+        self._client_event_task_counts[client_id] = task_count - 1
+
+    def _is_current_client_event(self, client_id: str, event_version: int) -> bool:
+        """Return True if the event version is still the latest for the client."""
+        return self._client_event_versions.get(client_id) == event_version
 
     async def _apply_hass_name_override(self, player: SendspinBasePlayer, client_id: str) -> None:
         """Apply Home Assistant display name for ESPHome-backed Sendspin players."""
@@ -448,78 +523,3 @@ class SendspinProvider(PlayerProvider):
             await self.mass.players.register_or_update(existing_player)
         finally:
             self._finish_client_event(client_id)
-
-    @property
-    def supported_features(self) -> set[ProviderFeature]:
-        """Return the features supported by this Provider."""
-        return {
-            ProviderFeature.SYNC_PLAYERS,
-        }
-
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
-        await super().loaded_in_mass()
-        # Start server for handling incoming Sendspin connections from clients
-        # and mDNS discovery of new clients
-        await self.server_api.start_server(
-            port=8927,
-            host=self.mass.streams.bind_ip,
-            advertise_addresses=[cast("str", self.mass.streams.publish_ip)],
-        )
-        for address in self._manual_ip_config:
-            try:
-                url = _manual_client_url(address)
-            except ValueError as err:
-                self.logger.warning(
-                    "Ignoring invalid manual Sendspin client address %s: %s", address, err
-                )
-                continue
-            self.logger.debug("Connecting to manually configured Sendspin client at %s", url)
-            self.server_api.connect_to_client(
-                url,
-                retry_initial_connection=True,
-                retry_indefinitely=True,
-            )
-
-    async def unload(self, is_removed: bool = False) -> None:
-        """
-        Handle unload/close of the provider.
-
-        Called when provider is deregistered (e.g. MA exiting or config reloading).
-
-        :param is_removed: True when the provider is removed from the configuration.
-        """
-        self._unloading = True
-        player_ids = [player.player_id for player in self.players]
-        # Disconnect all clients before stopping the server
-        clients = list(self.server_api.clients)
-        connected_clients = []
-        disconnect_tasks = []
-        for client in clients:
-            if client.connection is None:
-                continue
-            connected_clients.append(client)
-            disconnect_tasks.append(client.connection.disconnect(retry_connection=False))
-        if disconnect_tasks:
-            results = await asyncio.gather(*disconnect_tasks, return_exceptions=True)
-            for client, result in zip(connected_clients, results, strict=True):
-                if isinstance(result, Exception):
-                    self.logger.warning(
-                        "Error disconnecting client %s: %s", client.client_id, result
-                    )
-
-        # Stop the Sendspin server
-        await self.server_api.close()
-
-        for cb in self.unregister_cbs:
-            cb()
-        self.unregister_cbs = []
-        self._client_event_task_counts.clear()
-        self._client_event_versions.clear()
-        await asyncio.gather(
-            *(
-                self.mass.players.unregister(player_id, permanent=is_removed)
-                for player_id in player_ids
-            ),
-            return_exceptions=True,
-        )

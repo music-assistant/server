@@ -234,6 +234,12 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             msg = f"SMB mount failed with error: {output.decode()}"
             raise LoginFailed(msg)
 
+    async def unmount(self, ignore_error: bool = False) -> None:
+        """Unmount the remote share."""
+        returncode, output = await check_output("umount", self.base_path)
+        if returncode != 0 and not ignore_error:
+            self.logger.warning("SMB unmount failed with error: %s", output.decode())
+
     def _build_macos_mount_cmd(
         self, server: str, username: str, password: str | None, share: str, subfolder: str
     ) -> list[str]:
@@ -336,9 +342,3 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             self.base_path,
         ]
         return mount_cmd, env_vars
-
-    async def unmount(self, ignore_error: bool = False) -> None:
-        """Unmount the remote share."""
-        returncode, output = await check_output("umount", self.base_path)
-        if returncode != 0 and not ignore_error:
-            self.logger.warning("SMB unmount failed with error: %s", output.decode())

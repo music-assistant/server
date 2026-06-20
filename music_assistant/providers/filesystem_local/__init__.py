@@ -480,6 +480,368 @@ class LocalFileSystemProvider(MusicProvider):
         # flag provider as available again if an earlier sync had marked it down
         self._set_available(True)
 
+    async def get_artist(self, prov_artist_id: str) -> Artist:
+        """Get full artist details by id."""
+        db_artist = await self.mass.music.artists.get_library_item_by_prov_id(
+            prov_artist_id, self.instance_id
+        )
+        if not db_artist:
+            # this may happen if the artist is not in the db yet
+            # e.g. when browsing the filesystem
+            if await self.exists(prov_artist_id):
+                return await self._parse_artist(prov_artist_id, artist_path=prov_artist_id)
+            return await self._parse_artist(prov_artist_id)
+
+        # prov_artist_id is either an actual (relative) path or a name (as fallback)
+        safe_artist_name = create_safe_string(prov_artist_id, lowercase=False, replace_space=False)
+        if await self.exists(prov_artist_id):
+            artist_path = prov_artist_id
+        elif await self.exists(safe_artist_name):
+            artist_path = safe_artist_name
+        else:
+            for prov_mapping in db_artist.provider_mappings:
+                if prov_mapping.provider_instance != self.instance_id:
+                    continue
+                if prov_mapping.url:
+                    artist_path = prov_mapping.url
+                    break
+            else:
+                # this is an artist without an actual path on disk
+                # return the info we already have in the db
+                return db_artist
+        return await self._parse_artist(
+            db_artist.name,
+            sort_name=db_artist.sort_name,
+            mbid=db_artist.mbid,
+            artist_path=artist_path,
+        )
+
+    async def get_album(self, prov_album_id: str) -> Album:
+        """Get full album details by id."""
+        for track in await self.get_album_tracks(prov_album_id):
+            for prov_mapping in track.provider_mappings:
+                if prov_mapping.provider_instance == self.instance_id:
+                    file_item = await self.resolve(prov_mapping.item_id)
+                    tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+                    full_track = await self._parse_track(file_item, tags)
+                    assert isinstance(full_track.album, Album)
+                    return full_track.album
+        msg = f"Album not found: {prov_album_id}"
+        raise MediaNotFoundError(msg)
+
+    async def get_track(self, prov_track_id: str) -> Track:
+        """Get full track details by id."""
+        # ruff: noqa: PLR0915
+        if not await self.exists(prov_track_id):
+            msg = f"Track path does not exist: {prov_track_id}"
+            raise MediaNotFoundError(msg)
+
+        file_item = await self.resolve(prov_track_id)
+        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+        return await self._parse_track(file_item, tags=tags, full_album_metadata=True)
+
+    async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
+        """Get (full) podcast episode details by id."""
+        if not await self.exists(prov_episode_id):
+            msg = f"Episode path does not exist: {prov_episode_id}"
+            raise MediaNotFoundError(msg)
+        file_item = await self.resolve(prov_episode_id)
+        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+        return await self._parse_podcast_episode(file_item, tags=tags)
+
+    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
+        """Get full playlist details by id."""
+        if not await self.exists(prov_playlist_id):
+            msg = f"Playlist path does not exist: {prov_playlist_id}"
+            raise MediaNotFoundError(msg)
+
+        file_item = await self.resolve(prov_playlist_id)
+        playlist = Playlist(
+            item_id=file_item.relative_path,
+            provider=self.instance_id,
+            name=file_item.name,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=file_item.relative_path,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    details=file_item.checksum,
+                    in_library=True,
+                )
+            },
+        )
+        playlist.is_editable = ProviderFeature.PLAYLIST_TRACKS_EDIT in self.supported_features
+        # only playlists in the root are editable - all other are read only
+        if "/" in prov_playlist_id or "\\" in prov_playlist_id:
+            playlist.is_editable = False
+        # we do not (yet) have support to edit/create pls playlists, only m3u files can be edited
+        if file_item.ext == "pls":
+            playlist.is_editable = False
+        playlist.owner = self.name
+        # Check for local image with the same basename
+        if local_image := await self._get_playlist_local_image(file_item):
+            playlist.metadata.images = UniqueList([local_image])
+        return playlist
+
+    async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
+        """Get full audiobook details by id."""
+        # ruff: noqa: PLR0915
+        if not await self.exists(prov_audiobook_id):
+            msg = f"Audiobook path does not exist: {prov_audiobook_id}"
+            raise MediaNotFoundError(msg)
+
+        file_item = await self.resolve(prov_audiobook_id)
+        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+        return await self._parse_audiobook(file_item, tags=tags)
+
+    async def get_podcast(self, prov_podcast_id: str) -> Podcast:
+        """Get full podcast details by id."""
+        async for episode in self.get_podcast_episodes(prov_podcast_id):
+            assert isinstance(episode.podcast, Podcast)
+            return episode.podcast
+        msg = f"Podcast not found: {prov_podcast_id}"
+        raise MediaNotFoundError(msg)
+
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
+        """Get album tracks for given album id."""
+        # filesystem items are always stored in db so we can query the database
+        db_album = await self.mass.music.albums.get_library_item_by_prov_id(
+            prov_album_id, self.instance_id
+        )
+        if db_album is None:
+            msg = f"Album not found: {prov_album_id}"
+            raise MediaNotFoundError(msg)
+        album_tracks = await self.mass.music.albums.get_library_album_tracks(db_album.item_id)
+        return [
+            track
+            for track in album_tracks
+            if any(x.provider_instance == self.instance_id for x in track.provider_mappings)
+        ]
+
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
+        """Get playlist tracks."""
+        result: list[Track] = []
+        if page > 0:
+            # paging not (yet) supported
+            return result
+        if not await self.exists(prov_playlist_id):
+            msg = f"Playlist path does not exist: {prov_playlist_id}"
+            raise MediaNotFoundError(msg)
+
+        file_item = await self.resolve(prov_playlist_id)
+        # We are using the checksum of the playlist file here to invalidate the cache
+        # when a change has been made to the playlist file (ie track addition/deletion)
+        cache_checksum = file_item.checksum
+
+        cache_key = f"get_playlist_tracks.{prov_playlist_id}"
+        cached_data = await self.mass.cache.get(
+            cache_key,
+            provider=self.instance_id,
+            checksum=cache_checksum,
+            category=0,
+            base_class=Track,
+        )
+        if cached_data is not None:
+            return cached_data  # type: ignore[no-any-return]
+
+        _, ext = prov_playlist_id.rsplit(".", 1)
+        try:
+            # get playlist file contents
+            playlist_data_raw = await self._read_file(prov_playlist_id)
+            encoding = await detect_charset(playlist_data_raw)
+            playlist_data = playlist_data_raw.decode(encoding, errors="replace")
+
+            if ext in ("m3u", "m3u8"):
+                playlist_lines = parse_m3u(playlist_data)
+            else:
+                playlist_lines = parse_pls(playlist_data)
+
+            for idx, playlist_line in enumerate(playlist_lines, 1):
+                if "#EXT" in playlist_line.path:
+                    continue
+                if track := await self._parse_playlist_line(
+                    playlist_line.path, os.path.dirname(prov_playlist_id)
+                ):
+                    track.position = idx
+                    result.append(track)
+
+        except Exception as err:
+            self.logger.warning(
+                "Error while parsing playlist %s: %s",
+                prov_playlist_id,
+                str(err),
+                exc_info=err if self.logger.isEnabledFor(10) else None,
+            )
+
+        await self.mass.cache.set(
+            key=cache_key,
+            data=[track.to_dict() for track in result],
+            expiration=3600 * 24 * 365,  # File timestamp checksum handles invalidation
+            provider=self.instance_id,
+            checksum=cache_checksum,
+            category=0,
+        )
+
+        return result
+
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
+        """Get podcast episodes for given podcast id."""
+        episodes: list[PodcastEpisode] = []
+
+        async def _process_podcast_episode(item: FileSystemItem) -> None:
+            tags = await async_parse_tags(item.absolute_path, item.file_size)
+            try:
+                episode = await self._parse_podcast_episode(item, tags)
+            except MusicAssistantError as err:
+                self.logger.warning(
+                    "Could not parse uri/file %s to podcast episode: %s",
+                    item.relative_path,
+                    str(err),
+                )
+            else:
+                episodes.append(episode)
+
+        async with TaskManager(self.mass, 25) as tm:
+            for item in await self._scandir(prov_podcast_id):
+                if "." not in item.relative_path or item.is_dir:
+                    continue
+                if item.ext not in PODCAST_EPISODE_EXTENSIONS:
+                    continue
+                tm.create_task(_process_podcast_episode(item))
+
+        for episode in episodes:
+            yield episode
+
+    async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
+        """Add track(s) to playlist."""
+        if not await self.exists(prov_playlist_id):
+            msg = f"Playlist path does not exist: {prov_playlist_id}"
+            raise MediaNotFoundError(msg)
+        playlist_filename = self.get_absolute_path(prov_playlist_id)
+        async with aiofiles.open(playlist_filename, encoding="utf-8") as _file:
+            playlist_data = await _file.read()
+        for file_path in prov_track_ids:
+            track = await self.get_track(file_path)
+            playlist_data += f"\n#EXTINF:{track.duration or 0},{track.name}\n{file_path}\n"
+
+        # write playlist file (always in utf-8)
+        async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
+            await _file.write(playlist_data)
+
+    async def remove_playlist_tracks(
+        self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
+    ) -> None:
+        """Remove track(s) from playlist."""
+        if not await self.exists(prov_playlist_id):
+            msg = f"Playlist path does not exist: {prov_playlist_id}"
+            raise MediaNotFoundError(msg)
+        _, ext = prov_playlist_id.rsplit(".", 1)
+        # get playlist file contents
+        playlist_filename = self.get_absolute_path(prov_playlist_id)
+        async with aiofiles.open(playlist_filename, encoding="utf-8") as _file:
+            playlist_data = await _file.read()
+        # get current contents first
+        if ext in ("m3u", "m3u8"):
+            playlist_items = parse_m3u(playlist_data)
+        else:
+            playlist_items = parse_pls(playlist_data)
+        # remove items by index
+        for i in sorted(positions_to_remove, reverse=True):
+            # position = index + 1
+            del playlist_items[i - 1]
+        # build new playlist data
+        new_playlist_data = "#EXTM3U\n"
+        for item in playlist_items:
+            new_playlist_data += f"\n#EXTINF:{item.length or 0},{item.title}\n{item.path}\n"
+        async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
+            await _file.write(new_playlist_data)
+
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
+        """Create a new playlist on provider with given name."""
+        # creating a new playlist on the filesystem is as easy
+        # as creating a new (empty) file with the m3u extension...
+        # filename = await self.resolve(f"{name}.m3u")
+        filename = f"{name}.m3u"
+        playlist_filename = self.get_absolute_path(filename)
+        async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
+            await _file.write("#EXTM3U\n")
+        return await self.get_playlist(filename)
+
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+        """Return the content details for the given track when it will be streamed."""
+        try:
+            if media_type == MediaType.AUDIOBOOK:
+                return await self._get_stream_details_for_audiobook(item_id)
+            if media_type == MediaType.PODCAST_EPISODE:
+                return await self._get_stream_details_for_podcast_episode(item_id)
+            return await self._get_stream_details_for_track(item_id)
+        except FileNotFoundError:
+            self.logger.warning(
+                "File not found for media item %s",
+                item_id,
+            )
+            msg = f"Media file not found: {item_id}"
+            raise MediaNotFoundError(msg)
+
+    async def resolve_image(self, path: str) -> str | bytes:
+        """
+        Resolve an image from an image path.
+
+        This either returns (a generator to get) raw bytes of the image or
+        a string with an http(s) URL or local path that is accessible from the server.
+        """
+        # drop the cache-busting suffix appended by _versioned_image_path
+        file_item = await self.resolve(path.split("?cs=", 1)[0])
+        return file_item.absolute_path
+
+    async def check_write_access(self) -> None:
+        """Perform check if we have write access."""
+        # verify write access to determine we have playlist create/edit support
+        # overwrite with provider specific implementation if needed
+        temp_file_name = self.get_absolute_path(f"{shortuuid.random(8)}.txt")
+        try:
+            async with aiofiles.open(temp_file_name, "w") as _file:
+                await _file.write("test")
+            await asyncio.to_thread(os.remove, temp_file_name)
+            self.write_access = True
+        except Exception as err:
+            self.logger.debug("Write access disabled: %s", str(err))
+
+    async def resolve(self, file_path: str) -> FileSystemItem:
+        """Resolve (absolute or relative) path to FileSystemItem."""
+        absolute_path = self.get_absolute_path(file_path)
+
+        def _create_item() -> FileSystemItem:
+            if os.path.isdir(absolute_path):
+                return FileSystemItem(
+                    filename=Path(file_path).name,
+                    relative_path=get_relative_path(self.base_path, file_path),
+                    absolute_path=absolute_path,
+                    is_dir=True,
+                )
+            stat_info = Path(absolute_path).stat(follow_symlinks=False)
+            return FileSystemItem(
+                filename=Path(file_path).name,
+                relative_path=get_relative_path(self.base_path, file_path),
+                absolute_path=absolute_path,
+                is_dir=False,
+                checksum=str(int(stat_info.st_mtime)),
+                file_size=stat_info.st_size,
+            )
+
+        return await asyncio.to_thread(_create_item)
+
+    async def exists(self, file_path: str) -> bool:
+        """Return bool is this FileSystem musicprovider has given file/dir."""
+        if not file_path:
+            return False
+        abs_path = self.get_absolute_path(file_path)
+        return bool(await exists(abs_path))
+
+    def get_absolute_path(self, file_path: str) -> str:
+        """Return absolute path for given file path."""
+        return get_absolute_path(self.base_path, file_path)
+
     def _set_available(self, available: bool) -> None:
         """Update the provider availability and notify listeners on change."""
         if self.available == available:
@@ -624,109 +986,6 @@ class LocalFileSystemProvider(MusicProvider):
             if not (artist_albums or artist_tracks):
                 await self.mass.music.artists.remove_item_from_library(artist_id)
 
-    async def get_artist(self, prov_artist_id: str) -> Artist:
-        """Get full artist details by id."""
-        db_artist = await self.mass.music.artists.get_library_item_by_prov_id(
-            prov_artist_id, self.instance_id
-        )
-        if not db_artist:
-            # this may happen if the artist is not in the db yet
-            # e.g. when browsing the filesystem
-            if await self.exists(prov_artist_id):
-                return await self._parse_artist(prov_artist_id, artist_path=prov_artist_id)
-            return await self._parse_artist(prov_artist_id)
-
-        # prov_artist_id is either an actual (relative) path or a name (as fallback)
-        safe_artist_name = create_safe_string(prov_artist_id, lowercase=False, replace_space=False)
-        if await self.exists(prov_artist_id):
-            artist_path = prov_artist_id
-        elif await self.exists(safe_artist_name):
-            artist_path = safe_artist_name
-        else:
-            for prov_mapping in db_artist.provider_mappings:
-                if prov_mapping.provider_instance != self.instance_id:
-                    continue
-                if prov_mapping.url:
-                    artist_path = prov_mapping.url
-                    break
-            else:
-                # this is an artist without an actual path on disk
-                # return the info we already have in the db
-                return db_artist
-        return await self._parse_artist(
-            db_artist.name,
-            sort_name=db_artist.sort_name,
-            mbid=db_artist.mbid,
-            artist_path=artist_path,
-        )
-
-    async def get_album(self, prov_album_id: str) -> Album:
-        """Get full album details by id."""
-        for track in await self.get_album_tracks(prov_album_id):
-            for prov_mapping in track.provider_mappings:
-                if prov_mapping.provider_instance == self.instance_id:
-                    file_item = await self.resolve(prov_mapping.item_id)
-                    tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
-                    full_track = await self._parse_track(file_item, tags)
-                    assert isinstance(full_track.album, Album)
-                    return full_track.album
-        msg = f"Album not found: {prov_album_id}"
-        raise MediaNotFoundError(msg)
-
-    async def get_track(self, prov_track_id: str) -> Track:
-        """Get full track details by id."""
-        # ruff: noqa: PLR0915
-        if not await self.exists(prov_track_id):
-            msg = f"Track path does not exist: {prov_track_id}"
-            raise MediaNotFoundError(msg)
-
-        file_item = await self.resolve(prov_track_id)
-        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
-        return await self._parse_track(file_item, tags=tags, full_album_metadata=True)
-
-    async def get_podcast_episode(self, prov_episode_id: str) -> PodcastEpisode:
-        """Get (full) podcast episode details by id."""
-        if not await self.exists(prov_episode_id):
-            msg = f"Episode path does not exist: {prov_episode_id}"
-            raise MediaNotFoundError(msg)
-        file_item = await self.resolve(prov_episode_id)
-        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
-        return await self._parse_podcast_episode(file_item, tags=tags)
-
-    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
-        """Get full playlist details by id."""
-        if not await self.exists(prov_playlist_id):
-            msg = f"Playlist path does not exist: {prov_playlist_id}"
-            raise MediaNotFoundError(msg)
-
-        file_item = await self.resolve(prov_playlist_id)
-        playlist = Playlist(
-            item_id=file_item.relative_path,
-            provider=self.instance_id,
-            name=file_item.name,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=file_item.relative_path,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    details=file_item.checksum,
-                    in_library=True,
-                )
-            },
-        )
-        playlist.is_editable = ProviderFeature.PLAYLIST_TRACKS_EDIT in self.supported_features
-        # only playlists in the root are editable - all other are read only
-        if "/" in prov_playlist_id or "\\" in prov_playlist_id:
-            playlist.is_editable = False
-        # we do not (yet) have support to edit/create pls playlists, only m3u files can be edited
-        if file_item.ext == "pls":
-            playlist.is_editable = False
-        playlist.owner = self.name
-        # Check for local image with the same basename
-        if local_image := await self._get_playlist_local_image(file_item):
-            playlist.metadata.images = UniqueList([local_image])
-        return playlist
-
     async def _get_playlist_local_image(self, file_item: FileSystemItem) -> MediaItemImage | None:
         """Return a local image alongside the playlist file (matching basename) if any."""
         cache_key = f"playlist_image.{file_item.relative_path}"
@@ -767,135 +1026,6 @@ class LocalFileSystemProvider(MusicProvider):
         )
         return result
 
-    async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
-        """Get full audiobook details by id."""
-        # ruff: noqa: PLR0915
-        if not await self.exists(prov_audiobook_id):
-            msg = f"Audiobook path does not exist: {prov_audiobook_id}"
-            raise MediaNotFoundError(msg)
-
-        file_item = await self.resolve(prov_audiobook_id)
-        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
-        return await self._parse_audiobook(file_item, tags=tags)
-
-    async def get_podcast(self, prov_podcast_id: str) -> Podcast:
-        """Get full podcast details by id."""
-        async for episode in self.get_podcast_episodes(prov_podcast_id):
-            assert isinstance(episode.podcast, Podcast)
-            return episode.podcast
-        msg = f"Podcast not found: {prov_podcast_id}"
-        raise MediaNotFoundError(msg)
-
-    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
-        """Get album tracks for given album id."""
-        # filesystem items are always stored in db so we can query the database
-        db_album = await self.mass.music.albums.get_library_item_by_prov_id(
-            prov_album_id, self.instance_id
-        )
-        if db_album is None:
-            msg = f"Album not found: {prov_album_id}"
-            raise MediaNotFoundError(msg)
-        album_tracks = await self.mass.music.albums.get_library_album_tracks(db_album.item_id)
-        return [
-            track
-            for track in album_tracks
-            if any(x.provider_instance == self.instance_id for x in track.provider_mappings)
-        ]
-
-    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
-        """Get playlist tracks."""
-        result: list[Track] = []
-        if page > 0:
-            # paging not (yet) supported
-            return result
-        if not await self.exists(prov_playlist_id):
-            msg = f"Playlist path does not exist: {prov_playlist_id}"
-            raise MediaNotFoundError(msg)
-
-        file_item = await self.resolve(prov_playlist_id)
-        # We are using the checksum of the playlist file here to invalidate the cache
-        # when a change has been made to the playlist file (ie track addition/deletion)
-        cache_checksum = file_item.checksum
-
-        cache_key = f"get_playlist_tracks.{prov_playlist_id}"
-        cached_data = await self.mass.cache.get(
-            cache_key,
-            provider=self.instance_id,
-            checksum=cache_checksum,
-            category=0,
-            base_class=Track,
-        )
-        if cached_data is not None:
-            return cached_data  # type: ignore[no-any-return]
-
-        _, ext = prov_playlist_id.rsplit(".", 1)
-        try:
-            # get playlist file contents
-            playlist_data_raw = await self._read_file(prov_playlist_id)
-            encoding = await detect_charset(playlist_data_raw)
-            playlist_data = playlist_data_raw.decode(encoding, errors="replace")
-
-            if ext in ("m3u", "m3u8"):
-                playlist_lines = parse_m3u(playlist_data)
-            else:
-                playlist_lines = parse_pls(playlist_data)
-
-            for idx, playlist_line in enumerate(playlist_lines, 1):
-                if "#EXT" in playlist_line.path:
-                    continue
-                if track := await self._parse_playlist_line(
-                    playlist_line.path, os.path.dirname(prov_playlist_id)
-                ):
-                    track.position = idx
-                    result.append(track)
-
-        except Exception as err:
-            self.logger.warning(
-                "Error while parsing playlist %s: %s",
-                prov_playlist_id,
-                str(err),
-                exc_info=err if self.logger.isEnabledFor(10) else None,
-            )
-
-        await self.mass.cache.set(
-            key=cache_key,
-            data=[track.to_dict() for track in result],
-            expiration=3600 * 24 * 365,  # File timestamp checksum handles invalidation
-            provider=self.instance_id,
-            checksum=cache_checksum,
-            category=0,
-        )
-
-        return result
-
-    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
-        """Get podcast episodes for given podcast id."""
-        episodes: list[PodcastEpisode] = []
-
-        async def _process_podcast_episode(item: FileSystemItem) -> None:
-            tags = await async_parse_tags(item.absolute_path, item.file_size)
-            try:
-                episode = await self._parse_podcast_episode(item, tags)
-            except MusicAssistantError as err:
-                self.logger.warning(
-                    "Could not parse uri/file %s to podcast episode: %s",
-                    item.relative_path,
-                    str(err),
-                )
-            else:
-                episodes.append(episode)
-
-        async with TaskManager(self.mass, 25) as tm:
-            for item in await self._scandir(prov_podcast_id):
-                if "." not in item.relative_path or item.is_dir:
-                    continue
-                if item.ext not in PODCAST_EPISODE_EXTENSIONS:
-                    continue
-                tm.create_task(_process_podcast_episode(item))
-
-        for episode in episodes:
-            yield episode
-
     async def _parse_playlist_line(self, line: str, playlist_path: str) -> Track | None:
         """Try to parse a track from a playlist line."""
         try:
@@ -924,88 +1054,6 @@ class LocalFileSystemProvider(MusicProvider):
             self.logger.warning("Could not parse %s to track: %s", line, str(err))
 
         return None
-
-    async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
-        """Add track(s) to playlist."""
-        if not await self.exists(prov_playlist_id):
-            msg = f"Playlist path does not exist: {prov_playlist_id}"
-            raise MediaNotFoundError(msg)
-        playlist_filename = self.get_absolute_path(prov_playlist_id)
-        async with aiofiles.open(playlist_filename, encoding="utf-8") as _file:
-            playlist_data = await _file.read()
-        for file_path in prov_track_ids:
-            track = await self.get_track(file_path)
-            playlist_data += f"\n#EXTINF:{track.duration or 0},{track.name}\n{file_path}\n"
-
-        # write playlist file (always in utf-8)
-        async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
-            await _file.write(playlist_data)
-
-    async def remove_playlist_tracks(
-        self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
-    ) -> None:
-        """Remove track(s) from playlist."""
-        if not await self.exists(prov_playlist_id):
-            msg = f"Playlist path does not exist: {prov_playlist_id}"
-            raise MediaNotFoundError(msg)
-        _, ext = prov_playlist_id.rsplit(".", 1)
-        # get playlist file contents
-        playlist_filename = self.get_absolute_path(prov_playlist_id)
-        async with aiofiles.open(playlist_filename, encoding="utf-8") as _file:
-            playlist_data = await _file.read()
-        # get current contents first
-        if ext in ("m3u", "m3u8"):
-            playlist_items = parse_m3u(playlist_data)
-        else:
-            playlist_items = parse_pls(playlist_data)
-        # remove items by index
-        for i in sorted(positions_to_remove, reverse=True):
-            # position = index + 1
-            del playlist_items[i - 1]
-        # build new playlist data
-        new_playlist_data = "#EXTM3U\n"
-        for item in playlist_items:
-            new_playlist_data += f"\n#EXTINF:{item.length or 0},{item.title}\n{item.path}\n"
-        async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
-            await _file.write(new_playlist_data)
-
-    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
-        """Create a new playlist on provider with given name."""
-        # creating a new playlist on the filesystem is as easy
-        # as creating a new (empty) file with the m3u extension...
-        # filename = await self.resolve(f"{name}.m3u")
-        filename = f"{name}.m3u"
-        playlist_filename = self.get_absolute_path(filename)
-        async with aiofiles.open(playlist_filename, "w", encoding="utf-8") as _file:
-            await _file.write("#EXTM3U\n")
-        return await self.get_playlist(filename)
-
-    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Return the content details for the given track when it will be streamed."""
-        try:
-            if media_type == MediaType.AUDIOBOOK:
-                return await self._get_stream_details_for_audiobook(item_id)
-            if media_type == MediaType.PODCAST_EPISODE:
-                return await self._get_stream_details_for_podcast_episode(item_id)
-            return await self._get_stream_details_for_track(item_id)
-        except FileNotFoundError:
-            self.logger.warning(
-                "File not found for media item %s",
-                item_id,
-            )
-            msg = f"Media file not found: {item_id}"
-            raise MediaNotFoundError(msg)
-
-    async def resolve_image(self, path: str) -> str | bytes:
-        """
-        Resolve an image from an image path.
-
-        This either returns (a generator to get) raw bytes of the image or
-        a string with an http(s) URL or local path that is accessible from the server.
-        """
-        # drop the cache-busting suffix appended by _versioned_image_path
-        file_item = await self.resolve(path.split("?cs=", 1)[0])
-        return file_item.absolute_path
 
     @staticmethod
     def _versioned_image_path(relative_path: str, checksum: str | None) -> str:
@@ -1846,54 +1894,6 @@ class LocalFileSystemProvider(MusicProvider):
             expiration=120,
         )
         return images
-
-    async def check_write_access(self) -> None:
-        """Perform check if we have write access."""
-        # verify write access to determine we have playlist create/edit support
-        # overwrite with provider specific implementation if needed
-        temp_file_name = self.get_absolute_path(f"{shortuuid.random(8)}.txt")
-        try:
-            async with aiofiles.open(temp_file_name, "w") as _file:
-                await _file.write("test")
-            await asyncio.to_thread(os.remove, temp_file_name)
-            self.write_access = True
-        except Exception as err:
-            self.logger.debug("Write access disabled: %s", str(err))
-
-    async def resolve(self, file_path: str) -> FileSystemItem:
-        """Resolve (absolute or relative) path to FileSystemItem."""
-        absolute_path = self.get_absolute_path(file_path)
-
-        def _create_item() -> FileSystemItem:
-            if os.path.isdir(absolute_path):
-                return FileSystemItem(
-                    filename=Path(file_path).name,
-                    relative_path=get_relative_path(self.base_path, file_path),
-                    absolute_path=absolute_path,
-                    is_dir=True,
-                )
-            stat_info = Path(absolute_path).stat(follow_symlinks=False)
-            return FileSystemItem(
-                filename=Path(file_path).name,
-                relative_path=get_relative_path(self.base_path, file_path),
-                absolute_path=absolute_path,
-                is_dir=False,
-                checksum=str(int(stat_info.st_mtime)),
-                file_size=stat_info.st_size,
-            )
-
-        return await asyncio.to_thread(_create_item)
-
-    async def exists(self, file_path: str) -> bool:
-        """Return bool is this FileSystem musicprovider has given file/dir."""
-        if not file_path:
-            return False
-        abs_path = self.get_absolute_path(file_path)
-        return bool(await exists(abs_path))
-
-    def get_absolute_path(self, file_path: str) -> str:
-        """Return absolute path for given file path."""
-        return get_absolute_path(self.base_path, file_path)
 
     async def _get_stream_details_for_track(self, item_id: str) -> StreamDetails:
         """Return the streamdetails for a track/song."""

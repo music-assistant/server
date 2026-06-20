@@ -159,10 +159,6 @@ class BridgePlayerRole(Role):
         if self._on_mute_change_cb:
             self._on_mute_change_cb(muted)
 
-    def _emit_volume_changed(self) -> None:
-        """Emit VolumeChangedEvent so the SendspinPlayer stays in sync."""
-        self._client._signal_event(VolumeChangedEvent(volume=self._volume, muted=self._muted))
-
     def on_audio_chunk(self, chunk: AudioChunk) -> None:
         """Receive audio chunk from PushStream and forward to callback."""
         if self._on_audio_chunk_cb:
@@ -195,6 +191,10 @@ class BridgePlayerRole(Role):
         LOGGER.debug("BridgePlayerRole stream ended for client %s", self._client.client_id)
         if self._on_stream_end_cb:
             self._on_stream_end_cb()
+
+    def _emit_volume_changed(self) -> None:
+        """Emit VolumeChangedEvent so the SendspinPlayer stays in sync."""
+        self._client._signal_event(VolumeChangedEvent(volume=self._volume, muted=self._muted))
 
 
 register_role(BRIDGE_ROLE_ID, lambda client: BridgePlayerRole(client=client))

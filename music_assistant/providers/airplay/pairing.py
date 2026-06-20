@@ -317,6 +317,20 @@ class AirPlayPairing:
             await self.close()
 
     # ========================================================================
+    # Cleanup
+    # ========================================================================
+
+    async def close(self) -> None:
+        """Clean up resources."""
+        self._is_pairing = False
+        if self._session:
+            await self._session.close()
+            self._session = None
+        self._srp_context = None
+        self._srp_session = None
+        self._session_key = None
+
+    # ========================================================================
     # HAP (AirPlay 2) pairing implementation
     # ========================================================================
 
@@ -787,17 +801,3 @@ class AirPlayPairing:
 
         # Return credentials in cliraop format: client_id:auth_secret
         return f"{self._client_id.hex()}:{auth_secret.hex()}"
-
-    # ========================================================================
-    # Cleanup
-    # ========================================================================
-
-    async def close(self) -> None:
-        """Clean up resources."""
-        self._is_pairing = False
-        if self._session:
-            await self._session.close()
-            self._session = None
-        self._srp_context = None
-        self._srp_session = None
-        self._session_key = None
