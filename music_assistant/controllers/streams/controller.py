@@ -44,6 +44,7 @@ from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_LOG_LEVEL,
+    CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CODEC,
     CONF_PUBLISH_IP,
@@ -219,6 +220,7 @@ class StreamsController(CoreController):
                 default_value=-6,
                 category="playback",
             ),
+            CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
             ConfigEntry(
                 key=CONF_ALLOW_CROSSFADE_SAME_ALBUM,
                 type=ConfigEntryType.BOOLEAN,

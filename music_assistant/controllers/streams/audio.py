@@ -349,7 +349,7 @@ class StreamsAudio:
         player_settings = await mass.config.get_player_config(streamdetails.queue_id)
         core_config = await mass.config.get_core_config("streams")
         conf_volume_normalization_target = float(
-            str(player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET, -17))
+            str(core_config.get_value(CONF_VOLUME_NORMALIZATION_TARGET, -14))
         )
         # guard against invalid volume normalization values
         # range and default_value are guaranteed to be set for this constant
@@ -363,9 +363,7 @@ class StreamsAudio:
             assert isinstance(default_val, (int, float))
             conf_volume_normalization_target = float(default_val)
             self.logger.warning(
-                "Invalid volume normalization target configured for player %s, "
-                "resetting to default of %s dB",
-                streamdetails.queue_id,
+                "Invalid volume normalization target configured, resetting to default of %s LUFS",
                 CONF_ENTRY_VOLUME_NORMALIZATION_TARGET.default_value,
             )
         streamdetails.target_loudness = conf_volume_normalization_target

@@ -238,7 +238,7 @@
     },
     "volume_normalization_target": {
       "label": "Target level for volume normalization",
-      "description": "Adjust average (perceived) loudness to this target level, default is -17 LUFS\n\n**WARNING:** Setting the level too high may result in clipping!"
+      "description": "Adjust average (perceived) loudness to this target level, default is -14 LUFS\n\n**WARNING:** Setting the level too high may result in clipping!"
     },
     "zeroconf_interfaces": {
       "label": "Mdns/Zeroconf discovery interface(s)",
