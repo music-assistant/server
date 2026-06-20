@@ -108,6 +108,7 @@ from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import (
     clean_stream_title,
     detect_charset,
+    parse_quoted_stream_title,
     parse_title_and_version,
     remove_file,
 )
@@ -2653,17 +2654,28 @@ class StreamsAudio:
         )
         streamdetails.stream_title = cleaned_stream_title
 
-        if " - " in cleaned_stream_title:
+        # Parse the original title for structured fields first so stations that announce
+        # an album can refine the artwork lookup; fall back to the "Artist - Track" split.
+        album: str | None = None
+        if parsed := parse_quoted_stream_title(stream_title):
+            track_name, artist_name_raw, album = parsed
+        elif " - " in cleaned_stream_title:
             artist_name_raw, track_name = (
                 part.strip() for part in cleaned_stream_title.split(" - ", 1)
             )
-            if artist_name_raw and track_name:
-                self.logger.debug(
-                    "ICY metadata: artist='%s', track='%s'", artist_name_raw, track_name
-                )
-                self._update_radio_stream_metadata(
-                    streamdetails, artist=artist_name_raw, title=track_name
-                )
+        else:
+            return
+
+        if artist_name_raw and track_name:
+            self.logger.debug(
+                "ICY metadata: artist='%s', track='%s', album='%s'",
+                artist_name_raw,
+                track_name,
+                album,
+            )
+            self._update_radio_stream_metadata(
+                streamdetails, artist=artist_name_raw, title=track_name, album=album
+            )
 
     async def _validate_shoutcast_stream(self, url: str) -> bool:
         """
