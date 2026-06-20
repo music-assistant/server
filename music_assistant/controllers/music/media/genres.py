@@ -193,142 +193,6 @@ class GenreController(MediaControllerBase[Genre]):
         FROM (SELECT * FROM {DB_TABLE_GENRES} WHERE is_excluded = 0) AS {DB_TABLE_GENRES}"""
         return query, {}
 
-    @staticmethod
-    def _get_genre_icon_metadata(translation_key: str | None) -> MediaItemMetadata | None:
-        """
-        Build metadata with genre icon image if an SVG exists for the translation key.
-
-        :param translation_key: The genre's translation key (matches SVG filename).
-        """
-        if not translation_key:
-            return None
-        icon_path = RESOURCES_DIR.joinpath(GENRE_ICONS_DIR_NAME, f"{translation_key}.svg")
-        if not icon_path.is_file():
-            return None
-        image = MediaItemImage(
-            type=ImageType.THUMB,
-            path=f"{GENRE_ICONS_DIR_NAME}/{translation_key}.svg",
-            provider="builtin",
-        )
-        return MediaItemMetadata(images=UniqueList([image]))
-
-    @staticmethod
-    def _dedup_aliases(existing: list[str], new: list[str]) -> list[str]:
-        """
-        Merge alias lists, deduplicating by normalized form (create_safe_string).
-
-        Preserves the first occurrence's original casing.
-
-        :param existing: Current aliases (ordering preserved).
-        :param new: New aliases to add if not already present.
-        """
-        seen: set[str] = set()
-        result: list[str] = []
-        for alias in [*existing, *new]:
-            norm = create_safe_string(alias, True, True)
-            if norm and norm not in seen:
-                seen.add(norm)
-                result.append(alias)
-        return result
-
-    @property
-    def _search_filter_clause(self) -> str:
-        """Return search filter that also matches genre aliases."""
-        return (
-            f"({self.db_table}.search_name LIKE :search"
-            " OR EXISTS("
-            f"SELECT 1 FROM json_each({self.db_table}.genre_aliases) "
-            "WHERE LOWER(json_each.value) LIKE :search_raw))"
-        )
-
-    async def _add_library_item(self, item: Genre, overwrite_existing: bool = False) -> int:
-        """Add a new genre record to the database."""
-        aliases: list[str] = list(item.genre_aliases) if item.genre_aliases else [item.name]
-        # Ensure the genre's own name is always in aliases (normalized comparison)
-        name_norm = create_safe_string(item.name, True, True)
-        if not any(create_safe_string(a, True, True) == name_norm for a in aliases):
-            aliases.insert(0, item.name)
-        # If a soft-deleted genre with the same name exists, restore it instead of inserting
-        if excl_row := await self.mass.music.database.get_row(
-            DB_TABLE_GENRES, {"search_name": name_norm, "is_excluded": 1}
-        ):
-            db_id = int(excl_row["item_id"])
-            await self.mass.music.database.update(
-                DB_TABLE_GENRES, {"item_id": db_id}, {"is_excluded": 0}
-            )
-            self.logger.debug("restored soft-deleted genre %s (id: %s)", item.name, db_id)
-            return db_id
-        db_id = await self.mass.music.database.insert(
-            self.db_table,
-            {
-                "name": item.name,
-                "sort_name": item.sort_name,
-                "translation_key": item.translation_key,
-                "description": item.metadata.description if item.metadata else None,
-                "favorite": item.favorite,
-                "metadata": serialize_to_json(item.metadata),
-                "external_ids": serialize_to_json(item.external_ids),
-                "genre_aliases": serialize_to_json(aliases),
-                "play_count": 0,
-                "last_played": 0,
-                "search_name": create_safe_string(item.name, True, True),
-                "search_sort_name": create_safe_string(item.sort_name or "", True, True),
-                "timestamp_added": UNSET,
-                "is_default": 0,
-            },
-        )
-        self.logger.debug("added %s to database (id: %s)", item.name, db_id)
-        return db_id
-
-    async def _update_library_item(
-        self, item_id: str | int, update: Genre, overwrite: bool = False
-    ) -> None:
-        """Update existing genre record in the database."""
-        db_id = int(item_id)
-        cur_item = await self.get_library_item(db_id)
-        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
-        cur_item.external_ids.update(update.external_ids)
-        name = update.name if overwrite else cur_item.name
-        sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
-        existing_description = await self._get_description(db_id)
-        description = (
-            update.metadata.description
-            if update.metadata and update.metadata.description is not None
-            else None
-            if overwrite
-            else existing_description
-        )
-        # Merge aliases: keep existing, add any new from update (normalized dedup)
-        existing_aliases = list(cur_item.genre_aliases) if cur_item.genre_aliases else []
-        update_aliases = list(update.genre_aliases) if update.genre_aliases else []
-        if overwrite:
-            merged_aliases = self._dedup_aliases(update_aliases, [name])
-        else:
-            merged_aliases = self._dedup_aliases(existing_aliases, [*update_aliases, name])
-
-        await self.mass.music.database.update(
-            self.db_table,
-            {"item_id": db_id},
-            {
-                "name": name,
-                "sort_name": sort_name,
-                "translation_key": update.translation_key
-                if overwrite
-                else cur_item.translation_key,
-                "description": description,
-                "favorite": update.favorite,
-                "metadata": serialize_to_json(metadata),
-                "external_ids": serialize_to_json(
-                    update.external_ids if overwrite else cur_item.external_ids
-                ),
-                "genre_aliases": serialize_to_json(merged_aliases),
-                "search_name": create_safe_string(name, True, True),
-                "search_sort_name": create_safe_string(sort_name or "", True, True),
-                "timestamp_added": UNSET,
-            },
-        )
-        self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
-
     async def library_items(
         self,
         favorite: bool | None = None,
@@ -757,6 +621,625 @@ class GenreController(MediaControllerBase[Genre]):
             return []
         return [await self.get_library_item(item_id) for item_id in created_ids]
 
+    async def remove_item_from_library(
+        self, item_id: str | int, recursive: bool = True, exclude_globally: bool = True
+    ) -> None:
+        """
+        Delete genre record from the database.
+
+        :param item_id: Database ID of the genre to remove.
+        :param recursive: Unused for genres, kept for base-class compatibility.
+        :param exclude_globally: If True (default), soft-delete the genre so the scanner
+            will not recreate it. If False, hard-delete the row (used internally by
+            merge_genres where the source should not appear in the exclusion list).
+        """
+        db_id = int(item_id)
+        await self.mass.music.database.delete(
+            DB_TABLE_GENRE_MEDIA_ITEM_MAPPING, {"genre_id": db_id}
+        )
+        await self.mass.music.database.delete(
+            DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION, {"genre_id": db_id}
+        )
+        if exclude_globally:
+            # Fetch the item while it is still visible (base_query hides is_excluded=1 rows).
+            library_item = await self.get_library_item(db_id)
+            await self.mass.music.database.update(
+                DB_TABLE_GENRES, {"item_id": db_id}, {"is_excluded": 1}
+            )
+            self.mass.signal_event(EventType.MEDIA_ITEM_DELETED, library_item.uri, library_item)
+        else:
+            await super().remove_item_from_library(item_id, recursive)
+
+    async def add_alias(self, genre_id: str | int, alias: str) -> Genre:
+        """
+        Add an alias string to a genre.
+
+        :param genre_id: Database ID of the genre.
+        :param alias: Alias string to add.
+        """
+        db_id = int(genre_id)
+        genre = await self.get_library_item(db_id)
+        aliases = list(genre.genre_aliases) if genre.genre_aliases else []
+        aliases = self._dedup_aliases(aliases, [alias])
+        await self.mass.music.database.update(
+            self.db_table,
+            {"item_id": db_id},
+            {"genre_aliases": serialize_to_json(aliases)},
+        )
+        updated = await self.get_library_item(db_id)
+        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, updated.uri, updated)
+        return updated
+
+    async def remove_alias(self, genre_id: str | int, alias: str) -> Genre:
+        """
+        Remove an alias string from a genre.
+
+        :param genre_id: Database ID of the genre.
+        :param alias: Alias string to remove.
+        :raises ValueError: If trying to remove the genre's own name.
+        """
+        db_id = int(genre_id)
+        genre = await self.get_library_item(db_id)
+        if create_safe_string(alias, True, True) == create_safe_string(genre.name, True, True):
+            msg = (
+                f"Cannot remove self-alias '{alias}' from genre '{genre.name}'. "
+                f"Delete the genre instead."
+            )
+            raise ValueError(msg)
+        aliases = list(genre.genre_aliases) if genre.genre_aliases else []
+        alias_norm = create_safe_string(alias, True, True)
+        aliases = [a for a in aliases if create_safe_string(a, True, True) != alias_norm]
+        await self.mass.music.database.update(
+            self.db_table,
+            {"item_id": db_id},
+            {"genre_aliases": serialize_to_json(aliases)},
+        )
+        # Remove media mappings that were created via this alias (case-insensitive)
+        await self.mass.music.database.execute(
+            f"DELETE FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :genre_id AND LOWER(alias) = LOWER(:alias)",
+            {"genre_id": db_id, "alias": alias},
+        )
+        # Derived album/artist rows can be left orphaned by the deleted track rows.
+        await self._propagate_genre_mappings_to_parents()
+        updated = await self.get_library_item(db_id)
+        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, updated.uri, updated)
+        return updated
+
+    async def add_media_mapping(
+        self,
+        genre_id: str | int,
+        media_type: MediaType,
+        media_id: str | int,
+        alias: str | None = None,
+    ) -> None:
+        """
+        Map a media item to a genre.
+
+        :param genre_id: Database ID of the genre.
+        :param media_type: Type of media item (track, album, artist).
+        :param media_id: Database ID of the media item.
+        :param alias: The alias string that caused this mapping. If not provided,
+            the genre's primary name is used.
+        """
+        if alias is None:
+            genre = await self.get_library_item(int(genre_id))
+            alias = genre.name
+        await self.mass.music.database.insert(
+            DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+            {
+                "genre_id": int(genre_id),
+                "media_id": int(media_id),
+                "media_type": media_type.value,
+                "alias": alias,
+                "is_manual": 1,
+            },
+            allow_replace=True,
+        )
+
+    async def remove_media_mapping(
+        self, genre_id: str | int, media_type: MediaType, media_id: str | int
+    ) -> None:
+        """
+        Remove a media item mapping from a genre.
+
+        If the mapping was derived (propagated from child tracks), an exclusion is
+        automatically inserted so the next propagation scan does not re-derive it.
+
+        :param genre_id: Database ID of the genre.
+        :param media_type: Type of media item (track, album, artist).
+        :param media_id: Database ID of the media item.
+        """
+        row = await self.mass.music.database.get_row(
+            DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+            {"genre_id": int(genre_id), "media_id": int(media_id), "media_type": media_type.value},
+        )
+        if row and row["is_derived"]:
+            await self.exclude_genre_from_media_item(genre_id, media_type, media_id)
+            return
+        await self.mass.music.database.delete(
+            DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
+            {
+                "genre_id": int(genre_id),
+                "media_id": int(media_id),
+                "media_type": media_type.value,
+            },
+        )
+
+    async def exclude_genre_from_media_item(
+        self,
+        genre_id: str | int,
+        media_type: MediaType,
+        media_id: str | int,
+    ) -> None:
+        """
+        Permanently exclude a genre from being mapped to a media item.
+
+        Records the exclusion so the scanner will never re-add this mapping.
+        Any existing mapping for this genre/media pair is removed immediately.
+
+        :param genre_id: Database ID of the genre.
+        :param media_type: Type of media item (track, album, artist, etc.).
+        :param media_id: Database ID of the media item.
+        """
+        params = {
+            "genre_id": int(genre_id),
+            "media_id": int(media_id),
+            "media_type": media_type.value,
+        }
+        db = self.mass.music.database
+        # Run both statements without committing between them so the exclusion insert
+        # and the mapping delete are committed atomically.
+        await db.execute(
+            f"INSERT OR REPLACE INTO {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}"
+            "(genre_id, media_id, media_type) VALUES (:genre_id, :media_id, :media_type)",
+            params,
+        )
+        await db.execute(
+            f"DELETE FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            "WHERE genre_id = :genre_id AND media_id = :media_id AND media_type = :media_type",
+            params,
+        )
+        await db.commit()
+
+    async def remove_genre_exclusion(
+        self,
+        genre_id: str | int,
+        media_type: MediaType,
+        media_id: str | int,
+    ) -> None:
+        """
+        Remove a genre exclusion, allowing the scanner to re-map it on the next run.
+
+        :param genre_id: Database ID of the genre.
+        :param media_type: Type of media item (track, album, artist, etc.).
+        :param media_id: Database ID of the media item.
+        """
+        await self.mass.music.database.delete(
+            DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
+            {
+                "genre_id": int(genre_id),
+                "media_id": int(media_id),
+                "media_type": media_type.value,
+            },
+        )
+
+    async def get_global_genre_exclusions(self) -> list[dict[str, object]]:
+        """Return all globally excluded genres."""
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT item_id, name, sort_name, search_name, translation_key, metadata "
+            f"FROM {DB_TABLE_GENRES} WHERE is_excluded = 1 ORDER BY sort_name",
+            limit=0,
+        )
+        result = []
+        for row in rows:
+            entry = dict(row)
+            if raw_metadata := entry.get("metadata"):
+                entry["metadata"] = json_loads(raw_metadata)
+            result.append(entry)
+        return result
+
+    async def remove_global_genre_exclusion(self, genre_id: int) -> Genre:
+        """
+        Lift a global genre exclusion, making the genre visible and scannable again.
+
+        :param genre_id: Database ID of the excluded genre (item_id in genres table).
+        :return: The restored Genre.
+        """
+        row = await self.mass.music.database.get_row(
+            DB_TABLE_GENRES, {"item_id": genre_id, "is_excluded": 1}
+        )
+        if not row:
+            msg = f"No globally excluded genre found with id {genre_id}"
+            raise KeyError(msg)
+        await self.mass.music.database.update(
+            DB_TABLE_GENRES, {"item_id": genre_id}, {"is_excluded": 0}
+        )
+        library_item = await self.get_library_item(genre_id)
+        self.mass.signal_event(EventType.MEDIA_ITEM_ADDED, library_item.uri, library_item)
+        return library_item
+
+    async def promote_alias_to_genre(self, genre_id: str | int, alias: str) -> Genre:
+        """
+        Promote an alias to become a standalone genre.
+
+        Every genre that claimed the alias loses it, and all media mapped via
+        the alias is moved to the new genre.
+
+        :param genre_id: Database ID of the source genre.
+        :param alias: The alias string to promote.
+        :return: The newly created Genre.
+        """
+        db_genre_id = int(genre_id)
+        source_genre = await self.get_library_item(db_genre_id)
+        alias_norm = create_safe_string(alias, True, True)
+
+        if alias_norm == create_safe_string(source_genre.name, True, True):
+            msg = (
+                f"Cannot promote self-alias '{alias}'. "
+                f"This alias is the primary name for genre '{source_genre.name}'."
+            )
+            raise ValueError(msg)
+
+        owning_ids = await self._find_genre_ids_for_alias(alias_norm)
+        if db_genre_id not in owning_ids:
+            owning_ids.append(db_genre_id)
+
+        new_genre = Genre(
+            item_id="0",
+            provider="library",
+            name=alias,
+            sort_name=alias,
+            translation_key=None,
+            provider_mappings=set(),
+            favorite=False,
+        )
+        created_genre = await self.add_item_to_library(new_genre)
+        new_genre_id = int(created_genre.item_id)
+
+        # UPDATE OR REPLACE drops any pre-existing mapping on the new genre for
+        # the same (media_id, media_type) so the moved row wins.
+        placeholders = ", ".join(str(g) for g in owning_ids)
+        await self.mass.music.database.execute(
+            f"UPDATE OR REPLACE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
+            f"SET genre_id = :new_id "
+            f"WHERE genre_id IN ({placeholders}) AND LOWER(alias) = LOWER(:alias)",
+            {"new_id": new_genre_id, "alias": alias},
+        )
+
+        for owning_id in owning_ids:
+            owning = await self.get_library_item(owning_id)
+            # Defensive: a genre whose primary name equals the alias would hit
+            # the self-alias guard in remove_alias; skip rather than raise.
+            if create_safe_string(owning.name, True, True) == alias_norm:
+                continue
+            owning_aliases = list(owning.genre_aliases) if owning.genre_aliases else []
+            filtered = [
+                a for a in owning_aliases if create_safe_string(a, True, True) != alias_norm
+            ]
+            if len(filtered) != len(owning_aliases):
+                await self.mass.music.database.update(
+                    self.db_table,
+                    {"item_id": owning_id},
+                    {"genre_aliases": serialize_to_json(filtered)},
+                )
+
+        # Derived album/artist rows still point at the old source genres; rebuild
+        # them from the moved track mappings.
+        await self._propagate_genre_mappings_to_parents()
+
+        return await self.get_library_item(new_genre_id)
+
+    async def merge_genres(self, genre_ids: list[str | int], target_genre_id: str | int) -> Genre:
+        """
+        Merge one or more genres into a target genre.
+
+        Transfers all aliases and media mappings from the source genres to the
+        target, then deletes the source genres. Aliases and mappings are
+        deduplicated so no duplicates are created on the target.
+
+        :param genre_ids: List of genre IDs to merge into the target.
+        :param target_genre_id: Database ID of the genre to merge into.
+        """
+        target_id = int(target_genre_id)
+        source_ids = [int(gid) for gid in genre_ids]
+
+        if target_id in source_ids:
+            msg = "Target genre cannot be in the list of genres to merge"
+            raise ValueError(msg)
+        if not source_ids:
+            msg = "No genre IDs provided to merge"
+            raise ValueError(msg)
+
+        target_genre = await self.get_library_item(target_id)
+        db = self.mass.music.database
+        gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
+
+        # Collect and merge aliases from all source genres into the target
+        all_new_aliases: list[str] = []
+        for source_id in source_ids:
+            source_genre = await self.get_library_item(source_id)
+            if source_genre.genre_aliases:
+                all_new_aliases.extend(source_genre.genre_aliases)
+
+        existing_aliases = list(target_genre.genre_aliases) if target_genre.genre_aliases else []
+        merged_aliases = self._dedup_aliases(existing_aliases, all_new_aliases)
+        await db.update(
+            self.db_table,
+            {"item_id": target_id},
+            {"genre_aliases": serialize_to_json(merged_aliases)},
+        )
+
+        # Transfer media mappings from source genres to target (deduplicated)
+        placeholders = ", ".join(str(sid) for sid in source_ids)
+        await db.execute(
+            f"INSERT OR IGNORE INTO {gm} (genre_id, media_id, media_type, alias) "
+            f"SELECT :target_id, media_id, media_type, alias FROM {gm} "
+            f"WHERE genre_id IN ({placeholders})",
+            {"target_id": target_id},
+        )
+
+        # Hard-delete source genres: merging is not a user exclusion so sources must
+        # not appear in the global exclusion list.
+        for source_id in source_ids:
+            await self.remove_item_from_library(source_id, exclude_globally=False)
+
+        # Rebuild derived album/artist rows against the merged track mappings.
+        await self._propagate_genre_mappings_to_parents()
+
+        updated = await self.get_library_item(target_id)
+        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, updated.uri, updated)
+        return updated
+
+    async def sync_media_item_genres(
+        self, media_type: MediaType, media_id: str | int, genre_names: set[str]
+    ) -> None:
+        """
+        Sync genre mappings for a media item.
+
+        Ensures genre records exist and updates genre-media mappings.
+        Removes mappings that are no longer present in the incoming genre_names set.
+
+        :param media_type: The type of media item being synced.
+        :param media_id: The database ID of the media item.
+        :param genre_names: Set of genre names from the provider.
+        """
+        media_id_int = int(media_id)
+        gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
+
+        # Build target set: (genre_id, alias_name) from incoming names.
+        # One alias can map to multiple genres (n:n).
+        target_mappings: dict[int, str] = {}
+        for name in genre_names:
+            normalized = self._normalize_genre_name(name)
+            if not normalized:
+                continue
+            genre_ids = await self._find_genres_for_alias(normalized[0])
+            for gid in genre_ids:
+                if gid not in target_mappings:
+                    target_mappings[gid] = normalized[0]
+
+        # Get current genre_ids from database
+        rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT genre_id FROM {gm} WHERE media_type = :media_type AND media_id = :media_id",
+            {"media_type": media_type.value, "media_id": media_id_int},
+            limit=0,
+        )
+        existing_genre_ids = {int(row["genre_id"]) for row in rows}
+
+        to_add = set(target_mappings.keys()) - existing_genre_ids
+        to_remove = existing_genre_ids - set(target_mappings.keys())
+
+        for genre_id in to_remove:
+            await self.mass.music.database.delete(
+                gm,
+                {
+                    "genre_id": genre_id,
+                    "media_id": media_id_int,
+                    "media_type": media_type.value,
+                },
+            )
+
+        for genre_id in to_add:
+            await self.mass.music.database.insert(
+                gm,
+                {
+                    "genre_id": genre_id,
+                    "media_id": media_id_int,
+                    "media_type": media_type.value,
+                    "alias": target_mappings[genre_id],
+                },
+                allow_replace=True,
+            )
+
+    def register_scheduled_scan_task(self) -> BackgroundTask:
+        """Register the recurring genre mapping scan task."""
+        utc_hour, utc_minute = local_clock_time_to_utc(4, 0)
+        desired_schedule = TaskSchedule.daily(hour=utc_hour, minute=utc_minute)
+        return self.mass.tasks.register_scheduled_task(
+            task_id=GENRE_SCAN_TASK_ID,
+            name="Scan genre mappings",
+            handler=self._scan_genre_mappings,
+            schedule=desired_schedule,
+            translation_key="scan_genre_mappings",
+            translation_owner=self.translation_owner,
+            metadata={
+                "task_domain": "genre_mapping_scan",
+            },
+            allow_retry=True,
+        )
+
+    async def scan_mappings(self) -> dict[str, Any]:
+        """
+        Manually trigger a genre mapping scan (admin only).
+
+        :return: Status information about the scan trigger.
+        """
+        if self._genre_scan_running:
+            return {
+                "status": "already_running",
+                "message": "Genre mapping scanner is already running",
+            }
+
+        self._queue_genre_mapping_scan_task()
+
+        return {
+            "status": "triggered",
+            "message": "Genre mapping scan triggered",
+            "last_scan": self._last_scan_time,
+        }
+
+    async def get_scanner_status(self) -> dict[str, Any]:
+        """
+        Get status of the genre mapping background scanner.
+
+        :return: Scanner status information.
+        """
+        return {
+            "running": self._genre_scan_running,
+            "last_scan_time": self._last_scan_time,
+            "last_scan_ago_seconds": (
+                int(time.time() - self._last_scan_time) if self._last_scan_time else None
+            ),
+            "last_scan_mapped": self._last_scan_mapped,
+        }
+
+    @staticmethod
+    def _get_genre_icon_metadata(translation_key: str | None) -> MediaItemMetadata | None:
+        """
+        Build metadata with genre icon image if an SVG exists for the translation key.
+
+        :param translation_key: The genre's translation key (matches SVG filename).
+        """
+        if not translation_key:
+            return None
+        icon_path = RESOURCES_DIR.joinpath(GENRE_ICONS_DIR_NAME, f"{translation_key}.svg")
+        if not icon_path.is_file():
+            return None
+        image = MediaItemImage(
+            type=ImageType.THUMB,
+            path=f"{GENRE_ICONS_DIR_NAME}/{translation_key}.svg",
+            provider="builtin",
+        )
+        return MediaItemMetadata(images=UniqueList([image]))
+
+    @staticmethod
+    def _dedup_aliases(existing: list[str], new: list[str]) -> list[str]:
+        """
+        Merge alias lists, deduplicating by normalized form (create_safe_string).
+
+        Preserves the first occurrence's original casing.
+
+        :param existing: Current aliases (ordering preserved).
+        :param new: New aliases to add if not already present.
+        """
+        seen: set[str] = set()
+        result: list[str] = []
+        for alias in [*existing, *new]:
+            norm = create_safe_string(alias, True, True)
+            if norm and norm not in seen:
+                seen.add(norm)
+                result.append(alias)
+        return result
+
+    @property
+    def _search_filter_clause(self) -> str:
+        """Return search filter that also matches genre aliases."""
+        return (
+            f"({self.db_table}.search_name LIKE :search"
+            " OR EXISTS("
+            f"SELECT 1 FROM json_each({self.db_table}.genre_aliases) "
+            "WHERE LOWER(json_each.value) LIKE :search_raw))"
+        )
+
+    async def _add_library_item(self, item: Genre, overwrite_existing: bool = False) -> int:
+        """Add a new genre record to the database."""
+        aliases: list[str] = list(item.genre_aliases) if item.genre_aliases else [item.name]
+        # Ensure the genre's own name is always in aliases (normalized comparison)
+        name_norm = create_safe_string(item.name, True, True)
+        if not any(create_safe_string(a, True, True) == name_norm for a in aliases):
+            aliases.insert(0, item.name)
+        # If a soft-deleted genre with the same name exists, restore it instead of inserting
+        if excl_row := await self.mass.music.database.get_row(
+            DB_TABLE_GENRES, {"search_name": name_norm, "is_excluded": 1}
+        ):
+            db_id = int(excl_row["item_id"])
+            await self.mass.music.database.update(
+                DB_TABLE_GENRES, {"item_id": db_id}, {"is_excluded": 0}
+            )
+            self.logger.debug("restored soft-deleted genre %s (id: %s)", item.name, db_id)
+            return db_id
+        db_id = await self.mass.music.database.insert(
+            self.db_table,
+            {
+                "name": item.name,
+                "sort_name": item.sort_name,
+                "translation_key": item.translation_key,
+                "description": item.metadata.description if item.metadata else None,
+                "favorite": item.favorite,
+                "metadata": serialize_to_json(item.metadata),
+                "external_ids": serialize_to_json(item.external_ids),
+                "genre_aliases": serialize_to_json(aliases),
+                "play_count": 0,
+                "last_played": 0,
+                "search_name": create_safe_string(item.name, True, True),
+                "search_sort_name": create_safe_string(item.sort_name or "", True, True),
+                "timestamp_added": UNSET,
+                "is_default": 0,
+            },
+        )
+        self.logger.debug("added %s to database (id: %s)", item.name, db_id)
+        return db_id
+
+    async def _update_library_item(
+        self, item_id: str | int, update: Genre, overwrite: bool = False
+    ) -> None:
+        """Update existing genre record in the database."""
+        db_id = int(item_id)
+        cur_item = await self.get_library_item(db_id)
+        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+        cur_item.external_ids.update(update.external_ids)
+        name = update.name if overwrite else cur_item.name
+        sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
+        existing_description = await self._get_description(db_id)
+        description = (
+            update.metadata.description
+            if update.metadata and update.metadata.description is not None
+            else None
+            if overwrite
+            else existing_description
+        )
+        # Merge aliases: keep existing, add any new from update (normalized dedup)
+        existing_aliases = list(cur_item.genre_aliases) if cur_item.genre_aliases else []
+        update_aliases = list(update.genre_aliases) if update.genre_aliases else []
+        if overwrite:
+            merged_aliases = self._dedup_aliases(update_aliases, [name])
+        else:
+            merged_aliases = self._dedup_aliases(existing_aliases, [*update_aliases, name])
+
+        await self.mass.music.database.update(
+            self.db_table,
+            {"item_id": db_id},
+            {
+                "name": name,
+                "sort_name": sort_name,
+                "translation_key": update.translation_key
+                if overwrite
+                else cur_item.translation_key,
+                "description": description,
+                "favorite": update.favorite,
+                "metadata": serialize_to_json(metadata),
+                "external_ids": serialize_to_json(
+                    update.external_ids if overwrite else cur_item.external_ids
+                ),
+                "genre_aliases": serialize_to_json(merged_aliases),
+                "search_name": create_safe_string(name, True, True),
+                "search_sort_name": create_safe_string(sort_name or "", True, True),
+                "timestamp_added": UNSET,
+            },
+        )
+        self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
+
     async def _bulk_scan_media_genres(self) -> None:
         """
         Bulk-scan all media items and rebuild genre mappings using CTE.
@@ -1165,315 +1648,6 @@ class GenreController(MediaControllerBase[Genre]):
 
         await db.commit()
 
-    async def remove_item_from_library(
-        self, item_id: str | int, recursive: bool = True, exclude_globally: bool = True
-    ) -> None:
-        """
-        Delete genre record from the database.
-
-        :param item_id: Database ID of the genre to remove.
-        :param recursive: Unused for genres, kept for base-class compatibility.
-        :param exclude_globally: If True (default), soft-delete the genre so the scanner
-            will not recreate it. If False, hard-delete the row (used internally by
-            merge_genres where the source should not appear in the exclusion list).
-        """
-        db_id = int(item_id)
-        await self.mass.music.database.delete(
-            DB_TABLE_GENRE_MEDIA_ITEM_MAPPING, {"genre_id": db_id}
-        )
-        await self.mass.music.database.delete(
-            DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION, {"genre_id": db_id}
-        )
-        if exclude_globally:
-            # Fetch the item while it is still visible (base_query filters is_excluded=1).
-            library_item = await self.get_library_item(db_id)
-            await self.mass.music.database.update(
-                DB_TABLE_GENRES, {"item_id": db_id}, {"is_excluded": 1}
-            )
-            self.mass.signal_event(EventType.MEDIA_ITEM_DELETED, library_item.uri, library_item)
-        else:
-            await super().remove_item_from_library(item_id, recursive)
-
-    async def add_alias(self, genre_id: str | int, alias: str) -> Genre:
-        """
-        Add an alias string to a genre.
-
-        :param genre_id: Database ID of the genre.
-        :param alias: Alias string to add.
-        """
-        db_id = int(genre_id)
-        genre = await self.get_library_item(db_id)
-        aliases = list(genre.genre_aliases) if genre.genre_aliases else []
-        aliases = self._dedup_aliases(aliases, [alias])
-        await self.mass.music.database.update(
-            self.db_table,
-            {"item_id": db_id},
-            {"genre_aliases": serialize_to_json(aliases)},
-        )
-        updated = await self.get_library_item(db_id)
-        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, updated.uri, updated)
-        return updated
-
-    async def remove_alias(self, genre_id: str | int, alias: str) -> Genre:
-        """
-        Remove an alias string from a genre.
-
-        :param genre_id: Database ID of the genre.
-        :param alias: Alias string to remove.
-        :raises ValueError: If trying to remove the genre's own name.
-        """
-        db_id = int(genre_id)
-        genre = await self.get_library_item(db_id)
-        if create_safe_string(alias, True, True) == create_safe_string(genre.name, True, True):
-            msg = (
-                f"Cannot remove self-alias '{alias}' from genre '{genre.name}'. "
-                f"Delete the genre instead."
-            )
-            raise ValueError(msg)
-        aliases = list(genre.genre_aliases) if genre.genre_aliases else []
-        alias_norm = create_safe_string(alias, True, True)
-        aliases = [a for a in aliases if create_safe_string(a, True, True) != alias_norm]
-        await self.mass.music.database.update(
-            self.db_table,
-            {"item_id": db_id},
-            {"genre_aliases": serialize_to_json(aliases)},
-        )
-        # Remove media mappings that were created via this alias (case-insensitive)
-        await self.mass.music.database.execute(
-            f"DELETE FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
-            "WHERE genre_id = :genre_id AND LOWER(alias) = LOWER(:alias)",
-            {"genre_id": db_id, "alias": alias},
-        )
-        # Derived album/artist rows can be left orphaned by the deleted track rows.
-        await self._propagate_genre_mappings_to_parents()
-        updated = await self.get_library_item(db_id)
-        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, updated.uri, updated)
-        return updated
-
-    async def add_media_mapping(
-        self,
-        genre_id: str | int,
-        media_type: MediaType,
-        media_id: str | int,
-        alias: str | None = None,
-    ) -> None:
-        """
-        Map a media item to a genre.
-
-        :param genre_id: Database ID of the genre.
-        :param media_type: Type of media item (track, album, artist).
-        :param media_id: Database ID of the media item.
-        :param alias: The alias string that caused this mapping. If not provided,
-            the genre's primary name is used.
-        """
-        if alias is None:
-            genre = await self.get_library_item(int(genre_id))
-            alias = genre.name
-        await self.mass.music.database.insert(
-            DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
-            {
-                "genre_id": int(genre_id),
-                "media_id": int(media_id),
-                "media_type": media_type.value,
-                "alias": alias,
-                "is_manual": 1,
-            },
-            allow_replace=True,
-        )
-
-    async def remove_media_mapping(
-        self, genre_id: str | int, media_type: MediaType, media_id: str | int
-    ) -> None:
-        """
-        Remove a media item mapping from a genre.
-
-        If the mapping was derived (propagated from child tracks), an exclusion is
-        automatically inserted so the next propagation scan does not re-derive it.
-
-        :param genre_id: Database ID of the genre.
-        :param media_type: Type of media item (track, album, artist).
-        :param media_id: Database ID of the media item.
-        """
-        row = await self.mass.music.database.get_row(
-            DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
-            {"genre_id": int(genre_id), "media_id": int(media_id), "media_type": media_type.value},
-        )
-        if row and row["is_derived"]:
-            await self.exclude_genre_from_media_item(genre_id, media_type, media_id)
-            return
-        await self.mass.music.database.delete(
-            DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
-            {
-                "genre_id": int(genre_id),
-                "media_id": int(media_id),
-                "media_type": media_type.value,
-            },
-        )
-
-    async def exclude_genre_from_media_item(
-        self,
-        genre_id: str | int,
-        media_type: MediaType,
-        media_id: str | int,
-    ) -> None:
-        """
-        Permanently exclude a genre from being mapped to a media item.
-
-        Records the exclusion so the scanner will never re-add this mapping.
-        Any existing mapping for this genre/media pair is removed immediately.
-
-        :param genre_id: Database ID of the genre.
-        :param media_type: Type of media item (track, album, artist, etc.).
-        :param media_id: Database ID of the media item.
-        """
-        params = {
-            "genre_id": int(genre_id),
-            "media_id": int(media_id),
-            "media_type": media_type.value,
-        }
-        db = self.mass.music.database
-        # Run both statements without committing between them so the exclusion insert
-        # and the mapping delete are committed atomically.
-        await db.execute(
-            f"INSERT OR REPLACE INTO {DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION}"
-            "(genre_id, media_id, media_type) VALUES (:genre_id, :media_id, :media_type)",
-            params,
-        )
-        await db.execute(
-            f"DELETE FROM {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
-            "WHERE genre_id = :genre_id AND media_id = :media_id AND media_type = :media_type",
-            params,
-        )
-        await db.commit()
-
-    async def remove_genre_exclusion(
-        self,
-        genre_id: str | int,
-        media_type: MediaType,
-        media_id: str | int,
-    ) -> None:
-        """
-        Remove a genre exclusion, allowing the scanner to re-map it on the next run.
-
-        :param genre_id: Database ID of the genre.
-        :param media_type: Type of media item (track, album, artist, etc.).
-        :param media_id: Database ID of the media item.
-        """
-        await self.mass.music.database.delete(
-            DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
-            {
-                "genre_id": int(genre_id),
-                "media_id": int(media_id),
-                "media_type": media_type.value,
-            },
-        )
-
-    async def get_global_genre_exclusions(self) -> list[dict[str, object]]:
-        """Return all globally excluded genres."""
-        rows = await self.mass.music.database.get_rows_from_query(
-            f"SELECT item_id, name, sort_name, search_name, translation_key, metadata "
-            f"FROM {DB_TABLE_GENRES} WHERE is_excluded = 1 ORDER BY sort_name",
-            limit=0,
-        )
-        result = []
-        for row in rows:
-            entry = dict(row)
-            if raw_metadata := entry.get("metadata"):
-                entry["metadata"] = json_loads(raw_metadata)
-            result.append(entry)
-        return result
-
-    async def remove_global_genre_exclusion(self, genre_id: int) -> Genre:
-        """
-        Lift a global genre exclusion, making the genre visible and scannable again.
-
-        :param genre_id: Database ID of the excluded genre (item_id in genres table).
-        :return: The restored Genre.
-        """
-        row = await self.mass.music.database.get_row(
-            DB_TABLE_GENRES, {"item_id": genre_id, "is_excluded": 1}
-        )
-        if not row:
-            msg = f"No globally excluded genre found with id {genre_id}"
-            raise KeyError(msg)
-        await self.mass.music.database.update(
-            DB_TABLE_GENRES, {"item_id": genre_id}, {"is_excluded": 0}
-        )
-        library_item = await self.get_library_item(genre_id)
-        self.mass.signal_event(EventType.MEDIA_ITEM_ADDED, library_item.uri, library_item)
-        return library_item
-
-    async def promote_alias_to_genre(self, genre_id: str | int, alias: str) -> Genre:
-        """
-        Promote an alias to become a standalone genre.
-
-        Every genre that claimed the alias loses it, and all media mapped via
-        the alias is moved to the new genre.
-
-        :param genre_id: Database ID of the source genre.
-        :param alias: The alias string to promote.
-        :return: The newly created Genre.
-        """
-        db_genre_id = int(genre_id)
-        source_genre = await self.get_library_item(db_genre_id)
-        alias_norm = create_safe_string(alias, True, True)
-
-        if alias_norm == create_safe_string(source_genre.name, True, True):
-            msg = (
-                f"Cannot promote self-alias '{alias}'. "
-                f"This alias is the primary name for genre '{source_genre.name}'."
-            )
-            raise ValueError(msg)
-
-        owning_ids = await self._find_genre_ids_for_alias(alias_norm)
-        if db_genre_id not in owning_ids:
-            owning_ids.append(db_genre_id)
-
-        new_genre = Genre(
-            item_id="0",
-            provider="library",
-            name=alias,
-            sort_name=alias,
-            translation_key=None,
-            provider_mappings=set(),
-            favorite=False,
-        )
-        created_genre = await self.add_item_to_library(new_genre)
-        new_genre_id = int(created_genre.item_id)
-
-        # UPDATE OR REPLACE drops any pre-existing mapping on the new genre for
-        # the same (media_id, media_type) so the moved row wins.
-        placeholders = ", ".join(str(g) for g in owning_ids)
-        await self.mass.music.database.execute(
-            f"UPDATE OR REPLACE {DB_TABLE_GENRE_MEDIA_ITEM_MAPPING} "
-            f"SET genre_id = :new_id "
-            f"WHERE genre_id IN ({placeholders}) AND LOWER(alias) = LOWER(:alias)",
-            {"new_id": new_genre_id, "alias": alias},
-        )
-
-        for owning_id in owning_ids:
-            owning = await self.get_library_item(owning_id)
-            # Defensive: a genre whose primary name equals the alias would hit
-            # the self-alias guard in remove_alias; skip rather than raise.
-            if create_safe_string(owning.name, True, True) == alias_norm:
-                continue
-            owning_aliases = list(owning.genre_aliases) if owning.genre_aliases else []
-            filtered = [
-                a for a in owning_aliases if create_safe_string(a, True, True) != alias_norm
-            ]
-            if len(filtered) != len(owning_aliases):
-                await self.mass.music.database.update(
-                    self.db_table,
-                    {"item_id": owning_id},
-                    {"genre_aliases": serialize_to_json(filtered)},
-                )
-
-        # Derived album/artist rows still point at the old source genres; rebuild
-        # them from the moved track mappings.
-        await self._propagate_genre_mappings_to_parents()
-
-        return await self.get_library_item(new_genre_id)
-
     async def _find_genre_ids_for_alias(self, alias_norm: str) -> list[int]:
         """
         Return ids of non-excluded genres that claim the given alias.
@@ -1490,128 +1664,6 @@ class GenreController(MediaControllerBase[Genre]):
             if any(create_safe_string(a.strip(), True, True) == alias_norm for a in aliases):
                 found.append(int(row["item_id"]))
         return found
-
-    async def merge_genres(self, genre_ids: list[str | int], target_genre_id: str | int) -> Genre:
-        """
-        Merge one or more genres into a target genre.
-
-        Transfers all aliases and media mappings from the source genres to the
-        target, then deletes the source genres. Aliases and mappings are
-        deduplicated so no duplicates are created on the target.
-
-        :param genre_ids: List of genre IDs to merge into the target.
-        :param target_genre_id: Database ID of the genre to merge into.
-        """
-        target_id = int(target_genre_id)
-        source_ids = [int(gid) for gid in genre_ids]
-
-        if target_id in source_ids:
-            msg = "Target genre cannot be in the list of genres to merge"
-            raise ValueError(msg)
-        if not source_ids:
-            msg = "No genre IDs provided to merge"
-            raise ValueError(msg)
-
-        target_genre = await self.get_library_item(target_id)
-        db = self.mass.music.database
-        gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
-
-        # Collect and merge aliases from all source genres into the target
-        all_new_aliases: list[str] = []
-        for source_id in source_ids:
-            source_genre = await self.get_library_item(source_id)
-            if source_genre.genre_aliases:
-                all_new_aliases.extend(source_genre.genre_aliases)
-
-        existing_aliases = list(target_genre.genre_aliases) if target_genre.genre_aliases else []
-        merged_aliases = self._dedup_aliases(existing_aliases, all_new_aliases)
-        await db.update(
-            self.db_table,
-            {"item_id": target_id},
-            {"genre_aliases": serialize_to_json(merged_aliases)},
-        )
-
-        # Transfer media mappings from source genres to target (deduplicated)
-        placeholders = ", ".join(str(sid) for sid in source_ids)
-        await db.execute(
-            f"INSERT OR IGNORE INTO {gm} (genre_id, media_id, media_type, alias) "
-            f"SELECT :target_id, media_id, media_type, alias FROM {gm} "
-            f"WHERE genre_id IN ({placeholders})",
-            {"target_id": target_id},
-        )
-
-        # Hard-delete source genres: merging is not a user exclusion so sources must
-        # not appear in the global exclusion list.
-        for source_id in source_ids:
-            await self.remove_item_from_library(source_id, exclude_globally=False)
-
-        # Rebuild derived album/artist rows against the merged track mappings.
-        await self._propagate_genre_mappings_to_parents()
-
-        updated = await self.get_library_item(target_id)
-        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, updated.uri, updated)
-        return updated
-
-    async def sync_media_item_genres(
-        self, media_type: MediaType, media_id: str | int, genre_names: set[str]
-    ) -> None:
-        """
-        Sync genre mappings for a media item.
-
-        Ensures genre records exist and updates genre-media mappings.
-        Removes mappings that are no longer present in the incoming genre_names set.
-
-        :param media_type: The type of media item being synced.
-        :param media_id: The database ID of the media item.
-        :param genre_names: Set of genre names from the provider.
-        """
-        media_id_int = int(media_id)
-        gm = DB_TABLE_GENRE_MEDIA_ITEM_MAPPING
-
-        # Build target set: (genre_id, alias_name) from incoming names.
-        # One alias can map to multiple genres (n:n).
-        target_mappings: dict[int, str] = {}
-        for name in genre_names:
-            normalized = self._normalize_genre_name(name)
-            if not normalized:
-                continue
-            genre_ids = await self._find_genres_for_alias(normalized[0])
-            for gid in genre_ids:
-                if gid not in target_mappings:
-                    target_mappings[gid] = normalized[0]
-
-        # Get current genre_ids from database
-        rows = await self.mass.music.database.get_rows_from_query(
-            f"SELECT genre_id FROM {gm} WHERE media_type = :media_type AND media_id = :media_id",
-            {"media_type": media_type.value, "media_id": media_id_int},
-            limit=0,
-        )
-        existing_genre_ids = {int(row["genre_id"]) for row in rows}
-
-        to_add = set(target_mappings.keys()) - existing_genre_ids
-        to_remove = existing_genre_ids - set(target_mappings.keys())
-
-        for genre_id in to_remove:
-            await self.mass.music.database.delete(
-                gm,
-                {
-                    "genre_id": genre_id,
-                    "media_id": media_id_int,
-                    "media_type": media_type.value,
-                },
-            )
-
-        for genre_id in to_add:
-            await self.mass.music.database.insert(
-                gm,
-                {
-                    "genre_id": genre_id,
-                    "media_id": media_id_int,
-                    "media_type": media_type.value,
-                    "alias": target_mappings[genre_id],
-                },
-                allow_replace=True,
-            )
 
     async def _build_genre_lookup(
         self,
@@ -1776,23 +1828,6 @@ class GenreController(MediaControllerBase[Genre]):
         """Trigger genre mapping scan when music sync tasks have completed."""
         self._queue_genre_mapping_scan_task()
 
-    def register_scheduled_scan_task(self) -> BackgroundTask:
-        """Register the recurring genre mapping scan task."""
-        utc_hour, utc_minute = local_clock_time_to_utc(4, 0)
-        desired_schedule = TaskSchedule.daily(hour=utc_hour, minute=utc_minute)
-        return self.mass.tasks.register_scheduled_task(
-            task_id=GENRE_SCAN_TASK_ID,
-            name="Scan genre mappings",
-            handler=self._scan_genre_mappings,
-            schedule=desired_schedule,
-            translation_key="scan_genre_mappings",
-            translation_owner=self.translation_owner,
-            metadata={
-                "task_domain": "genre_mapping_scan",
-            },
-            allow_retry=True,
-        )
-
     def _queue_genre_mapping_scan_task(self) -> BackgroundTask:
         """Queue the genre mapping scanner as a managed background task."""
         self.register_scheduled_scan_task()
@@ -1842,38 +1877,3 @@ class GenreController(MediaControllerBase[Genre]):
                 str(err),
                 exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
             )
-
-    async def scan_mappings(self) -> dict[str, Any]:
-        """
-        Manually trigger a genre mapping scan (admin only).
-
-        :return: Status information about the scan trigger.
-        """
-        if self._genre_scan_running:
-            return {
-                "status": "already_running",
-                "message": "Genre mapping scanner is already running",
-            }
-
-        self._queue_genre_mapping_scan_task()
-
-        return {
-            "status": "triggered",
-            "message": "Genre mapping scan triggered",
-            "last_scan": self._last_scan_time,
-        }
-
-    async def get_scanner_status(self) -> dict[str, Any]:
-        """
-        Get status of the genre mapping background scanner.
-
-        :return: Scanner status information.
-        """
-        return {
-            "running": self._genre_scan_running,
-            "last_scan_time": self._last_scan_time,
-            "last_scan_ago_seconds": (
-                int(time.time() - self._last_scan_time) if self._last_scan_time else None
-            ),
-            "last_scan_mapped": self._last_scan_mapped,
-        }

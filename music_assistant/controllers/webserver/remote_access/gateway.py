@@ -1,4 +1,5 @@
-"""Music Assistant WebRTC Gateway.
+"""
+Music Assistant WebRTC Gateway.
 
 This module provides WebRTC-based remote access to Music Assistant instances.
 It connects to a signaling server and handles incoming WebRTC connections,
@@ -55,7 +56,8 @@ class WebRTCSession:
 
 
 class WebRTCGateway:
-    """WebRTC Gateway for Music Assistant Remote Access.
+    """
+    WebRTC Gateway for Music Assistant Remote Access.
 
     This gateway:
     1. Connects to a signaling server
@@ -134,23 +136,6 @@ class WebRTCGateway:
         """Return whether the gateway is connected to the signaling server."""
         return self._is_connected
 
-    async def _get_fresh_ice_servers(self) -> list[dict[str, Any]]:
-        """Get fresh ICE servers for a new WebRTC session.
-
-        If an ice_servers_callback was provided, it will be called to get fresh
-        TURN credentials. Otherwise, returns the static ice_servers.
-
-        :return: List of ICE server configurations with fresh credentials.
-        """
-        if self._ice_servers_callback:
-            try:
-                fresh_servers = await self._ice_servers_callback()
-                if fresh_servers:
-                    return fresh_servers
-            except Exception:
-                self.logger.exception("Failed to fetch fresh ICE servers, using cached servers")
-        return self.ice_servers
-
     async def start(self) -> None:
         """Start the WebRTC Gateway."""
         if self._running:
@@ -192,6 +177,24 @@ class WebRTCGateway:
         self._signaling_ws = None
         self._connecting = False
 
+    async def _get_fresh_ice_servers(self) -> list[dict[str, Any]]:
+        """
+        Get fresh ICE servers for a new WebRTC session.
+
+        If an ice_servers_callback was provided, it will be called to get fresh
+        TURN credentials. Otherwise, returns the static ice_servers.
+
+        :return: List of ICE server configurations with fresh credentials.
+        """
+        if self._ice_servers_callback:
+            try:
+                fresh_servers = await self._ice_servers_callback()
+                if fresh_servers:
+                    return fresh_servers
+            except Exception:
+                self.logger.exception("Failed to fetch fresh ICE servers, using cached servers")
+        return self.ice_servers
+
     async def _run(self) -> None:
         """Run the main loop with reconnection logic."""
         self.logger.debug("WebRTC Gateway _run() loop starting")
@@ -228,7 +231,8 @@ class WebRTCGateway:
                 break
 
     async def _connect_to_signaling(self) -> bool:
-        """Connect to the signaling server.
+        """
+        Connect to the signaling server.
 
         :return: True if reconnection should be attempted, False if connection was replaced.
         """
@@ -288,7 +292,8 @@ class WebRTCGateway:
         return True
 
     async def _signaling_message_loop(self, ws: aiohttp.ClientWebSocketResponse) -> int | None:
-        """Process messages from the signaling WebSocket.
+        """
+        Process messages from the signaling WebSocket.
 
         :param ws: The WebSocket connection to process messages from.
         :return: Close code if connection was closed with a code, None otherwise.
@@ -335,7 +340,8 @@ class WebRTCGateway:
             )
 
     async def _handle_signaling_message(self, message: dict[str, Any]) -> None:
-        """Handle incoming signaling messages.
+        """
+        Handle incoming signaling messages.
 
         :param message: The signaling message.
         """
@@ -381,7 +387,8 @@ class WebRTCGateway:
                 await self._handle_ice_candidate(session_id, candidate_data)
 
     async def _create_session(self, session_id: str) -> None:
-        """Create a new WebRTC session.
+        """
+        Create a new WebRTC session.
 
         :param session_id: The session ID.
         """
@@ -423,7 +430,8 @@ class WebRTCGateway:
                 await self._close_session(session_id)
 
     async def _handle_offer(self, session_id: str, offer: dict[str, Any]) -> None:
-        """Handle incoming WebRTC offer.
+        """
+        Handle incoming WebRTC offer.
 
         :param session_id: The session ID.
         :param offer: The offer data.
@@ -492,7 +500,8 @@ class WebRTCGateway:
             await self._close_session(session_id)
 
     async def _handle_ice_candidate(self, session_id: str, candidate: dict[str, Any]) -> None:
-        """Handle incoming ICE candidate.
+        """
+        Handle incoming ICE candidate.
 
         :param session_id: The session ID.
         :param candidate: The ICE candidate data.
@@ -533,7 +542,8 @@ class WebRTCGateway:
             self.logger.exception("Failed to add ICE candidate for session %s", session_id)
 
     async def _setup_data_channel(self, session: WebRTCSession) -> None:
-        """Set up data channel and bridge to local WebSocket.
+        """
+        Set up data channel and bridge to local WebSocket.
 
         :param session: The WebRTC session.
         """
@@ -566,7 +576,8 @@ class WebRTCGateway:
             self.logger.exception("Failed to connect to local WebSocket")
 
     async def _forward_to_local(self, session: WebRTCSession) -> None:
-        """Forward messages from WebRTC DataChannel to local WebSocket.
+        """
+        Forward messages from WebRTC DataChannel to local WebSocket.
 
         :param session: The WebRTC session.
         """
@@ -595,7 +606,8 @@ class WebRTCGateway:
             self.logger.exception("Error forwarding to local WebSocket")
 
     async def _forward_from_local(self, session: WebRTCSession) -> None:
-        """Forward messages from local WebSocket to WebRTC DataChannel.
+        """
+        Forward messages from local WebSocket to WebRTC DataChannel.
 
         :param session: The WebRTC session.
         """
@@ -618,7 +630,8 @@ class WebRTCGateway:
     async def _handle_http_proxy_request(
         self, session: WebRTCSession, request_data: dict[str, Any]
     ) -> None:
-        """Handle HTTP proxy request from remote client.
+        """
+        Handle HTTP proxy request from remote client.
 
         :param session: The WebRTC session.
         :param request_data: The HTTP proxy request data.
@@ -671,7 +684,8 @@ class WebRTCGateway:
                 session.data_channel.send(json.dumps(error_response))
 
     async def _close_session(self, session_id: str) -> None:
-        """Close a WebRTC session.
+        """
+        Close a WebRTC session.
 
         :param session_id: The session ID.
         """
@@ -713,7 +727,8 @@ class WebRTCGateway:
         await session.peer_connection.close()
 
     async def _setup_sendspin_channel(self, session: WebRTCSession) -> None:
-        """Set up sendspin data channel and bridge to internal sendspin server.
+        """
+        Set up sendspin data channel and bridge to internal sendspin server.
 
         :param session: The WebRTC session.
         """
@@ -764,7 +779,8 @@ class WebRTCGateway:
                 await session.sendspin_ws.close()
 
     async def _forward_sendspin_to_local(self, session: WebRTCSession) -> None:
-        """Forward messages from sendspin DataChannel to internal sendspin server.
+        """
+        Forward messages from sendspin DataChannel to internal sendspin server.
 
         :param session: The WebRTC session.
         """
@@ -794,7 +810,8 @@ class WebRTCGateway:
             self.logger.exception("Error forwarding sendspin to local")
 
     def _try_extract_sendspin_client_id(self, session: WebRTCSession, message: str) -> None:
-        """Try to extract client_id from sendspin auth message and set on websocket client.
+        """
+        Try to extract client_id from sendspin auth message and set on websocket client.
 
         :param session: The WebRTC session.
         :param message: The first sendspin message (expected to be auth).
@@ -819,7 +836,8 @@ class WebRTCGateway:
             pass  # Not valid JSON, ignore
 
     async def _forward_sendspin_from_local(self, session: WebRTCSession) -> None:
-        """Forward messages from internal sendspin server to sendspin DataChannel.
+        """
+        Forward messages from internal sendspin server to sendspin DataChannel.
 
         :param session: The WebRTC session.
         """

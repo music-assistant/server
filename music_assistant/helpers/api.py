@@ -126,7 +126,8 @@ def _extract_name_error_symbol(error: NameError) -> str | None:
 
 
 def _get_type_hints_for_api_command(func: Callable[..., Any]) -> dict[str, Any]:
-    """Get type hints for API command handlers with fallback for model types.
+    """
+    Get type hints for API command handlers with fallback for model types.
 
     We need this because API command handlers are often declared in controllers with
     type-only imports under TYPE_CHECKING (to avoid runtime cycles), e.g.:
@@ -161,7 +162,8 @@ def _resolve_generic_type_args(
     config_value_type: Any,
     media_item_type: Any,
 ) -> tuple[list[Any], bool]:
-    """Resolve TypeVars and type aliases in generic type arguments.
+    """
+    Resolve TypeVars and type aliases in generic type arguments.
 
     :param args: Type arguments from a generic type (e.g., from list[T] or dict[K, V])
     :param func: The function being analyzed
@@ -225,7 +227,8 @@ def _resolve_typevar_in_union(
     args: tuple[Any, ...],
     i: int,
 ) -> Any:
-    """Resolve a TypeVar found in a Union to its concrete type.
+    """
+    Resolve a TypeVar found in a Union to its concrete type.
 
     :param arg: The TypeVar to resolve.
     :param func: The function being analyzed.
@@ -288,7 +291,8 @@ class APICommandHandler:
         required_role: str | None = None,
         alias: bool = False,
     ) -> APICommandHandler:
-        """Parse APICommandHandler by providing a function.
+        """
+        Parse APICommandHandler by providing a function.
 
         :param command: The command name/path.
         :param func: The function to handle the command.
@@ -364,7 +368,8 @@ class APICommandHandler:
 def api_command(
     command: str, authenticated: bool = True, required_role: str | None = None
 ) -> Callable[[_F], _F]:
-    """Decorate a function as API route/command.
+    """
+    Decorate a function as API route/command.
 
     :param command: The command name/path.
     :param authenticated: Whether authentication is required (default: True).
@@ -381,7 +386,8 @@ def api_command(
 
 
 def _is_type_hint(value_type: Any) -> bool:
-    """Check if a type annotation is or contains type[X].
+    """
+    Check if a type annotation is or contains type[X].
 
     Handles both ``type[X]`` and ``type[X] | None``.
     """

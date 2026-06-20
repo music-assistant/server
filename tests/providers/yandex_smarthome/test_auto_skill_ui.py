@@ -317,7 +317,8 @@ class TestBuildCloudPlusEntries:
         assert getattr(backend, "advanced", False) is True
 
     def test_manual_fallback_suppressed_before_cloud_register(self) -> None:
-        """Don't render manual fields with an invalid `yandex_smart_home:` Client ID.
+        """
+        Don't render manual fields with an invalid `yandex_smart_home:` Client ID.
 
         cloud_plus Client ID embeds the yaha-cloud instance UUID; before
         the user clicks Register there's no UUID, and emitting a

@@ -1,4 +1,5 @@
-"""FastMCP sub-server for debug / troubleshooting tools.
+"""
+FastMCP sub-server for debug / troubleshooting tools.
 
 Spec: ``specs/inprogress/0005-debug-namespace.md``.
 
@@ -19,6 +20,8 @@ from typing import TYPE_CHECKING, Any
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
+
+from music_assistant.helpers.datetime import now
 
 from ..debug.event_buffer import EventBuffer
 from ..debug.inspect_serializer import dump
@@ -64,7 +67,8 @@ _RELOAD_POLL_INTERVAL = 0.1
 
 
 def _safe_get(obj: Any, name: str, default: Any = None) -> Any:
-    """Like getattr(obj, name, default) but also swallows property exceptions.
+    """
+    Like getattr(obj, name, default) but also swallows property exceptions.
 
     The inspect tools claim to work on broken/unavailable entities — a raising
     @property on the inspected object must not crash the tool. The serializer
@@ -100,7 +104,8 @@ def _register_reload_tool(
         timeout=TIMEOUT_INTERACTIVE,
     )
     async def reload_provider(instance_id: str, ctx: Context | None = None) -> ReloadResult:
-        """Unload and reload a configured provider instance.
+        """
+        Unload and reload a configured provider instance.
 
         INTERRUPTS ACTIVE STREAMS on the affected provider. Confirmation is
         required by default. See also: debug_inspect_provider to verify the
@@ -175,7 +180,8 @@ def _register_logs_tool(sub: FastMCP, mass: MusicAssistant) -> None:
         since_seconds: int | None = None,
         name: str = "musicassistant.log",
     ) -> LogTailResult:
-        """Return the last N parsed lines of musicassistant.log with optional filters.
+        """
+        Return the last N parsed lines of musicassistant.log with optional filters.
 
         Bearer tokens and common secret patterns are redacted before lines are returned.
         See also: debug_recent_events for state transitions in the same window.
@@ -209,7 +215,8 @@ def build_debug_server(
     logs_enabled: bool = True,
     reload_lock: asyncio.Lock | None = None,
 ) -> FastMCP:
-    """Build the ``debug`` sub-server.
+    """
+    Build the ``debug`` sub-server.
 
     :param mass: MusicAssistant instance.
     :param require_confirmation: When True (default), ``debug_reload_provider``
@@ -246,7 +253,8 @@ def _register_inspect_tools(sub: FastMCP, mass: MusicAssistant) -> None:
         timeout=TIMEOUT_FAST,
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def inspect_player(player_id: str) -> PlayerInspect:
-        """Return the raw runtime state of a player, including state.* fields the brief omits.
+        """
+        Return the raw runtime state of a player, including state.* fields the brief omits.
 
         Works for unavailable and disabled players — that is the point.
         See also: debug_recent_events with id_filter=<player_id> for transitions,
@@ -287,7 +295,8 @@ def _register_inspect_tools(sub: FastMCP, mass: MusicAssistant) -> None:
         timeout=TIMEOUT_FAST,
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def inspect_queue(queue_id: str) -> QueueInspect:
-        """Return the raw runtime state of a PlayerQueue plus the current_item resolved.
+        """
+        Return the raw runtime state of a PlayerQueue plus the current_item resolved.
 
         See also: debug_inspect_player for the queue's owning player,
         debug_recent_events with id_filter=<queue_id> for transitions.
@@ -317,7 +326,8 @@ def _register_inspect_tools(sub: FastMCP, mass: MusicAssistant) -> None:
         timeout=TIMEOUT_FAST,
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def inspect_provider(instance_id: str) -> ProviderInspect:
-        """Return the raw runtime state of a configured provider plus its manifest.
+        """
+        Return the raw runtime state of a configured provider plus its manifest.
 
         See also: debug_inspect_provider_config for masked configuration,
         debug_list_webserver_routes for the routes this provider registered,
@@ -361,7 +371,8 @@ def _register_events_tools(
         id_filter: str | None = None,
         since_seconds: int | None = None,
     ) -> EventSnapshot:
-        """Return the most recent events captured into the in-memory ring buffer.
+        """
+        Return the most recent events captured into the in-memory ring buffer.
 
         See also: debug_tail_log for the textual context around an event timestamp.
 
@@ -392,7 +403,8 @@ def _register_events_tools(
         timeout=TIMEOUT_FAST,
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def event_buffer_stats() -> EventBufferStats:
-        """Return introspection counters for the event ring buffer.
+        """
+        Return introspection counters for the event ring buffer.
 
         Use this to distinguish "no events match" from "events were dropped
         before you asked". ``dropped`` is non-zero whenever the buffer overflowed.
@@ -416,7 +428,8 @@ def _register_providers_tools(sub: FastMCP, mass: MusicAssistant) -> None:
         timeout=TIMEOUT_FAST,
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def list_providers() -> ProviderList:
-        """Roll-up of every configured provider.
+        """
+        Roll-up of every configured provider.
 
         See also: debug_inspect_provider for the full runtime dump,
         debug_inspect_provider_config for the masked configuration,
@@ -445,7 +458,8 @@ def _register_providers_tools(sub: FastMCP, mass: MusicAssistant) -> None:
         timeout=TIMEOUT_FAST,
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def inspect_provider_config(instance_id: str) -> ProviderConfigDump:
-        """Dump a provider's stored ConfigEntry values.
+        """
+        Dump a provider's stored ConfigEntry values.
 
         SECURE_STRING values are replaced by MA's SECURE_STRING_SUBSTITUTE
         sentinel via ``__post_serialize__`` in ``music_assistant_models`` —
@@ -483,7 +497,8 @@ def _register_providers_tools(sub: FastMCP, mass: MusicAssistant) -> None:
         timeout=TIMEOUT_FAST,
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def list_webserver_routes() -> RouteList:
-        """Enumerate the HTTP routes registered on MA's webserver.
+        """
+        Enumerate the HTTP routes registered on MA's webserver.
 
         Includes both dynamic (provider-registered) and static routes.
         Reaches into ``webserver._server.app.router`` — single documented
@@ -513,7 +528,8 @@ def _register_providers_tools(sub: FastMCP, mass: MusicAssistant) -> None:
         timeout=TIMEOUT_FAST,
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def list_package_versions() -> PackageVersions:
-        """Return installed versions of the key packages backing the MCP provider and MA.
+        """
+        Return installed versions of the key packages backing the MCP provider and MA.
 
         Useful for upstream bug reports.
         """
@@ -535,7 +551,8 @@ def _register_health_tool(
         timeout=TIMEOUT_FAST,
     )  # type: ignore[untyped-decorator, unused-ignore]
     async def health_summary() -> HealthSummary:
-        """Entry-point triage tool — one read returns a roll-up of provider state, queue counts, event rate, and log error count.
+        """
+        Entry-point triage tool — one read returns a roll-up of provider state, queue counts, event rate, and log error count.
 
         If a section flags errors, drill into: debug_inspect_provider for provider
         errors, debug_inspect_queue for queue errors, debug_tail_log for the
@@ -585,7 +602,7 @@ def _register_health_tool(
                 subscribed_at = datetime.fromisoformat(stats.subscribed_since)
                 elapsed_min = max(
                     1.0 / 60,
-                    (datetime.now().astimezone() - subscribed_at).total_seconds() / 60.0,
+                    (now() - subscribed_at).total_seconds() / 60.0,
                 )
                 events_per_min = {
                     et: round(count / elapsed_min, 2) for et, count in stats.by_type.items()

@@ -154,7 +154,8 @@ async def test_protocol_prefixed_reset_to_default_sticks(mass: MusicAssistant) -
 
 
 async def test_stale_prefixed_copy_does_not_shadow_default(mass: MusicAssistant) -> None:
-    """A pre-existing stale prefixed copy on the parent must not shadow the default.
+    """
+    A pre-existing stale prefixed copy on the parent must not shadow the default.
 
     Covers installs that already accumulated a redundant prefixed value before the
     fix: the protocol player holds the default (no stored value), so the config must

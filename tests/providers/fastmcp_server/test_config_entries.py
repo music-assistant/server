@@ -66,14 +66,14 @@ def test_categories_match_pr2889_ux(mock_mass: MagicMock) -> None:
     # ``Generic`` comes from the Connect Wizard ACTION entry, which mirrors the
     # Spotify provider's ``CONF_ACTION_AUTH`` button (no explicit category).
     assert categories == {
-        "Server",
-        "Query Permissions",
-        "Control Permissions",
-        "Edit Permissions",
-        "Delete Permissions",
-        "MCP Resources",
-        "Debug",
-        "Config",
+        "server",
+        "query_permissions",
+        "control_permissions",
+        "edit_permissions",
+        "delete_permissions",
+        "mcp_resources",
+        "debug",
+        "mcp_config",
         "generic",
     }
 
@@ -89,7 +89,8 @@ def test_info_label_includes_base_url(mock_mass: MagicMock) -> None:
 def test_info_label_normalises_mount_path_without_leading_slash(
     mock_mass: MagicMock,
 ) -> None:
-    """A user-typed ``mcp/v1`` (no leading slash) must still render a valid URL.
+    """
+    A user-typed ``mcp/v1`` (no leading slash) must still render a valid URL.
 
     Regression for upstream PR #3858 Copilot comment: the runtime normalises
     the mount path, but the info label did not — so the displayed endpoint
@@ -120,7 +121,7 @@ def test_debug_entries_present_with_off_defaults(mock_mass: MagicMock) -> None:
     ):
         assert key in entries, f"missing {key}"
         assert entries[key].default_value is False, f"{key} must be off by default"
-        assert entries[key].category == "Debug"
+        assert entries[key].category == "debug"
 
     cap = entries[CONF_DEBUG_EVENT_BUFFER_CAPACITY]
     assert cap.default_value == 500
@@ -139,4 +140,4 @@ def test_config_entries_present_with_off_defaults(mock_mass: MagicMock) -> None:
     ):
         assert key in entries, f"missing {key}"
         assert entries[key].default_value is False, f"{key} must be off by default"
-        assert entries[key].category == "Config"
+        assert entries[key].category == "mcp_config"

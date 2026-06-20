@@ -38,7 +38,8 @@ SCALAR_PROMPT_PAIRS: dict[str, tuple[str, str]] = {
 
 
 def compute_prompt_embeddings(model: object, prompts: dict[str, tuple[str, str]]) -> np.ndarray:
-    """Run a CLAP model's text encoder over a SCALAR_PROMPT_PAIRS-shaped mapping.
+    """
+    Run a CLAP model's text encoder over a SCALAR_PROMPT_PAIRS-shaped mapping.
 
     :param model: An object exposing ``get_text_embeddings(list[str]) -> torch.Tensor``.
     :param prompts: Mapping of scalar name -> (positive, negative) prompt pair.
@@ -54,7 +55,8 @@ def compute_prompt_embeddings(model: object, prompts: dict[str, tuple[str, str]]
 def save_precomputed_prompt_embeddings(
     path: Path, embeddings: np.ndarray, prompts_hash: str
 ) -> None:
-    """Persist the (N, D) prompt-embedding matrix and its prompts-hash to .npz.
+    """
+    Persist the (N, D) prompt-embedding matrix and its prompts-hash to .npz.
 
     :param path: Destination .npz path; parent must exist.
     :param embeddings: float32 array of shape (N_prompts, embedding_dim).
@@ -69,7 +71,8 @@ def save_precomputed_prompt_embeddings(
 
 
 def load_precomputed_prompt_embeddings(path: Path) -> tuple[np.ndarray, str]:
-    """Load (embeddings, prompts_hash) from an .npz written by save_precomputed_prompt_embeddings.
+    """
+    Load (embeddings, prompts_hash) from an .npz written by save_precomputed_prompt_embeddings.
 
     :param path: Source .npz path.
     """
@@ -82,7 +85,8 @@ def load_precomputed_prompt_embeddings(path: Path) -> tuple[np.ndarray, str]:
 
 
 def hash_scalar_prompt_pairs(prompts: dict[str, tuple[str, str]]) -> str:
-    """Stable SHA-256 hex digest of a SCALAR_PROMPT_PAIRS-shaped mapping.
+    """
+    Stable SHA-256 hex digest of a SCALAR_PROMPT_PAIRS-shaped mapping.
 
     :param prompts: Mapping of scalar name -> (positive, negative) prompt pair.
     """

@@ -204,7 +204,8 @@ class TestIdentifiersMatch:
         assert controller._identifiers_match(player_a, player_b) is False
 
     def test_mac_address_locally_administered_bit_match(self, mock_mass: MagicMock) -> None:
-        """Test that MAC addresses differing only in locally-administered bit match.
+        """
+        Test that MAC addresses differing only in locally-administered bit match.
 
         Some protocols (like AirPlay) report a MAC with the locally-administered
         bit set (bit 1 of first octet), while other protocols report the real
@@ -236,7 +237,8 @@ class TestIdentifiersMatch:
     def test_mac_address_locally_administered_bit_different_devices_no_match(
         self, mock_mass: MagicMock
     ) -> None:
-        """Test that different devices with locally-administered MACs don't match.
+        """
+        Test that different devices with locally-administered MACs don't match.
 
         Only the locally-administered bit should be ignored, not other differences.
         """
@@ -313,7 +315,8 @@ class TestIdentifiersMatch:
         assert controller._identifiers_match(player_a, player_b) is False
 
     def test_cast_uuid_match(self, mock_mass: MagicMock) -> None:
-        """Test that CAST_UUID identifiers match for cross-protocol linking.
+        """
+        Test that CAST_UUID identifiers match for cross-protocol linking.
 
         When a Chromecast device has no valid MAC (non-Google devices like SEI Robotics),
         the CAST_UUID identifier allows matching the Chromecast player with its
@@ -372,7 +375,8 @@ class TestIdentifiersMatch:
         assert controller._identifiers_match(player_a, player_b) is False
 
     def test_airplay_id_match(self, mock_mass: MagicMock) -> None:
-        """Test that AIRPLAY_ID identifiers match for cross-protocol linking.
+        """
+        Test that AIRPLAY_ID identifiers match for cross-protocol linking.
 
         When an AirPlay device's MAC has locally-administered bit differences,
         AIRPLAY_ID provides a reliable secondary match path between the AirPlay
@@ -487,7 +491,8 @@ class TestIdentifiersMatch:
         assert controller._identifiers_match(player_a, player_b) is True
 
     def test_ip_fallback_protocol_players_with_real_macs(self, mock_mass: MagicMock) -> None:
-        """Test that IP matches protocol players even when both have real MACs.
+        """
+        Test that IP matches protocol players even when both have real MACs.
 
         Some devices (e.g., Yamaha MusicCast) report different valid globally-unique
         MACs per protocol (DLNA vs AirPlay differ by 1 in the last octet).
@@ -704,7 +709,8 @@ class TestGetDeviceKeyFromPlayers:
     """Tests for device key generation."""
 
     def test_device_key_from_mac(self, mock_mass: MagicMock) -> None:
-        """Test device key generation from MAC address.
+        """
+        Test device key generation from MAC address.
 
         Note: Device keys are normalized to clear the locally-administered bit
         (bit 1 of first octet) to ensure consistent keys across protocols.
@@ -726,7 +732,8 @@ class TestGetDeviceKeyFromPlayers:
         assert device_key == "00bbccddeeff"
 
     def test_device_key_normalizes_locally_administered_mac(self, mock_mass: MagicMock) -> None:
-        """Test that device key normalizes locally-administered MACs.
+        """
+        Test that device key normalizes locally-administered MACs.
 
         A device with hardware MAC 54:78:C9:E6:0D:A0 and AirPlay MAC 56:78:C9:E6:0D:A0
         should generate the same device key, allowing them to be merged into
@@ -2289,7 +2296,8 @@ class TestProtocolSwitchingDuringPlayback:
         assert output_protocol.output_protocol_id == "airplay_sonos"
 
     async def test_no_restart_from_handle_set_members(self, mock_mass: MagicMock) -> None:
-        """Test that _handle_set_members does NOT restart playback.
+        """
+        Test that _handle_set_members does NOT restart playback.
 
         Protocol switching and playback restarts are handled in _forward_protocol_set_members,
         not in _handle_set_members. This test verifies that _handle_set_members doesn't
@@ -2393,7 +2401,8 @@ class TestNativeProtocolPlayerGrouping:
     """Tests for grouping with native protocol players (e.g., native AirPlay like Apple TV)."""
 
     def test_native_airplay_groups_with_protocol_linked_player(self, mock_mass: MagicMock) -> None:
-        """Test grouping a native AirPlay player (Apple TV) with a protocol-linked player (Sonos).
+        """
+        Test grouping a native AirPlay player (Apple TV) with a protocol-linked player (Sonos).
 
         This tests the scenario where:
         - Apple TV is a native AirPlay PLAYER (not PROTOCOL type)
@@ -2499,7 +2508,8 @@ class TestFinalGroupMembersTranslation:
     """Tests for __final_group_members translation of protocol player IDs."""
 
     def test_final_group_members_translates_protocol_ids(self, mock_mass: MagicMock) -> None:
-        """Test that __final_group_members translates protocol player IDs to visible IDs.
+        """
+        Test that __final_group_members translates protocol player IDs to visible IDs.
 
         When a native AirPlay player (Apple TV) has protocol players in its group_members,
         the final state should show the visible parent player IDs instead.
@@ -2609,7 +2619,8 @@ class TestFinalSyncedToWithNativeProtocolParent:
     """Tests for __final_synced_to when sync parent is a native protocol player."""
 
     def test_synced_to_native_airplay_player(self, mock_mass: MagicMock) -> None:
-        """Test that synced_to correctly shows native AirPlay player as parent.
+        """
+        Test that synced_to correctly shows native AirPlay player as parent.
 
         When a Sonos player's AirPlay protocol player is synced to a native AirPlay
         player (Apple TV), the Sonos's final synced_to should show the Apple TV.
@@ -2678,7 +2689,8 @@ class TestUngroupTranslation:
     """Tests for translation when ungrouping from native protocol players."""
 
     def test_ungroup_translates_visible_to_protocol_id(self, mock_mass: MagicMock) -> None:
-        """Test that ungrouping correctly translates visible ID to protocol ID.
+        """
+        Test that ungrouping correctly translates visible ID to protocol ID.
 
         When ungrouping Sonos from Apple TV, the visible Sonos ID should be
         translated to its AirPlay protocol player ID for the removal.
@@ -2747,7 +2759,8 @@ class TestUngroupTranslation:
 
 
 class TestNativeProtocolDomainPlayerGrouping:
-    """Tests for grouping with native protocol-domain players.
+    """
+    Tests for grouping with native protocol-domain players.
 
     This tests the scenario where a player's native provider domain IS the protocol
     domain (e.g., a sendspin web player with PlayerType.PLAYER and provider.domain="sendspin"),
@@ -2755,7 +2768,8 @@ class TestNativeProtocolDomainPlayerGrouping:
     """
 
     def test_native_protocol_player_groups_via_active_protocol(self, mock_mass: MagicMock) -> None:
-        """Test grouping a native protocol player via the parent's active protocol.
+        """
+        Test grouping a native protocol player via the parent's active protocol.
 
         Scenario: Kantoor (has sendspin linked protocol, active) groups with
         Web player (native sendspin PlayerType.PLAYER).
@@ -2830,7 +2844,8 @@ class TestNativeProtocolDomainPlayerGrouping:
         assert protocol_player == sendspin_kantoor
 
     def test_native_protocol_player_groups_via_common_protocol(self, mock_mass: MagicMock) -> None:
-        """Test grouping a native protocol player via common protocol search (Priority 4).
+        """
+        Test grouping a native protocol player via common protocol search (Priority 4).
 
         Same scenario but without a pre-set active protocol — the common protocol
         search should find sendspin as the shared protocol.
@@ -2905,7 +2920,8 @@ class TestNativeProtocolDomainPlayerGrouping:
         assert protocol_player == sendspin_kantoor
 
     def test_ungroup_native_protocol_player(self, mock_mass: MagicMock) -> None:
-        """Test ungrouping a native protocol player from a protocol-linked parent.
+        """
+        Test ungrouping a native protocol player from a protocol-linked parent.
 
         When ungrouping a native sendspin web player from Kantoor's sendspin group,
         the web player's own player_id should be used for removal.
@@ -2975,7 +2991,8 @@ class TestNativeProtocolDomainPlayerGrouping:
     def test_filter_protocol_members_accepts_native_protocol_player(
         self, mock_mass: MagicMock
     ) -> None:
-        """Test that _filter_protocol_members accepts native protocol-domain players.
+        """
+        Test that _filter_protocol_members accepts native protocol-domain players.
 
         A PlayerType.PLAYER with matching provider domain should pass through the
         filter, not just PlayerType.PROTOCOL players.
@@ -3030,7 +3047,8 @@ class TestNativeProtocolDomainPlayerGrouping:
         assert len(filtered) == 2
 
     def test_sendspin_visualizer_groups_via_common_protocol(self, mock_mass: MagicMock) -> None:
-        """Test grouping a sendspin visualizer (e.g. Hue light) with a sendspin-bridged parent.
+        """
+        Test grouping a sendspin visualizer (e.g. Hue light) with a sendspin-bridged parent.
 
         Visualizer players have no PLAY_MEDIA so they are not native players, but the
         Sendspin provider advertises a self-referential sendspin output protocol on them
@@ -3154,7 +3172,8 @@ class TestEnrichPlayerIdentifiers:
     async def test_locally_administered_bit_difference_replaces_mac(
         self, mock_mass: MagicMock
     ) -> None:
-        """Test that ARP MAC replaces reported MAC when only the locally-administered bit differs.
+        """
+        Test that ARP MAC replaces reported MAC when only the locally-administered bit differs.
 
         Example: AirPlay reports 56:78:C9:E6:0D:A0, ARP resolves 54:78:C9:E6:0D:A0.
         These differ only in bit 1 of the first octet (locally-administered bit).
@@ -3183,7 +3202,8 @@ class TestEnrichPlayerIdentifiers:
 
     @pytest.mark.asyncio
     async def test_completely_different_mac_replaced_by_arp(self, mock_mass: MagicMock) -> None:
-        """Test that ARP result always replaces a locally-administered MAC.
+        """
+        Test that ARP result always replaces a locally-administered MAC.
 
         Even when the ARP MAC is completely different from the reported MAC
         (e.g., Apple devices with random private MACs), the ARP result is used
@@ -3343,7 +3363,8 @@ def _create_universal_player(
 
 
 class TestProtocolToUniversalIdentifierFallback:
-    """Tests for Fix 1: identifier-based fallback matching for Universal Players.
+    """
+    Tests for Fix 1: identifier-based fallback matching for Universal Players.
 
     When a new protocol player (like Sendspin bridge) registers and its ID isn't
     in the Universal Player's stored _protocol_player_ids list, the system should
@@ -3501,7 +3522,8 @@ class TestProtocolToUniversalIdentifierFallback:
 
 
 class TestCachedParentIdentifierCopying:
-    """Tests for Fix 2: identifier copying when restoring cached parent links.
+    """
+    Tests for Fix 2: identifier copying when restoring cached parent links.
 
     When a protocol player reconnects and links to a Universal Player via the
     cached_parent_id fast path, identifiers must be copied to the Universal Player.
@@ -3561,7 +3583,8 @@ class TestCachedParentIdentifierCopying:
         )
 
     def test_sendspin_matches_after_identifier_copy(self, mock_mass: MagicMock) -> None:
-        """Test the full scenario: AirPlay restores, copies identifiers, Sendspin matches.
+        """
+        Test the full scenario: AirPlay restores, copies identifiers, Sendspin matches.
 
         AirPlay restores via cache, copies identifiers to the Universal Player,
         then the Sendspin bridge matches the Universal Player by MAC.
@@ -3680,7 +3703,8 @@ class TestCachedParentIdentifierCopying:
 
 
 class TestEnrichAndMatchIntegration:
-    """Integration tests for the interaction between MAC enrichment and identifier matching.
+    """
+    Integration tests for the interaction between MAC enrichment and identifier matching.
 
     These tests verify that Fix 3 (preserving original MAC when ARP resolves a
     completely different address) works correctly with the identifier matching system.
@@ -3688,7 +3712,8 @@ class TestEnrichAndMatchIntegration:
 
     @pytest.mark.asyncio
     async def test_apple_device_sendspin_matches_via_airplay_id(self, mock_mass: MagicMock) -> None:
-        """Test the full Apple device scenario end-to-end.
+        """
+        Test the full Apple device scenario end-to-end.
 
         1. AirPlay player registers with private MAC 62:E5:97:45:93:D3
         2. ARP resolves to hardware MAC C0:95:6D:51:34:E0 (always used)
@@ -3739,7 +3764,8 @@ class TestEnrichAndMatchIntegration:
 
     @pytest.mark.asyncio
     async def test_wiim_device_mac_replaced_still_matches(self, mock_mass: MagicMock) -> None:
-        """Test that WiiM devices match after ARP enrichment.
+        """
+        Test that WiiM devices match after ARP enrichment.
 
         WiiM AirPlay reports 56:78:C9:E6:0D:A0 (locally administered), ARP resolves to
         54:78:C9:E6:0D:A0 (hardware). The MAC is always replaced with the ARP result.
@@ -3788,7 +3814,8 @@ class TestEnrichAndMatchIntegration:
 
 
 class TestDuplicateProtocolPrevention:
-    """Tests for preventing duplicate protocol domain linking.
+    """
+    Tests for preventing duplicate protocol domain linking.
 
     When multiple instances of the same protocol (e.g., two AirPlay or ShairPort-Sync
     instances, or multi-zone Bluesound players) run on the same host, they share the
@@ -4351,7 +4378,8 @@ class TestUniversalPlayerMerging:
     """Tests for merging universal players when identifiers overlap."""
 
     def test_merge_universal_players_on_identifier_copy(self, mock_mass: MagicMock) -> None:
-        """Test that two universal players merge when they share a MAC after identifier copy.
+        """
+        Test that two universal players merge when they share a MAC after identifier copy.
 
         Simulates the Edifier scenario: DLNA creates a UUID-based universal player,
         AirPlay creates a MAC-based universal player. When ARP enrichment adds the
@@ -4792,7 +4820,8 @@ class TestUniversalPlayerMerging:
         assert config_store["players/dlna_cached/values/protocol_parent_id"] == "up_keep"
 
     def test_no_merge_same_domain_protocols_on_same_ip(self, mock_mass: MagicMock) -> None:
-        """Test that UPs with same-domain protocols on the same IP are NOT merged.
+        """
+        Test that UPs with same-domain protocols on the same IP are NOT merged.
 
         Scenario: 3 squeezelite instances on the same VM (same IP, different real MACs).
         Each gets its own universal player. The merge check must NOT merge them,
@@ -4976,7 +5005,8 @@ class TestUniversalPlayerReplacement:
 
 
 class TestEndToEndDuplicateProtocol:
-    """End-to-end integration tests for duplicate protocol → separate universal player flow.
+    """
+    End-to-end integration tests for duplicate protocol → separate universal player flow.
 
     These tests exercise the full async flow through _delayed_protocol_evaluation,
     ensure_universal_player_for_protocols, and _create_separate_universal_player,
@@ -4988,7 +5018,8 @@ class TestEndToEndDuplicateProtocol:
     def _setup_e2e_controller(
         mock_mass: MagicMock,
     ) -> tuple[PlayerController, UniversalPlayerProvider]:
-        """Set up a PlayerController and UniversalPlayerProvider wired for E2E testing.
+        """
+        Set up a PlayerController and UniversalPlayerProvider wired for E2E testing.
 
         The mock_mass is configured so that:
         - get_providers(ProviderType.PLAYER) returns the universal provider
@@ -5024,7 +5055,8 @@ class TestEndToEndDuplicateProtocol:
     async def test_path_a_delayed_eval_creates_separate_universal_for_duplicate(
         self, mock_mass: MagicMock
     ) -> None:
-        """Path A: _delayed_protocol_evaluation creates separate universal player for duplicate.
+        """
+        Path A: _delayed_protocol_evaluation creates separate universal player for duplicate.
 
         Scenario: Two AirPlay instances register on the same host.
         1. First AirPlay links to existing universal player
@@ -5098,7 +5130,8 @@ class TestEndToEndDuplicateProtocol:
     async def test_path_a_delayed_eval_joins_existing_universal_different_domain(
         self, mock_mass: MagicMock
     ) -> None:
-        """Path A: _delayed_protocol_evaluation correctly joins when domain is different.
+        """
+        Path A: _delayed_protocol_evaluation correctly joins when domain is different.
 
         Scenario: AirPlay universal player exists, DLNA arrives via delayed eval.
         DLNA should successfully join the existing universal player (different domain).
@@ -5157,7 +5190,8 @@ class TestEndToEndDuplicateProtocol:
     async def test_path_b_ensure_universal_separates_duplicate_domain(
         self, mock_mass: MagicMock
     ) -> None:
-        """Path B: ensure_universal_player_for_protocols separates can_join vs rejected.
+        """
+        Path B: ensure_universal_player_for_protocols separates can_join vs rejected.
 
         Scenario: Two AirPlay players arrive simultaneously for delayed eval.
         Both are unlinked, both pass to _create_or_update_universal_player.
@@ -5222,7 +5256,8 @@ class TestEndToEndDuplicateProtocol:
     async def test_path_b_first_creates_then_second_gets_separate(
         self, mock_mass: MagicMock
     ) -> None:
-        """Path B: First protocol player creates universal, second gets separate.
+        """
+        Path B: First protocol player creates universal, second gets separate.
 
         Scenario: AirPlay and DLNA create a universal player together.
         Then a second AirPlay arrives and gets its own separate universal player.
@@ -5292,7 +5327,8 @@ class TestEndToEndDuplicateProtocol:
     async def test_path_c_sendspin_duplicate_gets_separate_universal(
         self, mock_mass: MagicMock
     ) -> None:
-        """Path C: Two Sendspin bridge instances on same host get separate universal players.
+        """
+        Path C: Two Sendspin bridge instances on same host get separate universal players.
 
         Sendspin bridges match via CAST_UUID / AIRPLAY_ID, not MAC. Two bridges
         on the same host share the same MAC (from ARP) but have different CAST_UUIDs.
@@ -5363,7 +5399,8 @@ class TestEndToEndDuplicateProtocol:
     async def test_three_airplay_instances_get_separate_universals(
         self, mock_mass: MagicMock
     ) -> None:
-        """Test that three AirPlay instances each get their own universal player.
+        """
+        Test that three AirPlay instances each get their own universal player.
 
         Exercises the flow when there are 3+ instances of the same protocol.
         """
@@ -5401,7 +5438,8 @@ class TestEndToEndDuplicateProtocol:
 
     @pytest.mark.asyncio
     async def test_same_domain_same_ip_get_separate_universals(self, mock_mass: MagicMock) -> None:
-        """Test that multiple instances of the same protocol on the same host stay separate.
+        """
+        Test that multiple instances of the same protocol on the same host stay separate.
 
         Scenario: 3 shairport-sync AirPlay instances on the same Raspberry Pi.
         All share the same IP and have locally-administered MACs.
@@ -5438,7 +5476,8 @@ class TestEndToEndDuplicateProtocol:
 
     @pytest.mark.asyncio
     async def test_same_domain_same_mac_get_separate_universals(self, mock_mass: MagicMock) -> None:
-        """Test that two snapcast instances with the same ARP-resolved MAC stay separate.
+        """
+        Test that two snapcast instances with the same ARP-resolved MAC stay separate.
 
         Scenario: Two snapcast clients on the same Mac mini. Both have distinct
         locally-administered MACs but ARP resolves both to the same real hardware MAC.
@@ -5491,7 +5530,8 @@ class TestEndToEndDuplicateProtocol:
     async def test_mixed_protocols_plus_duplicate_creates_correct_topology(
         self, mock_mass: MagicMock
     ) -> None:
-        """Test that mixed protocols + duplicate create correct player topology.
+        """
+        Test that mixed protocols + duplicate create correct player topology.
 
         Scenario:
         - Device has AirPlay, DLNA, and Chromecast protocols
@@ -5571,7 +5611,8 @@ class TestEndToEndDuplicateProtocol:
 
 
 class TestSiblingProtocolMatching:
-    """Tests for sibling protocol matching via _match_via_linked_protocols.
+    """
+    Tests for sibling protocol matching via _match_via_linked_protocols.
 
     When a native player (e.g., HEOS) doesn't have its own MAC/serial identifiers
     but has protocol players (e.g., AirPlay) already linked, a new protocol player
@@ -5580,7 +5621,8 @@ class TestSiblingProtocolMatching:
     """
 
     def test_sendspin_matches_heos_via_airplay_sibling(self, mock_mass: MagicMock) -> None:
-        """Test Sendspin links to HEOS through AirPlay's shared AIRPLAY_ID.
+        """
+        Test Sendspin links to HEOS through AirPlay's shared AIRPLAY_ID.
 
         HEOS has no MAC/UUID identifiers. AirPlay is already linked to HEOS.
         Sendspin has AIRPLAY_ID matching AirPlay. Sibling matching should link
@@ -5796,7 +5838,8 @@ class TestSiblingProtocolMatching:
 
 
 class TestDelayedEvalRetry:
-    """Tests for the retry of _try_link_to_existing_player in _delayed_protocol_evaluation.
+    """
+    Tests for the retry of _try_link_to_existing_player in _delayed_protocol_evaluation.
 
     When a protocol player's delayed evaluation fires, native players may have
     registered during the delay period. The retry ensures they are checked before
@@ -5807,7 +5850,8 @@ class TestDelayedEvalRetry:
     async def test_delayed_eval_links_to_native_registered_during_delay(
         self, mock_mass: MagicMock
     ) -> None:
-        """Test delayed eval links to a native player that registered during the delay.
+        """
+        Test delayed eval links to a native player that registered during the delay.
 
         Scenario: Sendspin registers before HEOS. The delayed evaluation fires
         after HEOS has registered and has AirPlay linked. The retry should find
@@ -5900,14 +5944,16 @@ class TestDelayedEvalRetry:
 
 
 class TestNativePlayerSiblingLinking:
-    """Tests for the second pass in _try_link_protocols_to_native using sibling matching.
+    """
+    Tests for the second pass in _try_link_protocols_to_native using sibling matching.
 
     After a native player registers and recovers cached protocol links, the second
     pass should match remaining unlinked protocol players via sibling identifiers.
     """
 
     def test_native_registration_links_sendspin_via_sibling(self, mock_mass: MagicMock) -> None:
-        """Test HEOS registration links Sendspin via AirPlay sibling identifiers.
+        """
+        Test HEOS registration links Sendspin via AirPlay sibling identifiers.
 
         Scenario: Sendspin registered before HEOS. When HEOS registers, the first
         pass can't match Sendspin (no direct identifiers). After recovering cached
@@ -6585,7 +6631,8 @@ class TestUniversalPlayerRestoreOrphanCleanup:
     async def test_disabled_parent_reparents_and_disables_orphaned_protocols(
         self, mock_mass: MagicMock
     ) -> None:
-        """Self-heal: stale UP whose protocols belong to a disabled native parent.
+        """
+        Self-heal: stale UP whose protocols belong to a disabled native parent.
 
         Restoring such a UP should delete the wrapper, restore each protocol's
         parent_id back to the rightful (disabled) native parent, and cascade-disable
@@ -6932,7 +6979,8 @@ class TestUniversalPlayerCurrentMedia:
     """Tests for current_media resolution while an output protocol is active."""
 
     def test_current_media_surfaces_active_output_protocol(self, mock_mass: MagicMock) -> None:
-        """While outputting via a protocol player, surface that player's raw current_media.
+        """
+        While outputting via a protocol player, surface that player's raw current_media.
 
         A sync group mirrors its leader's raw current_media to resolve the active queue
         item. When the leader is a universal player outputting via AirPlay, returning None

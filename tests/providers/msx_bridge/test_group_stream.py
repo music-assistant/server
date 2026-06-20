@@ -33,7 +33,8 @@ async def test_subscribe_receives_all_chunks() -> None:
 
 
 async def test_late_joiner_after_finish_does_not_hang() -> None:
-    """subscribe() called after producer has already finished must not block indefinitely.
+    """
+    subscribe() called after producer has already finished must not block indefinitely.
 
     Regression test for: https://github.com/music-assistant/server/pull/3123#discussion_r2842897555
     """

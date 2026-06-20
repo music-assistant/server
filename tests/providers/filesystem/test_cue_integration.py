@@ -777,7 +777,8 @@ class TestGetTrackCueBranch:
 
 
 class TestClassifyScanItemCue:
-    """Sync-walker classification for CUE files.
+    """
+    Sync-walker classification for CUE files.
 
     Guards the edit-resync path: a CUE's previous checksum lives under synthetic
     per-track ids in provider_mappings, never under the CUE path itself. The

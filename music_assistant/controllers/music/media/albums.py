@@ -124,7 +124,8 @@ class AlbumsController(MediaControllerBase[Album]):
         album_types: list[AlbumType] | None = None,
         **kwargs: Any,
     ) -> list[Album]:
-        """Get in-database albums.
+        """
+        Get in-database albums.
 
         :param favorite: Filter by favorite status.
         :param search: Filter by search query.
@@ -420,6 +421,102 @@ class AlbumsController(MediaControllerBase[Album]):
         album = self.album_from_item_mapping(item)
         return await self.add_item_to_library(album)
 
+    async def radio_mode_base_tracks(
+        self,
+        item: Album,
+        preferred_provider_instances: list[str] | None = None,
+    ) -> list[Track]:
+        """
+        Get the list of base tracks from the controller used to calculate the dynamic radio.
+
+        :param item: The Album to get base tracks for.
+        :param preferred_provider_instances: List of preferred provider instance IDs to use.
+        """
+        return await self.tracks(item.item_id, item.provider, in_library_only=False)
+
+    async def match_provider(
+        self, db_album: Album, provider: MusicProvider, strict: bool = True
+    ) -> list[ProviderMapping]:
+        """
+        Try to find match on (streaming) provider for the provided (database) album.
+
+        This is used to link objects of different providers/qualities together.
+        """
+        self.logger.debug("Trying to match album %s on provider %s", db_album.name, provider.name)
+        matches: list[ProviderMapping] = []
+        artist_name = db_album.artists[0].name
+        search_str = f"{artist_name} - {db_album.name}"
+        search_result = await self.search(search_str, provider.instance_id)
+        for search_result_item in search_result:
+            if not search_result_item.available:
+                continue
+            if not compare_media_item(db_album, search_result_item, strict=strict):
+                continue
+            # we must fetch the full album version, search results can be simplified objects
+            prov_album = await self.get_provider_item(
+                search_result_item.item_id,
+                search_result_item.provider,
+                fallback=search_result_item,
+            )
+            if compare_album(db_album, prov_album, strict=strict):
+                # 100% match
+                matches.extend(prov_album.provider_mappings)
+        if not matches:
+            self.logger.debug(
+                "Could not find match for Album %s on provider %s",
+                db_album.name,
+                provider.name,
+            )
+        return matches
+
+    async def match_providers(self, db_album: Album) -> None:
+        """
+        Try to find match on all (streaming) providers for the provided (database) album.
+
+        This is used to link objects of different providers/qualities together.
+        """
+        if db_album.provider != "library":
+            return  # Matching only supported for database items
+        if not db_album.artists:
+            return  # guard
+
+        # try to find match on all providers
+        processed_domains = set()
+        for provider in self.mass.music.providers:
+            if provider.domain in processed_domains:
+                continue
+            if ProviderFeature.SEARCH not in provider.supported_features:
+                continue
+            if not self.mass.music.library_supported(provider, MediaType.ALBUM):
+                continue
+            if not provider.is_streaming_provider:
+                # matching on unique providers is pointless as they push (all) their content to MA
+                continue
+            if match := await self.match_provider(db_album, provider):
+                # 100% match, we update the db with the additional provider mapping(s)
+                await self.add_provider_mappings(db_album.item_id, match)
+                processed_domains.add(provider.domain)
+
+    def album_from_item_mapping(self, item: ItemMapping) -> Album:
+        """Create an Album object from an ItemMapping object."""
+        domain, instance_id = None, None
+        if prov := self.mass.get_provider(item.provider):
+            domain = prov.domain
+            instance_id = prov.instance_id
+        return Album.from_dict(
+            {
+                **item.to_dict(),
+                "provider_mappings": [
+                    {
+                        "item_id": item.item_id,
+                        "provider_domain": domain,
+                        "provider_instance": instance_id,
+                        "available": item.available,
+                    }
+                ],
+            }
+        )
+
     async def _add_library_item(self, item: Album, overwrite_existing: bool = False) -> int:
         """Add a new record to the database."""
         if not isinstance(item, Album):  # TODO: Remove this once the codebase is fully typed
@@ -503,19 +600,6 @@ class AlbumsController(MediaControllerBase[Album]):
             return await prov.get_album_tracks(item_id)
         return []
 
-    async def radio_mode_base_tracks(
-        self,
-        item: Album,
-        preferred_provider_instances: list[str] | None = None,
-    ) -> list[Track]:
-        """
-        Get the list of base tracks from the controller used to calculate the dynamic radio.
-
-        :param item: The Album to get base tracks for.
-        :param preferred_provider_instances: List of preferred provider instance IDs to use.
-        """
-        return await self.tracks(item.item_id, item.provider, in_library_only=False)
-
     async def _set_album_artists(
         self,
         db_id: int,
@@ -577,86 +661,4 @@ class AlbumsController(MediaControllerBase[Album]):
                 "track_number": track.track_number,
                 "disc_number": track.disc_number,
             },
-        )
-
-    async def match_provider(
-        self, db_album: Album, provider: MusicProvider, strict: bool = True
-    ) -> list[ProviderMapping]:
-        """
-        Try to find match on (streaming) provider for the provided (database) album.
-
-        This is used to link objects of different providers/qualities together.
-        """
-        self.logger.debug("Trying to match album %s on provider %s", db_album.name, provider.name)
-        matches: list[ProviderMapping] = []
-        artist_name = db_album.artists[0].name
-        search_str = f"{artist_name} - {db_album.name}"
-        search_result = await self.search(search_str, provider.instance_id)
-        for search_result_item in search_result:
-            if not search_result_item.available:
-                continue
-            if not compare_media_item(db_album, search_result_item, strict=strict):
-                continue
-            # we must fetch the full album version, search results can be simplified objects
-            prov_album = await self.get_provider_item(
-                search_result_item.item_id,
-                search_result_item.provider,
-                fallback=search_result_item,
-            )
-            if compare_album(db_album, prov_album, strict=strict):
-                # 100% match
-                matches.extend(prov_album.provider_mappings)
-        if not matches:
-            self.logger.debug(
-                "Could not find match for Album %s on provider %s",
-                db_album.name,
-                provider.name,
-            )
-        return matches
-
-    async def match_providers(self, db_album: Album) -> None:
-        """Try to find match on all (streaming) providers for the provided (database) album.
-
-        This is used to link objects of different providers/qualities together.
-        """
-        if db_album.provider != "library":
-            return  # Matching only supported for database items
-        if not db_album.artists:
-            return  # guard
-
-        # try to find match on all providers
-        processed_domains = set()
-        for provider in self.mass.music.providers:
-            if provider.domain in processed_domains:
-                continue
-            if ProviderFeature.SEARCH not in provider.supported_features:
-                continue
-            if not self.mass.music.library_supported(provider, MediaType.ALBUM):
-                continue
-            if not provider.is_streaming_provider:
-                # matching on unique providers is pointless as they push (all) their content to MA
-                continue
-            if match := await self.match_provider(db_album, provider):
-                # 100% match, we update the db with the additional provider mapping(s)
-                await self.add_provider_mappings(db_album.item_id, match)
-                processed_domains.add(provider.domain)
-
-    def album_from_item_mapping(self, item: ItemMapping) -> Album:
-        """Create an Album object from an ItemMapping object."""
-        domain, instance_id = None, None
-        if prov := self.mass.get_provider(item.provider):
-            domain = prov.domain
-            instance_id = prov.instance_id
-        return Album.from_dict(
-            {
-                **item.to_dict(),
-                "provider_mappings": [
-                    {
-                        "item_id": item.item_id,
-                        "provider_domain": domain,
-                        "provider_instance": instance_id,
-                        "available": item.available,
-                    }
-                ],
-            }
         )

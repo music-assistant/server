@@ -285,7 +285,8 @@ async def _request_with_session(
     timeout: int,
     auth: BasicAuth | None,
 ) -> str:
-    """Handle an API request with a provided aiohttp session.
+    """
+    Handle an API request with a provided aiohttp session.
 
     :param session: The aiohttp session to use.
     :param method: HTTP method to use for the request.
@@ -329,7 +330,8 @@ async def api_request(
     json_data: dict[str, Any] | None = None,
     timeout: int = 10,
 ) -> str:
-    """Send a request to the configured Music Assistant / Alexa API.
+    """
+    Send a request to the configured Music Assistant / Alexa API.
 
     Returns the response text on success or raises `ActionUnavailable` on failure.
     """
@@ -480,7 +482,8 @@ class AlexaPlayer(Player):
         self.update_state()
 
     def _on_player_media_updated(self) -> None:
-        """Handle callback when the current media of the player is updated.
+        """
+        Handle callback when the current media of the player is updated.
 
         Upload the stream URL and media metadata (title/artist/album/imageUrl)
         to the configured Music Assistant / Alexa API so the Alexa side can
@@ -592,7 +595,8 @@ class AlexaProvider(PlayerProvider):
             self._intents = []
 
     async def get_intent_utterance(self, intent_name: str, default: str) -> str:
-        """Return the first utterance for the given intent name (cached).
+        """
+        Return the first utterance for the given intent name (cached).
 
         If intents are not yet cached, attempt to load them.
         """

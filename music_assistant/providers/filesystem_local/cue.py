@@ -1,4 +1,5 @@
-"""CUE sheet integration for the filesystem_local provider.
+"""
+CUE sheet integration for the filesystem_local provider.
 
 A CUE sheet describes multiple logical tracks within a single audio file
 (typically a whole-album rip). This module provides:
@@ -137,22 +138,6 @@ class CueSheetHandler:
         )
         return sheet
 
-    @staticmethod
-    def _audio_format_from_tags(audio_path: str, tags: AudioTags) -> AudioFormat:
-        """
-        Build an AudioFormat for an audio file from its tags.
-
-        :param audio_path: Path to the audio file (used for extension fallback).
-        :param tags: Parsed audio tags.
-        """
-        return AudioFormat(
-            content_type=ContentType.try_parse(audio_path.rsplit(".", 1)[-1] or tags.format),
-            sample_rate=tags.sample_rate,
-            bit_depth=tags.bits_per_sample,
-            channels=tags.channels,
-            bit_rate=tags.bit_rate,
-        )
-
     async def find_audio_file(self, cue_item: FileSystemItem, cue_sheet: CueSheet) -> str | None:
         """
         Locate the audio file referenced by a CUE sheet.
@@ -183,125 +168,6 @@ class CueSheetHandler:
                 return candidate
 
         return None
-
-    @staticmethod
-    def _apply_cue_overrides(tags: AudioTags, cue_sheet: CueSheet) -> None:
-        """Overwrite album-level audio tags with values from the CUE sheet."""
-        if cue_sheet.title:
-            tags.tags["album"] = cue_sheet.title
-        if cue_sheet.sort_title:
-            tags.tags["albumsort"] = cue_sheet.sort_title
-        if cue_sheet.performers:
-            # plural form so AudioTags.album_artists sees every value; tags.tags is
-            # typed dict[str, str] but accepts list[str] at runtime for Vorbis multi.
-            # TODO: remove the type: ignore once AudioTags.tags is retyped upstream.
-            tags.tags.pop("albumartist", None)
-            tags.tags["albumartists"] = list(cue_sheet.performers)  # type: ignore[assignment]
-        if cue_sheet.album_artist_sort_names:
-            tags.tags["albumartistsort"] = ";".join(cue_sheet.album_artist_sort_names)
-        if cue_sheet.musicbrainz_albumartistids:
-            tags.tags["musicbrainzalbumartistid"] = ";".join(cue_sheet.musicbrainz_albumartistids)
-        if cue_sheet.date:
-            tags.tags["date"] = cue_sheet.date
-        if cue_sheet.genres:
-            # AudioTags.genres splits on ";" so we join multi-line values that way
-            tags.tags["genre"] = ";".join(cue_sheet.genres)
-        if cue_sheet.album_types:
-            # album_type reads "releasetype" as a single string and substring-matches
-            tags.tags["releasetype"] = " ".join(cue_sheet.album_types)
-        if cue_sheet.barcode:
-            tags.tags["barcode"] = cue_sheet.barcode
-        if cue_sheet.musicbrainz_albumid:
-            tags.tags["musicbrainzalbumid"] = cue_sheet.musicbrainz_albumid
-        if cue_sheet.musicbrainz_releasegroupid:
-            tags.tags["musicbrainzreleasegroupid"] = cue_sheet.musicbrainz_releasegroupid
-
-    async def _build_track(
-        self,
-        cue_track: CueTrack,
-        cue_item: FileSystemItem,
-        duration: float,
-        ctx: _TrackBuildContext,
-    ) -> Track:
-        """Construct a single Track from a CUE track entry."""
-        provider = self.provider
-        track_id = make_cue_track_id(cue_item.relative_path, cue_track.number)
-
-        # per-track PERFORMER wins over sheet-level. Multi-artist uses one PERFORMER
-        # line per artist (Vorbis convention); never delimiter-split, would mangle "AC/DC".
-        performer_names = cue_track.performers or list(ctx.album_performers)
-        track_artists: UniqueList[Artist | ItemMapping] = UniqueList()
-        for idx, artist_name in enumerate(performer_names):
-            artist = await provider._parse_artist(
-                name=artist_name,
-                sort_name=(
-                    cue_track.artist_sort_names[idx]
-                    if idx < len(cue_track.artist_sort_names)
-                    else None
-                ),
-                mbid=(
-                    cue_track.musicbrainz_artistids[idx]
-                    if idx < len(cue_track.musicbrainz_artistids)
-                    else None
-                ),
-            )
-            if artist:
-                track_artists.append(artist)
-        if not track_artists:
-            # neither the track nor the sheet declared a PERFORMER; fall back to
-            # the [unknown] artist rather than leaving the track artist-less
-            unknown = await provider._parse_artist(name=UNKNOWN_ARTIST, mbid=UNKNOWN_ARTIST_ID_MBID)
-            if unknown:
-                track_artists.append(unknown)
-
-        track = Track(
-            item_id=track_id,
-            provider=provider.instance_id,
-            name=cue_track.title or f"Track {cue_track.number}",
-            sort_name=cue_track.sort_name,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=track_id,
-                    provider_domain=provider.domain,
-                    provider_instance=provider.instance_id,
-                    audio_format=ctx.audio_format,
-                    details=cue_item.checksum,
-                    in_library=True,
-                )
-            },
-            track_number=cue_track.number,
-            disc_number=ctx.disc_number,
-            duration=round(duration),
-            date_added=ctx.date_added,
-        )
-
-        if track_artists:
-            track.artists = track_artists
-        if ctx.album:
-            track.album = ctx.album
-        for isrc in cue_track.isrcs:
-            track.external_ids.add((ExternalID.ISRC, isrc))
-        if cue_track.musicbrainz_recordingid:
-            # the setter runs UUID validation and keeps external_ids in sync
-            track.mbid = cue_track.musicbrainz_recordingid
-        if cue_track.musicbrainz_releasetrackid:
-            track.external_ids.add((ExternalID.MB_TRACK, cue_track.musicbrainz_releasetrackid))
-        if ctx.embedded_image is not None:
-            track.metadata.images = UniqueList([ctx.embedded_image])
-        if cue_track.genres:
-            # per-track REM GENRE wins over the shared audio-file/album genres
-            track.metadata.genres = set(cue_track.genres)
-        elif ctx.track_genres is not None:
-            track.metadata.genres = ctx.track_genres
-        if cue_track.copyright:
-            track.metadata.copyright = cue_track.copyright
-        if cue_track.grouping:
-            track.metadata.grouping = cue_track.grouping
-        if cue_track.comment:
-            track.metadata.description = cue_track.comment
-        if cue_track.explicit is not None:
-            track.metadata.explicit = cue_track.explicit
-        return track
 
     async def parse_tracks(self, cue_item: FileSystemItem) -> list[Track]:
         """
@@ -495,3 +361,138 @@ class CueSheetHandler:
             extra_input_args=["-ss", str(actual_seek), "-t", str(remaining_duration)],
         ):
             yield chunk
+
+    @staticmethod
+    def _audio_format_from_tags(audio_path: str, tags: AudioTags) -> AudioFormat:
+        """
+        Build an AudioFormat for an audio file from its tags.
+
+        :param audio_path: Path to the audio file (used for extension fallback).
+        :param tags: Parsed audio tags.
+        """
+        return AudioFormat(
+            content_type=ContentType.try_parse(audio_path.rsplit(".", 1)[-1] or tags.format),
+            sample_rate=tags.sample_rate,
+            bit_depth=tags.bits_per_sample,
+            channels=tags.channels,
+            bit_rate=tags.bit_rate,
+        )
+
+    @staticmethod
+    def _apply_cue_overrides(tags: AudioTags, cue_sheet: CueSheet) -> None:
+        """Overwrite album-level audio tags with values from the CUE sheet."""
+        if cue_sheet.title:
+            tags.tags["album"] = cue_sheet.title
+        if cue_sheet.sort_title:
+            tags.tags["albumsort"] = cue_sheet.sort_title
+        if cue_sheet.performers:
+            # plural form so AudioTags.album_artists sees every value; tags.tags is
+            # typed dict[str, str] but accepts list[str] at runtime for Vorbis multi.
+            # TODO: remove the type: ignore once AudioTags.tags is retyped upstream.
+            tags.tags.pop("albumartist", None)
+            tags.tags["albumartists"] = list(cue_sheet.performers)  # type: ignore[assignment]
+        if cue_sheet.album_artist_sort_names:
+            tags.tags["albumartistsort"] = ";".join(cue_sheet.album_artist_sort_names)
+        if cue_sheet.musicbrainz_albumartistids:
+            tags.tags["musicbrainzalbumartistid"] = ";".join(cue_sheet.musicbrainz_albumartistids)
+        if cue_sheet.date:
+            tags.tags["date"] = cue_sheet.date
+        if cue_sheet.genres:
+            # AudioTags.genres splits on ";" so we join multi-line values that way
+            tags.tags["genre"] = ";".join(cue_sheet.genres)
+        if cue_sheet.album_types:
+            # album_type reads "releasetype" as a single string and substring-matches
+            tags.tags["releasetype"] = " ".join(cue_sheet.album_types)
+        if cue_sheet.barcode:
+            tags.tags["barcode"] = cue_sheet.barcode
+        if cue_sheet.musicbrainz_albumid:
+            tags.tags["musicbrainzalbumid"] = cue_sheet.musicbrainz_albumid
+        if cue_sheet.musicbrainz_releasegroupid:
+            tags.tags["musicbrainzreleasegroupid"] = cue_sheet.musicbrainz_releasegroupid
+
+    async def _build_track(
+        self,
+        cue_track: CueTrack,
+        cue_item: FileSystemItem,
+        duration: float,
+        ctx: _TrackBuildContext,
+    ) -> Track:
+        """Construct a single Track from a CUE track entry."""
+        provider = self.provider
+        track_id = make_cue_track_id(cue_item.relative_path, cue_track.number)
+
+        # per-track PERFORMER wins over sheet-level. Multi-artist uses one PERFORMER
+        # line per artist (Vorbis convention); never delimiter-split, would mangle "AC/DC".
+        performer_names = cue_track.performers or list(ctx.album_performers)
+        track_artists: UniqueList[Artist | ItemMapping] = UniqueList()
+        for idx, artist_name in enumerate(performer_names):
+            artist = await provider._parse_artist(
+                name=artist_name,
+                sort_name=(
+                    cue_track.artist_sort_names[idx]
+                    if idx < len(cue_track.artist_sort_names)
+                    else None
+                ),
+                mbid=(
+                    cue_track.musicbrainz_artistids[idx]
+                    if idx < len(cue_track.musicbrainz_artistids)
+                    else None
+                ),
+            )
+            if artist:
+                track_artists.append(artist)
+        if not track_artists:
+            # neither the track nor the sheet declared a PERFORMER; fall back to
+            # the [unknown] artist rather than leaving the track artist-less
+            unknown = await provider._parse_artist(name=UNKNOWN_ARTIST, mbid=UNKNOWN_ARTIST_ID_MBID)
+            if unknown:
+                track_artists.append(unknown)
+
+        track = Track(
+            item_id=track_id,
+            provider=provider.instance_id,
+            name=cue_track.title or f"Track {cue_track.number}",
+            sort_name=cue_track.sort_name,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=track_id,
+                    provider_domain=provider.domain,
+                    provider_instance=provider.instance_id,
+                    audio_format=ctx.audio_format,
+                    details=cue_item.checksum,
+                    in_library=True,
+                )
+            },
+            track_number=cue_track.number,
+            disc_number=ctx.disc_number,
+            duration=round(duration),
+            date_added=ctx.date_added,
+        )
+
+        if track_artists:
+            track.artists = track_artists
+        if ctx.album:
+            track.album = ctx.album
+        for isrc in cue_track.isrcs:
+            track.external_ids.add((ExternalID.ISRC, isrc))
+        if cue_track.musicbrainz_recordingid:
+            # the setter runs UUID validation and keeps external_ids in sync
+            track.mbid = cue_track.musicbrainz_recordingid
+        if cue_track.musicbrainz_releasetrackid:
+            track.external_ids.add((ExternalID.MB_TRACK, cue_track.musicbrainz_releasetrackid))
+        if ctx.embedded_image is not None:
+            track.metadata.images = UniqueList([ctx.embedded_image])
+        if cue_track.genres:
+            # per-track REM GENRE wins over the shared audio-file/album genres
+            track.metadata.genres = set(cue_track.genres)
+        elif ctx.track_genres is not None:
+            track.metadata.genres = ctx.track_genres
+        if cue_track.copyright:
+            track.metadata.copyright = cue_track.copyright
+        if cue_track.grouping:
+            track.metadata.grouping = cue_track.grouping
+        if cue_track.comment:
+            track.metadata.description = cue_track.comment
+        if cue_track.explicit is not None:
+            track.metadata.explicit = cue_track.explicit
+        return track

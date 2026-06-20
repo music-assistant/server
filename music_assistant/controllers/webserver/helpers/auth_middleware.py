@@ -33,7 +33,8 @@ sendspin_player_id: ContextVar[str | None] = ContextVar("sendspin_player_id", de
 
 
 async def get_authenticated_user(request: web.Request) -> User | None:
-    """Get authenticated user from request.
+    """
+    Get authenticated user from request.
 
     :param request: The aiohttp request.
     """
@@ -136,7 +137,8 @@ async def get_authenticated_user(request: web.Request) -> User | None:
 
 
 async def require_authentication(request: web.Request) -> User:
-    """Require authentication for a request, raise 401 if not authenticated.
+    """
+    Require authentication for a request, raise 401 if not authenticated.
 
     :param request: The aiohttp request.
     """
@@ -150,7 +152,8 @@ async def require_authentication(request: web.Request) -> User:
 
 
 async def require_admin(request: web.Request) -> User:
-    """Require admin role for a request, raise 403 if not admin.
+    """
+    Require admin role for a request, raise 403 if not admin.
 
     :param request: The aiohttp request.
     """
@@ -217,7 +220,8 @@ def set_current_token(token: str | None) -> None:
 
 
 def get_sendspin_player_id() -> str | None:
-    """Get the sendspin player ID associated with the current connection.
+    """
+    Get the sendspin player ID associated with the current connection.
 
     :return: The sendspin player ID or None if not a sendspin connection.
     """
@@ -225,7 +229,8 @@ def get_sendspin_player_id() -> str | None:
 
 
 def set_sendspin_player_id(player_id: str | None) -> None:
-    """Set the sendspin player ID for the current connection.
+    """
+    Set the sendspin player ID for the current connection.
 
     :param player_id: The sendspin player ID to set.
     """
@@ -233,7 +238,8 @@ def set_sendspin_player_id(player_id: str | None) -> None:
 
 
 def is_request_from_ingress(request: web.Request) -> bool:
-    """Check if request is coming from Home Assistant Ingress (internal network).
+    """
+    Check if request is coming from Home Assistant Ingress (internal network).
 
     Security is enforced by socket-level verification (IP/port binding), not headers.
     Only requests on the internal ingress TCP site (172.30.32.x:8094) are accepted.
@@ -265,7 +271,8 @@ def is_request_from_ingress(request: web.Request) -> bool:
 
 @web.middleware
 async def auth_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
-    """Authenticate requests and store user in context.
+    """
+    Authenticate requests and store user in context.
 
     :param request: The aiohttp request.
     :param handler: The request handler.

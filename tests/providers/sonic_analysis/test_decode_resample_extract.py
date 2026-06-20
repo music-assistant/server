@@ -61,7 +61,8 @@ async def _start_session(
     session_id: str,
     sample_rate: int = 22050,
 ) -> None:
-    """Seed _sessions and call _start_analysis.
+    """
+    Seed _sessions and call _start_analysis.
 
     :param provider: The provider instance to register the session on.
     :param session_id: The session ID to register.
@@ -133,7 +134,8 @@ def test_decode_resample_extract_returns_three_tuple() -> None:
 
 @pytest.mark.asyncio
 async def test_process_pcm_chunk_offloads_via_run_offloaded() -> None:
-    """process_pcm_chunk must call _decode_resample_extract off the event loop.
+    """
+    process_pcm_chunk must call _decode_resample_extract off the event loop.
 
     Verified by:
     1. Patching _decode_resample_extract with a MagicMock that returns a valid 3-tuple.

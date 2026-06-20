@@ -37,6 +37,17 @@ def _coerce_optional_int(value: Any, field_name: str) -> int | None:
         raise InvalidDataError(f"Invalid value for {field_name}: {value!r}") from err
 
 
+def _coerce_optional_bool(value: Any, field_name: str) -> bool | None:
+    """Coerce a value to bool | None, raising InvalidDataError on bad input."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    raise InvalidDataError(
+        f"Invalid value for {field_name}: {value!r}. Expected True, False, or None."
+    )
+
+
 def _coerce_id_list(value: Any, field_name: str) -> list[int]:
     """Coerce a value to a list of ints, raising InvalidDataError on bad input."""
     if value is None:
@@ -117,6 +128,7 @@ class SmartPlaylistRules:
     dedup_hours: int | None = None
     album_types: list[str] = field(default_factory=list)
     excluded_album_types: list[str] = field(default_factory=list)
+    explicit: bool | None = None
 
     def all_seed_uris(self) -> list[str]:
         """Return every seed URI across the four seed lists, deduplicated, original order."""
@@ -164,6 +176,7 @@ class SmartPlaylistRules:
             "dedup_hours": self.dedup_hours,
             "album_types": self.album_types,
             "excluded_album_types": self.excluded_album_types,
+            "explicit": self.explicit,
         }
 
     @classmethod
@@ -216,6 +229,7 @@ class SmartPlaylistRules:
             excluded_album_types=_coerce_str_list(
                 data.get("excluded_album_types"), "excluded_album_types"
             ),
+            explicit=_coerce_optional_bool(data.get("explicit"), "explicit"),
         )
 
     def human_readable(self) -> str:
@@ -223,6 +237,10 @@ class SmartPlaylistRules:
         parts: list[str] = []
         if self.favorites_only:
             parts.append("Favorites only")
+        if self.explicit is True:
+            parts.append("Explicit only")
+        elif self.explicit is False:
+            parts.append("No explicit content")
         if self.genre_ids:
             names = [self.genre_names.get(gid, str(gid)) for gid in self.genre_ids]
             parts.append(f"Genres: {', '.join(names)}")

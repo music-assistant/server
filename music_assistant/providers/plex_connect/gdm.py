@@ -28,7 +28,8 @@ class PlexGDMAdvertiser:
         version: str = "1.0.0",
         device_class: str = "speaker",
     ) -> None:
-        """Initialize GDM advertiser.
+        """
+        Initialize GDM advertiser.
 
         :param instance_id: Unique identifier for this instance.
         :param port: Port number for the server.
