@@ -143,23 +143,23 @@ def _target_player_detail_entries(
 ) -> tuple[ConfigEntry, ...]:
     """Return read-only detail rows for the selected target player."""
     details = (
-        ("Music Assistant player Id", player.player_id),
-        ("MAC address", player.mac_address),
-        ("Bose UUID", player.bose_uuid),
+        ("target_player_ma_id", player.player_id),
+        ("target_player_mac_address", player.mac_address),
+        ("target_player_bose_uuid", player.bose_uuid),
     )
     key_prefix = f"target_player_detail_{player_index}_"
-    label_prefix = f"{player.name} - "
 
     return tuple(
         ConfigEntry(
             key=f"{key_prefix}{index}",
             type=ConfigEntryType.LABEL,
-            label=f"{label_prefix}{label}: {_unknown_if_empty(value)}",
+            translation_key=translation_key,
+            translation_params=[player.name, _unknown_if_empty(value)],
             required=False,
-            category="Target players",
+            category="target_players",
             advanced=True,
         )
-        for index, (label, value) in enumerate(details, start=1)
+        for index, (translation_key, value) in enumerate(details, start=1)
     )
 
 
@@ -257,7 +257,7 @@ async def _search_media_items(
             ),
             timeout=SEARCH_TIMEOUT,
         )
-    except (MusicAssistantError, TimeoutError):
+    except MusicAssistantError, TimeoutError:
         return []
 
     return _iter_search_result_items(search_result, media_type)
@@ -279,7 +279,7 @@ async def build_media_options(
             value=value,
         )
 
-    return sorted(options_by_value.values(), key=lambda option: option.title.lower())
+    return sorted(options_by_value.values(), key=lambda option: (option.title or "").lower())
 
 
 def _xml_local_name(tag: str) -> str:
@@ -313,21 +313,16 @@ async def get_config_entries(
     configurable_players = [player for player in bose_players if player.ip_address]
 
     if not configurable_players:
-        description = (
-            "No Bose SoundTouch speakers were detected by Music Assistant."
-            if not bose_players
-            else (
-                "Bose speakers were detected, but none exposes an IP address "
-                "required by SoundTouch."
-            )
-        )
         return (
             ConfigEntry(
                 key="no_bose_players_found",
                 type=ConfigEntryType.LABEL,
-                label="No configurable Bose SoundTouch speaker found",
+                translation_key=(
+                    "no_bose_players_found"
+                    if not bose_players
+                    else "no_configurable_bose_players_found"
+                ),
                 required=False,
-                description=description,
             ),
         )
 
@@ -384,9 +379,10 @@ async def get_config_entries(
             ConfigEntry(
                 key=f"preset_{preset_id}_header",
                 type=ConfigEntryType.DIVIDER,
-                label=f"Favorite {preset_id}",
+                translation_key="preset_header",
+                translation_params=[str(preset_id)],
                 required=False,
-                category="Favorites",
+                category="favorites",
             )
         )
         preset_entries.extend(
@@ -394,32 +390,31 @@ async def get_config_entries(
                 ConfigEntry(
                     key=media_type_key,
                     type=ConfigEntryType.STRING,
-                    label=f"Favorite {preset_id} media type",
+                    translation_key="preset_media_type",
+                    translation_params=[str(preset_id)],
                     required=False,
                     default_value=media_type.value,
                     value=media_type.value,
                     options=MEDIA_TYPE_OPTIONS,
-                    description=(
-                        "Type of media used for this SoundTouch favorite search and playback."
-                    ),
-                    category="Favorites",
+                    category="favorites",
                 ),
                 ConfigEntry(
                     key=search_key,
                     type=ConfigEntryType.STRING,
-                    label=f"Favorite {preset_id} search",
+                    translation_key="preset_search",
+                    translation_params=[str(preset_id)],
                     required=False,
                     default_value=query,
                     value=query,
-                    description="Type a search term, then press Search.",
-                    category="Favorites",
+                    category="favorites",
                 ),
                 ConfigEntry(
                     key=f"preset_{preset_id}_do_search",
                     type=ConfigEntryType.ACTION,
-                    label=f"Search favorite {preset_id} 🔎",
+                    translation_key="preset_search_action",
+                    translation_params=[str(preset_id)],
                     action=search_action,
-                    category="Favorites",
+                    category="favorites",
                 ),
             )
         )
@@ -430,19 +425,21 @@ async def get_config_entries(
                     ConfigEntry(
                         key=selected_key,
                         type=ConfigEntryType.STRING,
-                        label=f"Favorite {preset_id} result selection",
+                        translation_key="preset_result_selection",
+                        translation_params=[str(preset_id)],
                         required=False,
                         default_value=selected_media,
                         value=selected_media,
                         options=media_options,
-                        category="Favorites",
+                        category="favorites",
                     ),
                     ConfigEntry(
                         key=f"preset_{preset_id}_copy_media",
                         type=ConfigEntryType.ACTION,
-                        label=f"Select favorite {preset_id} ⭐",
+                        translation_key="preset_select_action",
+                        translation_params=[str(preset_id)],
                         action=copy_action,
-                        category="Favorites",
+                        category="favorites",
                     ),
                 )
             )
@@ -450,12 +447,12 @@ async def get_config_entries(
             ConfigEntry(
                 key=media_key,
                 type=ConfigEntryType.STRING,
-                label=f"Favorite {preset_id} to play",
+                translation_key="preset_media",
+                translation_params=[str(preset_id)],
                 required=False,
                 default_value=media_value,
                 value=media_value,
-                description="URI copied from the selected result or manually entered.",
-                category="Favorites",
+                category="favorites",
             )
         )
 
@@ -463,14 +460,12 @@ async def get_config_entries(
         ConfigEntry(
             key="target_players",
             type=ConfigEntryType.STRING,
-            label="Target players",
             required=True,
             default_value=[],
             value=selected_target_player_ids,
             options=player_options,
             multi_value=True,
-            description="Bose SoundTouch speakers detected by Music Assistant.",
-            category="Target players",
+            category="target_players",
         ),
         *target_player_detail_entries,
         *preset_entries,
@@ -495,7 +490,7 @@ def extract_preset_id(message: str) -> int | None:
 
     try:
         return int(preset_id) if preset_id else None
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
