@@ -277,7 +277,7 @@ class PandoraProvider(MusicProvider):
         """Get single radio station details."""
         return Radio(
             item_id=prov_radio_id,
-            provider=self.domain,
+            provider=self.instance_id,
             name=f"Pandora Station {prov_radio_id}",
             translation_key="pandora_station",
             translation_params=[prov_radio_id],
