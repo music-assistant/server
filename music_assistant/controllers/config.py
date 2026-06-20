@@ -89,7 +89,6 @@ from music_assistant.constants import (
     CONF_ENTRY_SAMPLE_RATES,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_ENTRY_VOLUME_NORMALIZATION,
-    CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_HIDE_IN_UI,
     CONF_MUTE_CONTROL,
@@ -106,6 +105,7 @@ from music_assistant.constants import (
     CONF_SERVER_ID,
     CONF_SMART_FADES_MODE,
     CONF_VOLUME_CONTROL,
+    CONF_VOLUME_NORMALIZATION_TARGET,
     CONFIGURABLE_CORE_CONTROLLERS,
     DEFAULT_CORE_CONFIG_ENTRIES,
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
@@ -1506,6 +1506,26 @@ class ConfigController:
         if self._migrate_metadata_maintenance_schedule():
             changed = True
 
+        # Remove volume_normalization_target from player configs — it is now a global setting on
+        # the streams controller and per-player overrides no longer make sense.
+        # TODO: remove after 2.10 release
+        all_player_configs = self._data.get(CONF_PLAYERS, {})
+        if isinstance(all_player_configs, dict):
+            for player_id, player_cfg in all_player_configs.items():
+                if not isinstance(player_cfg, dict):
+                    continue
+                values = player_cfg.get("values")
+                if not isinstance(values, dict):
+                    continue
+                if CONF_VOLUME_NORMALIZATION_TARGET in values:
+                    del values[CONF_VOLUME_NORMALIZATION_TARGET]
+                    LOGGER.info(
+                        "Removed per-player volume_normalization_target for player %s "
+                        "(now a global streams setting)",
+                        player_id,
+                    )
+                    changed = True
+
         if changed:
             await self._async_save()
 
@@ -1858,7 +1878,6 @@ class ConfigController:
             # we allow volume normalization/output limiter here as it is a per-queue(player) setting
             CONF_ENTRY_VOLUME_NORMALIZATION,
             CONF_ENTRY_OUTPUT_LIMITER,
-            CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
             CONF_ENTRY_TTS_PRE_ANNOUNCE,
             ConfigEntry(
                 key=CONF_PRE_ANNOUNCE_CHIME_URL,
