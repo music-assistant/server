@@ -704,6 +704,38 @@ class SonosPlayer(Player):
         self._attr_elapsed_time_last_updated = last_updated
         self.update_state()
 
+    def reconnect(self, delay: float = 1) -> None:
+        """Reconnect the player."""
+        if self.mass.closing:
+            return
+        # use a task_id to prevent multiple reconnects
+        task_id = f"sonos_reconnect_{self.player_id}"
+        self.mass.call_later(delay, self._connect, delay, task_id=task_id)
+
+    async def sync_play_modes(self, queue_id: str) -> None:
+        """Sync the play modes between MA and Sonos."""
+        queue = self.mass.player_queues.get(queue_id)
+        if not queue or queue.state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+            return
+        repeat_single_enabled = queue.repeat_mode == RepeatMode.ONE
+        repeat_all_enabled = queue.repeat_mode == RepeatMode.ALL
+        if not self.client.player.group:
+            return
+        play_modes = self.group_controller.play_modes
+        if (
+            play_modes.repeat != repeat_all_enabled
+            or play_modes.repeat_one != repeat_single_enabled
+        ):
+            try:
+                await self.group_controller.set_play_modes(
+                    repeat=repeat_all_enabled,
+                    repeat_one=repeat_single_enabled,
+                )
+            except FailedCommand as err:
+                if "groupCoordinatorChanged" not in str(err):
+                    # this may happen at race conditions
+                    raise
+
     async def _connect(self, retry_on_fail: int = 0) -> None:
         """Connect to the Sonos player."""
         if self.mass.closing:
@@ -745,14 +777,6 @@ class SonosPlayer(Player):
         self._listen_task = self.mass.create_task(_listener())
         await init_ready.wait()
 
-    def reconnect(self, delay: float = 1) -> None:
-        """Reconnect the player."""
-        if self.mass.closing:
-            return
-        # use a task_id to prevent multiple reconnects
-        task_id = f"sonos_reconnect_{self.player_id}"
-        self.mass.call_later(delay, self._connect, delay, task_id=task_id)
-
     async def _disconnect(self) -> None:
         """Disconnect the client and cleanup."""
         self.connected = False
@@ -761,30 +785,6 @@ class SonosPlayer(Player):
         if self.client:
             await self.client.disconnect()
         self.logger.debug("Disconnected from player API")
-
-    async def sync_play_modes(self, queue_id: str) -> None:
-        """Sync the play modes between MA and Sonos."""
-        queue = self.mass.player_queues.get(queue_id)
-        if not queue or queue.state not in (PlaybackState.PLAYING, PlaybackState.PAUSED):
-            return
-        repeat_single_enabled = queue.repeat_mode == RepeatMode.ONE
-        repeat_all_enabled = queue.repeat_mode == RepeatMode.ALL
-        if not self.client.player.group:
-            return
-        play_modes = self.group_controller.play_modes
-        if (
-            play_modes.repeat != repeat_all_enabled
-            or play_modes.repeat_one != repeat_single_enabled
-        ):
-            try:
-                await self.group_controller.set_play_modes(
-                    repeat=repeat_all_enabled,
-                    repeat_one=repeat_single_enabled,
-                )
-            except FailedCommand as err:
-                if "groupCoordinatorChanged" not in str(err):
-                    # this may happen at race conditions
-                    raise
 
     async def _set_sonos_queue_from_mass_queue(self, queue_id: str) -> None:
         """Set the SonosQueue items from the given MA PlayerQueue."""

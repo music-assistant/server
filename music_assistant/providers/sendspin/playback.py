@@ -365,46 +365,6 @@ class SendspinPlaybackSession:
             return None
         return self._timeline_start_us + track_start_offset_us
 
-    # -- Helpers ---------------------------------------------------------------
-
-    def _attach_task_exception_logger(self, task: asyncio.Task[Any], name: str) -> None:
-        """Log unhandled exception from background task when it finishes."""
-
-        def _done_callback(done_task: asyncio.Task[Any]) -> None:
-            if done_task.cancelled():
-                return
-            with suppress(Exception):
-                exc = done_task.exception()
-                if exc is not None:
-                    self.player.logger.exception(
-                        "Background task failed: %s",
-                        name,
-                        exc_info=exc,
-                    )
-
-        task.add_done_callback(_done_callback)
-
-    def _get_join_readiness(self) -> tuple[bool, str | None]:
-        """Check whether live join DSP preparation can be performed right now."""
-        if self._playback_running and self._push_stream is not None:
-            return (True, None)
-        return (False, "no active stream context")
-
-    # -- Snapshot helper -------------------------------------------------------
-
-    async def _snapshot_active_pipelines(
-        self,
-    ) -> tuple[set[str], tuple[tuple[str, _MemberPipeline], ...]]:
-        """Return (join_pending_ids, active_pipelines) under lock."""
-        async with self._state_lock:
-            members = self._members
-            leader_id = self.player.player_id
-            return set(self._join_catchup), tuple(
-                (mid, p)
-                for mid, p in self._member_pipelines.items()
-                if mid in members or mid == leader_id
-            )
-
     # -- Public API ------------------------------------------------------------
 
     async def transfer_to(self, new_player: SendspinPlayer) -> None:
@@ -525,6 +485,46 @@ class SendspinPlaybackSession:
             await self.remove_member(player_id)
         for player_id in member_ids - current_members:
             await self.add_member(player_id)
+
+    # -- Helpers ---------------------------------------------------------------
+
+    def _attach_task_exception_logger(self, task: asyncio.Task[Any], name: str) -> None:
+        """Log unhandled exception from background task when it finishes."""
+
+        def _done_callback(done_task: asyncio.Task[Any]) -> None:
+            if done_task.cancelled():
+                return
+            with suppress(Exception):
+                exc = done_task.exception()
+                if exc is not None:
+                    self.player.logger.exception(
+                        "Background task failed: %s",
+                        name,
+                        exc_info=exc,
+                    )
+
+        task.add_done_callback(_done_callback)
+
+    def _get_join_readiness(self) -> tuple[bool, str | None]:
+        """Check whether live join DSP preparation can be performed right now."""
+        if self._playback_running and self._push_stream is not None:
+            return (True, None)
+        return (False, "no active stream context")
+
+    # -- Snapshot helper -------------------------------------------------------
+
+    async def _snapshot_active_pipelines(
+        self,
+    ) -> tuple[set[str], tuple[tuple[str, _MemberPipeline], ...]]:
+        """Return (join_pending_ids, active_pipelines) under lock."""
+        async with self._state_lock:
+            members = self._members
+            leader_id = self.player.player_id
+            return set(self._join_catchup), tuple(
+                (mid, p)
+                for mid, p in self._member_pipelines.items()
+                if mid in members or mid == leader_id
+            )
 
     # -- Join catchup ----------------------------------------------------------
 

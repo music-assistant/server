@@ -105,29 +105,6 @@ class AirPlayStreamSession:
             self.sync_clients.remove(airplay_player)
         await self._cleanup_after_removal(airplay_player, reason=reason)
 
-    async def _cleanup_after_removal(
-        self, airplay_player: AirPlayPlayer, reason: str = "client removed"
-    ) -> None:
-        """
-        Clean up processes and state after a client has been removed from sync_clients.
-
-        :param airplay_player: The player whose processes should be stopped.
-        :param reason: Short human-readable reason, forwarded to stop_client for logging.
-        """
-        stream = airplay_player.stream
-        if stream is not None and stream.session != self:
-            stream = None
-        await self.stop_client(airplay_player, reason=reason)
-        # Only set IDLE if the player's stream still belongs to this session,
-        # otherwise a re-add to a new session may have already set a new state.
-        if stream is not None:
-            airplay_player.set_state_from_stream(PlaybackState.IDLE, stream=stream)
-        # Re-check sync_clients under the lock to avoid racing with add_client.
-        async with self._lock:
-            should_stop = not self.sync_clients
-        if should_stop:
-            await self.stop()
-
     async def stop_client(
         self, airplay_player: AirPlayPlayer, reason: str = "stop_client called"
     ) -> None:
@@ -277,6 +254,29 @@ class AirPlayStreamSession:
                     time.time() - now,
                 )
                 await self.remove_client(airplay_player, reason="late joiner connection timeout")
+
+    async def _cleanup_after_removal(
+        self, airplay_player: AirPlayPlayer, reason: str = "client removed"
+    ) -> None:
+        """
+        Clean up processes and state after a client has been removed from sync_clients.
+
+        :param airplay_player: The player whose processes should be stopped.
+        :param reason: Short human-readable reason, forwarded to stop_client for logging.
+        """
+        stream = airplay_player.stream
+        if stream is not None and stream.session != self:
+            stream = None
+        await self.stop_client(airplay_player, reason=reason)
+        # Only set IDLE if the player's stream still belongs to this session,
+        # otherwise a re-add to a new session may have already set a new state.
+        if stream is not None:
+            airplay_player.set_state_from_stream(PlaybackState.IDLE, stream=stream)
+        # Re-check sync_clients under the lock to avoid racing with add_client.
+        async with self._lock:
+            should_stop = not self.sync_clients
+        if should_stop:
+            await self.stop()
 
     async def _audio_streamer(self, audio_source: AsyncGenerator[bytes]) -> None:
         """Stream audio to all players."""
