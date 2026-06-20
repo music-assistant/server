@@ -33,7 +33,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 33
+API_SCHEMA_VERSION: Final[int] = 34
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -79,6 +79,7 @@ CONF_IP_ADDRESS: Final[str] = "ip_address"
 CONF_PORT: Final[str] = "port"
 CONF_PROVIDERS: Final[str] = "providers"
 CONF_PLAYERS: Final[str] = "players"
+CONF_PLAYER_QUEUES: Final[str] = "player_queues"
 CONF_CORE: Final[str] = "core"
 CONF_PATH: Final[str] = "path"
 CONF_NAME: Final[str] = "name"
@@ -410,8 +411,6 @@ CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     type=ConfigEntryType.INTEGER,
     range=(1, 15),
     default_value=8,
-    depends_on=CONF_SMART_FADES_MODE,
-    depends_on_value="standard_crossfade",
     category="playback",
     advanced=True,
     requires_reload=True,

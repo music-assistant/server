@@ -51,8 +51,8 @@
       "description": "Enable this option to allow crossfades between tracks that have different sample rates (e.g. 44.1kHz to 48kHz). \n\n Disable this option if you experience audio glitches during transitions between tracks."
     },
     "crossfade_duration": {
-      "label": "Crossfade duration",
-      "description": "Duration in seconds of the crossfade between tracks (if enabled)"
+      "label": "Standard crossfade duration",
+      "description": "Duration in seconds for the standard crossfade between tracks."
     },
     "enable_icy_metadata": {
       "label": "Try to inject metadata into stream (ICY)",
@@ -212,15 +212,6 @@
         "384000||24": "384kHz / 24 bits"
       }
     },
-    "smart_fades_mode": {
-      "label": "Enable Smart Fades",
-      "description": "Select the crossfade mode to use when transitioning between tracks.\n\n- 'Smart Crossfade': Uses beat matching and EQ filters to create smooth transitions between tracks.\n- 'Standard Crossfade': Regular crossfade that crossfades the last/first x-seconds of a track.",
-      "options": {
-        "disabled": "Disabled",
-        "smart_crossfade": "Smart Crossfade",
-        "standard_crossfade": "Standard Crossfade"
-      }
-    },
     "sync_adjust": {
       "label": "Audio synchronization delay correction",
       "description": "If this player is playing audio synced with other players and you always hear the audio too early or late on this player, you can shift the audio a bit."
@@ -295,9 +286,6 @@
       "options": {
         "auto": "Auto-select"
       }
-    },
-    "smart_crossfade_unavailable": {
-      "label": "Smart Crossfade is unavailable because this system has limited memory. It requires more RAM than is currently available for audio buffering."
     },
     "bind_port": {
       "label": "TCP Port",

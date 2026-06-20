@@ -54,7 +54,6 @@ from music_assistant.constants import (
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_FLOW_MODE_SAMPLE_RATE,
     CONF_OUTPUT_CHANNELS,
-    CONF_SMART_FADES_MODE,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
     CONF_VOLUME_NORMALIZATION_TARGET,
@@ -346,7 +345,7 @@ class StreamsAudio:
         streamdetails.fade_in = fade_in
 
         streamdetails.prefer_album_loudness = prefer_album_loudness
-        player_settings = await mass.config.get_player_config(streamdetails.queue_id)
+        queue_settings = mass.config.get_player_queue_config(streamdetails.queue_id)
         core_config = await mass.config.get_core_config("streams")
         conf_volume_normalization_target = float(
             str(core_config.get_value(CONF_VOLUME_NORMALIZATION_TARGET, -14))
@@ -368,7 +367,7 @@ class StreamsAudio:
             )
         streamdetails.target_loudness = conf_volume_normalization_target
         streamdetails.volume_normalization_mode = get_normalization_mode(
-            core_config, player_settings, streamdetails
+            core_config, queue_settings, streamdetails
         )
 
         # attach the DSP details of all group members
@@ -1380,9 +1379,9 @@ class StreamsAudio:
             # updated streamdetails.loudness since get_stream_details was called
             if streamdetails.queue_id:
                 core_config = await self.mass.config.get_core_config("streams")
-                player_settings = await self.mass.config.get_player_config(streamdetails.queue_id)
+                queue_settings = self.mass.config.get_player_queue_config(streamdetails.queue_id)
                 streamdetails.volume_normalization_mode = get_normalization_mode(
-                    core_config, player_settings, streamdetails
+                    core_config, queue_settings, streamdetails
                 )
 
         # handle volume normalization
@@ -1908,13 +1907,8 @@ class StreamsAudio:
             smart_fades_mode = SmartFadesMode.DISABLED
             standard_crossfade_duration = 0
         else:
-            smart_fades_mode = await self.mass.config.get_player_config_value(
-                queue.queue_id,
-                CONF_SMART_FADES_MODE,
-                default=SmartFadesMode.DISABLED,
-                return_type=SmartFadesMode,
-            )
-            standard_crossfade_duration = self.mass.config.get_raw_player_config_value(
+            smart_fades_mode = queue.crossfade_mode
+            standard_crossfade_duration = self.mass.config.get_raw_player_queue_config_value(
                 queue.queue_id, CONF_CROSSFADE_DURATION, 10
             )
         flow_mode_sample_rate_conf = self.mass.config.get_raw_player_config_value(

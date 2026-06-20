@@ -31,7 +31,6 @@ from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_SYNC_ADJUST,
     CONF_OUTPUT_CODEC,
-    CONF_SMART_FADES_MODE,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.audio import get_mime_type
@@ -270,14 +269,10 @@ class SqueezelitePlayer(Player):
             if media.source_id and media.queue_item_id
             else None
         )
+        queue = self.mass.player_queues.get(self.player_id)
         smart_fades_mode = (
-            await self.mass.config.get_player_config_value(
-                self.player_id,
-                CONF_SMART_FADES_MODE,
-                default=SmartFadesMode.DISABLED,
-                return_type=SmartFadesMode,
-            )
-            if media.media_type == MediaType.TRACK
+            queue.crossfade_mode
+            if queue and media.media_type == MediaType.TRACK
             else SmartFadesMode.DISABLED
         )
         master_audio_format = await self.mass.streams.audio.select_flow_pcm_format(

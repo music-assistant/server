@@ -24,6 +24,7 @@ import shortuuid
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
+    CrossfadeMode,
     EventType,
     MediaType,
     PlaybackState,
@@ -67,6 +68,7 @@ from music_assistant.constants import (
     ATTR_ACTIVE_PLAYLIST,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_PLAY_ACTION_IN_PROGRESS,
+    CONF_SMART_FADES_MODE,
     MASS_LOGO_ONLINE,
     PLAYBACK_REPORT_INTERVAL_SECONDS,
     PLAYLIST_MEDIA_TYPES,
@@ -100,6 +102,11 @@ from music_assistant.controllers.player_queues.helpers import (
     sort_tracks,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
+from music_assistant.controllers.streams.constants import (
+    CONF_BUFFER_SIZE,
+    CONF_BUFFER_SIZE_DEFAULT,
+    BufferSize,
+)
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     ImpersonatedUser,
     get_current_user,
@@ -347,6 +354,28 @@ class PlayerQueuesController(CoreController):
             # ensure to (re)queue the next track because it might have changed
             # note that we only do this if the player has loaded the current track
             # if not, we wait until it has loaded to prevent conflicts
+            if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
+                self._enqueue_next_item(queue_id, next_item)
+
+    @api_command("player_queues/crossfade")
+    def set_crossfade(self, queue_id: str, crossfade_mode: CrossfadeMode) -> None:
+        """Configure crossfade setting on the queue."""
+        queue = self._queues[queue_id]
+        if crossfade_mode == CrossfadeMode.SMART_CROSSFADE and not queue.smart_fades_available:
+            raise UnsupportedFeaturedException(
+                "Smart crossfade is not available with the current audio buffer size"
+            )
+        if queue.crossfade_mode == crossfade_mode:
+            return  # no change
+        queue.crossfade_mode = crossfade_mode
+        self.signal_update(queue_id)
+        if (
+            queue.state == PlaybackState.PLAYING
+            and queue.index_in_buffer is not None
+            and queue.index_in_buffer == queue.current_index
+        ):
+            # re-enqueue the next track so the new crossfade behaviour applies to the
+            # upcoming transition (only when the player has already loaded the current track)
             if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
                 self._enqueue_next_item(queue_id, next_item)
 
@@ -985,6 +1014,7 @@ class PlayerQueuesController(CoreController):
 
         target_queue.repeat_mode = source_queue.repeat_mode
         target_queue.shuffle_enabled = source_queue.shuffle_enabled
+        target_queue.crossfade_mode = source_queue.crossfade_mode
         target_queue.dont_stop_the_music_enabled = source_queue.dont_stop_the_music_enabled
         target_queue.radio_source = source_queue.radio_source
         target_queue.is_dynamic = source_queue.is_dynamic
@@ -1055,6 +1085,18 @@ class PlayerQueuesController(CoreController):
 
         self._queues[queue_id] = queue
         self._queue_items[queue_id] = queue_items
+        # stamp smart-fades availability (derived from the global audio buffer size) so clients
+        # know whether the smart_crossfade option can be selected
+        queue.smart_fades_available = self._smart_fades_available()
+        # seed crossfade_mode from the legacy smart_fades_mode player config for queues that were
+        # persisted before this field existed (or were never persisted at all)
+        # TODO: remove this migration seed after 2.11 release
+        if not (prev_state and "crossfade_mode" in prev_state) and (
+            legacy_mode := self.mass.config.get_raw_player_config_value(
+                queue_id, CONF_SMART_FADES_MODE
+            )
+        ):
+            queue.crossfade_mode = CrossfadeMode(str(legacy_mode))
         # always call update to calculate state etc
         self.on_player_update(player, {})
         self.mass.signal_event(EventType.QUEUE_ADDED, object_id=queue_id, data=queue)
@@ -3417,3 +3459,10 @@ class PlayerQueuesController(CoreController):
         if not fully_played and self._last_counted_play.get(queue_id) == queue_item_id:
             del self._last_counted_play[queue_id]
         return True
+
+    def _smart_fades_available(self) -> bool:
+        """Return whether smart crossfade is available (requires a larger audio buffer)."""
+        buffer_size = self.mass.config.get_raw_core_config_value(
+            "streams", CONF_BUFFER_SIZE, CONF_BUFFER_SIZE_DEFAULT
+        )
+        return BufferSize(str(buffer_size)) != BufferSize.MINIMAL
