@@ -818,8 +818,7 @@ class StreamsController(CoreController):
         # select the PCM format for the flow stream, anchored on the first track
         smart_fades_mode = (
             queue.crossfade_mode
-            if (queue := self.mass.player_queues.get(queue_id))
-            and start_queue_item.media_type == MediaType.TRACK
+            if start_queue_item.media_type == MediaType.TRACK
             else CrossfadeMode.DISABLED
         )
         flow_pcm_format = await self.audio.select_flow_pcm_format(
