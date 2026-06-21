@@ -76,7 +76,8 @@ _LATE_DROP_THRESHOLD_US = 500_000  # 500 ms
 
 
 def _now_us() -> int:
-    """Return current monotonic time in microseconds.
+    """
+    Return current monotonic time in microseconds.
 
     Uses CLOCK_MONOTONIC_RAW on Linux to match the aiosendspin server clock,
     which avoids NTP slewing poisoning playback scheduling.
@@ -340,7 +341,8 @@ class SendspinLocalAudioBridge:
             self.mass.create_task(self._reset_sink_volume())
 
     async def _reset_sink_volume(self) -> None:
-        """Pin PA sink hardware volume to 100% via the shared PAVolumeController.
+        """
+        Pin PA sink hardware volume to 100% via the shared PAVolumeController.
 
         Called at bridge startup and after each playback session for:
           - Master/base ALSA-card sinks (is_remap=False), where volume control
@@ -384,7 +386,8 @@ class SendspinLocalAudioBridge:
             self.mass.create_task(self._apply_hardware_volume())
 
     async def _apply_hardware_volume(self) -> None:
-        """Apply the current volume/mute state to PA sink hardware volume.
+        """
+        Apply the current volume/mute state to PA sink hardware volume.
 
         No-op if no PAVolumeController is available (software fallback path).
         """
@@ -444,7 +447,8 @@ class SendspinLocalAudioBridge:
         return 0
 
     def _apply_format_conversion(self, pcm_data: bytes) -> bytes:
-        """Apply PA format conversion only — no volume scaling.
+        """
+        Apply PA format conversion only — no volume scaling.
 
         Used on the hardware-volume-control path, where mute and volume are
         handled by PAVolumeController directly on the PA sink. Only the
@@ -458,7 +462,8 @@ class SendspinLocalAudioBridge:
         return samples.view(np.uint8).reshape(-1, 4)[:, 1:].tobytes()
 
     def _apply_software_volume(self, pcm_data: bytes) -> bytes:
-        """Apply software volume scaling and format conversion.
+        """
+        Apply software volume scaling and format conversion.
 
         Fallback path used when no PAVolumeController is available (or for
         the ALSA/sounddevice backend, which has no PA hardware volume path).
@@ -498,7 +503,8 @@ class SendspinLocalAudioBridge:
         return scaled.astype(np.int16).tobytes()
 
     async def _wait_for_chunk_time(self, timestamp_us: int) -> bool:
-        """Sleep until the scheduled playback time for a chunk.
+        """
+        Sleep until the scheduled playback time for a chunk.
 
         :param timestamp_us: Server-domain playback timestamp in microseconds.
         :returns: True if the chunk should be played, False if it arrived too
@@ -825,7 +831,8 @@ class LocalAudioBridgeManager:
         self.logger.debug("All local audio bridges stopped")
 
     async def _ensure_volume_controller(self, resolved_backend: str) -> None:
-        """Lazily connect the shared PAVolumeController for hardware sink volume.
+        """
+        Lazily connect the shared PAVolumeController for hardware sink volume.
 
         No-op if not the pulse backend or already connected. Logs and leaves
         it as None on failure — bridges fall back to software volume scaling.
@@ -843,7 +850,8 @@ class LocalAudioBridgeManager:
 
     @staticmethod
     def _remap_master_sinks(devices: list[dict[str, Any]]) -> set[str]:
-        """Return master sink names with at least one remap-sink child.
+        """
+        Return master sink names with at least one remap-sink child.
 
         Such masters must keep software volume control — their PA volume
         multiplies into every remap sink feeding through them. Masters with
@@ -854,7 +862,8 @@ class LocalAudioBridgeManager:
 
     @staticmethod
     def _remap_masters_with_passthrough(devices: list[dict[str, Any]]) -> set[str]:
-        """Return master sink names with a full-passthrough remap-sink child.
+        """
+        Return master sink names with a full-passthrough remap-sink child.
 
         A passthrough child has the same channel count as its master (a 1:1
         remap, e.g. the "_multichannel_stereo" sink from
@@ -877,7 +886,8 @@ class LocalAudioBridgeManager:
         return result
 
     async def _ensure_remap_topology(self, devices: list[dict[str, Any]]) -> bool:
-        """Create any missing per-zone/passthrough remap sinks for multi-channel cards.
+        """
+        Create any missing per-zone/passthrough remap sinks for multi-channel cards.
 
         For each ALSA-card master sink with more than 2 channels, computes
         the expected remap-sink topology (see remap_topology module) and
@@ -949,7 +959,8 @@ class LocalAudioBridgeManager:
         return loaded_any
 
     async def _register_protocol_player(self, device_uuid: str, display_name: str) -> Player:
-        """Register the local_audio-owned PROTOCOL attribution-stub player.
+        """
+        Register the local_audio-owned PROTOCOL attribution-stub player.
 
         Gives Universal Player a local_audio domain link so the wrapped
         up_... player is attributed to the Local Audio Out provider filter
@@ -983,7 +994,8 @@ class LocalAudioBridgeManager:
     async def _refresh_after_remap_topology(
         self, devices: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        """Create missing remap sinks and re-enumerate if any were added.
+        """
+        Create missing remap sinks and re-enumerate if any were added.
 
         :returns: The original devices list, or a freshly re-enumerated list
             if _ensure_remap_topology() loaded any new modules.
@@ -1002,7 +1014,8 @@ class LocalAudioBridgeManager:
 
     @staticmethod
     def _enumerate_output_devices(backend: str) -> tuple[str, list[dict[str, Any]]]:
-        """Enumerate available audio output devices for the given backend.
+        """
+        Enumerate available audio output devices for the given backend.
 
         :param backend: One of AUDIO_BACKEND_AUTO / AUDIO_BACKEND_PULSEAUDIO /
             AUDIO_BACKEND_ALSA (from constants).  On non-Linux the backend is

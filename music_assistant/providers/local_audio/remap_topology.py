@@ -1,4 +1,5 @@
-"""PulseAudio remap-sink topology computation for multi-channel cards.
+"""
+PulseAudio remap-sink topology computation for multi-channel cards.
 
 For any output sink with more than 2 channels, computes the set of
 module-remap-sink.c sinks local_audio should create:
@@ -51,7 +52,8 @@ class RemapSinkSpec:
 
 
 def normalize_card_name(alsa_card_name: str) -> str:
-    """Normalize an alsa.card_name property into a sink-name prefix.
+    """
+    Normalize an alsa.card_name property into a sink-name prefix.
 
     Mirrors `tr ' -' '_' | tr -cd '[:alnum:]_'`, e.g. "Creative X-Fi" ->
     "Creative_X_Fi", "HD-Audio Generic" -> "HD_Audio_Generic".
@@ -63,7 +65,8 @@ def normalize_card_name(alsa_card_name: str) -> str:
 def compute_remap_topology(
     card_name: str, channel_map: list[str], max_output_channels: int
 ) -> list[RemapSinkSpec]:
-    """Compute the remap-sink topology for one multi-channel master sink.
+    """
+    Compute the remap-sink topology for one multi-channel master sink.
 
     :param card_name: Normalized card name prefix (see normalize_card_name),
         used as f"{card_name}_{suffix}" for each created sink.

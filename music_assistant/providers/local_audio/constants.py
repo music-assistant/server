@@ -58,7 +58,8 @@ _TAPER_ROLLOFF_X: Final = 0.10  # below 10% slider, linear ramp to true silence
 
 
 def volume_pct_to_amplitude(volume_pct: int) -> float:
-    """Map a 0-100 volume percentage to a linear amplitude scale factor.
+    """
+    Map a 0-100 volume percentage to a linear amplitude scale factor.
 
     Uses the dr-lex 60dB exponential audio taper (y = a*e^(b*x)) for
     volume_pct >= 10, giving constant dB change per slider step. Below 10%,

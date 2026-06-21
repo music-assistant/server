@@ -52,7 +52,8 @@ class LocalAudioProvider(PlayerProvider):
             await bridge_manager.stop_all()
 
     def on_player_enabled(self, player_id: str) -> None:
-        """Override to suppress re-discovery on player enable.
+        """
+        Override to suppress re-discovery on player enable.
 
         ALSA devices are statically enumerated once at startup —
         there is no need to re-run discovery when a player is enabled.

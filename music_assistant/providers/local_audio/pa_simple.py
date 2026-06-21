@@ -57,7 +57,8 @@ def _find_pulse_server() -> str:
 
 
 def _get_pulse_server() -> str:
-    """Return the PulseAudio server path, checked fresh on each call.
+    """
+    Return the PulseAudio server path, checked fresh on each call.
 
     Intentionally not cached — the socket may not exist at import time
     but appear later once the audio addon has fully started.
@@ -138,7 +139,8 @@ class _PACVolume(ctypes.Structure):
 
 
 def _load_full_lib() -> ctypes.CDLL:
-    """Load full libpulse (not -simple) for the async context API.
+    """
+    Load full libpulse (not -simple) for the async context API.
 
     Required for pa_context_set_sink_volume_by_name(), which has no
     equivalent in libpulse-simple. libpulse.so.0 is a transitive dependency
@@ -217,7 +219,8 @@ def _get_full_lib() -> ctypes.CDLL:
 
 
 class PAVolumeController:
-    """Shared async libpulse connection for hardware PA sink volume control.
+    """
+    Shared async libpulse connection for hardware PA sink volume control.
 
     One instance is shared across all PA sink bridges. Connects once via a
     threaded mainloop; set_sink_volume() calls are then direct function calls
@@ -280,7 +283,8 @@ class PAVolumeController:
             raise OSError("Timed out connecting to PulseAudio for volume control")
 
     def set_sink_volume(self, sink_name: str, volume_pct: int, channels: int = 2) -> bool:
-        """Set hardware volume on a PA sink by name.
+        """
+        Set hardware volume on a PA sink by name.
 
         :param volume_pct: MA player volume, 0-100. Mapped to an amplitude
             scale factor via a dr-lex 60dB exponential audio taper
@@ -345,7 +349,8 @@ class PAVolumeController:
             return bool(result.get("success", 0))
 
     def load_module(self, module_name: str, argument: str) -> int | None:
-        """Load a PulseAudio module (e.g. module-remap-sink) via libpulse.
+        """
+        Load a PulseAudio module (e.g. module-remap-sink) via libpulse.
 
         :param module_name: PA module name, e.g. "module-remap-sink".
         :param argument: Module argument string, e.g.
@@ -390,7 +395,8 @@ class PAVolumeController:
             return None if idx == PA_INVALID_INDEX else idx
 
     def unload_module(self, module_index: int) -> bool:
-        """Unload a previously-loaded PulseAudio module by index.
+        """
+        Unload a previously-loaded PulseAudio module by index.
 
         Blocks (up to ~2s) for PA's response.
         :returns: True if PA reported success.
@@ -438,7 +444,8 @@ class PAVolumeController:
 
 
 class PASimpleStream:
-    """Synchronous PCM playback stream to a named PulseAudio sink.
+    """
+    Synchronous PCM playback stream to a named PulseAudio sink.
 
     All libpulse calls are serialized behind a threading.Lock so that
     concurrent executor threads cannot simultaneously write/free the
@@ -500,7 +507,8 @@ class PASimpleStream:
             self._lib.pa_simple_drain(self._conn, ctypes.byref(error))
 
     def close(self) -> None:
-        """Free the PA stream.
+        """
+        Free the PA stream.
 
         Acquires the lock before zeroing _conn and calling pa_simple_free,
         ensuring no concurrent write() or drain() can touch the pointer
@@ -521,7 +529,8 @@ class PASimpleStream:
 
 
 def enumerate_alsa_devices() -> list[dict[str, Any]]:
-    """Enumerate stereo-capable ALSA output devices via sounddevice/PortAudio.
+    """
+    Enumerate stereo-capable ALSA output devices via sounddevice/PortAudio.
 
     Returns list of dicts compatible with the PA sink dict shape so that
     LocalAudioBridgeManager can use the same registration path for both
@@ -597,7 +606,8 @@ def enumerate_alsa_devices() -> list[dict[str, Any]]:
 
 
 def enumerate_pa_sinks() -> list[dict[str, Any]]:
-    """Enumerate stereo-capable PulseAudio sinks via pactl JSON output.
+    """
+    Enumerate stereo-capable PulseAudio sinks via pactl JSON output.
 
     Uses pactl --format=json list sinks which always returns the sink's
     native sample rate and format regardless of active stream state —
