@@ -102,11 +102,6 @@ from music_assistant.controllers.player_queues.helpers import (
     sort_tracks,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
-from music_assistant.controllers.streams.constants import (
-    CONF_BUFFER_SIZE,
-    CONF_BUFFER_SIZE_DEFAULT,
-    BufferSize,
-)
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     ImpersonatedUser,
     get_current_user,
@@ -1083,9 +1078,6 @@ class PlayerQueuesController(CoreController):
 
         self._queues[queue_id] = queue
         self._queue_items[queue_id] = queue_items
-        # stamp smart-fades availability (derived from the global audio buffer size) so clients
-        # know whether the smart_crossfade option can be selected
-        queue.smart_fades_available = self._smart_fades_available()
         # seed crossfade_mode from the legacy smart_fades_mode player config for queues that were
         # persisted before this field existed (or were never persisted at all)
         # TODO: remove this migration seed after 2.11 release
@@ -2715,6 +2707,7 @@ class PlayerQueuesController(CoreController):
         # basic properties
         queue.display_name = player.state.name
         queue.available = player.state.available
+        queue.smart_fades_available = self.mass.streams.smart_fades_available
         queue.items = len(self._queue_items[queue_id])
 
         queue.state = (
@@ -3457,10 +3450,3 @@ class PlayerQueuesController(CoreController):
         if not fully_played and self._last_counted_play.get(queue_id) == queue_item_id:
             del self._last_counted_play[queue_id]
         return True
-
-    def _smart_fades_available(self) -> bool:
-        """Return whether smart crossfade is available (requires a larger audio buffer)."""
-        buffer_size = self.mass.config.get_raw_core_config_value(
-            "streams", CONF_BUFFER_SIZE, CONF_BUFFER_SIZE_DEFAULT
-        )
-        return BufferSize(str(buffer_size)) != BufferSize.MINIMAL

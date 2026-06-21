@@ -69,6 +69,7 @@ from music_assistant.controllers.streams.constants import (
     CONF_BUFFER_SIZE_DEFAULT,
     CONF_SMART_FADES_LOG_LEVEL,
     DEFAULT_PORT,
+    BufferSize,
     get_available_buffer_sizes,
 )
 from music_assistant.helpers.audio import (
@@ -168,6 +169,23 @@ class StreamsController(CoreController):
     def bind_ip(self) -> str:
         """Return the IP address this streamserver is bound to."""
         return self._bind_ip
+
+    @property
+    def smart_fades_available(self) -> bool:
+        """
+        Return whether smart crossfade can be used on this server.
+
+        Requires a large-enough audio buffer (at least balanced) and a loaded
+        smart fades audio analysis provider.
+        """
+        buffer_size = BufferSize(
+            self.mass.config.get_raw_core_config_value(
+                self.domain, CONF_BUFFER_SIZE, CONF_BUFFER_SIZE_DEFAULT
+            )
+        )
+        return (
+            buffer_size != BufferSize.MINIMAL and self.audio_analysis.smart_fades_provider_available
+        )
 
     async def get_config_entries(
         self, action: str | None = None, values: dict[str, ConfigValueType] | None = None
