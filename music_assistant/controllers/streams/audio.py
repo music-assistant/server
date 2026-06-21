@@ -69,16 +69,12 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.streams.audio_analysis import (
     LOUDNESS_ANALYSIS_DOMAIN,
-    SMART_FADES_ANALYSIS_DOMAIN,
 )
 from music_assistant.controllers.streams.audio_buffer import AudioBuffer
 from music_assistant.controllers.streams.constants import (
     CACHE_CATEGORY_RESOLVED_RADIO_URL,
     CACHE_PROVIDER,
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
-    CONF_BUFFER_SIZE,
-    CONF_BUFFER_SIZE_DEFAULT,
-    BufferSize,
 )
 from music_assistant.controllers.streams.ogg_handler import get_chained_ogg_stream
 from music_assistant.controllers.streams.smart_fades import SmartFadesMixer
@@ -1920,16 +1916,8 @@ class StreamsAudio:
             if flow_player
             else []
         )
-        # smart crossfade needs the smart_fades analysis provider (for beat/key data) and a
-        # non-minimal buffer for beat analysis; fall back to standard crossfade otherwise.
-        if smart_fades_mode == CrossfadeMode.SMART_CROSSFADE and (
-            self.mass.get_provider(SMART_FADES_ANALYSIS_DOMAIN) is None
-            or self.mass.config.get_raw_core_config_value(
-                "streams", CONF_BUFFER_SIZE, CONF_BUFFER_SIZE_DEFAULT
-            )
-            == BufferSize.MINIMAL
-        ):
-            smart_fades_mode = CrossfadeMode.STANDARD_CROSSFADE
+        # note: get_crossfade_mode() already falls back to standard when smart fades aren't
+        # available (no analysis provider / minimal buffer), so smart_fades_mode is safe to use.
         self.logger.info(
             "Start Queue Flow stream for Queue %s - crossfade: %s %s",
             queue.display_name,

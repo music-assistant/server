@@ -1072,8 +1072,12 @@ class ConfigController:
             # no changes
             return config
         self.set(conf_key, config.to_raw())
-        # apply immediately: restart playback if a changed setting requires a reload
         if changed_keys and (queue := self.mass.player_queues.get(queue_id)):
+            # refresh derived queue state (e.g. the effective smart-fades indicator) and notify
+            # clients so they don't see a stale value until the next unrelated queue update
+            queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
+            self.mass.player_queues.signal_update(queue_id)
+            # apply immediately: restart playback if a changed setting requires a reload
             requires_restart = any(
                 v.requires_reload
                 for v in config.values.values()

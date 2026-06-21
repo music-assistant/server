@@ -268,7 +268,9 @@ class SqueezelitePlayer(Player):
             if media.source_id and media.queue_item_id
             else None
         )
-        queue = self.mass.player_queues.get(self.player_id)
+        # crossfade is a queue-scoped setting; read it from the queue being played (source_id),
+        # which can differ from this player when playing on behalf of a group/linked queue
+        queue = self.mass.player_queues.get(media.source_id) if media.source_id else None
         crossfade_enabled = bool(
             queue and queue.crossfade_enabled and media.media_type == MediaType.TRACK
         )

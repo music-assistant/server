@@ -1006,6 +1006,8 @@ class PlayerQueuesController(CoreController):
         target_queue.repeat_mode = source_queue.repeat_mode
         target_queue.shuffle_enabled = source_queue.shuffle_enabled
         target_queue.crossfade_enabled = source_queue.crossfade_enabled
+        # refresh the derived smart-fades indicator for the target's own config/availability
+        target_queue.smart_fades_active = self.mass.streams.is_smart_fades_active(target_queue)
         target_queue.dont_stop_the_music_enabled = source_queue.dont_stop_the_music_enabled
         target_queue.radio_source = source_queue.radio_source
         target_queue.is_dynamic = source_queue.is_dynamic
