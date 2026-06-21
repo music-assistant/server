@@ -18,7 +18,12 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ContentType, MediaType, VolumeNormalizationMode
+from music_assistant_models.enums import (
+    ContentType,
+    CrossfadeMode,
+    MediaType,
+    VolumeNormalizationMode,
+)
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 
@@ -33,7 +38,6 @@ from music_assistant.controllers.streams.constants import (
     BufferSize,
 )
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
-from music_assistant.models.smart_fades import SmartFadesMode
 
 if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
@@ -395,9 +399,9 @@ class AudioBuffer:
         smart_fades_mode = (
             queue.crossfade_mode
             if queue and streamdetails.media_type == MediaType.TRACK
-            else SmartFadesMode.DISABLED
+            else CrossfadeMode.DISABLED
         )
-        if smart_fades_mode != SmartFadesMode.DISABLED:
+        if smart_fades_mode != CrossfadeMode.DISABLED:
             ready_threshold = 8
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC:
             # radio streams are continuous so the normalization will converge quickly,

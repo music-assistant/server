@@ -23,6 +23,7 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
+    CrossfadeMode,
     MediaType,
     PlayerFeature,
     ProviderType,
@@ -86,7 +87,6 @@ from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider
-from music_assistant.models.smart_fades import SmartFadesMode
 from music_assistant.providers.universal_group.constants import UGP_PREFIX
 from music_assistant.providers.universal_group.player import UniversalGroupPlayer
 
@@ -384,7 +384,7 @@ class StreamsController(CoreController):
             # gapless playback, we need to enforce flow mode
             queue_id
             and (queue := self.mass.player_queues.get(queue_id))
-            and queue.crossfade_mode != SmartFadesMode.DISABLED
+            and queue.crossfade_mode != CrossfadeMode.DISABLED
             and protocol_player
             and not protocol_player.supports_gapless
         )
@@ -646,14 +646,14 @@ class StreamsController(CoreController):
 
             if queue_item.media_type != MediaType.TRACK:
                 # no crossfade on non-tracks
-                smart_fades_mode = SmartFadesMode.DISABLED
+                smart_fades_mode = CrossfadeMode.DISABLED
             else:
                 smart_fades_mode = queue.crossfade_mode
                 standard_crossfade_duration = self.mass.config.get_raw_player_queue_config_value(
                     queue.queue_id, CONF_CROSSFADE_DURATION, 10
                 )
             if (
-                smart_fades_mode != SmartFadesMode.DISABLED
+                smart_fades_mode != CrossfadeMode.DISABLED
                 and PlayerFeature.GAPLESS_PLAYBACK not in player.state.supported_features
             ):
                 self.logger.warning(
@@ -661,9 +661,9 @@ class StreamsController(CoreController):
                     "consider enabling flow mode to enable crossfade on this player.",
                     player.state.name if player else "Unknown Player",
                 )
-                smart_fades_mode = SmartFadesMode.DISABLED
+                smart_fades_mode = CrossfadeMode.DISABLED
 
-            if smart_fades_mode != SmartFadesMode.DISABLED:
+            if smart_fades_mode != CrossfadeMode.DISABLED:
                 # crossfade is enabled, use special crossfaded single item stream
                 # where the crossfade of the next track is present in the stream of
                 # a single track. This only works if the player supports gapless playback!
@@ -820,12 +820,12 @@ class StreamsController(CoreController):
             queue.crossfade_mode
             if (queue := self.mass.player_queues.get(queue_id))
             and start_queue_item.media_type == MediaType.TRACK
-            else SmartFadesMode.DISABLED
+            else CrossfadeMode.DISABLED
         )
         flow_pcm_format = await self.audio.select_flow_pcm_format(
             player,
             start_streamdetails=start_queue_item.streamdetails,
-            smartfades_enabled=smart_fades_mode != SmartFadesMode.DISABLED,
+            smartfades_enabled=smart_fades_mode != CrossfadeMode.DISABLED,
         )
 
         # work out output format/details
@@ -1086,7 +1086,7 @@ class StreamsController(CoreController):
                 # does not support gapless playback, we need to enforce flow mode
                 queue_id
                 and (queue := self.mass.player_queues.get(queue_id))
-                and queue.crossfade_mode != SmartFadesMode.DISABLED
+                and queue.crossfade_mode != CrossfadeMode.DISABLED
                 and protocol_player
                 and not protocol_player.supports_gapless
             )

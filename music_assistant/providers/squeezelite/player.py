@@ -18,6 +18,7 @@ from aioslimproto.models import VisualisationType as SlimVisualisationType
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
+    CrossfadeMode,
     IdentifierType,
     MediaType,
     PlaybackState,
@@ -36,7 +37,6 @@ from music_assistant.constants import (
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.models.smart_fades import SmartFadesMode
 
 from .constants import (
     CONF_ENTRY_DISPLAY,
@@ -273,12 +273,12 @@ class SqueezelitePlayer(Player):
         smart_fades_mode = (
             queue.crossfade_mode
             if queue and media.media_type == MediaType.TRACK
-            else SmartFadesMode.DISABLED
+            else CrossfadeMode.DISABLED
         )
         master_audio_format = await self.mass.streams.audio.select_flow_pcm_format(
             self,
             start_streamdetails=start_queue_item.streamdetails if start_queue_item else None,
-            smartfades_enabled=smart_fades_mode != SmartFadesMode.DISABLED,
+            smartfades_enabled=smart_fades_mode != CrossfadeMode.DISABLED,
         )
 
         # select audio source, we force flow mode
