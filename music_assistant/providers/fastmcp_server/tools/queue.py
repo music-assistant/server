@@ -180,11 +180,12 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
             - ``replace_next``: Replace all items after the current one.
             - ``replace``: Clear the queue and replace with the new media.
         """
-        try:
-            queue_option = QueueOption(option)
-        except ValueError as exc:
-            valid = ", ".join(f"``{e.value}``" for e in QueueOption)
-            raise ToolError(f"Invalid option {option!r}. Valid options: {valid}") from exc
+        # QueueOption._missing_ silently falls back to UNKNOWN for invalid values
+        # instead of raising ValueError, so we must validate explicitly.
+        queue_option = QueueOption(option)
+        if queue_option is QueueOption.UNKNOWN:
+            valid = ", ".join(f"``{e.value}``" for e in QueueOption if e is not QueueOption.UNKNOWN)
+            raise ToolError(f"Invalid option {option!r}. Valid options: {valid}")
 
         await mass.player_queues.play_media(queue_id, uri, option=queue_option)
 
