@@ -564,7 +564,7 @@ class SoundcloudMusicProvider(MusicProvider):
             provider=self.domain,
             name=name,
             version=version,
-            duration=track_obj["duration"] / 1000,
+            duration=int(track_obj["duration"] / 1000),
             provider_mappings={
                 ProviderMapping(
                     item_id=track_id,
