@@ -109,7 +109,8 @@ class BridgePlayerRole(Role):
         bit_depth: int = BRIDGE_BIT_DEPTH,
         channels: int = BRIDGE_CHANNELS,
     ) -> None:
-        """Set up audio requirements for bridge PCM format.
+        """
+        Set up audio requirements for bridge PCM format.
 
         Call with the sink's native rate/depth so MA transcodes to the
         correct format before delivering chunks. Defaults to the bridge
