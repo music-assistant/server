@@ -1053,7 +1053,7 @@ class ConfigController:
         """
         Return (raw) single config(entry) value for a queue.
 
-        Note that this only returns the stored value without any validation or default.
+        Returns the stored value as-is (no validation), or the given default when not stored.
         """
         return cast(
             "ConfigValueType",

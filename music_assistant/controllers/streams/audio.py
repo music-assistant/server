@@ -1902,8 +1902,9 @@ class StreamsAudio:
             standard_crossfade_duration = 0
         else:
             crossfade_mode = self.mass.streams.get_crossfade_mode(queue)
+            # fallback matches CONF_ENTRY_CROSSFADE_DURATION's default
             standard_crossfade_duration = self.mass.config.get_raw_player_queue_config_value(
-                queue.queue_id, CONF_CROSSFADE_DURATION, 10
+                queue.queue_id, CONF_CROSSFADE_DURATION, 8
             )
         flow_mode_sample_rate_conf = self.mass.config.get_raw_player_config_value(
             queue.queue_id, CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART

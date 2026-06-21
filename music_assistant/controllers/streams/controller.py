@@ -409,9 +409,10 @@ class StreamsController(CoreController):
             raise InvalidDataError("Can not resolve stream URL: Invalid PlayerMedia data")
         queue_id = media.source_id
         crossfade_needs_flow_mode = (
-            # if the player(queue) has crossfade enabled but the player(protocol) does not support
-            # gapless playback, we need to enforce flow mode
-            queue_id
+            # crossfade only applies to tracks; if the queue has it enabled but the player(protocol)
+            # does not support gapless playback, we need to enforce flow mode
+            media.media_type == MediaType.TRACK
+            and queue_id
             and (queue := self.mass.player_queues.get(queue_id))
             and queue.crossfade_enabled
             and protocol_player
@@ -678,8 +679,9 @@ class StreamsController(CoreController):
                 crossfade_mode = CrossfadeMode.DISABLED
             else:
                 crossfade_mode = self.get_crossfade_mode(queue)
+                # fallback matches CONF_ENTRY_CROSSFADE_DURATION's default
                 standard_crossfade_duration = self.mass.config.get_raw_player_queue_config_value(
-                    queue.queue_id, CONF_CROSSFADE_DURATION, 10
+                    queue.queue_id, CONF_CROSSFADE_DURATION, 8
                 )
             if (
                 crossfade_mode != CrossfadeMode.DISABLED
@@ -1110,9 +1112,10 @@ class StreamsController(CoreController):
             protocol_player = self.mass.players.get_player(player_id) if player_id else None
             queue_id = media.source_id
             crossfade_needs_flow_mode = (
-                # if the player(queue) has crossfade enabled but the player(protocol)
-                # does not support gapless playback, we need to enforce flow mode
-                queue_id
+                # crossfade only applies to tracks; if the queue has it enabled but the
+                # player(protocol) does not support gapless playback, we need to enforce flow mode
+                media.media_type == MediaType.TRACK
+                and queue_id
                 and (queue := self.mass.player_queues.get(queue_id))
                 and queue.crossfade_enabled
                 and protocol_player
