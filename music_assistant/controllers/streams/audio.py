@@ -1146,7 +1146,7 @@ class StreamsAudio:
         return fmt
 
     async def select_pcm_format(
-        self, player: Player, streamdetails: StreamDetails, smartfades_enabled: bool
+        self, player: Player, streamdetails: StreamDetails, crossfade_enabled: bool
     ) -> AudioFormat:
         """
         Select the internal PCM format for streaming a single queue item.
@@ -1161,7 +1161,7 @@ class StreamsAudio:
 
         :param player: The player requesting the stream.
         :param streamdetails: Stream details for the current item.
-        :param smartfades_enabled: Whether crossfade is enabled for this stream.
+        :param crossfade_enabled: Whether crossfade is enabled for this stream.
         """
         if streamdetails.media_type == MediaType.AUDIO_SOURCE:
             return self._select_audio_source_pcm_format(player, streamdetails)
@@ -1174,16 +1174,14 @@ class StreamsAudio:
             (r for r in supported_sample_rates if r <= streamdetails.audio_format.sample_rate),
             default=min(supported_sample_rates),
         )
-        content_type, bit_depth = self._pick_pcm_bit_depth(
-            player, streamdetails, smartfades_enabled
-        )
+        content_type, bit_depth = self._pick_pcm_bit_depth(player, streamdetails, crossfade_enabled)
         pcm_format = AudioFormat(
             sample_rate=output_sample_rate,
             content_type=content_type,
             bit_depth=bit_depth,
             channels=streamdetails.audio_format.channels,
         )
-        if smartfades_enabled:
+        if crossfade_enabled:
             pcm_format.channels = 2
         return pcm_format
 
@@ -1191,7 +1189,7 @@ class StreamsAudio:
         self,
         player: Player,
         start_streamdetails: StreamDetails | None = None,
-        smartfades_enabled: bool = False,
+        crossfade_enabled: bool = False,
     ) -> AudioFormat:
         """
         Select the internal PCM format for a Queue Flow Mode stream.
@@ -1212,7 +1210,7 @@ class StreamsAudio:
             Required for the anchored modes ('smart' / 'bit_perfect') and for the
             bit-depth optimization. May be omitted for the fixed-rate modes — when
             omitted the bit depth defaults to F32.
-        :param smartfades_enabled: Whether the queue will use crossfade transitions.
+        :param crossfade_enabled: Whether the queue will use crossfade transitions.
         """
         if start_streamdetails is not None and (
             start_streamdetails.media_type == MediaType.AUDIO_SOURCE
@@ -1244,7 +1242,7 @@ class StreamsAudio:
             output_sample_rate = _snap_supported_rate_up(target_rate, supported_sample_rates)
 
         content_type, bit_depth = self._pick_pcm_bit_depth(
-            player, start_streamdetails, smartfades_enabled
+            player, start_streamdetails, crossfade_enabled
         )
         return AudioFormat(
             content_type=content_type,
@@ -1541,7 +1539,7 @@ class StreamsAudio:
         player: Player,
         queue_item: QueueItem,
         pcm_format: AudioFormat,
-        smart_fades_mode: CrossfadeMode = CrossfadeMode.SMART_CROSSFADE,
+        crossfade_mode: CrossfadeMode = CrossfadeMode.SMART_CROSSFADE,
         standard_crossfade_duration: int = 10,
     ) -> AsyncGenerator[bytes]:
         """Get the audio stream for a single queue item with (smart) crossfade to the next item."""
@@ -1587,7 +1585,7 @@ class StreamsAudio:
             queue_item.name,
             queue.display_name,
             player.name,
-            smart_fades_mode,
+            crossfade_mode,
             "true" if crossfade_data else "false",
         )
 
@@ -1596,7 +1594,7 @@ class StreamsAudio:
         # calculate crossfade buffer size
         crossfade_buffer_duration = (
             SMART_CROSSFADE_DURATION
-            if smart_fades_mode == CrossfadeMode.SMART_CROSSFADE
+            if crossfade_mode == CrossfadeMode.SMART_CROSSFADE
             else standard_crossfade_duration
         )
         crossfade_buffer_duration = min(
@@ -1720,11 +1718,11 @@ class StreamsAudio:
             next_pcm = await self.select_pcm_format(
                 player=player,
                 streamdetails=next_queue_item.streamdetails,
-                smartfades_enabled=True,
+                crossfade_enabled=True,
             )
             crossfade_allowed = self.crossfade_allowed(
                 queue_item,
-                smart_fades_mode=smart_fades_mode,
+                crossfade_mode=crossfade_mode,
                 player_id=player.player_id,
                 flow_mode=False,
                 next_queue_item=next_queue_item,
@@ -1776,7 +1774,7 @@ class StreamsAudio:
                     fade_out_streamdetails=streamdetails,
                     pcm_format=pcm_format,
                     standard_crossfade_duration=standard_crossfade_duration,
-                    mode=smart_fades_mode,
+                    mode=crossfade_mode,
                     fade_out_data=fade_out_data,
                     fade_in_bytes_len=crossfade_buffer_size,
                 )
@@ -1900,10 +1898,10 @@ class StreamsAudio:
         pcm_sample_size = pcm_format.pcm_sample_size
         if start_queue_item.media_type != MediaType.TRACK:
             # no crossfade on non-tracks
-            smart_fades_mode = CrossfadeMode.DISABLED
+            crossfade_mode = CrossfadeMode.DISABLED
             standard_crossfade_duration = 0
         else:
-            smart_fades_mode = self.mass.streams.get_crossfade_mode(queue)
+            crossfade_mode = self.mass.streams.get_crossfade_mode(queue)
             standard_crossfade_duration = self.mass.config.get_raw_player_queue_config_value(
                 queue.queue_id, CONF_CROSSFADE_DURATION, 10
             )
@@ -1917,13 +1915,13 @@ class StreamsAudio:
             else []
         )
         # note: get_crossfade_mode() already falls back to standard when smart fades aren't
-        # available (no analysis provider / minimal buffer), so smart_fades_mode is safe to use.
+        # available (no analysis provider / minimal buffer), so crossfade_mode is safe to use.
         self.logger.info(
             "Start Queue Flow stream for Queue %s - crossfade: %s %s",
             queue.display_name,
-            smart_fades_mode,
+            crossfade_mode,
             f"({standard_crossfade_duration}s)"
-            if smart_fades_mode == CrossfadeMode.STANDARD_CROSSFADE
+            if crossfade_mode == CrossfadeMode.STANDARD_CROSSFADE
             else "",
         )
         total_chunks_received = 0
@@ -1993,7 +1991,7 @@ class StreamsAudio:
             # calculate crossfade buffer size
             crossfade_buffer_duration = (
                 SMART_CROSSFADE_DURATION
-                if smart_fades_mode == CrossfadeMode.SMART_CROSSFADE
+                if crossfade_mode == CrossfadeMode.SMART_CROSSFADE
                 else standard_crossfade_duration
             )
             crossfade_buffer_duration = min(
@@ -2024,14 +2022,14 @@ class StreamsAudio:
                 last_fadeout_part
                 and last_streamdetails
                 and crossfade_buffer_size > 0
-                and smart_fades_mode != CrossfadeMode.DISABLED
+                and crossfade_mode != CrossfadeMode.DISABLED
             ):
                 crossfade_smart_fade = await self.smart_fades_mixer.build(
                     fade_in_streamdetails=queue_track.streamdetails,
                     fade_out_streamdetails=last_streamdetails,
                     pcm_format=pcm_format,
                     standard_crossfade_duration=standard_crossfade_duration,
-                    mode=smart_fades_mode,
+                    mode=crossfade_mode,
                     fade_out_data=last_fadeout_part,
                     fade_in_bytes_len=crossfade_buffer_size,
                 )
@@ -2077,7 +2075,7 @@ class StreamsAudio:
                         queue.queue_id, queue_track.queue_item_id
                     )
 
-                if smart_fades_mode == CrossfadeMode.DISABLED:
+                if crossfade_mode == CrossfadeMode.DISABLED:
                     # no cross/smart fade: yield chunks directly without intermediate buffer
                     yield chunk
                     bytes_written += len(chunk)
@@ -2190,7 +2188,7 @@ class StreamsAudio:
                 last_fadeout_part = b""
             if self.crossfade_allowed(
                 queue_track,
-                smart_fades_mode=smart_fades_mode,
+                crossfade_mode=crossfade_mode,
                 player_id=queue.queue_id,
                 flow_mode=True,
             ):
@@ -2204,7 +2202,7 @@ class StreamsAudio:
                         await asyncio.sleep(0)
                     bytes_written += len(remaining_bytes)
                 del remaining_bytes
-            elif smart_fades_mode != CrossfadeMode.DISABLED and crossfade_buffer:
+            elif crossfade_mode != CrossfadeMode.DISABLED and crossfade_buffer:
                 bytes_written += len(crossfade_buffer)
                 for pcm_slice in iter_pcm_slices(bytes(crossfade_buffer), pcm_format, 1000):
                     yield pcm_slice
@@ -2276,7 +2274,7 @@ class StreamsAudio:
     def crossfade_allowed(
         self,
         queue_item: QueueItem,
-        smart_fades_mode: CrossfadeMode,
+        crossfade_mode: CrossfadeMode,
         player_id: str,
         flow_mode: bool = False,
         next_queue_item: QueueItem | None = None,
@@ -2284,7 +2282,7 @@ class StreamsAudio:
         next_sample_rate: int | None = None,
     ) -> bool:
         """Get the crossfade config for a queue item."""
-        if smart_fades_mode == CrossfadeMode.DISABLED:
+        if crossfade_mode == CrossfadeMode.DISABLED:
             return False
         if not (self.mass.player_queues.get(queue_item.queue_id)):
             return False  # just a guard
@@ -2765,7 +2763,7 @@ class StreamsAudio:
         self,
         player: Player,
         streamdetails: StreamDetails | None,
-        smartfades_enabled: bool,
+        crossfade_enabled: bool,
     ) -> tuple[ContentType, int]:
         """
         Return ``(content_type, bit_depth)`` for an internal PCM stream.
@@ -2780,7 +2778,7 @@ class StreamsAudio:
         if streamdetails is None:
             return INTERNAL_PCM_FORMAT.content_type, INTERNAL_PCM_FORMAT.bit_depth
         needs_headroom = (
-            smartfades_enabled
+            crossfade_enabled
             or streamdetails.volume_normalization_mode != VolumeNormalizationMode.DISABLED
             or self._resolve_player_dsp_config(player).enabled
         )

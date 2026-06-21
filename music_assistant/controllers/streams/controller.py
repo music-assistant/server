@@ -619,7 +619,7 @@ class StreamsController(CoreController):
 
             # pick output format based on the streamdetails and player capabilities
             pcm_format = await self.audio.select_pcm_format(
-                player=player, streamdetails=queue_item.streamdetails, smartfades_enabled=True
+                player=player, streamdetails=queue_item.streamdetails, crossfade_enabled=True
             )
             output_format = await self.audio.get_output_format(
                 output_format_str=request.match_info["fmt"],
@@ -675,14 +675,14 @@ class StreamsController(CoreController):
 
             if queue_item.media_type != MediaType.TRACK:
                 # no crossfade on non-tracks
-                smart_fades_mode = CrossfadeMode.DISABLED
+                crossfade_mode = CrossfadeMode.DISABLED
             else:
-                smart_fades_mode = self.get_crossfade_mode(queue)
+                crossfade_mode = self.get_crossfade_mode(queue)
                 standard_crossfade_duration = self.mass.config.get_raw_player_queue_config_value(
                     queue.queue_id, CONF_CROSSFADE_DURATION, 10
                 )
             if (
-                smart_fades_mode != CrossfadeMode.DISABLED
+                crossfade_mode != CrossfadeMode.DISABLED
                 and PlayerFeature.GAPLESS_PLAYBACK not in player.state.supported_features
             ):
                 self.logger.warning(
@@ -690,9 +690,9 @@ class StreamsController(CoreController):
                     "consider enabling flow mode to enable crossfade on this player.",
                     player.state.name if player else "Unknown Player",
                 )
-                smart_fades_mode = CrossfadeMode.DISABLED
+                crossfade_mode = CrossfadeMode.DISABLED
 
-            if smart_fades_mode != CrossfadeMode.DISABLED:
+            if crossfade_mode != CrossfadeMode.DISABLED:
                 # crossfade is enabled, use special crossfaded single item stream
                 # where the crossfade of the next track is present in the stream of
                 # a single track. This only works if the player supports gapless playback!
@@ -700,7 +700,7 @@ class StreamsController(CoreController):
                     player=player,
                     queue_item=queue_item,
                     pcm_format=pcm_format,
-                    smart_fades_mode=smart_fades_mode,
+                    crossfade_mode=crossfade_mode,
                     standard_crossfade_duration=standard_crossfade_duration,
                 )
             else:
@@ -845,7 +845,7 @@ class StreamsController(CoreController):
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {start_queue_item_id}")
 
         # select the PCM format for the flow stream, anchored on the first track
-        smart_fades_mode = (
+        crossfade_mode = (
             self.get_crossfade_mode(queue)
             if start_queue_item.media_type == MediaType.TRACK
             else CrossfadeMode.DISABLED
@@ -853,7 +853,7 @@ class StreamsController(CoreController):
         flow_pcm_format = await self.audio.select_flow_pcm_format(
             player,
             start_streamdetails=start_queue_item.streamdetails,
-            smartfades_enabled=smart_fades_mode != CrossfadeMode.DISABLED,
+            crossfade_enabled=crossfade_mode != CrossfadeMode.DISABLED,
         )
 
         # work out output format/details

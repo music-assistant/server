@@ -277,7 +277,7 @@ class SqueezelitePlayer(Player):
         master_audio_format = await self.mass.streams.audio.select_flow_pcm_format(
             self,
             start_streamdetails=start_queue_item.streamdetails if start_queue_item else None,
-            smartfades_enabled=crossfade_enabled,
+            crossfade_enabled=crossfade_enabled,
         )
 
         # select audio source, we force flow mode
