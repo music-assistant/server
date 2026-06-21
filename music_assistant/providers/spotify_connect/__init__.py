@@ -219,8 +219,9 @@ class SpotifyConnectProvider(PluginProvider):
         # cleared on 'inactive'); gates get_stream_details and transport commands.
         self._spotify_session_active: bool = False
         # holds the single in-flight deferred play_media task scheduled from a
-        # 'playing' event; cancelled if a 'paused' / 'active' event arrives during
-        # the debounce so we don't act on stale state from a dying session.
+        # 'playing' event; cancelled when a 'paused' / 'stopped' / 'active' event
+        # arrives during the debounce so we don't act on stale state from a dying
+        # session.
         self._pending_play_media_task: asyncio.Task[None] | None = None
         self._last_session_active_time: float = 0
         self._last_volume_sent: int | None = None
@@ -586,10 +587,10 @@ class SpotifyConnectProvider(PluginProvider):
         """
         Trigger play_media after a short debounce.
 
-        The daemon can emit a stale 'playing' event from a dying session moments
-        before reconnecting; firing play_media synchronously on that event lands
-        our stream on a pipe that's about to lose its writer. Waiting briefly and
-        aborting on a 'paused' / 'active' event in the meantime avoids the loop.
+        The daemon can emit a stale 'playing' from a dying session just before it
+        reconnects; acting on it immediately would start a stream for a session
+        that is about to be replaced. Debouncing — and cancelling the task on a
+        later 'paused' / 'stopped' / 'active' event — avoids a play→stop→replay loop.
         """
         try:
             await asyncio.sleep(PLAY_MEDIA_DEBOUNCE_S)
@@ -757,6 +758,10 @@ class SpotifyConnectProvider(PluginProvider):
         if event_type == "active":
             self._spotify_session_active = True
             self._last_session_active_time = time.time()
+            # A (re)activation supersedes any deferred play_media scheduled from a
+            # previous session's stale 'playing'; the fresh 'playing' that follows
+            # schedules a new one.
+            self._cancel_pending_play_media()
             self.logger.info("Spotify Connect session active for %s", self.name)
         elif event_type == "inactive":
             self.logger.info("Spotify Connect session inactive for %s", self.name)
