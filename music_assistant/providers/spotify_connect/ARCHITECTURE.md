@@ -15,28 +15,21 @@ its local HTTP + WebSocket API. Music Assistant needs **no** Spotify Web API cre
 ## How it works
 
 ```
-┌─────────────────┐
-│   Spotify App   │  (mobile / desktop / web)
-└────────┬────────┘
-         │ Spotify Connect protocol (mDNS discovery + audio)
-         ▼
-┌──────────────────────────────────────────────────────────┐
-│  Spotify Connect Provider (one instance per player)        │
-│                                                            │
-│   go-librespot subprocess          GoLibrespotClient        │
-│   ┌──────────────────────┐   HTTP  ┌────────────────────┐  │
-│   │ Connect auth          │◀───────│ REST control:      │  │
-│   │ Ogg Vorbis → PCM      │   WS    │  resume/pause/...  │  │
-│   │ HTTP+WS API server    │───────▶│ /events listener:  │  │
-│   │ (loopback, per-inst.) │        │  state + metadata  │  │
-│   └──────────┬───────────┘        └────────────────────┘  │
-│              │ s16le PCM on stdout                          │
-│              ▼                                              │
-│   get_audio_stream (CUSTOM): source-paced, ends on pause    │
-│              │                                              │
-│              ▼  MA streams controller (ffmpeg resample)     │
-│         Music Assistant player                              │
-└──────────────────────────────────────────────────────────┘
+   Spotify app  (mobile / desktop / web)
+        │   Connect protocol: mDNS discovery + audio
+        ▼
+   go-librespot daemon  (one instance per player)
+        │   decodes Ogg Vorbis → s16le PCM on stdout, and is driven by
+        │   GoLibrespotClient over its local HTTP + WS API:
+        │   REST control (resume/pause/seek/volume) + /events (state, metadata)
+        ▼
+   get_audio_stream  (CUSTOM stream: source-paced, ends on pause)
+        │
+        ▼
+   MA streams controller  (ffmpeg resample, per player)
+        │
+        ▼
+   Music Assistant player
 ```
 
 ### Key components
