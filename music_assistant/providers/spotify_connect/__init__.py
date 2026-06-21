@@ -857,10 +857,13 @@ class SpotifyConnectProvider(PluginProvider):
             return
         if not self._in_use_by_queue:
             return
+        previous_volume = self._last_volume_sent
         self._last_volume_sent = volume
         try:
             await self.mass.players.cmd_volume_set(self._in_use_by_queue, volume)
         except Exception as err:
             # Volume sync is best-effort: the player may not support volume, or the
-            # command may fail. Never let it bubble up and drop the events loop.
+            # command may fail. Restore the cached value so a retry isn't wrongly
+            # deduped, and never let it bubble up and drop the events loop.
+            self._last_volume_sent = previous_volume
             self.logger.debug("Could not set volume on %s: %s", self._in_use_by_queue, err)
