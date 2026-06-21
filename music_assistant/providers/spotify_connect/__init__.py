@@ -95,10 +95,10 @@ PLAY_MEDIA_DEBOUNCE_S = 0.5
 INITIAL_VOLUME_GRACE_S = 3.0
 
 # User-facing message for the "not the active Spotify device" failure.
+# {0} is the Spotify Connect device's published name (see _not_active_error).
 NOT_ACTIVE_DEVICE_MESSAGE = (
-    "Music Assistant is not the active Spotify playback device. "
-    "Open the Spotify app, pick Music Assistant as the playback device, "
-    "and try again."
+    "'{0}' is not the active Spotify playback device. "
+    "Open the Spotify app, select it as the playback device, and try again."
 )
 
 
@@ -495,10 +495,12 @@ class SpotifyConnectProvider(PluginProvider):
             raise
 
     def _not_active_error(self) -> AudioError:
-        """Build the localized 'Music Assistant is not the active Spotify device' error."""
+        """Build the localized 'not the active Spotify device' error, naming this device."""
+        connect_name = cast("str", self.config.get_value(CONF_PUBLISH_NAME)) or self.name
         return AudioError(
-            NOT_ACTIVE_DEVICE_MESSAGE,
+            NOT_ACTIVE_DEVICE_MESSAGE.format(connect_name),
             translation_key="not_active_device",
+            translation_args=[connect_name],
             translation_owner=self.translation_owner,
         )
 
@@ -724,6 +726,12 @@ class SpotifyConnectProvider(PluginProvider):
             finally:
                 if proc:
                     await proc.close()
+                # The daemon — and thus the Spotify session — is gone. Reset session
+                # state so a dead/restarting daemon isn't treated as active and
+                # controllable; a fresh 'active' event re-establishes it on reconnect.
+                self._proc = None
+                self._playing = False
+                self._spotify_session_active = False
             if self._stop_called:
                 break
             self.logger.info("Spotify Connect background daemon stopped for %s", self.name)

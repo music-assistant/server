@@ -13,7 +13,7 @@
     }
   },
   "errors": {
-    "not_active_device": "Music Assistant is not the active Spotify playback device. Open the Spotify app, pick Music Assistant as the playback device, and try again."
+    "not_active_device": "'{0}' is not the active Spotify playback device. Open the Spotify app, select it as the playback device, and try again."
   },
   "manifest": {
     "description": "Makes a Music Assistant player appear as a device in the official Spotify app via Spotify Connect."
