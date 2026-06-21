@@ -2456,7 +2456,7 @@ class PlayerQueuesController(CoreController):
                     # items skipped as unplayable); stop waiting once it has no current item
                     current_item = queue.current_item
                     if current_item is None:
-                        return
+                        return  # type: ignore[unreachable]
                     if current_item.queue_item_id == item_id_in_buffer:
                         break
                     retries -= 1
