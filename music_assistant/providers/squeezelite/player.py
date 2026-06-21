@@ -31,13 +31,11 @@ from music_assistant.constants import (
     CONF_ENTRY_HTTP_PROFILE_FORCED_2,
     CONF_ENTRY_SYNC_ADJUST,
     CONF_OUTPUT_CODEC,
-    CONF_SMART_FADES_MODE,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.models.smart_fades import SmartFadesMode
 
 from .constants import (
     CONF_ENTRY_DISPLAY,
@@ -270,20 +268,16 @@ class SqueezelitePlayer(Player):
             if media.source_id and media.queue_item_id
             else None
         )
-        smart_fades_mode = (
-            await self.mass.config.get_player_config_value(
-                self.player_id,
-                CONF_SMART_FADES_MODE,
-                default=SmartFadesMode.DISABLED,
-                return_type=SmartFadesMode,
-            )
-            if media.media_type == MediaType.TRACK
-            else SmartFadesMode.DISABLED
+        # crossfade is a queue-scoped setting; read it from the queue being played (source_id),
+        # which can differ from this player when playing on behalf of a group/linked queue
+        queue = self.mass.player_queues.get(media.source_id) if media.source_id else None
+        crossfade_enabled = bool(
+            queue and queue.crossfade_enabled and media.media_type == MediaType.TRACK
         )
         master_audio_format = await self.mass.streams.audio.select_flow_pcm_format(
             self,
             start_streamdetails=start_queue_item.streamdetails if start_queue_item else None,
-            smartfades_enabled=smart_fades_mode != SmartFadesMode.DISABLED,
+            crossfade_enabled=crossfade_enabled,
         )
 
         # select audio source, we force flow mode

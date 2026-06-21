@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.enums import ContentType, CrossfadeMode, MediaType, StreamType
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -43,7 +43,6 @@ from music_assistant.controllers.streams.smart_fades.filters import (
 from music_assistant.controllers.streams.smart_fades.helpers import SMART_CROSSFADE_DURATION
 from music_assistant.controllers.streams.smart_fades.mixer import SmartFadesMixer
 from music_assistant.models.audio_analysis import AudioAnalysisData
-from music_assistant.models.smart_fades import SmartFadesMode
 
 PCM = AudioFormat(
     content_type=ContentType.PCM_S16LE,
@@ -447,7 +446,7 @@ class TestMixerBuild:
             fade_out_streamdetails=_streamdetails("out"),
             pcm_format=PCM,
             standard_crossfade_duration=8,
-            mode=SmartFadesMode.STANDARD_CROSSFADE,
+            mode=CrossfadeMode.STANDARD_CROSSFADE,
             fade_out_data=b"\x00" * _seconds(20),
             fade_in_bytes_len=_seconds(20),
         )
@@ -472,7 +471,7 @@ class TestMixerBuild:
             fade_out_streamdetails=_streamdetails("out"),
             pcm_format=PCM,
             standard_crossfade_duration=10,
-            mode=SmartFadesMode.SMART_CROSSFADE,
+            mode=CrossfadeMode.SMART_CROSSFADE,
             fade_out_data=fade_out_data,
             fade_in_bytes_len=_seconds(SMART_CROSSFADE_DURATION),
         )
@@ -516,7 +515,7 @@ class TestMixerBuild:
             fade_out_streamdetails=_streamdetails("out"),
             pcm_format=PCM,
             standard_crossfade_duration=10,
-            mode=SmartFadesMode.SMART_CROSSFADE,
+            mode=CrossfadeMode.SMART_CROSSFADE,
             fade_out_data=b"\x00" * _seconds(45),
             fade_in_bytes_len=_seconds(45),
         )
@@ -544,7 +543,7 @@ class TestMixerBuild:
             fade_out_streamdetails=_streamdetails("out"),
             pcm_format=PCM,
             standard_crossfade_duration=10,
-            mode=SmartFadesMode.SMART_CROSSFADE,
+            mode=CrossfadeMode.SMART_CROSSFADE,
             fade_out_data=b"\x00" * _seconds(30),
             fade_in_bytes_len=_seconds(30),
         )
@@ -567,7 +566,7 @@ class TestMixerBuild:
             fade_out_streamdetails=_streamdetails("out"),
             pcm_format=PCM,
             standard_crossfade_duration=10,
-            mode=SmartFadesMode.STANDARD_CROSSFADE,
+            mode=CrossfadeMode.STANDARD_CROSSFADE,
             fade_out_data=b"\x00" * _seconds(15),
             fade_in_bytes_len=_seconds(15),
         )
@@ -593,7 +592,7 @@ class TestMixerBuild:
             fade_out_streamdetails=_streamdetails("a"),
             pcm_format=PCM,
             standard_crossfade_duration=10,
-            mode=SmartFadesMode.STANDARD_CROSSFADE,
+            mode=CrossfadeMode.STANDARD_CROSSFADE,
             fade_out_data=fade_out_data,
             fade_in_bytes_len=_seconds(45),
         )
@@ -617,7 +616,7 @@ class TestMixerBuild:
             fade_out_streamdetails=_streamdetails("a"),
             pcm_format=PCM,
             standard_crossfade_duration=10,
-            mode=SmartFadesMode.SMART_CROSSFADE,
+            mode=CrossfadeMode.SMART_CROSSFADE,
             fade_out_data=fade_out_data,
             fade_in_bytes_len=_seconds(45),
         )
@@ -637,7 +636,7 @@ class TestMixerBuild:
             fade_out_streamdetails=_streamdetails("a"),
             pcm_format=PCM,
             standard_crossfade_duration=10,
-            mode=SmartFadesMode.SMART_CROSSFADE,
+            mode=CrossfadeMode.SMART_CROSSFADE,
             fade_out_data=b"\x00" * _seconds(45),
             fade_in_bytes_len=_seconds(45),
         )
@@ -658,7 +657,7 @@ class TestMixerBuild:
             fade_out_streamdetails=_streamdetails("a"),
             pcm_format=PCM,
             standard_crossfade_duration=10,
-            mode=SmartFadesMode.STANDARD_CROSSFADE,
+            mode=CrossfadeMode.STANDARD_CROSSFADE,
             fade_out_data=b"\x00" * _seconds(45),
             fade_in_bytes_len=_seconds(45),
         )
@@ -685,7 +684,7 @@ class TestMixerBuild:
             fade_out_streamdetails=_streamdetails("a"),
             pcm_format=PCM,
             standard_crossfade_duration=10,
-            mode=SmartFadesMode.STANDARD_CROSSFADE,
+            mode=CrossfadeMode.STANDARD_CROSSFADE,
             fade_out_data=fade_out_data,
             fade_in_bytes_len=_seconds(45),
         )
@@ -724,7 +723,7 @@ class TestMixerBuild:
             fade_out_streamdetails=_streamdetails("a"),
             pcm_format=PCM,
             standard_crossfade_duration=10,
-            mode=SmartFadesMode.STANDARD_CROSSFADE,
+            mode=CrossfadeMode.STANDARD_CROSSFADE,
             fade_out_data=fade_out_data,
             fade_in_bytes_len=_seconds(45),
         )
