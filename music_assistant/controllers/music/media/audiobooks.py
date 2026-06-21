@@ -271,14 +271,15 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
         # The query gives distinct titles, and a provider mappings column to ensure user filtering
         query = """
             SELECT distinct json_extract(metadata_iter.value, '$.title') AS title, pm as provider_mappings FROM (
-                SELECT pm, json_extract("metadata", "$.collections") as md FROM(
-                    SELECT
-                        * from audiobooks,
-                        (SELECT JSON_GROUP_ARRAY(
+                SELECT pm, json_extract("metadata", "$.collections") as md FROM (
+                    SELECT * from audiobooks, (
+                        SELECT JSON_GROUP_ARRAY(
                             json_object(
                                     'provider_instance', audiobook_pm.provider_instance
                             )
-                        )as pm FROM provider_mappings audiobook_pm WHERE audiobook_pm.item_id = item_id AND audiobook_pm.media_type = 'audiobook') AS provider_mappings
+                        ) as pm FROM provider_mappings audiobook_pm WHERE audiobook_pm.item_id = item_id
+                                                                    AND audiobook_pm.media_type = 'audiobook'
+                    ) AS provider_mappings
                  )
             ), json_each(md) as metadata_iter
         """
@@ -313,12 +314,14 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
     async def get_collection(self, title: str, search: str | None = None) -> AudiobookCollection:
         """Get a single, sorted collection."""
         # The query yields all possible item_ids
-        query = f"""
-        SELECT item_id FROM (
-            SELECT * FROM audiobooks WHERE json_extract(audiobooks.metadata, '$.collections') IS NOT NULL AND json_extract(audiobooks.metadata, '$.collections') != '[]'
-            ),
-        json_each(json_extract("metadata", "$.collections")) WHERE json_extract(json_each.value, '$.title') = '{title}'
-        """
+        query = (
+            "SELECT item_id FROM ("
+            "   SELECT * FROM audiobooks WHERE "
+            '       json_extract(audiobooks.metadata, "$.collections") IS NOT NULL AND '
+            '       json_extract(audiobooks.metadata, "$.collections") != "[]" '
+            '), json_each(json_extract("metadata", "$.collections")) WHERE '
+            f'json_extract(json_each.value, "$.title") = "{title}"'
+        )
         rows = await self.mass.music.database.get_rows_from_query(query, params={"title": title})
         item_ids: list[int] = []
         for row in rows:
