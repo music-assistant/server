@@ -362,9 +362,7 @@ class PlayerQueuesController(CoreController):
         """Configure crossfade setting on the queue."""
         queue = self._queues[queue_id]
         if crossfade_mode == CrossfadeMode.SMART_CROSSFADE and not queue.smart_fades_available:
-            raise UnsupportedFeaturedException(
-                "Smart crossfade is not available with the current audio buffer size"
-            )
+            raise UnsupportedFeaturedException("Smart crossfade is not available")
         if queue.crossfade_mode == crossfade_mode:
             return  # no change
         queue.crossfade_mode = crossfade_mode
