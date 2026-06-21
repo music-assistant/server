@@ -43,12 +43,12 @@ from music_assistant.constants import (
     CONF_BIND_IP,
     CONF_BIND_PORT,
     CONF_CROSSFADE_DURATION,
+    CONF_CROSSFADE_MODE,
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_LOG_LEVEL,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CODEC,
-    CONF_PREFER_SMART_FADES,
     CONF_PUBLISH_IP,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
@@ -193,16 +193,22 @@ class StreamsController(CoreController):
         """
         Return the effective crossfade mode for a queue.
 
-        Combines the per-play on/off toggle with the 'prefer smart fades' setting and smart fades
-        availability: smart when enabled, preferred and available; standard when enabled but smart
-        is off/unavailable; disabled otherwise.
+        Combines the per-play on/off toggle with the crossfade_mode setting and smart fades
+        availability: smart when enabled, selected and available; standard when enabled but smart
+        is not selected/available; disabled otherwise.
         """
         if not queue.crossfade_enabled:
             return CrossfadeMode.DISABLED
-        prefer_smart_fades = self.mass.config.get_raw_player_queue_config_value(
-            queue.queue_id, CONF_PREFER_SMART_FADES, True
+        # default to smart when this server can use it, else standard
+        default_mode = (
+            CrossfadeMode.SMART_CROSSFADE
+            if self.smart_fades_available
+            else CrossfadeMode.STANDARD_CROSSFADE
         )
-        if prefer_smart_fades and self.smart_fades_available:
+        mode = self.mass.config.get_raw_player_queue_config_value(
+            queue.queue_id, CONF_CROSSFADE_MODE, default_mode
+        )
+        if mode == CrossfadeMode.SMART_CROSSFADE and self.smart_fades_available:
             return CrossfadeMode.SMART_CROSSFADE
         return CrossfadeMode.STANDARD_CROSSFADE
 

@@ -137,7 +137,7 @@ CONF_REPORTED_MAC: Final[str] = "reported_mac"  # original MAC reported by provi
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
 CONF_ALLOW_AUDIO_CACHE: Final[str] = "allow_audio_cache"
 CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"  # legacy; consumed by one-time migration
-CONF_PREFER_SMART_FADES: Final[str] = "prefer_smart_fades"
+CONF_CROSSFADE_MODE: Final[str] = "crossfade_mode"
 CONF_SOCKS_URL: Final[str] = "socks_url"
 CONF_USE_SSL: Final[str] = "use_ssl"
 CONF_VERIFY_SSL: Final[str] = "verify_ssl"
@@ -394,13 +394,8 @@ CONF_ENTRY_OUTPUT_LIMITER = ConfigEntry(
 )
 
 
-CONF_ENTRY_PREFER_SMART_FADES = ConfigEntry(
-    key=CONF_PREFER_SMART_FADES,
-    type=ConfigEntryType.BOOLEAN,
-    default_value=True,
-    category="playback",
-    requires_reload=True,
-)
+# Note: the crossfade_mode select entry (standard/smart) is built dynamically in the config
+# controller because its options and default depend on smart fades availability.
 
 CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     key=CONF_CROSSFADE_DURATION,

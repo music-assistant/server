@@ -2,11 +2,8 @@
 
 from types import SimpleNamespace
 
-from music_assistant.controllers.config import (
-    PLAYER_QUEUE_CONFIG_ENTRIES,
-    ConfigController,
-    PlayerQueueConfig,
-)
+from music_assistant.constants import CONF_ENTRY_CROSSFADE_DURATION
+from music_assistant.controllers.config import ConfigController, PlayerQueueConfig
 
 
 def test_migrate_player_queue_settings_moves_only_queue_keys() -> None:
@@ -19,7 +16,7 @@ def test_migrate_player_queue_settings_moves_only_queue_keys() -> None:
                     "crossfade_duration": 12,
                     "volume_normalization": False,
                     "output_limiter": True,  # player/DSP stage -> stays on the player
-                    "smart_fades_mode": "smart_crossfade",  # legacy -> consumed (deleted)
+                    "smart_fades_mode": "disabled",  # legacy off -> consumed, nothing carried over
                 },
             },
             "p2": {"player_id": "p2", "values": {}},  # nothing to move
@@ -47,23 +44,24 @@ def test_migrate_player_queue_settings_noop_when_nothing_to_move() -> None:
     assert "player_queues" not in data
 
 
-def test_migrate_player_queue_settings_consumes_legacy_smart_fades_mode() -> None:
-    """smart_fades_mode is consumed: standard -> prefer_smart_fades=False, smart/disabled dropped."""
+def test_migrate_player_queue_settings_maps_legacy_smart_fades_mode() -> None:
+    """smart_fades_mode is consumed and standard/smart carry over to crossfade_mode."""
     data = {
         "players": {
             "p1": {"player_id": "p1", "values": {"smart_fades_mode": "standard_crossfade"}},
             "p2": {"player_id": "p2", "values": {"smart_fades_mode": "smart_crossfade"}},
+            "p3": {"player_id": "p3", "values": {"smart_fades_mode": "disabled"}},
         }
     }
     stub = SimpleNamespace(_data=data)
     assert ConfigController._migrate_player_queue_settings(stub) is True
-    # the legacy key is removed from both players
-    assert data["players"]["p1"]["values"] == {}
-    assert data["players"]["p2"]["values"] == {}
-    # standard -> explicit opt-out of smart fades
-    assert data["player_queues"]["p1"]["values"] == {"prefer_smart_fades": False}
-    # smart/disabled keep the default (prefer smart) -> no queue config written
-    assert "p2" not in data.get("player_queues", {})
+    # the legacy key is removed from every player
+    assert all(cfg["values"] == {} for cfg in data["players"].values())
+    # standard/smart carry over to the new crossfade_mode select
+    assert data["player_queues"]["p1"]["values"] == {"crossfade_mode": "standard_crossfade"}
+    assert data["player_queues"]["p2"]["values"] == {"crossfade_mode": "smart_crossfade"}
+    # disabled just means crossfade is off -> nothing written
+    assert "p3" not in data.get("player_queues", {})
 
 
 def test_migrate_player_queue_settings_keeps_existing_queue_value() -> None:
@@ -81,7 +79,7 @@ def test_migrate_player_queue_settings_keeps_existing_queue_value() -> None:
 def test_player_queue_config_parse_roundtrip() -> None:
     """A stored queue config parses its values back via the current entries."""
     config = PlayerQueueConfig.parse(
-        PLAYER_QUEUE_CONFIG_ENTRIES,
+        [CONF_ENTRY_CROSSFADE_DURATION],
         {"queue_id": "q1", "values": {"crossfade_duration": 9}},
     )
     assert config.queue_id == "q1"

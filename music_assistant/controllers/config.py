@@ -34,6 +34,7 @@ from music_assistant_models.constants import (
 from music_assistant_models.dsp import DSPConfig, DSPConfigPreset
 from music_assistant_models.enums import (
     ConfigEntryType,
+    CrossfadeMode,
     EventType,
     PlaybackState,
     PlayerFeature,
@@ -57,6 +58,7 @@ from music_assistant_models.errors import (
 
 from music_assistant.constants import (
     CONF_CORE,
+    CONF_CROSSFADE_MODE,
     CONF_ENABLED,
     CONF_ENTRY_ANNOUNCE_VOLUME,
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
@@ -88,7 +90,6 @@ from music_assistant.constants import (
     CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
-    CONF_ENTRY_PREFER_SMART_FADES,
     CONF_ENTRY_SAMPLE_RATES,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_ENTRY_VOLUME_NORMALIZATION,
@@ -102,7 +103,6 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
     CONF_PRE_ANNOUNCE_CHIME_URL,
-    CONF_PREFER_SMART_FADES,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_PROTOCOL_CATEGORY_PREFIX,
     CONF_PROTOCOL_KEY_SPLITTER,
@@ -136,13 +136,8 @@ DEFAULT_SAVE_DELAY = 5
 
 BASE_KEYS = ("enabled", "name", "available", "default_name", "provider", "type")
 
-# Per-queue config entries. These govern the playback session (read via queue_id) rather than the
-# physical player; they were previously stored as player config entries (migrated in _migrate).
-PLAYER_QUEUE_CONFIG_ENTRIES: tuple[ConfigEntry, ...] = (
-    CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_PREFER_SMART_FADES,
-    CONF_ENTRY_VOLUME_NORMALIZATION,
-)
+# owner namespace for per-queue config entry strings (controllers/player_queues/strings.json)
+PLAYER_QUEUE_CONFIG_OWNER = "core.player_queues"
 
 # TypeVar for config value type inference
 _ConfigValueT = TypeVar("_ConfigValueT", bound=ConfigValueType)
@@ -1025,9 +1020,15 @@ class ConfigController:
         return self._parse_player_queue_config(queue_id, raw_conf)
 
     @api_command("config/player_queues/get_entries")
-    def get_player_queue_config_entries(self, queue_id: str) -> list[ConfigEntry]:
+    def get_player_queue_config_entries(
+        self,
+        queue_id: str,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
         """Return all Config Entries to configure a queue."""
-        return list(PLAYER_QUEUE_CONFIG_ENTRIES)
+        entries = self._build_player_queue_config_entries()
+        return _with_translation_owner(entries, PLAYER_QUEUE_CONFIG_OWNER, action, values)
 
     @api_command("config/player_queues/get_value")
     def get_player_queue_config_value(self, queue_id: str, key: str) -> ConfigValueType:
@@ -1502,9 +1503,40 @@ class ConfigController:
     ) -> PlayerQueueConfig:
         """Parse a (raw) queue config dict into a PlayerQueueConfig with the current entries."""
         raw_conf = {**raw_conf, "queue_id": queue_id}
-        return cast(
-            "PlayerQueueConfig", PlayerQueueConfig.parse(PLAYER_QUEUE_CONFIG_ENTRIES, raw_conf)
+        entries = self._build_player_queue_config_entries()
+        return cast("PlayerQueueConfig", PlayerQueueConfig.parse(entries, raw_conf))
+
+    def _build_player_queue_config_entries(self) -> list[ConfigEntry]:
+        """
+        Build the per-queue config entries.
+
+        The crossfade_mode select's options and default depend on whether smart fades are
+        available: the smart option is disabled (shown but not selectable) and the default falls
+        back to standard crossfade when smart fades can't be used on this server.
+        """
+        smart_fades_available = self.mass.streams.smart_fades_available
+        crossfade_mode_entry = ConfigEntry(
+            key=CONF_CROSSFADE_MODE,
+            type=ConfigEntryType.STRING,
+            options=[
+                ConfigValueOption(CrossfadeMode.STANDARD_CROSSFADE.value),
+                ConfigValueOption(
+                    CrossfadeMode.SMART_CROSSFADE.value, disabled=not smart_fades_available
+                ),
+            ],
+            default_value=(
+                CrossfadeMode.SMART_CROSSFADE.value
+                if smart_fades_available
+                else CrossfadeMode.STANDARD_CROSSFADE.value
+            ),
+            category="playback",
+            requires_reload=True,
         )
+        return [
+            CONF_ENTRY_CROSSFADE_DURATION,
+            crossfade_mode_entry,
+            CONF_ENTRY_VOLUME_NORMALIZATION,
+        ]
 
     async def _load(self) -> None:
         """Load data from persistent storage."""
@@ -1627,12 +1659,17 @@ class ConfigController:
                 continue
             to_move = {key: player_values[key] for key in moved_keys if key in player_values}
             # the legacy smart_fades_mode encoded both on/off and standard-vs-smart; the on/off is
-            # now a runtime queue toggle, and only an explicit "standard_crossfade" choice carries
-            # over (as prefer_smart_fades=False). Consume the key either way.
+            # now a runtime queue toggle, and standard/smart carries over to the crossfade_mode
+            # select ("disabled" just means crossfade is off -> nothing to carry). Consume the key.
             legacy_mode = player_values.pop(CONF_SMART_FADES_MODE, None)
+            migrated_mode = (
+                legacy_mode
+                if legacy_mode in (CrossfadeMode.STANDARD_CROSSFADE, CrossfadeMode.SMART_CROSSFADE)
+                else None
+            )
             if not to_move and legacy_mode is None:
                 continue
-            if to_move or legacy_mode == "standard_crossfade":
+            if to_move or migrated_mode is not None:
                 queue_cfg = self._data.setdefault(CONF_PLAYER_QUEUES, {}).setdefault(
                     player_id, {"queue_id": player_id}
                 )
@@ -1641,8 +1678,8 @@ class ConfigController:
                     # don't clobber an existing queue value if one was already stored
                     queue_values.setdefault(key, value)
                     del player_values[key]
-                if legacy_mode == "standard_crossfade":
-                    queue_values.setdefault(CONF_PREFER_SMART_FADES, False)
+                if migrated_mode is not None:
+                    queue_values.setdefault(CONF_CROSSFADE_MODE, migrated_mode)
             LOGGER.info("Migrated queue settings for %s", player_id)
             changed = True
         return changed
