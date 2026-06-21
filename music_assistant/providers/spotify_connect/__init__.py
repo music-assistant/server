@@ -41,7 +41,7 @@ from music_assistant.helpers.util import select_free_port
 from music_assistant.models.plugin import PluginProvider
 
 from .client import GoLibrespotClient
-from .helpers import generate_device_id, get_go_librespot_binary
+from .helpers import generate_device_id, get_go_librespot_binary, interface_name_for_ip
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
@@ -680,10 +680,18 @@ class SpotifyConnectProvider(PluginProvider):
             "credentials": {"type": "zeroconf", "zeroconf": {"persist_credentials": True}},
             "server": {"enabled": True, "address": "127.0.0.1", "port": self._api_port},
         }
-        # Limit zeroconf advertisement to the configured stream bind interface.
+        # Advertise the Spotify Connect device only on the interface the streams
+        # server binds to, so it lands on the right network on multi-homed hosts.
+        # go-librespot selects advertise interfaces by name, so map the IP to one.
         bind_ip = self.mass.streams.bind_ip
         if bind_ip and bind_ip != "0.0.0.0":
-            config["zeroconf_interfaces_to_advertise"] = [bind_ip]
+            if iface_name := interface_name_for_ip(bind_ip):
+                config["zeroconf_interfaces_to_advertise"] = [iface_name]
+            else:
+                self.logger.debug(
+                    "No interface found for stream bind IP %s; advertising on all interfaces",
+                    bind_ip,
+                )
         config_file = os.path.join(self.cache_dir, "config.yml")
         with open(config_file, "w", encoding="utf-8") as fileobj:
             json.dump(config, fileobj, indent=2)
