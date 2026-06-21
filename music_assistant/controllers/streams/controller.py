@@ -48,6 +48,7 @@ from music_assistant.constants import (
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_HTTP_PROFILE,
     CONF_OUTPUT_CODEC,
+    CONF_PREFER_SMART_FADES,
     CONF_PUBLISH_IP,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_RADIO,
     CONF_VOLUME_NORMALIZATION_FIXED_GAIN_TRACKS,
@@ -93,6 +94,7 @@ from music_assistant.providers.universal_group.player import UniversalGroupPlaye
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.player import PlayerMedia
+    from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamMetadata
 
@@ -186,6 +188,23 @@ class StreamsController(CoreController):
         return (
             buffer_size != BufferSize.MINIMAL and self.audio_analysis.smart_fades_provider_available
         )
+
+    def get_crossfade_mode(self, queue: PlayerQueue) -> CrossfadeMode:
+        """
+        Return the effective crossfade mode for a queue.
+
+        Combines the per-play on/off toggle with the 'prefer smart fades' setting and smart fades
+        availability: smart when enabled, preferred and available; standard when enabled but smart
+        is off/unavailable; disabled otherwise.
+        """
+        if not queue.crossfade_enabled:
+            return CrossfadeMode.DISABLED
+        prefer_smart_fades = self.mass.config.get_raw_player_queue_config_value(
+            queue.queue_id, CONF_PREFER_SMART_FADES, True
+        )
+        if prefer_smart_fades and self.smart_fades_available:
+            return CrossfadeMode.SMART_CROSSFADE
+        return CrossfadeMode.STANDARD_CROSSFADE
 
     async def get_config_entries(
         self, action: str | None = None, values: dict[str, ConfigValueType] | None = None
@@ -384,7 +403,7 @@ class StreamsController(CoreController):
             # gapless playback, we need to enforce flow mode
             queue_id
             and (queue := self.mass.player_queues.get(queue_id))
-            and queue.crossfade_mode != CrossfadeMode.DISABLED
+            and queue.crossfade_enabled
             and protocol_player
             and not protocol_player.supports_gapless
         )
@@ -648,7 +667,7 @@ class StreamsController(CoreController):
                 # no crossfade on non-tracks
                 smart_fades_mode = CrossfadeMode.DISABLED
             else:
-                smart_fades_mode = queue.crossfade_mode
+                smart_fades_mode = self.get_crossfade_mode(queue)
                 standard_crossfade_duration = self.mass.config.get_raw_player_queue_config_value(
                     queue.queue_id, CONF_CROSSFADE_DURATION, 10
                 )
@@ -817,7 +836,7 @@ class StreamsController(CoreController):
 
         # select the PCM format for the flow stream, anchored on the first track
         smart_fades_mode = (
-            queue.crossfade_mode
+            self.get_crossfade_mode(queue)
             if start_queue_item.media_type == MediaType.TRACK
             else CrossfadeMode.DISABLED
         )
@@ -1085,7 +1104,7 @@ class StreamsController(CoreController):
                 # does not support gapless playback, we need to enforce flow mode
                 queue_id
                 and (queue := self.mass.player_queues.get(queue_id))
-                and queue.crossfade_mode != CrossfadeMode.DISABLED
+                and queue.crossfade_enabled
                 and protocol_player
                 and not protocol_player.supports_gapless
             )

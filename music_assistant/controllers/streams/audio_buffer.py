@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import (
     ContentType,
-    CrossfadeMode,
     MediaType,
     VolumeNormalizationMode,
 )
@@ -396,12 +395,10 @@ class AudioBuffer:
         # determine ready threshold: how many seconds of audio must be buffered
         # before signaling ready for playback
         queue = mass.player_queues.get(streamdetails.queue_id) if streamdetails.queue_id else None
-        smart_fades_mode = (
-            queue.crossfade_mode
-            if queue and streamdetails.media_type == MediaType.TRACK
-            else CrossfadeMode.DISABLED
+        crossfade_enabled = bool(
+            queue and queue.crossfade_enabled and streamdetails.media_type == MediaType.TRACK
         )
-        if smart_fades_mode != CrossfadeMode.DISABLED:
+        if crossfade_enabled:
             ready_threshold = 8
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC:
             # radio streams are continuous so the normalization will converge quickly,

@@ -146,6 +146,8 @@
   "common.config_entries.power_control.options.none": "None",
   "common.config_entries.pre_announcement_chime_url.description": "URL to a custom audio file to play before announcements.\nLeave empty to use the default chime.\nSupports http:// and https:// URLs pointing to audio files (.mp3, .wav, .flac, .ogg, .m4a, .aac).\nExample: http://homeassistant.local:8123/local/audio/custom_chime.mp3",
   "common.config_entries.pre_announcement_chime_url.label": "Custom (pre)announcement chime URL",
+  "common.config_entries.prefer_smart_fades.description": "Use smart crossfade (beat-matched) when available, otherwise fall back to the standard crossfade.",
+  "common.config_entries.prefer_smart_fades.label": "Prefer smart crossfade",
   "common.config_entries.preferred_output_protocol.description": "Select the preferred protocol for audio playback to this device.",
   "common.config_entries.preferred_output_protocol.label": "Preferred Output Protocol",
   "common.config_entries.preferred_output_protocol.options.auto": "Auto-select",

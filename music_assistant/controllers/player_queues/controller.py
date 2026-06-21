@@ -24,7 +24,6 @@ import shortuuid
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
-    CrossfadeMode,
     EventType,
     MediaType,
     PlaybackState,
@@ -353,14 +352,12 @@ class PlayerQueuesController(CoreController):
                 self._enqueue_next_item(queue_id, next_item)
 
     @api_command("player_queues/crossfade")
-    def set_crossfade(self, queue_id: str, crossfade_mode: CrossfadeMode) -> None:
-        """Configure crossfade setting on the queue."""
+    def set_crossfade(self, queue_id: str, crossfade_enabled: bool) -> None:
+        """Enable or disable crossfade on the queue."""
         queue = self._queues[queue_id]
-        if crossfade_mode == CrossfadeMode.SMART_CROSSFADE and not queue.smart_fades_available:
-            raise UnsupportedFeaturedException("Smart crossfade is not available")
-        if queue.crossfade_mode == crossfade_mode:
+        if queue.crossfade_enabled == crossfade_enabled:
             return  # no change
-        queue.crossfade_mode = crossfade_mode
+        queue.crossfade_enabled = crossfade_enabled
         self.signal_update(queue_id)
         if (
             queue.state == PlaybackState.PLAYING
@@ -1007,7 +1004,7 @@ class PlayerQueuesController(CoreController):
 
         target_queue.repeat_mode = source_queue.repeat_mode
         target_queue.shuffle_enabled = source_queue.shuffle_enabled
-        target_queue.crossfade_mode = source_queue.crossfade_mode
+        target_queue.crossfade_enabled = source_queue.crossfade_enabled
         target_queue.dont_stop_the_music_enabled = source_queue.dont_stop_the_music_enabled
         target_queue.radio_source = source_queue.radio_source
         target_queue.is_dynamic = source_queue.is_dynamic
@@ -1078,15 +1075,15 @@ class PlayerQueuesController(CoreController):
 
         self._queues[queue_id] = queue
         self._queue_items[queue_id] = queue_items
-        # seed crossfade_mode from the legacy smart_fades_mode player config for queues that were
-        # persisted before this field existed (or were never persisted at all)
+        # seed crossfade_enabled from the legacy smart_fades_mode player config for queues that
+        # were persisted before this field existed (or were never persisted at all)
         # TODO: remove this migration seed after 2.11 release
-        if not (prev_state and "crossfade_mode" in prev_state) and (
+        if not (prev_state and "crossfade_enabled" in prev_state) and (
             legacy_mode := self.mass.config.get_raw_player_config_value(
                 queue_id, CONF_SMART_FADES_MODE
             )
         ):
-            queue.crossfade_mode = CrossfadeMode(str(legacy_mode))
+            queue.crossfade_enabled = str(legacy_mode) != "disabled"
         # always call update to calculate state etc
         self.on_player_update(player, {})
         self.mass.signal_event(EventType.QUEUE_ADDED, object_id=queue_id, data=queue)

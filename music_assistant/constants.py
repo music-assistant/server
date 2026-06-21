@@ -136,7 +136,8 @@ CONF_CACHED_ARP_MAC: Final[str] = "cached_arp_mac"  # cached ARP-resolved MAC fo
 CONF_REPORTED_MAC: Final[str] = "reported_mac"  # original MAC reported by provider (before ARP)
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
 CONF_ALLOW_AUDIO_CACHE: Final[str] = "allow_audio_cache"
-CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"
+CONF_SMART_FADES_MODE: Final[str] = "smart_fades_mode"  # legacy; kept for queue migration seed
+CONF_PREFER_SMART_FADES: Final[str] = "prefer_smart_fades"
 CONF_SOCKS_URL: Final[str] = "socks_url"
 CONF_USE_SSL: Final[str] = "use_ssl"
 CONF_VERIFY_SSL: Final[str] = "verify_ssl"
@@ -393,15 +394,10 @@ CONF_ENTRY_OUTPUT_LIMITER = ConfigEntry(
 )
 
 
-CONF_ENTRY_SMART_FADES_MODE = ConfigEntry(
-    key=CONF_SMART_FADES_MODE,
-    type=ConfigEntryType.STRING,
-    options=[
-        ConfigValueOption("disabled"),
-        ConfigValueOption("smart_crossfade"),
-        ConfigValueOption("standard_crossfade"),
-    ],
-    default_value="disabled",
+CONF_ENTRY_PREFER_SMART_FADES = ConfigEntry(
+    key=CONF_PREFER_SMART_FADES,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=True,
     category="playback",
     requires_reload=True,
 )

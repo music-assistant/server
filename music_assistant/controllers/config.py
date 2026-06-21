@@ -88,6 +88,7 @@ from music_assistant.constants import (
     CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
+    CONF_ENTRY_PREFER_SMART_FADES,
     CONF_ENTRY_SAMPLE_RATES,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_ENTRY_VOLUME_NORMALIZATION,
@@ -101,11 +102,13 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
     CONF_PRE_ANNOUNCE_CHIME_URL,
+    CONF_PREFER_SMART_FADES,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_PROTOCOL_CATEGORY_PREFIX,
     CONF_PROTOCOL_KEY_SPLITTER,
     CONF_PROVIDERS,
     CONF_SERVER_ID,
+    CONF_SMART_FADES_MODE,
     CONF_VOLUME_CONTROL,
     CONF_VOLUME_NORMALIZATION_TARGET,
     CONFIGURABLE_CORE_CONTROLLERS,
@@ -137,6 +140,7 @@ BASE_KEYS = ("enabled", "name", "available", "default_name", "provider", "type")
 # physical player; they were previously stored as player config entries (migrated in _migrate).
 PLAYER_QUEUE_CONFIG_ENTRIES: tuple[ConfigEntry, ...] = (
     CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_PREFER_SMART_FADES,
     CONF_ENTRY_VOLUME_NORMALIZATION,
 )
 
@@ -1622,7 +1626,10 @@ class ConfigController:
             if not isinstance(player_values, dict):
                 continue
             to_move = {key: player_values[key] for key in moved_keys if key in player_values}
-            if not to_move:
+            # an explicit legacy "standard_crossfade" choice maps to prefer_smart_fades=False;
+            # smart/disabled keep the default of preferring smart fades when available
+            legacy_standard = player_values.get(CONF_SMART_FADES_MODE) == "standard_crossfade"
+            if not to_move and not legacy_standard:
                 continue
             queue_cfg = self._data.setdefault(CONF_PLAYER_QUEUES, {}).setdefault(
                 player_id, {"queue_id": player_id}
@@ -1632,7 +1639,9 @@ class ConfigController:
                 # don't clobber an existing queue value if one was already stored
                 queue_values.setdefault(key, value)
                 del player_values[key]
-            LOGGER.info("Migrated queue settings for %s: %s", player_id, list(to_move))
+            if legacy_standard:
+                queue_values.setdefault(CONF_PREFER_SMART_FADES, False)
+            LOGGER.info("Migrated queue settings for %s", player_id)
             changed = True
         return changed
 

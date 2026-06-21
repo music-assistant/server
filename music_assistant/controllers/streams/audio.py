@@ -1907,7 +1907,7 @@ class StreamsAudio:
             smart_fades_mode = CrossfadeMode.DISABLED
             standard_crossfade_duration = 0
         else:
-            smart_fades_mode = queue.crossfade_mode
+            smart_fades_mode = self.mass.streams.get_crossfade_mode(queue)
             standard_crossfade_duration = self.mass.config.get_raw_player_queue_config_value(
                 queue.queue_id, CONF_CROSSFADE_DURATION, 10
             )

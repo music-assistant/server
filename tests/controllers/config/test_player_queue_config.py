@@ -19,7 +19,7 @@ def test_migrate_player_queue_settings_moves_only_queue_keys() -> None:
                     "crossfade_duration": 12,
                     "volume_normalization": False,
                     "output_limiter": True,  # player/DSP stage -> stays on the player
-                    "smart_fades_mode": "standard_crossfade",  # seeded elsewhere -> stays
+                    "smart_fades_mode": "smart_crossfade",  # seeded elsewhere -> stays
                 },
             },
             "p2": {"player_id": "p2", "values": {}},  # nothing to move
@@ -31,7 +31,7 @@ def test_migrate_player_queue_settings_moves_only_queue_keys() -> None:
     # moved keys are gone from the player config
     assert data["players"]["p1"]["values"] == {
         "output_limiter": True,
-        "smart_fades_mode": "standard_crossfade",
+        "smart_fades_mode": "smart_crossfade",
     }
     # ...and now live under the per-queue config (queue_id == player_id)
     assert data["player_queues"]["p1"]["values"] == {
@@ -48,6 +48,22 @@ def test_migrate_player_queue_settings_noop_when_nothing_to_move() -> None:
     stub = SimpleNamespace(_data=data)
     assert ConfigController._migrate_player_queue_settings(stub) is False
     assert "player_queues" not in data
+
+
+def test_migrate_player_queue_settings_preserves_legacy_standard_choice() -> None:
+    """A legacy 'standard_crossfade' choice is migrated to prefer_smart_fades=False."""
+    data = {
+        "players": {
+            "p1": {"player_id": "p1", "values": {"smart_fades_mode": "standard_crossfade"}},
+            "p2": {"player_id": "p2", "values": {"smart_fades_mode": "smart_crossfade"}},
+        }
+    }
+    stub = SimpleNamespace(_data=data)
+    assert ConfigController._migrate_player_queue_settings(stub) is True
+    # standard -> explicit opt-out of smart fades
+    assert data["player_queues"]["p1"]["values"] == {"prefer_smart_fades": False}
+    # smart/disabled keep the default (prefer smart) -> no queue config written
+    assert "p2" not in data.get("player_queues", {})
 
 
 def test_migrate_player_queue_settings_keeps_existing_queue_value() -> None:

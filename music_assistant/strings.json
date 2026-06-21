@@ -54,6 +54,10 @@
       "label": "Standard crossfade duration",
       "description": "Duration in seconds for the standard crossfade between tracks."
     },
+    "prefer_smart_fades": {
+      "label": "Prefer smart crossfade",
+      "description": "Use smart crossfade (beat-matched) when available, otherwise fall back to the standard crossfade."
+    },
     "enable_icy_metadata": {
       "label": "Try to inject metadata into stream (ICY)",
       "description": "Try to inject metadata into the stream (ICY) to show track info on the player, even when flow mode is enabled.\n\nThis is called ICY metadata and is what is used by online radio stations to show you what is playing. \n\nBe aware that not all players support this correctly. If you experience issues with playback, try disabling this setting.",
