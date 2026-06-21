@@ -7,9 +7,8 @@ multiple Spotify Connect daemons.
 
 go-librespot is driven entirely over its local HTTP+WebSocket API: the WebSocket
 ``/events`` stream feeds player/session/metadata/volume state into Music Assistant,
-and transport + volume commands are issued via the REST endpoints. This means
-playback control no longer depends on a configured Spotify *music* provider /
-Web API the way the previous librespot-based implementation did.
+and transport + volume commands are issued via the REST endpoints. Playback control
+works without a configured Spotify *music* provider or the Spotify Web API.
 """
 
 from __future__ import annotations
@@ -282,13 +281,13 @@ class SpotifyConnectProvider(PluginProvider):
         if not self._playing and not self._spotify_session_active and not self._last_context_uri:
             raise self._not_active_error()
         # CUSTOM: the core pulls PCM from get_audio_stream. Reading the daemon's
-        # stdout (rather than a FIFO) means there is always a consumer attached
-        # (no fail-fast open), and lets us end the stream cleanly when playback
+        # stdout means a consumer is always attached, so go-librespot's non-blocking
+        # pipe open succeeds, and it lets us end the stream cleanly when playback
         # pauses so the player leaves the playing state. decoded_audio_format tells
         # the core the PCM is s16le while audio_format keeps the Ogg/Vorbis source
         # codec for display; MA resamples to each player's format as needed.
         # `-fflags nobuffer` keeps ffmpeg from buffering ahead on the resample path
-        # (we already back-pressure the daemon to realtime in get_audio_stream).
+        # (we back-pressure the daemon to realtime in get_audio_stream).
         # expiration=0: never reuse a cached streamdetails so the active-device
         # check above re-runs on every play attempt.
         return StreamDetails(
@@ -504,10 +503,9 @@ class SpotifyConnectProvider(PluginProvider):
         """
         Construct the AudioSource MediaItem.
 
-        Unlike the previous librespot implementation (where transport control
-        depended on a matching Spotify Web API provider), go-librespot exposes a
-        full REST control API, so play/pause/seek/next/previous are always
-        available while a session is active — the capability flags are static.
+        go-librespot exposes a full REST control API, so play / pause / seek /
+        next / previous are always available while a session is active — the
+        capability flags are static (no dependency on the Spotify Web API).
         """
         return AudioSource(
             item_id=AUDIO_SOURCE_ID,
@@ -682,8 +680,7 @@ class SpotifyConnectProvider(PluginProvider):
             "credentials": {"type": "zeroconf", "zeroconf": {"persist_credentials": True}},
             "server": {"enabled": True, "address": "127.0.0.1", "port": self._api_port},
         }
-        # Limit zeroconf advertisement to the configured stream bind interface
-        # (mirrors the old librespot --zeroconf-interface behaviour).
+        # Limit zeroconf advertisement to the configured stream bind interface.
         bind_ip = self.mass.streams.bind_ip
         if bind_ip and bind_ip != "0.0.0.0":
             config["zeroconf_interfaces_to_advertise"] = [bind_ip]

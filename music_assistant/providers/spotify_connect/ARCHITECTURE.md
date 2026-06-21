@@ -10,8 +10,7 @@ controls are proxied back to Spotify.
 The provider wraps **go-librespot** ([devgianlu/go-librespot](https://github.com/devgianlu/go-librespot)),
 a reverse-engineered Spotify Connect client, running as a subprocess and driven entirely over
 its local HTTP + WebSocket API. Music Assistant needs **no** Spotify Web API credentials and
-**no** configured Spotify *music* provider to control playback — a key difference from the
-previous librespot-based implementation.
+**no** configured Spotify *music* provider to control playback.
 
 ## How it works
 
@@ -64,9 +63,9 @@ previous librespot-based implementation.
 go-librespot ──s16le PCM──▶ stdout ──▶ get_audio_stream ──▶ ffmpeg (resample) ──▶ player
 ```
 
-- **`StreamType.CUSTOM`**: `get_audio_stream` reads the daemon's stdout and yields PCM. Reading
-  stdout (rather than a FIFO) means the subprocess pipe always has a reader — go-librespot's
-  non-blocking pipe open never fails — and lets us control the byte stream.
+- **`StreamType.CUSTOM`**: `get_audio_stream` reads the daemon's stdout and yields PCM. The
+  subprocess pipe always has a reader, so go-librespot's non-blocking pipe open never fails,
+  and we control the byte stream (pacing it, and ending it cleanly on pause).
 - **Source pacing**: go-librespot's pipe backend is not realtime-paced, so `get_audio_stream`
   paces the read at the native rate. This back-pressures the daemon to ~realtime, keeping it
   only a fraction of a second ahead so transport commands land quickly.
