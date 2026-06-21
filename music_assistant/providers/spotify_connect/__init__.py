@@ -32,11 +32,7 @@ from music_assistant_models.enums import (
     SourceControl,
     StreamType,
 )
-from music_assistant_models.errors import (
-    AudioError,
-    MediaNotFoundError,
-    UnsupportedFeaturedException,
-)
+from music_assistant_models.errors import AudioError, MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat, AudioSource, ProviderMapping
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
@@ -859,5 +855,7 @@ class SpotifyConnectProvider(PluginProvider):
         self._last_volume_sent = volume
         try:
             await self.mass.players.cmd_volume_set(self._in_use_by_queue, volume)
-        except UnsupportedFeaturedException:
-            self.logger.debug("Player %s does not support volume control", self._in_use_by_queue)
+        except Exception as err:
+            # Volume sync is best-effort: the player may not support volume, or the
+            # command may fail. Never let it bubble up and drop the events loop.
+            self.logger.debug("Could not set volume on %s: %s", self._in_use_by_queue, err)
