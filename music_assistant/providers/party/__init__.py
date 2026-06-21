@@ -514,7 +514,7 @@ class PartyPlugin(PluginProvider):
             )
 
         base_url = self.mass.webserver.base_url
-        assert base_url, "webserver base_url is not configured"
+        assert base_url  # for type-checker only
         return f"{base_url}/?join={code}"
 
     async def get_party_player(self) -> str | None:
