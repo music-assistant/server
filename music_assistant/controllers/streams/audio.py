@@ -2652,6 +2652,10 @@ class StreamsAudio:
         )
         streamdetails.stream_title = cleaned_stream_title
 
+        # Prefer station-provided cover art from the ICY 'StreamUrl' field (when it is
+        # an image) over the MusicBrainz artwork lookup in _update_radio_stream_metadata.
+        image_url = self._parse_icy_image_url(meta_data)
+
         # Parse the original title for structured fields first so stations that announce
         # an album can refine the artwork lookup; fall back to the "Artist - Track" split.
         album: str | None = None
@@ -2672,8 +2676,39 @@ class StreamsAudio:
                 album,
             )
             self._update_radio_stream_metadata(
-                streamdetails, artist=artist_name_raw, title=track_name, album=album
+                streamdetails,
+                artist=artist_name_raw,
+                title=track_name,
+                album=album,
+                image_url=image_url,
             )
+
+    def _parse_icy_image_url(self, meta_data: bytes) -> str | None:
+        """
+        Return a PNG or JPEG cover-art URL from the ICY 'StreamUrl' field, if present.
+
+        :param meta_data: Raw metadata bytes from an ICY stream chunk.
+        """
+        # The trailing semicolon is optional to match sources that omit it.
+        stream_url_re = re.search(rb"StreamUrl='([^']*)'", meta_data)
+        if not stream_url_re:
+            return None
+        try:
+            image_url = stream_url_re.group(1).decode("utf-8").strip()
+        except UnicodeDecodeError:
+            return None
+        if not image_url:
+            return None
+        # StreamUrl is not a standardized artwork field (reference clients such as VLC
+        # ignore it and it conventionally holds a station website link), so only accept
+        # values that point at a PNG or JPEG image.
+        parsed = urlparse(image_url)
+        if parsed.scheme not in ("http", "https"):
+            return None
+        if not parsed.path.lower().endswith((".png", ".jpg", ".jpeg")):
+            return None
+        self.logger.debug("ICY metadata: StreamUrl image='%s'", image_url)
+        return image_url
 
     async def _validate_shoutcast_stream(self, url: str) -> bool:
         """
