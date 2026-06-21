@@ -653,9 +653,18 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
         spec_str: str = sink.get("sample_specification", "")
         driver: str = sink.get("driver", "")
         properties: dict[str, str] = sink.get("properties", {})
-        master_device: str | None = (
-            properties.get("device.master_device") if driver == "module-remap-sink.c" else None
-        )
+        # device.master_device is set by module-remap-sink itself on every
+        # sink it creates, and only on those sinks — so it's a reliable way
+        # to detect a remap-sink child regardless of what the host reports
+        # in the top-level "driver" field. Real PulseAudio reports the
+        # literal module name there ("module-remap-sink.c" /
+        # "module-alsa-card.c"), but PipeWire's PulseAudio-compatibility
+        # layer instead reports a generic "PipeWire" driver string for
+        # every sink it manages, so "driver == module-remap-sink.c" alone
+        # would silently misdetect every remap sink (and every ALSA-card
+        # master sink) as something else on a PipeWire-only system.
+        master_device: str | None = properties.get("device.master_device")
+        is_remap = master_device is not None or driver == "module-remap-sink.c"
         alsa_card_name: str | None = properties.get("alsa.card_name")
         # pactl --format=json represents channel_map as a comma-separated
         # string (e.g. "front-left,front-right,rear-left,rear-right,...").
@@ -694,7 +703,7 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
                 "max_output_channels": channels,
                 "sample_rate": sample_rate,
                 "bit_depth": bit_depth,
-                "is_remap": driver == "module-remap-sink.c",
+                "is_remap": is_remap,
                 "master_device": master_device,
                 "driver": driver,
                 "channel_map": channel_map,

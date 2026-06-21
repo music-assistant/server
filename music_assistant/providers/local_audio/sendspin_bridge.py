@@ -297,10 +297,6 @@ class SendspinLocalAudioBridge:
             # stream volume into sink hardware volume on pa_simple_new open.
             await self._reset_sink_volume()
 
-    def _get_sendspin_provider(self) -> SendspinProvider | None:
-        """Get the Sendspin provider if available."""
-        return cast("SendspinProvider | None", self.mass.get_provider("sendspin"))
-
     async def stop(self) -> None:
         """Stop and unregister the Sendspin bridge."""
         async with self._lock:
@@ -310,6 +306,10 @@ class SendspinLocalAudioBridge:
                 self._sendspin_client = None
                 self._bridge_role = None
         self.logger.debug("Sendspin bridge stopped for %s", self.device_name)
+
+    def _get_sendspin_provider(self) -> SendspinProvider | None:
+        """Get the Sendspin provider if available."""
+        return cast("SendspinProvider | None", self.mass.get_provider("sendspin"))
 
     def _on_stream_start(self, request: ExternalStreamStartRequest) -> None:
         """Handle stream start request from Sendspin server."""
@@ -704,168 +704,6 @@ class LocalAudioBridgeManager:
             return provider.server_api
         return None
 
-    async def _ensure_volume_controller(self, resolved_backend: str) -> None:
-        """Lazily connect the shared PAVolumeController for hardware sink volume.
-
-        No-op if not the pulse backend or already connected. Logs and leaves
-        it as None on failure — bridges fall back to software volume scaling.
-        """
-        if resolved_backend != "pulse" or self._volume_controller is not None:
-            return
-        try:
-            self._volume_controller = await self.mass.loop.run_in_executor(None, PAVolumeController)
-            self.logger.debug("Hardware volume control connected (PAVolumeController)")
-        except OSError as err:
-            self.logger.warning(
-                "Hardware volume control unavailable, falling back to software volume scaling: %s",
-                err,
-            )
-
-    @staticmethod
-    def _remap_master_sinks(devices: list[dict[str, Any]]) -> set[str]:
-        """Return master sink names with at least one remap-sink child.
-
-        Such masters must keep software volume control — their PA volume
-        multiplies into every remap sink feeding through them. Masters with
-        no remap children (e.g. remap addon disabled) can safely use
-        hardware volume control like any standalone sink.
-        """
-        return {d["master_device"] for d in devices if d.get("is_remap") and d.get("master_device")}
-
-    @staticmethod
-    def _remap_masters_with_passthrough(devices: list[dict[str, Any]]) -> set[str]:
-        """Return master sink names with a full-passthrough remap-sink child.
-
-        A passthrough child has the same channel count as its master (a 1:1
-        remap, e.g. the "_multichannel_stereo" sink from
-        compute_remap_topology). Such masters are fully covered by their remap-sink topology (per-zone
-        sinks plus the passthrough for "play to all outputs") and should not
-        also be registered as their own player.
-        """
-        master_channels = {
-            d["name"]: d.get("max_output_channels", 0) for d in devices if not d.get("is_remap")
-        }
-        result: set[str] = set()
-        for d in devices:
-            master = d.get("master_device")
-            if (
-                d.get("is_remap")
-                and master
-                and master_channels.get(master) == d.get("max_output_channels")
-            ):
-                result.add(master)
-        return result
-
-    async def _ensure_remap_topology(self, devices: list[dict[str, Any]]) -> bool:
-        """Create any missing per-zone/passthrough remap sinks for multi-channel cards.
-
-        For each ALSA-card master sink with more than 2 channels, computes
-        the expected remap-sink topology (see remap_topology module) and
-        loads module-remap-sink.c for any sink not already present by name.
-        Idempotent: sinks that already exist (created by a previous run, or
-        matching this naming convention) are left untouched.
-
-        :param devices: Current enumerate_pa_sinks() result.
-        :returns: True if any new modules were loaded (caller should
-            re-enumerate to pick up the new sinks).
-        """
-        if self._volume_controller is None:
-            return False
-        controller = self._volume_controller
-        existing_names = {d["name"] for d in devices}
-        loaded_any = False
-
-        for device in devices:
-            if device.get("driver") != "module-alsa-card.c":
-                continue
-            channels: int = device.get("max_output_channels", 0)
-            if channels <= 2:
-                continue
-            alsa_card_name = device.get("alsa_card_name")
-            channel_map: list[str] = device.get("channel_map", [])
-            if not alsa_card_name or not channel_map:
-                continue
-
-            card_name = normalize_card_name(alsa_card_name)
-            master_sink_name: str = device["name"]
-            for spec in compute_remap_topology(card_name, channel_map, channels):
-                if spec.sink_name in existing_names:
-                    continue
-                argument = build_remap_sink_argument(spec, master_sink_name)
-                module_index = await self.mass.loop.run_in_executor(
-                    None, controller.load_module, "module-remap-sink", argument
-                )
-                if module_index is None:
-                    self.logger.warning("Failed to create remap sink %s", spec.sink_name)
-                    continue
-                self.logger.info(
-                    "Created remap sink %s (master=%s, module=%d)",
-                    spec.sink_name,
-                    master_sink_name,
-                    module_index,
-                )
-                self._loaded_remap_modules[spec.sink_name] = module_index
-                existing_names.add(spec.sink_name)
-                loaded_any = True
-
-        if loaded_any:
-            # module-device-restore may restore a persisted per-sink-name
-            # volume asynchronously shortly after sink creation, which can
-            # race with and overwrite _apply_hardware_volume() during
-            # bridge.start(). Give it a moment to settle first so our
-            # cached-volume application (run after re-enumeration) wins.
-            await asyncio.sleep(0.3)
-
-        return loaded_any
-
-    async def _register_protocol_player(self, device_uuid: str, display_name: str) -> Player:
-        """Register the local_audio-owned PROTOCOL attribution-stub player.
-
-        Gives Universal Player a local_audio domain link so the wrapped
-        up_... player is attributed to the Local Audio Out provider filter
-        in the MA UI. Mirrors the pattern used by AirPlay — the bare UUID
-        player_id is what provides this link.
-        """
-        # Force-enable the attribution stub before creating the Player instance.
-        # If a user previously disabled it, Player.__init__ will otherwise load enabled=False
-        # and MA will ignore registration entirely.
-        conf_key = f"{CONF_PLAYERS}/{device_uuid}"
-        if (raw := self.mass.config.get(conf_key)) and not raw.get("enabled", True):
-            self.logger.debug("Re-enabling disabled attribution stub for %s", display_name)
-            self.mass.config.set(conf_key, {**raw, "enabled": True})
-
-        protocol_player = Player(self.provider, device_uuid)
-        protocol_player._attr_type = PlayerType.PROTOCOL
-        protocol_player._attr_name = display_name
-        protocol_player._attr_available = True
-        protocol_player._attr_hidden_by_default = True  # attribution stub — hide from UI
-        protocol_player._attr_supported_features = set()  # no direct playback capability
-        protocol_player._attr_device_info = DeviceInfo(
-            model=display_name, manufacturer="Local Audio"
-        )
-        await self.mass.players.register_or_update(protocol_player)
-        return protocol_player
-
-    async def _refresh_after_remap_topology(
-        self, devices: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        """Create missing remap sinks and re-enumerate if any were added.
-
-        :returns: The original devices list, or a freshly re-enumerated list
-            if _ensure_remap_topology() loaded any new modules.
-        """
-        if not await self._ensure_remap_topology(devices):
-            return devices
-        try:
-            new_devices = await self.mass.loop.run_in_executor(None, enumerate_pa_sinks)
-        except (FileNotFoundError, RuntimeError) as err:
-            self.logger.warning("Failed to re-enumerate after creating remap sinks: %s", err)
-            return devices
-        self.logger.info(
-            "Found %d local audio output device(s) after creating remap sinks", len(new_devices)
-        )
-        return new_devices
-
     async def discover_and_register(self) -> None:
         """Enumerate output devices and register Sendspin bridges."""
         sendspin_server = self.sendspin_server
@@ -959,6 +797,209 @@ class LocalAudioBridgeManager:
                     device.get("pa_sink_name") or "n/a",
                 )
 
+    async def stop_all(self) -> None:
+        """Stop all Sendspin bridges and unload any remap sinks we created."""
+        async with self._lock:
+            for bridge in list(self._bridges.values()):
+                with suppress(Exception):
+                    await bridge.stop()
+            self._bridges.clear()
+        if self._loaded_remap_modules:
+            # Give PA a moment to release active streams on the remap sinks
+            # before unloading their modules — unload-module fails if a stream
+            # is still open on the sink at the time of the call.
+            await asyncio.sleep(0.5)
+        if self._volume_controller is not None:
+            controller = self._volume_controller
+            for sink_name, module_index in self._loaded_remap_modules.items():
+                with suppress(Exception):
+                    ok = await self.mass.loop.run_in_executor(
+                        None, controller.unload_module, module_index
+                    )
+                    if not ok:
+                        self.logger.warning("Failed to unload remap sink %s", sink_name)
+            self._loaded_remap_modules.clear()
+            with suppress(Exception):
+                await self.mass.loop.run_in_executor(None, self._volume_controller.close)
+            self._volume_controller = None
+        self.logger.debug("All local audio bridges stopped")
+
+    async def _ensure_volume_controller(self, resolved_backend: str) -> None:
+        """Lazily connect the shared PAVolumeController for hardware sink volume.
+
+        No-op if not the pulse backend or already connected. Logs and leaves
+        it as None on failure — bridges fall back to software volume scaling.
+        """
+        if resolved_backend != "pulse" or self._volume_controller is not None:
+            return
+        try:
+            self._volume_controller = await self.mass.loop.run_in_executor(None, PAVolumeController)
+            self.logger.debug("Hardware volume control connected (PAVolumeController)")
+        except OSError as err:
+            self.logger.warning(
+                "Hardware volume control unavailable, falling back to software volume scaling: %s",
+                err,
+            )
+
+    @staticmethod
+    def _remap_master_sinks(devices: list[dict[str, Any]]) -> set[str]:
+        """Return master sink names with at least one remap-sink child.
+
+        Such masters must keep software volume control — their PA volume
+        multiplies into every remap sink feeding through them. Masters with
+        no remap children (e.g. remap addon disabled) can safely use
+        hardware volume control like any standalone sink.
+        """
+        return {d["master_device"] for d in devices if d.get("is_remap") and d.get("master_device")}
+
+    @staticmethod
+    def _remap_masters_with_passthrough(devices: list[dict[str, Any]]) -> set[str]:
+        """Return master sink names with a full-passthrough remap-sink child.
+
+        A passthrough child has the same channel count as its master (a 1:1
+        remap, e.g. the "_multichannel_stereo" sink from
+        compute_remap_topology). Such masters are fully covered by their remap-sink topology (per-zone
+        sinks plus the passthrough for "play to all outputs") and should not
+        also be registered as their own player.
+        """
+        master_channels = {
+            d["name"]: d.get("max_output_channels", 0) for d in devices if not d.get("is_remap")
+        }
+        result: set[str] = set()
+        for d in devices:
+            master = d.get("master_device")
+            if (
+                d.get("is_remap")
+                and master
+                and master_channels.get(master) == d.get("max_output_channels")
+            ):
+                result.add(master)
+        return result
+
+    async def _ensure_remap_topology(self, devices: list[dict[str, Any]]) -> bool:
+        """Create any missing per-zone/passthrough remap sinks for multi-channel cards.
+
+        For each ALSA-card master sink with more than 2 channels, computes
+        the expected remap-sink topology (see remap_topology module) and
+        loads module-remap-sink.c for any sink not already present by name.
+        Idempotent: sinks that already exist (created by a previous run, or
+        matching this naming convention) are left untouched.
+
+        :param devices: Current enumerate_pa_sinks() result.
+        :returns: True if any new modules were loaded (caller should
+            re-enumerate to pick up the new sinks).
+        """
+        if self._volume_controller is None:
+            return False
+        controller = self._volume_controller
+        existing_names = {d["name"] for d in devices}
+        loaded_any = False
+
+        for device in devices:
+            # Master sinks are anything that isn't itself a remap-sink
+            # child (is_remap=False) — this is more robust than matching
+            # the "driver" field, since PipeWire's PulseAudio-compatibility
+            # layer reports a generic "PipeWire" driver string for every
+            # sink it manages (ALSA-backed or not), unlike real PulseAudio
+            # which reports the literal module name (e.g.
+            # "module-alsa-card.c"). alsa_card_name and channel_map being
+            # present (checked below) is what actually confirms this is a
+            # real ALSA-backed multi-channel sink worth computing a remap
+            # topology for, rather than e.g. a virtual/monitor/null sink.
+            if device.get("is_remap"):
+                continue
+            channels: int = device.get("max_output_channels", 0)
+            if channels <= 2:
+                continue
+            alsa_card_name = device.get("alsa_card_name")
+            channel_map: list[str] = device.get("channel_map", [])
+            if not alsa_card_name or not channel_map:
+                continue
+
+            card_name = normalize_card_name(alsa_card_name)
+            master_sink_name: str = device["name"]
+            for spec in compute_remap_topology(card_name, channel_map, channels):
+                if spec.sink_name in existing_names:
+                    continue
+                argument = build_remap_sink_argument(spec, master_sink_name)
+                module_index = await self.mass.loop.run_in_executor(
+                    None, controller.load_module, "module-remap-sink", argument
+                )
+                if module_index is None:
+                    self.logger.warning("Failed to create remap sink %s", spec.sink_name)
+                    continue
+                self.logger.info(
+                    "Created remap sink %s (master=%s, module=%d)",
+                    spec.sink_name,
+                    master_sink_name,
+                    module_index,
+                )
+                self._loaded_remap_modules[spec.sink_name] = module_index
+                existing_names.add(spec.sink_name)
+                loaded_any = True
+
+        if loaded_any:
+            # module-device-restore may restore a persisted per-sink-name
+            # volume asynchronously shortly after sink creation, which can
+            # race with and overwrite _apply_hardware_volume() during
+            # bridge.start(). Give it a moment to settle first so our
+            # cached-volume application (run after re-enumeration) wins.
+            await asyncio.sleep(0.3)
+
+        return loaded_any
+
+    async def _register_protocol_player(self, device_uuid: str, display_name: str) -> Player:
+        """Register the local_audio-owned PROTOCOL attribution-stub player.
+
+        Gives Universal Player a local_audio domain link so the wrapped
+        up_... player is attributed to the Local Audio Out provider filter
+        in the MA UI. Mirrors the pattern used by AirPlay — the bare UUID
+        player_id is what provides this link.
+        """
+        # Force-enable the attribution stub *before* constructing/registering
+        # the player. PlayerController.register() reads the persisted
+        # "enabled" config value and silently skips registration entirely if
+        # it's False — so re-enabling after register_or_update() has already
+        # been awaited is too late, the player has already been dropped.
+        # config.set() (not a mutation of the dict from config.get()) is
+        # required for the change to actually persist across restarts.
+        enabled_key = f"{CONF_PLAYERS}/{device_uuid}/enabled"
+        if self.mass.config.get(enabled_key, True) is False:
+            self.logger.debug("Re-enabling disabled attribution stub for %s", display_name)
+            self.mass.config.set(enabled_key, True)
+
+        protocol_player = Player(self.provider, device_uuid)
+        protocol_player._attr_type = PlayerType.PROTOCOL
+        protocol_player._attr_name = display_name
+        protocol_player._attr_available = True
+        protocol_player._attr_hidden_by_default = True  # attribution stub — hide from UI
+        protocol_player._attr_supported_features = set()  # no direct playback capability
+        protocol_player._attr_device_info = DeviceInfo(
+            model=display_name, manufacturer="Local Audio"
+        )
+        await self.mass.players.register_or_update(protocol_player)
+        return protocol_player
+
+    async def _refresh_after_remap_topology(
+        self, devices: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Create missing remap sinks and re-enumerate if any were added.
+
+        :returns: The original devices list, or a freshly re-enumerated list
+            if _ensure_remap_topology() loaded any new modules.
+        """
+        if not await self._ensure_remap_topology(devices):
+            return devices
+        try:
+            new_devices = await self.mass.loop.run_in_executor(None, enumerate_pa_sinks)
+        except (FileNotFoundError, RuntimeError) as err:
+            self.logger.warning("Failed to re-enumerate after creating remap sinks: %s", err)
+            return devices
+        self.logger.info(
+            "Found %d local audio output device(s) after creating remap sinks", len(new_devices)
+        )
+        return new_devices
+
     @staticmethod
     def _enumerate_output_devices(backend: str) -> tuple[str, list[dict[str, Any]]]:
         """Enumerate available audio output devices for the given backend.
@@ -1005,30 +1046,3 @@ class LocalAudioBridgeManager:
         except (FileNotFoundError, RuntimeError):
             pass
         return "alsa", enumerate_alsa_devices()
-
-    async def stop_all(self) -> None:
-        """Stop all Sendspin bridges and unload any remap sinks we created."""
-        async with self._lock:
-            for bridge in list(self._bridges.values()):
-                with suppress(Exception):
-                    await bridge.stop()
-            self._bridges.clear()
-        if self._loaded_remap_modules:
-            # Give PA a moment to release active streams on the remap sinks
-            # before unloading their modules — unload-module fails if a stream
-            # is still open on the sink at the time of the call.
-            await asyncio.sleep(0.5)
-        if self._volume_controller is not None:
-            controller = self._volume_controller
-            for sink_name, module_index in self._loaded_remap_modules.items():
-                with suppress(Exception):
-                    ok = await self.mass.loop.run_in_executor(
-                        None, controller.unload_module, module_index
-                    )
-                    if not ok:
-                        self.logger.warning("Failed to unload remap sink %s", sink_name)
-            self._loaded_remap_modules.clear()
-            with suppress(Exception):
-                await self.mass.loop.run_in_executor(None, self._volume_controller.close)
-            self._volume_controller = None
-        self.logger.debug("All local audio bridges stopped")
