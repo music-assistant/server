@@ -826,6 +826,14 @@ class LocalAudioBridgeManager:
         in the MA UI. Mirrors the pattern used by AirPlay — the bare UUID
         player_id is what provides this link.
         """
+        # Force-enable the attribution stub before creating the Player instance.
+        # If a user previously disabled it, Player.__init__ will otherwise load enabled=False
+        # and MA will ignore registration entirely.
+        conf_key = f"{CONF_PLAYERS}/{device_uuid}"
+        if (raw := self.mass.config.get(conf_key)) and not raw.get("enabled", True):
+            self.logger.debug("Re-enabling disabled attribution stub for %s", display_name)
+            self.mass.config.set(conf_key, {**raw, "enabled": True})
+
         protocol_player = Player(self.provider, device_uuid)
         protocol_player._attr_type = PlayerType.PROTOCOL
         protocol_player._attr_name = display_name
@@ -836,13 +844,6 @@ class LocalAudioBridgeManager:
             model=display_name, manufacturer="Local Audio"
         )
         await self.mass.players.register_or_update(protocol_player)
-        # Force-enable the attribution stub — if a user previously disabled it MA
-        # will skip registration on next startup, causing the player to disappear
-        # from the Local Audio Out provider filter. Re-enable via raw config store.
-        if raw := self.mass.config.get(f"{CONF_PLAYERS}/{device_uuid}"):
-            if not raw.get("enabled", True):
-                self.logger.debug("Re-enabling disabled attribution stub for %s", display_name)
-                raw["enabled"] = True
         return protocol_player
 
     async def _refresh_after_remap_topology(
