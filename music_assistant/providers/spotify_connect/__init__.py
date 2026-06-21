@@ -484,10 +484,13 @@ class SpotifyConnectProvider(PluginProvider):
         # that echo can arrive over the WS while we're still awaiting set_volume.
         # Recording up front lets _handle_volume_event dedupe it instead of
         # bouncing it back as a player volume change.
+        previous_volume = self._last_volume_sent
         self._last_volume_sent = volume
         try:
             await self._client.set_volume(round(volume / 100 * VOLUME_STEPS))
         except Exception as err:
+            # restore on failure so a retry of this value isn't wrongly deduped
+            self._last_volume_sent = previous_volume
             self.logger.warning("Failed to send volume command to go-librespot: %s", err)
             raise
 
