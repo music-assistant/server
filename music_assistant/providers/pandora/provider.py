@@ -33,7 +33,6 @@ from music_assistant_models.media_items import (
     MediaItemType,
     Playlist,
     ProviderMapping,
-    Radio,
     SearchResults,
     Track,
 )
@@ -41,7 +40,6 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import CONF_PASSWORD, CONF_SOCKS_URL, CONF_USERNAME
-from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.aiohttp_client import create_clientsession, get_socks5_url
 from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.util import parse_title_and_version
@@ -138,6 +136,142 @@ class PandoraProvider(MusicProvider):
             self._unsub_queue_added = self.mass.subscribe(
                 self._on_queue_added, EventType.QUEUE_ADDED
             )
+
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """Browse Pandora radio stations."""
+        sub_path = path.split("://", 1)[1] if "://" in path else ""
+        if not sub_path:
+            result: list[MediaItemType | ItemMapping | BrowseFolder] = []
+            async for station in self._get_stations():
+                self.logger.debug(f"Retrieved {station.name}, {station.is_dynamic}")
+                result.append(station)
+            return result
+        return await super().browse(path)
+
+    async def search(
+        self,
+        search_query: str,
+        media_types: list[MediaType],
+        limit: int = 25,
+    ) -> SearchResults:
+        """Search library radio stations by name."""
+        # Search limited to library stations (API search requires legacy endpoints)
+        if MediaType.PLAYLIST not in media_types:
+            return SearchResults()
+
+        results: list[Playlist] = []
+
+        async for station in self._get_stations():
+            if compare_strings(station.name, search_query):
+                results.append(station)
+                if len(results) >= limit:
+                    break
+
+        return SearchResults(playlists=results)
+
+    async def close(self) -> None:
+        """Handle closing of http session if using socks."""
+        if self._socks_proxy and self.http_session:
+            await self.http_session.close()
+
+    async def get_album(self, prov_track_id: str) -> Album:
+        """Get Album from provider track_id."""
+        if track := self._find_track(prov_track_id):
+            if album := self._parse_album(track, prov_track_id):
+                return album
+        raise MediaNotFoundError(f"Album {prov_track_id} not found")
+
+    async def get_artist(self, artist_name: str) -> Artist:
+        """Get artist details from just artist_name."""
+        if artist := self._parse_artist(artist_name):
+            return artist
+        raise MediaNotFoundError(f"Artist {artist_name} not found")
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes]:
+        """Return bytes of track from local _audio_cache."""
+        track_id = streamdetails.item_id.split("_", 1)[-1]
+        if not (audio := self._audio_cache.get(track_id)):
+            raise MediaNotFoundError(f"No cached audio for track {streamdetails.item_id}")
+        self._audio_cache.move_to_end(track_id)
+        start = 0
+        if seek_position and streamdetails.duration:
+            start = int(len(audio) / streamdetails.duration * seek_position)
+        for i in range(start, len(audio), 65536):
+            yield audio[i : i + 65536]
+
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
+        """Retrieve library/subscribed playlists from the provider."""
+        async for station in self._get_stations():
+            yield station
+
+    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
+        """Get full playlist details by id."""
+        async for station in self._get_stations():
+            if station.item_id == prov_playlist_id:
+                return station
+        raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
+
+    async def get_playlist_tracks(self, station_id: str, page: int = 0) -> list[Track]:
+        """Get all playlist tracks for given station id."""
+        if page > 0:
+            return []
+
+        session = self._get_or_create_session(station_id)
+        fragment = [] if len(session.fragments) == 0 else session.fragments[-1]
+        tracks = []
+        fragment_index = max(0, len(session.fragments) - 1)
+        for i in range(2):
+            fragment = await self._get_fragment_data(session, fragment_index + i)
+            for track in fragment:
+                if not track["cached"]:
+                    try:
+                        async with self.http_session.get(
+                            track["audioURL"], timeout=aiohttp.ClientTimeout(total=30)
+                        ) as resp:
+                            if resp.status != 200:
+                                self.logger.warning(
+                                    "Failed to download audio for %s (HTTP %s) - skipping",
+                                    track.get("songTitle"),
+                                    resp.status,
+                                )
+                                continue
+                            self._add_audio(track["musicId"], await resp.read())
+                    except (TimeoutError, aiohttp.ClientError) as err:
+                        self.logger.warning(
+                            "Error downloading audio for %s: %s", track.get("songTitle"), err
+                        )
+                        continue
+                    track["cached"] = True
+                    tracks.append(track)
+                    if len(tracks) >= 2:
+                        return [self._parse_track(track) for track in tracks]
+        return [self._parse_track(track) for track in tracks]
+
+    async def get_stream_details(self, prov_item_id: str, media_type: MediaType) -> StreamDetails:
+        """Get streamdetails for a radio station."""
+        station_id, track_id = prov_item_id.split("_", 1)
+        session = self._get_or_create_session(station_id)
+
+        if session.fragments:
+            if track_id in self._audio_cache:
+                return StreamDetails(
+                    provider=self.instance_id,
+                    item_id=prov_item_id,
+                    audio_format=self._audio_format(),
+                    media_type=MediaType.TRACK,
+                    stream_type=StreamType.CUSTOM,
+                    can_seek=True,
+                    allow_seek=True,
+                )
+        raise MediaNotFoundError("No stream URL found for song.")
+
+    async def get_track(self, prov_track_id: str) -> Track:
+        """Get full track details by id."""
+        if track := self._find_track(prov_track_id):
+            return self._parse_track(track)
+        raise MediaNotFoundError(f"Track {prov_track_id} not found")
 
     def _on_queue_added(self, event: MassEvent) -> None:
         """Clear a stale Pandora queue that was added after load."""
@@ -272,7 +406,7 @@ class PandoraProvider(MusicProvider):
                                 "Pandora stream is already active on another device. "
                                 "Automatically taking over the stream and retrying the request."
                             )
-                            await self.takeover_stream()
+                            await self._takeover_stream()
                             return await self._api_request(
                                 method,
                                 url,
@@ -300,155 +434,6 @@ class PandoraProvider(MusicProvider):
         except (ValueError, KeyError) as err:
             await self.close()
             raise InvalidDataError("Invalid response from Pandora") from err
-
-    @use_cache(3600)
-    async def get_radio(self, prov_radio_id: str) -> Radio:
-        """Get single radio station details."""
-        return Radio(
-            item_id=prov_radio_id,
-            provider=self.instance_id,
-            name=f"Pandora Station {prov_radio_id}",
-            translation_key="pandora_station",
-            translation_params=[prov_radio_id],
-            provider_mappings={
-                ProviderMapping(
-                    item_id=prov_radio_id,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                )
-            },
-        )
-
-    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse Pandora radio stations."""
-        sub_path = path.split("://", 1)[1] if "://" in path else ""
-        if not sub_path:
-            result: list[MediaItemType | ItemMapping | BrowseFolder] = []
-            async for station in self._get_stations():
-                self.logger.debug(f"Retrieved {station.name}, {station.is_dynamic}")
-                result.append(station)
-            return result
-        return await super().browse(path)
-
-    async def search(
-        self,
-        search_query: str,
-        media_types: list[MediaType],
-        limit: int = 25,
-    ) -> SearchResults:
-        """Search library radio stations by name."""
-        # Search limited to library stations (API search requires legacy endpoints)
-        if MediaType.PLAYLIST not in media_types:
-            return SearchResults()
-
-        results: list[Playlist] = []
-
-        async for station in self._get_stations():
-            if compare_strings(station.name, search_query):
-                results.append(station)
-                if len(results) >= limit:
-                    break
-
-        return SearchResults(playlists=results)
-
-    async def close(self) -> None:
-        """Handle closing of http session if using socks."""
-        if self._socks_proxy and self.http_session:
-            await self.http_session.close()
-
-    async def get_album(self, prov_track_id: str) -> Album:
-        """Get Album from provider track_id."""
-        if track := self._find_track(prov_track_id):
-            if album := self._parse_album(track, prov_track_id):
-                return album
-        raise MediaNotFoundError(f"Album {prov_track_id} not found")
-
-    async def get_artist(self, artist_name: str) -> Artist:
-        """Get artist details from just artist_name."""
-        if artist := self._parse_artist(artist_name):
-            return artist
-        raise MediaNotFoundError(f"Artist {artist_name} not found")
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes]:
-        """Return bytes of track from local _audio_cache."""
-        track_id = streamdetails.item_id.split("_", 1)[-1]
-        if not (audio := self._audio_cache.get(track_id)):
-            raise MediaNotFoundError(f"No cached audio for track {streamdetails.item_id}")
-        self._audio_cache.move_to_end(track_id)
-        start = 0
-        if seek_position and streamdetails.duration:
-            start = int(len(audio) / streamdetails.duration * seek_position)
-        for i in range(start, len(audio), 65536):
-            yield audio[i : i + 65536]
-
-    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
-        """Get full playlist details by id."""
-        async for station in self._get_stations():
-            if station.item_id == prov_playlist_id:
-                return station
-        raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
-
-    async def get_playlist_tracks(self, station_id: str, page: int = 0) -> list[Track]:
-        """Get all playlist tracks for given station id."""
-        if page > 0:
-            return []
-
-        session = self._get_or_create_session(station_id)
-        fragment = [] if len(session.fragments) == 0 else session.fragments[-1]
-        tracks = []
-        fragment_index = max(0, len(session.fragments) - 1)
-        for i in range(2):
-            fragment = await self._get_fragment_data(session, fragment_index + i)
-            for track in fragment:
-                if not track["cached"]:
-                    try:
-                        async with self.http_session.get(
-                            track["audioURL"], timeout=aiohttp.ClientTimeout(total=30)
-                        ) as resp:
-                            if resp.status != 200:
-                                self.logger.warning(
-                                    "Failed to download audio for %s (HTTP %s) - skipping",
-                                    track.get("songTitle"),
-                                    resp.status,
-                                )
-                                continue
-                            self._add_audio(track["musicId"], await resp.read())
-                    except (TimeoutError, aiohttp.ClientError) as err:
-                        self.logger.warning(
-                            "Error downloading audio for %s: %s", track.get("songTitle"), err
-                        )
-                        continue
-                    track["cached"] = True
-                    tracks.append(track)
-                    if len(tracks) >= 2:
-                        return [self._parse_track(track) for track in tracks]
-        return [self._parse_track(track) for track in tracks]
-
-    async def get_stream_details(self, prov_item_id: str, media_type: MediaType) -> StreamDetails:
-        """Get streamdetails for a radio station."""
-        station_id, track_id = prov_item_id.split("_", 1)
-        session = self._get_or_create_session(station_id)
-
-        if session.fragments:
-            if track_id in self._audio_cache:
-                return StreamDetails(
-                    provider=self.instance_id,
-                    item_id=prov_item_id,
-                    audio_format=self._audio_format(),
-                    media_type=MediaType.TRACK,
-                    stream_type=StreamType.CUSTOM,
-                    can_seek=True,
-                    allow_seek=True,
-                )
-        raise MediaNotFoundError("No stream URL found for song.")
-
-    async def get_track(self, prov_track_id: str) -> Track:
-        """Get full track details by id."""
-        if track := self._find_track(prov_track_id):
-            return self._parse_track(track)
-        raise MediaNotFoundError(f"Track {prov_track_id} not found")
 
     def _add_audio(self, key: str, value: bytes) -> None:
         # If the cache is full, pop the oldest item
@@ -684,7 +669,7 @@ class PandoraProvider(MusicProvider):
         """
         return self._high_quality_available and self.config.get_value(CONF_QUALITY) == QUALITY_HIGH
 
-    async def takeover_stream(self) -> None:
+    async def _takeover_stream(self) -> None:
         """
         Force Pandora to end any other active session and resume here.
 
