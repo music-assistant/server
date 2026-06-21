@@ -2337,7 +2337,7 @@ class PlayerQueuesController(CoreController):
                 current_item = queue.current_item
                 if current_item is None:
                     return  # guard
-                retries = max(120, (current_item.duration or 0) + 10)
+                retries = max(120, int(current_item.duration or 0) + 10)
                 for _ in range(retries):
                     # the queue can drain to empty while we sleep (e.g. all remaining
                     # items skipped as unplayable); stop waiting once it has no current item
