@@ -231,6 +231,21 @@ RUN set -x \
     && dpkg -i /tmp/snapserver.deb /tmp/snapclient.deb \
     && rm /tmp/snapserver.deb /tmp/snapclient.deb
 
+# Install go-librespot (used by the Spotify Connect provider) from GitHub releases.
+# The release binaries statically link libvorbis/libogg/libFLAC, so the only dynamic
+# dependency is libasound2 (already installed above for Snapcast).
+ARG GO_LIBRESPOT_VERSION=0.7.4
+RUN set -x \
+    && if [ "$TARGETARCH" = "arm64" ]; then \
+        GO_LIBRESPOT_ARCH="arm64"; \
+    else \
+        GO_LIBRESPOT_ARCH="x86_64"; \
+    fi \
+    && wget -q "https://github.com/devgianlu/go-librespot/releases/download/v${GO_LIBRESPOT_VERSION}/go-librespot_linux_${GO_LIBRESPOT_ARCH}.tar.gz" -O /tmp/go-librespot.tar.gz \
+    && tar -xzf /tmp/go-librespot.tar.gz -C /usr/local/bin go-librespot \
+    && chmod +x /usr/local/bin/go-librespot \
+    && rm /tmp/go-librespot.tar.gz
+
 # Copy FFmpeg binaries and libraries from builder stage
 COPY --from=ffmpeg-builder /usr/local/bin/ffmpeg /usr/local/bin/
 COPY --from=ffmpeg-builder /usr/local/bin/ffprobe /usr/local/bin/
