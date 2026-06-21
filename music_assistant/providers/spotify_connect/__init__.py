@@ -476,13 +476,17 @@ class SpotifyConnectProvider(PluginProvider):
         if not self._playing and not self._spotify_session_active:
             raise self._not_active_error()
         # Prevent ping-pong: only push if the value actually changed from what we
-        # last sent (or received from) the daemon.
+        # last sent to / received from the daemon.
         if self._last_volume_sent == volume:
             return
         assert self._client is not None
+        # Record BEFORE the call: go-librespot echoes a 'volume' event back, and
+        # that echo can arrive over the WS while we're still awaiting set_volume.
+        # Recording up front lets _handle_volume_event dedupe it instead of
+        # bouncing it back as a player volume change.
+        self._last_volume_sent = volume
         try:
             await self._client.set_volume(round(volume / 100 * VOLUME_STEPS))
-            self._last_volume_sent = volume
         except Exception as err:
             self.logger.warning("Failed to send volume command to go-librespot: %s", err)
             raise
@@ -830,6 +834,10 @@ class SpotifyConnectProvider(PluginProvider):
         if value is None:
             return
         volume = int(int(value) / int(max_value) * 100)
+        # Ignore our own echo: go-librespot emits a 'volume' event for the value we
+        # just pushed in on_volume_change; re-applying it would ping-pong.
+        if volume == self._last_volume_sent:
+            return
         # Ignore the volume that librespot reports right after a session becomes
         # active — the player's own volume should win in that window.
         if time.time() - self._last_session_active_time < INITIAL_VOLUME_GRACE_S:
