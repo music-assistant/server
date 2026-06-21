@@ -45,11 +45,14 @@ async def test_add_to_queue_accepts_valid_options(
 async def test_add_to_queue_rejects_invalid_option(mounted_queue: FastMCP) -> None:
     """Invalid option raises ToolError with the list of valid options."""
     async with Client(mounted_queue) as client:
-        with pytest.raises(ToolError, match="bogus"):
+        with pytest.raises(ToolError, match="bogus") as exc_info:
             await client.call_tool(
                 "queue_add_to_queue",
                 {"queue_id": "q1", "uri": "spotify://track/1", "option": "bogus"},
             )
+    msg = str(exc_info.value)
+    assert "``add``" in msg
+    assert "``replace_next``" in msg
 
 
 async def test_add_to_queue_defaults_to_add(mounted_queue: FastMCP, mock_mass: MagicMock) -> None:

@@ -50,7 +50,7 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         ``item_count``, shuffle / repeat flags, ``available`` and up to
         ``include_items`` lookahead ``items``. Note that
         ``QueueBrief.queue_id`` is the identifier the mutation tools
-        (``set_shuffle``, ``clear_queue``, ``transfer_queue``) expect — it is
+        (``set_shuffle``, ``add_to_queue``, ``clear_queue``, ``transfer_queue``) expect — it is
         distinct from ``player_id``. For a queue fed by an external plugin
         source (Connect / AirPlay / Ynison), the current item's ``name`` is
         the real track title rather than the source wrapper name.
@@ -162,7 +162,7 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         option: str = "add",
     ) -> None:
         """
-        Add media item(s) to the queue without replacing the current queue.
+        Enqueue media on a queue with an explicit placement mode.
 
         Supports different enqueue modes to control where items are placed
         and whether playback is affected.
