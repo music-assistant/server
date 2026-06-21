@@ -986,11 +986,15 @@ class PlexProvider(MusicProvider):
         page_size = 500
         offset = 0
         while True:
+            # maxresults caps a single page; without it container_size is only the HTTP
+            # batch size and plexapi keeps fetching until the end of the library, so every
+            # iteration would return all remaining tracks (an O(n^2) re-scan of the library).
             batch = cast(
                 "list[PlexTrack]",
                 await self._run_async(
                     self._plex_library.searchTracks,
                     title=None,
+                    maxresults=page_size,
                     container_size=page_size,
                     container_start=offset,
                 ),
