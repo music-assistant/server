@@ -1,4 +1,5 @@
-"""Dataclass models for the Yandex Smart Home API.
+"""
+Dataclass models for the Yandex Smart Home API.
 
 Covers device descriptions, capability states, action requests/results,
 callback payloads, and cloud WebSocket messages.
@@ -220,7 +221,8 @@ class ActionResult:
 
 @dataclass
 class CapabilityActionResultState:
-    """State with action result for a single capability in an action response.
+    """
+    State with action result for a single capability in an action response.
 
     Per Yandex Smart Home API, action_result goes inside 'state' alongside instance.
     """

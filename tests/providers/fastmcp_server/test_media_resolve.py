@@ -1,4 +1,5 @@
-"""Regression tests for media-item URI resolution.
+"""
+Regression tests for media-item URI resolution.
 
 Two robustness fixes are pinned here:
 

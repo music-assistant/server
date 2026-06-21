@@ -105,6 +105,10 @@
       "description": "Color for the 'Boost' badge shown on priority guest requests."
     }
   },
+  "config_categories": {
+    "guest_features": "Guest Features",
+    "karaoke": "Karaoke"
+  },
   "manifest": {
     "description": "Enable guest access with a shareable URL for party, allowing guests to add songs to the queue with rate limiting."
   }

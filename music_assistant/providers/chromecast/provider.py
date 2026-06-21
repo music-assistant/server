@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import threading
+import time
 from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
@@ -20,6 +21,7 @@ from music_assistant.constants import (
 )
 from music_assistant.models.player_provider import PlayerProvider
 
+from .constants import MULTICHANNEL_RECHECK_INTERVAL
 from .helpers import ChromecastInfo
 from .player import ChromecastPlayer
 from .sendspin_bridge import SendspinBridgeManager
@@ -134,6 +136,20 @@ class ChromecastProvider(PlayerProvider):
                 assert isinstance(castplayer, ChromecastPlayer)  # for type checking
                 castplayer.cast_info.update(disc_info)
                 self.mass.loop.call_soon_threadsafe(castplayer.update_state)
+                # An unavailable player may be a passive multichannel endpoint that
+                # slipped past the discovery filter (e.g. incomplete multizone info
+                # while the stereo pair was rebooting). Re-evaluate and remove it
+                # if it is now positively identified as such.
+                if self._should_recheck_multichannel_child(castplayer, player_id):
+                    self._pending_discoveries.add(player_id)
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            self._recheck_multichannel_child(player_id, disc_info),
+                            loop=self.mass.loop,
+                        )
+                    except RuntimeError:
+                        # event loop already closed (shutdown): release the marker
+                        self._pending_discoveries.discard(player_id)
                 return
 
             # Prevent duplicate discovery while async setup is in progress
@@ -203,3 +219,37 @@ class ChromecastProvider(PlayerProvider):
         player_id = str(uuid)
         self.logger.debug("Chromecast removed: %s - %s", cast_info.friendly_name, player_id)
         # we ignore this event completely as the Chromecast socket client handles this itself
+
+    def _should_recheck_multichannel_child(
+        self, castplayer: ChromecastPlayer, player_id: str
+    ) -> bool:
+        """Return whether an unavailable player should be re-evaluated as a multichannel child."""
+        if player_id in self._pending_discoveries:
+            return False
+        if castplayer.available or castplayer.cast_info.is_audio_group:
+            return False
+        return (
+            time.monotonic() - castplayer.last_multichannel_check
+        ) > MULTICHANNEL_RECHECK_INTERVAL
+
+    async def _recheck_multichannel_child(self, player_id: str, disc_info: CastInfo) -> None:
+        """Re-evaluate a player and remove it if it is a passive multichannel endpoint."""
+        try:
+            castplayer = self.mass.players.get_player(player_id)
+            if not isinstance(castplayer, ChromecastPlayer):
+                return
+            castplayer.last_multichannel_check = time.monotonic()
+            cast_info = ChromecastInfo.from_cast_info(disc_info)
+            await asyncio.to_thread(
+                cast_info.fill_out_missing_chromecast_info, self.mass.discovery.aiozc.zeroconf
+            )
+            if cast_info.is_multichannel_child and self.mass.players.get_player(player_id):
+                self.logger.info(
+                    "Removing %s as it is now identified as a passive (multichannel) endpoint",
+                    castplayer.cast_info.friendly_name,
+                )
+                await self.mass.players.unregister(player_id, permanent=True)
+        except Exception:
+            self.logger.debug("Multichannel re-check failed for %s", player_id, exc_info=True)
+        finally:
+            self._pending_discoveries.discard(player_id)

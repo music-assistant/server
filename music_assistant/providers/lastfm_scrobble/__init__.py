@@ -5,7 +5,7 @@ import enum
 import logging
 import time
 from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, ClassVar, Final, cast
 
 import pylast
 from music_assistant_models.config_entries import (
@@ -54,7 +54,8 @@ CONF_ACTION_AUTH: Final[str] = "_auth"
 
 
 class _NetworkType(enum.Enum):
-    """Available scrobbling network provider types.
+    """
+    Available scrobbling network provider types.
 
     This is a plain Enum class with string values.
     Use ``.value`` when passing to ``ConfigEntry`` or ``ConfigValueOption``
@@ -69,7 +70,8 @@ def _resolve_credentials(
     values: Mapping[str, ConfigValueType],
     network_type: _NetworkType = _NetworkType.LASTFM,
 ) -> tuple[str, str]:
-    """Resolve the effective API key and secret.
+    """
+    Resolve the effective API key and secret.
 
     Uses user-provided values if present, otherwise falls back to the
     built-in Last.fm credentials. Libre.fm always requires user-provided values.
@@ -102,7 +104,8 @@ def _resolve_credentials(
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
-    """Initialize provider(instance) with given configuration.
+    """
+    Initialize provider(instance) with given configuration.
 
     :returns: A configured LastFMScrobbleProvider instance.
     """
@@ -150,7 +153,8 @@ class LastFMScrobbleProvider(PluginProvider):
         )
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload/close of the provider.
+        """
+        Handle unload/close of the provider.
 
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
@@ -158,7 +162,8 @@ class LastFMScrobbleProvider(PluginProvider):
             unload_cb()
 
     def _get_network_config(self) -> dict[str, ConfigValueType]:
-        """Build the network configuration dict from provider config values.
+        """
+        Build the network configuration dict from provider config values.
 
         :returns: Dict of config keys to their current stored values.
         """
@@ -173,6 +178,9 @@ class LastFMScrobbleProvider(PluginProvider):
 
 class LastFMEventHandler(ScrobblerHelper):
     """Handle Last.fm event processing for scrobbling and now-playing updates."""
+
+    # pylast wraps every failure — including network errors — in PyLastError.
+    scrobble_exceptions: ClassVar[tuple[type[Exception], ...]] = (pylast.PyLastError,)
 
     def __init__(
         self, network: pylast._Network, logger: logging.Logger, config: ProviderConfig
@@ -221,7 +229,8 @@ async def get_config_entries(
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return config entries to setup this provider.
+    """
+    Return config entries to setup this provider.
 
     :param mass: The MusicAssistant instance.
     :param instance_id: ID of an existing provider instance (None if new instance setup).
@@ -244,8 +253,8 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             required=True,
             options=[
-                ConfigValueOption(_NetworkType.LASTFM.value, title="Last.FM"),
-                ConfigValueOption(_NetworkType.LIBREFM.value, title="LibreFM"),
+                ConfigValueOption(_NetworkType.LASTFM.value),
+                ConfigValueOption(_NetworkType.LIBREFM.value),
             ],
             default_value=network_type.value,
             value=network_type.value,
@@ -304,8 +313,7 @@ async def get_config_entries(
                     type=ConfigEntryType.ALERT,
                     required=False,
                     default_value=None,
-                    label=f"Successfully logged in as {username}, "
-                    "don't forget to hit save to complete the setup",
+                    translation_params=[username],
                 ),
             )
 
@@ -314,7 +322,8 @@ async def get_config_entries(
             ConfigEntry(
                 key=CONF_ACTION_AUTH,
                 type=ConfigEntryType.ACTION,
-                label=f"Authorize with {network_type.value}",
+                translation_key="authorize",
+                translation_params=[network_type.value],
                 action=CONF_ACTION_AUTH,
             ),
         )
@@ -339,7 +348,8 @@ async def get_config_entries(
 
 
 def get_network(config: dict[str, ConfigValueType]) -> pylast._Network:
-    """Create a pylast network instance with resolved credentials.
+    """
+    Create a pylast network instance with resolved credentials.
 
     Called in two contexts:
     1. during the auth flow (from ``get_config_entries``)

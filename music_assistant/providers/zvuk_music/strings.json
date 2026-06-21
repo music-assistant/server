@@ -5,8 +5,8 @@
       "description": "Enter your Zvuk Music X-Auth-Token. See the documentation for how to obtain it."
     },
     "clear_auth": {
-      "label": "Reset authentication",
-      "description": "Clear the current authentication details."
+      "label": "[%key:common::config_entries::clear_auth::label%]",
+      "description": "[%key:common::config_entries::clear_auth::description%]"
     },
     "quality": {
       "label": "Audio quality",

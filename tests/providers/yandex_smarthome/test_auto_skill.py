@@ -45,7 +45,8 @@ from music_assistant.providers.yandex_smarthome.constants import (
 
 
 def _mock_response(*, status: int = 200, body_text: str = "", body_json: Any = None) -> AsyncMock:
-    """Build a mock aiohttp.ClientResponse.
+    """
+    Build a mock aiohttp.ClientResponse.
 
     If *body_json* is given, ``text()`` returns its JSON-encoded form;
     otherwise ``body_text`` is used verbatim. Also wires up
@@ -678,7 +679,8 @@ def _fake_authenticator_factory(
     session: MagicMock | None = None,
     session_id_captor: list[str] | None = None,
 ) -> Any:
-    """Build an async-generator authenticator usable as *authenticator*.
+    """
+    Build an async-generator authenticator usable as *authenticator*.
 
     If *session_id_captor* is given, the session_id passed in by the
     orchestrator is appended to it so tests can assert it was forwarded.
@@ -706,7 +708,8 @@ async def _run_orch(
     session_id: str = "test-session-id",
     progress_cb: Any = None,
 ) -> SkillCreationArtifacts:
-    """Run auto_create_skill with sensible test defaults.
+    """
+    Run auto_create_skill with sensible test defaults.
 
     Injects *creator* via ``creator_factory`` and a fake authenticator
     so no real ya-passport-auth or aiohttp traffic is attempted.
@@ -913,7 +916,8 @@ class TestAutoCreateSkillFailure:
 
     @pytest.mark.asyncio
     async def test_cancelled_error_propagates(self) -> None:
-        """CancelledError must propagate, not be converted into a FAILED artifact.
+        """
+        CancelledError must propagate, not be converted into a FAILED artifact.
 
         Swallowing it would break cooperative task cancellation during
         HA shutdown or config-flow abort.
@@ -956,7 +960,8 @@ class TestAutoCreateSkillDirectMode:
 
 
 class TestAuthenticatorInjection:
-    """Both async-generator and already-decorated async-CM authenticators work.
+    """
+    Both async-generator and already-decorated async-CM authenticators work.
 
     Re-wrapping a callable that already returns an async CM with
     ``@asynccontextmanager`` breaks at runtime — the orchestrator must

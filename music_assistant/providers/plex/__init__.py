@@ -639,6 +639,8 @@ class PlexProvider(MusicProvider):
             album.metadata.images = images
         if plex_album.summary:
             album.metadata.description = plex_album.summary
+        if plex_album.genres:
+            album.metadata.genres = {genre.tag for genre in plex_album.genres if genre.tag}
 
         album.artists.append(
             self._get_item_mapping(
@@ -671,6 +673,8 @@ class PlexProvider(MusicProvider):
             artist.metadata.description = plex_artist.summary
         if images := get_thumbnail_images(plex_artist, self.instance_id):
             artist.metadata.images = images
+        if plex_artist.genres:
+            artist.metadata.genres = {genre.tag for genre in plex_artist.genres if genre.tag}
         return artist
 
     async def _parse_playlist(self, plex_playlist: PlexPlaylist) -> Playlist:
@@ -774,6 +778,8 @@ class PlexProvider(MusicProvider):
 
         if images := get_thumbnail_images(plex_track, self.instance_id):
             track.metadata.images = images
+        if plex_track.genres:
+            track.metadata.genres = {genre.tag for genre in plex_track.genres if genre.tag}
         if plex_track.parentKey:
             track.album = self._get_item_mapping(
                 MediaType.ALBUM, plex_track.parentKey, plex_track.parentTitle
@@ -790,7 +796,8 @@ class PlexProvider(MusicProvider):
         media_types: list[MediaType],
         limit: int = 20,
     ) -> SearchResults:
-        """Perform search on the plex library.
+        """
+        Perform search on the plex library.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include.

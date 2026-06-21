@@ -1,4 +1,5 @@
-"""Shared pytest fixtures for the FastMCP server provider.
+"""
+Shared pytest fixtures for the FastMCP server provider.
 
 Most tests run without a real Music Assistant install — they exercise pure
 logic (URI parsing, tag mapping, config entries shape) or use ``MagicMock``
@@ -30,7 +31,8 @@ from music_assistant.providers.fastmcp_server.debug import log_reader
 
 
 class FakeWebserver:
-    """Captures every dynamic-route registration so tests can drive them through aiohttp.
+    """
+    Captures every dynamic-route registration so tests can drive them through aiohttp.
 
     Mirrors the surface of ``mass.webserver`` that this plugin uses, without
     depending on a real Music Assistant install. Exposed via the
@@ -67,7 +69,8 @@ class FakeWebserver:
 
 
 def build_aiohttp_app(fake_ws: FakeWebserver) -> Any:
-    """Translate captured ``(path, handler, method)`` tuples into an aiohttp app.
+    """
+    Translate captured ``(path, handler, method)`` tuples into an aiohttp app.
 
     Mirrors MA's real dynamic-route matching
     (``helpers/webserver.py::_handle_catch_all``): a path registered as
@@ -228,7 +231,8 @@ def have_fastmcp() -> bool:
 
 @pytest.fixture
 def tmp_log_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_mass: MagicMock) -> Path:
-    """Sandboxed log root for SafeLogTail tests.
+    """
+    Sandboxed log root for SafeLogTail tests.
 
     Copies the fixture log into ``tmp_path`` and (a) patches the class-level
     ``SafeLogTail.ROOT`` so bare ``SafeLogTail()`` callers see ``tmp_path``,
@@ -248,7 +252,8 @@ def tmp_log_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_mass: Magi
 
 @pytest.fixture
 def fake_event_emitter(mock_mass: MagicMock) -> Any:
-    """Capture the EventBuffer subscriber and let tests emit synthetic events.
+    """
+    Capture the EventBuffer subscriber and let tests emit synthetic events.
 
     Replaces ``mock_mass.subscribe`` so the first call stores the callback;
     tests then call ``emitter.emit(event)`` to drive it.
@@ -307,7 +312,8 @@ def mounted_debug(mock_mass: MagicMock) -> Any:
 
 @pytest.fixture
 def mounted_debug_off(mock_mass: MagicMock) -> Any:
-    """Debug sub-server mounted with the TagFilterMiddleware allowing zero debug tags.
+    """
+    Debug sub-server mounted with the TagFilterMiddleware allowing zero debug tags.
 
     Uses the project's own ``TagFilterMiddleware`` (provider/middleware.py),
     not FastMCP's built-in ``restrict_tag`` — the latter is scope-based
@@ -335,7 +341,8 @@ def mounted_debug_off(mock_mass: MagicMock) -> Any:
 
 @pytest.fixture
 def mounted_debug_with_events(mock_mass: MagicMock, fake_event_emitter: Any) -> Any:
-    """Debug server with a started EventBuffer wired in.
+    """
+    Debug server with a started EventBuffer wired in.
 
     Yields ``(mcp, buffer, emitter)`` — tests drive synthetic events
     through ``emitter.emit(...)`` and read back via either the MCP
@@ -434,7 +441,8 @@ def mounted_config_no_secret(mock_mass: Any) -> Any:
 
 @pytest.fixture
 def mock_config_targets(mock_mass: Any) -> Any:
-    """Wire mock_mass.config with provider/core/player config + entries.
+    """
+    Wire mock_mass.config with provider/core/player config + entries.
 
     Provides a SECURE_STRING entry (token, requires_reload), an
     INTEGER-with-range (http_port), and a STRING (log_level). to_dict

@@ -18,7 +18,8 @@ if TYPE_CHECKING:
 
 
 async def _resolve_uri(mass: MusicAssistant, uri: str) -> Any:
-    """Look up a MediaItem by MA URI, raising ToolError when missing.
+    """
+    Look up a MediaItem by MA URI, raising ToolError when missing.
 
     MA's MusicController APIs that mutate library / favorites / play history
     expect a resolved (media_type, library_item_id) pair or a typed media
@@ -43,7 +44,8 @@ async def _resolve_uri(mass: MusicAssistant, uri: str) -> Any:
 
 
 async def _resolve_to_library_item(mass: MusicAssistant, uri: str) -> Any:
-    """Resolve a URI to its library counterpart, raising ToolError when not in library.
+    """
+    Resolve a URI to its library counterpart, raising ToolError when not in library.
 
     MA's :meth:`MusicController.remove_item_from_favorites` and
     :meth:`remove_item_from_library` expect a library item id. When the

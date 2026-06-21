@@ -150,7 +150,8 @@ class DiscoveryController(CoreController):
     async def async_find_mdns_service(
         self, service_type: str, name_filter: str, timeout: float = 3.0
     ) -> AsyncServiceInfo | None:
-        """Find an mDNS service by exact device name match, checking cache first then waiting.
+        """
+        Find an mDNS service by exact device name match, checking cache first then waiting.
 
         :param service_type: The mDNS service type (e.g., "_raop._tcp.local.").
         :param name_filter: Device name that must exactly match the service name portion.

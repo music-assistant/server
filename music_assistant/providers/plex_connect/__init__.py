@@ -139,7 +139,8 @@ class PlexConnectProvider(PluginProvider):
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
-        """Initialize the plugin provider.
+        """
+        Initialize the plugin provider.
 
         :param mass: MusicAssistant instance.
         :param manifest: Provider manifest.
@@ -200,7 +201,8 @@ class PlexConnectProvider(PluginProvider):
             await self._setup_player_instance()
 
     async def unload(self, is_removed: bool = False) -> None:
-        """Handle close/cleanup of the provider.
+        """
+        Handle close/cleanup of the provider.
 
         :param is_removed: Whether the provider is being removed.
         """
@@ -217,7 +219,8 @@ class PlexConnectProvider(PluginProvider):
         self._on_unload_callbacks.clear()
 
     def _is_port_available(self, port: int) -> bool:
-        """Check if a port is available by attempting to bind to it.
+        """
+        Check if a port is available by attempting to bind to it.
 
         :param port: Port number to check.
         :return: True if port is available, False otherwise.
@@ -232,7 +235,8 @@ class PlexConnectProvider(PluginProvider):
             return False
 
     def _find_available_port(self) -> int:
-        """Find the first available port in the configured range.
+        """
+        Find the first available port in the configured range.
 
         :return: First available port number.
         """
@@ -248,7 +252,8 @@ class PlexConnectProvider(PluginProvider):
         raise RuntimeError(msg)
 
     def _resolve_port(self) -> int:
-        """Return the long-term port for this instance, allocating one if needed.
+        """
+        Return the long-term port for this instance, allocating one if needed.
 
         The port is persisted in the instance config so it stays stable across restarts.
         A new port is allocated (and persisted) only on first setup, or if the configured
@@ -318,7 +323,8 @@ class PlexConnectProvider(PluginProvider):
             self._player_instance = None
 
     def _on_mass_player_event(self, event: MassEvent) -> None:
-        """Handle player added/removed events.
+        """
+        Handle player added/removed events.
 
         :param event: The event that occurred.
         """

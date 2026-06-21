@@ -38,7 +38,8 @@ class TidalUser:
 
 
 class ManualAuthenticationHelper:
-    """Helper for authentication flows that require manual user intervention.
+    """
+    Helper for authentication flows that require manual user intervention.
 
     For Tidal where the OAuth flow doesn't redirect to our callback,
     but instead requires the user to manually copy a URL after authentication.

@@ -330,7 +330,8 @@ class Audibleprovider(MusicProvider):
         return await self.helper.get_audiobook(asin=prov_audiobook_id, use_cache=False)
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse this provider's items.
+        """
+        Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://authors).
         """
@@ -534,7 +535,8 @@ class Audibleprovider(MusicProvider):
         return await self.helper.get_podcast_episode(prov_episode_id)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Get stream details for an audiobook or podcast episode.
+        """
+        Get stream details for an audiobook or podcast episode.
 
         :param item_id: The ASIN of the audiobook or podcast episode.
         :param media_type: The type of media (audiobook or podcast episode).

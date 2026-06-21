@@ -188,7 +188,8 @@ class TestApplyMMRWeights:
         assert default == explicit_none
 
     def test_weights_affect_redundancy_when_diversity_positive(self) -> None:
-        """With diversity > 0, weights also affect which 2nd pick MMR diversifies to.
+        """
+        With diversity > 0, weights also affect which 2nd pick MMR diversifies to.
 
         Setup: rhythm_match_a and rhythm_match_b are both rhythm-close to seed
         but identical to each other on rhythm (would look 'redundant' under

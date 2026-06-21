@@ -18,11 +18,15 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ContentType, MediaType, VolumeNormalizationMode
+from music_assistant_models.enums import (
+    ContentType,
+    MediaType,
+    VolumeNormalizationMode,
+)
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import CONF_SMART_FADES_MODE, MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.constants import (
     BUFFER_SIZE_MAP,
     CONF_BUFFER_SIZE,
@@ -33,7 +37,6 @@ from music_assistant.controllers.streams.constants import (
     BufferSize,
 )
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
-from music_assistant.models.smart_fades import SmartFadesMode
 
 if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
@@ -391,16 +394,11 @@ class AudioBuffer:
 
         # determine ready threshold: how many seconds of audio must be buffered
         # before signaling ready for playback
-        smart_fades_mode = (
-            SmartFadesMode(
-                mass.config.get_raw_player_config_value(
-                    streamdetails.queue_id, CONF_SMART_FADES_MODE, SmartFadesMode.DISABLED
-                )
-            )
-            if streamdetails.queue_id and streamdetails.media_type == MediaType.TRACK
-            else SmartFadesMode.DISABLED
+        queue = mass.player_queues.get(streamdetails.queue_id) if streamdetails.queue_id else None
+        crossfade_enabled = bool(
+            queue and queue.crossfade_enabled and streamdetails.media_type == MediaType.TRACK
         )
-        if smart_fades_mode != SmartFadesMode.DISABLED:
+        if crossfade_enabled:
             ready_threshold = 8
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC:
             # radio streams are continuous so the normalization will converge quickly,
