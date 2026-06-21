@@ -6,11 +6,19 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from fastmcp import Context, FastMCP
+from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
+from music_assistant_models.enums import QueueOption
 
 from ..models import QueueBrief
 from ..tags import Tag
-from ._common import TIMEOUT_FAST, TIMEOUT_MUTATION, confirm_or_raise, to_brief_queue
+from ._common import (
+    TIMEOUT_FAST,
+    TIMEOUT_MUTATION,
+    TIMEOUT_QUERY,
+    confirm_or_raise,
+    to_brief_queue,
+)
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -136,5 +144,48 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
             receive the queue.
         """
         await mass.player_queues.transfer_queue(source_queue_id, target_queue_id)
+
+    @sub.tool(
+        tags={Tag.EDIT_QUEUE},
+        annotations=ToolAnnotations(
+            title="Add media to queue",
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=False,
+        ),
+        timeout=TIMEOUT_QUERY,
+    )  # type: ignore[untyped-decorator, unused-ignore]
+    async def add_to_queue(
+        queue_id: str,
+        uri: str,
+        option: str = "add",
+    ) -> None:
+        """
+        Add media item(s) to the queue without replacing the current queue.
+
+        Supports different enqueue modes to control where items are placed
+        and whether playback is affected.
+
+        :param queue_id: Queue identifier from ``QueueBrief.queue_id`` (distinct
+            from ``PlayerBrief.player_id``).
+        :param uri: Music Assistant URI of the media to add, of the form
+            ``<provider>://<media_type>/<id>`` (e.g. as found on
+            ``TrackBrief.uri`` / ``AlbumBrief.uri`` / ``PlaylistBrief.uri``).
+        :param option: Enqueue mode controlling placement and playback:
+
+            - ``add`` (default): Append to the end of the queue.
+            - ``next``: Insert after the currently playing item (plays next).
+            - ``play``: Insert after current item and start playing immediately.
+            - ``replace_next``: Replace all items after the current one.
+            - ``replace``: Clear the queue and replace with the new media.
+        """
+        try:
+            queue_option = QueueOption(option)
+        except ValueError as exc:
+            valid = ", ".join(f"``{e.value}``" for e in QueueOption)
+            raise ToolError(f"Invalid option {option!r}. Valid options: {valid}") from exc
+
+        await mass.player_queues.play_media(queue_id, uri, option=queue_option)
 
     return sub
