@@ -24,6 +24,7 @@ import shortuuid
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
+    CrossfadeMode,
     EventType,
     MediaType,
     PlaybackState,
@@ -67,6 +68,9 @@ from music_assistant.constants import (
     ATTR_ACTIVE_PLAYLIST,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_PLAY_ACTION_IN_PROGRESS,
+    CONF_CROSSFADE_MODE,
+    CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_VOLUME_NORMALIZATION,
     MASS_LOGO_ONLINE,
     PLAYBACK_REPORT_INTERVAL_SECONDS,
     PLAYLIST_MEDIA_TYPES,
@@ -245,6 +249,38 @@ class PlayerQueuesController(CoreController):
             ),
         )
 
+    def get_queue_config_entries(self) -> list[ConfigEntry]:
+        """
+        Return the per-queue config entries.
+
+        The crossfade_mode select's options and default depend on whether smart fades are
+        available: the smart option is disabled (shown but not selectable) and the default falls
+        back to standard crossfade when smart fades can't be used on this server.
+        """
+        smart_fades_available = self.mass.streams.smart_fades_available
+        crossfade_mode_entry = ConfigEntry(
+            key=CONF_CROSSFADE_MODE,
+            type=ConfigEntryType.STRING,
+            options=[
+                ConfigValueOption(CrossfadeMode.STANDARD_CROSSFADE.value),
+                ConfigValueOption(
+                    CrossfadeMode.SMART_CROSSFADE.value, disabled=not smart_fades_available
+                ),
+            ],
+            default_value=(
+                CrossfadeMode.SMART_CROSSFADE.value
+                if smart_fades_available
+                else CrossfadeMode.STANDARD_CROSSFADE.value
+            ),
+            category="playback",
+            requires_reload=True,
+        )
+        return [
+            CONF_ENTRY_CROSSFADE_DURATION,
+            crossfade_mode_entry,
+            CONF_ENTRY_VOLUME_NORMALIZATION,
+        ]
+
     def __iter__(self) -> Iterator[PlayerQueue]:
         """Iterate over (available) players."""
         return iter(self._queues.values())
@@ -347,6 +383,26 @@ class PlayerQueuesController(CoreController):
             # ensure to (re)queue the next track because it might have changed
             # note that we only do this if the player has loaded the current track
             # if not, we wait until it has loaded to prevent conflicts
+            if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
+                self._enqueue_next_item(queue_id, next_item)
+
+    @api_command("player_queues/crossfade")
+    def set_crossfade(self, queue_id: str, crossfade_enabled: bool) -> None:
+        """Enable or disable crossfade on the queue."""
+        queue = self._queues[queue_id]
+        if queue.crossfade_enabled == crossfade_enabled:
+            return  # no change
+        queue.crossfade_enabled = crossfade_enabled
+        # refresh the derived smart-fades indicator so the update we signal reflects the new state
+        queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
+        self.signal_update(queue_id)
+        if (
+            queue.state == PlaybackState.PLAYING
+            and queue.index_in_buffer is not None
+            and queue.index_in_buffer == queue.current_index
+        ):
+            # re-enqueue the next track so the new crossfade behaviour applies to the
+            # upcoming transition (only when the player has already loaded the current track)
             if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
                 self._enqueue_next_item(queue_id, next_item)
 
@@ -985,6 +1041,9 @@ class PlayerQueuesController(CoreController):
 
         target_queue.repeat_mode = source_queue.repeat_mode
         target_queue.shuffle_enabled = source_queue.shuffle_enabled
+        target_queue.crossfade_enabled = source_queue.crossfade_enabled
+        # refresh the derived smart-fades indicator for the target's own config/availability
+        target_queue.smart_fades_active = self.mass.streams.is_smart_fades_active(target_queue)
         target_queue.dont_stop_the_music_enabled = source_queue.dont_stop_the_music_enabled
         target_queue.radio_source = source_queue.radio_source
         target_queue.is_dynamic = source_queue.is_dynamic
@@ -2675,6 +2734,7 @@ class PlayerQueuesController(CoreController):
         # basic properties
         queue.display_name = player.state.name
         queue.available = player.state.available
+        queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
         queue.items = len(self._queue_items[queue_id])
 
         queue.state = (
