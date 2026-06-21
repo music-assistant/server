@@ -30,7 +30,8 @@ LOGGER = logging.getLogger(__name__)
 
 
 class MCPServerRuntime:
-    """Build and manage a FastMCP server mounted into MA's webserver.
+    """
+    Build and manage a FastMCP server mounted into MA's webserver.
 
     The lifecycle is intentionally simple:
 
@@ -50,7 +51,8 @@ class MCPServerRuntime:
         config: ProviderConfig,
         logger: logging.Logger,
     ) -> None:
-        """Hold the shared dependencies; nothing is started here.
+        """
+        Hold the shared dependencies; nothing is started here.
 
         :param mass: MusicAssistant instance.
         :param config: Provider config.
@@ -78,7 +80,8 @@ class MCPServerRuntime:
         return f"{base}{self._mount_path}"
 
     async def start(self) -> None:
-        """Build the FastMCP server and mount it into the MA webserver.
+        """
+        Build the FastMCP server and mount it into the MA webserver.
 
         On any partial-mount failure, the in-progress state is rolled back
         via :meth:`stop` before the exception propagates — so a retry (or a
@@ -273,7 +276,8 @@ class MCPServerRuntime:
     async def apply_permission_change(
         self, new_config: ProviderConfig, changed_keys: set[str]
     ) -> None:
-        """Hot-swap the allowed-tag set, or restart when resources are involved.
+        """
+        Hot-swap the allowed-tag set, or restart when resources are involved.
 
         Resource toggles (``CONF_RES_*``) require a rebuild because resource
         registration is decided at :meth:`start` time; permission flags flip the
@@ -318,7 +322,8 @@ class MCPServerRuntime:
 
 
 async def _tag_lookup(mcp: Any, kind: str, key: str) -> set[str] | None:
-    """Resolve component name/URI back to its tag set via FastMCP public API.
+    """
+    Resolve component name/URI back to its tag set via FastMCP public API.
 
     Returns ``None`` if the component is unknown — middleware then blocks
     the call with NotFoundError, preventing a client that cached a name

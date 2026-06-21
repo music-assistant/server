@@ -1,4 +1,5 @@
-"""gPodder provider for Music Assistant.
+"""
+gPodder provider for Music Assistant.
 
 Tested against opodsync, https://github.com/kd2org/opodsync
 and nextcloud-gpodder, https://github.com/thrillfall/nextcloud-gpodder

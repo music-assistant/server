@@ -55,7 +55,8 @@ if TYPE_CHECKING:
 
 
 def get_bridge_client_id(airplay_player: AirPlayPlayer) -> str | None:
-    """Get the Sendspin bridge client ID for an AirPlay player.
+    """
+    Get the Sendspin bridge client ID for an AirPlay player.
 
     Uses the MAC address as the client_id to enable protocol linking.
     The Sendspin provider will create a SendspinPlayer with this client_id.
@@ -70,7 +71,8 @@ def get_bridge_client_id(airplay_player: AirPlayPlayer) -> str | None:
 
 
 class SendspinAirPlayBridge:
-    """Manages the Sendspin to AirPlay bridge for a single player.
+    """
+    Manages the Sendspin to AirPlay bridge for a single player.
 
     This class handles:
     1. Registering the AirPlay player as an external Sendspin client
@@ -84,7 +86,8 @@ class SendspinAirPlayBridge:
         airplay_player: AirPlayPlayer,
         sendspin_server: SendspinServer,
     ) -> None:
-        """Initialize the bridge.
+        """
+        Initialize the bridge.
 
         :param provider: The AirPlay provider instance.
         :param airplay_player: The AirPlay player to bridge.
@@ -218,7 +221,8 @@ class SendspinAirPlayBridge:
         )
 
     def _on_stream_start(self, request: ExternalStreamStartRequest) -> None:
-        """Handle stream start request from Sendspin server.
+        """
+        Handle stream start request from Sendspin server.
 
         Called when Sendspin wants to play audio to this bridge player.
         aiosendspin handles role lifecycle (on_connect, push stream join).
@@ -264,7 +268,8 @@ class SendspinAirPlayBridge:
         self._start_aligned = False
 
     def _on_bridge_stream_start(self) -> None:
-        """Start the writer task when the PushStream notifies us the stream has started.
+        """
+        Start the writer task when the PushStream notifies us the stream has started.
 
         Called via the BridgePlayerRole.on_stream_start callback when the
         PushStream begins delivering audio chunks.
@@ -384,7 +389,8 @@ class SendspinAirPlayBridge:
         self.mass.create_task(self.airplay_player.volume_mute(muted))
 
     def _on_bridge_stream_end(self) -> None:
-        """Stop the AirPlay protocol immediately when the stream ends.
+        """
+        Stop the AirPlay protocol immediately when the stream ends.
 
         Rather than just sending EOF (which lets the CLI play out its buffer),
         we schedule a full cleanup that kills the CLI process immediately.
@@ -396,7 +402,8 @@ class SendspinAirPlayBridge:
         self._schedule_cleanup()
 
     def _schedule_cleanup(self) -> None:
-        """Schedule cleanup of the current stream resources under the bridge lock.
+        """
+        Schedule cleanup of the current stream resources under the bridge lock.
 
         Uses _stop_streaming_locked which acquires self._lock, so concurrent
         cleanups are serialized safely.
@@ -415,7 +422,8 @@ class SendspinAirPlayBridge:
         stream_start_task: asyncio.Task[None] | None,
         prev_cleanup: asyncio.Task[None] | None = None,
     ) -> None:
-        """Clean up captured resources from a previous stream.
+        """
+        Clean up captured resources from a previous stream.
 
         Unlike _stop_streaming(), this operates on explicitly captured references
         rather than instance variables. This prevents a race condition where the
@@ -542,7 +550,8 @@ class SendspinAirPlayBridge:
         return True
 
     async def _cli_writer(self) -> None:
-        """Write queued audio data to the CLI process stdin.
+        """
+        Write queued audio data to the CLI process stdin.
 
         Waits for any pending cleanup and then for the new protocol to be
         ready before writing. Runs as a single task so writes are serialised
@@ -612,7 +621,8 @@ class SendspinBridgeManager:
     """Manages Sendspin bridges for all AirPlay players."""
 
     def __init__(self, provider: AirPlayProvider) -> None:
-        """Initialize the bridge manager.
+        """
+        Initialize the bridge manager.
 
         :param provider: The AirPlay provider instance.
         """
@@ -691,7 +701,8 @@ class SendspinBridgeManager:
         self.logger.debug("All Sendspin bridges stopped")
 
     def stop_streaming(self, airplay_player_id: str) -> bool:
-        """Stop streaming for a bridged AirPlay player.
+        """
+        Stop streaming for a bridged AirPlay player.
 
         :param airplay_player_id: The AirPlay player ID.
         :return: True if a bridge was found and stopped, False otherwise.

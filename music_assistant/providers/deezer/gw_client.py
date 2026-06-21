@@ -1,4 +1,5 @@
-"""A minimal client for the unofficial gw-API, which deezer is using on their website and app.
+"""
+A minimal client for the unofficial gw-API, which deezer is using on their website and app.
 
 Credits go out to RemixDev (https://gitlab.com/RemixDev) for figuring out, how to get the arl
 cookie based on the api_token.
@@ -129,7 +130,8 @@ class GWClient:
         return cast("dict[str, Any]", result_json)
 
     async def get_user_radio(self, config_id: str) -> list[dict[str, Any]]:
-        """Get personalized Flow tracks for a specific mood or genre.
+        """
+        Get personalized Flow tracks for a specific mood or genre.
 
         :param config_id: The Flow config identifier (e.g. "happy", "chill", "genre-rock").
         """

@@ -135,7 +135,8 @@ class _BufferedFfmpegProcessor:
         return out
 
     async def drain_available(self) -> int:
-        """Non-blocking drain of ffmpeg stdout into internal buffer.
+        """
+        Non-blocking drain of ffmpeg stdout into internal buffer.
 
         Returns cumulative produced output duration in microseconds.
         """
@@ -253,7 +254,8 @@ class _PendingChunk:
 
 @dataclass(slots=True)
 class _JoinCatchupState:
-    """Per-member state for a join-catchup processor replaying history through DSP.
+    """
+    Per-member state for a join-catchup processor replaying history through DSP.
 
     The processor is fed historical + live PCM via ``input_queue``.  Once its
     output catches up to the live stream (within tolerance), it is promoted to
@@ -300,7 +302,8 @@ class _MemberPipeline:
 
 
 class SendspinPlaybackSession:
-    """Coordinates playback for a Sendspin player group leader.
+    """
+    Coordinates playback for a Sendspin player group leader.
 
     The push stream supports multi-channel audio: members that need per-player
     DSP (EQ, channel mixing, output routing) each get a dedicated ffmpeg
@@ -362,50 +365,11 @@ class SendspinPlaybackSession:
             return None
         return self._timeline_start_us + track_start_offset_us
 
-    # -- Helpers ---------------------------------------------------------------
-
-    def _attach_task_exception_logger(self, task: asyncio.Task[Any], name: str) -> None:
-        """Log unhandled exception from background task when it finishes."""
-
-        def _done_callback(done_task: asyncio.Task[Any]) -> None:
-            if done_task.cancelled():
-                return
-            with suppress(Exception):
-                exc = done_task.exception()
-                if exc is not None:
-                    self.player.logger.exception(
-                        "Background task failed: %s",
-                        name,
-                        exc_info=exc,
-                    )
-
-        task.add_done_callback(_done_callback)
-
-    def _get_join_readiness(self) -> tuple[bool, str | None]:
-        """Check whether live join DSP preparation can be performed right now."""
-        if self._playback_running and self._push_stream is not None:
-            return (True, None)
-        return (False, "no active stream context")
-
-    # -- Snapshot helper -------------------------------------------------------
-
-    async def _snapshot_active_pipelines(
-        self,
-    ) -> tuple[set[str], tuple[tuple[str, _MemberPipeline], ...]]:
-        """Return (join_pending_ids, active_pipelines) under lock."""
-        async with self._state_lock:
-            members = self._members
-            leader_id = self.player.player_id
-            return set(self._join_catchup), tuple(
-                (mid, p)
-                for mid, p in self._member_pipelines.items()
-                if mid in members or mid == leader_id
-            )
-
     # -- Public API ------------------------------------------------------------
 
     async def transfer_to(self, new_player: SendspinPlayer) -> None:
-        """Transfer session ownership to a new player.
+        """
+        Transfer session ownership to a new player.
 
         Used during dynamic leader switching to keep the push stream alive
         while the old leader is removed from the sendspin group. The PushStream
@@ -521,6 +485,46 @@ class SendspinPlaybackSession:
             await self.remove_member(player_id)
         for player_id in member_ids - current_members:
             await self.add_member(player_id)
+
+    # -- Helpers ---------------------------------------------------------------
+
+    def _attach_task_exception_logger(self, task: asyncio.Task[Any], name: str) -> None:
+        """Log unhandled exception from background task when it finishes."""
+
+        def _done_callback(done_task: asyncio.Task[Any]) -> None:
+            if done_task.cancelled():
+                return
+            with suppress(Exception):
+                exc = done_task.exception()
+                if exc is not None:
+                    self.player.logger.exception(
+                        "Background task failed: %s",
+                        name,
+                        exc_info=exc,
+                    )
+
+        task.add_done_callback(_done_callback)
+
+    def _get_join_readiness(self) -> tuple[bool, str | None]:
+        """Check whether live join DSP preparation can be performed right now."""
+        if self._playback_running and self._push_stream is not None:
+            return (True, None)
+        return (False, "no active stream context")
+
+    # -- Snapshot helper -------------------------------------------------------
+
+    async def _snapshot_active_pipelines(
+        self,
+    ) -> tuple[set[str], tuple[tuple[str, _MemberPipeline], ...]]:
+        """Return (join_pending_ids, active_pipelines) under lock."""
+        async with self._state_lock:
+            members = self._members
+            leader_id = self.player.player_id
+            return set(self._join_catchup), tuple(
+                (mid, p)
+                for mid, p in self._member_pipelines.items()
+                if mid in members or mid == leader_id
+            )
 
     # -- Join catchup ----------------------------------------------------------
 
@@ -711,7 +715,8 @@ class SendspinPlaybackSession:
     # -- Playback pipeline -----------------------------------------------------
 
     async def _run_playback(self, media: PlayerMedia) -> None:  # noqa: PLR0915
-        """Run the playback pipeline for a single media session.
+        """
+        Run the playback pipeline for a single media session.
 
         Pulls PCM from the MA stream, feeds main + per-member DSP channels into the
         Sendspin push stream, and commits audio continuously. Supports dynamic group
@@ -957,7 +962,8 @@ class SendspinPlaybackSession:
         pending_backlog: deque[_PendingChunk],
         current_pcm: bytes,
     ) -> bool:
-        """Inject join-catchup historical audio once processor output reaches history end.
+        """
+        Inject join-catchup historical audio once processor output reaches history end.
 
         Join promotion lifecycle:
         1. A catchup processor is fed historical PCM and new commits in parallel.
@@ -1069,7 +1075,8 @@ class SendspinPlaybackSession:
         current_pcm: bytes,
         pending_backlog: deque[_PendingChunk],
     ) -> None:
-        """Push current chunk + queued pending chunks into join processor before promotion.
+        """
+        Push current chunk + queued pending chunks into join processor before promotion.
 
         Between the last committed chunk and the next commit, there may be
         chunks already queued by the producer that the catchup processor hasn't
@@ -1121,7 +1128,8 @@ class SendspinPlaybackSession:
         state: _JoinCatchupState,
         pcm: bytes,
     ) -> None:
-        """Enqueue PCM into a joining member writer queue.
+        """
+        Enqueue PCM into a joining member writer queue.
 
         Bails out immediately if the writer task is dead to avoid blocking
         the commit loop on a queue with no consumer.
@@ -1375,7 +1383,8 @@ class SendspinPlaybackSession:
         return self.player.api.group.start_stream(channel_resolver=self._resolve_channel_for_player)
 
     async def _wait_for_buffer_drain(self) -> None:
-        """Wait for clients to finish playing buffered audio.
+        """
+        Wait for clients to finish playing buffered audio.
 
         Called before stopping the push stream on natural EOF to prevent
         stream/end from clearing client buffers while audio is still playing.

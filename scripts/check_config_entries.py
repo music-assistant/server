@@ -1,5 +1,8 @@
 """
-Fail when a ConfigEntry or ConfigValueOption hardcodes user-facing text instead of strings.json.
+Guard against hardcoded config strings and invalid category keys in ConfigEntry/ConfigValueOption.
+
+Fails when a ConfigEntry or ConfigValueOption hardcodes user-facing text instead of strings.json,
+or when a ConfigEntry.category value is not defined in any strings.json config_categories section.
 
 A ConfigEntry's ``label``/``description``/``action_label`` and a ConfigValueOption's ``title`` are
 localized at serialization from the owning provider's (or the common) ``strings.json`` — keyed by
@@ -14,6 +17,10 @@ dynamic label must instead use a strings.json template (with ``{0}``/``{1}`` pla
 a legitimate data-driven value (player names, sample rates, ...) and left alone — only static
 titles (a string literal, or a literal picked by a conditional) are flagged.
 
+ConfigEntry.category must be a key defined under ``config_categories`` in any strings.json (common
+or provider-local). Raw English strings (e.g. ``"Guest Features"``) cannot be looked up and will
+never localize.
+
 Template/test providers (``_*`` and ``test``) are skipped, matching ``build_translations.py``.
 
 Usage:
@@ -23,6 +30,7 @@ Usage:
 from __future__ import annotations
 
 import ast
+import json
 import os
 import sys
 
@@ -43,6 +51,7 @@ _CHECKS: dict[str, tuple[tuple[str, ...], bool, str]] = {
 def find_violations() -> list[str]:
     """Return a sorted list of ``path:line: message`` for every hardcoded config text field."""
     violations: list[str] = []
+    valid_categories = _load_valid_categories()
     for path in _iter_python_files():
         try:
             tree = ast.parse(_read(path))
@@ -52,16 +61,31 @@ def find_violations() -> list[str]:
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
-            check = _CHECKS.get(_call_name(node))
-            if check is None:
-                continue
-            fields, flag_fstrings, target = check
-            for keyword in node.keywords:
-                if keyword.arg in fields and _is_hardcoded_text(keyword.value, flag_fstrings):
-                    violations.append(
-                        f"{rel}:{keyword.value.lineno}: {_call_name(node)} '{keyword.arg}' is "
-                        f"hardcoded; author it in the owner's strings.json ({target})"
-                    )
+            name = _call_name(node)
+            check = _CHECKS.get(name)
+            if check is not None:
+                fields, flag_fstrings, target = check
+                for keyword in node.keywords:
+                    if keyword.arg in fields and _is_hardcoded_text(keyword.value, flag_fstrings):
+                        violations.append(
+                            f"{rel}:{keyword.value.lineno}: {name} '{keyword.arg}' is "
+                            f"hardcoded; author it in the owner's strings.json ({target})"
+                        )
+            if name == "ConfigEntry":
+                for keyword in node.keywords:
+                    if keyword.arg != "category":
+                        continue
+                    if not (
+                        isinstance(keyword.value, ast.Constant)
+                        and isinstance(keyword.value.value, str)
+                    ):
+                        continue
+                    cat = keyword.value.value
+                    if cat not in valid_categories:
+                        violations.append(
+                            f"{rel}:{keyword.value.lineno}: ConfigEntry category={cat!r} is not "
+                            f"defined in any strings.json config_categories section"
+                        )
     return sorted(violations)
 
 
@@ -78,6 +102,27 @@ def main() -> int:
     for violation in violations:
         print(f"  {violation}", file=sys.stderr)
     return 1
+
+
+def _load_valid_categories() -> set[str]:
+    """Return all category keys defined under config_categories in any strings.json."""
+    valid: set[str] = set()
+    strings_files = [
+        os.path.join(PACKAGE_ROOT, "strings.json"),
+        *[
+            os.path.join(root, "strings.json")
+            for root, _dirs, files in os.walk(PACKAGE_ROOT)
+            if "strings.json" in files and root != PACKAGE_ROOT
+        ],
+    ]
+    for path in strings_files:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            valid.update(data.get("config_categories", {}).keys())
+        except OSError, json.JSONDecodeError:
+            continue
+    return valid
 
 
 def _iter_python_files() -> list[str]:

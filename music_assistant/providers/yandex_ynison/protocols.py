@@ -1,4 +1,5 @@
-"""Protocol definitions for provider dependencies.
+"""
+Protocol definitions for provider dependencies.
 
 Allows typing of external provider references without importing concrete classes.
 """
@@ -15,7 +16,8 @@ if TYPE_CHECKING:
 
 @runtime_checkable
 class YandexMusicProviderLike(Protocol):
-    """Structural interface for the yandex_music MusicProvider.
+    """
+    Structural interface for the yandex_music MusicProvider.
 
     Only the subset of methods/properties used by the Ynison plugin.
     """

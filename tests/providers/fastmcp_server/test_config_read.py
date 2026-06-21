@@ -77,7 +77,8 @@ async def test_get_entries_masks_secret_current_value(
     mounted_config: Any,
     mock_config_targets: Any,  # noqa: ARG001
 ) -> None:
-    """config_get_entries must mask SECURE_STRING current_value.
+    """
+    config_get_entries must mask SECURE_STRING current_value.
 
     Regression for PR #99 review finding B.
     """

@@ -238,7 +238,7 @@
     },
     "volume_normalization_target": {
       "label": "Target level for volume normalization",
-      "description": "Adjust average (perceived) loudness to this target level, default is -17 LUFS\n\n**WARNING:** Setting the level too high may result in clipping!"
+      "description": "Adjust average (perceived) loudness to this target level, default is -14 LUFS\n\n**WARNING:** Setting the level too high may result in clipping!"
     },
     "zeroconf_interfaces": {
       "label": "Mdns/Zeroconf discovery interface(s)",
@@ -351,7 +351,13 @@
     "protocol_general": "General",
     "audio_analysis": "Audio Analysis",
     "presets": "Presets",
-    "settings": "Settings"
+    "settings": "Settings",
+    "features": "Features",
+    "status": "Status",
+    "discover": "Discover",
+    "debug": "Debug",
+    "server": "Server",
+    "recommendations": "Recommendations"
   },
   "media": {
     "genre": {
@@ -590,32 +596,6 @@
       "wellness": {
         "name": "Wellness",
         "description": "Meditation music is music performed to aid in the practice of meditation. It can have a specific religious content, but also more recently has been associated with modern composers who use meditation techniques in their process of composition, or who compose such music with no particular religious group as a focus. The concept also includes music performed as an act of meditation."
-      }
-    },
-    "playlist": {
-      "all_favorite_tracks": {
-        "name": "All favorited tracks"
-      },
-      "random_artist": {
-        "name": "Random Artist (from library)"
-      },
-      "random_album": {
-        "name": "Random Album (from library)"
-      },
-      "random_tracks": {
-        "name": "500 Random tracks (from library)"
-      },
-      "recently_played": {
-        "name": "Recently played tracks"
-      },
-      "recently_added_tracks": {
-        "name": "Recently added tracks"
-      },
-      "infinite_mix": {
-        "name": "Infinite Mix (library)"
-      },
-      "infinite_mix_favorites": {
-        "name": "Infinite Mix (favorites)"
       }
     },
     "folder": {

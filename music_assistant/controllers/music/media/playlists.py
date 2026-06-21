@@ -84,33 +84,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
         self.mass.register_api_command("music/playlists/export_playlist", self.export_playlist)
         self.mass.register_api_command("music/playlists/import_playlist", self.import_playlist)
 
-    def _verify_update_allowed(self, current_item: Playlist, update: Playlist) -> None:
-        """Verify that the update is allowed from a security perspective.
-
-        Prevents updating item_id for non-streaming providers to prevent path traversal attacks.
-        """
-        # Build lookup dict of current mappings: provider_instance -> item_id
-        current_mappings = {
-            mapping.provider_instance: mapping.item_id for mapping in current_item.provider_mappings
-        }
-
-        # Check if any existing mapping's item_id has been modified for non-streaming providers
-        for update_mapping in update.provider_mappings:
-            # Only check if this is an existing mapping being modified
-            if update_mapping.provider_instance in current_mappings:
-                current_item_id = current_mappings[update_mapping.provider_instance]
-
-                # Disallow item_id changes for filesystem-based providers (filesystem, builtin)
-                if (
-                    current_item_id != update_mapping.item_id
-                    and update_mapping.provider_instance.startswith(("filesystem", "builtin"))
-                ):
-                    msg = (
-                        f"Updating item_id is not allowed for filesystem-based providers: "
-                        f"attempted to change '{current_item_id}' to '{update_mapping.item_id}'"
-                    )
-                    raise InvalidDataError(msg)
-
     async def tracks(
         self,
         item_id: str,
@@ -279,6 +252,130 @@ class PlaylistController(MediaControllerBase[Playlist]):
             priority=True,
         )
 
+    async def radio_mode_base_tracks(
+        self,
+        item: Playlist,
+        preferred_provider_instances: list[str] | None = None,
+    ) -> list[Track]:
+        """
+        Get the list of base tracks from the controller used to calculate the dynamic radio.
+
+        :param item: The Playlist to get base tracks for.
+        :param preferred_provider_instances: List of preferred provider instance IDs to use.
+        """
+        return [
+            x
+            async for x in self.tracks(item.item_id, item.provider)
+            # Radio mode only works with Tracks (filter out all other types)
+            if isinstance(x, Track) and x.available
+        ]
+
+    async def match_providers(self, db_item: Playlist) -> None:
+        """
+        Try to find match on all (streaming) providers for the provided (database) item.
+
+        This is used to link objects of different providers/qualities together.
+        """
+        # playlists can only be matched on the same provider (if not unique)
+        if self.mass.music.match_provider_instances(db_item):
+            await self.add_provider_mappings(db_item.item_id, db_item.provider_mappings)
+
+    async def export_playlist(self, db_playlist_id: str | int) -> str:
+        """
+        Export a playlist to M3U8 format.
+
+        :param db_playlist_id: The library database ID of the playlist.
+        """
+        db_id = int(db_playlist_id)
+        playlist = await self.get_library_item(db_id)
+        if not playlist:
+            msg = f"Playlist with id {db_id} not found"
+            raise MediaNotFoundError(msg)
+        items: list[PlaylistItem] = []
+        async for track in self.tracks(
+            item_id=str(db_id),
+            provider_instance_id_or_domain="library",
+        ):
+            items.append(media_item_to_playlist_item(track))
+        playlist_image_url = playlist.image.path if playlist.image else None
+        return generate_m3u(playlist.name, items, playlist_image_url)
+
+    async def import_playlist(
+        self,
+        m3u_data: str,
+        library_matching: bool = False,
+        match_providers: list[str] | None = None,
+    ) -> Playlist:
+        """
+        Import a playlist from M3U8 format.
+
+        Creates a new builtin playlist from the provided M3U data.
+
+        :param m3u_data: The M3U8 playlist data as a string.
+        :param library_matching: When True, attempt to find tracks by searching
+            providers using metadata when the original URI's provider is not
+            available. Defaults to False.
+        :param match_providers: Optional list of provider instance IDs or domains
+            to search when library_matching is enabled.
+        """
+        provider = self.mass.get_provider("builtin")
+        if not provider or not isinstance(provider, MusicProvider):
+            raise ProviderUnavailableError("Builtin provider is not available")
+        builtin_prov = cast("BuiltinProvider", provider)
+        playlist = await builtin_prov.import_playlist(m3u_data)
+        for prov_mapping in playlist.provider_mappings:
+            prov_mapping.in_library = True
+        db_playlist = await self.add_item_to_library(playlist, False)
+        if library_matching:
+            prov_playlist_id = playlist.item_id
+            user = get_current_user()
+            self.mass.tasks.run_background_task(
+                name=f"Import playlist {db_playlist.name}",
+                handler=lambda: builtin_prov.match_imported_playlist_tracks(
+                    prov_playlist_id, match_providers
+                ),
+                translation_key="import_playlist_matching",
+                translation_owner=self.translation_owner,
+                translation_args=[db_playlist.name],
+                user_id=user.user_id if user else None,
+                metadata={
+                    "task_domain": "playlist_import_matching",
+                    "playlist_id": str(db_playlist.item_id),
+                    "playlist_name": db_playlist.name,
+                },
+                allow_retry=True,
+                allow_cancel=True,
+            )
+        return db_playlist
+
+    def _verify_update_allowed(self, current_item: Playlist, update: Playlist) -> None:
+        """
+        Verify that the update is allowed from a security perspective.
+
+        Prevents updating item_id for non-streaming providers to prevent path traversal attacks.
+        """
+        # Build lookup dict of current mappings: provider_instance -> item_id
+        current_mappings = {
+            mapping.provider_instance: mapping.item_id for mapping in current_item.provider_mappings
+        }
+
+        # Check if any existing mapping's item_id has been modified for non-streaming providers
+        for update_mapping in update.provider_mappings:
+            # Only check if this is an existing mapping being modified
+            if update_mapping.provider_instance in current_mappings:
+                current_item_id = current_mappings[update_mapping.provider_instance]
+
+                # Disallow item_id changes for filesystem-based providers (filesystem, builtin)
+                if (
+                    current_item_id != update_mapping.item_id
+                    and update_mapping.provider_instance.startswith(("filesystem", "builtin"))
+                ):
+                    msg = (
+                        f"Updating item_id is not allowed for filesystem-based providers: "
+                        f"attempted to change '{current_item_id}' to '{update_mapping.item_id}'"
+                    )
+                    raise InvalidDataError(msg)
+
     async def _add_library_item(self, item: Playlist, overwrite_existing: bool = False) -> int:
         """Add a new record to the database."""
         db_id = await self.mass.music.database.insert(
@@ -286,6 +383,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
             {
                 "name": item.name,
                 "sort_name": item.sort_name,
+                # persist the localizable name key + its params so the localized name survives
+                # the library round-trip (e.g. builtin playlists, Spotify's per-account
+                # "Liked Songs {0}"). params are re-stamped from the provider on each sync.
+                "translation_key": item.translation_key,
+                "translation_params": serialize_to_json(item.translation_params)
+                if item.translation_params
+                else None,
                 "owner": item.owner,
                 "is_editable": item.is_editable,
                 "favorite": item.favorite,
@@ -314,6 +418,15 @@ class PlaylistController(MediaControllerBase[Playlist]):
         cur_item.external_ids.update(update.external_ids)
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
+        # adopt the synced item's translation_key + params (as a unit) when it supplies a key, so
+        # the localized name follows the provider, existing rows backfill, and a stale param (e.g.
+        # a renamed Spotify account) self-heals; otherwise keep what we have (unless overwriting).
+        if overwrite or update.translation_key is not None:
+            translation_key = update.translation_key
+            translation_params = update.translation_params
+        else:
+            translation_key = cur_item.translation_key
+            translation_params = cur_item.translation_params
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
@@ -321,6 +434,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 # always prefer name/owner from updated item here
                 "name": name,
                 "sort_name": sort_name,
+                "translation_key": translation_key,
+                "translation_params": serialize_to_json(translation_params)
+                if translation_params
+                else None,
                 "owner": update.owner or cur_item.owner,
                 "is_editable": update.is_editable,
                 "metadata": serialize_to_json(metadata),
@@ -360,33 +477,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider = cast("MusicProvider", provider)
         async with self.mass.cache.handle_refresh(force_refresh):
             return await provider.get_playlist_tracks(item_id, page=page)
-
-    async def radio_mode_base_tracks(
-        self,
-        item: Playlist,
-        preferred_provider_instances: list[str] | None = None,
-    ) -> list[Track]:
-        """
-        Get the list of base tracks from the controller used to calculate the dynamic radio.
-
-        :param item: The Playlist to get base tracks for.
-        :param preferred_provider_instances: List of preferred provider instance IDs to use.
-        """
-        return [
-            x
-            async for x in self.tracks(item.item_id, item.provider)
-            # Radio mode only works with Tracks (filter out all other types)
-            if isinstance(x, Track) and x.available
-        ]
-
-    async def match_providers(self, db_item: Playlist) -> None:
-        """Try to find match on all (streaming) providers for the provided (database) item.
-
-        This is used to link objects of different providers/qualities together.
-        """
-        # playlists can only be matched on the same provider (if not unique)
-        if self.mass.music.match_provider_instances(db_item):
-            await self.add_provider_mappings(db_item.item_id, db_item.provider_mappings)
 
     async def _handle_add_playlist_tracks(self, db_playlist_id: str | int, uris: list[str]) -> None:
         """Handle adding playlist items inside a managed task."""
@@ -658,69 +748,3 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # in the next scheduled run of the playlist metadata task
         playlist.metadata.last_refresh = None
         await self.update_item_in_library(db_playlist_id, playlist)
-
-    async def export_playlist(self, db_playlist_id: str | int) -> str:
-        """Export a playlist to M3U8 format.
-
-        :param db_playlist_id: The library database ID of the playlist.
-        """
-        db_id = int(db_playlist_id)
-        playlist = await self.get_library_item(db_id)
-        if not playlist:
-            msg = f"Playlist with id {db_id} not found"
-            raise MediaNotFoundError(msg)
-        items: list[PlaylistItem] = []
-        async for track in self.tracks(
-            item_id=str(db_id),
-            provider_instance_id_or_domain="library",
-        ):
-            items.append(media_item_to_playlist_item(track))
-        playlist_image_url = playlist.image.path if playlist.image else None
-        return generate_m3u(playlist.name, items, playlist_image_url)
-
-    async def import_playlist(
-        self,
-        m3u_data: str,
-        library_matching: bool = False,
-        match_providers: list[str] | None = None,
-    ) -> Playlist:
-        """Import a playlist from M3U8 format.
-
-        Creates a new builtin playlist from the provided M3U data.
-
-        :param m3u_data: The M3U8 playlist data as a string.
-        :param library_matching: When True, attempt to find tracks by searching
-            providers using metadata when the original URI's provider is not
-            available. Defaults to False.
-        :param match_providers: Optional list of provider instance IDs or domains
-            to search when library_matching is enabled.
-        """
-        provider = self.mass.get_provider("builtin")
-        if not provider or not isinstance(provider, MusicProvider):
-            raise ProviderUnavailableError("Builtin provider is not available")
-        builtin_prov = cast("BuiltinProvider", provider)
-        playlist = await builtin_prov.import_playlist(m3u_data)
-        for prov_mapping in playlist.provider_mappings:
-            prov_mapping.in_library = True
-        db_playlist = await self.add_item_to_library(playlist, False)
-        if library_matching:
-            prov_playlist_id = playlist.item_id
-            user = get_current_user()
-            self.mass.tasks.run_background_task(
-                name=f"Import playlist {db_playlist.name}",
-                handler=lambda: builtin_prov.match_imported_playlist_tracks(
-                    prov_playlist_id, match_providers
-                ),
-                translation_key="import_playlist_matching",
-                translation_owner=self.translation_owner,
-                translation_args=[db_playlist.name],
-                user_id=user.user_id if user else None,
-                metadata={
-                    "task_domain": "playlist_import_matching",
-                    "playlist_id": str(db_playlist.item_id),
-                    "playlist_name": db_playlist.name,
-                },
-                allow_retry=True,
-                allow_cancel=True,
-            )
-        return db_playlist

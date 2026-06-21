@@ -196,7 +196,8 @@ LOUDNESS_MEASUREMENT_MIN_LUFS: Final[float] = -50.0
 
 
 def load_genre_mapping() -> list[dict[str, Any]]:
-    """Load default genre mapping from JSON file.
+    """
+    Load default genre mapping from JSON file.
 
     :return: List of genre mapping dictionaries with 'genre' and 'aliases' keys.
     :raises FileNotFoundError: If genre_mapping.json is missing.
@@ -375,8 +376,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     key=CONF_VOLUME_NORMALIZATION_TARGET,
     type=ConfigEntryType.INTEGER,
     range=(-30, -5),
-    default_value=-17,
-    depends_on=CONF_VOLUME_NORMALIZATION,
+    default_value=-14,
     category="playback",
     advanced=True,
     requires_reload=True,

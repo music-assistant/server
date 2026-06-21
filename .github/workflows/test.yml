@@ -32,6 +32,7 @@ jobs:
     outputs:
       mode: ${{ steps.scope.outputs.mode }}
       test_paths: ${{ steps.scope.outputs.test_paths }}
+      cov_paths: ${{ steps.scope.outputs.cov_paths }}
     steps:
       - name: Check out code from GitHub
         uses: actions/checkout@v7
@@ -51,6 +52,7 @@ jobs:
             {
               echo "mode=full"
               echo "test_paths="
+              echo "cov_paths="
             } >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -59,6 +61,27 @@ jobs:
           gh api --paginate \
             "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
             --jq '.[] | .filename, (.previous_filename // empty)' | python3 scripts/ci_test_scope.py
+
+  provider-scope:
+    # Advisory only (never fails the build): emit warning annotations when a PR that touches a
+    # provider also changes unrelated shared code, suggesting those changes move to their own PR.
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out code from GitHub
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - name: Warn on out-of-scope provider changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate \
+            "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" \
+            --jq '.[] | .filename, (.previous_filename // empty)' | python3 scripts/check_provider_scope.py
 
   lint:
     runs-on: ubuntu-latest
@@ -130,18 +153,26 @@ jobs:
         # https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
         run: uv pip install --system --index-strategy unsafe-best-match . .[test] -r requirements_all.txt
       - name: Pytest
-        # mode=partial runs only the changed providers' tests (set by the changes job);
-        # mode=full runs everything.
+        # mode=partial runs only the changed providers' tests with coverage scoped to
+        # those provider packages; mode=full runs everything with full coverage.
+        # `-o addopts=` clears the default "--cov music_assistant" so the scope applies.
+        env:
+          MODE: ${{ needs.changes.outputs.mode }}
+          TEST_PATHS: ${{ needs.changes.outputs.test_paths }}
+          COV_PATHS: ${{ needs.changes.outputs.cov_paths }}
         run: |
-          if [ "${{ needs.changes.outputs.mode }}" = "partial" ]; then
-            targets="${{ needs.changes.outputs.test_paths }}"
+          if [ "$MODE" = "partial" ]; then
+            targets="$TEST_PATHS"
+            cov=""
+            for src in $COV_PATHS; do cov="$cov --cov=$src"; done
           else
             targets="tests/"
+            cov="--cov=music_assistant"
           fi
-          pytest --durations 10 --cov-report=term-missing --cov-report=xml ${targets}
+          pytest -o addopts="" --durations 10 $cov --cov-report=term-missing --cov-report=xml $targets
       - name: Upload coverage to Codecov
         if: ${{ !github.event.pull_request.head.repo.fork }}
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: ./coverage.xml
           flags: ${{ needs.changes.outputs.mode }}

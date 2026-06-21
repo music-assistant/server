@@ -112,7 +112,8 @@ def _resolve_direct_client_secret(
     instance_id: str | None,
     values: dict[str, ConfigValueType],
 ) -> str:
-    """Return the direct-mode OAuth client secret for the current install.
+    """
+    Return the direct-mode OAuth client secret for the current install.
 
     `CONF_DIRECT_CLIENT_SECRET` is a SECURE_STRING: MA's frontend does
     not echo saved secrets back into ``values`` on re-open, so reading
@@ -189,7 +190,8 @@ async def _run_auto_create_action(
     connection_type: str,
     instance_id: str | None,
 ) -> None:
-    """Execute the experimental auto-create-skill action.
+    """
+    Execute the experimental auto-create-skill action.
 
     Never re-raises: all errors are persisted into the artifacts blob so
     the UI can show a FAILED state on the next render rather than
