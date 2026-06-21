@@ -1027,7 +1027,7 @@ class ConfigController:
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Return all Config Entries to configure a queue."""
-        entries = self._build_player_queue_config_entries()
+        entries = self.mass.player_queues.get_queue_config_entries()
         return _with_translation_owner(entries, PLAYER_QUEUE_CONFIG_OWNER, action, values)
 
     @api_command("config/player_queues/get_value")
@@ -1507,40 +1507,8 @@ class ConfigController:
     ) -> PlayerQueueConfig:
         """Parse a (raw) queue config dict into a PlayerQueueConfig with the current entries."""
         raw_conf = {**raw_conf, "queue_id": queue_id}
-        entries = self._build_player_queue_config_entries()
+        entries = self.mass.player_queues.get_queue_config_entries()
         return cast("PlayerQueueConfig", PlayerQueueConfig.parse(entries, raw_conf))
-
-    def _build_player_queue_config_entries(self) -> list[ConfigEntry]:
-        """
-        Build the per-queue config entries.
-
-        The crossfade_mode select's options and default depend on whether smart fades are
-        available: the smart option is disabled (shown but not selectable) and the default falls
-        back to standard crossfade when smart fades can't be used on this server.
-        """
-        smart_fades_available = self.mass.streams.smart_fades_available
-        crossfade_mode_entry = ConfigEntry(
-            key=CONF_CROSSFADE_MODE,
-            type=ConfigEntryType.STRING,
-            options=[
-                ConfigValueOption(CrossfadeMode.STANDARD_CROSSFADE.value),
-                ConfigValueOption(
-                    CrossfadeMode.SMART_CROSSFADE.value, disabled=not smart_fades_available
-                ),
-            ],
-            default_value=(
-                CrossfadeMode.SMART_CROSSFADE.value
-                if smart_fades_available
-                else CrossfadeMode.STANDARD_CROSSFADE.value
-            ),
-            category="playback",
-            requires_reload=True,
-        )
-        return [
-            CONF_ENTRY_CROSSFADE_DURATION,
-            crossfade_mode_entry,
-            CONF_ENTRY_VOLUME_NORMALIZATION,
-        ]
 
     async def _load(self) -> None:
         """Load data from persistent storage."""

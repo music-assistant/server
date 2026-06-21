@@ -24,6 +24,7 @@ import shortuuid
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
+    CrossfadeMode,
     EventType,
     MediaType,
     PlaybackState,
@@ -67,6 +68,9 @@ from music_assistant.constants import (
     ATTR_ACTIVE_PLAYLIST,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_PLAY_ACTION_IN_PROGRESS,
+    CONF_CROSSFADE_MODE,
+    CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_VOLUME_NORMALIZATION,
     MASS_LOGO_ONLINE,
     PLAYBACK_REPORT_INTERVAL_SECONDS,
     PLAYLIST_MEDIA_TYPES,
@@ -244,6 +248,38 @@ class PlayerQueuesController(CoreController):
                 hidden=True,
             ),
         )
+
+    def get_queue_config_entries(self) -> list[ConfigEntry]:
+        """
+        Return the per-queue config entries.
+
+        The crossfade_mode select's options and default depend on whether smart fades are
+        available: the smart option is disabled (shown but not selectable) and the default falls
+        back to standard crossfade when smart fades can't be used on this server.
+        """
+        smart_fades_available = self.mass.streams.smart_fades_available
+        crossfade_mode_entry = ConfigEntry(
+            key=CONF_CROSSFADE_MODE,
+            type=ConfigEntryType.STRING,
+            options=[
+                ConfigValueOption(CrossfadeMode.STANDARD_CROSSFADE.value),
+                ConfigValueOption(
+                    CrossfadeMode.SMART_CROSSFADE.value, disabled=not smart_fades_available
+                ),
+            ],
+            default_value=(
+                CrossfadeMode.SMART_CROSSFADE.value
+                if smart_fades_available
+                else CrossfadeMode.STANDARD_CROSSFADE.value
+            ),
+            category="playback",
+            requires_reload=True,
+        )
+        return [
+            CONF_ENTRY_CROSSFADE_DURATION,
+            crossfade_mode_entry,
+            CONF_ENTRY_VOLUME_NORMALIZATION,
+        ]
 
     def __iter__(self) -> Iterator[PlayerQueue]:
         """Iterate over (available) players."""
