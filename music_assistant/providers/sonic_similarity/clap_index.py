@@ -81,67 +81,9 @@ class ClapIndex:
         self._last_save: float = time.monotonic()
         self._save_lock = asyncio.Lock()
 
-    @property
-    def _index_path(self) -> Path:
-        return Path(self._mass.storage_path) / f"{self._filename_stem}.usearch"
-
-    @property
-    def _keys_path(self) -> Path:
-        return Path(self._mass.storage_path) / f"{self._filename_stem}_keys.json"
-
     async def load(self) -> None:
         """Create a fresh index or restore from disk."""
         await asyncio.to_thread(self._load_sync)
-
-    def _load_sync(self) -> None:
-        from usearch.index import (  # type: ignore[attr-defined]  # noqa: PLC0415
-            Index,
-            MetricKind,
-            ScalarKind,
-        )
-
-        self._index = Index(
-            ndim=CLAP_EMBEDDING_DIM,
-            metric=MetricKind.Cos,
-            dtype=ScalarKind.F16,
-        )
-        self._reverse = {}
-
-        # Index + keys are paired: a populated reverse map without a backing
-        # index makes contains() lie and permanently blocks rebuilds from
-        # re-adding embeddings. Drop the keys file whenever the index is
-        # missing or unreadable so the next rebuild starts consistent.
-        index_loaded = False
-        if self._index_path.exists():
-            try:
-                self._index.load(str(self._index_path))
-                index_loaded = True
-                self._logger.debug(
-                    "Loaded CLAP index from %s (%d vectors)",
-                    self._index_path,
-                    len(self._index),
-                )
-            except Exception:
-                self._logger.exception("Failed to load CLAP index file, starting fresh")
-                self._index_path.unlink(missing_ok=True)
-                self._index = Index(
-                    ndim=CLAP_EMBEDDING_DIM,
-                    metric=MetricKind.Cos,
-                    dtype=ScalarKind.F16,
-                )
-
-        if not index_loaded:
-            self._keys_path.unlink(missing_ok=True)
-            return
-
-        if self._keys_path.exists():
-            try:
-                raw = json.loads(self._keys_path.read_text(encoding="utf-8"))
-                self._reverse = {int(k): (v[0], v[1]) for k, v in raw.items()}
-            except Exception:
-                self._logger.exception("Failed to load CLAP keys file, starting fresh")
-                self._reverse = {}
-                self._keys_path.unlink(missing_ok=True)
 
     async def close(self) -> None:
         """Flush to disk and release the index."""
@@ -183,24 +125,6 @@ class ClapIndex:
         self._reverse[label] = (provider, item_id)
         self._dirty_adds += 1
         await self._maybe_flush()
-
-    def _add_sync(self, label: int, vec: np.ndarray) -> None:
-        if label in self._index:
-            self._index.remove(label)
-        self._index.add(label, vec)
-
-    def _embedding_for_label(self, label: int) -> np.ndarray | None:
-        """Fetch and validate the stored 1024-dim vector for a label, or None."""
-        try:
-            vec = self._index.get(label)
-        except Exception:
-            return None
-        if vec is None:
-            return None
-        arr = np.asarray(vec, dtype=np.float32).reshape(-1)
-        if arr.shape != (CLAP_EMBEDDING_DIM,):
-            return None
-        return arr
 
     def get_embedding(self, provider: str, item_id: str) -> np.ndarray | None:
         """
@@ -260,16 +184,96 @@ class ClapIndex:
             )
         return results
 
-    def _search_sync(self, vec: np.ndarray, k: int) -> list[tuple[int, float]]:
-        res = self._index.search(vec, k)
-        return list(zip(res.keys, res.distances, strict=False))
-
     async def save(self) -> None:
         """Force an unconditional flush."""
         async with self._save_lock:
             await asyncio.to_thread(self._save_sync)
             self._dirty_adds = 0
             self._last_save = time.monotonic()
+
+    def __len__(self) -> int:
+        """Return the number of tracks currently in the index."""
+        return len(self._reverse)
+
+    @property
+    def _index_path(self) -> Path:
+        return Path(self._mass.storage_path) / f"{self._filename_stem}.usearch"
+
+    @property
+    def _keys_path(self) -> Path:
+        return Path(self._mass.storage_path) / f"{self._filename_stem}_keys.json"
+
+    def _load_sync(self) -> None:
+        from usearch.index import (  # type: ignore[attr-defined]  # noqa: PLC0415
+            Index,
+            MetricKind,
+            ScalarKind,
+        )
+
+        self._index = Index(
+            ndim=CLAP_EMBEDDING_DIM,
+            metric=MetricKind.Cos,
+            dtype=ScalarKind.F16,
+        )
+        self._reverse = {}
+
+        # Index + keys are paired: a populated reverse map without a backing
+        # index makes contains() lie and permanently blocks rebuilds from
+        # re-adding embeddings. Drop the keys file whenever the index is
+        # missing or unreadable so the next rebuild starts consistent.
+        index_loaded = False
+        if self._index_path.exists():
+            try:
+                self._index.load(str(self._index_path))
+                index_loaded = True
+                self._logger.debug(
+                    "Loaded CLAP index from %s (%d vectors)",
+                    self._index_path,
+                    len(self._index),
+                )
+            except Exception:
+                self._logger.exception("Failed to load CLAP index file, starting fresh")
+                self._index_path.unlink(missing_ok=True)
+                self._index = Index(
+                    ndim=CLAP_EMBEDDING_DIM,
+                    metric=MetricKind.Cos,
+                    dtype=ScalarKind.F16,
+                )
+
+        if not index_loaded:
+            self._keys_path.unlink(missing_ok=True)
+            return
+
+        if self._keys_path.exists():
+            try:
+                raw = json.loads(self._keys_path.read_text(encoding="utf-8"))
+                self._reverse = {int(k): (v[0], v[1]) for k, v in raw.items()}
+            except Exception:
+                self._logger.exception("Failed to load CLAP keys file, starting fresh")
+                self._reverse = {}
+                self._keys_path.unlink(missing_ok=True)
+
+    def _add_sync(self, label: int, vec: np.ndarray) -> None:
+        if label in self._index:
+            self._index.remove(label)
+        self._index.add(label, vec)
+
+    def _embedding_for_label(self, label: int) -> np.ndarray | None:
+        """Fetch and validate the stored 1024-dim vector for a label, or None."""
+        try:
+            vec = self._index.get(label)
+        except Exception:
+            return None
+        if vec is None:
+            return None
+        arr = np.asarray(vec, dtype=np.float32).reshape(-1)
+        if arr.shape != (CLAP_EMBEDDING_DIM,):
+            return None
+        return arr
+
+    def _search_sync(self, vec: np.ndarray, k: int) -> list[tuple[int, float]]:
+        res = self._index.search(vec, k)
+        return list(zip(res.keys, res.distances, strict=False))
 
     def _save_sync(self) -> None:
         if self._index is None:
@@ -296,7 +300,3 @@ class ClapIndex:
         if time.monotonic() - self._last_save < SAVE_MIN_INTERVAL_SECONDS:
             return
         await self.save()
-
-    def __len__(self) -> int:
-        """Return the number of tracks currently in the index."""
-        return len(self._reverse)

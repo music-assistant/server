@@ -136,24 +136,6 @@ class WebRTCGateway:
         """Return whether the gateway is connected to the signaling server."""
         return self._is_connected
 
-    async def _get_fresh_ice_servers(self) -> list[dict[str, Any]]:
-        """
-        Get fresh ICE servers for a new WebRTC session.
-
-        If an ice_servers_callback was provided, it will be called to get fresh
-        TURN credentials. Otherwise, returns the static ice_servers.
-
-        :return: List of ICE server configurations with fresh credentials.
-        """
-        if self._ice_servers_callback:
-            try:
-                fresh_servers = await self._ice_servers_callback()
-                if fresh_servers:
-                    return fresh_servers
-            except Exception:
-                self.logger.exception("Failed to fetch fresh ICE servers, using cached servers")
-        return self.ice_servers
-
     async def start(self) -> None:
         """Start the WebRTC Gateway."""
         if self._running:
@@ -194,6 +176,24 @@ class WebRTCGateway:
 
         self._signaling_ws = None
         self._connecting = False
+
+    async def _get_fresh_ice_servers(self) -> list[dict[str, Any]]:
+        """
+        Get fresh ICE servers for a new WebRTC session.
+
+        If an ice_servers_callback was provided, it will be called to get fresh
+        TURN credentials. Otherwise, returns the static ice_servers.
+
+        :return: List of ICE server configurations with fresh credentials.
+        """
+        if self._ice_servers_callback:
+            try:
+                fresh_servers = await self._ice_servers_callback()
+                if fresh_servers:
+                    return fresh_servers
+            except Exception:
+                self.logger.exception("Failed to fetch fresh ICE servers, using cached servers")
+        return self.ice_servers
 
     async def _run(self) -> None:
         """Run the main loop with reconnection logic."""

@@ -63,6 +63,7 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
     BROWSE_FANS,
+    BROWSE_FEED,
     BROWSE_FOLLOWERS,
     BROWSE_FOLLOWING,
     BROWSE_WISHLIST,
@@ -506,6 +507,7 @@ class BandcampProvider(MusicProvider):
                     name="Bandcamp Feed",
                     translation_key="feed",
                     icon="mdi-rss",
+                    is_playable=True,
                     items=UniqueList(feed_tracks),
                 )
             )
@@ -517,6 +519,7 @@ class BandcampProvider(MusicProvider):
                     name="Wishlist",
                     translation_key="wishlist",
                     icon="mdi-heart",
+                    is_playable=True,
                     items=UniqueList(wishlist),
                 )
             )
@@ -569,6 +572,11 @@ class BandcampProvider(MusicProvider):
         if path_parts and path_parts[0] in (BROWSE_FANS, BROWSE_FOLLOWERS):
             return await self._browse_person(path_parts, base)
 
+        # The feed/wishlist recommendation folders resolve to their tracks here when played;
+        # the folder's explicit path is dropped on deserialization, so play arrives as the
+        # bare item_id slug (e.g. ".../feed") rather than ".../recommendations/feed".
+        if path_parts == [BROWSE_FEED]:
+            return await self._get_feed_tracks()
         if path_parts == [BROWSE_WISHLIST]:
             return await self._browse_person_content(None, CollectionType.WISHLIST)
         if path_parts == [BROWSE_FOLLOWING]:

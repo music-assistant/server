@@ -64,6 +64,213 @@ class UniversalPlayerProvider(PlayerProvider):
                 # The stored protocol IDs enable fast matching when protocols register
                 await self._restore_player(player_conf.player_id)
 
+    async def create_universal_player(
+        self,
+        device_key: str,
+        name: str,
+        device_info: DeviceInfo,
+        protocol_player_ids: list[str],
+    ) -> Player:
+        """
+        Create a new UniversalPlayer.
+
+        Called by the PlayerController when multiple protocol players are
+        detected for a device without a native player.
+
+        :param device_key: Unique device key (typically MAC address).
+        :param name: Display name for the player.
+        :param device_info: Aggregated device information.
+        :param protocol_player_ids: List of protocol player IDs to link.
+        :return: The created UniversalPlayer instance.
+        """
+        # Generate player_id from device_key
+        player_id = f"{UNIVERSAL_PLAYER_PREFIX}{device_key}"
+
+        # Check if player already exists
+        if existing := self.mass.players.get_player(player_id):
+            # Update existing player with new protocol players
+            if isinstance(existing, UniversalPlayer):
+                for pid in protocol_player_ids:
+                    existing.add_protocol_player(pid)
+                # Merge identifiers from new device_info
+                for id_type, value in device_info.identifiers.items():
+                    existing.device_info.add_identifier(id_type, value)
+                # Persist updated data to config
+                await self._save_player_data(player_id, existing)
+                existing.update_state()
+            return existing
+
+        # Create config for the new player (complex values saved separately after)
+        self.mass.config.create_default_player_config(
+            player_id=player_id,
+            provider=self.instance_id,
+            player_type=PlayerType.GROUP,
+            name=name,
+            enabled=True,
+            values={
+                CONF_LINKED_PROTOCOL_IDS: protocol_player_ids,
+            },
+        )
+
+        # Save device identifiers and info to config (these are nested dicts,
+        # not supported by ConfigValueType, so we save them directly)
+        base_key = f"{CONF_PLAYERS}/{player_id}/values"
+        self.mass.config.set(
+            f"{base_key}/{CONF_DEVICE_IDENTIFIERS}",
+            {k.value: v for k, v in device_info.identifiers.items()},
+        )
+        self.mass.config.set(
+            f"{base_key}/{CONF_DEVICE_INFO}",
+            {"model": device_info.model, "manufacturer": device_info.manufacturer},
+        )
+
+        self.logger.info(
+            "Creating universal player %s with protocol players: %s",
+            player_id,
+            protocol_player_ids,
+        )
+
+        # Create the player instance
+        player = UniversalPlayer(
+            provider=self,
+            player_id=player_id,
+            name=name,
+            device_info=device_info,
+            protocol_player_ids=protocol_player_ids,
+        )
+
+        await self.mass.players.register_or_update(player)
+        return player
+
+    async def add_protocol_to_universal_player(
+        self, player_id: str, protocol_player_id: str
+    ) -> None:
+        """
+        Add a protocol player to an existing universal player.
+
+        Called when a new protocol player is discovered that matches an existing
+        universal player.
+
+        :param player_id: ID of the universal player.
+        :param protocol_player_id: ID of the protocol player to add.
+        """
+        if player := self.get_universal_player(player_id):
+            player.add_protocol_player(protocol_player_id)
+            # Save all player data (protocol IDs, identifiers, device info)
+            await self._save_player_data(player_id, player)
+            player.update_state()
+
+    async def remove_universal_player(self, player_id: str) -> None:
+        """
+        Remove a universal player.
+
+        Called when all protocol players for a device are removed.
+
+        :param player_id: ID of the universal player to remove.
+        """
+        await self.mass.players.unregister(player_id, permanent=True)
+
+    async def ensure_universal_player_for_protocols(
+        self, protocol_players: list[Player]
+    ) -> Player | None:
+        """
+        Ensure a universal player exists for a set of protocol players.
+
+        This method handles the orchestration of creating or updating a universal player
+        for the given protocol players. It uses per-device locking to prevent race
+        conditions when multiple protocols for the same device register simultaneously.
+
+        When a second instance of the same protocol domain tries to join an existing
+        universal player (e.g., two AirPlay instances on the same host), the duplicate
+        is separated out and given its own universal player with a player_id-based key.
+
+        :param protocol_players: List of protocol players for the same device.
+        :return: The created or updated universal player, or None if operation failed.
+        """
+        device_key = self._get_device_key_from_players(protocol_players)
+        if not device_key:
+            return None
+
+        universal_player_id = f"{UNIVERSAL_PLAYER_PREFIX}{device_key}"
+
+        # Use a per-device lock to prevent race conditions
+        if device_key not in self._universal_player_locks:
+            self._universal_player_locks[device_key] = asyncio.Lock()
+
+        async with self._universal_player_locks[device_key]:
+            # Re-check - another task may have already handled these players
+            # Filter out players that are already linked to a parent
+            protocol_players = [p for p in protocol_players if not p.protocol_parent_id]
+            if not protocol_players:
+                return None
+
+            # Check if universal player already exists
+            if existing := self.mass.players.get_player(universal_player_id):
+                if isinstance(existing, UniversalPlayer):
+                    # Separate players into those that can join vs those that are
+                    # domain-duplicates (a domain already active on the universal player)
+                    active_domains: set[str] = set()
+                    for link in existing.linked_output_protocols:
+                        if not link.protocol_domain:
+                            continue
+                        # A registered player occupies this domain slot even if unavailable
+                        if self.mass.players.get_player(link.output_protocol_id):
+                            active_domains.add(link.protocol_domain)
+                    can_join = [
+                        p for p in protocol_players if p.provider.domain not in active_domains
+                    ]
+                    rejected = [p for p in protocol_players if p.provider.domain in active_domains]
+
+                    # Add players that can join to the existing universal player
+                    for player in can_join:
+                        await self.add_protocol_to_universal_player(
+                            universal_player_id, player.player_id
+                        )
+
+                    # Create separate universal players for rejected (domain-duplicate)
+                    # players using player_id-based device keys
+                    for player in rejected:
+                        fallback_key = player.player_id.replace(":", "").replace("-", "").lower()
+                        await self._create_separate_universal_player(fallback_key, player)
+
+                return existing
+
+            # Create new universal player
+            device_info = self._aggregate_device_info(protocol_players)
+            name = self._get_clean_player_name(protocol_players)
+            protocol_player_ids = [p.player_id for p in protocol_players]
+
+            return await self.create_universal_player(
+                device_key=device_key,
+                name=name,
+                device_info=device_info,
+                protocol_player_ids=protocol_player_ids,
+            )
+
+    def get_universal_player(self, player_id: str) -> UniversalPlayer | None:
+        """Get a UniversalPlayer by ID if it exists and is managed by this provider."""
+        if player := self.mass.players.get_player(player_id):
+            if isinstance(player, UniversalPlayer):
+                return player
+        return None
+
+    async def remove_player(self, player_id: str) -> None:
+        """Remove a universal player and clean up any stale protocol player configs."""
+        if player := self.get_universal_player(player_id):
+            # Clean up configs for protocol players tracked by this universal player
+            # that are not currently registered (unavailable/stale).
+            # Available protocol players are handled by _cleanup_protocol_links
+            # in the player controller (clears parent + schedules re-evaluation).
+            for protocol_id in list(player._protocol_player_ids):
+                if not self.mass.players.get_player(protocol_id):
+                    self.logger.info(
+                        "Cleaning up stale protocol config %s from universal player %s",
+                        protocol_id,
+                        player_id,
+                    )
+                    self.mass.players.delete_player_config(protocol_id)
+        await self.remove_universal_player(player_id)
+
     async def _restore_player(self, player_id: str) -> None:  # noqa: PLR0915
         """
         Restore a universal player from config.
@@ -239,84 +446,6 @@ class UniversalPlayerProvider(PlayerProvider):
             )
             await self.mass.config.save_player_config(protocol_id, {"enabled": False})
 
-    async def create_universal_player(
-        self,
-        device_key: str,
-        name: str,
-        device_info: DeviceInfo,
-        protocol_player_ids: list[str],
-    ) -> Player:
-        """
-        Create a new UniversalPlayer.
-
-        Called by the PlayerController when multiple protocol players are
-        detected for a device without a native player.
-
-        :param device_key: Unique device key (typically MAC address).
-        :param name: Display name for the player.
-        :param device_info: Aggregated device information.
-        :param protocol_player_ids: List of protocol player IDs to link.
-        :return: The created UniversalPlayer instance.
-        """
-        # Generate player_id from device_key
-        player_id = f"{UNIVERSAL_PLAYER_PREFIX}{device_key}"
-
-        # Check if player already exists
-        if existing := self.mass.players.get_player(player_id):
-            # Update existing player with new protocol players
-            if isinstance(existing, UniversalPlayer):
-                for pid in protocol_player_ids:
-                    existing.add_protocol_player(pid)
-                # Merge identifiers from new device_info
-                for id_type, value in device_info.identifiers.items():
-                    existing.device_info.add_identifier(id_type, value)
-                # Persist updated data to config
-                await self._save_player_data(player_id, existing)
-                existing.update_state()
-            return existing
-
-        # Create config for the new player (complex values saved separately after)
-        self.mass.config.create_default_player_config(
-            player_id=player_id,
-            provider=self.instance_id,
-            player_type=PlayerType.GROUP,
-            name=name,
-            enabled=True,
-            values={
-                CONF_LINKED_PROTOCOL_IDS: protocol_player_ids,
-            },
-        )
-
-        # Save device identifiers and info to config (these are nested dicts,
-        # not supported by ConfigValueType, so we save them directly)
-        base_key = f"{CONF_PLAYERS}/{player_id}/values"
-        self.mass.config.set(
-            f"{base_key}/{CONF_DEVICE_IDENTIFIERS}",
-            {k.value: v for k, v in device_info.identifiers.items()},
-        )
-        self.mass.config.set(
-            f"{base_key}/{CONF_DEVICE_INFO}",
-            {"model": device_info.model, "manufacturer": device_info.manufacturer},
-        )
-
-        self.logger.info(
-            "Creating universal player %s with protocol players: %s",
-            player_id,
-            protocol_player_ids,
-        )
-
-        # Create the player instance
-        player = UniversalPlayer(
-            provider=self,
-            player_id=player_id,
-            name=name,
-            device_info=device_info,
-            protocol_player_ids=protocol_player_ids,
-        )
-
-        await self.mass.players.register_or_update(player)
-        return player
-
     async def _save_protocol_ids(self, player_id: str, protocol_player_ids: list[str]) -> None:
         """Save protocol player IDs to config for persistence across restarts."""
         conf_key = f"{CONF_PLAYERS}/{player_id}/values/{CONF_LINKED_PROTOCOL_IDS}"
@@ -359,118 +488,6 @@ class UniversalPlayerProvider(PlayerProvider):
             len(player.device_info.identifiers),
         )
 
-    async def add_protocol_to_universal_player(
-        self, player_id: str, protocol_player_id: str
-    ) -> None:
-        """
-        Add a protocol player to an existing universal player.
-
-        Called when a new protocol player is discovered that matches an existing
-        universal player.
-
-        :param player_id: ID of the universal player.
-        :param protocol_player_id: ID of the protocol player to add.
-        """
-        if player := self.get_universal_player(player_id):
-            player.add_protocol_player(protocol_player_id)
-            # Save all player data (protocol IDs, identifiers, device info)
-            await self._save_player_data(player_id, player)
-            player.update_state()
-
-    async def remove_universal_player(self, player_id: str) -> None:
-        """
-        Remove a universal player.
-
-        Called when all protocol players for a device are removed.
-
-        :param player_id: ID of the universal player to remove.
-        """
-        await self.mass.players.unregister(player_id, permanent=True)
-
-    async def ensure_universal_player_for_protocols(
-        self, protocol_players: list[Player]
-    ) -> Player | None:
-        """
-        Ensure a universal player exists for a set of protocol players.
-
-        This method handles the orchestration of creating or updating a universal player
-        for the given protocol players. It uses per-device locking to prevent race
-        conditions when multiple protocols for the same device register simultaneously.
-
-        When a second instance of the same protocol domain tries to join an existing
-        universal player (e.g., two AirPlay instances on the same host), the duplicate
-        is separated out and given its own universal player with a player_id-based key.
-
-        :param protocol_players: List of protocol players for the same device.
-        :return: The created or updated universal player, or None if operation failed.
-        """
-        device_key = self._get_device_key_from_players(protocol_players)
-        if not device_key:
-            return None
-
-        universal_player_id = f"{UNIVERSAL_PLAYER_PREFIX}{device_key}"
-
-        # Use a per-device lock to prevent race conditions
-        if device_key not in self._universal_player_locks:
-            self._universal_player_locks[device_key] = asyncio.Lock()
-
-        async with self._universal_player_locks[device_key]:
-            # Re-check - another task may have already handled these players
-            # Filter out players that are already linked to a parent
-            protocol_players = [p for p in protocol_players if not p.protocol_parent_id]
-            if not protocol_players:
-                return None
-
-            # Check if universal player already exists
-            if existing := self.mass.players.get_player(universal_player_id):
-                if isinstance(existing, UniversalPlayer):
-                    # Separate players into those that can join vs those that are
-                    # domain-duplicates (a domain already active on the universal player)
-                    active_domains: set[str] = set()
-                    for link in existing.linked_output_protocols:
-                        if not link.protocol_domain:
-                            continue
-                        # A registered player occupies this domain slot even if unavailable
-                        if self.mass.players.get_player(link.output_protocol_id):
-                            active_domains.add(link.protocol_domain)
-                    can_join = [
-                        p for p in protocol_players if p.provider.domain not in active_domains
-                    ]
-                    rejected = [p for p in protocol_players if p.provider.domain in active_domains]
-
-                    # Add players that can join to the existing universal player
-                    for player in can_join:
-                        await self.add_protocol_to_universal_player(
-                            universal_player_id, player.player_id
-                        )
-
-                    # Create separate universal players for rejected (domain-duplicate)
-                    # players using player_id-based device keys
-                    for player in rejected:
-                        fallback_key = player.player_id.replace(":", "").replace("-", "").lower()
-                        await self._create_separate_universal_player(fallback_key, player)
-
-                return existing
-
-            # Create new universal player
-            device_info = self._aggregate_device_info(protocol_players)
-            name = self._get_clean_player_name(protocol_players)
-            protocol_player_ids = [p.player_id for p in protocol_players]
-
-            return await self.create_universal_player(
-                device_key=device_key,
-                name=name,
-                device_info=device_info,
-                protocol_player_ids=protocol_player_ids,
-            )
-
-    def get_universal_player(self, player_id: str) -> UniversalPlayer | None:
-        """Get a UniversalPlayer by ID if it exists and is managed by this provider."""
-        if player := self.mass.players.get_player(player_id):
-            if isinstance(player, UniversalPlayer):
-                return player
-        return None
-
     async def _create_separate_universal_player(
         self, device_key: str, protocol_player: Player
     ) -> Player | None:
@@ -503,23 +520,6 @@ class UniversalPlayerProvider(PlayerProvider):
             device_info=device_info,
             protocol_player_ids=[protocol_player.player_id],
         )
-
-    async def remove_player(self, player_id: str) -> None:
-        """Remove a universal player and clean up any stale protocol player configs."""
-        if player := self.get_universal_player(player_id):
-            # Clean up configs for protocol players tracked by this universal player
-            # that are not currently registered (unavailable/stale).
-            # Available protocol players are handled by _cleanup_protocol_links
-            # in the player controller (clears parent + schedules re-evaluation).
-            for protocol_id in list(player._protocol_player_ids):
-                if not self.mass.players.get_player(protocol_id):
-                    self.logger.info(
-                        "Cleaning up stale protocol config %s from universal player %s",
-                        protocol_id,
-                        player_id,
-                    )
-                    self.mass.players.delete_player_config(protocol_id)
-        await self.remove_universal_player(player_id)
 
     def _get_device_key_from_players(self, protocol_players: list[Player]) -> str | None:
         """

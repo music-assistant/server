@@ -107,6 +107,24 @@ async def get_config_entries(
     )
 
 
+def _filter_by_explicit(tracks: list[Track], explicit_rule: bool | None) -> list[Track]:
+    """
+    Filter tracks based on the explicit content rule.
+
+    :param tracks: List of tracks to filter.
+    :param explicit_rule: True = only explicit tracks, False = exclude explicit tracks,
+                          None = no filter.
+    :return: Filtered list of tracks.
+    """
+    if explicit_rule is True:
+        # Only include tracks explicitly marked as explicit
+        return [t for t in tracks if t.metadata.explicit is True]
+    if explicit_rule is False:
+        # Exclude tracks explicitly marked as explicit; pass through unknown
+        return [t for t in tracks if t.metadata.explicit is not True]
+    return tracks
+
+
 class SmartPlaylistProvider(PluginProvider):
     """Smart Playlist plugin provider for Music Assistant."""
 
@@ -615,6 +633,9 @@ class SmartPlaylistProvider(PluginProvider):
                     and t.metadata.popularity >= rules.min_popularity
                 ]
 
+            # Apply explicit filter in library mode
+            tracks = _filter_by_explicit(tracks, rules.explicit)
+
             if rules.year_from is not None or rules.year_to is not None:
                 tracks = [
                     t
@@ -685,6 +706,8 @@ class SmartPlaylistProvider(PluginProvider):
             ]
         if rules.favorites_only:
             tracks = [t for t in tracks if t.favorite]
+        # Apply explicit filter in seed/discover mode post-filtering
+        tracks = _filter_by_explicit(tracks, rules.explicit)
         if has_genre_filter and rules.logic == LOGIC_AND:
             # Best-effort genre filter: resolve names then match against track genre metadata.
             # Tracks without genre metadata are kept (don't exclude for missing data).

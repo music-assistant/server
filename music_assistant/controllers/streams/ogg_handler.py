@@ -292,6 +292,12 @@ class _ChainedOggState:
         self.last_granule: int = 0
         self.granule_offset: int = 0
 
+    def process_page(self, page: OggPage) -> bytes | None:
+        """Process page. Returns data to yield or None to skip."""
+        if self.first_chain:
+            return self._process_first_chain_page(page)
+        return self._process_chain_page(page)
+
     def _handle_metadata(self, page: OggPage) -> None:
         """Extract and invoke callback for supported in-band metadata pages."""
         if self.metadata_callback:
@@ -384,12 +390,6 @@ class _ChainedOggState:
             new_granule=new_granule,
             clear_bos=page.is_bos,
         )
-
-    def process_page(self, page: OggPage) -> bytes | None:
-        """Process page. Returns data to yield or None to skip."""
-        if self.first_chain:
-            return self._process_first_chain_page(page)
-        return self._process_chain_page(page)
 
 
 def _resync_ogg_buffer(buffer: bytearray) -> int:

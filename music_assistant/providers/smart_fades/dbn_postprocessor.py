@@ -68,6 +68,61 @@ class DBNDownBeatTracker:
                 }
             )
 
+    def __call__(self, activations: NDArray[np.float64]) -> NDArray[np.float64]:
+        """
+        Run DBN decoding on beat/downbeat activations.
+
+        :param activations: Shape (T, 2), columns [beat_act, downbeat_act].
+            Values should be probabilities in (0, 1).
+        :return: Shape (M, 2) array of [time_seconds, beat_position].
+            beat_position is 1 for downbeats, 2..num_beats for other beats.
+        """
+        # Threshold: trim leading/trailing silence
+        first = 0
+        if self.threshold:
+            above = np.nonzero(activations.max(axis=1) >= self.threshold)[0]
+            if len(above) > 0:
+                first = int(above[0])
+                last = int(above[-1]) + 1
+                activations = activations[first:last]
+
+        log_dens = self._compute_log_densities(activations, self.observation_lambda)
+
+        # Run Viterbi for each meter hypothesis, pick best
+        best_path = None
+        best_log_prob = -np.inf
+        best_hmm = self._hmms[0]
+
+        for hmm in self._hmms:
+            path, log_prob = self._viterbi(
+                log_dens,
+                hmm["om_pointers"],
+                hmm["tm_states"],
+                hmm["tm_pointers"],
+                hmm["tm_log_probs"],
+            )
+            if log_prob > best_log_prob:
+                best_log_prob = log_prob
+                best_path = path
+                best_hmm = hmm
+
+        assert best_path is not None
+        positions = best_hmm["positions"][best_path]
+        beat_numbers = positions.astype(int) + 1
+
+        if self.correct:
+            beats = self._correct_beats(best_path, best_hmm, activations, beat_numbers)
+        else:
+            beats = np.nonzero(np.diff(beat_numbers))[0] + 1
+
+        if len(beats) == 0:
+            return np.empty((0, 2), dtype=np.float64)
+
+        beat_times = (beats + first) / self.fps
+        beat_positions = beat_numbers[beats]
+
+        return np.column_stack([beat_times, beat_positions])
+
     @staticmethod
     def _build_bar_state_space(
         num_beats: int,
@@ -234,61 +289,6 @@ class DBNDownBeatTracker:
         # Downbeat states: absolute position < border (first beat of bar)
         pointers[positions < border] = 2
         return pointers
-
-    def __call__(self, activations: NDArray[np.float64]) -> NDArray[np.float64]:
-        """
-        Run DBN decoding on beat/downbeat activations.
-
-        :param activations: Shape (T, 2), columns [beat_act, downbeat_act].
-            Values should be probabilities in (0, 1).
-        :return: Shape (M, 2) array of [time_seconds, beat_position].
-            beat_position is 1 for downbeats, 2..num_beats for other beats.
-        """
-        # Threshold: trim leading/trailing silence
-        first = 0
-        if self.threshold:
-            above = np.nonzero(activations.max(axis=1) >= self.threshold)[0]
-            if len(above) > 0:
-                first = int(above[0])
-                last = int(above[-1]) + 1
-                activations = activations[first:last]
-
-        log_dens = self._compute_log_densities(activations, self.observation_lambda)
-
-        # Run Viterbi for each meter hypothesis, pick best
-        best_path = None
-        best_log_prob = -np.inf
-        best_hmm = self._hmms[0]
-
-        for hmm in self._hmms:
-            path, log_prob = self._viterbi(
-                log_dens,
-                hmm["om_pointers"],
-                hmm["tm_states"],
-                hmm["tm_pointers"],
-                hmm["tm_log_probs"],
-            )
-            if log_prob > best_log_prob:
-                best_log_prob = log_prob
-                best_path = path
-                best_hmm = hmm
-
-        assert best_path is not None
-        positions = best_hmm["positions"][best_path]
-        beat_numbers = positions.astype(int) + 1
-
-        if self.correct:
-            beats = self._correct_beats(best_path, best_hmm, activations, beat_numbers)
-        else:
-            beats = np.nonzero(np.diff(beat_numbers))[0] + 1
-
-        if len(beats) == 0:
-            return np.empty((0, 2), dtype=np.float64)
-
-        beat_times = (beats + first) / self.fps
-        beat_positions = beat_numbers[beats]
-
-        return np.column_stack([beat_times, beat_positions])
 
     @staticmethod
     def _compute_log_densities(

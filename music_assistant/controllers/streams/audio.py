@@ -108,6 +108,7 @@ from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 from music_assistant.helpers.util import (
     clean_stream_title,
     detect_charset,
+    parse_quoted_stream_title,
     parse_title_and_version,
     remove_file,
 )
@@ -200,50 +201,6 @@ class StreamsAudio:
         """Return the smart fades mixer."""
         assert self._smart_fades_mixer is not None, "StreamsAudio.setup() not called"
         return self._smart_fades_mixer
-
-    def _update_radio_stream_metadata(
-        self,
-        streamdetails: StreamDetails,
-        artist: str | None,
-        title: str,
-        image_url: str | None = None,
-        album: str | None = None,
-    ) -> None:
-        """
-        Update radio stream metadata and trigger artwork lookup.
-
-        :param streamdetails: The stream details to update.
-        :param artist: Artist name (will be normalized).
-        :param title: Track title (will be cleaned for display).
-        :param image_url: Optional image URL from stream metadata.
-        :param album: Optional album name.
-        """
-        station_image_url = image_url or self.mass.metadata.get_radio_stream_station_image(
-            streamdetails
-        )
-        artist_normalized = (
-            self.mass.metadata.normalize_radio_artist_name(artist) if artist else None
-        )
-        display_title, _ = parse_title_and_version(title, strip_for_display=True)
-
-        streamdetails.stream_metadata = StreamMetadata(
-            title=display_title,
-            artist=artist_normalized,
-            album=album,
-            image_url=station_image_url,
-        )
-        streamdetails.stream_metadata_last_updated = time.time()
-        if streamdetails.queue_id:
-            self.mass.player_queues.signal_update(streamdetails.queue_id)
-
-        # Fetch artwork in background (track, album then artist)
-        if artist and title and not image_url:
-            self.mass.call_later(
-                0.2,
-                self.mass.metadata.update_radio_stream_artwork,
-                streamdetails,
-                task_id=f"update_radio_artwork_{streamdetails.queue_id}",
-            )
 
     # --- Public methods ---
 
@@ -392,7 +349,7 @@ class StreamsAudio:
         player_settings = await mass.config.get_player_config(streamdetails.queue_id)
         core_config = await mass.config.get_core_config("streams")
         conf_volume_normalization_target = float(
-            str(player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET, -17))
+            str(core_config.get_value(CONF_VOLUME_NORMALIZATION_TARGET, -14))
         )
         # guard against invalid volume normalization values
         # range and default_value are guaranteed to be set for this constant
@@ -406,9 +363,7 @@ class StreamsAudio:
             assert isinstance(default_val, (int, float))
             conf_volume_normalization_target = float(default_val)
             self.logger.warning(
-                "Invalid volume normalization target configured for player %s, "
-                "resetting to default of %s dB",
-                streamdetails.queue_id,
+                "Invalid volume normalization target configured, resetting to default of %s LUFS",
                 CONF_ENTRY_VOLUME_NORMALIZATION_TARGET.default_value,
             )
         streamdetails.target_loudness = conf_volume_normalization_target
@@ -652,61 +607,6 @@ class StreamsAudio:
                 ffmpeg_proc.returncode,
                 streamdetails.uri,
             )
-
-    async def _cache_radio_result(
-        self,
-        url: str,
-        stream_type: StreamType,
-        resolved_url: str | None = None,
-    ) -> tuple[str, StreamType]:
-        """Cache and return a radio stream resolution result."""
-        result = (resolved_url or url, stream_type)
-        await self.mass.cache.set(
-            url,
-            result,
-            expiration=3600 * 3,
-            provider=CACHE_PROVIDER,
-            category=CACHE_CATEGORY_RESOLVED_RADIO_URL,
-        )
-        return result
-
-    async def _handle_client_error_for_radio_stream(
-        self, url: str, err: aiohttp.ClientError, fallback_stream_type: StreamType
-    ) -> tuple[str, StreamType]:
-        """Handle aiohttp client errors during radio stream resolution."""
-        # Prefer the final post-redirect URL: aiohttp follows redirects before raising,
-        # but the original url may just point at a redirector rather than the ICY endpoint.
-        request_info = getattr(err, "request_info", None)
-        validate_url = str(request_info.url) if request_info is not None else url
-
-        # Check if this is a Shoutcast/ICY response that aiohttp can't parse
-        if isinstance(err, aiohttp.ClientResponseError) and "ICY" in str(err).upper():
-            self.logger.debug(
-                "ICY response detected for %s, validating Shoutcast stream", validate_url
-            )
-            if await self._validate_shoutcast_stream(validate_url):
-                return await self._cache_radio_result(
-                    url, StreamType.SHOUTCAST, resolved_url=validate_url
-                )
-            self.logger.warning(
-                "ICY response detected but Shoutcast validation failed for %s", validate_url
-            )
-            return await self._cache_radio_result(
-                url, fallback_stream_type, resolved_url=validate_url
-            )
-
-        # Other aiohttp errors - might still be Shoutcast, check it
-        self.logger.debug("aiohttp error for %s, checking if legacy Shoutcast stream", validate_url)
-        if await self._validate_shoutcast_stream(validate_url):
-            return await self._cache_radio_result(
-                url, StreamType.SHOUTCAST, resolved_url=validate_url
-            )
-
-        # Unknown error - still try to stream
-        self.logger.warning(
-            "Failed to parse radio URL %s: %s - attempting direct stream", validate_url, str(err)
-        )
-        return await self._cache_radio_result(url, fallback_stream_type, resolved_url=validate_url)
 
     async def resolve_radio_stream(self, url: str) -> tuple[str, StreamType]:
         """
@@ -1416,41 +1316,6 @@ class StreamsAudio:
             )
         finally:
             streamdetails.seconds_streamed = bytes_received / pcm_format.pcm_sample_size
-
-    async def _iter_audio_source_pcm(
-        self,
-        streamdetails: StreamDetails,
-        pcm_format: AudioFormat,
-    ) -> AsyncGenerator[bytes]:
-        """Yield PCM for an AudioSource, bypassing ffmpeg when formats match."""
-        if _pcm_formats_match(streamdetails.audio_format, pcm_format):
-            source_gen = self._open_audio_source_generator(streamdetails)
-            async for chunk in realtime_pcm_pacer(source_gen, pcm_format):
-                yield chunk
-            return
-        # format mismatch → fall back to ffmpeg for resampling (still small chunks)
-        async for chunk in self.get_media_stream(
-            streamdetails=streamdetails,
-            pcm_format=pcm_format,
-            filter_params=None,
-            chunk_seconds=AUDIO_SOURCE_CHUNK_SECONDS,
-        ):
-            yield chunk
-
-    def _open_audio_source_generator(self, streamdetails: StreamDetails) -> AsyncGenerator[bytes]:
-        """Open the raw PCM generator for an AudioSource (CUSTOM or NAMED_PIPE)."""
-        if streamdetails.stream_type == StreamType.CUSTOM:
-            provider = self.mass.get_provider(streamdetails.provider)
-            if provider is None:
-                raise ProviderUnavailableError(
-                    f"Provider {streamdetails.provider} for stream is no longer available"
-                )
-            provider = cast("MusicProvider | PluginProvider", provider)
-            return provider.get_audio_stream(streamdetails)
-        if streamdetails.stream_type == StreamType.NAMED_PIPE:
-            assert isinstance(streamdetails.path, str)  # for type checking
-            return read_named_pipe(streamdetails.path)
-        raise AudioError(f"Unsupported stream_type {streamdetails.stream_type} for AudioSource")
 
     async def get_queue_item_stream(
         self,
@@ -2607,6 +2472,140 @@ class StreamsAudio:
 
     # --- Private methods ---
 
+    def _update_radio_stream_metadata(
+        self,
+        streamdetails: StreamDetails,
+        artist: str | None,
+        title: str,
+        image_url: str | None = None,
+        album: str | None = None,
+    ) -> None:
+        """
+        Update radio stream metadata and trigger artwork lookup.
+
+        :param streamdetails: The stream details to update.
+        :param artist: Artist name (will be normalized).
+        :param title: Track title (will be cleaned for display).
+        :param image_url: Optional image URL from stream metadata.
+        :param album: Optional album name.
+        """
+        station_image_url = image_url or self.mass.metadata.get_radio_stream_station_image(
+            streamdetails
+        )
+        artist_normalized = (
+            self.mass.metadata.normalize_radio_artist_name(artist) if artist else None
+        )
+        display_title, _ = parse_title_and_version(title, strip_for_display=True)
+
+        streamdetails.stream_metadata = StreamMetadata(
+            title=display_title,
+            artist=artist_normalized,
+            album=album,
+            image_url=station_image_url,
+        )
+        streamdetails.stream_metadata_last_updated = time.time()
+        if streamdetails.queue_id:
+            self.mass.player_queues.signal_update(streamdetails.queue_id)
+
+        # Fetch artwork in background (track, album then artist)
+        if artist and title and not image_url:
+            self.mass.call_later(
+                0.2,
+                self.mass.metadata.update_radio_stream_artwork,
+                streamdetails,
+                task_id=f"update_radio_artwork_{streamdetails.queue_id}",
+            )
+
+    async def _cache_radio_result(
+        self,
+        url: str,
+        stream_type: StreamType,
+        resolved_url: str | None = None,
+    ) -> tuple[str, StreamType]:
+        """Cache and return a radio stream resolution result."""
+        result = (resolved_url or url, stream_type)
+        await self.mass.cache.set(
+            url,
+            result,
+            expiration=3600 * 3,
+            provider=CACHE_PROVIDER,
+            category=CACHE_CATEGORY_RESOLVED_RADIO_URL,
+        )
+        return result
+
+    async def _handle_client_error_for_radio_stream(
+        self, url: str, err: aiohttp.ClientError, fallback_stream_type: StreamType
+    ) -> tuple[str, StreamType]:
+        """Handle aiohttp client errors during radio stream resolution."""
+        # Prefer the final post-redirect URL: aiohttp follows redirects before raising,
+        # but the original url may just point at a redirector rather than the ICY endpoint.
+        request_info = getattr(err, "request_info", None)
+        validate_url = str(request_info.url) if request_info is not None else url
+
+        # Check if this is a Shoutcast/ICY response that aiohttp can't parse
+        if isinstance(err, aiohttp.ClientResponseError) and "ICY" in str(err).upper():
+            self.logger.debug(
+                "ICY response detected for %s, validating Shoutcast stream", validate_url
+            )
+            if await self._validate_shoutcast_stream(validate_url):
+                return await self._cache_radio_result(
+                    url, StreamType.SHOUTCAST, resolved_url=validate_url
+                )
+            self.logger.warning(
+                "ICY response detected but Shoutcast validation failed for %s", validate_url
+            )
+            return await self._cache_radio_result(
+                url, fallback_stream_type, resolved_url=validate_url
+            )
+
+        # Other aiohttp errors - might still be Shoutcast, check it
+        self.logger.debug("aiohttp error for %s, checking if legacy Shoutcast stream", validate_url)
+        if await self._validate_shoutcast_stream(validate_url):
+            return await self._cache_radio_result(
+                url, StreamType.SHOUTCAST, resolved_url=validate_url
+            )
+
+        # Unknown error - still try to stream
+        self.logger.warning(
+            "Failed to parse radio URL %s: %s - attempting direct stream", validate_url, str(err)
+        )
+        return await self._cache_radio_result(url, fallback_stream_type, resolved_url=validate_url)
+
+    async def _iter_audio_source_pcm(
+        self,
+        streamdetails: StreamDetails,
+        pcm_format: AudioFormat,
+    ) -> AsyncGenerator[bytes]:
+        """Yield PCM for an AudioSource, bypassing ffmpeg when formats match."""
+        if _pcm_formats_match(streamdetails.audio_format, pcm_format):
+            source_gen = self._open_audio_source_generator(streamdetails)
+            async for chunk in realtime_pcm_pacer(source_gen, pcm_format):
+                yield chunk
+            return
+        # format mismatch → fall back to ffmpeg for resampling (still small chunks)
+        async for chunk in self.get_media_stream(
+            streamdetails=streamdetails,
+            pcm_format=pcm_format,
+            filter_params=None,
+            chunk_seconds=AUDIO_SOURCE_CHUNK_SECONDS,
+        ):
+            yield chunk
+
+    def _open_audio_source_generator(self, streamdetails: StreamDetails) -> AsyncGenerator[bytes]:
+        """Open the raw PCM generator for an AudioSource (CUSTOM or NAMED_PIPE)."""
+        if streamdetails.stream_type == StreamType.CUSTOM:
+            provider = self.mass.get_provider(streamdetails.provider)
+            if provider is None:
+                raise ProviderUnavailableError(
+                    f"Provider {streamdetails.provider} for stream is no longer available"
+                )
+            provider = cast("MusicProvider | PluginProvider", provider)
+            return provider.get_audio_stream(streamdetails)
+        if streamdetails.stream_type == StreamType.NAMED_PIPE:
+            assert isinstance(streamdetails.path, str)  # for type checking
+            return read_named_pipe(streamdetails.path)
+        raise AudioError(f"Unsupported stream_type {streamdetails.stream_type} for AudioSource")
+
     def _parse_icy_metadata(self, meta_data: bytes, streamdetails: StreamDetails) -> None:
         """
         Parse ICY metadata and update streamdetails.
@@ -2653,17 +2652,28 @@ class StreamsAudio:
         )
         streamdetails.stream_title = cleaned_stream_title
 
-        if " - " in cleaned_stream_title:
+        # Parse the original title for structured fields first so stations that announce
+        # an album can refine the artwork lookup; fall back to the "Artist - Track" split.
+        album: str | None = None
+        if parsed := parse_quoted_stream_title(stream_title):
+            track_name, artist_name_raw, album = parsed
+        elif " - " in cleaned_stream_title:
             artist_name_raw, track_name = (
                 part.strip() for part in cleaned_stream_title.split(" - ", 1)
             )
-            if artist_name_raw and track_name:
-                self.logger.debug(
-                    "ICY metadata: artist='%s', track='%s'", artist_name_raw, track_name
-                )
-                self._update_radio_stream_metadata(
-                    streamdetails, artist=artist_name_raw, title=track_name
-                )
+        else:
+            return
+
+        if artist_name_raw and track_name:
+            self.logger.debug(
+                "ICY metadata: artist='%s', track='%s', album='%s'",
+                artist_name_raw,
+                track_name,
+                album,
+            )
+            self._update_radio_stream_metadata(
+                streamdetails, artist=artist_name_raw, title=track_name, album=album
+            )
 
     async def _validate_shoutcast_stream(self, url: str) -> bool:
         """

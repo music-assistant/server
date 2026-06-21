@@ -2102,5 +2102,15 @@
   "common.media.folder.spring.name": "Lente",
   "common.media.folder.summer.name": "Zomer",
   "common.media.folder.winter.name": "Winter",
-  "common.media.folder.workout.name": "Workout"
+  "common.media.folder.workout.name": "Workout",
+  "provider.builtin.media.playlist.all_favorite_tracks.name": "Alle favoriete nummers",
+  "provider.builtin.media.playlist.infinite_mix.description": "Een eindeloze, steeds veranderende afspeellijst die telkens 25 willekeurige nummers uit je bibliotheek selecteert wanneer de wachtrij bijna afloopt. Vooraf laden is niet nodig — het geheugengebruik blijft constant, ongeacht de grootte van je bibliotheek.",
+  "provider.builtin.media.playlist.infinite_mix.name": "Oneindige Mix (bibliotheek)",
+  "provider.builtin.media.playlist.infinite_mix_favorites.description": "Zoals de Oneindige Mix, maar beperkt tot je favoriete nummers. Er worden 25 nieuwe willekeurige favorieten toegevoegd wanneer de wachtrij bijna afloopt.",
+  "provider.builtin.media.playlist.infinite_mix_favorites.name": "Oneindige Mix (favorieten)",
+  "provider.builtin.media.playlist.random_album.name": "Willekeurig Album (uit de bibliotheek)",
+  "provider.builtin.media.playlist.random_artist.name": "Willekeurige Artiest (uit de bibliotheek)",
+  "provider.builtin.media.playlist.random_tracks.name": "500 willekeurige nummers (uit de bibliotheek)",
+  "provider.builtin.media.playlist.recently_added_tracks.name": "Onlangs toegevoegde nummers",
+  "provider.builtin.media.playlist.recently_played.name": "Onlangs afgespeelde nummers"
 }
