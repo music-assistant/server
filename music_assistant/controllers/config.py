@@ -1626,21 +1626,23 @@ class ConfigController:
             if not isinstance(player_values, dict):
                 continue
             to_move = {key: player_values[key] for key in moved_keys if key in player_values}
-            # an explicit legacy "standard_crossfade" choice maps to prefer_smart_fades=False;
-            # smart/disabled keep the default of preferring smart fades when available
-            legacy_standard = player_values.get(CONF_SMART_FADES_MODE) == "standard_crossfade"
-            if not to_move and not legacy_standard:
+            # the legacy smart_fades_mode encoded both on/off and standard-vs-smart; the on/off is
+            # now a runtime queue toggle, and only an explicit "standard_crossfade" choice carries
+            # over (as prefer_smart_fades=False). Consume the key either way.
+            legacy_mode = player_values.pop(CONF_SMART_FADES_MODE, None)
+            if not to_move and legacy_mode is None:
                 continue
-            queue_cfg = self._data.setdefault(CONF_PLAYER_QUEUES, {}).setdefault(
-                player_id, {"queue_id": player_id}
-            )
-            queue_values = queue_cfg.setdefault("values", {})
-            for key, value in to_move.items():
-                # don't clobber an existing queue value if one was already stored
-                queue_values.setdefault(key, value)
-                del player_values[key]
-            if legacy_standard:
-                queue_values.setdefault(CONF_PREFER_SMART_FADES, False)
+            if to_move or legacy_mode == "standard_crossfade":
+                queue_cfg = self._data.setdefault(CONF_PLAYER_QUEUES, {}).setdefault(
+                    player_id, {"queue_id": player_id}
+                )
+                queue_values = queue_cfg.setdefault("values", {})
+                for key, value in to_move.items():
+                    # don't clobber an existing queue value if one was already stored
+                    queue_values.setdefault(key, value)
+                    del player_values[key]
+                if legacy_mode == "standard_crossfade":
+                    queue_values.setdefault(CONF_PREFER_SMART_FADES, False)
             LOGGER.info("Migrated queue settings for %s", player_id)
             changed = True
         return changed

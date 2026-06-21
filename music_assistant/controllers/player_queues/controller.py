@@ -67,7 +67,6 @@ from music_assistant.constants import (
     ATTR_ACTIVE_PLAYLIST,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_PLAY_ACTION_IN_PROGRESS,
-    CONF_SMART_FADES_MODE,
     MASS_LOGO_ONLINE,
     PLAYBACK_REPORT_INTERVAL_SECONDS,
     PLAYLIST_MEDIA_TYPES,
@@ -1075,15 +1074,6 @@ class PlayerQueuesController(CoreController):
 
         self._queues[queue_id] = queue
         self._queue_items[queue_id] = queue_items
-        # seed crossfade_enabled from the legacy smart_fades_mode player config for queues that
-        # were persisted before this field existed (or were never persisted at all)
-        # TODO: remove this migration seed after 2.11 release
-        if not (prev_state and "crossfade_enabled" in prev_state) and (
-            legacy_mode := self.mass.config.get_raw_player_config_value(
-                queue_id, CONF_SMART_FADES_MODE
-            )
-        ):
-            queue.crossfade_enabled = str(legacy_mode) != "disabled"
         # always call update to calculate state etc
         self.on_player_update(player, {})
         self.mass.signal_event(EventType.QUEUE_ADDED, object_id=queue_id, data=queue)

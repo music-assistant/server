@@ -19,7 +19,7 @@ def test_migrate_player_queue_settings_moves_only_queue_keys() -> None:
                     "crossfade_duration": 12,
                     "volume_normalization": False,
                     "output_limiter": True,  # player/DSP stage -> stays on the player
-                    "smart_fades_mode": "smart_crossfade",  # seeded elsewhere -> stays
+                    "smart_fades_mode": "smart_crossfade",  # legacy -> consumed (deleted)
                 },
             },
             "p2": {"player_id": "p2", "values": {}},  # nothing to move
@@ -28,11 +28,8 @@ def test_migrate_player_queue_settings_moves_only_queue_keys() -> None:
     stub = SimpleNamespace(_data=data)
     changed = ConfigController._migrate_player_queue_settings(stub)
     assert changed is True
-    # moved keys are gone from the player config
-    assert data["players"]["p1"]["values"] == {
-        "output_limiter": True,
-        "smart_fades_mode": "smart_crossfade",
-    }
+    # moved keys (and the consumed legacy smart_fades_mode) are gone from the player config
+    assert data["players"]["p1"]["values"] == {"output_limiter": True}
     # ...and now live under the per-queue config (queue_id == player_id)
     assert data["player_queues"]["p1"]["values"] == {
         "crossfade_duration": 12,
@@ -50,8 +47,8 @@ def test_migrate_player_queue_settings_noop_when_nothing_to_move() -> None:
     assert "player_queues" not in data
 
 
-def test_migrate_player_queue_settings_preserves_legacy_standard_choice() -> None:
-    """A legacy 'standard_crossfade' choice is migrated to prefer_smart_fades=False."""
+def test_migrate_player_queue_settings_consumes_legacy_smart_fades_mode() -> None:
+    """smart_fades_mode is consumed: standard -> prefer_smart_fades=False, smart/disabled dropped."""
     data = {
         "players": {
             "p1": {"player_id": "p1", "values": {"smart_fades_mode": "standard_crossfade"}},
@@ -60,6 +57,9 @@ def test_migrate_player_queue_settings_preserves_legacy_standard_choice() -> Non
     }
     stub = SimpleNamespace(_data=data)
     assert ConfigController._migrate_player_queue_settings(stub) is True
+    # the legacy key is removed from both players
+    assert data["players"]["p1"]["values"] == {}
+    assert data["players"]["p2"]["values"] == {}
     # standard -> explicit opt-out of smart fades
     assert data["player_queues"]["p1"]["values"] == {"prefer_smart_fades": False}
     # smart/disabled keep the default (prefer smart) -> no queue config written
