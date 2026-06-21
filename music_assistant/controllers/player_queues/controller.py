@@ -357,8 +357,8 @@ class PlayerQueuesController(CoreController):
         if queue.crossfade_enabled == crossfade_enabled:
             return  # no change
         queue.crossfade_enabled = crossfade_enabled
-        # refresh the derived effective mode so the update we signal reflects the new state
-        queue.crossfade_mode = self.mass.streams.get_crossfade_mode(queue)
+        # refresh the derived smart-fades indicator so the update we signal reflects the new state
+        queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
         self.signal_update(queue_id)
         if (
             queue.state == PlaybackState.PLAYING
@@ -2696,7 +2696,7 @@ class PlayerQueuesController(CoreController):
         # basic properties
         queue.display_name = player.state.name
         queue.available = player.state.available
-        queue.crossfade_mode = self.mass.streams.get_crossfade_mode(queue)
+        queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
         queue.items = len(self._queue_items[queue_id])
 
         queue.state = (

@@ -206,6 +206,10 @@ class StreamsController(CoreController):
             return CrossfadeMode.SMART_CROSSFADE
         return CrossfadeMode.STANDARD_CROSSFADE
 
+    def is_smart_fades_active(self, queue: PlayerQueue) -> bool:
+        """Return whether the queue's effective crossfade mode is smart crossfade."""
+        return self.get_crossfade_mode(queue) == CrossfadeMode.SMART_CROSSFADE
+
     async def get_config_entries(
         self, action: str | None = None, values: dict[str, ConfigValueType] | None = None
     ) -> tuple[ConfigEntry, ...]:
