@@ -516,7 +516,7 @@ class PartyPlugin(PluginProvider):
 
         base_url_value = self.mass.webserver.config.get_value("base_url")
         base_url = str(base_url_value) if base_url_value else f"http://localhost:{DEFAULT_PORT}"
-        return f"{base_url}/?join={code}"
+        return f"{base_url.rstrip('/')}/?join={code}"
 
     async def get_party_player(self) -> str | None:
         """
