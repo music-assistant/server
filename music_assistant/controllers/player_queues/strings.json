@@ -14,6 +14,9 @@
       "options": {
         "standard_crossfade": "Standard crossfade",
         "smart_crossfade": "Smart crossfade (beat-matched)"
+      },
+      "disabled_reasons": {
+        "smart_crossfade": "Not available on this server: smart crossfade needs the smart fades analysis provider and a larger audio buffer (balanced or higher)."
       }
     },
     "volume_normalization": {

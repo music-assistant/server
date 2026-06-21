@@ -481,6 +481,7 @@
   "core.player_queues.config_entries.crossfade_duration.description": "Duration in seconds for the standard crossfade between tracks.",
   "core.player_queues.config_entries.crossfade_duration.label": "Standard crossfade duration",
   "core.player_queues.config_entries.crossfade_mode.description": "The crossfade type to use when crossfade is enabled. Smart crossfade beat-matches tracks and needs the smart fades analysis provider on a capable system; it falls back to standard when unavailable.",
+  "core.player_queues.config_entries.crossfade_mode.disabled_reasons.smart_crossfade": "Not available on this server: smart crossfade needs the smart fades analysis provider and a larger audio buffer (balanced or higher).",
   "core.player_queues.config_entries.crossfade_mode.label": "Crossfade mode",
   "core.player_queues.config_entries.crossfade_mode.options.smart_crossfade": "Smart crossfade (beat-matched)",
   "core.player_queues.config_entries.crossfade_mode.options.standard_crossfade": "Standard crossfade",
