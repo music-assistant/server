@@ -704,7 +704,6 @@ class BBCSoundsProvider(MusicProvider):
         # so as not to show out of date information
         if sub_path == "stations" and sub_sub_path and sub_sub_sub_path:
             station_menu = await self._get_station_schedule_menu(
-                show_local=self.show_local_stations,
                 path_parts=path_parts,
                 station_id=sub_sub_path,
                 date=sub_sub_sub_path,
