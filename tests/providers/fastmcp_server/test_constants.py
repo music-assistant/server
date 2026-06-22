@@ -21,7 +21,7 @@ def test_resource_keys_count() -> None:
 
 
 def test_hot_swappable_includes_perm_resource_and_meta_keys() -> None:
-    """Hot-swappable set is the union of permission, resource, and meta keys."""
+    """Hot-swappable set is exactly the union of permission, resource, and meta keys — anything else triggers a runtime restart."""
     assert HOT_SWAPPABLE_KEYS == PERMISSION_KEYS | RESOURCE_KEYS | META_KEYS
 
 
@@ -31,7 +31,7 @@ def test_meta_keys_count() -> None:
 
 
 def test_no_overlap_perm_resource_meta() -> None:
-    """Permission, resource, and meta key sets don't overlap."""
+    """Permission, resource, and meta key sets don't overlap (cleanly partitioned)."""
     assert PERMISSION_KEYS.isdisjoint(RESOURCE_KEYS)
     assert PERMISSION_KEYS.isdisjoint(META_KEYS)
     assert RESOURCE_KEYS.isdisjoint(META_KEYS)

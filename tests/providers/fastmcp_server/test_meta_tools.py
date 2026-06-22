@@ -1,4 +1,4 @@
-"""Tests for MCP meta-tool discovery (search_tools + invoke_tool)."""
+"""Tests for MCP meta-tool discovery (search_tools, get_tool_schema, invoke_tool)."""
 # mypy: disable-error-code="arg-type, no-untyped-def, type-arg, assignment, operator, misc"
 
 from __future__ import annotations

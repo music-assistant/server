@@ -1,4 +1,4 @@
-"""MCP meta-tool discovery (search_tools + invoke_tool)."""
+"""MCP meta-tool discovery (search_tools, get_tool_schema, invoke_tool)."""
 
 from __future__ import annotations
 
