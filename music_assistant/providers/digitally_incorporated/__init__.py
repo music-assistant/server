@@ -625,8 +625,6 @@ class DigitallyIncorporatedProvider(MusicProvider):
         """Match a PLS-derived slug to channel JSON (case-insensitive; ``*_aac`` / ``*_mp3``)."""
         if pls_key in channels_by_key:
             return channels_by_key[pls_key]
-        # Build a lowercase-keyed view for case-insensitive matching.
-        lower_channels_by_key = {key.lower(): value for key, value in channels_by_key.items()}
         pls_lower = pls_key.lower()
         if pls_lower in channels_lower_by_key:
             return channels_lower_by_key[pls_lower]
