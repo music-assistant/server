@@ -5,7 +5,7 @@ from __future__ import annotations
 import ctypes
 import os
 import threading
-from typing import Any, ClassVar, Final
+from typing import Any, ClassVar, Final, Self
 
 from .constants import volume_pct_to_amplitude
 
@@ -519,7 +519,7 @@ class PASimpleStream:
             if conn:
                 self._lib.pa_simple_free(conn)
 
-    def __enter__(self) -> PASimpleStream:
+    def __enter__(self) -> Self:
         """Enter context manager."""
         return self
 
