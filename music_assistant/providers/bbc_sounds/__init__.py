@@ -407,7 +407,7 @@ class BBCSoundsProvider(MusicProvider):
     async def _get_station_stream_details(self, item_id: str) -> StreamDetails:
         """Fetch stream details for a live station."""
         station = await self._request_pool(
-            "station:{item_id}",
+            f"station:{item_id}",
             self.client.stations.get_station(
                 item_id,
                 include_stream=True,
