@@ -30,7 +30,11 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -45,6 +49,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.playlists import parse_pls
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.music_provider import MusicProvider
 
@@ -80,7 +85,6 @@ CACHE_STREAM_URL = 3600  # 1 hour
 CACHE_FAVORITES = 300  # 5 minutes
 
 # Favorites playlist on listen.* (premium tier; ``public3`` is legacy and not used here).
-_FILE_LINE_RE = re.compile(r"^\s*File\d+\s*=\s*(.+?)\s*$", re.IGNORECASE)
 _PLS_CHANNEL_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$", re.IGNORECASE)
 
 # Root ``/favorites.pls`` (no tier) often returns HTTP 406 — use premium only.
@@ -634,23 +638,27 @@ class DigitallyIncorporatedProvider(MusicProvider):
         return None
 
     def _parse_favorites_pls_channel_keys(self, pls_body: str, network_key: str) -> list[str]:
-        """Parse PLS text; return ordered unique channel keys derived from FileN= URLs."""
+        """Return ordered, unique channel keys derived from the favorites PLS entries."""
+        try:
+            items = parse_pls(pls_body)
+        except InvalidDataError as err:
+            self.logger.debug(
+                "%s: could not parse favorites PLS for network %s: %s",
+                self.domain,
+                network_key,
+                err,
+            )
+            return []
         ordered: list[str] = []
         seen_keys: set[str] = set()
         unmapped_basenames: set[str] = set()
-        for line in pls_body.splitlines():
-            match = _FILE_LINE_RE.match(line)
-            if not match:
-                continue
-            raw_url = match.group(1)
-            channel_key = self._stream_url_to_channel_key(raw_url, network_key)
+        for item in items:
+            channel_key = self._stream_url_to_channel_key(item.path, network_key)
             if channel_key and channel_key not in seen_keys:
                 seen_keys.add(channel_key)
                 ordered.append(channel_key)
-            elif not channel_key:
-                bn = self._pls_url_basename(raw_url)
-                if bn:
-                    unmapped_basenames.add(bn)
+            elif not channel_key and (bn := self._pls_url_basename(item.path)):
+                unmapped_basenames.add(bn)
         if unmapped_basenames:
             sample = ", ".join(sorted(unmapped_basenames)[:12])
             extra = len(unmapped_basenames) - 12
