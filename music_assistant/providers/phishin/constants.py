@@ -21,7 +21,7 @@ PHISH_TADB_ID: Final[str] = "112677"
 
 # Fallback image for albums without artwork
 FALLBACK_ALBUM_IMAGE: Final[str] = (
-    "https://raw.githubusercontent.com/music-assistant/music-assistant.io/refs/heads/main/docs/assets/icons/phish-logo.png"
+    "https://raw.githubusercontent.com/music-assistant/music-assistant.io/refs/heads/main/public/assets/icons/phish-logo.png"
 )
 
 # API endpoints

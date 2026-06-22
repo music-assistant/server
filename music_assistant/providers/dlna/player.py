@@ -9,13 +9,10 @@ from typing import TYPE_CHECKING, Any, Concatenate
 from urllib.parse import urlparse
 
 import defusedxml.ElementTree as DefusedET
-from async_upnp_client.client import UpnpDevice, UpnpService, UpnpStateVariable
 from async_upnp_client.exceptions import UpnpError, UpnpResponseError
 from async_upnp_client.profiles.dlna import DmrDevice, TransportState
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import PlayerUnavailableError
-from music_assistant_models.player import PlayerMedia
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.upnp import create_didl_metadata
@@ -24,6 +21,10 @@ from music_assistant.models.player import DeviceInfo, Player
 from .constants import PLAYER_CONFIG_ENTRIES
 
 if TYPE_CHECKING:
+    from async_upnp_client.client import UpnpDevice, UpnpService, UpnpStateVariable
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.player import PlayerMedia
+
     from .provider import DLNAPlayerProvider
 
 
@@ -59,7 +60,8 @@ def catch_request_errors[DLNAPlayerT: "DLNAPlayer", **P, R](
 
 
 class DLNAPlayer(Player):
-    """DLNA Player.
+    """
+    DLNA Player.
 
     All DLNA players are considered generic protocol endpoints (PlayerType.PROTOCOL)
     and will be wrapped in a UniversalPlayer. Devices with native provider support
@@ -72,12 +74,13 @@ class DLNAPlayer(Player):
 
     def __init__(
         self,
-        provider: "DLNAPlayerProvider",
+        provider: DLNAPlayerProvider,
         player_id: str,
         description_url: str,
         device: DmrDevice | None = None,
     ) -> None:
-        """Init Player.
+        """
+        Init Player.
 
         The player_id is the udn.
         """
@@ -101,136 +104,9 @@ class DLNAPlayer(Player):
         """Set the availability of the player."""
         self._attr_available = available
 
-    async def _device_connect(self) -> None:
-        """Connect DLNA/DMR Device."""
-        self.logger.debug("Connecting to device at %s", self.description_url)
-
-        async with self.lock:
-            if self.device:
-                self.logger.debug("Trying to connect when device already connected")
-                return
-
-            # Connect to the base UPNP device
-            if TYPE_CHECKING:
-                assert isinstance(self.provider, DLNAPlayerProvider)  # for type checking
-            upnp_device = await self.provider.upnp_factory.async_create_device(self.description_url)
-
-            # Create profile wrapper
-            self.device = DmrDevice(upnp_device, self.provider.notify_server.event_handler)
-
-            # Subscribe to event notifications
-            try:
-                self.device.on_event = self._handle_event
-                await self.device.async_subscribe_services(auto_resubscribe=True)
-            except UpnpResponseError as err:
-                # Device rejected subscription request. This is OK, variables
-                # will be polled instead.
-                self.logger.debug("Device rejected subscription: %r", err)
-            except UpnpError as err:
-                # Don't leave the device half-constructed
-                self.device.on_event = None
-                self.device = None
-                self.logger.debug("Error while subscribing during device connect: %r", err)
-                raise
-            else:
-                # connect was successful, update device info
-                self._attr_device_info = DeviceInfo(
-                    model=self.device.model_name,
-                    manufacturer=self.device.manufacturer,
-                )
-                # Add UDN (player_id) as UUID identifier for matching with other protocols
-                # Strip the "uuid:" prefix if present for proper matching
-                uuid_value = self.player_id
-                if uuid_value.lower().startswith("uuid:"):
-                    uuid_value = uuid_value[5:]
-                self._attr_device_info.add_identifier(IdentifierType.UUID, uuid_value)
-                # MAC address is NOT extracted from UUID because the last 12 chars
-                # of UPnP UUIDs are unreliable — many devices put random/model
-                # values there, not the real hardware MAC. Instead, the player
-                # controller resolves the real MAC via ARP during registration
-                # using the IP address extracted below.
-                # Try to extract just the IP from the URL for matching
-                ip_address = self.device.device.presentation_url or self.description_url
-                with suppress(ValueError):
-                    parsed = urlparse(ip_address)
-                    if parsed.hostname:
-                        self._attr_device_info.add_identifier(
-                            IdentifierType.IP_ADDRESS, parsed.hostname
-                        )
-
-    def _handle_event(
-        self,
-        service: UpnpService,
-        state_variables: Sequence[UpnpStateVariable[Any]],
-    ) -> None:
-        """Handle state variable(s) changed event from DLNA device."""
-        if not state_variables:
-            # Indicates a failure to resubscribe, check if device is still available
-            self.force_poll = True
-            return
-        if service.service_id == "urn:upnp-org:serviceId:AVTransport":
-            for state_variable in state_variables:
-                # Force a state refresh when player begins or pauses playback
-                # to update the position info.
-                if state_variable.name == "TransportState" and state_variable.value in (
-                    TransportState.PLAYING,
-                    TransportState.PAUSED_PLAYBACK,
-                ):
-                    self.force_poll = True
-                    self.mass.create_task(self.poll())
-                    self.logger.log(
-                        VERBOSE_LOG_LEVEL,
-                        "Received new state from event for Player %s: %s",
-                        self.display_name,
-                        state_variable.value,
-                    )
-        self.last_seen = time.time()
-        self.mass.create_task(self._update_player())
-
-    async def _update_player(self) -> None:
-        """Update DLNA Player."""
-        prev_url = self._attr_current_media.uri if self._attr_current_media is not None else ""
-        prev_state = self.state
-        await self.set_dynamic_attributes()
-        current_url = self._attr_current_media.uri if self._attr_current_media is not None else ""
-        current_state = self.state
-
-        if (prev_url != current_url) or (prev_state != current_state):
-            # fetch track details on state or url change
-            self.force_poll = True
-
-        try:
-            self.update_state()
-        except (KeyError, TypeError):
-            # at start the update might come faster than the config is initialized
-            await asyncio.sleep(2)
-            self.update_state()
-
-    def _set_player_features(self) -> None:
-        """Set Player Features based on config values and capabilities."""
-        assert self.device is not None  # for type checking
-        supported_features: set[PlayerFeature] = set()
-
-        # Only add PLAY_MEDIA if the device actually supports playback
-        # Passive speakers (like stereo pair satellites) don't have play capability
-        if self.device.has_play_media:
-            supported_features.add(PlayerFeature.PLAY_MEDIA)
-            # there is no way to check if a dlna player support enqueuing
-            # so we simply assume it does and if it doesn't
-            # you'll find out at playback time and we log a warning
-            supported_features.add(PlayerFeature.ENQUEUE)
-            supported_features.add(PlayerFeature.GAPLESS_PLAYBACK)
-
-        if self.device.has_volume_level:
-            supported_features.add(PlayerFeature.VOLUME_SET)
-        if self.device.has_volume_mute:
-            supported_features.add(PlayerFeature.VOLUME_MUTE)
-        if self.device.has_pause:
-            supported_features.add(PlayerFeature.PAUSE)
-        self._attr_supported_features = supported_features
-
     async def setup(self) -> bool:
-        """Set up player in MA.
+        """
+        Set up player in MA.
 
         :return: True if setup was successful, False if device should be ignored.
         """
@@ -247,85 +123,6 @@ class DLNAPlayer(Player):
         self.set_static_attributes()
         await self.mass.players.register_or_update(self)
         return True
-
-    async def _is_sonos_passive_speaker(self) -> bool:
-        """Check if this is a Sonos passive stereo pair speaker.
-
-        Queries the device's own topology. If that returns 403, the device is
-        considered passive (passive satellites and speakers with UPnP disabled
-        block topology queries). If successful, checks for Invisible="1" attribute.
-        """
-        if not self.device:
-            return False
-
-        manufacturer = (self.device.manufacturer or "").lower()
-        if "sonos" not in manufacturer:
-            return False
-
-        # Extract base UUID (strip "uuid:" prefix and "_MR" suffix)
-        our_uuid = self.player_id.removeprefix("uuid:").removesuffix("_MR")
-
-        # Query this device's topology
-        upnp_device = self.device.profile_device.root_device
-        result = await self._check_invisible_in_topology(upnp_device, our_uuid)
-
-        # Return the result: True if passive/403, False if active or check failed
-        return result if result is not None else False
-
-    async def _check_invisible_in_topology(
-        self, upnp_device: UpnpDevice, our_uuid: str
-    ) -> bool | None:
-        """Check if our UUID is marked as Invisible in the topology.
-
-        :param upnp_device: UPnP device to query
-        :param our_uuid: Our device UUID to search for
-        :return: True if invisible/403 error, False if visible, None if check failed
-        """
-        zone_topology_service = None
-        for service in upnp_device.all_services:
-            if "ZoneGroupTopology" in service.service_type:
-                zone_topology_service = service
-                break
-
-        if not zone_topology_service:
-            return None
-
-        try:
-            action = zone_topology_service.action("GetZoneGroupState")
-            if not action:
-                return None
-
-            result = await action.async_call()
-            zone_group_state_xml = result.get("ZoneGroupState", "")
-            if not zone_group_state_xml:
-                return None
-
-            root = DefusedET.fromstring(zone_group_state_xml)
-            for member in root.iter("ZoneGroupMember"):
-                if member.get("UUID", "").upper() == our_uuid.upper():
-                    return str(member.get("Invisible", "0")) == "1"
-
-        except UpnpResponseError as err:
-            # 403 Forbidden indicates passive satellite (blocks topology queries)
-            if "403" in str(err):
-                self.logger.debug(
-                    "Sonos device %s returned 403 - treating as passive satellite",
-                    our_uuid,
-                )
-                return True
-            self.logger.log(
-                VERBOSE_LOG_LEVEL,
-                "Error checking Sonos zone topology: %s",
-                err,
-            )
-        except (UpnpError, DefusedET.ParseError) as err:
-            self.logger.log(
-                VERBOSE_LOG_LEVEL,
-                "Error checking Sonos zone topology: %s",
-                err,
-            )
-
-        return None
 
     def set_static_attributes(self) -> None:
         """Set static attributes."""
@@ -381,28 +178,6 @@ class DLNAPlayer(Player):
                 self._attr_elapsed_time_last_updated = (
                     self.device.media_position_updated_at.timestamp()
                 )
-
-    def _get_playback_state(self) -> PlaybackState | None:
-        """Return current PlaybackState of the player."""
-        if self.device is None:
-            return None
-        if self.device.transport_state is None:
-            return PlaybackState.IDLE
-        if self.device.transport_state in (
-            TransportState.PLAYING,
-            TransportState.TRANSITIONING,
-        ):
-            return PlaybackState.PLAYING
-        if self.device.transport_state in (
-            TransportState.PAUSED_PLAYBACK,
-            TransportState.PAUSED_RECORDING,
-        ):
-            return PlaybackState.PAUSED
-        if self.device.transport_state == TransportState.VENDOR_DEFINED:
-            # Unable to map this state to anything reasonable, fallback to idle
-            return PlaybackState.IDLE
-
-        return PlaybackState.IDLE
 
     async def get_config_entries(
         self,
@@ -520,26 +295,6 @@ class DLNAPlayer(Player):
         await self.device.async_mute_volume(muted)
         await self._poll_volume_state()
 
-    async def _poll_volume_state(self) -> None:
-        """Poll the device for current volume/mute state and update player.
-
-        Some DLNA devices don't send RenderingControl events for
-        volume/mute changes initiated via UPnP actions, and the library
-        skips polling RC state variables when subscribed to events.
-        This forces a targeted poll to keep state in sync.
-        """
-        if not self.device:
-            return
-        actions: list[str] = []
-        if self.device.has_volume_level:
-            actions.append("GetVolume")
-        if self.device.has_volume_mute:
-            actions.append("GetMute")
-        if not actions:
-            return
-        await self.device._async_poll_state_variables("RC", actions, InstanceID=0, Channel="Master")
-        await self._update_player()
-
     async def poll(self) -> None:
         """Poll player for state updates."""
         # try to reconnect the device if the connection was lost
@@ -578,6 +333,258 @@ class DLNAPlayer(Player):
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
         await self._device_disconnect()
+
+    async def _device_connect(self) -> None:
+        """Connect DLNA/DMR Device."""
+        self.logger.debug("Connecting to device at %s", self.description_url)
+
+        async with self.lock:
+            if self.device:
+                self.logger.debug("Trying to connect when device already connected")
+                return
+
+            # Connect to the base UPNP device
+            if TYPE_CHECKING:
+                assert isinstance(self.provider, DLNAPlayerProvider)  # for type checking
+            upnp_device = await self.provider.upnp_factory.async_create_device(self.description_url)
+
+            # Create profile wrapper
+            self.device = DmrDevice(upnp_device, self.provider.notify_server.event_handler)
+
+            # Subscribe to event notifications
+            try:
+                self.device.on_event = self._handle_event
+                await self.device.async_subscribe_services(auto_resubscribe=True)
+            except UpnpResponseError as err:
+                # Device rejected subscription request. This is OK, variables
+                # will be polled instead.
+                self.logger.debug("Device rejected subscription: %r", err)
+            except UpnpError as err:
+                # Don't leave the device half-constructed
+                self.device.on_event = None
+                self.device = None
+                self.logger.debug("Error while subscribing during device connect: %r", err)
+                raise
+            else:
+                # connect was successful, update device info
+                self._attr_device_info = DeviceInfo(
+                    model=self.device.model_name,
+                    manufacturer=self.device.manufacturer,
+                )
+                # Add UDN (player_id) as UUID identifier for matching with other protocols
+                # Strip the "uuid:" prefix if present for proper matching
+                uuid_value = self.player_id
+                if uuid_value.lower().startswith("uuid:"):
+                    uuid_value = uuid_value[5:]
+                self._attr_device_info.add_identifier(IdentifierType.UUID, uuid_value)
+                # MAC address is NOT extracted from UUID because the last 12 chars
+                # of UPnP UUIDs are unreliable — many devices put random/model
+                # values there, not the real hardware MAC. Instead, the player
+                # controller resolves the real MAC via ARP during registration
+                # using the IP address extracted below.
+                # Try to extract just the IP from the URL for matching
+                ip_address = self.device.device.presentation_url or self.description_url
+                with suppress(ValueError):
+                    parsed = urlparse(ip_address)
+                    if parsed.hostname:
+                        self._attr_device_info.add_identifier(
+                            IdentifierType.IP_ADDRESS, parsed.hostname
+                        )
+
+    def _handle_event(
+        self,
+        service: UpnpService,
+        state_variables: Sequence[UpnpStateVariable[Any]],
+    ) -> None:
+        """Handle state variable(s) changed event from DLNA device."""
+        if not state_variables:
+            # Indicates a failure to resubscribe, check if device is still available
+            self.force_poll = True
+            return
+        if service.service_id == "urn:upnp-org:serviceId:AVTransport":
+            for state_variable in state_variables:
+                # Force a state refresh when player begins or pauses playback
+                # to update the position info.
+                if state_variable.name == "TransportState" and state_variable.value in (
+                    TransportState.PLAYING,
+                    TransportState.PAUSED_PLAYBACK,
+                ):
+                    self.force_poll = True
+                    self.mass.create_task(self.poll())
+                    self.logger.log(
+                        VERBOSE_LOG_LEVEL,
+                        "Received new state from event for Player %s: %s",
+                        self.display_name,
+                        state_variable.value,
+                    )
+        self.last_seen = time.time()
+        self.mass.create_task(self._update_player())
+
+    async def _update_player(self) -> None:
+        """Update DLNA Player."""
+        prev_url = self._attr_current_media.uri if self._attr_current_media is not None else ""
+        prev_state = self.state
+        await self.set_dynamic_attributes()
+        current_url = self._attr_current_media.uri if self._attr_current_media is not None else ""
+        current_state = self.state
+
+        if (prev_url != current_url) or (prev_state != current_state):
+            # fetch track details on state or url change
+            self.force_poll = True
+
+        try:
+            self.update_state()
+        except KeyError, TypeError:
+            # at start the update might come faster than the config is initialized
+            await asyncio.sleep(2)
+            self.update_state()
+
+    def _set_player_features(self) -> None:
+        """Set Player Features based on config values and capabilities."""
+        assert self.device is not None  # for type checking
+        supported_features: set[PlayerFeature] = set()
+
+        # Only add PLAY_MEDIA if the device actually supports playback
+        # Passive speakers (like stereo pair satellites) don't have play capability
+        if self.device.has_play_media:
+            supported_features.add(PlayerFeature.PLAY_MEDIA)
+            # there is no way to check if a dlna player support enqueuing
+            # so we simply assume it does and if it doesn't
+            # you'll find out at playback time and we log a warning
+            supported_features.add(PlayerFeature.ENQUEUE)
+            supported_features.add(PlayerFeature.GAPLESS_PLAYBACK)
+
+        if self.device.has_volume_level:
+            supported_features.add(PlayerFeature.VOLUME_SET)
+        if self.device.has_volume_mute:
+            supported_features.add(PlayerFeature.VOLUME_MUTE)
+        if self.device.has_pause:
+            supported_features.add(PlayerFeature.PAUSE)
+        self._attr_supported_features = supported_features
+
+    async def _is_sonos_passive_speaker(self) -> bool:
+        """
+        Check if this is a Sonos passive stereo pair speaker.
+
+        Queries the device's own topology. If that returns 403, the device is
+        considered passive (passive satellites and speakers with UPnP disabled
+        block topology queries). If successful, checks for Invisible="1" attribute.
+        """
+        if not self.device:
+            return False
+
+        manufacturer = (self.device.manufacturer or "").lower()
+        if "sonos" not in manufacturer:
+            return False
+
+        # Extract base UUID (strip "uuid:" prefix and "_MR" suffix)
+        our_uuid = self.player_id.removeprefix("uuid:").removesuffix("_MR")
+
+        # Query this device's topology
+        upnp_device = self.device.profile_device.root_device
+        result = await self._check_invisible_in_topology(upnp_device, our_uuid)
+
+        # Return the result: True if passive/403, False if active or check failed
+        return result if result is not None else False
+
+    async def _check_invisible_in_topology(
+        self, upnp_device: UpnpDevice, our_uuid: str
+    ) -> bool | None:
+        """
+        Check if our UUID is marked as Invisible in the topology.
+
+        :param upnp_device: UPnP device to query
+        :param our_uuid: Our device UUID to search for
+        :return: True if invisible/403 error, False if visible, None if check failed
+        """
+        zone_topology_service = None
+        for service in upnp_device.all_services:
+            if "ZoneGroupTopology" in service.service_type:
+                zone_topology_service = service
+                break
+
+        if not zone_topology_service:
+            return None
+
+        try:
+            action = zone_topology_service.action("GetZoneGroupState")
+            if not action:
+                return None
+
+            result = await action.async_call()
+            zone_group_state_xml = result.get("ZoneGroupState", "")
+            if not zone_group_state_xml:
+                return None
+
+            root = DefusedET.fromstring(zone_group_state_xml)
+            for member in root.iter("ZoneGroupMember"):
+                if member.get("UUID", "").upper() == our_uuid.upper():
+                    return str(member.get("Invisible", "0")) == "1"
+
+        except UpnpResponseError as err:
+            # 403 Forbidden indicates passive satellite (blocks topology queries)
+            if "403" in str(err):
+                self.logger.debug(
+                    "Sonos device %s returned 403 - treating as passive satellite",
+                    our_uuid,
+                )
+                return True
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Error checking Sonos zone topology: %s",
+                err,
+            )
+        except (UpnpError, DefusedET.ParseError) as err:
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Error checking Sonos zone topology: %s",
+                err,
+            )
+
+        return None
+
+    def _get_playback_state(self) -> PlaybackState | None:
+        """Return current PlaybackState of the player."""
+        if self.device is None:
+            return None
+        if self.device.transport_state is None:
+            return PlaybackState.IDLE
+        if self.device.transport_state in (
+            TransportState.PLAYING,
+            TransportState.TRANSITIONING,
+        ):
+            return PlaybackState.PLAYING
+        if self.device.transport_state in (
+            TransportState.PAUSED_PLAYBACK,
+            TransportState.PAUSED_RECORDING,
+        ):
+            return PlaybackState.PAUSED
+        if self.device.transport_state == TransportState.VENDOR_DEFINED:
+            # Unable to map this state to anything reasonable, fallback to idle
+            return PlaybackState.IDLE
+
+        return PlaybackState.IDLE
+
+    async def _poll_volume_state(self) -> None:
+        """
+        Poll the device for current volume/mute state and update player.
+
+        Some DLNA devices don't send RenderingControl events for
+        volume/mute changes initiated via UPnP actions, and the library
+        skips polling RC state variables when subscribed to events.
+        This forces a targeted poll to keep state in sync.
+        """
+        if not self.device:
+            return
+        actions: list[str] = []
+        if self.device.has_volume_level:
+            actions.append("GetVolume")
+        if self.device.has_volume_mute:
+            actions.append("GetMute")
+        if not actions:
+            return
+        await self.device._async_poll_state_variables("RC", actions, InstanceID=0, Channel="Master")
+        await self._update_player()
 
     async def _device_disconnect(self) -> None:
         """Destroy connections to the device."""

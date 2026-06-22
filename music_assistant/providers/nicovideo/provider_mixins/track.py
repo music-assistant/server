@@ -50,8 +50,9 @@ class NicovideoMusicProviderTrackMixin(NicovideoMusicProviderMixinBase):
     @override
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Get audio stream with dynamic playlist generation for optimized seeking.
+    ) -> AsyncGenerator[bytes]:
+        """
+        Get audio stream with dynamic playlist generation for optimized seeking.
 
         Args:
             streamdetails: Stream details containing domand_bid and parsed_playlist in data field

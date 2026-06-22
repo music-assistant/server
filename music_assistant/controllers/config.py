@@ -8,6 +8,7 @@ import contextlib
 import logging
 import os
 from copy import deepcopy
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, overload
 from uuid import uuid4
 
@@ -22,6 +23,7 @@ from music_assistant_models.config_entries import (
     ConfigValueType,
     CoreConfig,
     PlayerConfig,
+    PlayerQueueConfig,
     ProviderConfig,
 )
 from music_assistant_models.constants import (
@@ -32,20 +34,31 @@ from music_assistant_models.constants import (
 from music_assistant_models.dsp import DSPConfig, DSPConfigPreset
 from music_assistant_models.enums import (
     ConfigEntryType,
+    CrossfadeMode,
     EventType,
+    PlaybackState,
     PlayerFeature,
     PlayerType,
     ProviderFeature,
+    ProviderStatus,
     ProviderType,
 )
 from music_assistant_models.errors import (
     ActionUnavailable,
+    AuthenticationFailed,
+    AuthenticationRequired,
     InvalidDataError,
+    LoginFailed,
     UnsupportedFeaturedException,
+    UnsupportedSystemError,
+)
+from music_assistant_models.errors import (
+    InvalidToken as InvalidTokenError,
 )
 
 from music_assistant.constants import (
     CONF_CORE,
+    CONF_CROSSFADE_MODE,
     CONF_ENABLED,
     CONF_ENTRY_ANNOUNCE_VOLUME,
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
@@ -56,6 +69,7 @@ from music_assistant.constants import (
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_ENABLE_ICY_METADATA,
     CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_FLOW_MODE_SAMPLE_RATE,
     CONF_ENTRY_HTTP_PROFILE,
     CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS,
     CONF_ENTRY_LIBRARY_SYNC_ALBUMS,
@@ -73,18 +87,19 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_CHANNELS,
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_OUTPUT_LIMITER,
+    CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
     CONF_ENTRY_SAMPLE_RATES,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_ENTRY_VOLUME_NORMALIZATION,
-    CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_HIDE_IN_UI,
     CONF_MUTE_CONTROL,
     CONF_ONBOARD_DONE,
     CONF_PLAYER_DSP,
     CONF_PLAYER_DSP_PRESETS,
+    CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
     CONF_POWER_CONTROL,
     CONF_PRE_ANNOUNCE_CHIME_URL,
@@ -95,17 +110,13 @@ from music_assistant.constants import (
     CONF_SERVER_ID,
     CONF_SMART_FADES_MODE,
     CONF_VOLUME_CONTROL,
+    CONF_VOLUME_NORMALIZATION_TARGET,
     CONFIGURABLE_CORE_CONTROLLERS,
     DEFAULT_CORE_CONFIG_ENTRIES,
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
     ENCRYPT_SUFFIX,
     NON_HTTP_PROVIDERS,
     PLAYER_CONTROL_PROTOCOL,
-)
-from music_assistant.controllers.streams.constants import (
-    CONF_BUFFER_SIZE,
-    CONF_BUFFER_SIZE_DEFAULT,
-    BufferSize,
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, async_json_dumps, async_json_loads
@@ -125,12 +136,66 @@ DEFAULT_SAVE_DELAY = 5
 
 BASE_KEYS = ("enabled", "name", "available", "default_name", "provider", "type")
 
+# owner namespace for per-queue config entry strings (controllers/player_queues/strings.json)
+PLAYER_QUEUE_CONFIG_OWNER = "core.player_queues"
+
 # TypeVar for config value type inference
 _ConfigValueT = TypeVar("_ConfigValueT", bound=ConfigValueType)
 
 isfile = wrap(os.path.isfile)
 remove = wrap(os.remove)
 rename = wrap(os.rename)
+
+
+def _with_translation_owner(
+    entries: list[ConfigEntry],
+    owner: str,
+    action: str | None,
+    values: dict[str, ConfigValueType] | None,
+) -> list[ConfigEntry]:
+    """
+    Return copies of the entries stamped with the owner namespace used to resolve their strings.
+
+    During an action flow (action + values present) the current value is also populated from the
+    passed values.
+    """
+    populate = action is not None and values is not None
+    result: list[ConfigEntry] = []
+    for entry in entries:
+        # replace() returns a copy so we never mutate the shared (often module-level) entry defs.
+        # An entry that already declares an owner (e.g. an injected protocol entry that belongs to
+        # its origin provider, not the host player) keeps it; everything else gets the passed owner.
+        copied = replace(entry, translation_owner=entry.translation_owner or owner)
+        if populate and values is not None and copied.value is None:
+            copied.value = values.get(copied.key, copied.default_value)
+        result.append(copied)
+    return result
+
+
+_AUTH_ERROR_CODES = frozenset(
+    {
+        AuthenticationRequired.error_code,
+        AuthenticationFailed.error_code,
+        LoginFailed.error_code,
+        InvalidTokenError.error_code,
+    }
+)
+
+
+def _provider_status(conf: ProviderConfig, is_loaded: bool) -> ProviderStatus:
+    """Derive the (lifecycle) status of a provider from its config and load state."""
+    if not conf.enabled:
+        return ProviderStatus.DISABLED
+    if is_loaded:
+        # runtime (un)availability of a loaded provider is conveyed via ProviderInstance.available
+        return ProviderStatus.LOADED
+    if conf.last_error is not None:
+        if conf.last_error.error_code in _AUTH_ERROR_CODES:
+            return ProviderStatus.AUTH_REQUIRED
+        if conf.last_error.error_code == UnsupportedSystemError.error_code:
+            return ProviderStatus.INCOMPATIBLE
+        return ProviderStatus.ERROR
+    return ProviderStatus.LOADING
 
 
 class ConfigController:
@@ -266,16 +331,26 @@ class ConfigController:
         """Return all known provider configurations, optionally filtered by ProviderType."""
         raw_values = self.get(CONF_PROVIDERS, {})
         prov_entries = {x.domain for x in self.mass.get_provider_manifests()}
-        return [
-            await self.get_provider_config(prov_conf["instance_id"])
-            if include_values
-            else cast("ProviderConfig", ProviderConfig.parse([], prov_conf))
-            for prov_conf in raw_values.values()
-            if (provider_type is None or prov_conf["type"] == provider_type)
-            and (provider_domain is None or prov_conf["domain"] == provider_domain)
+        configs: list[ProviderConfig] = []
+        for prov_conf in raw_values.values():
+            if provider_type is not None and prov_conf["type"] != provider_type:
+                continue
+            if provider_domain is not None and prov_conf["domain"] != provider_domain:
+                continue
             # guard for deleted providers
-            and prov_conf["domain"] in prov_entries
-        ]
+            if prov_conf["domain"] not in prov_entries:
+                continue
+            if include_values:
+                # get_provider_config already stamps the derived status
+                configs.append(await self.get_provider_config(prov_conf["instance_id"]))
+                continue
+            conf = cast("ProviderConfig", ProviderConfig.parse([], prov_conf))
+            is_loaded = (
+                self.mass.get_provider(conf.instance_id, return_unavailable=True) is not None
+            )
+            conf.status = _provider_status(conf, is_loaded)
+            configs.append(conf)
+        return configs
 
     @api_command("config/providers/get")
     async def get_provider_config(self, instance_id: str) -> ProviderConfig:
@@ -292,7 +367,10 @@ class ConfigController:
             else:
                 msg = f"Unknown provider domain: {raw_conf['domain']}"
                 raise KeyError(msg)
-            return cast("ProviderConfig", ProviderConfig.parse(config_entries, raw_conf))
+            conf = cast("ProviderConfig", ProviderConfig.parse(config_entries, raw_conf))
+            is_loaded = self.mass.get_provider(instance_id, return_unavailable=True) is not None
+            conf.status = _provider_status(conf, is_loaded)
+            return conf
         msg = f"No config found for provider id {instance_id}"
         raise KeyError(msg)
 
@@ -451,15 +529,7 @@ class ConfigController:
                 self.mass, instance_id=instance_id, action=action, values=values
             ),
         ]
-        if action and values is not None:
-            # set current value from passed values for config entries
-            # only do this if we're passed values (e.g. during an action)
-            # deepcopy here to avoid modifying original entries
-            all_entries = [deepcopy(entry) for entry in all_entries]
-            for entry in all_entries:
-                if entry.value is None:
-                    entry.value = values.get(entry.key, entry.default_value)
-        return all_entries
+        return _with_translation_owner(all_entries, f"provider.{provider_domain}", action, values)
 
     @api_command("config/providers/save", required_role="admin")
     async def save_provider_config(
@@ -506,9 +576,11 @@ class ConfigController:
                     continue
                 self.mass.players.delete_player_config(player.player_id)
             # cleanup remaining player configs
-            for player_conf in list(self.get(CONF_PLAYERS, {}).values()):
-                if player_conf["provider"] == instance_id:
-                    self.remove(f"{CONF_PLAYERS}/{player_conf['player_id']}")
+            for key, player_conf in list(self.get(CONF_PLAYERS, {}).items()):
+                if not isinstance(player_conf, dict):
+                    continue
+                if player_conf.get("provider") == instance_id:
+                    self.remove(f"{CONF_PLAYERS}/{player_conf.get('player_id') or key}")
 
     async def remove_provider_config_value(self, instance_id: str, key: str) -> None:
         """Remove/reset single Provider config value."""
@@ -533,9 +605,16 @@ class ConfigController:
     ) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider id."""
         result: list[PlayerConfig] = []
-        for raw_conf in list(self.get(CONF_PLAYERS, {}).values()):
+        for key, raw_conf in list(self.get(CONF_PLAYERS, {}).items()):
+            # guard against malformed entries that lost their base keys
+            # (can happen via race between delete_player_config and a stale player
+            # update writing back a nested sub-key, which recreates a partial dict).
+            if not isinstance(raw_conf, dict) or "player_id" not in raw_conf:
+                LOGGER.warning("Removing malformed player config entry %s (missing player_id)", key)
+                self.remove(f"{CONF_PLAYERS}/{key}")
+                continue
             # optional provider filter
-            if provider is not None and raw_conf["provider"] != provider:
+            if provider is not None and raw_conf.get("provider") != provider:
                 continue
             # filter out unavailable players
             # (unless disabled, otherwise there is no way to re-enable them)
@@ -574,6 +653,13 @@ class ConfigController:
         raw_conf: dict[str, Any]
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             raw_conf = deepcopy(raw_conf)
+            # protocol-prefixed entries are virtual mirrors of the linked protocol player's own
+            # config (the canonical store). Drop any that linger in this player's persisted values
+            # so a stale copy can never shadow the protocol player's current value; the live values
+            # are merged back in from the protocol player(s) below.
+            if stored_values := raw_conf.get("values"):
+                for key in [key for key in stored_values if CONF_PROTOCOL_KEY_SPLITTER in key]:
+                    del stored_values[key]
             if player := self.mass.players.get_player(player_id, False):
                 raw_conf["default_name"] = player.state.name
                 raw_conf["provider"] = player.provider.instance_id
@@ -589,9 +675,21 @@ class ConfigController:
                 # handle unavailable player and/or provider
                 config_entries = []
                 raw_conf["available"] = False
-                raw_conf["default_name"] = raw_conf.get("default_name") or raw_conf["player_id"]
+                raw_conf["default_name"] = (
+                    raw_conf.get("default_name") or raw_conf.get("player_id") or player_id
+                )
+                raw_conf.setdefault("player_id", player_id)
 
-            return cast("PlayerConfig", PlayerConfig.parse(config_entries, raw_conf))
+            conf = cast("PlayerConfig", PlayerConfig.parse(config_entries, raw_conf))
+            # parse() stamps every entry with this player's owner; injected protocol entries
+            # belong to their own protocol provider, so restore that owner for string resolution.
+            for entry in conf.values.values():
+                if CONF_PROTOCOL_KEY_SPLITTER not in entry.key:
+                    continue
+                protocol_player_id = entry.key.split(CONF_PROTOCOL_KEY_SPLITTER, 1)[0]
+                if protocol_player := self.mass.players.get_player(protocol_player_id, False):
+                    entry.translation_owner = protocol_player.translation_owner
+            return conf
         msg = f"No config found for player id {player_id}"
         raise KeyError(msg)
 
@@ -645,15 +743,7 @@ class ConfigController:
             *[x for x in default_entries if x.key not in player_entries_keys],
             *player_entries,
         ]
-        if action and values is not None:
-            # set current value from passed values for config entries
-            # only do this if we're passed values (e.g. during an action)
-            # deepcopy here to avoid modifying original entries
-            all_entries = [deepcopy(entry) for entry in all_entries]
-            for entry in all_entries:
-                if entry.value is None:
-                    entry.value = values.get(entry.key, entry.default_value)
-        return all_entries
+        return _with_translation_owner(all_entries, f"provider.{player.provider}", action, values)
 
     @overload
     async def get_player_config_value(
@@ -806,6 +896,12 @@ class ConfigController:
         for key, value in existing_values.items():
             if key not in new_values and key not in config_entry_keys:
                 new_values[key] = value
+        # never persist protocol-prefixed (virtual) entries on this player; the linked protocol
+        # player is the canonical store (handled by _update_output_protocol_config). Storing a copy
+        # here would shadow the protocol player's value once it is reset back to its default.
+        new_values = {
+            key: value for key, value in new_values.items() if CONF_PROTOCOL_KEY_SPLITTER not in key
+        }
         new_raw["values"] = new_values
         self.set(conf_key, new_raw)
         try:
@@ -850,11 +946,19 @@ class ConfigController:
 
     def set_player_default_name(self, player_id: str, default_name: str) -> None:
         """Set (or update) the default name for a player."""
+        # skip if the player config root no longer exists, otherwise the
+        # nested set would resurrect a partial entry (missing player_id etc).
+        if not self.get(f"{CONF_PLAYERS}/{player_id}"):
+            return
         conf_key = f"{CONF_PLAYERS}/{player_id}/default_name"
         self.set(conf_key, default_name)
 
     def set_player_type(self, player_id: str, player_type: PlayerType) -> None:
         """Set (or update) the type for a player."""
+        # skip if the player config root no longer exists, otherwise the
+        # nested set would resurrect a partial entry (missing player_id etc).
+        if not self.get(f"{CONF_PLAYERS}/{player_id}"):
+            return
         conf_key = f"{CONF_PLAYERS}/{player_id}/player_type"
         self.set(conf_key, player_type)
 
@@ -901,6 +1005,89 @@ class ConfigController:
             default_conf_raw,
         )
 
+    @api_command("config/player_queues")
+    def get_player_queue_configs(self) -> list[PlayerQueueConfig]:
+        """Return all (stored) queue configurations."""
+        return [
+            self._parse_player_queue_config(queue_id, raw_conf)
+            for queue_id, raw_conf in list(self.get(CONF_PLAYER_QUEUES, {}).items())
+        ]
+
+    @api_command("config/player_queues/get")
+    def get_player_queue_config(self, queue_id: str) -> PlayerQueueConfig:
+        """Return (full) configuration for a single queue."""
+        raw_conf = self.get(f"{CONF_PLAYER_QUEUES}/{queue_id}") or {"queue_id": queue_id}
+        return self._parse_player_queue_config(queue_id, raw_conf)
+
+    @api_command("config/player_queues/get_entries")
+    def get_player_queue_config_entries(
+        self,
+        queue_id: str,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> list[ConfigEntry]:
+        """Return all Config Entries to configure a queue."""
+        entries = self.mass.player_queues.get_queue_config_entries()
+        return _with_translation_owner(entries, PLAYER_QUEUE_CONFIG_OWNER, action, values)
+
+    @api_command("config/player_queues/get_value")
+    def get_player_queue_config_value(self, queue_id: str, key: str) -> ConfigValueType:
+        """Return single config(entry) value for a queue."""
+        return self.get_player_queue_config(queue_id).get_value(key)
+
+    if TYPE_CHECKING:
+
+        @overload
+        def get_raw_player_queue_config_value(
+            self, queue_id: str, key: str, default: _ConfigValueT
+        ) -> _ConfigValueT: ...
+
+        @overload
+        def get_raw_player_queue_config_value(
+            self, queue_id: str, key: str, default: None = None
+        ) -> ConfigValueType | None: ...
+
+    def get_raw_player_queue_config_value(
+        self, queue_id: str, key: str, default: ConfigValueType = None
+    ) -> ConfigValueType:
+        """
+        Return (raw) single config(entry) value for a queue.
+
+        Returns the stored value as-is (no validation), or the given default when not stored.
+        """
+        return cast(
+            "ConfigValueType",
+            self.get(f"{CONF_PLAYER_QUEUES}/{queue_id}/values/{key}", default),
+        )
+
+    @api_command("config/player_queues/save", required_role="admin")
+    async def save_player_queue_config(
+        self, queue_id: str, values: dict[str, ConfigValueType]
+    ) -> PlayerQueueConfig:
+        """Save/update PlayerQueueConfig."""
+        config = self.get_player_queue_config(queue_id)
+        changed_keys = config.update(values)
+        conf_key = f"{CONF_PLAYER_QUEUES}/{queue_id}"
+        if not changed_keys and self.get(conf_key) is not None:
+            # no changes
+            return config
+        self.set(conf_key, config.to_raw())
+        if changed_keys and (queue := self.mass.player_queues.get(queue_id)):
+            # refresh derived queue state (e.g. the effective smart-fades indicator) and notify
+            # clients so they don't see a stale value until the next unrelated queue update
+            queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
+            self.mass.player_queues.signal_update(queue_id)
+            # apply immediately: restart playback if a changed setting requires a reload
+            requires_restart = any(
+                v.requires_reload
+                for v in config.values.values()
+                if f"values/{v.key}" in changed_keys
+            )
+            if requires_restart and queue.state == PlaybackState.PLAYING:
+                await self.mass.player_queues.stop(queue_id)
+                self.mass.call_later(1, self.mass.player_queues.resume, queue_id, False)
+        return self.get_player_queue_config(queue_id)
+
     @api_command("config/players/dsp/get")
     def get_player_dsp_config(self, player_id: str) -> DSPConfig:
         """
@@ -926,9 +1113,11 @@ class ConfigController:
         # validate the new config
         config.validate()
 
+        old_dsp_enabled = self.get_player_dsp_config(player_id).enabled
         # Save and apply the new config to the player
         self.set(f"{CONF_PLAYER_DSP}/{player_id}", config.to_dict())
-        await self.mass.players.on_player_dsp_change(player_id)
+        if old_dsp_enabled or config.enabled:
+            await self.mass.players.on_player_dsp_change(player_id)
         # send the dsp config updated event
         self.mass.signal_event(
             EventType.PLAYER_DSP_CONFIG_UPDATED,
@@ -1132,15 +1321,7 @@ class ConfigController:
             await controller.get_config_entries(action=action, values=values)
             + DEFAULT_CORE_CONFIG_ENTRIES
         )
-        if action and values is not None:
-            # set current value from passed values for config entries
-            # only do this if we're passed values (e.g. during an action)
-            # deepcopy here to avoid modifying original entries
-            all_entries = [deepcopy(entry) for entry in all_entries]
-            for entry in all_entries:
-                if entry.value is None:
-                    entry.value = values.get(entry.key, entry.default_value)
-        return all_entries
+        return _with_translation_owner(all_entries, f"core.{domain}", action, values)
 
     @api_command("config/core/save", required_role="admin")
     async def save_core_config(
@@ -1321,6 +1502,14 @@ class ConfigController:
             msg = "Password decryption failed"
             raise InvalidDataError(msg) from err
 
+    def _parse_player_queue_config(
+        self, queue_id: str, raw_conf: dict[str, Any]
+    ) -> PlayerQueueConfig:
+        """Parse a (raw) queue config dict into a PlayerQueueConfig with the current entries."""
+        raw_conf = {**raw_conf, "queue_id": queue_id}
+        entries = self.mass.player_queues.get_queue_config_entries()
+        return cast("PlayerQueueConfig", PlayerQueueConfig.parse(entries, raw_conf))
+
     async def _load(self) -> None:
         """Load data from persistent storage."""
         assert not self._data, "Already loaded"
@@ -1350,6 +1539,27 @@ class ConfigController:
             tasks_core_config["domain"] = "tasks"
             LOGGER.warning("Repaired corrupt tasks core configuration")
             changed = True
+
+        # Collapse legacy multi-instance Fully Kiosk provider configs into a single
+        # provider instance with a list of devices (matching the MPD provider pattern).
+        # TODO: remove after 2.10 release
+        if self._migrate_fully_kiosk_multi_instance():
+            changed = True
+        # Migrate default_enqueue_option_radio -> default_enqueue_option_live_sources.
+        # The same setting now covers both radio stations and plugin AudioSources
+        # (Spotify Connect, AirPlay receiver, etc.); preserves the user's customised
+        # value if they set one.
+        # TODO: remove after 2.10 release
+        player_queues_cfg = self._data.get(CONF_CORE, {}).get("player_queues")
+        if isinstance(player_queues_cfg, dict):
+            values = player_queues_cfg.get("values")
+            if isinstance(values, dict) and "default_enqueue_option_radio" in values:
+                radio_value = values.pop("default_enqueue_option_radio")
+                values.setdefault("default_enqueue_option_live_sources", radio_value)
+                LOGGER.info(
+                    "Migrated default_enqueue_option_radio -> default_enqueue_option_live_sources"
+                )
+                changed = True
 
         # Migrate sync_group members_filter (exclusion) -> allowed_members (inclusion).
         # Inversion freezes the universe at migration time; speakers added after this
@@ -1382,8 +1592,212 @@ class ConfigController:
                 )
                 changed = True
 
+        # Drop the persisted schedule for the metadata maintenance tasks that were hardcoded
+        # to run at 04:00 local. They are now registered under new ("_v2") task ids with a
+        # randomized full-day schedule (to avoid spiking the shared MusicBrainz mirror), so the
+        # old persisted state is orphaned and can be removed.
+        # TODO: remove after 2.9 release
+        if self._migrate_metadata_maintenance_schedule():
+            changed = True
+
+        # TODO: remove after 2.10 release
+        if self._migrate_volume_normalization_target():
+            changed = True
+
+        # Move queue-scoped settings (crossfade duration, volume normalization) from the per-player
+        # config to the new per-queue config (queue_id == player_id, so the id maps 1:1).
+        # TODO: remove after 2.11 release
+        if self._migrate_player_queue_settings():
+            changed = True
+
         if changed:
             await self._async_save()
+
+    def _migrate_player_queue_settings(self) -> bool:
+        """Move queue-scoped settings from the per-player config to the per-queue config."""
+        moved_keys = (
+            CONF_ENTRY_CROSSFADE_DURATION.key,
+            CONF_ENTRY_VOLUME_NORMALIZATION.key,
+        )
+        all_player_configs = self._data.get(CONF_PLAYERS, {})
+        if not isinstance(all_player_configs, dict):
+            return False
+        changed = False
+        for player_id, player_cfg in all_player_configs.items():
+            if not isinstance(player_cfg, dict):
+                continue
+            player_values = player_cfg.get("values")
+            if not isinstance(player_values, dict):
+                continue
+            to_move = {key: player_values[key] for key in moved_keys if key in player_values}
+            # the legacy smart_fades_mode encoded both on/off and standard-vs-smart; the on/off is
+            # now a runtime queue toggle, and standard/smart carries over to the crossfade_mode
+            # select ("disabled" just means crossfade is off -> nothing to carry). Consume the key.
+            legacy_mode = player_values.pop(CONF_SMART_FADES_MODE, None)
+            migrated_mode = (
+                legacy_mode
+                if legacy_mode in (CrossfadeMode.STANDARD_CROSSFADE, CrossfadeMode.SMART_CROSSFADE)
+                else None
+            )
+            if not to_move and legacy_mode is None:
+                continue
+            if to_move or migrated_mode is not None:
+                queue_cfg = self._data.setdefault(CONF_PLAYER_QUEUES, {}).setdefault(
+                    player_id, {"queue_id": player_id}
+                )
+                queue_values = queue_cfg.setdefault("values", {})
+                for key, value in to_move.items():
+                    # don't clobber an existing queue value if one was already stored
+                    queue_values.setdefault(key, value)
+                    del player_values[key]
+                if migrated_mode is not None:
+                    queue_values.setdefault(CONF_CROSSFADE_MODE, migrated_mode)
+            LOGGER.info("Migrated queue settings for %s", player_id)
+            changed = True
+        return changed
+
+    def _migrate_volume_normalization_target(self) -> bool:
+        """
+        Migrate volume_normalization_target from per-player to the global streams setting.
+
+        Collects all explicitly stored per-player values; if they all agree on a single value,
+        that value is promoted to the streams core config so the user's preference is preserved.
+        """
+        all_player_configs = self._data.get(CONF_PLAYERS, {})
+        if not isinstance(all_player_configs, dict):
+            return False
+        per_player_values: set[int] = set()
+        for player_cfg in all_player_configs.values():
+            if not isinstance(player_cfg, dict):
+                continue
+            values = player_cfg.get("values")
+            if not isinstance(values, dict):
+                continue
+            if CONF_VOLUME_NORMALIZATION_TARGET in values:
+                per_player_values.add(int(values[CONF_VOLUME_NORMALIZATION_TARGET]))
+
+        if not per_player_values:
+            return False
+
+        streams_core = self._data.setdefault(CONF_CORE, {}).setdefault("streams", {})
+        streams_values = streams_core.setdefault("values", {})
+        # only promote when not already globally configured
+        if CONF_VOLUME_NORMALIZATION_TARGET not in streams_values:
+            # single consistent value across all players → promote it; mixed → use new default
+            promoted = per_player_values.pop() if len(per_player_values) == 1 else None
+            if promoted is not None:
+                streams_values[CONF_VOLUME_NORMALIZATION_TARGET] = promoted
+                LOGGER.info(
+                    "Promoted volume_normalization_target %s LUFS to global streams setting",
+                    promoted,
+                )
+
+        for player_id, player_cfg in all_player_configs.items():
+            if not isinstance(player_cfg, dict):
+                continue
+            values = player_cfg.get("values")
+            if not isinstance(values, dict):
+                continue
+            if CONF_VOLUME_NORMALIZATION_TARGET in values:
+                del values[CONF_VOLUME_NORMALIZATION_TARGET]
+                LOGGER.info(
+                    "Removed per-player volume_normalization_target for player %s",
+                    player_id,
+                )
+        return True
+
+    def _migrate_metadata_maintenance_schedule(self) -> bool:
+        """Remove the orphaned persisted state for the pre-randomization metadata task ids."""
+        core_config = self._data.get(CONF_CORE)
+        if not isinstance(core_config, dict):
+            return False
+        tasks_config = core_config.get("tasks")
+        if not isinstance(tasks_config, dict):
+            return False
+        task_states = tasks_config.get("scheduled_task_states")
+        if not isinstance(task_states, dict):
+            return False
+        legacy_task_ids = (
+            "metadata_missing_artist_metadata_scan",
+            "metadata_playlist_metadata_scan",
+            "metadata_thumb_cache_cleanup",
+        )
+        removed = [task_id for task_id in legacy_task_ids if task_id in task_states]
+        for task_id in removed:
+            del task_states[task_id]
+        if removed:
+            LOGGER.info("Removed orphaned metadata maintenance schedule state for %s", removed)
+        return bool(removed)
+
+    def _migrate_fully_kiosk_multi_instance(self) -> bool:
+        """Collapse legacy multi-instance Fully Kiosk configs into a single provider instance."""
+        providers = self._data.get(CONF_PROVIDERS, {})
+        legacy_ids = [
+            iid
+            for iid, conf in providers.items()
+            if isinstance(conf, dict)
+            and conf.get("domain") == "fully_kiosk"
+            and iid != "fully_kiosk"
+        ]
+        if not legacy_ids:
+            return False
+
+        ip_entries: list[str] = []
+        players = self._data.setdefault(CONF_PLAYERS, {})
+        for iid in legacy_ids:
+            old_values = providers[iid].get("values") or {}
+            host = old_values.get("ip_address")
+            if not host:
+                del providers[iid]
+                continue
+            try:
+                port = int(old_values.get("port") or 2323)
+            except TypeError, ValueError:
+                port = 2323
+            entry = host if port == 2323 else f"{host}:{port}"
+            if entry not in ip_entries:
+                ip_entries.append(entry)
+
+            new_player_id = f"fully_kiosk_{host}_{port}"
+            player_conf = players.setdefault(
+                new_player_id,
+                {
+                    "player_id": new_player_id,
+                    "provider": "fully_kiosk",
+                    "enabled": True,
+                    "values": {},
+                },
+            )
+            player_values = player_conf.setdefault("values", {})
+            for key in ("password", "use_ssl", "verify_ssl", "ssl_fingerprint"):
+                if old_values.get(key) is not None and key not in player_values:
+                    player_values[key] = old_values[key]
+
+            del providers[iid]
+
+        if "fully_kiosk" in providers:
+            existing_values = providers["fully_kiosk"].setdefault("values", {})
+            existing_ips = list(existing_values.get("manual_discovery_ip_addresses") or [])
+            for entry in ip_entries:
+                if entry not in existing_ips:
+                    existing_ips.append(entry)
+            existing_values["manual_discovery_ip_addresses"] = existing_ips
+        else:
+            providers["fully_kiosk"] = {
+                "type": "player",
+                "domain": "fully_kiosk",
+                "instance_id": "fully_kiosk",
+                "enabled": True,
+                "values": {"manual_discovery_ip_addresses": ip_entries},
+            }
+
+        LOGGER.warning(
+            "Migrated %d legacy Fully Kiosk provider instance(s) into a single instance. "
+            "Devices and their passwords have been preserved, but any Fully Kiosk player "
+            "that was part of a universal group will need to be re-added to it. ",
+            len(legacy_ids),
+        )
+        return True
 
     async def _async_save(self) -> None:
         """Save persistent data to disk."""
@@ -1478,9 +1892,11 @@ class ConfigController:
         else:
             msg = f"Unknown provider domain: {provider_domain}"
             raise KeyError(msg)
-        if prov.depends_on and not self.mass.get_provider(prov.depends_on):
-            msg = f"Provider {manifest.name} depends on {prov.depends_on}"
-            raise ValueError(msg)
+        if prov.depends_on:
+            dep_configs = await self.get_provider_configs(provider_domain=prov.depends_on)
+            if not any(dep_conf.enabled for dep_conf in dep_configs):
+                msg = f"Provider {manifest.name} depends on {prov.depends_on}"
+                raise ValueError(msg)
         # create new provider config with given values
         existing = {
             x.instance_id for x in await self.get_provider_configs(provider_domain=provider_domain)
@@ -1568,14 +1984,17 @@ class ConfigController:
             if is_http_based_player_protocol:
                 # for http based players we can add the http streaming related entries
                 default_entries += [
-                    CONF_ENTRY_SAMPLE_RATES,
                     CONF_ENTRY_OUTPUT_CODEC,
                     CONF_ENTRY_HTTP_PROFILE,
                     CONF_ENTRY_ENABLE_ICY_METADATA,
                 ]
+                # only inject the sample-rates config when the player can't declare its rates itself
+                if not player.declares_supported_sample_rates:
+                    default_entries.append(CONF_ENTRY_SAMPLE_RATES)
                 # add flow mode entry for http-based players that do not already enforce it
                 if not player.requires_flow_mode:
                     default_entries.append(CONF_ENTRY_FLOW_MODE)
+                default_entries.append(CONF_ENTRY_FLOW_MODE_SAMPLE_RATE)
         if PlayerFeature.GAPLESS_PLAYBACK in player.supported_features:
             default_entries.append(CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES)
         # request player specific entries
@@ -1600,48 +2019,15 @@ class ConfigController:
 
         # some base entries for all player types
         # note that these may NOT be playback/audio related
-        buffer_size = self.get_raw_core_config_value(
-            "streams", CONF_BUFFER_SIZE, CONF_BUFFER_SIZE_DEFAULT
-        )
-        # smart crossfade needs a larger buffer for beat analysis
-        smart_fades_options = [
-            ConfigValueOption("Disabled", "disabled"),
-            ConfigValueOption("Standard Crossfade", "standard_crossfade"),
-        ]
-        if buffer_size != BufferSize.MINIMAL:
-            smart_fades_options.insert(1, ConfigValueOption("Smart Crossfade", "smart_crossfade"))
-
         entries += [
-            ConfigEntry(
-                key=CONF_SMART_FADES_MODE,
-                type=ConfigEntryType.STRING,
-                label="Enable Smart Fades",
-                options=smart_fades_options,
-                default_value="disabled",
-                description="Select the crossfade mode to use when transitioning "
-                "between tracks.\n\n"
-                "- 'Smart Crossfade': Uses beat matching and EQ filters to create "
-                "smooth transitions between tracks.\n"
-                "- 'Standard Crossfade': Regular crossfade that crossfades the "
-                "last/first x-seconds of a track.",
-                category="playback",
-                requires_reload=True,
-            ),
-            CONF_ENTRY_CROSSFADE_DURATION,
-            # we allow volume normalization/output limiter here as it is a per-queue(player) setting
-            CONF_ENTRY_VOLUME_NORMALIZATION,
+            # the output limiter is applied per-player in the output filter chain (DSP stage), so
+            # unlike the other playback settings (crossfade/volume normalization) which moved to the
+            # queue config, it stays a player setting
             CONF_ENTRY_OUTPUT_LIMITER,
-            CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
             CONF_ENTRY_TTS_PRE_ANNOUNCE,
             ConfigEntry(
                 key=CONF_PRE_ANNOUNCE_CHIME_URL,
                 type=ConfigEntryType.STRING,
-                label="Custom (pre)announcement chime URL",
-                description="URL to a custom audio file to play before announcements.\n"
-                "Leave empty to use the default chime.\n"
-                "Supports http:// and https:// URLs pointing to "
-                "audio files (.mp3, .wav, .flac, .ogg, .m4a, .aac).\n"
-                "Example: http://homeassistant.local:8123/local/audio/custom_chime.mp3",
                 category="announcements",
                 required=False,
                 depends_on=CONF_ENTRY_TTS_PRE_ANNOUNCE.key,
@@ -1654,11 +2040,6 @@ class ConfigController:
             ConfigEntry(
                 key=CONF_HIDE_IN_UI,
                 type=ConfigEntryType.BOOLEAN,
-                label="Hide this player in the user interface",
-                description="Hide this player from the main players list and dashboard selection "
-                "menus.  The player remains fully controllable and still appears in any sync group "
-                "it currently belongs to and in the settings. Disable the player to exclude "
-                "it everywhere.",
                 default_value=player.hidden_by_default,
                 category="generic",
                 advanced=False,
@@ -1667,9 +2048,6 @@ class ConfigController:
             ConfigEntry(
                 key=CONF_EXPOSE_PLAYER_TO_HA,
                 type=ConfigEntryType.BOOLEAN,
-                label="Expose this player to Home Assistant",
-                description="Expose this player to the Home Assistant integration. \n"
-                "If disabled, this player will not be imported into Home Assistant.",
                 category="generic",
                 advanced=False,
                 default_value=player.expose_to_ha_by_default,
@@ -1689,35 +2067,36 @@ class ConfigController:
             CONF_ENTRY_ANNOUNCE_VOLUME,
             CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
             CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
+            # play_media-on-self preference (only relevant to non-group players)
+            CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
         ]
         return entries
 
     def _create_player_control_config_entries(self, player: Player) -> list[ConfigEntry]:
         """Create config entries for player controls."""
+        is_group = player.state.type == PlayerType.GROUP
         all_controls = self.mass.players.player_controls()
         power_controls = [x for x in all_controls if x.supports_power]
         volume_controls = [x for x in all_controls if x.supports_volume]
         mute_controls = [x for x in all_controls if x.supports_mute]
-        auto_option = ConfigValueOption(
-            title="Auto-select (based on active/preferred protocol)", value=PLAYER_CONTROL_PROTOCOL
-        )
+        auto_option = ConfigValueOption(PLAYER_CONTROL_PROTOCOL)
         # work out player supported features
         power_options: list[ConfigValueOption] = []
         if player.supports_feature(PlayerFeature.POWER):
             power_options.append(
-                ConfigValueOption(title="Native power control", value=PLAYER_CONTROL_NATIVE),
+                ConfigValueOption(PLAYER_CONTROL_NATIVE),
             )
         volume_options: list[ConfigValueOption] = []
         has_native_volume_control = False
         if player.supports_feature(PlayerFeature.VOLUME_SET):
             has_native_volume_control = True
             volume_options.append(
-                ConfigValueOption(title="Native volume control", value=PLAYER_CONTROL_NATIVE),
+                ConfigValueOption(PLAYER_CONTROL_NATIVE),
             )
         mute_options: list[ConfigValueOption] = []
         if player.supports_feature(PlayerFeature.VOLUME_MUTE):
             mute_options.append(
-                ConfigValueOption(title="Native mute control", value=PLAYER_CONTROL_NATIVE),
+                ConfigValueOption(PLAYER_CONTROL_NATIVE),
             )
         # add player protocols as volume controls if native player has no volume control
         for linked_protocol in player.linked_output_protocols:
@@ -1734,8 +2113,7 @@ class ConfigController:
                     # even if the protocol player is not the active protocol
                     volume_options.append(
                         ConfigValueOption(
-                            title=protocol_player.provider.name,
-                            value=protocol_player.player_id,
+                            protocol_player.player_id, title=protocol_player.provider.name
                         )
                     )
             if protocol_player.supports_feature(PlayerFeature.VOLUME_MUTE):
@@ -1746,24 +2124,21 @@ class ConfigController:
                     # even if the protocol player is not the active protocol
                     mute_options.append(
                         ConfigValueOption(
-                            title=protocol_player.provider.name,
-                            value=protocol_player.player_id,
+                            protocol_player.player_id, title=protocol_player.provider.name
                         )
                     )
 
         # append none+fake options
         power_options += [
-            ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
-            ConfigValueOption(title="Fake power control", value=PLAYER_CONTROL_FAKE),
+            ConfigValueOption(PLAYER_CONTROL_NONE),
+            ConfigValueOption(PLAYER_CONTROL_FAKE),
         ]
         volume_options += [
-            ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE),
+            ConfigValueOption(PLAYER_CONTROL_NONE),
         ]
-        mute_options.append(ConfigValueOption(title="None", value=PLAYER_CONTROL_NONE))
+        mute_options.append(ConfigValueOption(PLAYER_CONTROL_NONE))
         if player.supports_feature(PlayerFeature.VOLUME_SET):
-            mute_options.append(
-                ConfigValueOption(title="Fake mute control", value=PLAYER_CONTROL_FAKE)
-            )
+            mute_options.append(ConfigValueOption(PLAYER_CONTROL_FAKE))
 
         # return final config entries for all options
         return [
@@ -1771,12 +2146,11 @@ class ConfigController:
             ConfigEntry(
                 key=CONF_POWER_CONTROL,
                 type=ConfigEntryType.STRING,
-                label="Power Control",
                 default_value=power_options[0].value if power_options else PLAYER_CONTROL_NONE,
                 required=False,
                 options=[
                     *power_options,
-                    *(ConfigValueOption(x.name, x.id) for x in power_controls),
+                    *(ConfigValueOption(x.id, title=x.name) for x in power_controls),
                 ],
                 category="player_controls",
             ),
@@ -1784,12 +2158,11 @@ class ConfigController:
             ConfigEntry(
                 key=CONF_VOLUME_CONTROL,
                 type=ConfigEntryType.STRING,
-                label="Volume Control",
                 default_value=volume_options[0].value if volume_options else PLAYER_CONTROL_NONE,
                 required=True,
                 options=[
                     *volume_options,
-                    *(ConfigValueOption(x.name, x.id) for x in volume_controls),
+                    *(ConfigValueOption(x.id, title=x.name) for x in volume_controls),
                 ],
                 category="player_controls",
             ),
@@ -1797,20 +2170,22 @@ class ConfigController:
             ConfigEntry(
                 key=CONF_MUTE_CONTROL,
                 type=ConfigEntryType.STRING,
-                label="Mute Control",
                 default_value=mute_options[0].value if mute_options else PLAYER_CONTROL_NONE,
                 required=True,
                 options=[
                     *mute_options,
-                    *[ConfigValueOption(x.name, x.id) for x in mute_controls],
+                    *[ConfigValueOption(x.id, title=x.name) for x in mute_controls],
                 ],
                 category="player_controls",
             ),
             # Volume limit entries
             CONF_ENTRY_MIN_VOLUME,
             CONF_ENTRY_MAX_VOLUME,
-            # auto-play on power on control config entry
-            CONF_ENTRY_AUTO_PLAY,
+            # auto-play on power on — only meaningful for individual players.
+            # For group players, power on/off is purely a "capture members"
+            # toggle (Fake control) and auto-starting playback there causes
+            # surprise playback when the user just wanted to pin the group.
+            *([] if is_group else [CONF_ENTRY_AUTO_PLAY]),
         ]
 
     async def _create_output_protocol_config_entries(  # noqa: PLR0915
@@ -1844,21 +2219,19 @@ class ConfigController:
                 # otherwise use the protocol output id (=player id)
                 title = f"{protocol_name} (native)" if protocol.is_native else protocol_name
                 value = "native" if protocol.is_native else protocol.output_protocol_id
-                options.append(ConfigValueOption(title=title, value=value))
+                options.append(ConfigValueOption(value, title=title))
                 has_native = has_native or protocol.is_native
 
         if has_native:
             default_value = "native"
         else:
             default_value = "auto"
-            options.append(ConfigValueOption(title="Auto-select", value="auto"))
+            options.append(ConfigValueOption("auto"))
 
         all_entries.append(
             ConfigEntry(
                 key=CONF_PREFERRED_OUTPUT_PROTOCOL,
                 type=ConfigEntryType.STRING,
-                label="Preferred Output Protocol",
-                description="Select the preferred protocol for audio playback to this device.",
                 default_value=default_value,
                 required=True,
                 options=options,
@@ -1885,14 +2258,14 @@ class ConfigController:
             protocol_prefix = f"{protocol.output_protocol_id}{CONF_PROTOCOL_KEY_SPLITTER}"
             protocol_enabled_key = f"{protocol_prefix}enabled"
             protocol_category = f"{CONF_PROTOCOL_CATEGORY_PREFIX}_{domain}"
-            category_translation_key = "settings.category.protocol_output_settings"
+            category_translation_key = "protocol_output_settings"
             if not protocol.is_native:
                 all_entries.append(
                     ConfigEntry(
                         key=protocol_enabled_key,
                         type=ConfigEntryType.BOOLEAN,
-                        label="Enable",
-                        description="Enable or disable this output protocol for the player.",
+                        # the key is per-protocol (dynamic), so pin a static catalog key
+                        translation_key="protocol_enable",
                         value=protocol_player_enabled,
                         default_value=True,
                         category=protocol_category,
@@ -1940,6 +2313,11 @@ class ConfigController:
                     entry.category = protocol_category
                     entry.category_translation_key = category_translation_key
                     entry.category_translation_params = [protocol_name]
+                    # the key gets prefixed below to avoid collisions; pin the catalog key to the
+                    # original (bare) slug and the protocol's own provider so the label still
+                    # resolves against provider.<domain>.config_entries.<original_key>
+                    entry.translation_key = entry.translation_key or entry.key
+                    entry.translation_owner = protocol_player.translation_owner
                     entry.key = f"{protocol_prefix}{entry.key}"
                     entry.depends_on = None if protocol.is_native else protocol_enabled_key
                     entry.action = f"{protocol_prefix}{entry.action}" if entry.action else None

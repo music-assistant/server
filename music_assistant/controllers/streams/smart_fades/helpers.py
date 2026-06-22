@@ -8,13 +8,57 @@ import numpy.typing as npt
 # Buffer size in seconds for crossfade analysis
 SMART_CROSSFADE_DURATION = 45
 
+# Below this many seconds of audible tail, a smart crossfade is pointless;
+# the caller should fall back to a standard fade (which strips silence).
+MIN_EFFECTIVE_FADE_BUFFER = 10.0
+
+
+def detect_effective_audio_end(
+    rms_energy: npt.NDArray[np.float32] | None,
+    track_duration: float | None,
+    buffer_duration: float,
+) -> float:
+    """
+    Return the buffer-local time where the outgoing track's audible content ends.
+
+    Returns ``buffer_duration`` when no usable energy data exists or there is no
+    trailing silence, and ``0.0`` when the entire tail is silent.
+
+    :param rms_energy: Peak-normalized RMS energy bins spanning the full track.
+    :param track_duration: Full track duration in seconds.
+    :param buffer_duration: Length in seconds of the fade-out holdback buffer.
+    """
+    if (
+        rms_energy is None
+        or not track_duration
+        or len(rms_energy) < 2
+        or not np.any(np.isfinite(rms_energy))
+    ):
+        return buffer_duration
+    bin_duration = track_duration / len(rms_energy)
+    start_bin = max(0, int((track_duration - buffer_duration) / bin_duration))
+    tail = rms_energy[start_bin:]
+    # floor relative to sustained track energy, so hiss/noise tails count as
+    # silence but intentionally quiet outros do not
+    sustained = rms_energy[rms_energy > 0.01]
+    floor = max(0.02, 0.05 * float(np.median(sustained))) if len(sustained) else 0.02
+    audible = np.nonzero(tail > floor)[0]
+    if len(audible) == 0:
+        return 0.0
+    return min(
+        float((start_bin + audible[-1] + 1) * bin_duration)
+        - max(0.0, track_duration - buffer_duration),
+        buffer_duration,
+    )
+
 
 def extrapolate_downbeats(
     downbeats: npt.NDArray[np.float32],
     buffer_size: float = SMART_CROSSFADE_DURATION,
     bpm: float | None = None,
 ) -> npt.NDArray[np.float32]:
-    """Extrapolate downbeats based on actual intervals when detection is incomplete.
+    """
+    Extrapolate downbeats based on actual intervals when detection is incomplete.
 
     This is needed when we want to perform beat alignment in an 'atmospheric' outro
     that does not have any detected downbeats.
@@ -95,7 +139,8 @@ def compute_gradual_tempo_steps(
     downbeats: npt.NDArray[np.float32],
     max_step_pct: float = 0.005,
 ) -> list[tuple[float, float]]:
-    """Compute S-curve tempo steps aligned to downbeats.
+    """
+    Compute S-curve tempo steps aligned to downbeats.
 
     :param start_ratio: Starting tempo ratio (e.g., 1.0).
     :param end_ratio: Target tempo ratio (e.g., 1.05).
@@ -156,7 +201,8 @@ def generate_synthetic_timestamps(
     bpm: float,
     n_min: int = 4,
 ) -> npt.NDArray[np.float32]:
-    """Generate evenly-spaced synthetic timing points for gradual stretch.
+    """
+    Generate evenly-spaced synthetic timing points for gradual stretch.
 
     Used when real beat/downbeat detection provides fewer than 2 timestamps
     in the stretch window.

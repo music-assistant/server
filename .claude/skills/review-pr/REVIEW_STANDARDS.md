@@ -28,7 +28,11 @@ When the PR adds a new provider (new files under `music_assistant/providers/`), 
 | Plugin | `_demo_plugin_provider` |
 | Audio analysis | `_demo_audio_analysis_provider` |
 
-Flag any deviations from the requirements and patterns outlined in the demo provider as `[PROBLEM]` or `[CRITICAL]` depending on severity.
+- Flag any deviations from the requirements and patterns outlined in the demo provider as `[PROBLEM]` or `[CRITICAL]` depending on severity.
+- Provider icons (e.g. icon.svg) are allowed to be 5KB max. If larger, flag as a critical.
+
+## Project standards
+Respect the project standards as outlined in CLAUDE.md. Any deviations must be raised as `[PROBLEM]`.
 
 ## Helper Function Reuse
 

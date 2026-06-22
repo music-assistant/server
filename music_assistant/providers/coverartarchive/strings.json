@@ -1,0 +1,5 @@
+{
+  "manifest": {
+    "description": "Provides album artwork from the Cover Art Archive, the official artwork repository for MusicBrainz."
+  }
+}

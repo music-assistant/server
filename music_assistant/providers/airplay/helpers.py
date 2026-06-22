@@ -36,7 +36,8 @@ NTP_EPOCH_DELTA = 0x83AA7E80  # 2208988800 seconds
 
 
 async def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
-    """Resolve best local interface IP for cliraop's -if argument.
+    """
+    Resolve best local interface IP for cliraop's -if argument.
 
     :param mass: The MusicAssistant instance.
     :param target_ip: The IP address of the target AirPlay device.
@@ -190,7 +191,8 @@ def is_apple_device(manufacturer: str, model: str) -> bool:
 
 
 async def get_cli_binary(protocol: StreamingProtocol) -> str:
-    """Find the correct raop/airplay binary belonging to the platform.
+    """
+    Find the correct raop/airplay binary belonging to the platform.
 
     Args:
         protocol: The streaming protocol (RAOP or AIRPLAY2)

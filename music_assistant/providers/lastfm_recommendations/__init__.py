@@ -18,11 +18,15 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     ResourceTemporarilyUnavailable,
 )
+from music_assistant_models.media_items import Track
 
 from music_assistant.constants import CONF_USERNAME
+from music_assistant.controllers.cache import use_cache
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.providers.lastfm_recommendations.api_client import LastFMAPIClient
 from music_assistant.providers.lastfm_recommendations.constants import (
+    CACHE_CATEGORY_RESOLVED_ITEMS,
+    CACHE_EXPIRATION_SECONDS,
     CONF_ACTION_CLEAR_CACHE,
     CONF_API_KEY,
     CONF_ENABLE_GENRE,
@@ -39,7 +43,7 @@ from music_assistant.providers.lastfm_recommendations.recommendations import (
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.media_items import Artist, RecommendationFolder, Track
+    from music_assistant_models.media_items import Artist, RecommendationFolder
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -49,6 +53,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.RECOMMENDATIONS,
     ProviderFeature.SIMILAR_ARTISTS,
     ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.ARTIST_TOPTRACKS,
 }
 
 
@@ -76,81 +81,52 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_API_KEY,
             type=ConfigEntryType.SECURE_STRING,
-            label="Last.fm API Key",
             required=False,
-            description="Optional. Override the built-in API key.",
             value=values.get(CONF_API_KEY) if values else None,
             advanced=True,
         ),
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Last.fm Username",
             required=False,
-            description="Your Last.fm username for genre-based recommendations (optional)",
             value=values.get(CONF_USERNAME) if values else None,
         ),
         ConfigEntry(
             key=CONF_ENABLE_PERSONALIZED,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable Personalized Recommendations",
             default_value=False,
-            description=(
-                "Provide 'Similar Artists' and 'Similar Tracks' rows based on your "
-                "listening history"
-            ),
-            category="Recommendations",
+            category="recommendations",
         ),
         ConfigEntry(
             key=CONF_ENABLE_GLOBAL_CHARTS,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable Global Charts",
             default_value=False,
-            description=(
-                "Provide 'Global Top Artists' and 'Global Top Tracks' rows from "
-                "Last.fm's worldwide charts"
-            ),
-            category="Recommendations",
+            category="recommendations",
         ),
         ConfigEntry(
             key=CONF_ENABLE_GENRE,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable Genre Recommendations",
             default_value=False,
-            description=(
-                "Provide 'Top Artists', 'Top Albums' and 'Top Tracks' rows for your "
-                "most played genre (requires username)"
-            ),
-            category="Recommendations",
+            category="recommendations",
         ),
         ConfigEntry(
             key=CONF_ENABLE_GEO,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable Geographic Charts",
             default_value=False,
-            description=("Provide 'Top Artists' and 'Top Tracks' rows for the selected country"),
-            category="Recommendations",
+            category="recommendations",
         ),
         ConfigEntry(
             key=CONF_GEO_COUNTRY,
             type=ConfigEntryType.STRING,
-            label="Country for Geographic Charts",
             default_value="Argentina",
-            description="Select country for geography-based top artists and tracks",
-            options=[ConfigValueOption(country, country) for country in GEO_COUNTRIES],
-            category="Recommendations",
+            options=[ConfigValueOption(country, title=country) for country in GEO_COUNTRIES],
+            category="recommendations",
         ),
         ConfigEntry(
             key=CONF_ACTION_CLEAR_CACHE,
             type=ConfigEntryType.ACTION,
-            label="Refresh Recommendations",
-            description=(
-                "Rebuild recommendations immediately instead of waiting for the next "
-                "scheduled refresh."
-            ),
             action=CONF_ACTION_CLEAR_CACHE,
-            action_label="Refresh Now",
-            category="Recommendations",
+            category="recommendations",
             advanced=True,
             required=False,
         ),
@@ -167,18 +143,18 @@ class LastFMRecommendationsProvider(MetadataProvider):
 
         self._recommendation_folders: list[RecommendationFolder] = []
 
-        # Register recurring refresh task (default: every 6 hours).
-        # Initial delay of 20s allows streaming providers to finish loading first.
+        # Register recurring refresh task (runs every 6 hours).
         self.mass.tasks.register_scheduled_task(
             task_id=f"{REFRESH_TASK_ID}_{self.instance_id}",
             name="Refresh Last.fm recommendations",
             handler=self._refresh_recommendations,
             schedule=TaskSchedule.hourly(every=6),
-            initial_delay=20,
-            translation_key="background_task.refresh_lastfm_recommendations",
+            translation_key="refresh_lastfm_recommendations",
+            translation_owner=self.translation_owner,
         )
 
         # Populate on every startup so the UI isn't empty until the next scheduled refresh.
+        # Delayed 20s to let streaming providers finish loading first.
         self.mass.call_later(
             20,
             self._refresh_recommendations,
@@ -219,7 +195,8 @@ class LastFMRecommendationsProvider(MetadataProvider):
         return self._recommendation_folders
 
     async def get_similar_artists(self, artist: Artist, limit: int = 25) -> list[Artist]:
-        """Retrieve similar artists from Last.fm.
+        """
+        Retrieve similar artists from Last.fm.
 
         :param artist: The reference artist.
         :param limit: Maximum number of similar artists to return.
@@ -235,7 +212,8 @@ class LastFMRecommendationsProvider(MetadataProvider):
         return [a for a in resolved if a is not None]
 
     async def get_similar_tracks(self, track: Track, limit: int = 25) -> list[Track]:
-        """Retrieve similar tracks from Last.fm.
+        """
+        Retrieve similar tracks from Last.fm.
 
         :param track: The reference track.
         :param limit: Maximum number of similar tracks to return.
@@ -250,3 +228,41 @@ class LastFMRecommendationsProvider(MetadataProvider):
             *[self.recommendations_manager.get_or_resolve_track(raw) for raw in similar_raw]
         )
         return [t for t in resolved if t is not None]
+
+    async def get_artist_toptracks(self, artist: Artist, limit: int = 25) -> list[Track]:
+        """
+        Retrieve an artist's top tracks from Last.fm.
+
+        :param artist: The reference artist.
+        :param limit: Maximum number of top tracks to return.
+        """
+        artist_mbid = artist.get_external_id(ExternalID.MB_ARTIST)
+        return await self._get_artist_toptracks(artist.name, artist_mbid, limit)
+
+    @use_cache(
+        CACHE_EXPIRATION_SECONDS,
+        category=CACHE_CATEGORY_RESOLVED_ITEMS,
+        allow_expired_cache=True,
+    )
+    async def _get_artist_toptracks(
+        self, artist_name: str, artist_mbid: str | None, limit: int
+    ) -> list[Track]:
+        """Fetch and resolve an artist's top tracks, keyed by name/mbid for caching."""
+        top_raw = await self.api.get_artist_top_tracks(artist_name, artist_mbid, limit)
+        if not top_raw:
+            return []
+
+        # Tolerate individual resolution failures (e.g. a rate-limited lookup) so one bad
+        # track can't sink the whole listing.
+        resolved = await asyncio.gather(
+            *[self.recommendations_manager.get_or_resolve_track(raw) for raw in top_raw],
+            return_exceptions=True,
+        )
+        tracks = [t for t in resolved if isinstance(t, Track)]
+        self.logger.debug(
+            "Resolved %d/%d top tracks to playable items for '%s'",
+            len(tracks),
+            len(top_raw),
+            artist_name,
+        )
+        return tracks

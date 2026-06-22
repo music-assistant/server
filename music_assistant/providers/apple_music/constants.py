@@ -2,7 +2,7 @@
 
 from music_assistant_models.enums import ProviderFeature
 
-from music_assistant.helpers.app_vars import app_var
+from music_assistant.helpers.app_vars import app_var  # type: ignore[attr-defined]
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -37,3 +37,4 @@ CONF_MUSIC_USER_MANUAL_TOKEN = "music_user_manual_token"
 CONF_MUSIC_USER_TOKEN_TIMESTAMP = "music_user_token_timestamp"
 CACHE_CATEGORY_DECRYPT_KEY = 1
 MAX_ARTWORK_DIMENSION = 1000
+BLOBSTORE_DOMAIN = "blobstore.apple.com"

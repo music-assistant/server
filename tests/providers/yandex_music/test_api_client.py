@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
 import re
 import time
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any, cast
 from unittest import mock
 
@@ -24,10 +26,19 @@ from music_assistant.providers.yandex_music.api_client import (
     GET_FILE_INFO_CODECS,
     YandexMusicClient,
 )
+from music_assistant.providers.yandex_music.constants import (
+    CAPTCHA_COOLDOWN_LADDER_S,
+    INITIAL_SYNC_JITTER_S,
+    INITIAL_SYNC_WINDOW_S,
+    RESTRICTIVE_GLOBAL_CONCURRENCY,
+    THROTTLE_DEFAULT_RPS,
+    THROTTLE_METADATA_RPS,
+)
 
 
 def _make_client() -> tuple[YandexMusicClient, mock.AsyncMock]:
-    """Create a YandexMusicClient with a mocked underlying ClientAsync.
+    """
+    Create a YandexMusicClient with a mocked underlying ClientAsync.
 
     Also mocks connect() so that _reconnect() restores the mock client
     instead of trying to create a real connection.
@@ -228,7 +239,8 @@ def _patch_get_tracks(client: YandexMusicClient, tracks: list[object]) -> mock.A
 
 
 def _call_args(m: mock.AsyncMock) -> tuple[tuple[Any, ...], Mapping[str, Any]]:
-    """Return (args, kwargs) from the most recent await on ``m``.
+    """
+    Return (args, kwargs) from the most recent await on ``m``.
 
     Raises AssertionError when the mock was never awaited — intentionally
     surfacing missed setup rather than letting mypy's `None is not iterable`
@@ -425,7 +437,8 @@ async def test_rotor_session_feedback_like_uses_trackid_without_seconds() -> Non
 
 
 async def test_rotor_session_request_maps_unauthorized_to_login_failed() -> None:
-    """Expired/invalid token during /rotor/session/* surfaces as LoginFailed.
+    """
+    Expired/invalid token during /rotor/session/* surfaces as LoginFailed.
 
     Without this mapping the raw ``UnauthorizedError`` from the MarshalX
     client would bubble up through browse / play paths and crash the
@@ -573,7 +586,8 @@ async def test_get_artist_about_returns_none_on_network_error() -> None:
 
 
 def test_lrc_regex_matches_valid_synced_lyrics() -> None:
-    """LRC regex matches valid synced lyrics with proper format [mm:ss.xx].
+    """
+    LRC regex matches valid synced lyrics with proper format [mm:ss.xx].
 
     Uses re.search (no ^ anchor) matching the implementation in api_client.py,
     which intentionally allows timestamps anywhere in the text so that LRC
@@ -745,7 +759,8 @@ async def test_get_dashboard_stations_returns_personalized_stations() -> None:
 
 
 async def test_get_track_file_info_parses_camelcase_download_info() -> None:
-    """get_track_file_info parses the v3-style camelCase ``downloadInfo`` key.
+    """
+    get_track_file_info parses the v3-style camelCase ``downloadInfo`` key.
 
     The yandex-music v3 client no longer recursively normalises camelCase keys
     inside ``Response.result``. The raw JSON for /get-file-info comes back as
@@ -869,15 +884,15 @@ def test_truncate_err_msg_caps_long_html() -> None:
 # -- captcha vs plain 429 in _call_with_retry ---------------------------------
 
 
-async def test_call_with_retry_captcha_raises_with_600s_backoff() -> None:
-    """Captcha response triggers a 600s cooldown and the HTML body is truncated out."""
+async def test_call_with_retry_captcha_raises_with_first_strike_backoff() -> None:
+    """Captcha response triggers a 15s cooldown on first strike and the HTML body is truncated out."""
     client, underlying = _make_client()
     underlying.tracks = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
 
     with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
         await client.get_tracks(["42"])
 
-    assert exc_info.value.backoff_time == 600
+    assert exc_info.value.backoff_time == 15
     # The "default" kind owns c.tracks() — block deadline must be set.
     assert client._block_until["default"] > 0
     # The other kinds must remain untouched.
@@ -977,7 +992,8 @@ async def test_bypass_throttler_bypasses_block() -> None:
 
 
 async def test_captcha_during_bypass_still_engages_block() -> None:
-    """Captcha received during a BYPASS_THROTTLER call must still quarantine the kind.
+    """
+    Captcha received during a BYPASS_THROTTLER call must still quarantine the kind.
 
     Stream URL refresh runs under BYPASS_THROTTLER to keep an in-flight track
     alive — but if Yandex returns smart-captcha on that very refresh, we DO
@@ -1002,7 +1018,7 @@ async def test_captcha_during_bypass_still_engages_block() -> None:
 
     assert result is None
     # The block must have been engaged despite the bypass.
-    assert client._block_until["file_info"] > time.monotonic() + 500
+    assert client._block_until["file_info"] > time.monotonic() + 10
     # Other kinds remain free.
     assert client._block_until["default"] == 0.0
     assert client._block_until["rotor"] == 0.0
@@ -1078,7 +1094,8 @@ async def test_file_info_cache_hit_skips_network() -> None:
 
 
 async def test_file_info_cache_separates_entries_by_codecs() -> None:
-    """Different codec preference lists must NOT share a cache slot.
+    """
+    Different codec preference lists must NOT share a cache slot.
 
     Yandex picks the codec (and download URL) based on the codec order, so a
     cached response for codecs="flac-mp4,flac" must not be reused when the
@@ -1205,7 +1222,8 @@ async def test_file_info_cache_lru_eviction(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 async def test_check_block_runs_again_after_throttler_acquire() -> None:
-    """A concurrent request that passed the pre-check must bail after acquire().
+    """
+    A concurrent request that passed the pre-check must bail after acquire().
 
     Without the post-acquire re-check, requests already queued in the
     throttler when another request engages the cooldown would proceed to
@@ -1231,7 +1249,8 @@ async def test_check_block_runs_again_after_throttler_acquire() -> None:
 
 
 async def test_rotor_feedback_no_retry_propagates_429_to_engage_block() -> None:
-    """Rotor session feedback (with_retry=False) must propagate 429s.
+    """
+    Rotor session feedback (with_retry=False) must propagate 429s.
 
     The inner `_do` swallows ordinary NetworkErrors for fire-and-forget
     paths, but a captcha 429 must reach `_call_no_retry` so the rotor
@@ -1254,15 +1273,16 @@ async def test_rotor_feedback_no_retry_propagates_429_to_engage_block() -> None:
 
     # Feedback is fire-and-forget — caller gets False, no raise.
     assert result is False
-    # But the rotor cooldown MUST have been engaged.
-    assert client._block_until["rotor"] > time.monotonic() + 500
+    # But the rotor cooldown MUST have been engaged (first-strike: 60s).
+    assert client._block_until["rotor"] > time.monotonic() + 10
     # Other kinds untouched.
     assert client._block_until["default"] == 0.0
     assert client._block_until["file_info"] == 0.0
 
 
 async def test_retry_path_classifies_captcha_after_reconnect() -> None:
-    """A captcha 429 on the reconnect-retry attempt must engage the block.
+    """
+    A captcha 429 on the reconnect-retry attempt must engage the block.
 
     Without classification on the retry, the raw NetworkError propagates
     with the full HTML body and the kind cooldown is never set.
@@ -1280,10 +1300,10 @@ async def test_retry_path_classifies_captcha_after_reconnect() -> None:
     with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
         await client.get_tracks(["42"])
 
-    # Should have backed off for the captcha cooldown duration, not 60s.
-    assert exc_info.value.backoff_time == 600
+    # Should have backed off for the first-strike captcha cooldown.
+    assert exc_info.value.backoff_time == 15
     # Block engaged on default kind.
-    assert client._block_until["default"] > time.monotonic() + 500
+    assert client._block_until["default"] > time.monotonic() + 10
     # Both attempts ran (connection error + retry).
     assert underlying.tracks.await_count == 2
     # The HTML body must be truncated in the chain, not propagated raw.
@@ -1293,7 +1313,8 @@ async def test_retry_path_classifies_captcha_after_reconnect() -> None:
 
 
 async def test_retry_path_re_checks_block_before_retry() -> None:
-    """A retry after reconnect must re-check the per-kind block.
+    """
+    A retry after reconnect must re-check the per-kind block.
 
     Another concurrent task may engage the cooldown while the reconnect is
     in flight; without a re-check, the retry would still hit Yandex during
@@ -1319,7 +1340,8 @@ async def test_retry_path_re_checks_block_before_retry() -> None:
 
 
 async def test_file_info_cache_hit_blocked_during_cooldown() -> None:
-    """A populated cache must not be served while the file_info kind is blocked.
+    """
+    A populated cache must not be served while the file_info kind is blocked.
 
     Otherwise the streaming layer would happily replay a pre-cooldown URL
     while Yandex is actively rate-limiting our IP/account, defeating the
@@ -1346,7 +1368,8 @@ async def test_file_info_cache_hit_blocked_during_cooldown() -> None:
 
 
 async def test_bypass_refresh_replaces_cached_entry() -> None:
-    """BYPASS_THROTTLER refresh must overwrite the existing cache entry.
+    """
+    BYPASS_THROTTLER refresh must overwrite the existing cache entry.
 
     Otherwise the next non-bypass caller keeps receiving the old URL until
     the TTL expires, even though refresh has just proven that entry stale.
@@ -1385,7 +1408,8 @@ async def test_bypass_refresh_replaces_cached_entry() -> None:
 
 
 async def test_file_info_cache_invalidated_on_unauthorized() -> None:
-    """UnauthorizedError on a refresh must clear the cached entry for the track.
+    """
+    UnauthorizedError on a refresh must clear the cached entry for the track.
 
     Otherwise post-re-auth callers could be served a URL tied to the
     expired session.
@@ -1409,3 +1433,741 @@ async def test_file_info_cache_invalidated_on_unauthorized() -> None:
         BYPASS_THROTTLER.reset(token)
     assert result is None
     assert cache_key not in client._file_info_cache
+
+
+# -- captcha cooldown ladder + decay (#146) -----------------------------------
+
+
+async def test_captcha_first_strike_uses_short_cooldown() -> None:
+    """First captcha strike picks the short rung — empirical Yandex recovery ~15s."""
+    client, underlying = _make_client()
+    underlying.tracks = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
+
+    with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
+        await client.get_tracks(["42"])
+
+    assert exc_info.value.backoff_time == 15
+    assert len(client._captcha_strikes["default"]) == 1
+
+
+async def test_captcha_second_strike_uses_medium_cooldown() -> None:
+    """Second strike in the retention window escalates to 60s."""
+    client, underlying = _make_client()
+    underlying.tracks = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
+
+    # First strike
+    with pytest.raises(ResourceTemporarilyUnavailable):
+        await client.get_tracks(["42"])
+    # Clear the block so the second call is allowed to reach the API and trip again.
+    client._block_until["default"] = 0.0
+
+    with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
+        await client.get_tracks(["42"])
+
+    assert exc_info.value.backoff_time == 60
+    assert len(client._captcha_strikes["default"]) == 2
+
+
+async def test_captcha_third_strike_uses_max_cooldown() -> None:
+    """Third and later strikes cap at 120s."""
+    client, underlying = _make_client()
+    underlying.tracks = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
+
+    for _ in range(2):
+        with pytest.raises(ResourceTemporarilyUnavailable):
+            await client.get_tracks(["42"])
+        client._block_until["default"] = 0.0
+
+    with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
+        await client.get_tracks(["42"])
+
+    assert exc_info.value.backoff_time == 120
+    assert len(client._captcha_strikes["default"]) == 3
+
+
+async def test_captcha_fourth_strike_stays_at_max_cooldown() -> None:
+    """Strikes beyond the ladder length stay capped at the last rung (120s)."""
+    client, underlying = _make_client()
+    underlying.tracks = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
+
+    for _ in range(3):
+        with pytest.raises(ResourceTemporarilyUnavailable):
+            await client.get_tracks(["42"])
+        client._block_until["default"] = 0.0
+
+    with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
+        await client.get_tracks(["42"])
+
+    assert exc_info.value.backoff_time == 120
+
+
+async def test_captcha_strikes_decay_after_retention_window() -> None:
+    """Strikes outside CAPTCHA_STRIKE_RETENTION_S are forgotten — ladder resets."""
+    client, underlying = _make_client()
+    underlying.tracks = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
+
+    # Two strikes in quick succession.
+    with pytest.raises(ResourceTemporarilyUnavailable):
+        await client.get_tracks(["42"])
+    client._block_until["default"] = 0.0
+    with pytest.raises(ResourceTemporarilyUnavailable):
+        await client.get_tracks(["42"])
+    client._block_until["default"] = 0.0
+    assert len(client._captcha_strikes["default"]) == 2
+
+    # Age both strikes past the retention window.
+    aged = time.monotonic() - 3700.0  # > CAPTCHA_STRIKE_RETENTION_S (3600s)
+    client._captcha_strikes["default"].clear()
+    client._captcha_strikes["default"].extend([aged, aged])
+
+    with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
+        await client.get_tracks(["42"])
+
+    # Aged strikes were trimmed; this is a "fresh" first strike again.
+    assert exc_info.value.backoff_time == 15
+    assert len(client._captcha_strikes["default"]) == 1
+
+
+async def test_captcha_strikes_per_kind_isolated() -> None:
+    """A captcha on file_info must not bump the default strike counter."""
+    client, underlying = _make_client()
+    underlying._request = mock.MagicMock()
+    underlying._request.get = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
+    underlying.base_url = "https://api.music.yandex.net"
+
+    # Trip captcha on file_info via the BYPASS_THROTTLER + get_track_file_info path
+    # (which swallows the exception and returns None).
+    token = BYPASS_THROTTLER.set(True)
+    try:
+        result = await client.get_track_file_info("42")
+    finally:
+        BYPASS_THROTTLER.reset(token)
+    assert result is None
+
+    assert len(client._captcha_strikes["file_info"]) == 1
+    assert len(client._captcha_strikes["default"]) == 0
+
+
+# -- metadata throttler kind (#146) -------------------------------------------
+
+
+def test_metadata_kind_uses_separate_throttler() -> None:
+    """`metadata` resolves to a different Throttler than `default`."""
+    client = YandexMusicClient(token=SecretStr("fake_token"))
+    assert client._get_throttler("metadata") is not client._get_throttler("default")
+    assert client._get_throttler("metadata") is not client._get_throttler("file_info")
+    assert client._get_throttler("metadata") is not client._get_throttler("rotor")
+
+
+async def test_metadata_captcha_does_not_block_default() -> None:
+    """A captcha-driven `metadata` block must not stop `default` calls."""
+    client, underlying = _make_client()
+    client._block_until["metadata"] = time.monotonic() + 600
+
+    underlying.tracks = mock.AsyncMock(return_value=[])
+    await client.get_tracks(["1"])
+    underlying.tracks.assert_awaited()
+
+
+async def test_default_captcha_does_not_block_metadata() -> None:
+    """A captcha-driven `default` block must not stop `metadata` calls."""
+    client, underlying = _make_client()
+    client._block_until["default"] = time.monotonic() + 600
+
+    underlying.artists = mock.AsyncMock(return_value=[mock.MagicMock()])
+    result = await client.get_artist("42")
+    assert result is not None
+    underlying.artists.assert_awaited()
+
+
+@pytest.mark.parametrize(
+    ("method_name", "underlying_attr", "underlying_return", "call_args"),
+    [
+        ("get_album", "albums", [mock.MagicMock()], ("42",)),
+        (
+            "get_album_with_tracks",
+            "albums_with_tracks",
+            mock.MagicMock(),
+            ("42",),
+        ),
+        ("get_artist", "artists", [mock.MagicMock()], ("42",)),
+        (
+            "get_artist_albums",
+            "artists_direct_albums",
+            mock.MagicMock(albums=[mock.MagicMock()]),
+            ("42",),
+        ),
+        ("get_artist_about", "artists_about", mock.MagicMock(), ("42",)),
+        (
+            "get_artist_tracks",
+            "artists_tracks",
+            mock.MagicMock(tracks=[mock.MagicMock()]),
+            ("42",),
+        ),
+    ],
+)
+async def test_metadata_methods_use_metadata_throttler(
+    method_name: str,
+    underlying_attr: str,
+    underlying_return: Any,
+    call_args: tuple[str, ...],
+) -> None:
+    """Each metadata-refresh method must acquire the metadata throttler."""
+    client, underlying = _make_client()
+    setattr(underlying, underlying_attr, mock.AsyncMock(return_value=underlying_return))
+
+    method = getattr(client, method_name)
+    await method(*call_args)
+
+    metadata_throttler = cast("mock.AsyncMock", client._throttlers["metadata"])
+    default_throttler = cast("mock.AsyncMock", client._throttlers["default"])
+    metadata_throttler.acquire.assert_awaited()
+    default_throttler.acquire.assert_not_awaited()
+
+
+# -- initial-sync jitter window (#146) ----------------------------------------
+
+
+async def test_jitter_applied_for_default_within_initial_sync_window() -> None:
+    """`default` calls within INITIAL_SYNC_WINDOW_S get a positive jitter delay."""
+    client, underlying = _make_client()
+    client._connected_at = time.monotonic()  # window is currently active
+    underlying.tracks = mock.AsyncMock(return_value=[])
+
+    with (
+        mock.patch(
+            "music_assistant.providers.yandex_music.api_client.random.uniform",
+            return_value=0.25,
+        ),
+        mock.patch(
+            "music_assistant.providers.yandex_music.api_client.asyncio.sleep",
+            new_callable=mock.AsyncMock,
+        ) as sleep_mock,
+    ):
+        await client.get_tracks(["1"])
+
+    sleep_mock.assert_awaited()
+    assert sleep_mock.await_args is not None
+    delay = sleep_mock.await_args.args[0]
+    assert 0.0 <= delay <= 0.5  # INITIAL_SYNC_JITTER_S = 0.5
+
+
+async def test_jitter_applied_for_metadata_within_initial_sync_window() -> None:
+    """`metadata` calls within INITIAL_SYNC_WINDOW_S get a positive jitter delay."""
+    client, underlying = _make_client()
+    client._connected_at = time.monotonic()
+    underlying.artists = mock.AsyncMock(return_value=[mock.MagicMock()])
+
+    with (
+        mock.patch(
+            "music_assistant.providers.yandex_music.api_client.random.uniform",
+            return_value=0.25,
+        ),
+        mock.patch(
+            "music_assistant.providers.yandex_music.api_client.asyncio.sleep",
+            new_callable=mock.AsyncMock,
+        ) as sleep_mock,
+    ):
+        await client.get_artist("1")
+
+    sleep_mock.assert_awaited()
+
+
+async def test_jitter_skipped_after_initial_sync_window() -> None:
+    """Outside INITIAL_SYNC_WINDOW_S the helper is a no-op."""
+    client, underlying = _make_client()
+    # Connected 120s ago — well past the 60s window.
+    client._connected_at = time.monotonic() - 120.0
+    underlying.tracks = mock.AsyncMock(return_value=[])
+
+    with mock.patch(
+        "music_assistant.providers.yandex_music.api_client.asyncio.sleep",
+        new_callable=mock.AsyncMock,
+    ) as sleep_mock:
+        await client.get_tracks(["1"])
+
+    sleep_mock.assert_not_awaited()
+
+
+async def test_jitter_skipped_when_never_connected() -> None:
+    """If _connected_at is None (no successful connect yet), jitter is skipped."""
+    client, underlying = _make_client()
+    client._connected_at = None
+    underlying.tracks = mock.AsyncMock(return_value=[])
+
+    with mock.patch(
+        "music_assistant.providers.yandex_music.api_client.asyncio.sleep",
+        new_callable=mock.AsyncMock,
+    ) as sleep_mock:
+        await client.get_tracks(["1"])
+
+    sleep_mock.assert_not_awaited()
+
+
+async def test_jitter_skipped_for_file_info_kind() -> None:
+    """file_info is on the streaming hot path — jitter must never apply."""
+    client, underlying = _make_client()
+    client._connected_at = time.monotonic()  # window active
+    raw_response = {
+        "downloadInfo": {
+            "url": "https://example.com/x",
+            "codec": "flac-mp4",
+        }
+    }
+    underlying._request = mock.MagicMock()
+    underlying._request.get = mock.AsyncMock(return_value=raw_response)
+    underlying.base_url = "https://api.music.yandex.net"
+
+    with mock.patch(
+        "music_assistant.providers.yandex_music.api_client.asyncio.sleep",
+        new_callable=mock.AsyncMock,
+    ) as sleep_mock:
+        await client.get_track_file_info("42")
+
+    sleep_mock.assert_not_awaited()
+
+
+async def test_jitter_skipped_for_rotor_kind() -> None:
+    """Rotor has its own bucket — jitter must never apply."""
+    client, underlying = _make_client()
+    client._connected_at = time.monotonic()
+    dashboard = mock.MagicMock(spec=Dashboard)
+    dashboard.stations = []
+    underlying.rotor_stations_dashboard = mock.AsyncMock(return_value=dashboard)
+
+    with mock.patch(
+        "music_assistant.providers.yandex_music.api_client.asyncio.sleep",
+        new_callable=mock.AsyncMock,
+    ) as sleep_mock:
+        await client.get_dashboard_stations()
+
+    sleep_mock.assert_not_awaited()
+    assert len(client._captcha_strikes["metadata"]) == 0
+
+
+# -- regression pins (#146) ---------------------------------------------------
+
+
+def test_throttle_default_rps_is_5() -> None:
+    """Pin the default RPS — empirical probing showed Yandex tolerates ≥10."""
+    assert THROTTLE_DEFAULT_RPS == 5
+
+
+def test_throttle_metadata_rps_is_3() -> None:
+    """Pin the metadata RPS."""
+    assert THROTTLE_METADATA_RPS == 3
+
+
+def test_captcha_cooldown_ladder_is_15_60_120() -> None:
+    """Pin the shortened ladder — empirical recovery time was ~15s, not 60s."""
+    assert CAPTCHA_COOLDOWN_LADDER_S == (15.0, 60.0, 120.0)
+
+
+def test_initial_sync_window_constants() -> None:
+    """Pin the jitter window defaults."""
+    assert INITIAL_SYNC_JITTER_S == 0.5
+    assert INITIAL_SYNC_WINDOW_S == 60.0
+
+
+def test_classify_429_behavior_unchanged_smart_captcha() -> None:
+    """Existing captcha classification still detects smart-captcha markers."""
+    client, _ = _make_client()
+    err = NetworkError(_CAPTCHA_HTML_SNIPPET)
+    assert client._classify_429(err) == "captcha"
+
+
+def test_classify_429_behavior_unchanged_plain_429() -> None:
+    """Existing classification still returns 'rate_limit' for bare 429."""
+    client, _ = _make_client()
+    err = NetworkError("Bad Request (429): Too Many Requests")
+    assert client._classify_429(err) == "rate_limit"
+
+
+def test_classify_429_behavior_unchanged_non_network() -> None:
+    """Existing classification still returns 'other' for non-NetworkError."""
+    client, _ = _make_client()
+    err = ValueError("HTTP 429 from some other source")
+    assert client._classify_429(err) == "other"
+
+
+# -- RTU propagation regression (#146): metadata methods must NOT swallow ----
+# the captcha cooldown. ResourceTemporarilyUnavailable is a sibling of
+# ProviderUnavailableError under MusicAssistantError, not a descendant, so
+# the (BadRequestError, NetworkError, ProviderUnavailableError) catch tuple
+# correctly lets RTU propagate. These tests pin that contract — a future
+# refactor widening the catch to MusicAssistantError would silently defeat
+# the entire #146 cooldown mechanism.
+
+
+async def test_get_album_propagates_captcha_rtu() -> None:
+    """A captcha trip in get_album must raise RTU, not return None."""
+    client, underlying = _make_client()
+    underlying.albums = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
+    with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
+        await client.get_album("42")
+    assert exc_info.value.backoff_time == 15
+
+
+async def test_get_album_with_tracks_propagates_captcha_rtu() -> None:
+    """A captcha trip in get_album_with_tracks must raise RTU, not return None."""
+    client, underlying = _make_client()
+    underlying.albums_with_tracks = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
+    with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
+        await client.get_album_with_tracks("42")
+    assert exc_info.value.backoff_time == 15
+
+
+async def test_get_artist_propagates_captcha_rtu() -> None:
+    """A captcha trip in get_artist must raise RTU, not return None."""
+    client, underlying = _make_client()
+    underlying.artists = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
+    with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
+        await client.get_artist("42")
+    assert exc_info.value.backoff_time == 15
+
+
+async def test_get_artist_albums_propagates_captcha_rtu() -> None:
+    """A captcha trip in get_artist_albums must raise RTU, not return []."""
+    client, underlying = _make_client()
+    underlying.artists_direct_albums = mock.AsyncMock(
+        side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET)
+    )
+    with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
+        await client.get_artist_albums("42")
+    assert exc_info.value.backoff_time == 15
+
+
+async def test_get_artist_about_propagates_captcha_rtu() -> None:
+    """A captcha trip in get_artist_about must raise RTU, not return None."""
+    client, underlying = _make_client()
+    underlying.artists_about = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
+    with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
+        await client.get_artist_about("42")
+    assert exc_info.value.backoff_time == 15
+
+
+async def test_get_artist_tracks_propagates_captcha_rtu() -> None:
+    """A captcha trip in get_artist_tracks must raise RTU, not return []."""
+    client, underlying = _make_client()
+    underlying.artists_tracks = mock.AsyncMock(side_effect=NetworkError(_CAPTCHA_HTML_SNIPPET))
+    with pytest.raises(ResourceTemporarilyUnavailable) as exc_info:
+        await client.get_artist_tracks("42")
+    assert exc_info.value.backoff_time == 15
+
+
+# -- jitter respects BYPASS_THROTTLER (#146) ---------------------------------
+
+
+async def test_jitter_skipped_under_bypass_throttler() -> None:
+    """
+    Stream URL refresh paths run under BYPASS_THROTTLER — jitter must not fire.
+
+    The helper sits inside the ``if not BYPASS_THROTTLER.get():`` block in
+    both _call_with_retry and _call_no_retry. If a future refactor lifts
+    the jitter call out of that block, stream URL refresh would eat up to
+    INITIAL_SYNC_JITTER_S of avoidable latency during the first
+    INITIAL_SYNC_WINDOW_S after every connect — exactly when reconnect
+    storms make latency hurt the most.
+    """
+    client, underlying = _make_client()
+    client._connected_at = time.monotonic()  # window is active
+
+    raw_response = {
+        "downloadInfo": {
+            "url": "https://example.com/x",
+            "codec": "flac-mp4",
+        }
+    }
+    underlying._request = mock.MagicMock()
+    underlying._request.get = mock.AsyncMock(return_value=raw_response)
+    underlying.base_url = "https://api.music.yandex.net"
+
+    with mock.patch(
+        "music_assistant.providers.yandex_music.api_client.asyncio.sleep",
+        new_callable=mock.AsyncMock,
+    ) as sleep_mock:
+        token = BYPASS_THROTTLER.set(True)
+        try:
+            await client.get_track_file_info("42")
+        finally:
+            BYPASS_THROTTLER.reset(token)
+
+    sleep_mock.assert_not_awaited()
+
+
+# -- M5: BadRequestError handling (4xx is terminal, not retryable) -----------
+
+
+async def test_search_swallows_bad_request_as_empty_result() -> None:
+    """
+    A 4xx from Yandex search is terminal — return None, do not signal retry.
+
+    Wrapping ``BadRequestError`` as ``ResourceTemporarilyUnavailable`` tells
+    Music Assistant the request can be retried, which reproduces the same
+    failure in a loop. The right answer is "no result".
+    """
+    client, underlying = _make_client()
+    underlying.search = mock.AsyncMock(side_effect=BadRequestError("malformed query"))
+
+    result = await client.search("any query")
+
+    assert result is None
+    underlying.search.assert_awaited_once()
+
+
+async def test_get_liked_tracks_swallows_bad_request_as_empty_list() -> None:
+    """Terminal 4xx for liked tracks returns ``[]`` — not a retryable failure."""
+    client, underlying = _make_client()
+    underlying.users_likes_tracks = mock.AsyncMock(side_effect=BadRequestError("not allowed"))
+
+    result = await client.get_liked_tracks()
+
+    assert result == []
+
+
+async def test_get_liked_albums_swallows_bad_request_as_empty_list() -> None:
+    """Terminal 4xx for liked albums returns ``[]`` — not a retryable failure."""
+    client, underlying = _make_client()
+    underlying.users_likes_albums = mock.AsyncMock(side_effect=BadRequestError("not allowed"))
+
+    result = await client.get_liked_albums()
+
+    assert result == []
+
+
+# -- M8: get_liked_tracks tolerates naive timestamps from yandex-music --------
+
+
+async def test_get_liked_tracks_sort_survives_naive_timestamp() -> None:
+    """
+    Sorting must not crash when ``TrackShort.timestamp`` is timezone-naive.
+
+    The upstream ``yandex-music`` library is inconsistent about tz on
+    ``TrackShort.timestamp``. Comparing a naive ``datetime`` against the
+    previous ``datetime.min.replace(tzinfo=UTC)`` sentinel raises
+    ``TypeError: can't compare offset-naive and offset-aware datetimes``
+    and the whole liked-tracks collection fails to load.
+    """
+    client, underlying = _make_client()
+
+    naive_ts = datetime(2024, 1, 1, 12, 0, 0)  # noqa: DTZ001 — naive on purpose
+    aware_ts = datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC)
+    track_naive = type("T", (), {"id": 1, "timestamp": naive_ts})()
+    track_aware = type("T", (), {"id": 2, "timestamp": aware_ts})()
+    track_missing = type("T", (), {"id": 3})()  # no .timestamp at all
+
+    result_obj = type("R", (), {"tracks": [track_naive, track_aware, track_missing]})()
+    underlying.users_likes_tracks = mock.AsyncMock(return_value=result_obj)
+
+    result = await client.get_liked_tracks()
+
+    assert {t.id for t in result} == {1, 2, 3}
+
+
+# -- M9: _call_with_retry re-acquires the throttler on reconnect retry ---------
+
+
+async def test_call_with_retry_reacquires_throttler_on_reconnect() -> None:
+    """
+    The reconnect-retry path must consume a throttler token too.
+
+    Skipping ``throttler.acquire()`` on the second attempt doubles the
+    effective request rate during connection flap — exactly the conditions
+    that already increase the risk of Yandex's smart-captcha tripping.
+    """
+    client, underlying = _make_client()
+
+    # Make .tracks fail once with a connection error, then succeed.
+    track = type("T", (), {"id": 42})()
+    underlying.tracks = mock.AsyncMock(side_effect=[NetworkError("ECONNRESET"), [track]])
+
+    result = await client.get_tracks(["42"])
+
+    assert result == [track]
+    # The throttler used by get_tracks falls under the "default" kind.
+    default_throttler = client._throttlers["default"]
+    assert default_throttler.acquire.await_count == 2, (  # type: ignore[attr-defined]
+        "throttler must be re-acquired on the reconnect-retry attempt"
+    )
+
+
+async def test_jitter_skipped_when_kind_already_blocked() -> None:
+    """
+    A blocked kind must fast-fail BEFORE the jitter sleep.
+
+    Order contract in _call_with_retry: _check_block -> jitter -> acquire ->
+    _check_block. The pre-check raises RTU immediately when the kind is
+    quarantined, so the jitter sleep never runs. A refactor that reorders
+    these calls would turn a fast-fail circuit breaker into a slow-fail
+    one during the first INITIAL_SYNC_WINDOW_S after connect — exactly
+    when MA's library walker is hammering the provider hardest.
+    """
+    client, underlying = _make_client()
+    client._connected_at = time.monotonic()  # window is active
+    client._block_until["default"] = time.monotonic() + 600  # kind quarantined
+    underlying.tracks = mock.AsyncMock(return_value=[])
+
+    with (
+        mock.patch(
+            "music_assistant.providers.yandex_music.api_client.asyncio.sleep",
+            new_callable=mock.AsyncMock,
+        ) as sleep_mock,
+        pytest.raises(ResourceTemporarilyUnavailable),
+    ):
+        await client.get_tracks(["1"])
+
+    sleep_mock.assert_not_awaited()
+    # Fast-fail: underlying API was never called.
+    underlying.tracks.assert_not_awaited()
+
+
+# -- Per-endpoint concurrency lock (defense-in-depth vs Yandex captcha) -------
+
+
+async def test_parallel_same_endpoint_calls_serialize() -> None:
+    """
+    Parallel calls to the same endpoint must run one-at-a-time.
+
+    Yandex's edge treats concurrent requests to the same URL family as a
+    scraper signature and trips captcha within ~460 ms. The per-endpoint
+    lock in ``_call_with_retry`` is the defense-in-depth that prevents a
+    future ``asyncio.gather`` from re-introducing the same burst pattern.
+    """
+    client, underlying = _make_client()
+
+    concurrent_peak = 0
+    in_flight = 0
+    lock = asyncio.Lock()
+
+    async def _slow_tracks(_track_ids: list[str]) -> list[Any]:
+        nonlocal concurrent_peak, in_flight
+        async with lock:
+            in_flight += 1
+            concurrent_peak = max(concurrent_peak, in_flight)
+        try:
+            await asyncio.sleep(0.05)
+            return []
+        finally:
+            async with lock:
+                in_flight -= 1
+
+    underlying.tracks = _slow_tracks
+
+    # Fire 5 parallel calls to the SAME method; per-endpoint lock should
+    # serialise them despite ``asyncio.gather`` queueing them simultaneously.
+    await asyncio.gather(*(client.get_tracks([str(i)]) for i in range(5)))
+
+    assert concurrent_peak == 1, (
+        f"per-endpoint lock failed to serialise; saw {concurrent_peak} concurrent calls"
+    )
+
+
+async def test_restrictive_mode_caps_global_concurrency() -> None:
+    """
+    Restrictive mode caps total in-flight requests to ``RESTRICTIVE_GLOBAL_CONCURRENCY``.
+
+    Yandex's edge enforces a per-token concurrency limit on datacenter /
+    VPN IPs (empirically ~6 simultaneous before captcha). The
+    restrictive_rate_limits toggle adds a token-wide semaphore so the
+    provider stays under that ceiling regardless of how the call sites
+    fan out.
+    """
+    client = YandexMusicClient(token=SecretStr("fake"), restrictive_rate_limits=True)
+    mock_underlying = mock.AsyncMock()
+    client._client = mock_underlying
+    client._user_id = 12345
+    for kind in client._throttlers:
+        client._throttlers[kind] = mock.AsyncMock()
+
+    async def _fake_connect() -> bool:
+        client._client = mock_underlying
+        return True
+
+    client.connect = _fake_connect  # type: ignore[method-assign]
+
+    concurrent_peak = 0
+    in_flight = 0
+    state_lock = asyncio.Lock()
+
+    # Stub direct on YandexMusicClient methods (each one different) so the
+    # per-endpoint lock cannot also bound this — only the global semaphore
+    # should. We hijack ``_call_with_retry`` itself: it's the place every
+    # method funnels through, and instrumenting it lets us count true
+    # in-flight invocations without re-shaping every yandex_music response.
+    real_invoke = client._invoke_under_endpoint_lock
+
+    async def _instrumented(_func: Any, _real_client: Any, _endpoint: Any) -> Any:
+        nonlocal concurrent_peak, in_flight
+        async with state_lock:
+            in_flight += 1
+            concurrent_peak = max(concurrent_peak, in_flight)
+        try:
+            await asyncio.sleep(0.05)
+        finally:
+            async with state_lock:
+                in_flight -= 1
+        # Bypass the actual HTTP call after measuring — we only care about
+        # how many entered the gate at once, not what they return.
+        return mock.MagicMock()
+
+    client._invoke_under_endpoint_lock = _instrumented  # type: ignore[method-assign,assignment]
+
+    async def _call(i: int) -> Any:
+        # Each iteration uses a different ``__qualname__`` so per-endpoint
+        # locks don't interfere with the measurement.
+        async def _fake(_c: Any) -> Any:
+            return None
+
+        _fake.__qualname__ = f"YandexMusicClient.synthetic_{i}.<locals>.<lambda>"
+        return await client._call_with_retry(_fake, kind="default")
+
+    # Fire 8 parallel calls. Without the global semaphore, peak concurrency
+    # would be 8. With it, peak ≤ RESTRICTIVE_GLOBAL_CONCURRENCY.
+    await asyncio.gather(*(_call(i) for i in range(8)))
+
+    # restore
+    client._invoke_under_endpoint_lock = real_invoke  # type: ignore[method-assign]
+
+    assert concurrent_peak <= RESTRICTIVE_GLOBAL_CONCURRENCY, (
+        f"restrictive mode failed to cap global concurrency; "
+        f"peak={concurrent_peak} > {RESTRICTIVE_GLOBAL_CONCURRENCY}"
+    )
+
+
+async def test_parallel_different_endpoints_run_concurrently() -> None:
+    """
+    Calls to different endpoint methods must NOT block each other.
+
+    The per-endpoint lock is keyed on the calling method's qualname, so
+    parallel calls to distinct YandexMusicClient methods proceed in
+    parallel (subject to throttler/RPS).
+    """
+    client, underlying = _make_client()
+
+    concurrent_peak = 0
+    in_flight = 0
+    lock = asyncio.Lock()
+
+    async def _slow(*_args: Any, **_kwargs: Any) -> Any:
+        nonlocal concurrent_peak, in_flight
+        async with lock:
+            in_flight += 1
+            concurrent_peak = max(concurrent_peak, in_flight)
+        try:
+            await asyncio.sleep(0.05)
+            return []
+        finally:
+            async with lock:
+                in_flight -= 1
+
+    underlying.tracks = _slow
+    underlying.users_likes_albums = _slow
+
+    await asyncio.gather(
+        client.get_tracks(["1"]),
+        client.get_liked_albums(),
+    )
+
+    assert concurrent_peak == 2, (
+        f"different endpoints should run in parallel; saw peak={concurrent_peak}"
+    )

@@ -1,4 +1,11 @@
-"""Data model for audio analysis results stored by Audio Analysis providers."""
+"""
+Data model for audio analysis results stored by Audio Analysis providers.
+
+Stays server-local: the numpy.ndarray fields below would force numpy as an
+upstream dep on every consumer of music_assistant_models if this module moved.
+The lightweight AudioAnalysisCoverage shape lives upstream at
+music_assistant_models.audio_analysis instead.
+"""
 
 from __future__ import annotations
 
@@ -89,7 +96,7 @@ class AudioAnalysisData(DataClassDictMixin):
     extra_data: dict[str, Any] | None = None
 
     class Config(BaseConfig):  # noqa: D106
-        serialization_strategy = {
+        serialization_strategy = {  # noqa: RUF012  # mashumaro Config attr; ClassVar conflicts with BaseConfig
             np.ndarray: {
                 "serialize": lambda x: x.tolist(),
                 "deserialize": lambda x: np.asarray(x, dtype=np.float32),

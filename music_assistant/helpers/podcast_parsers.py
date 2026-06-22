@@ -1,10 +1,9 @@
 """Podcastfeed -> Mass."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from io import BytesIO
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import aiohttp
 import podcastparser
 from aiohttp.client import ClientError
 from music_assistant_models.enums import ContentType, ImageType, MediaType
@@ -20,11 +19,15 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+if TYPE_CHECKING:
+    import aiohttp
+
 
 async def get_podcastparser_dict(
     *, session: aiohttp.ClientSession, feed_url: str, max_episodes: int = 0
 ) -> dict[str, Any]:
-    """Get feed parsed by podcastparser by providing the url.
+    """
+    Get feed parsed by podcastparser by providing the url.
 
     max_episodes = 0 does not limit the returned episodes.
     """
@@ -62,7 +65,8 @@ def parse_podcast(
     domain: str,
     mass_item_id: str | None = None,
 ) -> Podcast:
-    """Podcast -> Mass Podcast.
+    """
+    Podcast -> Mass Podcast.
 
     The item_id is the feed url by default, or the optional mass_item_id instead.
     """
@@ -141,7 +145,8 @@ def parse_podcast_episode(
     domain: str,
     mass_item_id: str | None = None,
 ) -> PodcastEpisode | None:
-    """Podcast Episode -> Mass Podcast Episode.
+    """
+    Podcast Episode -> Mass Podcast Episode.
 
     The item_id is {prov_podcast_id} {guid_or_stream_url} by default, or the optional mass_item_id
     instead. The podcast_cover is used, if the episode should not have its own cover.
@@ -193,7 +198,7 @@ def parse_podcast_episode(
         },
     )
     if episode_published is not None:
-        mass_episode.metadata.release_date = datetime.fromtimestamp(episode_published)
+        mass_episode.metadata.release_date = datetime.fromtimestamp(episode_published, tz=UTC)
 
     # chapter
     if chapters := episode.get("chapters"):

@@ -26,7 +26,7 @@ class _UnsetType:
 
     _instance: _UnsetType | None = None
 
-    def __new__(cls) -> _UnsetType:
+    def __new__(cls) -> _UnsetType:  # noqa: PYI034  # singleton sentinel always returns the one instance, not Self
         """Create singleton instance."""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -93,6 +93,44 @@ def query_params(query: str, params: dict[str, Any] | None) -> tuple[str, dict[s
     return (result_query, result_params)
 
 
+def get_sqlite_memory_settings() -> tuple[int, int]:
+    """
+    Return (cache_size_kib, mmap_size_bytes) scaled to available system memory.
+
+    The page cache is a per-connection ceiling that is filled lazily, so a small database
+    never consumes a large ceiling. Hosts with ample RAM keep the previous generous values
+    (and a much bigger cache on very large hosts) so performance is unaffected — only memory-
+    constrained devices are scaled down. Returns the generous defaults when memory is
+    unknown (e.g. Windows), so those hosts fail open to full performance.
+    """
+    # imported lazily to keep this low-level helper free of the heavier util import chain
+    from music_assistant.helpers.util import get_total_system_memory  # noqa: PLC0415
+
+    # SQLite caps mmap_size at its build-time SQLITE_MAX_MMAP_SIZE (~2GiB), so the previous
+    # 30GB request was already effectively ~2GiB. We keep that ceiling on capable hosts and
+    # only request less on memory-constrained devices (where a large DB would otherwise map
+    # most of the file into reclaimable RSS). The page cache is the only fast path for the
+    # part of a database beyond that ~2GiB window, so hosts with lots of RAM get a much larger
+    # cache to keep a very large library hot.
+    gib = 1024**3
+    total_ram_gb = get_total_system_memory()
+    if total_ram_gb >= 16.0:
+        # very large host: cache enough to keep a multi-GB library hot in memory
+        return 1024000, 2 * gib
+    if total_ram_gb >= 12.0:
+        return 512000, 2 * gib
+    if total_ram_gb >= 8.0:
+        # plenty of RAM: favour performance with a larger page cache
+        return 128000, 2 * gib
+    if total_ram_gb == 0.0 or total_ram_gb >= 4.0:
+        # unknown (fail open) or capable: keep the previous 64MB cache and ~2GiB mmap ceiling
+        return 64000, 2 * gib
+    if total_ram_gb >= 2.0:
+        return 32000, gib
+    # memory-constrained device: keep each connection's footprint small
+    return 16000, 256 * 1024 * 1024
+
+
 class DatabaseConnection:
     """Class that holds the (connection to the) database with some convenience helper functions."""
 
@@ -102,8 +140,27 @@ class DatabaseConnection:
         """Initialize class."""
         self.db_path = db_path
 
-    async def setup(self) -> None:
-        """Perform async initialization."""
+    async def setup(
+        self,
+        cache_size_kib: int | None = None,
+        mmap_size_bytes: int | None = None,
+    ) -> None:
+        """
+        Perform async initialization.
+
+        :param cache_size_kib: SQLite page-cache ceiling for this connection, in KiB.
+            Defaults to a value scaled to the host's available memory.
+        :param mmap_size_bytes: SQLite memory-map ceiling for this connection, in bytes.
+            Defaults to a value scaled to the host's available memory.
+        """
+        default_cache_kib, default_mmap_bytes = get_sqlite_memory_settings()
+        # coerce + clamp to non-negative ints so the values are always safe to interpolate
+        cache_size_kib = max(
+            0, int(default_cache_kib if cache_size_kib is None else cache_size_kib)
+        )
+        mmap_size_bytes = max(
+            0, int(default_mmap_bytes if mmap_size_bytes is None else mmap_size_bytes)
+        )
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
         # setup some default settings for more performance
@@ -113,8 +170,8 @@ class DatabaseConnection:
         await self.execute("PRAGMA journal_size_limit = 6144000;")
         await self.execute("PRAGMA synchronous=normal;")
         await self.execute("PRAGMA temp_store=memory;")
-        await self.execute("PRAGMA mmap_size = 30000000000;")
-        await self.execute("PRAGMA cache_size = -64000;")
+        await self.execute(f"PRAGMA mmap_size = {mmap_size_bytes};")
+        await self.execute(f"PRAGMA cache_size = -{cache_size_kib};")
         await self.commit()
 
     async def close(self) -> None:
@@ -157,6 +214,17 @@ class DatabaseConnection:
         _query, _params = query_params(query, params)
         async with debug_query(_query, _params):
             return cast("list[Mapping[str, Any]]", await self._db.execute_fetchall(_query, _params))
+
+    async def iter_rows_from_query(
+        self,
+        query: str,
+        params: dict[str, Any] | None = None,
+    ) -> AsyncGenerator[Mapping[str, Any]]:
+        """Stream rows for a given custom query without materializing the full result."""
+        _query, _params = query_params(query, params)
+        async with debug_query(_query, _params), self._db.execute(_query, _params) as cursor:
+            async for row in cursor:
+                yield cast("Mapping[str, Any]", row)
 
     async def get_count_from_query(
         self,
@@ -293,7 +361,7 @@ class DatabaseConnection:
         self,
         table: str,
         match: dict[str, Any] | None = None,
-    ) -> AsyncGenerator[Mapping[str, Any], None]:
+    ) -> AsyncGenerator[Mapping[str, Any]]:
         """Iterate all items within a table."""
         limit: int = 500
         offset: int = 0
@@ -311,7 +379,33 @@ class DatabaseConnection:
             await asyncio.sleep(0)  # yield to eventloop
             offset += limit
 
+    async def get_reclaimable_ratio(self) -> float:
+        """
+        Return the fraction (0..1) of the database file that a VACUUM would reclaim.
+
+        This is the share of pages on the free list and is a cheap way to decide
+        whether a (potentially expensive) VACUUM is actually worthwhile.
+        """
+        page_count = await self._get_pragma_int("page_count")
+        if page_count <= 0:
+            return 0.0
+        freelist_count = await self._get_pragma_int("freelist_count")
+        return freelist_count / page_count
+
     async def vacuum(self) -> None:
         """Run vacuum command on database."""
-        await self._db.execute("VACUUM")
-        await self._db.commit()
+        # VACUUM rebuilds the whole database in temp storage; with temp_store=memory that
+        # copy lives entirely in RAM and OOMs memory constrained devices on large databases,
+        # so spill it to a temp file (located at SQLITE_TMPDIR) for the duration.
+        await self._db.execute("PRAGMA temp_store=FILE;")
+        try:
+            await self._db.execute("VACUUM")
+            await self._db.commit()
+        finally:
+            await self._db.execute("PRAGMA temp_store=memory;")
+
+    async def _get_pragma_int(self, pragma: str) -> int:
+        """Return the integer value of a single-value sqlite PRAGMA."""
+        async with self._db.execute(f"PRAGMA {pragma}") as cursor:
+            row = await cursor.fetchone()
+            return int(row[0]) if row else 0
