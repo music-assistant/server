@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
+from multidict import CIMultiDict
 from music_assistant_models.enums import ContentType, MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import Radio, SearchResults
@@ -20,7 +21,9 @@ from music_assistant.providers.mammamiradio import (
     STREAM_METADATA_UPDATE_INTERVAL,
     SUPPORTED_FEATURES,
     MammamiradioProvider,
+    _audio_format_from_contract,
     _segment_to_stream_metadata,
+    _v1_to_stream_metadata,
     get_config_entries,
 )
 
@@ -52,6 +55,81 @@ def _make_json_ctx(payload: Any, status: int = 200) -> MagicMock:
     ctx.__aenter__ = AsyncMock(return_value=response)
     ctx.__aexit__ = AsyncMock(return_value=False)
     return ctx
+
+
+def _make_v1_ctx(payload: Any, status: int = 200, etag: str | None = None) -> MagicMock:
+    """Async-context-manager mock for the v1 endpoint, with case-insensitive headers (ETag)."""
+    response = MagicMock()
+    response.status = status
+    response.json = AsyncMock(return_value=payload)
+    response.headers = CIMultiDict({"ETag": etag}) if etag else CIMultiDict()
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=response)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    return ctx
+
+
+def _make_bad_json_ctx(status: int = 200) -> MagicMock:
+    """Async-context-manager mock whose body is not JSON (``.json()`` raises)."""
+    response = MagicMock()
+    response.status = status
+    response.json = AsyncMock(side_effect=ValueError("not json"))
+    response.headers = CIMultiDict()
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=response)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    return ctx
+
+
+def _route_get(mapping: dict[str, MagicMock], default_status: int = 404) -> Any:
+    """Return a ``http_session.get`` side_effect that dispatches by URL substring."""
+
+    def _get(url: str, *_args: Any, **_kwargs: Any) -> MagicMock:
+        for needle, ctx in mapping.items():
+            if needle in url:
+                return ctx
+        return _make_response_ctx(default_status)
+
+    return _get
+
+
+# A representative v1 now-playing response (music segment) reused across tests.
+_V1_AUDIO_FORMAT: dict[str, Any] = {
+    "codec": "mp3",
+    "mime_type": "audio/mpeg",
+    "bitrate_kbps": 192,
+    "sample_rate_hz": 48000,
+    "channels": 2,
+}
+_V1_MUSIC: dict[str, Any] = {
+    "schema_version": "1",
+    "station": {
+        "name": "mammamiradio",
+        "hosts": [
+            {"engine_host": "gianni", "display_name": "Gianni"},
+            {"engine_host": "lucia", "display_name": "Lucia"},
+        ],
+    },
+    "stream": {"relative_url": "/stream", "audio_format": _V1_AUDIO_FORMAT},
+    "now_playing": {
+        "segment_class": "music",
+        "segment_type": "music",
+        "title": "Volare",
+        "artist": "Modugno",
+        "artwork": "http://art/volare.jpg",
+        "album": "Best Of",
+    },
+    "up_next": [
+        {
+            "segment_class": "voice",
+            "segment_type": "banter",
+            "title": "Chiacchiere",
+            "predicted": False,
+        }
+    ],
+    "session_state": "live",
+    "changed_at": 100.0,
+}
 
 
 @pytest.fixture
@@ -107,21 +185,42 @@ async def test_get_config_entries_returns_single_url_field() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_handle_async_init_passes_when_reachable(
+async def test_handle_async_init_v1_contract(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
-    """Path 1 — reachable addon: init logs success and does not raise."""
-    mass_mock.http_session.get = MagicMock(return_value=_make_response_ctx(200))
+    """Path 1 — a reachable v1 now-playing endpoint selects v1 mode and caches the format."""
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(_V1_MUSIC, etag='W/"a"'))
     await provider.handle_async_init()
-    mass_mock.http_session.get.assert_called_once()
+    assert provider._use_v1 is True
+    assert provider._audio_format_dict == _V1_AUDIO_FORMAT
     called_url = mass_mock.http_session.get.call_args.args[0]
-    assert called_url == "http://localhost:8000/healthz"
+    assert called_url == "http://localhost:8000/api/integrations/v1/now-playing"
+
+
+async def test_handle_async_init_falls_back_to_healthz_on_404(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """An older addon (no v1 endpoint -> 404) falls back to the /healthz liveness probe."""
+    mass_mock.http_session.get = MagicMock(
+        side_effect=_route_get(
+            {
+                "/api/integrations/v1/now-playing": _make_response_ctx(404),
+                "/healthz": _make_response_ctx(200),
+            }
+        )
+    )
+    await provider.handle_async_init()
+    assert provider._use_v1 is False
+    called_urls = [c.args[0] for c in mass_mock.http_session.get.call_args_list]
+    assert any(u.endswith("/api/integrations/v1/now-playing") for u in called_urls)
+    assert any(u.endswith("/healthz") for u in called_urls)
 
 
 async def test_handle_async_init_raises_when_unreachable(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
-    """Path 2 — unreachable addon: init raises ProviderUnavailableError.
+    """
+    Path 2 — unreachable addon: init raises ProviderUnavailableError.
 
     The provider is the canonical place for liveness detection (matches
     RadioBrowser's pattern). Raising here prevents MA from loading a
@@ -135,18 +234,72 @@ async def test_handle_async_init_raises_when_unreachable(
         await provider.handle_async_init()
 
 
-async def test_handle_async_init_raises_on_http_error(
+async def test_handle_async_init_raises_when_both_endpoints_unhealthy(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
-    """5xx (or any >=400) from /healthz raises ProviderUnavailableError.
+    """
+    A 5xx on the v1 probe falls back to /healthz; if that is also 5xx, init raises.
 
-    Distinct from the unreachable case: the addon process is up enough to
-    respond, but reports unhealthy. Surfaces as ProviderUnavailableError
-    same as the unreachable case so MA treats both consistently.
+    The addon process responds but reports unhealthy on both the v1 contract and
+    /healthz, so the provider surfaces ProviderUnavailableError.
     """
     mass_mock.http_session.get = MagicMock(return_value=_make_response_ctx(503))
     with pytest.raises(ProviderUnavailableError):
         await provider.handle_async_init()
+
+
+async def test_handle_async_init_v1_5xx_falls_back_to_healthy_healthz(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """
+    A transient 5xx on the v1 endpoint must NOT fail load when /healthz is healthy.
+
+    Regression guard: a momentary ingress/proxy 5xx during an addon restart used
+    to be fatal (the v1 probe raised on any >=400). Now it falls back to legacy
+    mode and the provider still loads.
+    """
+    mass_mock.http_session.get = MagicMock(
+        side_effect=_route_get(
+            {
+                "/api/integrations/v1/now-playing": _make_response_ctx(503),
+                "/healthz": _make_response_ctx(200),
+            }
+        )
+    )
+    await provider.handle_async_init()  # must not raise
+    assert provider._use_v1 is False
+
+
+async def test_handle_async_init_404_then_healthz_5xx_raises(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """An older addon (v1 404) whose /healthz is unhealthy raises ProviderUnavailableError."""
+    mass_mock.http_session.get = MagicMock(
+        side_effect=_route_get(
+            {
+                "/api/integrations/v1/now-playing": _make_response_ctx(404),
+                "/healthz": _make_response_ctx(503),
+            }
+        )
+    )
+    with pytest.raises(ProviderUnavailableError):
+        await provider.handle_async_init()
+
+
+async def test_handle_async_init_v1_non_json_falls_back_to_healthz(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A 200 with a non-JSON body demotes to legacy mode (no crash) when /healthz is up."""
+    mass_mock.http_session.get = MagicMock(
+        side_effect=_route_get(
+            {
+                "/api/integrations/v1/now-playing": _make_bad_json_ctx(200),
+                "/healthz": _make_response_ctx(200),
+            }
+        )
+    )
+    await provider.handle_async_init()  # must not raise
+    assert provider._use_v1 is False
 
 
 # ---------------------------------------------------------------------------
@@ -245,11 +398,17 @@ async def test_get_radio_with_invalid_id_raises_media_not_found(
 async def test_get_stream_details_returns_mp3_format(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
-    """Path 9 — StreamDetails declares ContentType.MP3 with hard-coded 128k bitrate."""
+    """
+    Path 9 — StreamDetails declares ContentType.MP3 at the addon's published bitrate.
+
+    Without a cached v1 contract (no init in this test) the published defaults
+    apply: MP3 @ 192 kbps (matching the addon's AudioConfig default, not the old
+    hard-coded 128).
+    """
     mass_mock.http_session.get = MagicMock(return_value=_make_response_ctx(200))
     details = await provider.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
     assert details.audio_format.content_type == ContentType.MP3
-    assert details.audio_format.bit_rate == 128
+    assert details.audio_format.bit_rate == 192
     assert details.media_type == MediaType.RADIO
 
 
@@ -267,7 +426,8 @@ async def test_get_stream_details_uses_configured_url_with_stream_suffix(
 async def test_get_stream_details_does_not_probe_at_stream_time(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
-    """Stream-time has no HTTP probe; liveness is checked at init only.
+    """
+    Stream-time has no HTTP probe; liveness is checked at init only.
 
     This is intentional per MA convention — NTS/RadioBrowser/ORF Radiothek
     all do the same. ``get_stream_details`` returns a passthrough
@@ -421,7 +581,8 @@ def test_segment_news_flash_uses_host() -> None:
 
 
 def test_segment_sweeper_is_total_and_titled() -> None:
-    """A sweeper segment (real SegmentType, no dedicated branch) still yields a title.
+    """
+    A sweeper segment (real SegmentType, no dedicated branch) still yields a title.
 
     Regression for the unhandled-type crash: SWEEPER is in mammamiradio's
     SegmentType enum; the helper must produce a valid StreamMetadata.
@@ -820,7 +981,8 @@ async def test_callback_ignores_non_dict_payload(
 async def test_callback_tolerates_malformed_segment_metadata(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
-    """A segment whose ``metadata`` is the wrong type is coerced, not dropped.
+    """
+    A segment whose ``metadata`` is the wrong type is coerced, not dropped.
 
     ``metadata`` arriving as a list (not an object) is treated as empty metadata;
     the mapper is total, so it yields a valid frame (title clamps to the label)
@@ -841,7 +1003,8 @@ async def test_callback_tolerates_malformed_segment_metadata(
 async def test_callback_tolerates_non_dict_now_streaming(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
-    """A non-dict now_streaming must not raise out of the callback (no-raise contract).
+    """
+    A non-dict now_streaming must not raise out of the callback (no-raise contract).
 
     Regression: ``seg_key`` is computed from ``now.get(...)`` OUTSIDE the mapper's
     try/except, so a truthy non-dict ``now_streaming`` previously escaped into MA's
@@ -860,7 +1023,8 @@ async def test_callback_swallows_mapper_exception(
     mass_mock: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The callback try/except is a backstop: if the mapper raises, prior frame is kept.
+    """
+    The callback try/except is a backstop: if the mapper raises, prior frame is kept.
 
     The mapper is total by construction, so this monkeypatches it to raise and
     asserts the documented no-raise contract still holds for any future regression.
@@ -883,12 +1047,408 @@ async def test_callback_swallows_mapper_exception(
 
 
 # ---------------------------------------------------------------------------
+# v1 now-playing contract — audio format
+# ---------------------------------------------------------------------------
+
+
+def test_audio_format_from_contract_reads_published_format() -> None:
+    """The audio format comes from the v1 contract: MP3 / 192 kbps / 48 kHz / stereo."""
+    fmt = _audio_format_from_contract(_V1_AUDIO_FORMAT)
+    assert fmt.content_type == ContentType.MP3
+    assert fmt.bit_rate == 192
+    assert fmt.sample_rate == 48000
+    assert fmt.channels == 2
+
+
+def test_audio_format_from_contract_defaults_when_absent() -> None:
+    """Missing/None contract falls back to the addon's published defaults."""
+    fmt = _audio_format_from_contract(None)
+    assert fmt.content_type == ContentType.MP3
+    assert fmt.bit_rate == 192
+    assert fmt.sample_rate == 48000
+    assert fmt.channels == 2
+
+
+def test_audio_format_from_contract_unknown_codec_defaults_to_mp3() -> None:
+    """An unrecognized codec degrades to MP3 rather than ContentType.UNKNOWN."""
+    fmt = _audio_format_from_contract({"codec": "weird", "bitrate_kbps": 96})
+    assert fmt.content_type == ContentType.MP3
+    assert fmt.bit_rate == 96
+
+
+def test_audio_format_from_contract_honors_alternate_codec() -> None:
+    """A real alternate codec is parsed (forward-compat for a future addon encoder)."""
+    fmt = _audio_format_from_contract(
+        {"codec": "aac", "bitrate_kbps": 256, "sample_rate_hz": 44100, "channels": 1}
+    )
+    assert fmt.content_type == ContentType.AAC
+    assert fmt.bit_rate == 256
+    assert fmt.sample_rate == 44100
+    assert fmt.channels == 1
+
+
+# ---------------------------------------------------------------------------
+# v1 now-playing contract — `_v1_to_stream_metadata` (pure mapping)
+# ---------------------------------------------------------------------------
+
+
+def _v1_payload(now_playing: Any, *, up_next: Any = None, station: Any = None) -> dict[str, Any]:
+    """Build a minimal v1 response around a ``now_playing`` block."""
+    return {
+        "schema_version": "1",
+        "station": station if station is not None else {"name": "mammamiradio", "hosts": []},
+        "stream": {"relative_url": "/stream", "audio_format": _V1_AUDIO_FORMAT},
+        "now_playing": now_playing,
+        "up_next": up_next if up_next is not None else [],
+        "session_state": "live" if now_playing is not None else "empty_queue",
+        "changed_at": 1.0,
+    }
+
+
+def test_v1_music_maps_title_artist_artwork_album() -> None:
+    """A music segment surfaces title / artist / artwork / album from the contract."""
+    sm = _v1_to_stream_metadata(_V1_MUSIC, show_upcoming=False)
+    assert sm.title == "Volare"
+    assert sm.artist == "Modugno"
+    assert sm.image_url == "http://art/volare.jpg"
+    assert sm.album == "Best Of"
+
+
+def test_v1_voice_uses_now_playing_host() -> None:
+    """A voice segment uses the contract's top-level ``host`` byline as the artist."""
+    now = {
+        "segment_class": "voice",
+        "segment_type": "banter",
+        "title": "Host banter",
+        "host": "Gianni",
+    }
+    sm = _v1_to_stream_metadata(_v1_payload(now), show_upcoming=False)
+    assert sm.title == "Host banter"
+    assert sm.artist == "Gianni"
+
+
+def test_v1_voice_host_string_wins_over_station_hosts() -> None:
+    """
+    A populated now_playing.host takes precedence over station.hosts.
+
+    Mirrors the live news_flash case (host="Giulia") where the byline must be the
+    single reading host, not the full station roster.
+    """
+    now = {
+        "segment_class": "voice",
+        "segment_type": "news_flash",
+        "title": "Notizie",
+        "host": "Giulia",
+    }
+    station = {
+        "name": "mammamiradio",
+        "hosts": [
+            {"engine_host": "m", "display_name": "Marco"},
+            {"engine_host": "l", "display_name": "Lucia"},
+        ],
+    }
+    sm = _v1_to_stream_metadata(_v1_payload(now, station=station), show_upcoming=False)
+    assert sm.artist == "Giulia"
+
+
+def test_v1_voice_without_host_falls_back_to_station_display_names() -> None:
+    """The real banter fix: station hosts are display_name dicts, not strings."""
+    now = {"segment_class": "voice", "segment_type": "banter", "title": None, "host": None}
+    station = {
+        "name": "mammamiradio",
+        "hosts": [
+            {"engine_host": "g", "display_name": "Gianni"},
+            {"engine_host": "l", "display_name": "Lucia"},
+        ],
+    }
+    sm = _v1_to_stream_metadata(_v1_payload(now, station=station), show_upcoming=False)
+    assert sm.title == "Host banter"
+    assert sm.artist == "Gianni, Lucia"
+
+
+def test_v1_interstitial_titles_with_station_artist() -> None:
+    """An interstitial (ad / station id) carries its label and the station as artist."""
+    now = {"segment_class": "interstitial", "segment_type": "ad", "title": "Ad break"}
+    sm = _v1_to_stream_metadata(_v1_payload(now), show_upcoming=False)
+    assert sm.title == "Ad break"
+    assert sm.artist == "mammamiradio"
+
+
+def test_v1_unavailable_renders_idle_station_frame() -> None:
+    """An 'unavailable' segment renders the station name and suppresses the description."""
+    now = {"segment_class": "unavailable", "segment_type": "skipping", "title": None}
+    sm = _v1_to_stream_metadata(_v1_payload(now, up_next=[{"title": "Next"}]), show_upcoming=True)
+    assert sm.title == "mammamiradio"
+    assert sm.description is None
+
+
+def test_v1_no_now_playing_is_idle() -> None:
+    """session_state stopped/empty_queue (now_playing null) renders the station name."""
+    sm = _v1_to_stream_metadata(_v1_payload(None), show_upcoming=True)
+    assert sm.title == "mammamiradio"
+    assert sm.description is None
+
+
+def test_v1_unknown_segment_class_renders_idle_not_leak() -> None:
+    """A future additive segment_class degrades to the idle station frame, not a leak."""
+    now = {"segment_class": "future_thing", "segment_type": "promo", "title": "Promo X"}
+    sm = _v1_to_stream_metadata(_v1_payload(now), show_upcoming=False)
+    assert sm.title == "mammamiradio"
+
+
+def test_v1_up_next_description_when_show_upcoming() -> None:
+    """The 'Up next' frame surfaces the next item's title."""
+    sm = _v1_to_stream_metadata(_V1_MUSIC, show_upcoming=True)
+    assert sm.description == "Up next: Chiacchiere"
+
+
+def test_v1_no_up_next_description_on_now_frame() -> None:
+    """The 'Now' frame carries no description (no 'A casa' in the v1 contract)."""
+    sm = _v1_to_stream_metadata(_V1_MUSIC, show_upcoming=False)
+    assert sm.description is None
+
+
+def test_v1_mapper_is_total_against_malformed_payload() -> None:
+    """Non-dict now_playing / non-list up_next / non-dict station never raise."""
+    payload = {"station": ["x"], "now_playing": ["not", "a", "dict"], "up_next": {"bad": 1}}
+    sm = _v1_to_stream_metadata(payload, show_upcoming=True)
+    assert sm.title == "mammamiradio"
+    assert sm.description is None
+
+
+# ---------------------------------------------------------------------------
+# v1 now-playing contract — `_update_from_v1` callback (stateful)
+# ---------------------------------------------------------------------------
+
+
+async def test_v1_callback_populates_from_contract(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """The v1 callback polls the contract endpoint and sets stream_metadata."""
+    provider._use_v1 = True
+    details = await _details_for(provider)
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(_V1_MUSIC, etag='W/"v1"'))
+    await provider._update_stream_metadata(details, 0)
+    assert details.stream_metadata.title == "Volare"
+    assert details.stream_metadata.artist == "Modugno"
+    assert mass_mock.http_session.get.call_args.args[0].endswith("/api/integrations/v1/now-playing")
+
+
+async def test_v1_callback_alternates_now_then_upnext(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """Call 1 renders the Now frame; call 2 (same segment) flips to the Up-next frame."""
+    provider._use_v1 = True
+    details = await _details_for(provider)
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(_V1_MUSIC, etag='W/"v1"'))
+    await provider._update_stream_metadata(details, 0)
+    desc_now = details.stream_metadata.description
+    assert desc_now is None
+    await provider._update_stream_metadata(details, 0)
+    desc_next = details.stream_metadata.description
+    assert desc_next == "Up next: Chiacchiere"
+
+
+async def test_v1_callback_304_reuses_cache_and_keeps_alternating(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A 304 reuses the cached payload (conditional poll) and still flips the view."""
+    provider._use_v1 = True
+    details = await _details_for(provider)
+    mass_mock.http_session.get = MagicMock(
+        side_effect=[
+            _make_v1_ctx(_V1_MUSIC, status=200, etag='W/"v1"'),
+            _make_v1_ctx(None, status=304),
+        ]
+    )
+    await provider._update_stream_metadata(details, 0)  # 200 -> Now frame
+    desc_now = details.stream_metadata.description
+    assert desc_now is None
+    await provider._update_stream_metadata(details, 0)  # 304 -> Up-next from cache
+    desc_next = details.stream_metadata.description
+    assert desc_next == "Up next: Chiacchiere"
+    # The second request was conditional on the stored ETag.
+    second_call = mass_mock.http_session.get.call_args_list[1]
+    assert second_call.kwargs["headers"]["If-None-Match"] == 'W/"v1"'
+
+
+async def test_v1_callback_swallows_unreachable_keeps_prior(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A mid-stream connection failure must not raise and keeps the prior frame."""
+    provider._use_v1 = True
+    details = await _details_for(provider)
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(_V1_MUSIC, etag='W/"v1"'))
+    await provider._update_stream_metadata(details, 0)
+    prior = details.stream_metadata
+    mass_mock.http_session.get = MagicMock(
+        return_value=_make_failing_ctx(aiohttp.ClientConnectionError("nope"))
+    )
+    await provider._update_stream_metadata(details, 0)  # must not raise
+    assert details.stream_metadata is prior
+
+
+async def test_v1_callback_resets_alternation_on_segment_change(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """
+    A new segment resets the alternation back to the Now frame.
+
+    Keyed on segment identity (segment_type/title/started_at), not the addon's
+    ``changed_at`` clock, so a mid-segment queue-append does not snap to Now.
+    """
+    provider._use_v1 = True
+    details = await _details_for(provider)
+    other = {**_V1_MUSIC, "now_playing": {**_V1_MUSIC["now_playing"], "title": "OtherSong"}}
+    mass_mock.http_session.get = MagicMock(
+        side_effect=[
+            _make_v1_ctx(_V1_MUSIC, etag='W/"a"'),
+            _make_v1_ctx(_V1_MUSIC, etag='W/"a"'),
+            _make_v1_ctx(other, etag='W/"b"'),
+        ]
+    )
+    await provider._update_stream_metadata(details, 0)  # Now
+    d1 = details.stream_metadata.description
+    await provider._update_stream_metadata(details, 0)  # Up-next
+    d2 = details.stream_metadata.description
+    await provider._update_stream_metadata(details, 0)  # new segment -> reset to Now
+    d3 = details.stream_metadata.description
+    assert d1 is None
+    assert d2 == "Up next: Chiacchiere"
+    assert d3 is None
+    assert details.stream_metadata.title == "OtherSong"
+
+
+async def test_get_stream_details_uses_contract_audio_format(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """
+    After init against a v1 contract, get_stream_details reflects the contract's format.
+
+    Locks the end-to-end plumbing with a NON-default format (the default test
+    payload is bit-identical to the fallback defaults, which would hide a
+    regression where _audio_format() ignored the cached contract).
+    """
+    contract = {
+        **_V1_MUSIC,
+        "stream": {
+            "relative_url": "/stream",
+            "audio_format": {
+                "codec": "aac",
+                "bitrate_kbps": 256,
+                "sample_rate_hz": 44100,
+                "channels": 1,
+            },
+        },
+    }
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(contract, etag='W/"a"'))
+    await provider.handle_async_init()
+    details = await provider.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
+    assert details.audio_format.content_type == ContentType.AAC
+    assert details.audio_format.bit_rate == 256
+    assert details.audio_format.sample_rate == 44100
+    assert details.audio_format.channels == 1
+
+
+async def test_v1_callback_swallows_mapper_exception(
+    provider: MammamiradioProvider,
+    mass_mock: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The v1 callback's try/except backstop keeps the prior frame if the mapper raises."""
+    provider._use_v1 = True
+    details = await _details_for(provider)
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(_V1_MUSIC, etag='W/"a"'))
+    await provider._update_stream_metadata(details, 0)
+    prior = details.stream_metadata
+
+    def _boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("v1 mapper blew up")
+
+    monkeypatch.setattr("music_assistant.providers.mammamiradio._v1_to_stream_metadata", _boom)
+    other = {**_V1_MUSIC, "now_playing": {**_V1_MUSIC["now_playing"], "title": "X"}}
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(other, etag='W/"b"'))
+    await provider._update_stream_metadata(details, 0)  # must not raise
+    assert details.stream_metadata is prior
+
+
+async def test_v1_callback_cold_cache_304_keeps_prior(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A 304 with no cached payload (cold cache) is a no-op, not a crash."""
+    provider._use_v1 = True
+    details = await _details_for(provider)
+    assert details.stream_metadata is None
+    mass_mock.http_session.get = MagicMock(
+        return_value=_make_v1_ctx(None, status=304, etag='W/"x"')
+    )
+    await provider._update_stream_metadata(details, 0)  # must not raise
+    assert details.stream_metadata is None
+
+
+async def test_v1_callback_idle_no_now_playing(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A live response with session_state empty_queue / now_playing=null renders idle, no raise."""
+    provider._use_v1 = True
+    details = await _details_for(provider)
+    idle: dict[str, Any] = {
+        "schema_version": "1",
+        "station": {"name": "mammamiradio", "hosts": []},
+        "stream": {"relative_url": "/stream", "audio_format": _V1_AUDIO_FORMAT},
+        "now_playing": None,
+        "up_next": [],
+        "session_state": "empty_queue",
+        "changed_at": 0.0,
+    }
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(idle, etag='W/"i"'))
+    await provider._update_stream_metadata(details, 0)  # must not raise
+    assert details.stream_metadata.title == "mammamiradio"
+    assert details.stream_metadata.description is None
+
+
+async def test_v1_callback_without_etag_polls_unconditionally(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """
+    If the addon omits the ETag header, the provider degrades gracefully.
+
+    Each tick is a fresh 200 with no If-None-Match sent — the 304 optimization is
+    simply unavailable, not a failure.
+    """
+    provider._use_v1 = True
+    details = await _details_for(provider)
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(_V1_MUSIC))  # no etag
+    await provider._update_stream_metadata(details, 0)
+    assert details.stream_metadata.title == "Volare"
+    await provider._update_stream_metadata(details, 0)
+    second = mass_mock.http_session.get.call_args_list[1]
+    assert "If-None-Match" not in second.kwargs.get("headers", {})
+
+
+def test_legacy_banter_dict_hosts_use_display_name() -> None:
+    """The /public-status fallback path also fixes the host-dict bug (real addon shape)."""
+    brand = {
+        "station_name": "mammamiradio",
+        "hosts": [
+            {"engine_host": "g", "display_name": "Gianni"},
+            {"engine_host": "l", "display_name": "Lucia"},
+        ],
+    }
+    sm = _segment_to_stream_metadata(
+        {"type": "banter", "label": ""}, [], {}, brand, show_upcoming=False
+    )
+    assert sm.artist == "Gianni, Lucia"
+
+
+# ---------------------------------------------------------------------------
 # Live integration smoke (opt-in via MAMMAMIRADIO_LIVE_URL)
 # ---------------------------------------------------------------------------
 
 
 async def test_live_stream_smoke() -> None:
-    """Live smoke test against a running mammamiradio addon. Skipped by default.
+    """
+    Live smoke test against a running mammamiradio addon. Skipped by default.
 
     Opt in by setting ``MAMMAMIRADIO_LIVE_URL`` (e.g. ``http://localhost:8000``).
     Verifies handle_async_init, browse, and get_stream_details against a real
