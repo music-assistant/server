@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.errors import UnsupportedFeaturedException
+from music_assistant_models.player import PlayerSource
 
 from music_assistant.controllers.players import PlayerController
 from tests.common import MockPlayer, MockProvider
@@ -54,6 +55,12 @@ def mock_mass() -> MagicMock:
 def controller(mock_mass: MagicMock) -> PlayerController:
     """Create a PlayerController instance."""
     return PlayerController(mock_mass)
+
+
+@pytest.fixture
+def provider(mock_mass: MagicMock) -> MockProvider:
+    """Create a mock provider."""
+    return MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
 
 
 class TestSetMembersValidation:
@@ -670,6 +677,94 @@ class TestPlayMediaOverride:
         assert power_calls == []
         # ... and play_media was issued directly on the member
         assert played_on == ["member"]
+
+
+class TestExternalSourcePlayPause:
+    """Pause/play handling for externally-initiated sources (no active output protocol)."""
+
+    @staticmethod
+    def _make_external_source_player(
+        provider: MockProvider,
+        controller: PlayerController,
+        mock_mass: MagicMock,
+        *,
+        playback_state: PlaybackState,
+        can_play_pause: bool = True,
+        supports_pause: bool = True,
+    ) -> MockPlayer:
+        """Build a player playing a passive external source, with no active output protocol."""
+        player = MockPlayer(provider, "player_1", "Test Player")
+        player._attr_supported_features = {PlayerFeature.PAUSE} if supports_pause else set()
+        player._attr_source_list = [
+            PlayerSource(
+                id="spotify",
+                name="Spotify",
+                passive=True,
+                can_play_pause=can_play_pause,
+                can_next_previous=True,
+                can_seek=True,
+            )
+        ]
+        player._attr_active_source = "spotify"
+        player._attr_playback_state = playback_state
+        player._cache.clear()
+        controller._players = {"player_1": player}
+        mock_mass.players = controller
+        mock_mass.player_queues = MagicMock()
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        player.update_state(signal_event=False)
+        return player
+
+    def test_pause_external_source_forwards_to_player(
+        self, mock_mass: MagicMock, controller: PlayerController, provider: MockProvider
+    ) -> None:
+        """Pausing a pausable external source forwards to the player, not STOP."""
+        player = self._make_external_source_player(
+            provider, controller, mock_mass, playback_state=PlaybackState.PLAYING
+        )
+        player.pause = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+
+        asyncio.run(controller._handle_cmd_pause("player_1"))
+
+        player.pause.assert_awaited_once()
+        controller._handle_cmd_stop.assert_not_called()
+
+    def test_play_external_source_unpauses_player(
+        self, mock_mass: MagicMock, controller: PlayerController, provider: MockProvider
+    ) -> None:
+        """Unpausing a paused external source forwards to the player, not a restart."""
+        player = self._make_external_source_player(
+            provider, controller, mock_mass, playback_state=PlaybackState.PAUSED
+        )
+        player.play = AsyncMock()  # type: ignore[method-assign]
+        player.play_media = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_select_source = AsyncMock()  # type: ignore[method-assign]
+
+        asyncio.run(controller._handle_cmd_play("player_1"))
+
+        player.play.assert_awaited_once()
+        player.play_media.assert_not_called()
+        controller._handle_select_source.assert_not_called()
+
+    def test_pause_falls_back_to_stop_without_pause_support(
+        self, mock_mass: MagicMock, controller: PlayerController, provider: MockProvider
+    ) -> None:
+        """A player that cannot pause natively still falls back to STOP."""
+        player = self._make_external_source_player(
+            provider,
+            controller,
+            mock_mass,
+            playback_state=PlaybackState.PLAYING,
+            supports_pause=False,
+        )
+        player.pause = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+
+        asyncio.run(controller._handle_cmd_pause("player_1"))
+
+        controller._handle_cmd_stop.assert_awaited_once()
+        player.pause.assert_not_called()
 
 
 if __name__ == "__main__":
