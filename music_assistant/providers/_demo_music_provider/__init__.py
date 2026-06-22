@@ -199,7 +199,8 @@ class MyDemoMusicprovider(MusicProvider):
         media_types: list[MediaType],
         limit: int = 5,
     ) -> SearchResults:
-        """Perform search on musicprovider.
+        """
+        Perform search on musicprovider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include.
@@ -212,7 +213,7 @@ class MyDemoMusicprovider(MusicProvider):
         # in general you should return a list of MediaItems for each media type.
         # For radio, a simple search of the available channel names is acceptable
 
-    async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
+    async def get_library_artists(self) -> AsyncGenerator[Artist]:
         """Retrieve library artists from the provider."""
         # OPTIONAL
         # Will only be called if you reported the LIBRARY_ARTISTS feature
@@ -252,7 +253,7 @@ class MyDemoMusicprovider(MusicProvider):
             },
         )
 
-    async def get_library_albums(self) -> AsyncGenerator[Album, None]:
+    async def get_library_albums(self) -> AsyncGenerator[Album]:
         """Retrieve library albums from the provider."""
         # OPTIONAL
         # Will only be called if you reported the LIBRARY_ALBUMS feature
@@ -268,7 +269,7 @@ class MyDemoMusicprovider(MusicProvider):
         # the 'sync_library' method.
         yield  # type: ignore[misc]
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """Retrieve library tracks from the provider."""
         # OPTIONAL
         # Will only be called if you reported the LIBRARY_TRACKS feature
@@ -284,7 +285,7 @@ class MyDemoMusicprovider(MusicProvider):
         # the 'sync_library' method.
         yield  # type: ignore[misc]
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve library/subscribed playlists from the provider."""
         # OPTIONAL
         # Will only be called if you reported the LIBRARY_PLAYLISTS feature
@@ -300,7 +301,7 @@ class MyDemoMusicprovider(MusicProvider):
         # the 'sync_library' method.
         yield  # type: ignore[misc]
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
         # OPTIONAL
         # Will only be called if you reported the LIBRARY_RADIOS feature
@@ -338,6 +339,9 @@ class MyDemoMusicprovider(MusicProvider):
         # to avoid too many calls to the provider's API.
         # You can use the @use_cache decorator from music_assistant.controllers.cache
         # to easily apply caching to this method.
+        # As this returns a collection that also serves as good fallback data, decorate it with
+        # allow_expired_cache=True, e.g. @use_cache(3600 * 24, allow_expired_cache=True).
+        # That serves the stale result instantly while refreshing it in the background.
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:  # type: ignore[empty-body]
         """Get a list of most popular tracks for the given artist."""
@@ -348,6 +352,9 @@ class MyDemoMusicprovider(MusicProvider):
         # to avoid too many calls to the provider's API.
         # You can use the @use_cache decorator from music_assistant.controllers.cache
         # to easily apply caching to this method.
+        # As this returns a collection that also serves as good fallback data, decorate it with
+        # allow_expired_cache=True, e.g. @use_cache(3600 * 24, allow_expired_cache=True).
+        # That serves the stale result instantly while refreshing it in the background.
 
     async def get_album(self, prov_album_id: str) -> Album:  # type: ignore[empty-body]
         """Get full album details by id."""
@@ -396,6 +403,9 @@ class MyDemoMusicprovider(MusicProvider):
         # to avoid too many calls to the provider's API.
         # You can use the @use_cache decorator from music_assistant.controllers.cache
         # to easily apply caching to this method.
+        # As this returns a collection that also serves as good fallback data, decorate it with
+        # allow_expired_cache=True, e.g. @use_cache(3600 * 24, allow_expired_cache=True).
+        # That serves the stale result instantly while refreshing it in the background.
 
     async def get_playlist_tracks(  # type: ignore[empty-body]
         self,
@@ -409,6 +419,9 @@ class MyDemoMusicprovider(MusicProvider):
         # to avoid too many calls to the provider's API.
         # You can use the @use_cache decorator from music_assistant.controllers.cache
         # to easily apply caching to this method.
+        # As this returns a collection that also serves as good fallback data, decorate it with
+        # allow_expired_cache=True, e.g. @use_cache(3600 * 3, allow_expired_cache=True).
+        # That serves the stale result instantly while refreshing it in the background.
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to provider's library. Return true on success."""
@@ -449,6 +462,9 @@ class MyDemoMusicprovider(MusicProvider):
         # to avoid too many calls to the provider's API.
         # You can use the @use_cache decorator from music_assistant.controllers.cache
         # to easily apply caching to this method.
+        # As this returns a collection that also serves as good fallback data, decorate it with
+        # allow_expired_cache=True, e.g. @use_cache(3600 * 24, allow_expired_cache=True).
+        # That serves the stale result instantly while refreshing it in the background.
 
     async def get_resume_position(  # type: ignore[empty-body]
         self, item_id: str, media_type: MediaType
@@ -478,6 +494,10 @@ class MyDemoMusicprovider(MusicProvider):
         # podcasts or audiobooks, this may as well be an episode or chapter id.
         # You should return a StreamDetails object here with the info as accurate as possible
         # to allow Music Assistant to process the audio using ffmpeg.
+        # IMPORTANT: Streaming providers (ie. is_streaming_provider = True) are NOT allowed
+        # to cache any audio data from the provider locally. Streaming providers must always
+        # return a valid stream url in the StreamDetails with an optional encryption key in
+        # case  of encrypted streams.
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -501,7 +521,7 @@ class MyDemoMusicprovider(MusicProvider):
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    ) -> AsyncGenerator[bytes]:
         """
         Return the (custom) audio stream for the provider item.
 
@@ -575,7 +595,8 @@ class MyDemoMusicprovider(MusicProvider):
         return path
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse this provider's items.
+        """
+        Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
         """

@@ -1,5 +1,11 @@
 """Tests for utility/helper functions."""
 
+import errno
+import logging
+import os
+from pathlib import Path
+from unittest.mock import patch
+
 import pytest
 
 from music_assistant.providers.filesystem_local import helpers
@@ -112,3 +118,118 @@ def test_get_artist_dir() -> None:
 def test_get_album_dir(album_name: str, track_dir: str, expected: str) -> None:
     """Test the extraction of an album dir."""
     assert helpers.get_album_dir(track_dir, album_name) == expected
+
+
+SUPPORTED = {"mp3", "flac"}
+
+
+def _build_music_tree(root: Path) -> None:
+    """Create a small music tree fixture."""
+    (root / "Artist1" / "Album1").mkdir(parents=True)
+    (root / "Artist1" / "Album1" / "track1.mp3").write_bytes(b"x")
+    (root / "Artist1" / "Album1" / "track2.flac").write_bytes(b"x")
+    (root / "Artist2").mkdir()
+    (root / "Artist2" / "track3.mp3").write_bytes(b"x")
+
+
+def test_recursive_iter_happy_path(tmp_path: Path) -> None:
+    """Test that a healthy scan yields all supported files and records no errors."""
+    _build_music_tree(tmp_path)
+    errors: list[OSError] = []
+    items = list(
+        helpers.recursive_iter(
+            str(tmp_path),
+            str(tmp_path),
+            SUPPORTED,
+            logging.getLogger("test"),
+            errors,
+        )
+    )
+    rel_paths = sorted(i.relative_path for i in items)
+    assert rel_paths == [
+        "Artist1/Album1/track1.mp3",
+        "Artist1/Album1/track2.flac",
+        "Artist2/track3.mp3",
+    ]
+    assert errors == []
+
+
+def test_recursive_iter_root_unreachable_records_error(tmp_path: Path) -> None:
+    """Test that a missing root path is reported via scan_errors."""
+    errors: list[OSError] = []
+    missing = tmp_path / "does-not-exist"
+    items = list(
+        helpers.recursive_iter(
+            str(missing),
+            str(missing),
+            SUPPORTED,
+            logging.getLogger("test"),
+            errors,
+        )
+    )
+    assert items == []
+    assert len(errors) == 1
+    assert errors[0].errno == errno.ENOENT
+
+
+def test_recursive_iter_root_eacces_records_error() -> None:
+    """Test that permission-denied on the root path is reported via scan_errors."""
+    errors: list[OSError] = []
+    with patch("os.scandir", side_effect=PermissionError(errno.EACCES, "denied")):
+        items = list(
+            helpers.recursive_iter(
+                "/fake/root",
+                "/fake/root",
+                SUPPORTED,
+                logging.getLogger("test"),
+                errors,
+            )
+        )
+    assert items == []
+    assert len(errors) == 1
+    assert errors[0].errno == errno.EACCES
+
+
+def test_recursive_iter_subfolder_failure_is_not_fatal(tmp_path: Path) -> None:
+    """Test that a sub-folder scan failure does not populate scan_errors."""
+    _build_music_tree(tmp_path)
+    errors: list[OSError] = []
+    real_scandir = os.scandir
+    bad_dir = str(tmp_path / "Artist1" / "Album1")
+
+    def fake_scandir(path: str | os.PathLike[str]):  # type: ignore[no-untyped-def]
+        if str(path) == bad_dir:
+            raise OSError(errno.EIO, "i/o error")
+        return real_scandir(path)
+
+    with patch("os.scandir", side_effect=fake_scandir):
+        items = list(
+            helpers.recursive_iter(
+                str(tmp_path),
+                str(tmp_path),
+                SUPPORTED,
+                logging.getLogger("test"),
+                errors,
+            )
+        )
+
+    rel_paths = sorted(i.relative_path for i in items)
+    assert rel_paths == ["Artist2/track3.mp3"]
+    assert errors == []
+
+
+def test_recursive_iter_einval_is_ignored() -> None:
+    """Test that EINVAL from an unsupported path name is not recorded."""
+    errors: list[OSError] = []
+    with patch("os.scandir", side_effect=OSError(errno.EINVAL, "invalid path")):
+        items = list(
+            helpers.recursive_iter(
+                "/weird/\udcff",
+                "/weird/\udcff",
+                SUPPORTED,
+                logging.getLogger("test"),
+                errors,
+            )
+        )
+    assert items == []
+    assert errors == []

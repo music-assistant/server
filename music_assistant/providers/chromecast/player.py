@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
@@ -20,7 +21,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerUnavailableError
 from music_assistant_models.player import PlayerSource
 from pychromecast import IDLE_APP_ID
-from pychromecast.controllers.media import STREAM_TYPE_BUFFERED, STREAM_TYPE_LIVE
+from pychromecast.controllers.media import STREAM_TYPE_LIVE
 from pychromecast.controllers.multizone import MultizoneController
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 
@@ -77,12 +78,13 @@ class ChromecastPlayer(Player):
         self.status_listener: CastStatusListener | None
         self.cast_info = cast_info
         self.mz_controller: MultizoneController | None = None
+        self.on_app_status_changed: Callable[[str | None], None] | None = None
         self.last_poll = 0.0
+        self.last_multichannel_check = 0.0
         self.flow_meta_checksum: str | None = None
         # set static variables
         self._attr_supported_features = {
             PlayerFeature.PLAY_MEDIA,
-            PlayerFeature.POWER,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.PAUSE,
@@ -92,7 +94,6 @@ class ChromecastPlayer(Player):
         }
         self._attr_name = self.cast_info.friendly_name
         self._attr_available = False
-        self._attr_powered = False
         self._attr_needs_poll = True
         self._attr_type = player_type
         # Disable TV's by default
@@ -130,20 +131,6 @@ class ChromecastPlayer(Player):
         """Start the chromecast socket client (must be called after __init__)."""
         await asyncio.to_thread(self.cc.start)
 
-    @staticmethod
-    def _is_google_device(cast_info: ChromecastInfo) -> bool:
-        """Check if a device is a Google device with native Cast support.
-
-        Google devices (Chromecast, Nest, Google Home) have native Cast support
-        and should be exposed as PlayerType.PLAYER. Non-Google devices with Cast
-        support should be exposed as PlayerType.PROTOCOL.
-        """
-        if not cast_info.manufacturer:
-            # If no manufacturer, check model name for Google devices
-            model = cast_info.model_name.lower() if cast_info.model_name else ""
-            return any(google in model for google in ("chromecast", "google", "nest", "home"))
-        return cast_info.manufacturer.lower() in ("google", "google inc.")
-
     async def get_config_entries(
         self,
         action: str | None = None,
@@ -163,7 +150,10 @@ class ChromecastPlayer(Player):
 
     async def stop(self) -> None:
         """Send STOP command to given player."""
-        await asyncio.to_thread(self.cc.media_controller.stop)
+        if self.type == PlayerType.GROUP:
+            await asyncio.to_thread(self.cc.media_controller.stop)
+        else:
+            await asyncio.to_thread(self.cc.quit_app)
 
     async def play(self) -> None:
         """Send PLAY command to given player."""
@@ -186,7 +176,7 @@ class ChromecastPlayer(Player):
         await asyncio.to_thread(self.cc.media_controller.seek, position)
 
     async def power(self, powered: bool) -> None:
-        """Send POWER command to given player."""
+        """Send POWER command to given player (only for Cast Groups)."""
         if powered:
             await self._launch_app()
             self._attr_active_source = None
@@ -258,9 +248,7 @@ class ChromecastPlayer(Player):
 
     async def poll(self) -> None:
         """Poll player for state updates."""
-        # only update status of media controller if player is on
-        if not self.powered:
-            return
+        # only update status of media controller if media controller is active
         if not self.cc.media_controller.is_active:
             return
         try:
@@ -287,9 +275,47 @@ class ChromecastPlayer(Player):
         else:
             await asyncio.to_thread(self.cc.disconnect, 10)
 
+    ### Callbacks from Chromecast Statuslistener
+
+    def on_new_cast_status(self, status: CastStatus) -> None:
+        """Handle updated CastStatus (called from pychromecast socket thread)."""
+        if status is None or self.mass.closing:
+            return
+        # Dispatch to event loop for thread-safe attribute mutation
+        self.mass.loop.call_soon_threadsafe(self._handle_cast_status, status)
+
+    def on_new_media_status(self, status: MediaStatus) -> None:
+        """Handle updated MediaStatus (called from pychromecast socket thread)."""
+        if self.mass.closing:
+            return
+        # Dispatch to event loop for thread-safe attribute mutation
+        self.mass.loop.call_soon_threadsafe(self._handle_media_status, status)
+
+    def on_new_connection_status(self, status: ConnectionStatus) -> None:
+        """Handle updated ConnectionStatus (called from pychromecast socket thread)."""
+        if self.mass.closing:
+            return
+        # Dispatch to event loop for thread-safe attribute mutation
+        self.mass.loop.call_soon_threadsafe(self._handle_connection_status, status)
+
+    @staticmethod
+    def _is_google_device(cast_info: ChromecastInfo) -> bool:
+        """
+        Check if a device is a Google device with native Cast support.
+
+        Google devices (Chromecast, Nest, Google Home) have native Cast support
+        and should be exposed as PlayerType.PLAYER. Non-Google devices with Cast
+        support should be exposed as PlayerType.PROTOCOL.
+        """
+        if not cast_info.manufacturer:
+            # If no manufacturer, check model name for Google devices
+            model = cast_info.model_name.lower() if cast_info.model_name else ""
+            return any(google in model for google in ("chromecast", "google", "nest", "home"))
+        return cast_info.manufacturer.lower() in ("google", "google inc.")
+
     def _on_player_media_updated(self) -> None:
         """Handle callback when the current media of the player is updated."""
-        if not self.powered:
+        if self.powered is False:
             return
         if not self.cc.media_controller.status.player_is_playing:
             return
@@ -297,14 +323,14 @@ class ChromecastPlayer(Player):
             return
         if self._attr_playback_state != PlaybackState.PLAYING:
             return
-        if not (current_media := self.current_media):
+        if not (current_media := self.state.current_media):
             return
         if not (
-            "/flow/" in current_media.uri
-            or self.current_media.media_type
+            (self._attr_current_media and "/flow/" in self._attr_current_media.uri)
+            or current_media.media_type
             in (
                 MediaType.RADIO,
-                MediaType.PLUGIN_SOURCE,
+                MediaType.AUDIO_SOURCE,
             )
         ):
             # only update metadata for streams without known duration
@@ -401,17 +427,11 @@ class ChromecastPlayer(Player):
         except TimeoutError:
             self.logger.warning("Timed out waiting for app launch on %s", self.display_name)
             raise PlayerUnavailableError(
-                f"Timed out launching app on {self.display_name}"
+                f"Timed out launching app on {self.display_name}",
+                translation_key="app_launch_timeout",
+                translation_owner=self.translation_owner,
+                translation_args=[self.display_name],
             ) from None
-
-    ### Callbacks from Chromecast Statuslistener
-
-    def on_new_cast_status(self, status: CastStatus) -> None:
-        """Handle updated CastStatus (called from pychromecast socket thread)."""
-        if status is None or self.mass.closing:
-            return
-        # Dispatch to event loop for thread-safe attribute mutation
-        self.mass.loop.call_soon_threadsafe(self._handle_cast_status, status)
 
     def _handle_cast_status(self, status: CastStatus) -> None:
         """Process CastStatus on the event loop thread."""
@@ -436,32 +456,26 @@ class ChromecastPlayer(Player):
             self._attr_static_group_members = self._attr_group_members.copy()
             self._attr_supported_features = {
                 PlayerFeature.PLAY_MEDIA,
+                # only cast groups can be powered on/off as a group,
+                # so only add the POWER feature for groups
                 PlayerFeature.POWER,
                 PlayerFeature.VOLUME_SET,
                 PlayerFeature.VOLUME_MUTE,
                 PlayerFeature.PAUSE,
                 PlayerFeature.ENQUEUE,
             }
+            self._attr_powered = self.cc.app_id is not None and self.cc.app_id != IDLE_APP_ID
 
         # update player status
         self._attr_name = self.cast_info.friendly_name
         self._attr_volume_level = round(status.volume_level * 100)
         self._attr_volume_muted = status.volume_muted
-        new_powered = self.cc.app_id is not None and self.cc.app_id != IDLE_APP_ID
-        self._attr_powered = new_powered
-        if self._attr_powered and not new_powered and self.type == PlayerType.GROUP:
-            # group is being powered off, update group childs
-            for child_id in self.group_members:
-                if child := self.mass.players.get_player(child_id):
-                    child.update_state()
         self.update_state()
-
-    def on_new_media_status(self, status: MediaStatus) -> None:
-        """Handle updated MediaStatus (called from pychromecast socket thread)."""
-        if self.mass.closing:
-            return
-        # Dispatch to event loop for thread-safe attribute mutation
-        self.mass.loop.call_soon_threadsafe(self._handle_media_status, status)
+        if self.on_app_status_changed is not None:
+            try:
+                self.on_app_status_changed(status.app_id)
+            except Exception:
+                self.logger.exception("Error in app status callback for %s", self.display_name)
 
     def _handle_media_status(self, status: MediaStatus) -> None:  # noqa: PLR0915
         """Process MediaStatus on the event loop thread."""
@@ -558,13 +572,6 @@ class ChromecastPlayer(Player):
                     child.update_state()
         self.update_state()
 
-    def on_new_connection_status(self, status: ConnectionStatus) -> None:
-        """Handle updated ConnectionStatus (called from pychromecast socket thread)."""
-        if self.mass.closing:
-            return
-        # Dispatch to event loop for thread-safe attribute mutation
-        self.mass.loop.call_soon_threadsafe(self._handle_connection_status, status)
-
     def _handle_connection_status(self, status: ConnectionStatus) -> None:
         """Process ConnectionStatus on the event loop thread."""
         self.logger.log(
@@ -577,6 +584,11 @@ class ChromecastPlayer(Player):
         if status.status == CONNECTION_STATUS_DISCONNECTED:
             self._attr_available = False
             self.update_state()
+            if self.on_app_status_changed is not None:
+                try:
+                    self.on_app_status_changed(None)
+                except Exception:
+                    self.logger.exception("Error in app status callback for %s", self.display_name)
             return
 
         new_available = status.status == CONNECTION_STATUS_CONNECTED
@@ -616,10 +628,9 @@ class ChromecastPlayer(Player):
 
     def _create_cc_media_item(self, media: PlayerMedia, stream_url: str) -> dict[str, Any]:
         """Create CC media item from MA PlayerMedia."""
-        if "/flow/" in stream_url or media.media_type != MediaType.TRACK or not media.duration:
-            stream_type = STREAM_TYPE_LIVE
-        else:
-            stream_type = STREAM_TYPE_BUFFERED
+        # Always use LIVE stream type because MA streams are real-time encoded by FFmpeg,
+        # so they are not seekable and don't have a known content length.
+        stream_type = STREAM_TYPE_LIVE
         metadata = {
             "metadataType": 3,
             "albumName": media.album or "",
@@ -628,7 +639,7 @@ class ChromecastPlayer(Player):
             "title": media.title or "",
             "images": [{"url": media.image_url}] if media.image_url else None,
         }
-        file_ext = stream_url.split("?")[0].split(".")[-1].lower()
+        file_ext = stream_url.split("?", maxsplit=1)[0].rsplit(".", maxsplit=1)[-1].lower()
         return {
             "contentId": stream_url,
             "customData": {

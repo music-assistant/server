@@ -50,8 +50,10 @@ CONF_ALEXA_LANGUAGE = "alexa_language"
 
 ALEXA_LANGUAGE_COMMANDS = {
     "play_audio_de-DE": "sag music assistant spiele audio",
+    "play_audio_en-CA": "ask music assistant to play audio",
     "play_audio_en-US": "ask music assistant to play audio",
     "play_audio_es-ES": "pídele a music assistant que reproduzca audio",
+    "play_audio_fr-CA": "music assistant",
     "play_audio_fr-FR": "music assistant",
     "play_audio_it-IT": "chiedi a music assistant di riprodurre audio",
     "play_audio_pt-BR": "peça ao music assistant para reproduzir áudio",
@@ -150,43 +152,36 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_URL,
             type=ConfigEntryType.STRING,
-            label="URL",
             required=True,
             default_value="amazon.com",
         ),
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="E-Mail",
             required=True,
             value=values.get(CONF_USERNAME) if values else None,
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=True,
             value=values.get(CONF_PASSWORD) if values else None,
         ),
         ConfigEntry(
             key=CONF_AUTH_SECRET,
             type=ConfigEntryType.SECURE_STRING,
-            label="OTP Secret",
             required=False,
             value=values.get(CONF_AUTH_SECRET) if values else None,
         ),
         ConfigEntry(
             key=CONF_ACTION_AUTH,
             type=ConfigEntryType.ACTION,
-            label="Authenticate with Amazon",
-            description="Click to start the authentication process.",
             action=CONF_ACTION_AUTH,
             depends_on=CONF_URL,
         ),
         ConfigEntry(
             key=CONF_API_URL,
             type=ConfigEntryType.STRING,
-            label="API Url",
             default_value="http://localhost:5000",
             required=True,
             value=values.get(CONF_API_URL) if values else None,
@@ -194,29 +189,28 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_API_BASIC_AUTH_USERNAME,
             type=ConfigEntryType.STRING,
-            label="API Basic Auth Username",
             required=False,
             value=values.get(CONF_API_BASIC_AUTH_USERNAME) if values else None,
         ),
         ConfigEntry(
             key=CONF_API_BASIC_AUTH_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="API Basic Auth Password",
             required=False,
             value=values.get(CONF_API_BASIC_AUTH_PASSWORD) if values else None,
         ),
         ConfigEntry(
             key=CONF_ALEXA_LANGUAGE,
             type=ConfigEntryType.STRING,
-            label="Alexa Language",
             required=True,
             options=[
-                ConfigValueOption("English (USA)", "en-US"),
-                ConfigValueOption("German (Germany)", "de-DE"),
-                ConfigValueOption("Spanish (Spain)", "es-ES"),
-                ConfigValueOption("French (France)", "fr-FR"),
-                ConfigValueOption("Italian (Italy)", "it-IT"),
-                ConfigValueOption("Portuguese (Brazil)", "pt-BR"),
+                ConfigValueOption("en-US"),
+                ConfigValueOption("en-CA"),
+                ConfigValueOption("de-DE"),
+                ConfigValueOption("es-ES"),
+                ConfigValueOption("fr-FR"),
+                ConfigValueOption("fr-CA"),
+                ConfigValueOption("it-IT"),
+                ConfigValueOption("pt-BR"),
             ],
             default_value="en-US",  # choose a sensible default
         ),
@@ -242,7 +236,7 @@ async def save_cookie(login: AlexaLogin, username: str, mass: MusicAssistant) ->
         _LOGGER.debug("Saving cookie to %s", login._cookiefile[0])
     try:
         await asyncio.to_thread(cookie_jar.save, login._cookiefile[0])
-    except (OSError, EOFError, TypeError, AttributeError):
+    except OSError, EOFError, TypeError, AttributeError:
         _LOGGER.debug("Error saving pickled cookie to %s", login._cookiefile[0])
 
 
@@ -258,6 +252,31 @@ async def delete_cookie(cookiefile: str) -> None:
         _LOGGER.debug("Cookie file %s does not exist, nothing to delete.", cookiefile)
 
 
+async def load_cookie(login: AlexaLogin) -> dict[str, str] | None:
+    """
+    Restore a previously saved Alexa session into the login's aiohttp session.
+
+    :param login: The AlexaLogin whose session cookie jar should be populated.
+    """
+    cookiefile = login._cookiefile[0] if login._cookiefile else None
+    if not cookiefile or not await asyncio.to_thread(os.path.exists, cookiefile):
+        return None
+    if login._session is None:
+        login._create_session()
+    # aiohttp 3.14 saves the cookie jar as JSON, which alexapy's own load_cookie()
+    # cannot parse. Load it with aiohttp's loader into the session jar (preserving
+    # the cookie domains required for auth) and return the cookies for login().
+    cookie_jar = login._session.cookie_jar
+    assert isinstance(cookie_jar, aiohttp.CookieJar)
+    try:
+        await asyncio.to_thread(cookie_jar.load, cookiefile)
+    except (OSError, EOFError, TypeError, ValueError, AttributeError) as ex:
+        _LOGGER.debug("Error loading cookie from %s: %s", cookiefile, ex)
+        return None
+    cookies = login._get_cookies_from_session()
+    return cast("dict[str, str]", cookies) if cookies else None
+
+
 async def _request_with_session(
     session: aiohttp.ClientSession,
     method: str,
@@ -266,7 +285,8 @@ async def _request_with_session(
     timeout: int,
     auth: BasicAuth | None,
 ) -> str:
-    """Handle an API request with a provided aiohttp session.
+    """
+    Handle an API request with a provided aiohttp session.
 
     :param session: The aiohttp session to use.
     :param method: HTTP method to use for the request.
@@ -310,7 +330,8 @@ async def api_request(
     json_data: dict[str, Any] | None = None,
     timeout: int = 10,
 ) -> str:
-    """Send a request to the configured Music Assistant / Alexa API.
+    """
+    Send a request to the configured Music Assistant / Alexa API.
 
     Returns the response text on success or raises `ActionUnavailable` on failure.
     """
@@ -419,6 +440,10 @@ class AlexaPlayer(Player):
 
         payload = {
             "streamUrl": stream_url,
+            "title": media.title,
+            "artist": media.artist,
+            "album": media.album,
+            "imageUrl": media.image_url,
         }
 
         await api_request(
@@ -434,7 +459,7 @@ class AlexaPlayer(Player):
 
         alexa_locale = self.provider.config.get_value(CONF_ALEXA_LANGUAGE)
 
-        ask_command_key = f"play_audio_{alexa_locale if alexa_locale else 'default'}"
+        ask_command_key = f"play_audio_{alexa_locale or 'default'}"
 
         if ask_command_key not in ALEXA_LANGUAGE_COMMANDS:
             _LOGGER.debug(
@@ -457,7 +482,8 @@ class AlexaPlayer(Player):
         self.update_state()
 
     def _on_player_media_updated(self) -> None:
-        """Handle callback when the current media of the player is updated.
+        """
+        Handle callback when the current media of the player is updated.
 
         Upload the stream URL and media metadata (title/artist/album/imageUrl)
         to the configured Music Assistant / Alexa API so the Alexa side can
@@ -528,7 +554,7 @@ class AlexaProvider(PlayerProvider):
         )
         self.login._cookiefile = [self.login._outputpath(cookie_path)]
 
-        await self.login.login(cookies=await self.login.load_cookie())
+        await self.login.login(cookies=await load_cookie(self.login))
 
         devices = await AlexaAPI.get_devices(self.login)
 
@@ -569,7 +595,8 @@ class AlexaProvider(PlayerProvider):
             self._intents = []
 
     async def get_intent_utterance(self, intent_name: str, default: str) -> str:
-        """Return the first utterance for the given intent name (cached).
+        """
+        Return the first utterance for the given intent name (cached).
 
         If intents are not yet cached, attempt to load them.
         """

@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
+from music_assistant_models.enums import CrossfadeMode
+
+from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.controllers.streams.smart_fades.fades import (
     SmartCrossFade,
     SmartFade,
+    SmartFadeNotApplicable,
     StandardCrossFade,
 )
 from music_assistant.helpers.audio import align_audio_to_frame_boundary, strip_silence
-from music_assistant.models.smart_fades import (
-    SmartFadesAnalysis,
-    SmartFadesAnalysisFragment,
-    SmartFadesMode,
-)
+from music_assistant.models.audio_analysis import AudioAnalysisData
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
@@ -31,111 +32,122 @@ class SmartFadesMixer:
         self.streams = streams
         self.logger = streams.logger.getChild("smart_fades_mixer")
 
-    async def mix(
+    async def build(
         self,
-        fade_in_part: bytes,
-        fade_out_part: bytes,
         fade_in_streamdetails: StreamDetails,
         fade_out_streamdetails: StreamDetails,
         pcm_format: AudioFormat,
-        standard_crossfade_duration: int = 10,
-        mode: SmartFadesMode = SmartFadesMode.SMART_CROSSFADE,
-    ) -> bytes:
-        """Apply crossfade with internal state management and smart/standard fallback logic."""
-        if mode == SmartFadesMode.DISABLED:
-            # No crossfade, just concatenate
-            # Note that this should not happen since we check this before calling mix()
-            # but just to be sure...
-            return fade_out_part + fade_in_part
+        standard_crossfade_duration: int,
+        mode: CrossfadeMode,
+        fade_out_data: bytes,
+        fade_in_bytes_len: int,
+    ) -> SmartFade:
+        """
+        Pick the SmartFade implementation, prime its filters, and return it.
 
-        if mode == SmartFadesMode.STANDARD_CROSSFADE:
-            # strip silence from end of audio of fade_out_part
-            fade_out_part = await strip_silence(
-                fade_out_part,
+        For the standard crossfade path (explicit mode or smart-crossfade fallback)
+        the trailing silence in ``fade_out_data`` is measured so that ``timing_info``
+        reflects the audio that will actually be rendered.  The trim itself is deferred
+        to ``apply()``, which executes it as a plain slice — no bytes are modified here.
+
+        :param fade_in_streamdetails: Stream details for the incoming track.
+        :param fade_out_streamdetails: Stream details for the outgoing track.
+        :param pcm_format: Audio format of both input buffers (and mix output).
+        :param standard_crossfade_duration: Duration in seconds for standard crossfade.
+        :param mode: Smart fades mode (SMART_CROSSFADE or STANDARD_CROSSFADE).
+        :param fade_out_data: PCM buffer of the outgoing track's tail.
+        :param fade_in_bytes_len: Expected length in bytes of the fade-in input.
+        """
+        smart_fade: SmartFade | None = None
+        if mode == CrossfadeMode.SMART_CROSSFADE:
+            smart_fade = await self._build_smart_crossfade(
+                fade_in_streamdetails=fade_in_streamdetails,
+                fade_out_streamdetails=fade_out_streamdetails,
+                fade_out_bytes_len=len(fade_out_data),
+                fade_in_bytes_len=fade_in_bytes_len,
                 pcm_format=pcm_format,
-                reverse=True,
             )
-            # Ensure frame alignment after silence stripping
-            fade_out_part = align_audio_to_frame_boundary(fade_out_part, pcm_format)
-            # strip silence from begin of audio of fade_in_part
-            fade_in_part = await strip_silence(
-                fade_in_part,
-                pcm_format=pcm_format,
-                reverse=False,
-            )
-            # Ensure frame alignment after silence stripping
-            fade_in_part = align_audio_to_frame_boundary(fade_in_part, pcm_format)
-            smart_fade: SmartFade = StandardCrossFade(
+        if smart_fade is None:
+            # standard path — explicit mode AND smart-crossfade fallback land here.
+            # Measure the trailing silence here so timing_info reflects the audio that
+            # will actually be rendered; apply() executes the cut as a plain slice.
+            trailing_silence_bytes = 0
+            try:
+                stripped = align_audio_to_frame_boundary(
+                    await strip_silence(fade_out_data, pcm_format=pcm_format, reverse=True),
+                    pcm_format,
+                )
+                trailing_silence_bytes = max(0, len(fade_out_data) - len(stripped))
+            except Exception as err:
+                # a failed measurement degrades to the old late-boundary bookkeeping
+                # instead of killing the stream
+                self.logger.warning("Measuring trailing silence failed: %s", err)
+            smart_fade = StandardCrossFade(
                 logger=self.logger,
                 crossfade_duration=standard_crossfade_duration,
             )
-            return await smart_fade.apply(
-                fade_out_part,
-                fade_in_part,
-                pcm_format,
+            smart_fade.trailing_silence_bytes = trailing_silence_bytes
+            smart_fade._build(
+                len(fade_out_data) - trailing_silence_bytes, fade_in_bytes_len, pcm_format
             )
-        # Attempt smart crossfade with analysis data
-        fade_out_analysis: SmartFadesAnalysis | None
-        if stored_analysis := await self.streams.mass.music.get_smart_fades_analysis(
+        return smart_fade
+
+    async def mix(
+        self,
+        smart_fade: SmartFade,
+        fade_in_part: bytes | AsyncGenerator[bytes],
+        fade_out_part: bytes,
+        pcm_format: AudioFormat,
+    ) -> AsyncGenerator[bytes]:
+        """Run the already-built SmartFade and yield mixed PCM audio chunks."""
+        async for chunk in smart_fade.apply(fade_out_part, fade_in_part, pcm_format):
+            yield chunk
+
+    async def _build_smart_crossfade(
+        self,
+        fade_in_streamdetails: StreamDetails,
+        fade_out_streamdetails: StreamDetails,
+        fade_out_bytes_len: int,
+        fade_in_bytes_len: int,
+        pcm_format: AudioFormat,
+    ) -> SmartFade | None:
+        """Attempt to build a SmartCrossFade. Returns None when fallback is needed."""
+        fade_out_analysis: (
+            AudioAnalysisData | None
+        ) = await self.streams.audio_analysis.get_audio_analysis(
             fade_out_streamdetails.item_id,
             fade_out_streamdetails.provider,
-            SmartFadesAnalysisFragment.OUTRO,
-        ):
-            fade_out_analysis = stored_analysis
-        else:
-            fade_out_analysis = await self.streams.mass.streams.smart_fades_analyzer.analyze(
-                fade_out_streamdetails.item_id,
-                fade_out_streamdetails.provider,
-                SmartFadesAnalysisFragment.OUTRO,
-                fade_out_part,
-                pcm_format,
-            )
-
-        fade_in_analysis: SmartFadesAnalysis | None
-        if stored_analysis := await self.streams.mass.music.get_smart_fades_analysis(
+            priority=(SMART_FADES_ANALYSIS_DOMAIN,),
+        )
+        fade_in_analysis: (
+            AudioAnalysisData | None
+        ) = await self.streams.audio_analysis.get_audio_analysis(
             fade_in_streamdetails.item_id,
             fade_in_streamdetails.provider,
-            SmartFadesAnalysisFragment.INTRO,
-        ):
-            fade_in_analysis = stored_analysis
-        else:
-            fade_in_analysis = await self.streams.mass.streams.smart_fades_analyzer.analyze(
-                fade_in_streamdetails.item_id,
-                fade_in_streamdetails.provider,
-                SmartFadesAnalysisFragment.INTRO,
-                fade_in_part,
-                pcm_format,
-            )
-        if (
+            priority=(SMART_FADES_ANALYSIS_DOMAIN,),
+        )
+        if not (
             fade_out_analysis
             and fade_in_analysis
-            and fade_out_analysis.confidence > 0.3
-            and fade_in_analysis.confidence > 0.3
-            and mode == SmartFadesMode.SMART_CROSSFADE
+            and fade_out_analysis.bpm
+            and fade_in_analysis.bpm
+            and fade_out_analysis.beats is not None
+            and fade_in_analysis.beats is not None
         ):
-            try:
-                smart_fade = SmartCrossFade(
-                    logger=self.logger,
-                    fade_out_analysis=fade_out_analysis,
-                    fade_in_analysis=fade_in_analysis,
-                )
-                return await smart_fade.apply(
-                    fade_out_part,
-                    fade_in_part,
-                    pcm_format,
-                )
-            except Exception as e:
-                self.logger.warning(
-                    "Smart crossfade failed: %s, falling back to standard crossfade", e
-                )
-
-        # Always fallback to Standard Crossfade in case something goes wrong
-        smart_fade = StandardCrossFade(
-            logger=self.logger,
-            crossfade_duration=standard_crossfade_duration,
-        )
-        return await smart_fade.apply(
-            fade_out_part,
-            fade_in_part,
-            pcm_format,
-        )
+            return None
+        try:
+            smart_fade = SmartCrossFade(
+                logger=self.logger,
+                fade_out_analysis=fade_out_analysis,
+                fade_in_analysis=fade_in_analysis,
+            )
+            smart_fade._build(fade_out_bytes_len, fade_in_bytes_len, pcm_format)
+        except SmartFadeNotApplicable as e:
+            self.logger.debug("Smart crossfade not applicable: %s - using standard crossfade", e)
+            return None
+        except Exception as e:
+            self.logger.warning(
+                "Smart crossfade build failed: %s, falling back to standard crossfade", e
+            )
+            return None
+        return smart_fade

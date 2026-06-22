@@ -7,14 +7,13 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState, PlayerFeature
+from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 from propcache import under_cached_property as cached_property
 
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS, CONF_ENTRY_HTTP_PROFILE_HIDDEN
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
-from music_assistant.providers.snapcast.constants import CONF_ENTRY_SAMPLE_RATES_SNAPCAST
 from music_assistant.providers.snapcast.ma_stream import SnapcastMAStream
 from music_assistant.providers.sync_group.constants import SGP_PREFIX
 
@@ -26,7 +25,8 @@ if TYPE_CHECKING:
 
 
 class TrackedPlayerState(TypedDict, total=False):
-    """Tracked state for the Snapcast MA player.
+    """
+    Tracked state for the Snapcast MA player.
 
     It is used for change detection and state synchronization, and may be
     partially populated depending on which information is
@@ -53,6 +53,9 @@ class TrackedPlayerState(TypedDict, total=False):
 
 class SnapCastPlayer(Player):
     """SnapCastPlayer."""
+
+    # snapcast has fixed sample rate/bit depth
+    _attr_supported_sample_rates = [(48000, 16)]
 
     def __init__(
         self,
@@ -238,15 +241,9 @@ class SnapCastPlayer(Player):
         sync_group_player: Player | None = None
         if curr_ma_stream := self.snap_provider.get_snap_ma_stream(curr_stream_id):
             media = curr_ma_stream.media
-            if media.media_type == MediaType.PLUGIN_SOURCE:
-                custom_data = media.custom_data or {}
-                assigned_player = custom_data.get("player_id", "")
-                if assigned_player.startswith(SGP_PREFIX):
-                    sync_group_player = self.mass.players.get_player(assigned_player)
-            else:
-                media_src_id = media.source_id or ""
-                if media_src_id.startswith(SGP_PREFIX):
-                    sync_group_player = self.mass.players.get_player(media_src_id)
+            media_src_id = media.source_id or ""
+            if media_src_id.startswith(SGP_PREFIX):
+                sync_group_player = self.mass.players.get_player(media_src_id)
         if sync_group_player and self.player_id in (player_ids_to_remove or []):
             # players in sync_group_player.group_members will be rejoined
             # remove others first
@@ -368,7 +365,6 @@ class SnapCastPlayer(Player):
     ) -> list[ConfigEntry]:
         """Player config."""
         return [
-            CONF_ENTRY_SAMPLE_RATES_SNAPCAST,
             # we don't use the http server for streaming
             CONF_ENTRY_HTTP_PROFILE_HIDDEN,
         ]
@@ -398,7 +394,8 @@ class SnapCastPlayer(Player):
                 break
 
     async def _process_snapcast_client_state(self) -> bool:
-        """Process the latest Snapcast client state and apply changes to this player.
+        """
+        Process the latest Snapcast client state and apply changes to this player.
 
         Returns:
         True if changes were applied and a state update should be emitted via

@@ -150,10 +150,8 @@ async def test_handle_async_init_with_identity(provider: BandcampProvider) -> No
 async def test_handle_async_init_without_identity(mass_mock: Mock, manifest_mock: Mock) -> None:
     """Test async initialization without identity token."""
     config = Mock()
-    config.get_value.side_effect = (
-        lambda key, default=None: default
-        if default is not None
-        else ("INFO" if key == "log_level" else None)
+    config.get_value.side_effect = lambda key, default=None: (
+        default if default is not None else ("INFO" if key == "log_level" else None)
     )
     provider = BandcampProvider(mass_mock, manifest_mock, config)
 
@@ -589,7 +587,8 @@ async def test_fetch_api_track_not_found_error(provider: BandcampProvider) -> No
 
 
 async def test_fetch_api_track_rate_limit_error(provider: BandcampProvider) -> None:
-    """Test _fetch_api_track converts BandcampRateLimitError.
+    """
+    Test _fetch_api_track converts BandcampRateLimitError.
 
     Since @throttle_with_retries is on _fetch_api_track, persistent rate
     limiting exhausts retries and raises RetriesExhausted.
@@ -752,7 +751,7 @@ async def test_get_library_tracks_success(provider: BandcampProvider) -> None:
         patch.object(provider, "get_album_tracks", new_callable=AsyncMock) as mock_get_tracks,
     ):
         # Make get_library_albums an async generator
-        async def mock_albums_gen() -> AsyncGenerator[Mock, None]:
+        async def mock_albums_gen() -> AsyncGenerator[Mock]:
             yield Mock(item_id="123-456")
 
         mock_get_albums.return_value = mock_albums_gen()
@@ -787,6 +786,96 @@ async def test_fetch_api_track_login_error(provider: BandcampProvider) -> None:
         pytest.raises(LoginFailed, match=r"login is invalid or expired"),
     ):
         await provider._fetch_api_track("123-456-789")
+
+
+# --- Recommendations tests ---
+
+
+async def test_recommendations_returns_feed_and_wishlist(provider: BandcampProvider) -> None:
+    """Test recommendations surfaces the feed and wishlist as folders."""
+    feed_track = Mock()
+    wishlist_album = Mock()
+
+    with (
+        patch.object(provider, "_get_feed_tracks", new_callable=AsyncMock) as mock_feed,
+        patch.object(provider, "_browse_person_content", new_callable=AsyncMock) as mock_wishlist,
+    ):
+        mock_feed.return_value = [feed_track]
+        mock_wishlist.return_value = [wishlist_album]
+
+        folders = await provider.recommendations()
+
+        mock_wishlist.assert_called_once_with(None, CollectionType.WISHLIST)
+        assert [f.name for f in folders] == ["Bandcamp Feed", "Wishlist"]
+        assert feed_track in folders[0].items
+        assert wishlist_album in folders[1].items
+        # Both folders must be playable; browsing their slug resolves to tracks
+        # (see test_browse_feed_returns_tracks and the existing wishlist browse tests).
+        assert all(f.is_playable for f in folders)
+
+
+async def test_browse_feed_returns_tracks(provider: BandcampProvider) -> None:
+    """Test browsing the feed slug resolves to the feed tracks (the play path for the folder)."""
+    feed_track = Mock()
+    with patch.object(provider, "_get_feed_tracks", new_callable=AsyncMock) as mock_feed:
+        mock_feed.return_value = [feed_track]
+
+        result = await provider.browse("bandcamp_test://feed")
+
+        assert result == [feed_track]
+
+
+async def test_recommendations_no_identity(provider: BandcampProvider) -> None:
+    """Test recommendations returns nothing without an identity token."""
+    provider._client.identity = None
+    assert await provider.recommendations() == []
+
+
+async def test_recommendations_omits_empty_folders(provider: BandcampProvider) -> None:
+    """Test that empty feed and wishlist produce no folders."""
+    with (
+        patch.object(provider, "_get_feed_tracks", new_callable=AsyncMock) as mock_feed,
+        patch.object(provider, "_browse_person_content", new_callable=AsyncMock) as mock_wishlist,
+    ):
+        mock_feed.return_value = []
+        mock_wishlist.return_value = []
+
+        assert await provider.recommendations() == []
+
+
+async def test_get_feed_tracks_filters_non_streamable(provider: BandcampProvider) -> None:
+    """Test _get_feed_tracks skips tracks without a streaming URL and caches the result."""
+    streamable = Mock(streaming_url={"mp3-128": "https://example.com/feed.mp3"})
+    silent = Mock(streaming_url=None)
+    converted = Mock()
+
+    with (
+        patch.object(provider, "_fetch_feed", new_callable=AsyncMock) as mock_fetch,
+        patch.object(
+            provider._converters, "track_from_feed", return_value=converted
+        ) as mock_convert,
+    ):
+        mock_fetch.return_value = Mock(track_list=[streamable, silent])
+
+        result = await provider._get_feed_tracks()
+
+        mock_convert.assert_called_once_with(streamable)
+        assert result == [converted]
+        cast("AsyncMock", provider.mass.cache.set).assert_called_once()
+
+
+async def test_get_feed_tracks_cache_hit(provider: BandcampProvider) -> None:
+    """Test _get_feed_tracks returns cached tracks without hitting the API."""
+    cached = [Mock()]
+
+    with (
+        patch.object(provider.mass.cache, "get", new_callable=AsyncMock, return_value=cached),
+        patch.object(provider, "_fetch_feed", new_callable=AsyncMock) as mock_fetch,
+    ):
+        result = await provider._get_feed_tracks()
+
+        mock_fetch.assert_not_called()
+        assert result == cached
 
 
 # --- Browse tests ---
@@ -1602,18 +1691,20 @@ async def test_browse_person_following_with_person_id(provider: BandcampProvider
 
 
 async def test_browse_person_following_cache_hit(provider: BandcampProvider) -> None:
-    """Test _browse_person_following deserializes cached dicts back to Artist objects."""
-    cached_items = [
+    """Test _browse_person_following returns cached Artist objects without calling API."""
+    cached_artists = [
         Artist(
             item_id="100",
             provider="bandcamp",
             name="Cached Artist",
             provider_mappings=set(),
-        ).to_dict(),
+        ),
     ]
 
     with (
-        patch.object(provider.mass.cache, "get", new_callable=AsyncMock, return_value=cached_items),
+        patch.object(
+            provider.mass.cache, "get", new_callable=AsyncMock, return_value=cached_artists
+        ),
         patch.object(
             provider, "_get_all_collection_items", new_callable=AsyncMock
         ) as mock_get_collection,
@@ -1646,26 +1737,6 @@ async def test_browse_person_following_skips_not_found(provider: BandcampProvide
         result = await provider._browse_person_following(42)
 
         assert len(result) == 1
-
-
-async def test_browse_person_following_cache_hit_stale_data(
-    provider: BandcampProvider, caplog: pytest.LogCaptureFixture
-) -> None:
-    """Test _browse_person_following falls through to API on stale/corrupt cache."""
-    stale_cache = [{"garbage": True}]
-
-    with (
-        patch.object(provider.mass.cache, "get", new_callable=AsyncMock, return_value=stale_cache),
-        patch.object(
-            provider, "_get_all_collection_items", new_callable=AsyncMock
-        ) as mock_get_collection,
-    ):
-        mock_get_collection.return_value = []
-        result = await provider._browse_person_following(42)
-
-        mock_get_collection.assert_called_once()
-        assert result == []
-        assert "Stale cache" in caplog.text
 
 
 # --- _browse_person_people tests ---
@@ -1715,16 +1786,16 @@ async def test_browse_person_people_cache_hit_rebuilds_slugs(
             provider="bandcamp_test",
             path="bandcamp_test://fans/coolslug",
             name="Cool User",
-        ).to_dict(),
+        ),
         BrowseFolder(
             item_id="person_222",
             provider="bandcamp_test",
             path="bandcamp_test://fans/anotherslug",
             name="Another User",
-        ).to_dict(),
+        ),
     ]
 
-    async def fake_cache_get(key: str, **kwargs: object) -> list[dict[str, object]] | None:  # noqa: ARG001
+    async def fake_cache_get(key: str, **kwargs: object) -> list[BrowseFolder] | None:  # noqa: ARG001
         if "_browse_person_people_" in key:
             return cached_folders
         return None
@@ -1744,34 +1815,6 @@ async def test_browse_person_people_cache_hit_rebuilds_slugs(
     assert result[1].name == "Another User"
     assert provider._slug_to_fan_id["coolslug"] == 111
     assert provider._slug_to_fan_id["anotherslug"] == 222
-
-
-async def test_browse_person_people_cache_hit_stale_data(
-    provider: BandcampProvider, caplog: pytest.LogCaptureFixture
-) -> None:
-    """Test _browse_person_people falls through to API on stale/corrupt cache."""
-    stale_cache = [{"garbage": True}]
-
-    async def fake_cache_get(key: str, **kwargs: object) -> object:  # noqa: ARG001
-        if "_browse_person_people_" in key:
-            return stale_cache
-        return None
-
-    with (
-        patch.object(provider.mass.cache, "get", new_callable=AsyncMock) as mock_cache_get,
-        patch.object(
-            provider, "_get_all_collection_items", new_callable=AsyncMock
-        ) as mock_get_collection,
-    ):
-        mock_cache_get.side_effect = fake_cache_get
-        mock_get_collection.return_value = []
-        result = await provider._browse_person_people(
-            CollectionType.FOLLOWING_FANS, "bandcamp_test://fans"
-        )
-
-        mock_get_collection.assert_called_once()
-        assert result == []
-        assert "Stale cache" in caplog.text
 
 
 async def test_rebuild_slug_cache_calls_browse_person_people(
@@ -1928,9 +1971,9 @@ async def test_get_library_artists_paginates(provider: BandcampProvider) -> None
 
         assert len(artists) == 2
         assert mock_get.call_count == 2
-        # Band IDs 100 and 200 from pages 1 and 2
+        # Band IDs 100 and 200 from pages 1 and 2, converted to str per base class contract
         called_ids = {call.args[0] for call in mock_get_artist.call_args_list}
-        assert called_ids == {100, 200}
+        assert called_ids == {"100", "200"}
 
 
 async def test_get_all_collection_items_error_mid_pagination(
@@ -1955,7 +1998,8 @@ async def test_get_all_collection_items_error_mid_pagination(
 async def test_browse_person_content_returns_only_resolved_items(
     provider: BandcampProvider,
 ) -> None:
-    """Test that _browse_person_content returns only resolved Album/Track objects.
+    """
+    Test that _browse_person_content returns only resolved Album/Track objects.
 
     Regression test: a previous version reused the same list variable for both
     the raw API items and the resolved results, which mixed CollectionItem

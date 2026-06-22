@@ -3,9 +3,16 @@
   "domain": "kion_music",
   "stage": "beta",
   "name": "KION Music",
-  "description": "Stream music from KION Music (MTS) service.",
-  "codeowners": ["@TrudenBoy"],
+  "description": "Stream music, personalized recommendations, and lossless FLAC from KION Music — including My Wave radio and library sync.",
+  "codeowners": [
+    "@TrudenBoy"
+  ],
+  "credits": [
+    "[yandex-music-api](https://github.com/MarshalX/yandex-music-api)"
+  ],
   "documentation": "https://music-assistant.io/music-providers/kion-music/",
-  "requirements": ["yandex-music==2.2.0"],
+  "requirements": [
+    "yandex-music==3.0.0"
+  ],
   "multi_instance": true
 }

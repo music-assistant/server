@@ -9,10 +9,8 @@ without deadlocking.
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import logging
 import os
-import sys
 
 # if TYPE_CHECKING:
 from collections.abc import AsyncGenerator
@@ -37,31 +35,6 @@ def get_subprocess_env(env: dict[str, str] | None = None) -> dict[str, str]:
     return result
 
 
-def _try_increase_pipe_buffer(proc: asyncio.subprocess.Process) -> None:
-    """Try to increase pipe buffer size on Linux for smoother audio streaming.
-
-    Default Linux pipe buffer is 64KB. This increases it to 1MB to reduce
-    the chance of FFmpeg stalling on write when the consumer is briefly slow.
-    """
-    if sys.platform != "linux":
-        return
-    target_size = 1024 * 1024  # 1 MB
-    f_setpipe_sz = 1031  # F_SETPIPE_SZ
-    for stream in (proc.stdin, proc.stdout):
-        if stream is None:
-            continue
-        try:
-            # StreamWriter has .transport, StreamReader has ._transport
-            transport = getattr(stream, "transport", None) or getattr(stream, "_transport", None)
-            if transport is None:
-                continue
-            pipe_handle = transport.get_extra_info("pipe")
-            if pipe_handle is not None:
-                fcntl.fcntl(pipe_handle.fileno(), f_setpipe_sz, target_size)
-        except (OSError, AttributeError) as err:
-            LOGGER.debug("Failed to increase pipe buffer size: %s", err)
-
-
 class AsyncProcess:
     """
     AsyncProcess.
@@ -83,7 +56,8 @@ class AsyncProcess:
         name: str | None = None,
         env: dict[str, str] | None = None,
     ) -> None:
-        """Initialize AsyncProcess.
+        """
+        Initialize AsyncProcess.
 
         :param args: Command and arguments to execute.
         :param stdin: Stdin configuration (True for PIPE, False for None, or custom).
@@ -151,12 +125,11 @@ class AsyncProcess:
             env=self._env,
             bufsize=0,
         )
-        _try_increase_pipe_buffer(self.proc)
         self.logger.log(
             VERBOSE_LOG_LEVEL, "Process %s started with PID %s", self.name, self.proc.pid
         )
 
-    async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
+    async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes]:
         """Yield chunks of n size from the process stdout."""
         while True:
             chunk = await self.readexactly(n)
@@ -164,7 +137,7 @@ class AsyncProcess:
                 break
             yield chunk
 
-    async def iter_any(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
+    async def iter_any(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes]:
         """Yield chunks as they come in from process stdout."""
         while True:
             chunk = await self.read(n)
@@ -185,7 +158,8 @@ class AsyncProcess:
                 return err.partial
 
     async def read(self, n: int) -> bytes:
-        """Read up to n bytes from the stdout stream.
+        """
+        Read up to n bytes from the stdout stream.
 
         If n is positive, this function try to read n bytes,
         and may return less or equal bytes than requested, but at least one byte.
@@ -205,12 +179,8 @@ class AsyncProcess:
         if self.proc.stdin is None:
             return
         async with self._stdin_lock:
-            mv = memoryview(data)
-            chunk_size = 65536
-            with suppress(BrokenPipeError, ConnectionResetError):
-                for i in range(0, len(mv), chunk_size):
-                    self.proc.stdin.write(mv[i : i + chunk_size])
-                    await self.proc.stdin.drain()
+            self.proc.stdin.write(data)
+            await self.proc.stdin.drain()
 
     async def write_eof(self) -> None:
         """Write end of file to to process stdin."""
@@ -253,7 +223,7 @@ class AsyncProcess:
                 # raise for all other (value) errors
                 raise
 
-    async def iter_stderr(self) -> AsyncGenerator[str, None]:
+    async def iter_stderr(self) -> AsyncGenerator[str]:
         """Iterate lines from the stderr stream as string."""
         line: str | bytes
         while True:

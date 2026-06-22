@@ -4,6 +4,7 @@
     'album_type': 'album',
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -13,8 +14,10 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -22,6 +25,7 @@
             dict({
               'path': 'https://resources.tidal.com/images/1234/5678/90ab/cdef/750x750.jpg',
               'provider': 'tidal_instance',
+              'proxy_id': None,
               'remotely_accessible': True,
               'type': 'thumb',
             }),
@@ -65,7 +69,6 @@
           }),
         ]),
         'sort_name': 'test artist',
-        'translation_key': None,
         'uri': 'tidal_instance://artist/12345',
         'version': '',
       }),
@@ -83,8 +86,10 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': '℗ 2023 Test Label',
       'description': None,
+      'description_language': None,
       'explicit': False,
       'genres': None,
       'grouping': None,
@@ -92,6 +97,7 @@
         dict({
           'path': 'https://resources.tidal.com/images/abcd/ef01/2345/6789/750x750.jpg',
           'provider': 'tidal_instance',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -135,7 +141,6 @@
       }),
     ]),
     'sort_name': 'test album',
-    'translation_key': None,
     'uri': 'tidal_instance://album/67890',
     'version': 'Deluxe Edition',
     'year': 2023,
@@ -143,6 +148,7 @@
 # ---
 # name: test_parse_artist[artist]
   dict({
+    'artist_type': 'singer',
     'date_added': '2024-06-10T12:00:00+00:00',
     'external_ids': list([
     ]),
@@ -152,8 +158,10 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -161,6 +169,7 @@
         dict({
           'path': 'https://resources.tidal.com/images/1234/5678/90ab/cdef/750x750.jpg',
           'provider': 'tidal_instance',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -204,7 +213,6 @@
       }),
     ]),
     'sort_name': 'test artist',
-    'translation_key': None,
     'uri': 'tidal_instance://artist/12345',
     'version': '',
   })
@@ -222,8 +230,10 @@
     'media_type': 'playlist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'A personalized mix just for you',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -231,6 +241,7 @@
         dict({
           'path': 'http://example.com/mix-medium.jpg',
           'provider': 'tidal_instance',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -279,6 +290,7 @@
       'track',
     ]),
     'translation_key': None,
+    'translation_params': None,
     'uri': 'tidal_instance://playlist/mix_mix_123',
     'version': '',
   })
@@ -296,8 +308,10 @@
     'media_type': 'playlist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -305,6 +319,7 @@
         dict({
           'path': 'https://resources.tidal.com/images/playlist/square/image/id/750x750.jpg',
           'provider': 'tidal_instance',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -353,6 +368,7 @@
       'track',
     ]),
     'translation_key': None,
+    'translation_params': None,
     'uri': 'tidal_instance://playlist/aabbcc-1122-3344-5566',
     'version': '',
   })
@@ -377,6 +393,7 @@
     }),
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -386,8 +403,10 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -395,6 +414,7 @@
             dict({
               'path': 'https://resources.tidal.com/images/1234/5678/90ab/cdef/750x750.jpg',
               'provider': 'tidal_instance',
+              'proxy_id': None,
               'remotely_accessible': True,
               'type': 'thumb',
             }),
@@ -438,7 +458,6 @@
           }),
         ]),
         'sort_name': 'test artist',
-        'translation_key': None,
         'uri': 'tidal_instance://artist/12345',
         'version': '',
       }),
@@ -459,8 +478,10 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': '℗ 2023 Test Label',
       'description': None,
+      'description_language': None,
       'explicit': False,
       'genres': None,
       'grouping': None,
@@ -468,6 +489,7 @@
         dict({
           'path': 'https://resources.tidal.com/images/abcd/ef01/2345/6789/750x750.jpg',
           'provider': 'tidal_instance',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -512,7 +534,6 @@
     ]),
     'sort_name': 'test track',
     'track_number': 1,
-    'translation_key': None,
     'uri': 'tidal_instance://track/112233',
     'version': 'Remastered',
   })

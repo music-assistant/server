@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import PlaybackState
 
+from music_assistant.helpers.images import player_image_url
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.providers.airplay.constants import AIRPLAY_PCM_FORMAT
 from music_assistant.providers.airplay.helpers import generate_active_remote_id
@@ -22,7 +23,8 @@ if TYPE_CHECKING:
 
 
 class AirPlayProtocol(ABC):
-    """Base class for AirPlay streaming protocols (RAOP and AirPlay2).
+    """
+    Base class for AirPlay streaming protocols (RAOP and AirPlay2).
 
     This class contains common logic shared between protocol implementations,
     with abstract methods for protocol-specific behavior.
@@ -38,7 +40,8 @@ class AirPlayProtocol(ABC):
         self,
         player: AirPlayPlayer,
     ) -> None:
-        """Initialize base AirPlay protocol.
+        """
+        Initialize base AirPlay protocol.
 
         Args:
             player: The player to stream to
@@ -53,22 +56,32 @@ class AirPlayProtocol(ABC):
         self._cli_proc: AsyncProcess | None = None
         self.commands_pipe = AsyncNamedPipeWriter(
             f"/tmp/{self.player.protocol.value}-{self.player.player_id}-{self.active_remote_id}-cmd",  # noqa: S108
+            owner_id=self.player.player_id,
         )
         self._stopped = False
         self._total_bytes_sent = 0
         self._stream_bytes_sent = 0
         self._connected = asyncio.Event()
         self._metadata_checksum = ""
-        self._last_metadata_sent: float = 0.0
+        self._last_progress_sent: int = -1
+        self._elapsed_time_offset: float | None = None
+        self._cli_start_ts: float | None = None
+        self._connected_ts: float | None = None
 
     @property
     def running(self) -> bool:
         """Return boolean if this stream is running."""
         return not self._stopped and self._cli_proc is not None and not self._cli_proc.closed
 
+    @property
+    def connected(self) -> bool:
+        """Return boolean if the stream connection has been established."""
+        return self._connected.is_set()
+
     @abstractmethod
     async def start(self, start_ntp: int) -> None:
-        """Start the CLI process.
+        """
+        Start the CLI process.
 
         :param start_ntp: NTP timestamp to start streaming.
         """
@@ -85,6 +98,8 @@ class AirPlayProtocol(ABC):
         self.mass.call_later(2, self.send_cli_command(f"VOLUME={volume}"))
         # we also need to send the metadata after connection, because some players (e.g. Sonos)
         # simply won't start playback until they receive the metadata ?!
+        # reset checksum so the resend isn't blocked by deduplication
+        self._metadata_checksum = ""
         self.mass.call_later(2, self.player._on_player_media_updated)
 
     async def stop(self, force: bool = False) -> None:
@@ -93,9 +108,15 @@ class AirPlayProtocol(ABC):
 
         :param force: If True, immediately kill the process without graceful shutdown.
         """
-        # always send stop command first
-        await self.send_cli_command("ACTION=STOP")
-        self._stopped = True
+        # Send STOP first and only flip ``_stopped`` once the write returns.
+        # Flipping the flag too early lets concurrent cleanup coroutines that
+        # check ``_stopped`` (e.g. ``send_cli_command`` short-circuit) assume
+        # teardown is done before STOP has actually reached the CLI child.
+        # Use try/finally so the flag still flips if the write raises.
+        try:
+            await self.send_cli_command("ACTION=STOP")
+        finally:
+            self._stopped = True
         await self.commands_pipe.remove()
         if force:
             # Kill immediately - skip write_eof() as it can block indefinitely
@@ -110,7 +131,8 @@ class AirPlayProtocol(ABC):
         self.player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0)
 
     async def write_audio(self, data: bytes) -> None:
-        """Write raw audio data to the CLI process stdin.
+        """
+        Write raw audio data to the CLI process stdin.
 
         :param data: Raw audio bytes to send to the streaming process.
         """
@@ -146,21 +168,17 @@ class AirPlayProtocol(ABC):
             album = metadata.album or ""
 
             metadata_checksum = f"{title}|{artist}|{album}|{duration}|{metadata.image_url}"
-            if (
-                metadata_checksum == self._metadata_checksum
-                and time.time() - self._last_metadata_sent <= 2
-            ):
-                # metadata has not changed since last time, skip sending to CLI
+            if metadata_checksum == self._metadata_checksum:
                 return
             self._metadata_checksum = metadata_checksum
-            self._last_metadata_sent = time.time()
 
             cmd = f"TITLE={title}\nARTIST={artist}\nALBUM={album}\n"
             cmd += f"DURATION={duration}\nPROGRESS=0\nACTION=SENDMETA\n"
 
             await self.send_cli_command(cmd)
-            # get image
-            if metadata.image_url:
-                await self.send_cli_command(f"ARTWORK={metadata.image_url}")
-        if progress is not None:
+            self._last_progress_sent = 0
+            if artwork_url := player_image_url(self.mass, metadata.image_url):
+                await self.send_cli_command(f"ARTWORK={artwork_url}")
+        if progress is not None and abs(progress - self._last_progress_sent) >= 2:
+            self._last_progress_sent = progress
             await self.send_cli_command(f"PROGRESS={progress}")

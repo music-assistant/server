@@ -50,7 +50,7 @@ jobs:
           echo "Release channel: $CHANNEL"
 
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0 # Fetch all history for proper comparison
 
@@ -200,11 +200,41 @@ jobs:
 
                 # Check if it's already a beta version (e.g., 2.7.0b1)
                 if [[ "$BETA_VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)b([0-9]+)$ ]]; then
-                  BASE_VERSION="${BASH_REMATCH[1]}"
+                  BETA_BASE="${BASH_REMATCH[1]}"
                   BETA_NUM="${BASH_REMATCH[2]}"
-                  NEXT_BETA=$((BETA_NUM + 1))
-                  NEW_VERSION="${BASE_VERSION}b${NEXT_BETA}"
-                  echo "Incrementing existing beta: ${LAST_BETA_TAG} -> ${NEW_VERSION}"
+
+                  # Extract major.minor from beta base
+                  if [[ "$BETA_BASE" =~ ^([0-9]+)\.([0-9]+)\.[0-9]+$ ]]; then
+                    BETA_MAJOR="${BASH_REMATCH[1]}"
+                    BETA_MINOR="${BASH_REMATCH[2]}"
+                  fi
+
+                  # Check if stable has caught up to or surpassed the beta base version
+                  NEED_NEW_CYCLE=false
+                  if [ -n "$LAST_STABLE_TAG" ]; then
+                    STABLE_VERSION=$(echo "$LAST_STABLE_TAG" | sed 's/^v//')
+                    if [[ "$STABLE_VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+                      STABLE_MAJOR="${BASH_REMATCH[1]}"
+                      STABLE_MINOR="${BASH_REMATCH[2]}"
+
+                      if [ "$STABLE_MAJOR" -gt "$BETA_MAJOR" ] || \
+                         ([ "$STABLE_MAJOR" -eq "$BETA_MAJOR" ] && [ "$STABLE_MINOR" -ge "$BETA_MINOR" ]); then
+                        NEED_NEW_CYCLE=true
+                      fi
+                    fi
+                  fi
+
+                  if [ "$NEED_NEW_CYCLE" = true ]; then
+                    # Stable has caught up or surpassed beta — start new beta cycle
+                    NEXT_MINOR=$((STABLE_MINOR + 1))
+                    NEW_VERSION="${STABLE_MAJOR}.${NEXT_MINOR}.0b1"
+                    echo "Starting new beta cycle: stable ${LAST_STABLE_TAG} >= beta base ${BETA_BASE} -> ${NEW_VERSION}"
+                  else
+                    # Beta is still ahead of stable, increment beta number
+                    NEXT_BETA=$((BETA_NUM + 1))
+                    NEW_VERSION="${BETA_BASE}b${NEXT_BETA}"
+                    echo "Incrementing existing beta: ${LAST_BETA_TAG} -> ${NEW_VERSION}"
+                  fi
                 else
                   # Should not happen, but fallback
                   NEW_VERSION="0.1.0b1"
@@ -320,12 +350,10 @@ jobs:
       contents: write
       pull-requests: read
       packages: write
-      id-token: write # Required for PyPI publishing
     uses: ./.github/workflows/release.yml
     with:
       version: ${{ needs.check-and-release.outputs.version }}
       channel: ${{ needs.check-and-release.outputs.channel }}
       important_notes: ${{ inputs.important_notes }}
     secrets:
-      PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
       PRIVILEGED_GITHUB_TOKEN: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}

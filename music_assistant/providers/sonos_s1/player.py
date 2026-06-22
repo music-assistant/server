@@ -20,7 +20,7 @@ from soco import SoCoException
 from soco.core import MUSIC_SRC_RADIO, SoCo
 from soco.data_structures import DidlAudioBroadcast
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL, create_sample_rates_config_entry
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
@@ -34,14 +34,15 @@ from .constants import (
     POSITION_SECONDS,
     RESUB_COOLDOWN_SECONDS,
     SONOS_STATE_TRANSITIONING,
+    SOURCE_LINEIN,
     SOURCE_MAPPING,
+    SOURCE_TV,
     SUBSCRIPTION_SERVICES,
     SUBSCRIPTION_TIMEOUT,
 )
 from .helpers import SonosUpdateError, soco_error
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
     from soco.events_base import Event as SonosEvent
     from soco.events_base import SubscriptionBase
 
@@ -57,6 +58,9 @@ class SonosSubscriptionsFailed(PlayerCommandFailed):
 
 class SonosPlayer(Player):
     """Sonos Player implementation for S1 speakers."""
+
+    # S1 hardware is fixed to 16-bit at 44.1/48 kHz
+    _attr_supported_sample_rates = [(44100, 16), (48000, 16)]
 
     def __init__(
         self,
@@ -98,33 +102,6 @@ class SonosPlayer(Player):
         subscribed_services = {sub.service.service_type for sub in self._subscriptions}
         return SUBSCRIPTION_SERVICES - subscribed_services
 
-    def _extract_mac_from_player_id(self) -> str | None:
-        """Extract MAC address from Sonos player_id.
-
-        Sonos player_ids follow the format RINCON_XXXXXXXXXXXX01400 where
-        the middle 12 hex characters represent the MAC address.
-
-        :return: MAC address string in XX:XX:XX:XX:XX:XX format, or None if not extractable.
-        """
-        # Remove RINCON_ prefix if present
-        player_id = self.player_id
-        player_id = player_id.removeprefix("RINCON_")
-
-        # Remove the 01400 suffix (or similar) - should be last 5 chars
-        if len(player_id) >= 17:  # 12 hex chars for MAC + 5 chars suffix
-            mac_hex = player_id[:12]
-        else:
-            return None
-
-        # Validate it looks like a MAC (all hex characters)
-        try:
-            int(mac_hex, 16)
-        except ValueError:
-            return None
-
-        # Format as XX:XX:XX:XX:XX:XX
-        return ":".join(mac_hex[i : i + 2].upper() for i in range(0, 12, 2))
-
     async def setup(self) -> None:
         """Set up the player."""
         self._attr_volume_level = self.soco.volume
@@ -149,20 +126,6 @@ class SonosPlayer(Player):
 
         self.update_state()
         await self.unsubscribe()
-
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
-        """Return all (provider/player specific) Config Entries for the player."""
-        return [
-            create_sample_rates_config_entry(
-                supported_sample_rates=[44100, 48000],
-                supported_bit_depths=[16],
-                hidden=True,
-            ),
-        ]
 
     async def stop(self) -> None:
         """Send STOP command to the player."""
@@ -233,7 +196,12 @@ class SonosPlayer(Player):
                 f"Player {self.display_name} can not "
                 "accept play_media command, it is synced to another player."
             )
-            raise PlayerCommandFailed(msg)
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="play_media_synced",
+                translation_owner=self.translation_owner,
+                translation_args=[self.display_name],
+            )
 
         stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         if not media.duration:
@@ -257,7 +225,12 @@ class SonosPlayer(Player):
                 f"Player {self.display_name} can not "
                 "accept enqueue command, it is synced to another player."
             )
-            raise PlayerCommandFailed(msg)
+            raise PlayerCommandFailed(
+                msg,
+                translation_key="enqueue_synced",
+                translation_owner=self.translation_owner,
+                translation_args=[self.display_name],
+            )
 
         didl_metadata = create_didl_metadata(media)
         stream_url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
@@ -273,6 +246,21 @@ class SonosPlayer(Player):
 
         await asyncio.to_thread(add_to_queue)
         self.mass.call_later(2, self.poll)
+
+    async def select_source(self, source: str) -> None:
+        """Handle SELECT SOURCE command on the player."""
+        if source in LINEIN_SOURCE_IDS:
+
+            def _switch_to_linein() -> None:
+                if source == SOURCE_TV:
+                    self.soco.switch_to_tv()
+                elif source == SOURCE_LINEIN:
+                    self.soco.switch_to_line_in()
+
+            await asyncio.to_thread(_switch_to_linein)
+            self.mass.call_later(2, self.poll)
+        else:
+            await self.stop()
 
     @soco_error()
     async def set_members(
@@ -354,35 +342,10 @@ class SonosPlayer(Player):
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
         self.update_player()
 
-    async def _check_availability(self) -> None:
-        """Check if the player is still available."""
-        try:
-            await asyncio.to_thread(self.ping)
-            self._speaker_activity("ping")
-        except SonosUpdateError:
-            if not self._attr_available:
-                return
-            self.logger.warning(
-                "No recent activity and cannot reach %s, marking unavailable",
-                self.display_name,
-            )
-            await self.offline()
-
     @soco_error()
     def ping(self) -> None:
         """Test device availability. Failure will raise SonosUpdateError."""
         self.soco.renderingControl.GetVolume([("InstanceID", 0), ("Channel", "Master")], timeout=1)
-
-    @soco_error()
-    def _poll_track_info(self) -> dict[str, Any]:
-        """Poll the speaker for current track info.
-
-        Add converted position values (NOT async fiendly).
-        """
-        track_info: dict[str, Any] = self.soco.get_current_track_info()
-        track_info[DURATION_SECONDS] = _timespan_secs(track_info.get("duration"))
-        track_info[POSITION_SECONDS] = _timespan_secs(track_info.get("position"))
-        return track_info
 
     def update_player(self, signal_update: bool = True) -> None:
         """Update Sonos Player."""
@@ -392,34 +355,6 @@ class SonosPlayer(Player):
             # when we're just updating from a manual poll, the player manager
             # will detect changes to the player object itself
             self.mass.loop.call_soon_threadsafe(self.update_state)
-
-    async def _subscribe_target(
-        self, target: SubscriptionBase, sub_callback: Callable[[SonosEvent], None]
-    ) -> None:
-        """Create a Sonos subscription for given target."""
-
-        def on_renew_failed(exception: Exception) -> None:
-            """Handle a failed subscription renewal callback."""
-            self.mass.create_task(self._renew_failed(exception))
-
-        # Use events_asyncio which makes subscribe() async-awaitable
-        subscription = await target.subscribe(
-            auto_renew=True, requested_timeout=SUBSCRIPTION_TIMEOUT
-        )
-        subscription.callback = sub_callback
-        subscription.auto_renew_fail = on_renew_failed
-        self._subscriptions.append(subscription)
-
-    async def _renew_failed(self, exception: Exception) -> None:
-        """Mark the speaker as offline after a subscription renewal failure.
-
-        This is to reset the state to allow a future clean subscription attempt.
-        """
-        if not self._attr_available:
-            return
-
-        self.log_subscription_result(exception, "Subscription renewal", logging.WARNING)
-        await self.offline()
 
     def log_subscription_result(self, result: Any, event: str, level: int = logging.DEBUG) -> None:
         """Log a message if a subscription action (create/renew/stop) results in an exception."""
@@ -482,6 +417,194 @@ class SonosPlayer(Player):
         for result in results:
             self.log_subscription_result(result, "Unsubscribe")
         self._subscriptions = []
+
+    def update_groups(self) -> None:
+        """Update group topology when polling."""
+        asyncio.run_coroutine_threadsafe(self.create_update_groups_coro(), self.mass.loop)
+
+    def create_update_groups_coro(
+        self, event: SonosEvent | None = None
+    ) -> Coroutine[Any, Any, None]:
+        """Handle callback for topology change event."""
+
+        def _get_soco_group() -> list[str]:
+            """Ask SoCo cache for existing topology."""
+            coordinator_uid = self.soco.uid
+            joined_uids = []
+            with contextlib.suppress(OSError, SoCoException):
+                if self.soco.group and self.soco.group.coordinator:
+                    coordinator_uid = self.soco.group.coordinator.uid
+                    joined_uids = [
+                        p.uid
+                        for p in self.soco.group.members
+                        if p.uid != coordinator_uid and p.is_visible
+                    ]
+
+            return [coordinator_uid, *joined_uids]
+
+        async def _extract_group(event: SonosEvent | None) -> list[str]:
+            """Extract group layout from a topology event."""
+            group = event and event.zone_player_uui_ds_in_group
+            if group:
+                assert isinstance(group, str)
+                return group.split(",")
+            return await asyncio.to_thread(_get_soco_group)
+
+        def _regroup(group: list[str]) -> None:
+            """Rebuild internal group layout (async safe)."""
+            if group == [self.soco.uid] and not self._attr_group_members:
+                # Skip updating existing single speakers in polling mode
+                return
+
+            group_members_ids = []
+
+            for uid in group:
+                speaker = self.mass.players.get_player(uid)
+                if speaker:
+                    group_members_ids.append(uid)
+                else:
+                    self.logger.debug(
+                        "%s group member unavailable (%s), will try again",
+                        self.display_name,
+                        uid,
+                    )
+                    return
+
+            if self._attr_group_members == group_members_ids:
+                # Useful in polling mode for speakers with stereo pairs or surrounds
+                # as those "invisible" speakers will bypass the single speaker check
+                return
+
+            self._attr_group_members = group_members_ids
+            self.mass.loop.call_soon_threadsafe(self.update_state)
+
+            self.logger.debug("Regrouped %s: %s", self.display_name, self._attr_group_members)
+            self.update_player()
+
+        async def _handle_group_event(event: SonosEvent | None) -> None:
+            """Get async lock and handle event."""
+            _provider = cast("SonosPlayerProvider", self._provider)
+            async with _provider.topology_condition:
+                group = await _extract_group(event)
+                if self.soco.uid == group[0]:
+                    _regroup(group)
+                    _provider.topology_condition.notify_all()
+
+        return _handle_group_event(event)
+
+    async def wait_for_groups(self, groups: list[list[SonosPlayer]]) -> None:
+        """Wait until all groups are present, or timeout."""
+
+        def _test_groups(groups: list[list[SonosPlayer]]) -> bool:
+            """Return whether all groups exist now."""
+            for group in groups:
+                coordinator = group[0]
+
+                # Test that coordinator is coordinating
+                current_group = coordinator.group_members
+                if coordinator != current_group[0]:
+                    return False
+
+                # Test that joined members match
+                if set(group[1:]) != set(current_group[1:]):
+                    return False
+
+            return True
+
+        _provider = cast("SonosPlayerProvider", self._provider)
+        try:
+            async with asyncio.timeout(5):
+                while not _test_groups(groups):
+                    await _provider.topology_condition.wait()
+        except TimeoutError:
+            self.logger.warning("Timeout waiting for target groups %s", groups)
+
+        if players := self.mass.players.all_players(provider_filter=_provider.instance_id):
+            any_speaker = cast("SonosPlayer", players[0])
+            any_speaker.soco.zone_group_state.clear_cache()
+
+    def _extract_mac_from_player_id(self) -> str | None:
+        """
+        Extract MAC address from Sonos player_id.
+
+        Sonos player_ids follow the format RINCON_XXXXXXXXXXXX01400 where
+        the middle 12 hex characters represent the MAC address.
+
+        :return: MAC address string in XX:XX:XX:XX:XX:XX format, or None if not extractable.
+        """
+        # Remove RINCON_ prefix if present
+        player_id = self.player_id
+        player_id = player_id.removeprefix("RINCON_")
+
+        # Remove the 01400 suffix (or similar) - should be last 5 chars
+        if len(player_id) >= 17:  # 12 hex chars for MAC + 5 chars suffix
+            mac_hex = player_id[:12]
+        else:
+            return None
+
+        # Validate it looks like a MAC (all hex characters)
+        try:
+            int(mac_hex, 16)
+        except ValueError:
+            return None
+
+        # Format as XX:XX:XX:XX:XX:XX
+        return ":".join(mac_hex[i : i + 2].upper() for i in range(0, 12, 2))
+
+    async def _check_availability(self) -> None:
+        """Check if the player is still available."""
+        try:
+            await asyncio.to_thread(self.ping)
+            self._speaker_activity("ping")
+        except SonosUpdateError:
+            if not self._attr_available:
+                return
+            self.logger.warning(
+                "No recent activity and cannot reach %s, marking unavailable",
+                self.display_name,
+            )
+            await self.offline()
+
+    @soco_error()
+    def _poll_track_info(self) -> dict[str, Any]:
+        """
+        Poll the speaker for current track info.
+
+        Add converted position values (NOT async fiendly).
+        """
+        track_info: dict[str, Any] = self.soco.get_current_track_info()
+        track_info[DURATION_SECONDS] = _timespan_secs(track_info.get("duration"))
+        track_info[POSITION_SECONDS] = _timespan_secs(track_info.get("position"))
+        return track_info
+
+    async def _subscribe_target(
+        self, target: SubscriptionBase, sub_callback: Callable[[SonosEvent], None]
+    ) -> None:
+        """Create a Sonos subscription for given target."""
+
+        def on_renew_failed(exception: Exception) -> None:
+            """Handle a failed subscription renewal callback."""
+            self.mass.create_task(self._renew_failed(exception))
+
+        # Use events_asyncio which makes subscribe() async-awaitable
+        subscription = await target.subscribe(
+            auto_renew=True, requested_timeout=SUBSCRIPTION_TIMEOUT
+        )
+        subscription.callback = sub_callback
+        subscription.auto_renew_fail = on_renew_failed
+        self._subscriptions.append(subscription)
+
+    async def _renew_failed(self, exception: Exception) -> None:
+        """
+        Mark the speaker as offline after a subscription renewal failure.
+
+        This is to reset the state to allow a future clean subscription attempt.
+        """
+        if not self._attr_available:
+            return
+
+        self.log_subscription_result(exception, "Subscription renewal", logging.WARNING)
+        await self.offline()
 
     def _handle_event(self, event: SonosEvent) -> None:
         """Handle SonosEvent callback."""
@@ -662,111 +785,6 @@ class SonosPlayer(Player):
         if not was_available:
             self.update_player()
             self.mass.loop.call_soon_threadsafe(self.mass.create_task, self.subscribe())
-
-    def update_groups(self) -> None:
-        """Update group topology when polling."""
-        asyncio.run_coroutine_threadsafe(self.create_update_groups_coro(), self.mass.loop)
-
-    def create_update_groups_coro(
-        self, event: SonosEvent | None = None
-    ) -> Coroutine[Any, Any, None]:
-        """Handle callback for topology change event."""
-
-        def _get_soco_group() -> list[str]:
-            """Ask SoCo cache for existing topology."""
-            coordinator_uid = self.soco.uid
-            joined_uids = []
-            with contextlib.suppress(OSError, SoCoException):
-                if self.soco.group and self.soco.group.coordinator:
-                    coordinator_uid = self.soco.group.coordinator.uid
-                    joined_uids = [
-                        p.uid
-                        for p in self.soco.group.members
-                        if p.uid != coordinator_uid and p.is_visible
-                    ]
-
-            return [coordinator_uid, *joined_uids]
-
-        async def _extract_group(event: SonosEvent | None) -> list[str]:
-            """Extract group layout from a topology event."""
-            group = event and event.zone_player_uui_ds_in_group
-            if group:
-                assert isinstance(group, str)
-                return group.split(",")
-            return await asyncio.to_thread(_get_soco_group)
-
-        def _regroup(group: list[str]) -> None:
-            """Rebuild internal group layout (async safe)."""
-            if group == [self.soco.uid] and not self._attr_group_members:
-                # Skip updating existing single speakers in polling mode
-                return
-
-            group_members_ids = []
-
-            for uid in group:
-                speaker = self.mass.players.get_player(uid)
-                if speaker:
-                    group_members_ids.append(uid)
-                else:
-                    self.logger.debug(
-                        "%s group member unavailable (%s), will try again",
-                        self.display_name,
-                        uid,
-                    )
-                    return
-
-            if self._attr_group_members == group_members_ids:
-                # Useful in polling mode for speakers with stereo pairs or surrounds
-                # as those "invisible" speakers will bypass the single speaker check
-                return
-
-            self._attr_group_members = group_members_ids
-            self.mass.loop.call_soon_threadsafe(self.update_state)
-
-            self.logger.debug("Regrouped %s: %s", self.display_name, self._attr_group_members)
-            self.update_player()
-
-        async def _handle_group_event(event: SonosEvent | None) -> None:
-            """Get async lock and handle event."""
-            _provider = cast("SonosPlayerProvider", self._provider)
-            async with _provider.topology_condition:
-                group = await _extract_group(event)
-                if self.soco.uid == group[0]:
-                    _regroup(group)
-                    _provider.topology_condition.notify_all()
-
-        return _handle_group_event(event)
-
-    async def wait_for_groups(self, groups: list[list[SonosPlayer]]) -> None:
-        """Wait until all groups are present, or timeout."""
-
-        def _test_groups(groups: list[list[SonosPlayer]]) -> bool:
-            """Return whether all groups exist now."""
-            for group in groups:
-                coordinator = group[0]
-
-                # Test that coordinator is coordinating
-                current_group = coordinator.group_members
-                if coordinator != current_group[0]:
-                    return False
-
-                # Test that joined members match
-                if set(group[1:]) != set(current_group[1:]):
-                    return False
-
-            return True
-
-        _provider = cast("SonosPlayerProvider", self._provider)
-        try:
-            async with asyncio.timeout(5):
-                while not _test_groups(groups):
-                    await _provider.topology_condition.wait()
-        except TimeoutError:
-            self.logger.warning("Timeout waiting for target groups %s", groups)
-
-        if players := self.mass.players.all_players(provider_filter=_provider.instance_id):
-            any_speaker = cast("SonosPlayer", players[0])
-            any_speaker.soco.zone_group_state.clear_cache()
 
 
 def _convert_state(sonos_state: str | None) -> PlayerState:

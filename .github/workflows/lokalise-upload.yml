@@ -1,0 +1,53 @@
+name: Upload Lokalise source strings
+
+# Pushes the generated English source file (music_assistant/translations/en.json,
+# produced by scripts/build_translations.py from the per-module strings.json files)
+# to the Lokalise server project. Together with lokalise-download.yml this gives a fully
+# GitHub-Actions-driven push/pull sync: the repo is the source of truth for the English
+# source keys, Lokalise holds the translations, and the download workflow brings them back.
+#
+# Triggers on changes to the generated source file on dev (immediate sync) plus a weekly
+# safety-net run and manual dispatch.
+#
+# Uses the org/repo secrets LOKALISE_RW_API_TOKEN (read-write token for upload) and
+# LOKALISE_SERVER_PROJECT_ID (the Lokalise server project id).
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - music_assistant/translations/en.json
+  schedule:
+    - cron: "0 1 * * 2" # weekly safety net, before the Tuesday download run
+  workflow_dispatch:
+
+# Only checks out the repo and pushes to Lokalise (via the Lokalise token), so read-only.
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Lokalise CLI
+        # pin the installer and CLI to a tagged release (don't run a script off a moving branch)
+        run: curl -sfL https://raw.githubusercontent.com/lokalise/lokalise-cli-2-go/v3.1.4/install.sh | sh -s -- -b ./bin v3.1.4
+      - name: Upload source strings
+        env:
+          VAR_LOKALISE_API_TOKEN: ${{ secrets.LOKALISE_RW_API_TOKEN }}
+          VAR_LOKALISE_PROJECT_ID: ${{ secrets.LOKALISE_SERVER_PROJECT_ID }}
+        run: |
+          ./bin/lokalise2 \
+            --token "${VAR_LOKALISE_API_TOKEN}" \
+            --project-id "${VAR_LOKALISE_PROJECT_ID}" \
+            file upload \
+            --file music_assistant/translations/en.json \
+            --lang-iso en \
+            --replace-modified \
+            --distinguish-by-file=false \
+            --convert-placeholders=false \
+            --poll \
+            --poll-timeout 120s
+          # NOTE: add --cleanup-mode to prune keys removed from the source (destructive:
+          # also deletes their translations). Left off by default as a safety measure.

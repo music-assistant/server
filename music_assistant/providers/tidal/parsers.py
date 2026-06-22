@@ -26,7 +26,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.helpers.util import infer_album_type, parse_title_and_version
 
-from .constants import BROWSE_URL, RESOURCES_URL
+from .constants import BROWSE_URL, FAVORITE_TRACKS_PLAYLIST_ID, RESOURCES_URL
 
 if TYPE_CHECKING:
     from .provider import TidalProvider
@@ -131,7 +131,7 @@ def parse_album(provider: TidalProvider, album_obj: dict[str, Any]) -> Album:
     if release_date := album_obj_data.get("releaseDate", ""):
         try:
             album.year = int(release_date.split("-")[0])
-        except (ValueError, IndexError):
+        except ValueError, IndexError:
             provider.logger.debug("Invalid release date format: %s", release_date)
         with suppress(ValueError):
             album.metadata.release_date = datetime.fromisoformat(release_date)
@@ -337,3 +337,30 @@ def parse_playlist(
         )
 
     return playlist
+
+
+def parse_favorite_tracks_playlist(provider: TidalProvider) -> Playlist:
+    """Build a virtual Playlist representing the user's favorited tracks."""
+    owner_name = str(provider.auth.user_id)
+    if provider.auth.user.profile_name:
+        owner_name = provider.auth.user.profile_name
+    elif provider.auth.user.user_name:
+        owner_name = provider.auth.user.user_name
+
+    return Playlist(
+        item_id=FAVORITE_TRACKS_PLAYLIST_ID,
+        provider=provider.instance_id,
+        name="Favorite Tracks",
+        translation_key="favorite_tracks",
+        owner=owner_name,
+        provider_mappings={
+            ProviderMapping(
+                item_id=FAVORITE_TRACKS_PLAYLIST_ID,
+                provider_domain=provider.domain,
+                provider_instance=provider.instance_id,
+                url=f"{BROWSE_URL}/my-collection/tracks",
+                is_unique=True,
+            )
+        },
+        is_editable=False,
+    )

@@ -18,7 +18,10 @@ RUN uv venv $VIRTUAL_ENV
 # pre-install ALL requirements into the venv
 # comes at a cost of a slightly larger image size but is faster to start
 # because we do not have to install dependencies at runtime
+# --index-strategy: allow PyPI packages when also using the PyTorch extra index
+# https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
 RUN uv pip install \
+    --index-strategy unsafe-best-match \
     -r requirements_all.txt
 
 # Install PyAV from pre-built wheel (built against system FFmpeg in base image)
@@ -85,10 +88,13 @@ EXPOSE 8095
 
 WORKDIR $VIRTUAL_ENV
 
-# Entrypoint script that enables jemalloc for the main process only
+# Entrypoint script that enables jemalloc for the main process only.
+# MALLOC_CONF enables jemalloc's background thread so freed pages are returned to
+# the OS while the process is idle; without it an idle server holds onto the peak
+# RSS reached during startup (db migration, provider setup, metadata, image decode).
 RUN printf '#!/bin/sh\n\
 for path in /usr/lib/*/libjemalloc.so.2; do\n\
-    [ -f "$path" ] && export LD_PRELOAD="$path" && break\n\
+    [ -f "$path" ] && export LD_PRELOAD="$path" MALLOC_CONF="background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000" && break\n\
 done\n\
 exec mass "$@"\n' > /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
 

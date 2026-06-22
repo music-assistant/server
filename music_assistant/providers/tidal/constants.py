@@ -8,9 +8,24 @@ BASE_URL_V2 = "https://api.tidal.com/v2"
 OPEN_API_URL = "https://openapi.tidal.com/v2"
 BROWSE_URL = "https://tidal.com/browse"
 RESOURCES_URL = "https://resources.tidal.com/images"
+# Base host for the /pages/* feed.
+WEB_BASE_URL = "https://tidal.com/v1"
+SESSIONS_URL = f"{BASE_URL}/sessions"
 
 # Authentication
 TOKEN_TYPE = "Bearer"
+AUTH_URL = "https://auth.tidal.com/v1/oauth2"
+LOGIN_URL = "https://login.tidal.com/authorize"
+REDIRECT_URI = "https://tidal.com/android/login/auth"
+
+# API paths (relative to BASE_URL unless used with an explicit base_url)
+PLAYLISTS = "playlists"
+PAGES_MIX = "pages/mix"
+FAVORITES_ARTISTS = "favorites/artists"
+FAVORITES_ALBUMS = "favorites/albums"
+FAVORITES_TRACKS = "favorites/tracks"
+FAVORITES_PLAYLISTS = "favorites/playlists"
+FAVORITES_MIXES = "favorites/mixes"
 
 # Actions
 CONF_ACTION_START_PKCE_LOGIN = "start_pkce_login"
@@ -42,7 +57,6 @@ DEFAULT_LIMIT: Final[int] = 50
 CACHE_CATEGORY_DEFAULT: Final[int] = 0
 CACHE_CATEGORY_RECOMMENDATIONS: Final[int] = 1
 CACHE_CATEGORY_ISRC_MAP: Final[int] = 2
-# Playback info (DASH manifest / direct URL) per track+quality. CDN tokens observed to be
-# valid for ~60 minutes, so 20 minutes gives a safe window without stale data.
-CACHE_CATEGORY_PLAYBACK_INFO: Final[int] = 3
-CACHE_TTL_PLAYBACK_INFO: Final[int] = 1200  # 20 minutes
+
+# Virtual playlist IDs
+FAVORITE_TRACKS_PLAYLIST_ID: Final[str] = "favorite_tracks"

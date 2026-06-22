@@ -10,6 +10,7 @@ FIXME skipping in non-live radio shows restarts the stream but keeps the seek ti
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from collections.abc import AsyncGenerator
 from datetime import timedelta
 from typing import TYPE_CHECKING, Literal
@@ -40,7 +41,11 @@ from music_assistant_models.streamdetails import StreamMetadata
 from music_assistant_models.unique_list import UniqueList
 
 import music_assistant.helpers.datetime as dt
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.constants import (
+    CONF_ENTRY_UNOFFICIAL_PROVIDER,
+    CONF_PASSWORD,
+    CONF_USERNAME,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import LOCAL_TIMEZONE
 from music_assistant.models.music_provider import MusicProvider
@@ -105,45 +110,34 @@ async def get_config_entries(
     # ruff: noqa: ARG001
 
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
             key=_Constants.CONF_INTRO,
             type=ConfigEntryType.LABEL,
-            label="A BBC Sounds account is optional, but some UK-only content may not work without"
-            " it",
         ),
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Email or username",
             required=False,
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=False,
         ),
         ConfigEntry(
             key=_Constants.CONF_SHOW_LOCAL,
             advanced=True,
             type=ConfigEntryType.BOOLEAN,
-            label="Show local radio stations?",
             default_value=False,
         ),
         ConfigEntry(
             key=_Constants.CONF_STREAM_FORMAT,
             advanced=True,
-            label="Preferred stream format",
             type=ConfigEntryType.STRING,
             options=[
-                ConfigValueOption(
-                    "HLS",
-                    _Constants.CONF_STREAM_FORMAT_HLS,
-                ),
-                ConfigValueOption(
-                    "MPEG-DASH",
-                    _Constants.CONF_STREAM_FORMAT_DASH,
-                ),
+                ConfigValueOption(_Constants.CONF_STREAM_FORMAT_HLS),
+                ConfigValueOption(_Constants.CONF_STREAM_FORMAT_DASH),
             ],
             default_value=_Constants.CONF_STREAM_FORMAT_HLS,
         ),
@@ -200,7 +194,7 @@ class BBCSoundsProvider(MusicProvider):
                 try:
                     await self.client.personal.get_experience_menu()
                     return
-                except (exceptions.UnauthorisedError, exceptions.APIResponseError):
+                except exceptions.UnauthorisedError, exceptions.APIResponseError:
                     await self.client.auth.renew_session()
 
             try:
@@ -312,24 +306,28 @@ class BBCSoundsProvider(MusicProvider):
 
     async def _get_programme_segments(self, vpid: str) -> list[Segment] | None:
         """Get on demand segments from cache or API."""
-        segments = await self.mass.cache.get(
+        cached = await self.mass.cache.get(
             provider=self.domain, key=f"programme_segments_{vpid}", default=False
         )
-        if segments is False:
+        if cached is False:
             segments = await self.client.streaming.get_show_segments(vpid)
-            await self.mass.cache.set(
-                provider=self.domain,
-                key=f"programme_segments_{vpid}",
-                data=segments,
-            )
-        if isinstance(segments, list):
-            return segments
+            if isinstance(segments, list):
+                await self.mass.cache.set(
+                    provider=self.domain,
+                    key=f"programme_segments_{vpid}",
+                    data=[dataclasses.asdict(s) for s in segments],
+                )
+                return segments
+            return None
+        if isinstance(cached, list):
+            return [Segment(**item) for item in cached]
         return None
 
     async def _update_on_demand_stream_metadata(
         self, stream_details: StreamDetails, elapsed_time: int
     ) -> None:
-        """Get the currently playing segment (song) for on-demand episodes.
+        """
+        Get the currently playing segment (song) for on-demand episodes.
 
         Called by the callback function in StreamDetails.
         """
@@ -414,12 +412,12 @@ class BBCSoundsProvider(MusicProvider):
         """Get list of stations as Radios."""
         radio_list: list[Radio] = []
         for station in await self.client.stations.get_stations(include_local=include_local):
-            if station and station.item_id:
+            if station and station.id:
                 station_info = await self._station_programme_display(station=station)
                 description = station_info.title if station_info else None
                 radio_list.append(
                     Radio(
-                        item_id=station.item_id,
+                        item_id=station.id,
                         name=(
                             station.network.short_title
                             if station.network and station.network.short_title
@@ -445,7 +443,7 @@ class BBCSoundsProvider(MusicProvider):
                         ),
                         provider_mappings={
                             ProviderMapping(
-                                item_id=station.item_id,
+                                item_id=station.id,
                                 provider_domain=self.domain,
                                 provider_instance=self.instance_id,
                             )
@@ -510,6 +508,7 @@ class BBCSoundsProvider(MusicProvider):
                 item_id="stations",
                 provider=self.domain,
                 name="Schedule and Programmes",
+                translation_key="schedule_programmes",
                 path=f"{self.domain}://stations",
                 image=MediaItemImage(
                     path="https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid/latest.png",
@@ -529,6 +528,7 @@ class BBCSoundsProvider(MusicProvider):
                 item_id="listen_live",
                 provider=self.domain,
                 name="Listen Live",
+                translation_key="listen_live",
                 path=f"{self.domain}://listen_live",
                 image=MediaItemImage(
                     path="https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid/listen_live.png",
@@ -540,7 +540,8 @@ class BBCSoundsProvider(MusicProvider):
             BrowseFolder(
                 item_id="stations",
                 provider=self.domain,
-                name="Schedules and Programmes",
+                name="Schedule and Programmes",
+                translation_key="schedule_programmes",
                 path=f"{self.domain}://stations",
                 image=MediaItemImage(
                     path="https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid/latest.png",
@@ -630,12 +631,14 @@ class BBCSoundsProvider(MusicProvider):
                 BrowseFolder(
                     item_id="today",
                     name="Today",
+                    translation_key="today",
                     provider=self.domain,
                     path="/".join([*path_parts, dt.now().strftime("%Y-%m-%d")]),
                 ),
                 BrowseFolder(
                     item_id="yesterday",
                     name="Yesterday",
+                    translation_key="yesterday",
                     provider=self.domain,
                     path="/".join(
                         [
@@ -680,7 +683,8 @@ class BBCSoundsProvider(MusicProvider):
         ]
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse this provider's items.
+        """
+        Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
         """
@@ -749,7 +753,7 @@ class BBCSoundsProvider(MusicProvider):
     async def get_podcast_episodes(
         self,
         prov_podcast_id: str,
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    ) -> AsyncGenerator[PodcastEpisode]:
         """Get all PodcastEpisodes for given podcast id."""
         podcast_episodes = await self.client.streaming.get_podcast_episodes(prov_podcast_id)
 

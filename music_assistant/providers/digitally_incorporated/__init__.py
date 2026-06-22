@@ -162,18 +162,13 @@ async def get_config_entries(
         ConfigEntry(
             key="listen_key",
             type=ConfigEntryType.STRING,
-            label="Listen Key",
-            description=(
-                "Premium listen key from account settings. Used for playback and to load "
-                "your favorites (from favorites.pls); favorites cannot be edited here."
-            ),
             required=True,
         )
     )
 
     # Network selection - multi-select instead of individual booleans
     network_options = [
-        ConfigValueOption(network_info["display_name"], network_key)
+        ConfigValueOption(network_key, title=network_info["display_name"])
         for network_key, network_info in NETWORKS.items()
     ]
 
@@ -181,8 +176,6 @@ async def get_config_entries(
         ConfigEntry(
             key="enabled_networks",
             type=ConfigEntryType.STRING,
-            label="Enabled Networks",
-            description="Select which networks to enable",
             default_value=list(NETWORKS.keys()),  # Enable all by default
             required=True,
             options=network_options,
@@ -233,7 +226,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
             self.logger.info(
                 "%s: Successfully connected to Digitally Incorporated API", self.domain
             )
-        except (ProviderUnavailableError, MediaNotFoundError):
+        except ProviderUnavailableError, MediaNotFoundError:
             # Re-raise provider/media errors as-is (they already have domain prefix)
             raise
         except (aiohttp.ClientError, aiohttp.ServerTimeoutError) as err:
@@ -298,8 +291,8 @@ class DigitallyIncorporatedProvider(MusicProvider):
         results.radio = radios
         return results
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
-        """Retrieve user's favorite radio stations from active networks."""
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
+        """Retrieve the user's favorite radio stations from active networks."""
         for network_key in self._get_active_networks():
             try:
                 channel_keys = await self._get_favorite_channel_keys(network_key)
@@ -851,7 +844,7 @@ class DigitallyIncorporatedProvider(MusicProvider):
 
             return stream_url
 
-        except (ProviderUnavailableError, MediaNotFoundError):
+        except ProviderUnavailableError, MediaNotFoundError:
             # Re-raise provider/media errors as-is (they already have domain prefix)
             raise
         except (aiohttp.ClientError, ValueError, KeyError, IndexError) as err:

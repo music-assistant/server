@@ -7,14 +7,24 @@ from typing import TYPE_CHECKING, cast
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
+
 from .constants import (
     CONF_ACTION_CLEAR_AUTH,
     CONF_BASE_URL,
+    CONF_CODECS,
+    CONF_LIKED_TRACKS_MAX_TRACKS,
+    CONF_MY_WAVE_MAX_TRACKS,
     CONF_QUALITY,
     CONF_TOKEN,
+    CONF_TRANSPORT,
     DEFAULT_BASE_URL,
+    QUALITY_BALANCED,
+    QUALITY_EFFICIENT,
     QUALITY_HIGH,
     QUALITY_LOSSLESS,
+    TRANSPORT_ENCRAW,
+    TRANSPORT_RAW,
 )
 from .provider import KionMusicProvider
 
@@ -24,7 +34,6 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
-
 
 SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_ARTISTS,
@@ -39,7 +48,9 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_TRACKS_EDIT,
     ProviderFeature.BROWSE,
     ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.SIMILAR_ARTISTS,
     ProviderFeature.RECOMMENDATIONS,
+    ProviderFeature.LYRICS,
 }
 
 
@@ -68,12 +79,11 @@ async def get_config_entries(
     is_authenticated = bool(values.get(CONF_TOKEN))
 
     return (
+        CONF_ENTRY_UNOFFICIAL_PROVIDER,
+        # Authentication
         ConfigEntry(
             key=CONF_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="KION Music Token",
-            description="Enter your KION Music OAuth token. "
-            "See the documentation for how to obtain it.",
             required=True,
             hidden=is_authenticated,
             value=cast("str", values.get(CONF_TOKEN)) if values else None,
@@ -81,29 +91,64 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_ACTION_CLEAR_AUTH,
             type=ConfigEntryType.ACTION,
-            label="Reset authentication",
-            description="Clear the current authentication details.",
             action=CONF_ACTION_CLEAR_AUTH,
             hidden=not is_authenticated,
         ),
+        # Quality
         ConfigEntry(
             key=CONF_QUALITY,
             type=ConfigEntryType.STRING,
-            label="Audio quality",
-            description="Select preferred audio quality.",
             options=[
-                ConfigValueOption("High (320 kbps)", QUALITY_HIGH),
-                ConfigValueOption("Lossless (FLAC)", QUALITY_LOSSLESS),
+                ConfigValueOption(QUALITY_EFFICIENT),
+                ConfigValueOption(QUALITY_BALANCED),
+                ConfigValueOption(QUALITY_HIGH),
+                ConfigValueOption(QUALITY_LOSSLESS),
             ],
-            default_value=QUALITY_HIGH,
+            default_value=QUALITY_BALANCED,
         ),
+        # My Mix maximum tracks (advanced)
+        ConfigEntry(
+            key=CONF_MY_WAVE_MAX_TRACKS,
+            type=ConfigEntryType.INTEGER,
+            range=(10, 1000),
+            default_value=150,
+            required=False,
+            advanced=True,
+        ),
+        # Liked Tracks maximum tracks (advanced)
+        ConfigEntry(
+            key=CONF_LIKED_TRACKS_MAX_TRACKS,
+            type=ConfigEntryType.INTEGER,
+            range=(50, 2000),
+            default_value=500,
+            required=False,
+            advanced=True,
+        ),
+        # Transport mode (advanced)
+        ConfigEntry(
+            key=CONF_TRANSPORT,
+            type=ConfigEntryType.STRING,
+            options=[
+                ConfigValueOption(TRANSPORT_RAW),
+                ConfigValueOption(TRANSPORT_ENCRAW),
+            ],
+            default_value=TRANSPORT_RAW,
+            required=False,
+            advanced=True,
+        ),
+        # Custom codecs override (advanced)
+        ConfigEntry(
+            key=CONF_CODECS,
+            type=ConfigEntryType.STRING,
+            default_value="",
+            required=False,
+            advanced=True,
+        ),
+        # API Base URL (advanced)
         ConfigEntry(
             key=CONF_BASE_URL,
             type=ConfigEntryType.STRING,
-            label="API Base URL",
-            description="API endpoint base URL. "
-            "Only change if KION Music changes their API endpoint. "
-            "Default: https://music.mts.ru/ya_proxy_api",
+            translation_params=[DEFAULT_BASE_URL],
             default_value=DEFAULT_BASE_URL,
             required=False,
             advanced=True,
