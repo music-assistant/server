@@ -59,9 +59,6 @@ class SonosSubscriptionsFailed(PlayerCommandFailed):
 class SonosPlayer(Player):
     """Sonos Player implementation for S1 speakers."""
 
-    # S1 hardware is fixed to 16-bit at 44.1/48 kHz
-    _attr_supported_sample_rates = [(44100, 16), (48000, 16)]
-
     def __init__(
         self,
         provider: SonosPlayerProvider,
@@ -75,6 +72,8 @@ class SonosPlayer(Player):
 
         # Set player attributes
         self._attr_supported_features = set(PLAYER_FEATURES)
+        # S1 hardware is fixed to 16-bit at 44.1/48 kHz
+        self._attr_supported_sample_rates = [(44100, 16), (48000, 16)]
         self._attr_name = soco.player_name
         self._attr_device_info = DeviceInfo(
             model=soco.speaker_info["model_name"],

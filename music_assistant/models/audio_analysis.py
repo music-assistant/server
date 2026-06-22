@@ -96,7 +96,7 @@ class AudioAnalysisData(DataClassDictMixin):
     extra_data: dict[str, Any] | None = None
 
     class Config(BaseConfig):  # noqa: D106
-        serialization_strategy = {
+        serialization_strategy = {  # noqa: RUF012  # mashumaro Config attr; ClassVar conflicts with BaseConfig
             np.ndarray: {
                 "serialize": lambda x: x.tolist(),
                 "deserialize": lambda x: np.asarray(x, dtype=np.float32),
