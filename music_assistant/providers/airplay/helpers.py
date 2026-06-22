@@ -7,8 +7,10 @@ import logging
 import os
 import platform
 import socket
+import stat
 import time
 from ipaddress import ip_address
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ContentType
@@ -204,7 +206,18 @@ async def get_cli_binary(protocol: StreamingProtocol) -> str:
         RuntimeError: If the binary cannot be found
     """
 
+    def ensure_executable(cli_path: str) -> None:
+        """Restore execute bit dropped by wheel/Docker packaging (see ariacast_receiver)."""
+        path = Path(cli_path)
+        if not path.is_file():
+            return
+        mode = path.stat().st_mode
+        if mode & stat.S_IXUSR:
+            return
+        path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
     async def check_binary(cli_path: str) -> str | None:
+        ensure_executable(cli_path)
         try:
             if protocol == StreamingProtocol.RAOP:
                 args = [

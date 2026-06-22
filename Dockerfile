@@ -41,6 +41,11 @@ RUN uv pip install \
     --no-cache \
     "music-assistant@dist/music_assistant-${MASS_VERSION}-py3-none-any.whl"
 
+# Provider streaming binaries are bundled in the wheel without the execute bit.
+RUN find "$VIRTUAL_ENV/lib" -path '*/music_assistant/providers/*/bin/*' -type f \
+    ! -name '*.md' ! -name '*.sh' ! -name '*.conf' ! -name '.gitkeep' \
+    -exec chmod +x {} +
+
 # Pre-compile Python bytecode for faster startup
 RUN $VIRTUAL_ENV/bin/python -m compileall -q $VIRTUAL_ENV/lib/python*/site-packages/music_assistant
 
@@ -96,6 +101,9 @@ RUN printf '#!/bin/sh\n\
 for path in /usr/lib/*/libjemalloc.so.2; do\n\
     [ -f "$path" ] && export LD_PRELOAD="$path" MALLOC_CONF="background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000" && break\n\
 done\n\
+find /app/venv/lib -path "*/music_assistant/providers/*/bin/*" -type f \\\n\
+    ! -name "*.md" ! -name "*.sh" ! -name "*.conf" ! -name ".gitkeep" \\\n\
+    -exec chmod +x {} + 2>/dev/null\n\
 exec mass "$@"\n' > /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh", "--data-dir", "/data", "--cache-dir", "/data/.cache"]
