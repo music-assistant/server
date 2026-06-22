@@ -930,7 +930,8 @@ class MusicAssistant:
                     # method is decorated with our api decorator
                     authenticated = getattr(obj, "api_authenticated", True)
                     required_role = getattr(obj, "api_required_role", None)
-                    self.register_api_command(obj.api_cmd, obj, authenticated, required_role)
+                    alias = getattr(obj, "api_alias", False)
+                    self.register_api_command(obj.api_cmd, obj, authenticated, required_role, alias)
 
     async def _load_builtin_providers(self) -> None:
         """
