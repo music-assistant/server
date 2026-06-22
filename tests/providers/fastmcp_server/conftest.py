@@ -159,6 +159,8 @@ def mock_mass(mock_user: MagicMock) -> MagicMock:
     mass.player_queues.items = MagicMock(return_value=[])
     mass.player_queues.play_media = AsyncMock()
     mass.player_queues.play_pause = AsyncMock()
+    mass.player_queues.pause = AsyncMock()
+    mass.player_queues.resume = AsyncMock()
     mass.player_queues.stop = AsyncMock()
     mass.player_queues.next = AsyncMock()
     mass.player_queues.previous = AsyncMock()
