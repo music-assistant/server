@@ -36,7 +36,11 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         ),
         timeout=TIMEOUT_FAST,
     )  # type: ignore[untyped-decorator, unused-ignore]
-    async def get_active_queue(player_id: str, include_items: int = 25) -> QueueBrief | None:
+    async def get_active_queue(
+        player_id: str = "",
+        include_items: int = 25,
+        queue_id: str = "",
+    ) -> QueueBrief | None:
         """
         Return the active queue for a player, or ``None`` if the player is idle.
 
@@ -50,14 +54,21 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         source (Connect / AirPlay / Ynison), the current item's ``name`` is
         the real track title rather than the source wrapper name.
 
-        :param player_id: Player identifier from ``PlayerBrief.player_id``.
+        :param player_id: Player identifier from ``PlayerBrief.player_id``. The
+            ``queue_id`` used by the playback/queue tools is accepted as an
+            alias here, since for a normal player queue the two are the same
+            value.
         :param include_items: How many lookahead items to materialise. Clamped
             to the ``[0, 500]`` range — 500 matches MA's own queue page size
             and the ``queue://`` resource cap, preventing a hostile or
             sloppy client from forcing the server to load thousands of rows
             on every call.
+        :param queue_id: Alias for ``player_id`` — provide either one.
         """
-        queue = mass.player_queues.get_active_queue(player_id)
+        target = player_id or queue_id
+        if not target:
+            raise ToolError("Provide player_id (the PlayerBrief.player_id to inspect).")
+        queue = mass.player_queues.get_active_queue(target)
         if queue is None:
             return None
         limit = min(max(include_items, 0), MAX_QUEUE_ITEMS)

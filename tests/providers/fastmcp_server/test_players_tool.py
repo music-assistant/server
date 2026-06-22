@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 from fastmcp import Client, FastMCP
+from fastmcp.exceptions import ToolError
 
 from music_assistant.providers.fastmcp_server.tools import build_players_server, build_queue_server
 
@@ -373,3 +374,29 @@ async def test_queue_get_active_queue_external_item_title(mock_mass: Any) -> Non
         result = await client.call_tool("queue_get_active_queue", {"player_id": "lenco"})
     assert result.data.items[0].name == "Behind Your Walls"
     mock_mass.player_queues.items.assert_called_with("lenco", limit=25)
+
+
+async def test_queue_get_active_queue_accepts_queue_id_alias(mock_mass: Any) -> None:
+    """queue_get_active_queue accepts ``queue_id`` as an alias for ``player_id``."""
+    raw = json.loads(
+        Path(__file__).parent.joinpath("fixtures/queue_external_audio_source.json").read_text()
+    )
+    queue = _ns(raw)
+    mock_mass.player_queues.get_active_queue.return_value = queue
+    mock_mass.player_queues.items.return_value = [queue.current_item]
+
+    mcp = FastMCP(name="test")
+    mcp.mount(build_queue_server(mock_mass), namespace="queue")
+    async with Client(mcp) as client:
+        result = await client.call_tool("queue_get_active_queue", {"queue_id": "lenco"})
+    assert result.data.items[0].name == "Behind Your Walls"
+    mock_mass.player_queues.get_active_queue.assert_called_with("lenco")
+
+
+async def test_queue_get_active_queue_requires_an_identifier(mock_mass: Any) -> None:
+    """queue_get_active_queue raises a clear error when neither id is provided."""
+    mcp = FastMCP(name="test")
+    mcp.mount(build_queue_server(mock_mass), namespace="queue")
+    async with Client(mcp) as client:
+        with pytest.raises(ToolError, match="player_id"):
+            await client.call_tool("queue_get_active_queue", {})
