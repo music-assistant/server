@@ -12,6 +12,7 @@ from .constants import (
     CONF_DEBUG_EVENTS,
     CONF_ENFORCE_AUDIENCE,
     CONF_EXTRA_ALLOWED_ORIGINS,
+    CONF_META_TOOL_DISCOVERY,
     CONF_MOUNT_PATH,
     CONF_REQUIRE_AUTH,
     CONF_REQUIRE_CONFIRMATION,
@@ -199,6 +200,7 @@ class MCPServerRuntime:
         register_resources(mcp, self._mass, self._config)
         register_prompts(mcp, self._config)
 
+        self._register_meta_tools(mcp)
         self._apply_tag_filter(mcp, enabled_tags(self._config))
 
         self._mcp = mcp
@@ -292,11 +294,11 @@ class MCPServerRuntime:
             ``new`` here would always be empty — the caller's set is the only
             reliable signal.
         """
-        from .constants import PERMISSION_KEYS  # noqa: PLC0415
+        from .constants import META_KEYS, PERMISSION_KEYS  # noqa: PLC0415
 
         # ``set().issubset(...)`` is True, so an empty ``changed_keys`` (no-op
         # call) classifies as permission-only and skips a pointless restart.
-        permission_only = changed_keys.issubset(PERMISSION_KEYS)
+        permission_only = changed_keys.issubset(PERMISSION_KEYS | META_KEYS)
 
         self._config = new_config
         if permission_only and hasattr(self, "_allowed_tags"):
@@ -319,6 +321,41 @@ class MCPServerRuntime:
         # middleware sees the new permissions without rebuilding FastMCP.
         self._allowed_tags = {str(t) for t in allowed}
         mcp.add_middleware(TagFilterMiddleware(lambda: self._allowed_tags, build_tag_lookup(mcp)))
+
+    def _meta_tool_enabled(self) -> bool:
+        return bool(self._config.get_value(CONF_META_TOOL_DISCOVERY))
+
+    def _register_meta_tools(self, mcp: Any) -> None:
+        """
+        Register the search_tools/invoke_tool helpers and gate them behind the toggle.
+
+        :param mcp: FastMCP root the meta tools are registered on.
+        """
+        from .meta_tools import register_meta_tools  # noqa: PLC0415
+
+        async def is_tool_visible(name: str) -> bool:
+            tags = await _tag_lookup(mcp, "tool", name)
+            if tags is None:
+                return False
+            if not tags:
+                return True
+            return any(t in self._allowed_tags for t in tags)
+
+        register_meta_tools(
+            mcp,
+            call_tool=mcp.call_tool,
+            list_tools=mcp.list_tools,
+            get_tool=mcp.get_tool,
+            is_tool_visible=is_tool_visible,
+        )
+        self._apply_meta_tools(mcp)
+
+    def _apply_meta_tools(self, mcp: Any) -> None:
+        """Install meta-tool middleware (inner — runs after tag filter on ingress)."""
+        from .meta_tools import MetaToolConfig, MetaToolMiddleware  # noqa: PLC0415
+
+        meta_config = MetaToolConfig(enabled_provider=self._meta_tool_enabled)
+        mcp.add_middleware(MetaToolMiddleware(meta_config))
 
 
 async def _tag_lookup(mcp: Any, kind: str, key: str) -> set[str] | None:

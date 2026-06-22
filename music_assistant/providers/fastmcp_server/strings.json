@@ -28,6 +28,10 @@
       "label": "Connect Wizard external URL (fallback)",
       "description": "Optional explicit base URL the Connect Wizard should open at (e.g. `https://ha.example.com/<addon-slug>` for Home Assistant add-on ingress). Used only when the wizard cannot auto-detect the external URL from the active client connection — set it if your reverse proxy strips the `X-Forwarded-Host` / `X-Ingress-Path` headers."
     },
+    "meta_tool_discovery": {
+      "label": "Simplified tool discovery",
+      "description": "Expose only Search tools and Invoke tool to MCP clients so agents search the catalog by keyword instead of listing every tool; permissions still apply."
+    },
     "debug_event_buffer_capacity": {
       "label": "Debug: event buffer capacity",
       "description": "Maximum number of recent events kept in memory when `Debug: read recent MA events` is enabled. Older events are dropped FIFO. Has no effect when events are off."

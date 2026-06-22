@@ -107,6 +107,24 @@ async def test_permission_only_change_hot_swaps(
 
 
 @pytest.mark.asyncio
+async def test_meta_toggle_hot_swaps_without_restart(
+    mock_mass: MagicMock, mock_config: MagicMock
+) -> None:
+    """Meta-tool discovery toggles hot-swap without remounting the runtime."""
+    from music_assistant.providers.fastmcp_server.server import MCPServerRuntime  # noqa: PLC0415
+
+    runtime = MCPServerRuntime(mock_mass, mock_config, logging.getLogger("t"))
+    runtime._allowed_tags = {"query:library"}
+    runtime.stop = AsyncMock()
+    runtime.start = AsyncMock()
+
+    await runtime.apply_permission_change(mock_config, changed_keys={"meta_tool_discovery"})
+
+    runtime.stop.assert_not_awaited()
+    runtime.start.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_start_rolls_back_on_partial_mount_failure(
     mock_mass: MagicMock, mock_config: MagicMock
 ) -> None:

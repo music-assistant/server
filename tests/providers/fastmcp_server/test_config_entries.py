@@ -18,9 +18,11 @@ from music_assistant.providers.fastmcp_server.constants import (
     CONF_DEBUG_PROVIDERS,
     CONF_DEBUG_RELOAD,
     CONF_DELETE_LIBRARY,
+    CONF_META_TOOL_DISCOVERY,
     CONF_MOUNT_PATH,
     CONF_QUERY_LIBRARY,
     CONF_REQUIRE_AUTH,
+    META_KEYS,
     PERMISSION_KEYS,
     RESOURCE_KEYS,
 )
@@ -30,9 +32,9 @@ if TYPE_CHECKING:
 
 
 def test_total_entry_count(mock_mass: MagicMock) -> None:
-    """38 entries: 1 info label + 1 connect-wizard action + 6 server + 16 perms + 3 resources + 6 debug + 5 config."""
+    """39 entries: prior 38 + 1 meta-tool discovery setting."""
     entries = build_config_entries(mock_mass, {})
-    assert len(entries) == 1 + 1 + 6 + 16 + 3 + 6 + 5
+    assert len(entries) == 1 + 1 + 6 + 16 + 1 + 3 + 6 + 5
 
 
 def test_all_permission_keys_present(mock_mass: MagicMock) -> None:
@@ -51,6 +53,13 @@ def test_delete_keys_default_false(mock_mass: MagicMock) -> None:
     for key in PERMISSION_KEYS:
         if key.startswith(mutation_prefixes):
             assert entries[key].default_value is False, f"{key} should default False"
+
+
+def test_meta_keys_present(mock_mass: MagicMock) -> None:
+    """Meta-tool discovery config key is exposed in the schema."""
+    entries = {e.key: e for e in build_config_entries(mock_mass, {})}
+    assert META_KEYS.issubset(entries.keys())
+    assert entries[CONF_META_TOOL_DISCOVERY].default_value is False
 
 
 def test_query_keys_default_true(mock_mass: MagicMock) -> None:
@@ -76,6 +85,12 @@ def test_categories_match_pr2889_ux(mock_mass: MagicMock) -> None:
         "mcp_config",
         "generic",
     }
+
+
+def test_meta_tool_discovery_under_server_category(mock_mass: MagicMock) -> None:
+    """Simplified tool discovery belongs with other server settings, not its own section."""
+    entries = {e.key: e for e in build_config_entries(mock_mass, {})}
+    assert entries[CONF_META_TOOL_DISCOVERY].category == "server"
 
 
 def test_info_label_includes_base_url(mock_mass: MagicMock) -> None:

@@ -10,6 +10,9 @@ CONF_ENFORCE_AUDIENCE = "enforce_audience"
 CONF_REQUIRE_CONFIRMATION = "require_confirmation"
 CONF_CONNECT_EXTERNAL_URL = "connect_external_url"
 
+# ── Meta-tool discovery (search_tools + invoke_tool) ───────────────────────────
+CONF_META_TOOL_DISCOVERY = "meta_tool_discovery"
+
 DEFAULT_MOUNT_PATH = "/mcp/v1"
 
 # ── Query permissions ─────────────────────────────────────────────────────────
@@ -95,6 +98,8 @@ RESOURCE_KEYS: frozenset[str] = frozenset(
     }
 )
 
+META_KEYS: frozenset[str] = frozenset({CONF_META_TOOL_DISCOVERY})
+
 # Permission-only changes can be hot-swapped without remount; everything else triggers
 # a full restart of the runtime.
-HOT_SWAPPABLE_KEYS: frozenset[str] = PERMISSION_KEYS | RESOURCE_KEYS
+HOT_SWAPPABLE_KEYS: frozenset[str] = PERMISSION_KEYS | RESOURCE_KEYS | META_KEYS

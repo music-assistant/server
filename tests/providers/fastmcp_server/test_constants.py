@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from music_assistant.providers.fastmcp_server.constants import (
     HOT_SWAPPABLE_KEYS,
+    META_KEYS,
     PERMISSION_KEYS,
     RESOURCE_KEYS,
 )
@@ -19,11 +20,18 @@ def test_resource_keys_count() -> None:
     assert len(RESOURCE_KEYS) == 3
 
 
-def test_hot_swappable_includes_perm_and_resource_keys() -> None:
-    """Hot-swappable set is exactly the union — anything else triggers a runtime restart."""
-    assert HOT_SWAPPABLE_KEYS == PERMISSION_KEYS | RESOURCE_KEYS
+def test_hot_swappable_includes_perm_resource_and_meta_keys() -> None:
+    """Hot-swappable set is the union of permission, resource, and meta keys."""
+    assert HOT_SWAPPABLE_KEYS == PERMISSION_KEYS | RESOURCE_KEYS | META_KEYS
 
 
-def test_no_overlap_perm_resource() -> None:
-    """Permission and resource key sets don't overlap (cleanly partitioned)."""
+def test_meta_keys_count() -> None:
+    """1 meta-tool discovery config key."""
+    assert len(META_KEYS) == 1
+
+
+def test_no_overlap_perm_resource_meta() -> None:
+    """Permission, resource, and meta key sets don't overlap."""
     assert PERMISSION_KEYS.isdisjoint(RESOURCE_KEYS)
+    assert PERMISSION_KEYS.isdisjoint(META_KEYS)
+    assert RESOURCE_KEYS.isdisjoint(META_KEYS)

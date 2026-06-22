@@ -34,6 +34,7 @@ from .constants import (
     CONF_EDIT_QUEUE,
     CONF_ENFORCE_AUDIENCE,
     CONF_EXTRA_ALLOWED_ORIGINS,
+    CONF_META_TOOL_DISCOVERY,
     CONF_MOUNT_PATH,
     CONF_QUERY_LIBRARY,
     CONF_QUERY_METADATA,
@@ -140,6 +141,13 @@ def build_config_entries(
             default_value="",
             category="server",
             advanced=True,
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_META_TOOL_DISCOVERY,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=False,
+            category="server",
             required=False,
         ),
         # Query permissions
