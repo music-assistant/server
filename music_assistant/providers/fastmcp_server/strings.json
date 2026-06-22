@@ -30,7 +30,7 @@
     },
     "meta_tool_discovery": {
       "label": "Simplified tool discovery",
-      "description": "Expose only Search tools and Invoke tool to MCP clients so agents search the catalog by keyword instead of listing every tool; permissions still apply."
+      "description": "Expose only Search tools, Get tool schema and Invoke tool to MCP clients so agents search the catalog by keyword, fetch one tool's schema on demand, then invoke it — instead of listing every tool; permissions still apply."
     },
     "debug_event_buffer_capacity": {
       "label": "Debug: event buffer capacity",

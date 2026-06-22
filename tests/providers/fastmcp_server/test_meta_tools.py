@@ -12,6 +12,7 @@ from mcp.types import ToolAnnotations
 
 from music_assistant.providers.fastmcp_server.meta_tools import (
     DIRECT_CALL_BLOCKED,
+    GET_TOOL_SCHEMA_NAME,
     INVOKE_TOOL_NAME,
     SEARCH_TOOLS_NAME,
     MetaToolConfig,
@@ -96,17 +97,18 @@ async def test_meta_off_lists_all_tools_except_meta() -> None:
     async with Client(mcp) as client:
         names = {t.name for t in await client.list_tools()}
     assert SEARCH_TOOLS_NAME not in names
+    assert GET_TOOL_SCHEMA_NAME not in names
     assert INVOKE_TOOL_NAME not in names
     assert "library_search_tracks" in names
     assert "playback_play_media" in names
 
 
 async def test_meta_on_lists_only_meta_tools() -> None:
-    """When enabled, tools/list exposes only search_tools and invoke_tool."""
+    """When enabled, tools/list exposes only the meta tools."""
     mcp = _build_server(meta_enabled=True)
     async with Client(mcp) as client:
         names = {t.name for t in await client.list_tools()}
-    assert names == {SEARCH_TOOLS_NAME, INVOKE_TOOL_NAME}
+    assert names == {SEARCH_TOOLS_NAME, GET_TOOL_SCHEMA_NAME, INVOKE_TOOL_NAME}
 
 
 async def test_direct_call_blocked_when_meta_enabled() -> None:
@@ -133,19 +135,70 @@ async def test_search_tools_natural_language_recommends_albums() -> None:
     assert payload["tools"][0]["name"] == "library_search_albums"
 
 
-async def test_search_tools_finds_matches_with_schema() -> None:
-    """search_tools returns matching tools with input schemas."""
+async def test_search_tools_always_omits_schema() -> None:
+    """search_tools returns lightweight name+description+score results only."""
     mcp = _build_server(meta_enabled=True)
     async with Client(mcp) as client:
-        result = await client.call_tool(
-            SEARCH_TOOLS_NAME,
-            {"query": "tracks", "include_schema": True},
-        )
+        result = await client.call_tool(SEARCH_TOOLS_NAME, {"query": "tracks"})
     text_blocks = [c for c in result.content if hasattr(c, "text")]
     payload = json.loads(text_blocks[0].text)
     assert payload["count"] >= 1
     match = next(t for t in payload["tools"] if t["name"] == "library_search_tracks")
-    assert "query" in match["inputSchema"]["properties"]
+    assert set(match) == {"name", "description", "score"}
+    assert "inputSchema" not in match
+
+
+async def test_search_tools_include_schema_override_removed() -> None:
+    """The include_schema override is gone: it never yields inline schemas."""
+    mcp = _build_server(meta_enabled=True)
+    async with Client(mcp) as client:
+        try:
+            result = await client.call_tool(
+                SEARCH_TOOLS_NAME,
+                {"query": "tracks", "include_schema": True},
+            )
+        except ToolError:
+            return  # param rejected outright — acceptable
+    text_blocks = [c for c in result.content if hasattr(c, "text")]
+    payload = json.loads(text_blocks[0].text)
+    assert all("inputSchema" not in t for t in payload["tools"])
+
+
+async def test_get_tool_schema_returns_input_schema() -> None:
+    """get_tool_schema returns the full schema for a single tool."""
+    mcp = _build_server(meta_enabled=True)
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            GET_TOOL_SCHEMA_NAME,
+            {"tool_name": "library_search_tracks"},
+        )
+    text_blocks = [c for c in result.content if hasattr(c, "text")]
+    payload = json.loads(text_blocks[0].text)
+    assert payload["name"] == "library_search_tracks"
+    assert "query" in payload["inputSchema"]["properties"]
+
+
+async def test_get_tool_schema_respects_rbac() -> None:
+    """get_tool_schema rejects tools hidden by the tag filter."""
+    mcp = _build_server(allowed={"query"}, meta_enabled=True)
+    async with Client(mcp) as client:
+        with pytest.raises(ToolError) as exc:
+            await client.call_tool(
+                GET_TOOL_SCHEMA_NAME,
+                {"tool_name": "playback_play_media"},
+            )
+    assert "disabled by configuration" in str(exc.value)
+
+
+async def test_get_tool_schema_rejects_meta_tool() -> None:
+    """get_tool_schema refuses to introspect meta tools."""
+    mcp = _build_server(meta_enabled=True)
+    async with Client(mcp) as client:
+        with pytest.raises(ToolError):
+            await client.call_tool(
+                GET_TOOL_SCHEMA_NAME,
+                {"tool_name": SEARCH_TOOLS_NAME},
+            )
 
 
 async def test_invoke_tool_runs_target_tool() -> None:

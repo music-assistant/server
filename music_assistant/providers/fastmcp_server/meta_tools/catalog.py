@@ -6,7 +6,6 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from .constants import META_TOOL_NAMES
-from .schema import build_tool_schema
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -286,17 +285,16 @@ async def search_tool_catalog(
     query: str,
     *,
     list_tools: Callable[..., Awaitable[Any]],
-    get_tool: Callable[[str], Awaitable[Any]],
     is_tool_visible: Callable[[str], Awaitable[bool]],
-    include_schema: bool = True,
     limit: int = 25,
 ) -> dict[str, Any]:
     """
     Return tools matching *query*, ranked by relevance.
 
     Matching tokenizes the query and tool name (``library_search_albums`` matches
-    ``library search albums``). Results include a relevance ``score`` and an
-    optional ``recommended`` tool when one match is clearly best.
+    ``library search albums``). Results are lightweight (name, description, score);
+    use ``get_tool_schema`` to fetch a single tool's full schema. Includes a
+    ``recommended`` tool when one match is clearly best.
     """
     query_tokens = normalize_query_tokens(tokenize_query(query.strip()))
     if not query_tokens:
@@ -329,10 +327,6 @@ async def search_tool_catalog(
             "description": description,
             "score": score,
         }
-        if include_schema:
-            tool = await get_tool(name)
-            if tool is not None:
-                entry.update(build_tool_schema(tool))
         matches.append(entry)
 
     result: dict[str, Any] = {"query": query, "count": len(matches), "tools": matches}

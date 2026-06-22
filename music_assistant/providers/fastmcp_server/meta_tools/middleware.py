@@ -108,18 +108,30 @@ Search the Music Assistant MCP tool catalog by keyword or natural phrase.
 Queries use token matching — spaces and underscores are equivalent, so
 "library search albums" matches ``library_search_albums``.
 
+Results are always lightweight (name, description, score) — to keep them cheap there
+is no option to inline schemas. Fetch a tool's arguments with get_tool_schema instead.
+
 WORKFLOW:
 1. Call search_tools (e.g. query="library search albums", "playback play media", "players list").
-2. Prefer ``recommended`` when present; follow ``workflow`` for multi-step tasks like playing music.
-3. Call invoke_tool with tool_name and arguments from the schema.
+   Prefer ``recommended`` when present and follow ``workflow`` for multi-step tasks.
+2. Call get_tool_schema with the chosen tool_name to fetch its arguments before invoking.
+3. Call invoke_tool with tool_name and arguments matching that schema.
 
-Playing music on a speaker is always multi-step: search URI → list players → playback_play_media.
-Use include_schema=false for a lighter name+description-only listing."""
+Playing music on a speaker is always multi-step: search URI → list players → playback_play_media."""
+
+
+GET_TOOL_SCHEMA_DESCRIPTION = """\
+Fetch the full schema for a single Music Assistant MCP tool.
+
+Pass the exact tool_name from search_tools (e.g. library_search_tracks) to get its
+name, description, inputSchema (and outputSchema/annotations when present). Use this
+after search_tools and before invoke_tool to learn a tool's arguments without paying
+for every search match's schema. RBAC permissions still apply."""
 
 
 INVOKE_TOOL_DESCRIPTION = """\
 Invoke any Music Assistant MCP tool by name.
 
 Pass the exact tool_name from search_tools (e.g. library_search_tracks) and a JSON
-arguments object matching that tool's inputSchema. RBAC permissions still apply —
-tools disabled in MCP Server settings cannot be invoked."""
+arguments object matching that tool's inputSchema (from get_tool_schema). RBAC
+permissions still apply — tools disabled in MCP Server settings cannot be invoked."""

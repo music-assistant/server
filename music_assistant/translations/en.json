@@ -805,7 +805,7 @@
   "provider.fastmcp_server.config_entries.enforce_audience.label": "Enforce token audience (RFC 8707)",
   "provider.fastmcp_server.config_entries.extra_allowed_origins.description": "Comma-separated list of additional `Origin` headers to accept (e.g. `https://ha.example.com` for Home Assistant ingress, or a reverse-proxy hostname). By default the server only accepts `localhost`, `127.0.0.1`, the MA `base_url` host, and `publish_ip`. Mismatching Origins are rejected with 403 to mitigate DNS rebinding.",
   "provider.fastmcp_server.config_entries.extra_allowed_origins.label": "Additional allowed Origins (CSV)",
-  "provider.fastmcp_server.config_entries.meta_tool_discovery.description": "Expose only Search tools and Invoke tool to MCP clients so agents search the catalog by keyword instead of listing every tool; permissions still apply.",
+  "provider.fastmcp_server.config_entries.meta_tool_discovery.description": "Expose only Search tools, Get tool schema and Invoke tool to MCP clients so agents search the catalog by keyword, fetch one tool's schema on demand, then invoke it — instead of listing every tool; permissions still apply.",
   "provider.fastmcp_server.config_entries.meta_tool_discovery.label": "Simplified tool discovery",
   "provider.fastmcp_server.config_entries.mount_path.description": "HTTP path prefix where the MCP server is mounted on MA's webserver. Change only if it conflicts with another route.",
   "provider.fastmcp_server.config_entries.mount_path.label": "Mount path",
