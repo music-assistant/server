@@ -8,7 +8,6 @@ import asyncio
 import copy
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
-from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 from music_assistant_models.config_entries import (
