@@ -263,4 +263,10 @@ class SnapcastSocketServer:
             # Schedule the send in the event loop
             task = asyncio.create_task(self._send_message(event_msg))
             self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
+
+            def _on_task_done(t: asyncio.Task[None]) -> None:
+                self._background_tasks.discard(t)
+                if not t.cancelled() and (exc := t.exception()):
+                    self._logger.debug("Background task failed", exc_info=exc)
+
+            task.add_done_callback(_on_task_done)
