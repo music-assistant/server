@@ -12,6 +12,22 @@ from music_assistant.providers.sonic_similarity.models import SimilarParams
 from music_assistant.providers.sonic_similarity.similarity import ScoredCandidate
 
 
+def format_text_query(query: str) -> str:
+    """Frame a bare text query toward CLAP's training captions.
+
+    CLAP's text encoder was trained on audio captions, so a light ``<query> music``
+    suffix lands the embedding closer to how tracks were captioned and measurably
+    sharpens retrieval. The suffix is skipped when the query already mentions music
+    to avoid ``rock music music``.
+
+    :param query: Raw user query.
+    """
+    cleaned = query.strip()
+    if not cleaned or "music" in cleaned.lower():
+        return cleaned
+    return f"{cleaned} music"
+
+
 def _parse_clap_embedding(raw: Any) -> np.ndarray | None:
     """Coerce a stored embedding (list/tuple) into a 1024-dim float32 array, or None."""
     if raw is None:

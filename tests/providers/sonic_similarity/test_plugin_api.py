@@ -15,6 +15,7 @@ from music_assistant.providers.sonic_similarity.helpers import (
     _parse_similar_params,
     _parse_weights,
     apply_filters,
+    format_text_query,
 )
 from music_assistant.providers.sonic_similarity.similarity import Candidate, ScoredCandidate
 from tests.providers.sonic_similarity.conftest import make_track
@@ -95,6 +96,27 @@ class TestParseSimilarParams:
         assert params.filter_providers is None
         assert params.exclude_track_ids is None
         assert params.exclude_artists is None
+
+
+class TestFormatTextQuery:
+    """Tests for the CLAP query template helper."""
+
+    def test_appends_music_suffix(self) -> None:
+        """A bare query is framed toward CLAP's caption form."""
+        assert format_text_query("aggressive metal") == "aggressive metal music"
+
+    def test_skips_when_music_present(self) -> None:
+        """No double 'music' when the query already mentions it."""
+        assert format_text_query("upbeat dance music") == "upbeat dance music"
+        assert format_text_query("Music for studying") == "Music for studying"
+
+    def test_strips_whitespace(self) -> None:
+        """Surrounding whitespace is trimmed before framing."""
+        assert format_text_query("  jazzy  ") == "jazzy music"
+
+    def test_empty_stays_empty(self) -> None:
+        """An empty/whitespace query is left as an empty string."""
+        assert format_text_query("   ") == ""
 
 
 class TestApplyFilters:

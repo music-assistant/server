@@ -56,6 +56,7 @@ from music_assistant.providers.sonic_similarity.helpers import (
     _parse_similar_params,
     _parse_weights,
     apply_filters,
+    format_text_query,
 )
 from music_assistant.providers.sonic_similarity.models import SimilarParams, _SearchContext
 from music_assistant.providers.sonic_similarity.similarity import (
@@ -840,13 +841,37 @@ class SonicSimilarityPlugin(PluginProvider):
         )
         return SearchResults(tracks=[t for t in resolved if t is not None])
 
-    async def _embed_text_query(self, query: str) -> np.ndarray | None:
-        """Encode a free-text query through the CLAP text encoder, or None if unavailable."""
+    async def _embed_text_query(
+        self, query: str, exclude: str | None = None, exclude_weight: float = 1.0
+    ) -> np.ndarray | None:
+        """Encode a free-text query through the CLAP text encoder, or None if unavailable.
+
+        :param query: Free-text query; framed toward CLAP's caption form before encoding.
+        :param exclude: Optional text to push away from. CLAP ignores literal negation
+            ("not loud" ~= "loud"), so exclusion is done in embedding space by
+            subtracting the exclude direction. Each side is unit-normalised first so
+            neither term dominates by raw magnitude.
+        :param exclude_weight: Strength of the exclusion subtraction.
+        """
         encoder = await self._get_text_encoder()
         if encoder is None:
             return None
-        text_emb = await asyncio.to_thread(encoder.get_text_embeddings, [query])
-        return cast("np.ndarray", text_emb[0].detach().cpu().numpy().astype(np.float32).reshape(-1))
+        prompts = [format_text_query(query)]
+        if exclude:
+            prompts.append(format_text_query(exclude))
+        embeddings = await asyncio.to_thread(encoder.get_text_embeddings, prompts)
+
+        def _unit(index: int) -> np.ndarray:
+            vec = embeddings[index].detach().cpu().numpy().astype(np.float32).reshape(-1)
+            norm = float(np.linalg.norm(vec))
+            return cast("np.ndarray", vec / norm if norm else vec)
+
+        keep = _unit(0)
+        if not exclude:
+            return keep
+        result = keep - exclude_weight * _unit(1)
+        norm = float(np.linalg.norm(result))
+        return result / norm if norm else result
 
     async def _handle_status(self) -> dict[str, Any]:
         """Return current analysis status."""
@@ -1371,11 +1396,19 @@ class SonicSimilarityPlugin(PluginProvider):
         return CLAP(version="2023", use_cuda=False, text_enabled=True)
 
     async def _handle_text_search(
-        self, query: str, limit: int = 25, resolve: bool = False
+        self,
+        query: str,
+        exclude: str | None = None,
+        exclude_weight: float = 1.0,
+        limit: int = 25,
+        resolve: bool = False,
     ) -> dict[str, Any]:
         """Return tracks closest to a natural-language query in CLAP's joint space.
 
         :param query: Free-text query (e.g. "super dancy disco track").
+        :param exclude: Optional text to push results away from (e.g. "vocals").
+            CLAP ignores literal "not", so this is applied as a vector subtraction.
+        :param exclude_weight: Strength of the exclusion, clamped to [0, 2].
         :param limit: Max matches to return.
         :param resolve: When True, include track name and artist for each item.
         """
@@ -1386,7 +1419,8 @@ class SonicSimilarityPlugin(PluginProvider):
                 "query": query,
                 "items": [],
             }
-        emb_np = await self._embed_text_query(query)
+        exclude_weight = max(0.0, min(2.0, exclude_weight))
+        emb_np = await self._embed_text_query(query, exclude=exclude, exclude_weight=exclude_weight)
         if emb_np is None:
             return {
                 "analyzed": False,
