@@ -739,7 +739,7 @@ async def cleanup_thumb_cache(cache_path: str, max_size_bytes: int) -> int:
     thumb_dir = os.path.join(cache_path, _THUMB_CACHE_DIR)
 
     def _cleanup() -> int:
-        if not os.path.isdir(thumb_dir):
+        if not Path(thumb_dir).is_dir():
             return 0
         entries = []
         for entry in os.scandir(thumb_dir):
