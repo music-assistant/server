@@ -87,6 +87,7 @@ class TestParseSimilarParams:
         assert params.depth == 1
         assert params.branch_factor == 5
         assert params.blend_mode == "centroid"
+        assert params.candidates == 200
         assert params.seed_weights is None
         assert params.diversity == 0.0
         assert params.preset == "balanced"

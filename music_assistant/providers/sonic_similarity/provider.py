@@ -282,7 +282,10 @@ class SonicSimilarityPlugin(PluginProvider):
         seed_weights: list[float] | None = None,
         diversity: float = 0.0,
         preset: str = "balanced",
-        candidates: int = 50,
+        # 200 saturates recall@10 vs an exact weighted-kNN; 50 under-served the
+        # more aggressive presets (e.g. 'party'). Cost is ~linear in this value
+        # and independent of library size, so it stays cheap at any scale.
+        candidates: int = 200,
         filter_genres: list[str] | None = None,
         filter_providers: list[str] | None = None,
         exclude_track_ids: list[str] | None = None,
