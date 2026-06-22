@@ -207,7 +207,10 @@ class BBCSoundsProvider(MusicProvider):
         self.menu = await self.client.get_menu(recommendations=MenuRecommendationOptions.EXCLUDE)
 
     async def _request_pool(self, key: str, coro: Awaitable[Any]) -> Any:
-        """Reuse API calls for multiple players/streams."""
+        """Reuse API calls for multiple players/streams.
+
+        If we are streaming the same station to multiple players, we end
+        """
         # TODO: this will stop working once stream seeking is implemented
         if key in self._concurrent_requests:
             return await self._concurrent_requests[key]
@@ -218,9 +221,15 @@ class BBCSoundsProvider(MusicProvider):
 
         try:
             result = await coro
-            future.set_result(result)
+            if not future.done():
+                future.set_result(result)
             return result
-        except Exception as err:
+        except asyncio.CancelledError as err:
+            # Explicitly cancelled
+            future.set_exception(err)
+            raise
+        except BaseException as err:
+            # Everything else
             future.set_exception(err)
             raise
         finally:
@@ -243,9 +252,12 @@ class BBCSoundsProvider(MusicProvider):
         )
 
         if data is not None:
+            self.logger.debug(f"Found item for key {key} in cache")
             if isinstance(data, dict) and expected_type:
+                self.logger.debug(f"Converting back to {expected_type}")
                 return expected_type(**cast("dict[str, Any]", data))
-            if isinstance(data, dict) or (expected_type and isinstance(data, expected_type)):
+            if isinstance(data, dict) or (expected_type and type(data) is expected_type):
+                self.logger.debug(f"Returning as type{data} as expected")
                 return cast("T | dict[str, Any]", data)
             raise MusicAssistantError(f"Cache returned unexpected type {type(data)}")
 
@@ -257,6 +269,12 @@ class BBCSoundsProvider(MusicProvider):
                 data=cast("SerializableType", data),
                 provider=self.instance_id,
                 expiration=expiration,
+            )
+        else:
+            await self.mass.cache.set(
+                key=key,
+                data=cast("SerializableType", data),
+                provider=self.instance_id,
             )
 
         return data
