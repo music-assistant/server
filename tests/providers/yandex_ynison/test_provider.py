@@ -908,9 +908,10 @@ class TestYnisonStateHandling:
             )
             provider._track_changed_event.set()
 
-        asyncio.create_task(simulate_echo_then_change())
+        task = asyncio.create_task(simulate_echo_then_change())
         result = await provider._wait_for_track_change("old_track", timeout=5.0)
         assert result is True
+        await task
 
     async def test_wait_for_track_change_returns_immediately_if_already_advanced(
         self,

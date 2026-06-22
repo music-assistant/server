@@ -117,6 +117,7 @@ class WebRTCGateway:
         self.ice_servers = ice_servers or self.DEFAULT_ICE_SERVERS
 
         self.sessions: dict[str, WebRTCSession] = {}
+        self._background_tasks: set[asyncio.Task[None]] = set()
         self._signaling_ws: aiohttp.ClientWebSocketResponse | None = None
         self._running = False
         self._reconnect_delay = 10  # Wait 10 seconds before reconnecting
@@ -404,10 +405,12 @@ class WebRTCGateway:
         def on_datachannel(channel: Any) -> None:
             if channel.label == "sendspin":
                 session.sendspin_channel = channel
-                asyncio.create_task(self._setup_sendspin_channel(session))
+                task = asyncio.create_task(self._setup_sendspin_channel(session))
             else:
                 session.data_channel = channel
-                asyncio.create_task(self._setup_data_channel(session))
+                task = asyncio.create_task(self._setup_data_channel(session))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
 
         @pc.on("icecandidate")
         async def on_icecandidate(candidate: Any) -> None:
