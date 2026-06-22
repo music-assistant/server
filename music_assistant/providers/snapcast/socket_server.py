@@ -64,6 +64,7 @@ class SnapcastSocketServer:
         self._server: asyncio.AbstractServer | None = None
         self._client_writer: asyncio.StreamWriter | None = None
         self._unsub_callback: Any = None
+        self._background_tasks: set[asyncio.Task[None]] = set()
         self._logger = LOGGER.getChild(queue_id)
 
     async def start(self) -> None:
@@ -260,4 +261,6 @@ class SnapcastSocketServer:
                 "data": event.data.to_dict() if hasattr(event.data, "to_dict") else event.data,
             }
             # Schedule the send in the event loop
-            asyncio.create_task(self._send_message(event_msg))
+            task = asyncio.create_task(self._send_message(event_msg))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)

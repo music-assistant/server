@@ -99,6 +99,7 @@ class AudioBuffer:
         self._inactivity_task: asyncio.Task[None] | None = None
         self._cancelled = False
         self._producer_error: Exception | None = None
+        self._background_tasks: set[asyncio.Task[None]] = set()
         self.ready = asyncio.Event()
         self._chunk_callbacks: list[ChunkCallback] = []
         self._cancel_callbacks: list[CancelCallback] = []
@@ -634,7 +635,9 @@ class AudioBuffer:
             if exc is not None and isinstance(exc, Exception):
                 self._producer_error = exc
                 loop = asyncio.get_running_loop()
-                loop.create_task(self._notify_on_producer_error())
+                task = loop.create_task(self._notify_on_producer_error())
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
 
         task.add_done_callback(_on_producer_done)
 
