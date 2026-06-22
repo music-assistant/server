@@ -1,137 +1,87 @@
+"""Sveriges Radio music provider."""
+
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Sequence
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, Final
 
-from music_assistant_models.config_entries import ConfigEntry
+import aiohttp
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import (
+    AudioFormat,
     BrowseFolder,
     MediaItemImage,
     MediaItemType,
+    ProviderMapping,
     Radio,
     SearchResults,
 )
-from music_assistant_models.streamdetails import AudioFormat, StreamDetails
+from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+        ProviderConfig,
+    )
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
+API_BASE: Final = "https://api.sr.se/api/v2"
+
+# bound each request; the shared session's default timeout is too long for a metadata fetch
+HTTP_TIMEOUT: Final = aiohttp.ClientTimeout(total=10)
 
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
-    ProviderFeature.LIBRARY_RADIOS,
 }
 
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
-    """Initialize instance"""
+    """Initialize instance."""
     return SverigesRadio(mass, manifest, config, SUPPORTED_FEATURES)
 
 
+async def get_config_entries(
+    mass: MusicAssistant,  # noqa: ARG001
+    instance_id: str | None = None,  # noqa: ARG001
+    action: str | None = None,  # noqa: ARG001
+    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider (none required)."""
+    return ()
 
 
 class SverigesRadio(MusicProvider):
-
-    async def handle_async_init(self) -> None:
-        """Initialise"""
-        self._base_api = "https://api.sr.se/api/v2"
-
-    # ---------------------------------------------------------------------
-    # Library / browse
-    # ---------------------------------------------------------------------
-
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
-
-        params = {"format": "json", "size": 500}
-        async with self.mass.http_session.get(
-            f"{self._base_api}/channels", params=params
-        ) as resp:
-            data = await resp.json()
-
-        for ch in data.get("channels", []):
-            ch_id = str(ch["id"])
-            name = ch.get("name") or ch.get("channeltype") or f"SR {ch_id}"
-            img_url = ch.get("image")
-
-            radio = Radio(
-                name=name,
-                item_id=ch_id,
-                provider=self.domain,
-                provider_mappings=self._provider_mapping_for_id(ch_id),
-            )
-
-            if img_url:
-                radio.metadata.add_image(
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=img_url,
-                        provider=self.domain,
-                        remotely_accessible=True,
-                    )
-                )
-
-            yield radio
-
-    async def get_radio(self, prov_radio_id: str) -> Radio:
-        """Get radio details by SR channel id."""
-        params = {"format": "json"}
-        async with self.mass.http_session.get(
-            f"{self._base_api}/channels/{prov_radio_id}", params=params
-        ) as resp:
-            data = await resp.json()
-
-        ch = data.get("channel")
-        if not ch:
-            raise MediaNotFoundError("Radio not found")
-
-        name = ch.get("name") or ch.get("channeltype") or f"SR {prov_radio_id}"
-        img_url = ch.get("image")
-
-        radio = Radio(
-            name=name,
-            item_id=str(ch["id"]),
-            provider=self.domain,
-            provider_mappings=self._provider_mapping_for_id(str(ch["id"])),
-        )
-
-        if img_url:
-            radio.metadata.add_image(
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=img_url,
-                    provider=self.domain,
-                    remotely_accessible=True,
-                )
-            )
-
-        return radio
+    """Sveriges Radio music provider."""
 
     async def browse(self, path: str) -> Sequence[MediaItemType | BrowseFolder]:
-        """list all radio stations"""
-        radios = [r async for r in self.get_library_radios()]
-        return radios
+        """List all Sveriges Radio stations."""
+        if (subpath := path.split("://", 1)[1] if "://" in path else "") != "":
+            msg = f"Invalid subpath: {subpath}"
+            raise KeyError(msg)
+        return [self._parse_radio(channel) for channel in await self._get_channels()]
 
-    # ---------------------------------------------------------------------
-    # Search (radio only, basic)
-    # ---------------------------------------------------------------------
+    async def get_radio(self, prov_radio_id: str) -> Radio:
+        """Get full radio details by id."""
+        if channel := await self._get_channel(prov_radio_id):
+            return self._parse_radio(channel)
+        raise MediaNotFoundError(f"Radio station {prov_radio_id} not found")
 
     async def search(
         self,
@@ -139,40 +89,27 @@ class SverigesRadio(MusicProvider):
         media_types: list[MediaType],
         limit: int = 5,
     ) -> SearchResults:
-        """Search  channels by name"""
-        radios: list[Radio] = []
-
-        if MediaType.RADIO in media_types or not media_types:
-            all_radios = [r async for r in self.get_library_radios()]
-            q = search_query.lower()
-            radios = [r for r in all_radios if q in (r.name or "").lower()][:limit]
-
+        """Search Sveriges Radio channels by name."""
+        if media_types and MediaType.RADIO not in media_types:
+            return SearchResults()
+        query = search_query.lower()
+        radios = [
+            self._parse_radio(channel)
+            for channel in await self._get_channels()
+            if query in (channel.get("name") or "").lower()
+        ][:limit]
         return SearchResults(radio=radios)
 
-    # ---------------------------------------------------------------------
-    # Stream resolution
-    # ---------------------------------------------------------------------
-
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Get stream details """
-        if media_type != MediaType.RADIO:
-            raise MediaNotFoundError("Unsupported media type for SR provider")
-
-        params = {"format": "json"}
-        async with self.mass.http_session.get(
-            f"{self._base_api}/channels/{item_id}", params=params
-        ) as resp:
-            data = await resp.json()
-
-        ch = data.get("channel") or {}
-        liveaudio = ch.get("liveaudio") or {}
-        url = liveaudio.get("url")
+        """Get stream details for a radio station."""
+        # the live audio URL is already part of the cached channel list, so no extra request
+        channel = await self._get_channel(item_id)
+        url = (channel.get("liveaudio") or {}).get("url") if channel else None
         if not url:
-            raise MediaNotFoundError("No live audio URL for this channel")
-
+            raise MediaNotFoundError(f"Radio station {item_id} has no live audio URL")
         return StreamDetails(
             provider=self.domain,
-            item_id=str(item_id),
+            item_id=item_id,
             media_type=media_type,
             stream_type=StreamType.HTTP,
             path=url,
@@ -181,22 +118,50 @@ class SverigesRadio(MusicProvider):
             allow_seek=False,
         )
 
-    # ---------------------------------------------------------------------
-    # Helper
-    # ---------------------------------------------------------------------
+    @use_cache(3600 * 24)  # Cache for 1 day
+    async def _get_channels(self) -> list[dict[str, Any]]:
+        """Fetch the full list of Sveriges Radio channels."""
+        params = {"format": "json", "size": "500"}
+        try:
+            async with self.mass.http_session.get(
+                f"{API_BASE}/channels", params=params, timeout=HTTP_TIMEOUT
+            ) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+        except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            raise ProviderUnavailableError("Sveriges Radio API unavailable") from err
+        channels: list[dict[str, Any]] = data.get("channels", [])
+        return channels
 
-    def _provider_mapping_for_id(self, item_id: str):
-        """Build ProviderMapping set """
-        from music_assistant_models.media_items import ProviderMapping
+    async def _get_channel(self, channel_id: str) -> dict[str, Any] | None:
+        """Return the cached channel payload for an id, or None if unknown."""
+        return next(
+            (channel for channel in await self._get_channels() if str(channel["id"]) == channel_id),
+            None,
+        )
 
-        return {
-            ProviderMapping(
-                item_id=str(item_id),
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
+    def _parse_radio(self, channel: dict[str, Any]) -> Radio:
+        """Build a Radio object from an SR channel payload."""
+        channel_id = str(channel["id"])
+        radio = Radio(
+            name=channel.get("name") or channel.get("channeltype") or f"SR {channel_id}",
+            item_id=channel_id,
+            provider=self.domain,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=channel_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
+        if image := channel.get("image"):
+            radio.metadata.add_image(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=image,
+                    provider=self.domain,
+                    remotely_accessible=True,
+                )
             )
-        }
-
-    @property
-    def is_streaming_provider(self) -> bool:
-        return True
+        return radio
