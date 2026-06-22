@@ -37,10 +37,6 @@ if TYPE_CHECKING:
 class WamPlayer(Player):
     """Representation of a Samsung WAM speaker."""
 
-    _attr_supported_sample_rates = [
-        (sr, bd) for sr in (44100, 48000, 88200, 96000, 176400, 192000) for bd in (16, 24)
-    ]
-
     def __init__(
         self,
         prov: SamsungWamProvider,
@@ -72,6 +68,9 @@ class WamPlayer(Player):
 
         self.logger = self.prov.logger.getChild(self.player_id)
         self._attr_supported_features = set(PLAYER_FEATURES_BASE)
+        self._attr_supported_sample_rates = [
+            (sr, bd) for sr in (44100, 48000, 88200, 96000, 176400, 192000) for bd in (16, 24)
+        ]
         self._attr_can_group_with = {prov.instance_id}
         self._attr_needs_poll = True
         self._attr_poll_interval = POLL_INTERVAL

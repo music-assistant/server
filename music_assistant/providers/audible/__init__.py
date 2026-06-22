@@ -7,7 +7,7 @@ import os
 from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
 from logging import getLevelName
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 from urllib.parse import quote, unquote
 from uuid import uuid4
 
@@ -248,7 +248,7 @@ class Audibleprovider(MusicProvider):
         await self._login()
 
     # Cache for authenticators to avoid repeated file I/O
-    _AUTH_CACHE: dict[str, audible.Authenticator] = {}
+    _AUTH_CACHE: ClassVar[dict[str, audible.Authenticator]] = {}
 
     async def _login(self) -> None:
         """Authenticate with Audible using the saved authentication file."""
