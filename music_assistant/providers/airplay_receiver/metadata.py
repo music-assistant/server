@@ -215,7 +215,13 @@ class MetadataReader:
             # Process the metadata item
             task = asyncio.create_task(self._process_metadata_item(type_str, code_str, data))
             self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
+
+            def _on_task_done(t: asyncio.Task[None]) -> None:
+                self._background_tasks.discard(t)
+                if not t.cancelled() and (exc := t.exception()):
+                    self.logger.debug("Background task failed", exc_info=exc)
+
+            task.add_done_callback(_on_task_done)
 
         except Exception as err:
             self.logger.debug("Error parsing XML item: %s", err)
