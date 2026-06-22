@@ -1,8 +1,8 @@
 {
   "type": "music",
   "domain": "mammamiradio",
-  "name": "mammamiradio",
-  "description": "AI-generated Italian radio station — continuous music, banter, and ads. Self-hosted via the mammamiradio HA addon.",
+  "name": "Mamma Mi Radio",
+  "description": "AI-generated Italian radio station — continuous music, banter, and ads. Self-hosted via the Mamma Mi Radio HA addon.",
   "codeowners": ["@florianhorner"],
   "requirements": [],
   "documentation": "https://github.com/florianhorner/mammamiradio",

@@ -1,11 +1,11 @@
 {
   "config_entries": {
     "mammamiradio_url": {
-      "label": "mammamiradio URL",
-      "description": "URL of your mammamiradio HA addon (default matches the stock addon configuration)."
+      "label": "Mamma Mi Radio URL",
+      "description": "URL of your Mamma Mi Radio HA addon (default matches the stock addon configuration)."
     }
   },
   "manifest": {
-    "description": "AI-generated Italian radio station — continuous music, banter, and ads. Self-hosted via the mammamiradio HA addon."
+    "description": "AI-generated Italian radio station — continuous music, banter, and ads. Self-hosted via the Mamma Mi Radio HA addon."
   }
 }

@@ -348,6 +348,15 @@ async def test_search_substring_returns_entry(
     assert results.radio[0].item_id == RADIO_ITEM_ID
 
 
+async def test_search_display_name_returns_entry(
+    provider: MammamiradioProvider,
+) -> None:
+    """The full display name 'Mamma Mi Radio' (with spaces) matches the entry."""
+    results = await provider.search("Mamma Mi Radio", [MediaType.RADIO])
+    assert len(results.radio) == 1
+    assert results.radio[0].item_id == RADIO_ITEM_ID
+
+
 async def test_search_no_match_returns_empty(
     provider: MammamiradioProvider,
 ) -> None:
@@ -652,7 +661,7 @@ def test_segment_empty_now_streaming_is_idle() -> None:
 def test_segment_missing_brand_defaults_station_name() -> None:
     """A missing brand still yields a non-empty title via the literal fallback."""
     sm = _segment_to_stream_metadata({"type": "stopped"}, [], {}, {}, show_upcoming=False)
-    assert sm.title == "mammamiradio"
+    assert sm.title == "Mamma Mi Radio"
 
 
 def test_segment_malformed_upcoming_does_not_raise() -> None:
@@ -1212,7 +1221,7 @@ def test_v1_mapper_is_total_against_malformed_payload() -> None:
     """Non-dict now_playing / non-list up_next / non-dict station never raise."""
     payload = {"station": ["x"], "now_playing": ["not", "a", "dict"], "up_next": {"bad": 1}}
     sm = _v1_to_stream_metadata(payload, show_upcoming=True)
-    assert sm.title == "mammamiradio"
+    assert sm.title == "Mamma Mi Radio"
     assert sm.description is None
 
 

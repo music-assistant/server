@@ -1,8 +1,8 @@
 """
 mammamiradio music provider support for MusicAssistant.
 
-mammamiradio is a self-hosted, AI-generated continuous Italian radio station
-with banter, music, and ads. This provider exposes the user's mammamiradio
+Mamma Mi Radio is a self-hosted, AI-generated continuous Italian radio station
+with banter, music, and ads. This provider exposes the user's Mamma Mi Radio
 HA addon as a single Radio entry inside Music Assistant.
 
 Now-playing metadata is read from the addon's versioned consumer contract
@@ -60,10 +60,10 @@ SUPPORTED_FEATURES = {
 CONF_MAMMAMIRADIO_URL = "mammamiradio_url"
 DEFAULT_URL = "http://localhost:8000"
 RADIO_ITEM_ID = "mammamiradio"
-RADIO_NAME = "mammamiradio"
+RADIO_NAME = "Mamma Mi Radio"
 RADIO_DESCRIPTION = (
     "AI-generated Italian radio station — continuous music, banter, and ads. "
-    "Self-hosted via the mammamiradio HA addon."
+    "Self-hosted via the Mamma Mi Radio HA addon."
 )
 REACHABILITY_TIMEOUT = 5
 # How often Music Assistant invokes the live-metadata callback (seconds). 12s is
@@ -409,10 +409,10 @@ class MammamiradioProvider(MusicProvider):
         limit: int = 5,
     ) -> SearchResults:
         """
-        Perform search on the mammamiradio entry.
+        Perform search on the Mamma Mi Radio entry.
 
-        Matches the substring of "mammamiradio" (case-insensitive) against
-        the search query.
+        Matches the query (case-insensitive) against either the display name or
+        the provider slug, so both "mamma mi radio" and "mammamiradio" find it.
         """
         results = SearchResults()
         if MediaType.RADIO not in media_types:
@@ -420,7 +420,7 @@ class MammamiradioProvider(MusicProvider):
         search_query_lower = search_query.lower().strip()
         if not search_query_lower:
             return results
-        if search_query_lower in RADIO_NAME.lower():
+        if search_query_lower in RADIO_NAME.lower() or search_query_lower in RADIO_ITEM_ID:
             results.radio = [self._build_radio()]
         return results
 
