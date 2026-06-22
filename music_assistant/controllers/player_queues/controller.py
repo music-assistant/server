@@ -340,22 +340,22 @@ class PlayerQueuesController(CoreController):
             shuffle=shuffle_enabled,
         )
 
-    @api_command("player_queues/dont_stop_the_music")
-    def set_dont_stop_the_music(self, queue_id: str, dont_stop_the_music_enabled: bool) -> None:
-        """Configure Don't stop the music setting on the queue."""
+    @api_command("player_queues/autoplay")
+    def set_autoplay(self, queue_id: str, autoplay_enabled: bool) -> None:
+        """Configure Autoplay setting on the queue."""
         providers_available_with_similar_tracks = any(
             ProviderFeature.SIMILAR_TRACKS in provider.supported_features
             for provider in self.mass.music.providers
         )
-        if dont_stop_the_music_enabled and not providers_available_with_similar_tracks:
+        if autoplay_enabled and not providers_available_with_similar_tracks:
             raise UnsupportedFeaturedException(
-                "Don't stop the music is not supported by any of the available music providers"
+                "Autoplay is not supported by any of the available music providers"
             )
         queue = self._queues[queue_id]
-        queue.dont_stop_the_music_enabled = dont_stop_the_music_enabled
+        queue.autoplay_enabled = autoplay_enabled
         # if this happens to be the last track in the queue, fill the radio source
         if (
-            queue.dont_stop_the_music_enabled
+            queue.autoplay_enabled
             and queue.enqueued_media_items
             and queue.current_index is not None
             and (queue.items - queue.current_index) <= 1
@@ -365,6 +365,11 @@ class PlayerQueuesController(CoreController):
             task_id = f"fill_radio_tracks_{queue_id}"
             self.mass.call_later(5, self._fill_radio_tracks, queue_id, task_id=task_id)
         self.signal_update(queue_id=queue_id)
+
+    @api_command("player_queues/dont_stop_the_music", alias=True)
+    def set_dont_stop_the_music(self, queue_id: str, dont_stop_the_music_enabled: bool) -> None:
+        """Backwards-compatible alias for the autoplay command, used by older clients."""
+        self.set_autoplay(queue_id, dont_stop_the_music_enabled)
 
     @api_command("player_queues/repeat")
     def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
@@ -1044,7 +1049,7 @@ class PlayerQueuesController(CoreController):
         target_queue.crossfade_enabled = source_queue.crossfade_enabled
         # refresh the derived smart-fades indicator for the target's own config/availability
         target_queue.smart_fades_active = self.mass.streams.is_smart_fades_active(target_queue)
-        target_queue.dont_stop_the_music_enabled = source_queue.dont_stop_the_music_enabled
+        target_queue.autoplay_enabled = source_queue.autoplay_enabled
         target_queue.radio_source = source_queue.radio_source
         target_queue.is_dynamic = source_queue.is_dynamic
         target_queue.enqueued_media_items = source_queue.enqueued_media_items
@@ -1108,7 +1113,7 @@ class PlayerQueuesController(CoreController):
                 active=False,
                 display_name=player.state.name,
                 available=player.state.available,
-                dont_stop_the_music_enabled=False,
+                autoplay_enabled=False,
                 items=0,
             )
 
@@ -1894,7 +1899,7 @@ class PlayerQueuesController(CoreController):
                         )
 
                 # Save requested media item to play on the queue so we can use it as a source
-                # for Don't stop the music. Use FIFO list to keep track of the last 10 played items
+                # for Autoplay. Use FIFO list to keep track of the last 10 played items
                 # Skip ItemMapping and BrowseFolder - only queue full MediaItemType objects
                 if not isinstance(
                     media_item, (ItemMapping, BrowseFolder)
@@ -2889,19 +2894,19 @@ class PlayerQueuesController(CoreController):
 
         # watch dynamic radio items refill if needed
         if "current_item_id" in changed_keys:
-            # auto enable radio mode if dont stop the music is enabled
+            # auto enable radio mode if autoplay is enabled
             if (
-                queue.dont_stop_the_music_enabled
+                queue.autoplay_enabled
                 and queue.enqueued_media_items
                 and queue.current_index is not None
                 and (queue.items - queue.current_index) <= 1
             ):
-                # We have received the last item in the queue and Don't stop the music is enabled
+                # We have received the last item in the queue and Autoplay is enabled
                 # set the played media item(s) as radio items (which will refill the queue)
                 # note that this will fail if there are no media items for which we have
                 # a dynamic radio source.
                 self.logger.debug(
-                    "End of queue detected and Don't stop the music is enabled for %s"
+                    "End of queue detected and Autoplay is enabled for %s"
                     " - setting enqueued media items as radio source: %s",
                     queue.display_name,
                     ", ".join([x.uri for x in queue.enqueued_media_items]),  # type: ignore[misc]  # uri set in __post_init__
