@@ -1662,17 +1662,27 @@ class Player(ABC):
         # wrong clock for live plugin sources (loses upstream seeks and
         # pause-resume on the queue's corrected_elapsed_time, which the
         # player_queues controller and several player providers consume).
-        if (
-            (active_source := self.__final_active_source)
-            and (queue := self.mass.player_queues.get(active_source))
-            and (current_item := queue.current_item) is not None
-            and (sd := current_item.streamdetails) is not None
-            and sd.media_type == MediaType.AUDIO_SOURCE
-            and sd.stream_metadata is not None
-            and sd.stream_metadata.elapsed_time is not None
-        ):
-            elapsed_time = sd.stream_metadata.elapsed_time
-            elapsed_time_last_updated = sd.stream_metadata.elapsed_time_last_updated or time.time()
+        # A group player outputs the AudioSource from its own queue, which
+        # __final_active_source may not resolve to, so the group's own queue
+        # is also consulted.
+        candidate_source_ids = [self.__final_active_source]
+        if self.type == PlayerType.GROUP:
+            candidate_source_ids.append(self.player_id)
+        for source_id in candidate_source_ids:
+            if (
+                source_id
+                and (queue := self.mass.player_queues.get(source_id))
+                and (current_item := queue.current_item) is not None
+                and (sd := current_item.streamdetails) is not None
+                and sd.media_type == MediaType.AUDIO_SOURCE
+                and sd.stream_metadata is not None
+                and sd.stream_metadata.elapsed_time is not None
+            ):
+                elapsed_time = sd.stream_metadata.elapsed_time
+                elapsed_time_last_updated = (
+                    sd.stream_metadata.elapsed_time_last_updated or time.time()
+                )
+                break
 
         return (playback_state, elapsed_time, elapsed_time_last_updated)
 
