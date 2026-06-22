@@ -1056,6 +1056,6 @@ class LocalAudioBridgeManager:
             sinks = enumerate_pa_sinks()
             if sinks:
                 return "pulse", sinks
-        except (FileNotFoundError, RuntimeError):
+        except (FileNotFoundError, RuntimeError):  # fmt: skip
             pass
         return "alsa", enumerate_alsa_devices()

@@ -701,7 +701,7 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
                 "float32be": 32,
             }
             bit_depth = _fmt_to_depth.get(fmt.lower(), 16)
-        except (IndexError, ValueError):
+        except (IndexError, ValueError):  # fmt: skip
             continue
         if channels < 2:
             continue
