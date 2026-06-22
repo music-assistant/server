@@ -7,7 +7,7 @@ import urllib
 from collections.abc import Callable
 from dataclasses import dataclass
 from types import TracebackType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
 import pkce
 from music_assistant_models.enums import EventType
@@ -50,7 +50,7 @@ class ManualAuthenticationHelper:
         self.mass = mass
         self.session_id = session_id
 
-    async def __aenter__(self) -> ManualAuthenticationHelper:
+    async def __aenter__(self) -> Self:
         """Enter context manager."""
         return self
 

@@ -14,7 +14,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlparse
 
 import aiohttp
@@ -71,7 +71,7 @@ class WebRTCGateway:
     CLOSE_CODE_REPLACED = 4000
 
     # Default ICE servers (public STUN only - used as fallback)
-    DEFAULT_ICE_SERVERS: list[dict[str, Any]] = [
+    DEFAULT_ICE_SERVERS: ClassVar[list[dict[str, Any]]] = [
         {"urls": "stun:stun.home-assistant.io:3478"},
         {"urls": "stun:stun.l.google.com:19302"},
         {"urls": "stun:stun1.l.google.com:19302"},
