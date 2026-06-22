@@ -47,9 +47,8 @@ from sounds import (
     exceptions,
 )
 from sounds import PodcastEpisode as SoundsPodcastEpisode
-from sounds.utils import image_from_spotify
+from sounds.models import Playlist
 
-import music_assistant.helpers.datetime as dt
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER, CONF_PASSWORD, CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.cache.constants import SerializableType
