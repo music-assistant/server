@@ -858,7 +858,6 @@ class ProtocolLinkingMixin:
             active_protocol_ids = {
                 link.output_protocol_id for link in player.linked_output_protocols
             }
-            had_active_protocols = bool(active_protocol_ids)
             moved_protocol_ids: set[str] = set()
 
             # Transfer all protocol links from universal player to native player
@@ -874,8 +873,12 @@ class ProtocolLinkingMixin:
                         # Link refused, keep the protocol owned by the universal player.
                         protocol_player.set_protocol_parent_id(player.player_id)
 
-            if had_active_protocols and not moved_protocol_ids:
-                # No active link could migrate, keep the universal player as-is.
+            if active_protocol_ids - moved_protocol_ids:
+                # A link was refused, keep the universal player and hand over only
+                # what moved so the refused protocols are not orphaned.
+                self._migrate_protocol_ids_to_parent(native_player, moved_protocol_ids)
+                self._remove_protocol_ids_from_parent(player, moved_protocol_ids)
+                native_player.update_state()
                 continue
 
             cached_only_ids = known_protocol_ids - active_protocol_ids
