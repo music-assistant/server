@@ -1286,10 +1286,7 @@ class StreamsAudio:
                 yield chunk
         except AudioError as err:
             streamdetails.stream_error = True
-            # Only revoke availability when the stream never produced audio (i.e. it
-            # failed to start). A mid-stream abort after real playback is typically a
-            # transient/network condition on a live source that can be reconnected, so
-            # the item must stay available to allow a restart.
+            # revoke availability when the stream never produced any audio
             if bytes_received == 0:
                 queue_item.available = False
             if raise_on_error:
@@ -1498,10 +1495,7 @@ class StreamsAudio:
             finished = True
         except AudioError as err:
             streamdetails.stream_error = True
-            # Only revoke availability when the stream never produced audio (i.e. it
-            # failed to start). A mid-stream abort after real playback is typically a
-            # transient/network condition - common for radio streams that drop and can
-            # be reconnected - so the item must stay available to allow a restart.
+            # revoke availability when the stream never produced any audio
             if bytes_received == 0:
                 queue_item.available = False
             if raise_on_error:
