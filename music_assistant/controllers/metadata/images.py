@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, cast
 import aiofiles
 from aiohttp import web
 from music_assistant_models.enums import ImageType
-from music_assistant_models.errors import ProviderUnavailableError
+from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import (
     Album,
     BrowseFolder,
@@ -158,7 +158,10 @@ class ImageProxyMixin:
         )
         if not img_path:
             return None
-        thumbnail = await self.get_thumbnail(img_path, provider="builtin", size=size)
+        try:
+            thumbnail = await self.get_thumbnail(img_path, provider="builtin", size=size)
+        except MediaNotFoundError:
+            return None
 
         return cast("bytes", thumbnail)
 
@@ -251,7 +254,7 @@ class ImageProxyMixin:
             return await get_palette_for_url(self.mass, image)
         try:
             return await get_palette(self.mass, image.path, image.provider)
-        except FileNotFoundError, OSError:
+        except MediaNotFoundError, OSError:
             return None
 
     async def get_thumbnail(
@@ -266,9 +269,14 @@ class ImageProxyMixin:
         """Get/create thumbnail image for path (image url or local path)."""
         if image_format is None:
             image_format = _detect_image_format(path)
-        thumbnail_bytes, content_format = await self._resolve_thumbnail(
-            path, provider, size, image_format, flatten_transparency
-        )
+        try:
+            thumbnail_bytes, content_format = await self._resolve_thumbnail(
+                path, provider, size, image_format, flatten_transparency
+            )
+        except (MediaNotFoundError, OSError) as err:
+            # normalize a missing/unreadable image into one typed error so callers
+            # (and not just the HTTP imageproxy handler) can handle it uniformly
+            raise MediaNotFoundError(f"Image not found or unreadable: {path}") from err
         if base64:
             enc_image = b64encode(thumbnail_bytes).decode()
             return f"data:{_IMAGEPROXY_CONTENT_TYPES[content_format]};base64,{enc_image}"
@@ -443,7 +451,7 @@ class ImageProxyMixin:
             )
         except Exception as err:
             # broadly catch all exceptions here to ensure we dont crash the request handler
-            if isinstance(err, FileNotFoundError):
+            if isinstance(err, (MediaNotFoundError, FileNotFoundError)):
                 self.logger.log(VERBOSE_LOG_LEVEL, "Image not found: %s", path)
             else:
                 self.logger.warning(
