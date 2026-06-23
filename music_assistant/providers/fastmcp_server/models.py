@@ -22,6 +22,24 @@ class TrackBrief:
     artists: list[str] = field(default_factory=list)
     album: str | None = None
     duration: int | None = None
+    disc_number: int | None = None
+    track_number: int | None = None
+
+
+@dataclass
+class AlbumTracksResult:
+    """An album summary plus its track listing in disc/track order."""
+
+    album: AlbumBrief
+    tracks: list[TrackBrief] = field(default_factory=list)
+
+
+@dataclass
+class ArtistAlbumsResult:
+    """An artist summary plus their album discography."""
+
+    artist: ArtistBrief
+    albums: list[AlbumBrief] = field(default_factory=list)
 
 
 @dataclass

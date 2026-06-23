@@ -32,8 +32,8 @@ def _coerce_playlist_db_id(value: str | int) -> int:
     pass either form.
 
     :param value: The integer library id, an all-digit string, or a
-        ``library://playlist/<n>`` URI as returned by ``list_playlists`` /
-        ``get_playlist_by_uri``.
+        ``library://playlist/<n>`` URI as returned by ``list_library_playlists`` /
+        ``library_get_playlist_by_uri``.
     """
     if isinstance(value, int):
         return value

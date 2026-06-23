@@ -11,36 +11,15 @@ from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from ..tags import Tag
-from ._common import TIMEOUT_MUTATION, TIMEOUT_QUERY, confirm_or_raise
+from ._common import TIMEOUT_MUTATION, TIMEOUT_QUERY, confirm_or_raise, resolve_uri
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 
 async def _resolve_uri(mass: MusicAssistant, uri: str) -> Any:
-    """
-    Look up a MediaItem by MA URI, raising ToolError when missing.
-
-    MA's MusicController APIs that mutate library / favorites / play history
-    expect a resolved (media_type, library_item_id) pair or a typed media
-    object — not a raw URI string. This helper centralises the lookup and
-    surfaces a distinct ToolError message per failure class so the LLM
-    caller can distinguish "URI typo" from "provider offline".
-    """
-    from music_assistant_models.errors import (  # noqa: PLC0415
-        InvalidProviderURI,
-        MediaNotFoundError,
-        ProviderUnavailableError,
-    )
-
-    try:
-        return await mass.music.get_item_by_uri(uri)
-    except MediaNotFoundError as exc:
-        raise ToolError(f"Item not found for URI: {uri!r}") from exc
-    except InvalidProviderURI as exc:
-        raise ToolError(f"Malformed Music Assistant URI: {uri!r}") from exc
-    except ProviderUnavailableError as exc:
-        raise ToolError(f"Provider for URI {uri!r} is offline or unreachable") from exc
+    """Backward-compatible alias for :func:`resolve_uri`."""
+    return await resolve_uri(mass, uri)
 
 
 async def _resolve_to_library_item(mass: MusicAssistant, uri: str) -> Any:
