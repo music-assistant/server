@@ -3341,7 +3341,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         active_queue = self.get_active_queue(leader)
         was_playing = active_queue is not None and active_queue.state == PlaybackState.PLAYING
-        new_leader_id = self._select_ad_hoc_leader(remaining_members)
+        new_leader_id = self._select_ad_hoc_leader(leader, remaining_members)
         self.logger.info(
             "Transferring leadership of %s to %s (%s remaining member(s))",
             leader.name,
@@ -3361,28 +3361,34 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         if was_playing:
             await self.mass.player_queues.resume(new_leader_id)
 
-    def _select_ad_hoc_leader(self, remaining_members: list[str]) -> str:
+    def _select_ad_hoc_leader(self, leader: Player, remaining_members: list[str]) -> str:
         """
         Pick the new leader for an ad-hoc sync group leadership transfer.
 
-        Prefers the member that can group with the most other remaining members so
-        that regrouping succeeds; falls back (on a tie) to the first remaining member.
+        Prefers a remaining member that supports the protocol the group is currently
+        playing on, so the other members can be regrouped under it; falls back to the
+        first remaining member. The members' own ``can_group_with`` is unusable here
+        because it is empty while they are still synced to the old leader.
 
+        :param leader: The current sync leader being removed.
         :param remaining_members: Candidate member player_ids, already filtered for
             availability. Must not be empty.
         """
-
-        def groupable_count(member_id: str) -> int:
-            member = self.get_player(member_id)
-            if member is None:
-                return -1
-            return sum(
-                1
-                for other in remaining_members
-                if other != member_id and other in member.state.can_group_with
-            )
-
-        return max(remaining_members, key=groupable_count)
+        active_domain: str | None = None
+        if leader.active_output_protocol and leader.active_output_protocol != "native":
+            if protocol_player := self.get_player(leader.active_output_protocol):
+                active_domain = protocol_player.provider.domain
+        if active_domain:
+            for member_id in remaining_members:
+                member = self.get_player(member_id)
+                if member is None:
+                    continue
+                if member.provider.domain == active_domain or any(
+                    protocol.protocol_domain == active_domain and protocol.available
+                    for protocol in member.linked_output_protocols
+                ):
+                    return member_id
+        return remaining_members[0]
 
     # Private command handlers (no permission checks)
 

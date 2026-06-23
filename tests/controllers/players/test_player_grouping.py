@@ -468,27 +468,33 @@ class TestPlayerBaseIsActiveSession:
 class TestAdHocLeadershipTransfer:
     """Unjoining an ad-hoc sync leader transfers leadership instead of dissolving."""
 
-    def test_select_ad_hoc_leader_prefers_most_groupable(
+    def test_select_ad_hoc_leader_prefers_active_protocol(
         self, controller: PlayerController
     ) -> None:
-        """The new leader should be the member that can group with the most others."""
-        player_a = MagicMock()
-        player_a.state.can_group_with = {"b", "c"}
-        player_b = MagicMock()
-        player_b.state.can_group_with = {"a"}
-        player_c = MagicMock()
-        player_c.state.can_group_with = {"a"}
-        controller._players = {"a": player_a, "b": player_b, "c": player_c}
+        """The new leader should be a member that supports the group's active protocol."""
+        # leader is playing via an airplay protocol player
+        leader = MagicMock()
+        leader.active_output_protocol = "leader_airplay"
+        protocol_player = MagicMock()
+        protocol_player.provider.domain = "airplay"
+        # member_a can't do airplay, member_b can
+        member_a = MagicMock()
+        member_a.provider.domain = "sonos"
+        member_a.linked_output_protocols = []
+        member_b = MagicMock()
+        member_b.provider.domain = "airplay"
+        member_b.linked_output_protocols = []
+        controller._players = {"leader_airplay": protocol_player, "a": member_a, "b": member_b}
 
-        assert controller._select_ad_hoc_leader(["a", "b", "c"]) == "a"
+        assert controller._select_ad_hoc_leader(leader, ["a", "b"]) == "b"
 
-    def test_select_ad_hoc_leader_single_member(self, controller: PlayerController) -> None:
-        """With a single remaining member, that member is selected."""
-        player_b = MagicMock()
-        player_b.state.can_group_with = set()
-        controller._players = {"b": player_b}
+    def test_select_ad_hoc_leader_falls_back_to_first(self, controller: PlayerController) -> None:
+        """Without an active protocol to match, fall back to the first remaining member."""
+        leader = MagicMock()
+        leader.active_output_protocol = None
+        controller._players = {"a": MagicMock(), "b": MagicMock()}
 
-        assert controller._select_ad_hoc_leader(["b"]) == "b"
+        assert controller._select_ad_hoc_leader(leader, ["a", "b"]) == "a"
 
     async def test_handle_set_members_transfers_leader_when_playing(
         self, mock_mass: MagicMock
