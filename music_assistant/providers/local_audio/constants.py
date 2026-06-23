@@ -52,7 +52,9 @@ DEFAULT_BUFFER_FRAMES = 1024  # sounddevice blocksize for macOS/ALSA PortAudio o
 # cube-root step to counteract PA's own cubic volume curve) and for the
 # software PCM-scaling fallback path, so the same slider position sounds
 # the same regardless of which volume-control mode is active.
-_TAPER_A: Final = 0.001  # 10**(-60/20) -- amplitude at the -60dB reference point
+# _TAPER_A: Final = 0.001  # 10**(-60/20) -- amplitude at the -60dB reference point
+# 40dB range (better for receiver/outdoor speakers):
+_TAPER_A: Final = 0.01  # 10**(-40/20)
 _TAPER_B: Final = math.log(1.0 / _TAPER_A)  # ~6.908, gives 60dB range over x in [0, 1]
 _TAPER_ROLLOFF_X: Final = 0.10  # below 10% slider, linear ramp to true silence
 
