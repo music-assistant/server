@@ -60,7 +60,7 @@
   "common.config_entries.volume_normalization.description": "Włącz normalizację głośności w oparciu o standard EBU-R128 bez wpływu na zakres dynamiki",
   "common.config_entries.volume_normalization.label": "Włącz normalizację głośności (w oparciu o EBU-R128)",
   "common.config_entries.volume_normalization_fixed_gain_tracks.label": "Regulacja stałego\/zaspasowego wzmocnienia dla ścieżek",
-  "common.config_entries.volume_normalization_target.description": "Dostosuj średnią (odczuwaną) głośność do poziomu docelowego, wartość domyślna to -17 LUFS\n\n **OSTRZEŻENIE:** Ustawienie zbyt wysokiego poziomu może spowodować zniekształcenia — przycięcie (clipping)!",
+  "common.config_entries.volume_normalization_target.description": "Dostosuj średnią (odczuwaną) głośność do poziomu docelowego, wartość domyślna to -14 LUFS\n\n **OSTRZEŻENIE:** Ustawienie zbyt wysokiego poziomu może spowodować zniekształcenia — przycięcie (clipping)!",
   "common.config_entries.volume_normalization_target.label": "Docelowy poziom normalizacji głośności",
   "common.media.albums.name": "Albumy",
   "common.media.artists.name": "Wykonawcy",

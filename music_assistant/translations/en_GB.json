@@ -11,7 +11,7 @@
   "common.config_entries.icon.description": "Material design icon for this player. \n\nSee https:\/\/pictogrammers.com\/library\/mdi\/.",
   "common.config_entries.volume_normalization.description": "Enable volume normalisation based on the EBU-R128 standard without affecting dynamic range",
   "common.config_entries.volume_normalization.label": "Enable volume normalisation (EBU-R128 based)",
-  "common.config_entries.volume_normalization_target.description": "Adjust average (perceived) loudness to this target level, default is -17 LUFS \n\n **WARNING:** Setting the level too high may result in clipping!",
+  "common.config_entries.volume_normalization_target.description": "Adjust average (perceived) loudness to this target level, default is -14 LUFS \n\n **WARNING:** Setting the level too high may result in clipping!",
   "common.media.favorite_playlists.name": "Favourite playlists",
   "common.media.recent_favorite_tracks.name": "Recently favourited tracks"
 }
