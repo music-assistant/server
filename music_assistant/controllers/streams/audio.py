@@ -693,10 +693,14 @@ class StreamsAudio:
         """
         self.logger.debug("Start streaming radio with ICY metadata from url %s", url)
         timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
-        reconnect_count = 0
-        max_reconnects = 1000  # Allow many reconnects for long-running radio
+        # Budget for *consecutive* reconnects that delivered no audio. A connection
+        # that actually streamed data resets it, so a healthy long-running stream can
+        # reconnect indefinitely while a dead/looping one bails out instead of spinning.
+        failed_reconnects = 0
+        max_failed_reconnects = 25
 
-        while reconnect_count <= max_reconnects:
+        while True:
+            streamed_data = False
             try:
                 async with self._connect_radio_stream(
                     url, allow_redirects=True, headers=HTTP_HEADERS_ICY, timeout=timeout
@@ -712,7 +716,9 @@ class StreamsAudio:
                     # connection mid-frame; that (and the network errors below) drops us
                     # out to the reconnect handler so a live stream survives the blip.
                     while True:
-                        yield await resp.content.readexactly(meta_int)
+                        chunk = await resp.content.readexactly(meta_int)
+                        streamed_data = True
+                        yield chunk
                         meta_byte = await resp.content.readexactly(1)
                         if meta_byte == b"\x00":
                             continue
@@ -736,14 +742,23 @@ class StreamsAudio:
                 aiohttp.ClientPayloadError,
                 aiohttp.ServerDisconnectedError,
             ) as err:
-                reconnect_count += 1
-                if reconnect_count > max_reconnects:
-                    raise RetriesExhausted(
-                        f"ICY radio stream failed after {max_reconnects} reconnects: {err}"
-                    ) from err
-                self.logger.warning(
-                    "ICY radio stream disconnected (reconnect #%d): %s", reconnect_count, err
-                )
+                if streamed_data:
+                    # a healthy session that dropped - reconnect without spending budget
+                    failed_reconnects = 0
+                    self.logger.debug("ICY radio stream dropped, reconnecting: %s", err)
+                else:
+                    failed_reconnects += 1
+                    if failed_reconnects > max_failed_reconnects:
+                        raise RetriesExhausted(
+                            f"ICY radio stream failed after {max_failed_reconnects} "
+                            f"reconnects without data: {err}"
+                        ) from err
+                    self.logger.warning(
+                        "ICY radio stream reconnect produced no data (%d/%d): %s",
+                        failed_reconnects,
+                        max_failed_reconnects,
+                        err,
+                    )
                 await asyncio.sleep(0.5)
 
     async def get_reconnecting_radio_stream(self, url: str) -> AsyncGenerator[bytes]:

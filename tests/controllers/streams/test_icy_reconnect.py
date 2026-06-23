@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import MediaNotFoundError, RetriesExhausted
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -110,3 +110,29 @@ async def test_icy_stream_raises_on_http_404(monkeypatch: pytest.MonkeyPatch) ->
             "http://example.test/radio.mp3", _radio_streamdetails()
         ):
             pass
+
+
+@pytest.mark.asyncio
+async def test_icy_stream_gives_up_when_no_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A connection that never delivers audio bails out instead of reconnecting forever."""
+    audio = StreamsAudio(MagicMock())
+    connect_calls = 0
+
+    def _fake_connect(*_args: Any, **_kwargs: Any) -> _FakeConnCtx:
+        nonlocal connect_calls
+        connect_calls += 1
+        # empty frames -> readexactly immediately raises IncompleteReadError (no data)
+        return _FakeConnCtx([])
+
+    monkeypatch.setattr(audio, "_connect_radio_stream", _fake_connect)
+    # don't actually wait out the backoff between reconnect attempts
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+    with pytest.raises(RetriesExhausted):
+        async for _chunk in audio.get_icy_radio_stream(
+            "http://example.test/radio.mp3", _radio_streamdetails()
+        ):
+            pass
+
+    # bails after the budget is exhausted rather than spinning indefinitely
+    assert connect_calls < 50
