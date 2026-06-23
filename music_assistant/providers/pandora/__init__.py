@@ -64,7 +64,7 @@ async def get_config_entries(
     if action == CONF_TAKEOVER_ACTION and instance_id:
         provider = cast("PandoraProvider|None", mass.get_provider(instance_id))
         if provider is not None:
-            await provider._takeover_stream()
+            await provider.takeover_stream()
 
     return (
         CONF_ENTRY_UNOFFICIAL_PROVIDER,

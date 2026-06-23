@@ -250,28 +250,51 @@ class PandoraProvider(MusicProvider):
         return [self._parse_track(track) for track in tracks]
 
     async def get_stream_details(self, prov_item_id: str, media_type: MediaType) -> StreamDetails:
-        """Get streamdetails for a radio station."""
+        """Get streamdetails for a cached Pandora track."""
+        if media_type != MediaType.TRACK:
+            raise MediaNotFoundError(f"Unsupported media type: {media_type}")
         station_id, track_id = prov_item_id.split("_", 1)
-        session = self._get_or_create_session(station_id)
+        self._get_or_create_session(station_id)
 
-        if session.fragments:
-            if track_id in self._audio_cache:
-                return StreamDetails(
-                    provider=self.instance_id,
-                    item_id=prov_item_id,
-                    audio_format=self._audio_format(),
-                    media_type=MediaType.TRACK,
-                    stream_type=StreamType.CUSTOM,
-                    can_seek=True,
-                    allow_seek=True,
-                )
-        raise MediaNotFoundError("No stream URL found for song.")
+        if track_id not in self._audio_cache:
+            raise MediaNotFoundError(f"No cached audio for track {prov_item_id}")
+        track = self._find_track(prov_item_id)
+        duration = int(track.get("trackLength", 0)) if track else 0
+        can_seek = duration > 0
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=prov_item_id,
+            audio_format=self._audio_format(),
+            media_type=MediaType.TRACK,
+            stream_type=StreamType.CUSTOM,
+            duration=duration,
+            can_seek=can_seek,
+            allow_seek=can_seek,
+        )
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         if track := self._find_track(prov_track_id):
             return self._parse_track(track)
         raise MediaNotFoundError(f"Track {prov_track_id} not found")
+
+    async def takeover_stream(self) -> None:
+        """
+        Force Pandora to end any other active session and resume here.
+
+        This sends "forceActive=true" to the playbackResumed endpoint, which instructs Pandora to
+        terminate any conflicting stream on other devices. The user must manually restart playback
+        in MA after clicking the config button that triggers this call.
+        """
+        self.logger.debug("Sending playbackResumed request to Pandora to attempt stream takeover.")
+        await self._api_request(
+            "POST",
+            PLAYBACK_RESUMED_ENDPOINT,
+            data={"forceActive": True},
+            # This is called as part of handling a STREAM_VIOLATION 429, so mark that reason as
+            # already exhausted to prevent _api_request from retrying on another 429.
+            exhausted_retry_reasons=frozenset({RETRY_REASON_STREAM_VIOLATION}),
+        )
 
     def _on_queue_added(self, event: MassEvent) -> None:
         """Clear a stale Pandora queue that was added after load."""
@@ -406,7 +429,7 @@ class PandoraProvider(MusicProvider):
                                 "Pandora stream is already active on another device. "
                                 "Automatically taking over the stream and retrying the request."
                             )
-                            await self._takeover_stream()
+                            await self.takeover_stream()
                             return await self._api_request(
                                 method,
                                 url,
@@ -498,9 +521,12 @@ class PandoraProvider(MusicProvider):
             session.fragments[fragment_index] = tracks
             # Drop metadata for a fragment that has aged out of the audio cache
             # window so memory stays bounded over a long listening session.
-            prune_index = fragment_index - int(MAX_CACHE_SIZE / 4)  # each fragment hold 4 songs
+            prune_index = fragment_index - int(MAX_CACHE_SIZE / 4)  # each fragment holds 4 songs
             if prune_index >= 0 and session.fragments[prune_index]:
-                session.fragments[prune_index] = []
+                if not any(
+                    t.get("musicId") in self._audio_cache for t in session.fragments[prune_index]
+                ):
+                    session.fragments[prune_index] = []
             return tracks
 
         except MediaNotFoundError:
@@ -668,21 +694,3 @@ class PandoraProvider(MusicProvider):
         high-quality streaming, while still respecting the user's preference if they are eligible.
         """
         return self._high_quality_available and self.config.get_value(CONF_QUALITY) == QUALITY_HIGH
-
-    async def _takeover_stream(self) -> None:
-        """
-        Force Pandora to end any other active session and resume here.
-
-        This sends "forceActive=true" to the playbackResumed endpoint, which instructs Pandora to
-        terminate any conflicting stream on other devices. The user must manually restart playback
-        in MA after clicking the config button that triggers this call.
-        """
-        self.logger.debug("Sending playbackResumed request to Pandora to attempt stream takeover.")
-        await self._api_request(
-            "POST",
-            PLAYBACK_RESUMED_ENDPOINT,
-            data={"forceActive": True},
-            # This is called as part of handling a STREAM_VIOLATION 429, so mark that reason as
-            # already exhausted to prevent _api_request from retrying on another 429.
-            exhausted_retry_reasons=frozenset({RETRY_REASON_STREAM_VIOLATION}),
-        )
