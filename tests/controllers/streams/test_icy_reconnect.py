@@ -1,0 +1,90 @@
+"""Tests for ICY radio stream reconnection on disconnect."""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+from unittest.mock import MagicMock
+
+import pytest
+from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.streamdetails import StreamDetails
+
+from music_assistant.controllers.streams.audio import StreamsAudio
+
+_META_INT = 4
+
+
+class _FakeContent:
+    """Minimal stand-in for aiohttp StreamReader content, driven by a script of frames."""
+
+    def __init__(self, frames: list[bytes | Exception]) -> None:
+        self._frames = list(frames)
+
+    async def readexactly(self, _n: int) -> bytes:
+        if not self._frames:
+            raise asyncio.IncompleteReadError(b"", _n)
+        item = self._frames.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+class _FakeConnCtx:
+    """Async context manager yielding a fake ICY response."""
+
+    def __init__(self, frames: list[bytes | Exception]) -> None:
+        self._resp = MagicMock()
+        self._resp.headers = {"icy-metaint": str(_META_INT)}
+        self._resp.content = _FakeContent(frames)
+
+    async def __aenter__(self) -> Any:
+        return self._resp
+
+    async def __aexit__(self, *_exc: object) -> bool:
+        return False
+
+
+def _radio_streamdetails() -> StreamDetails:
+    return StreamDetails(
+        provider="test_provider",
+        item_id="radio1",
+        audio_format=AudioFormat(content_type=ContentType.MP3),
+        media_type=MediaType.RADIO,
+        stream_type=StreamType.ICY,
+        path="http://example.test/radio.mp3",
+    )
+
+
+@pytest.mark.asyncio
+async def test_icy_stream_reconnects_after_disconnect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mid-stream disconnect transparently reconnects and keeps yielding audio."""
+    audio = StreamsAudio(MagicMock())
+
+    # connection #1 yields one audio frame then drops; connection #2 yields another.
+    connections = [
+        _FakeConnCtx([b"AAAA", b"\x00", asyncio.IncompleteReadError(b"", _META_INT)]),
+        _FakeConnCtx([b"BBBB", b"\x00", asyncio.IncompleteReadError(b"", _META_INT)]),
+    ]
+    connect_calls = 0
+
+    def _fake_connect(*_args: Any, **_kwargs: Any) -> _FakeConnCtx:
+        nonlocal connect_calls
+        ctx = connections[connect_calls]
+        connect_calls += 1
+        return ctx
+
+    monkeypatch.setattr(audio, "_connect_radio_stream", _fake_connect)
+
+    chunks: list[bytes] = []
+    async for chunk in audio.get_icy_radio_stream(
+        "http://example.test/radio.mp3", _radio_streamdetails()
+    ):
+        chunks.append(chunk)
+        if len(chunks) == 2:
+            # got one frame from each connection - reconnection proven
+            break
+
+    assert chunks == [b"AAAA", b"BBBB"]
+    assert connect_calls == 2

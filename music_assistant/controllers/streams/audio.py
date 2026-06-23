@@ -683,7 +683,7 @@ class StreamsAudio:
         self, url: str, streamdetails: StreamDetails
     ) -> AsyncGenerator[bytes]:
         """
-        Stream radio audio with ICY metadata support.
+        Stream radio audio with ICY metadata support, reconnecting on disconnect.
 
         Requires icy-metaint header support. Stream type should be validated
         by resolve_radio_stream() before calling this function.
@@ -693,24 +693,56 @@ class StreamsAudio:
         """
         self.logger.debug("Start streaming radio with ICY metadata from url %s", url)
         timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
+        reconnect_count = 0
+        max_reconnects = 1000  # Allow many reconnects for long-running radio
 
-        async with self._connect_radio_stream(
-            url, allow_redirects=True, headers=HTTP_HEADERS_ICY, timeout=timeout
-        ) as resp:
-            headers = resp.headers
-            meta_int = int(headers["icy-metaint"])
+        while reconnect_count <= max_reconnects:
+            try:
+                async with self._connect_radio_stream(
+                    url, allow_redirects=True, headers=HTTP_HEADERS_ICY, timeout=timeout
+                ) as resp:
+                    meta_int = int(resp.headers["icy-metaint"])
+                    # readexactly raises IncompleteReadError when the server closes the
+                    # connection mid-frame; that (and the network errors below) drops us
+                    # out to the reconnect handler so a live stream survives the blip.
+                    while True:
+                        yield await resp.content.readexactly(meta_int)
+                        meta_byte = await resp.content.readexactly(1)
+                        if meta_byte == b"\x00":
+                            continue
+                        meta_length = ord(meta_byte) * 16
+                        meta_data = await resp.content.readexactly(meta_length)
+                        self._parse_icy_metadata(meta_data, streamdetails)
+            except asyncio.CancelledError:
+                self.logger.debug("ICY radio stream cancelled for %s", url)
+                raise
+            except (
+                asyncio.IncompleteReadError,
+                aiohttp.ClientConnectionError,
+                aiohttp.ClientPayloadError,
+                aiohttp.ServerDisconnectedError,
+            ) as err:
+                reconnect_count += 1
+                if reconnect_count > max_reconnects:
+                    raise RetriesExhausted(
+                        f"ICY radio stream failed after {max_reconnects} reconnects: {err}"
+                    ) from err
+                self.logger.warning(
+                    "ICY radio stream disconnected (reconnect #%d): %s", reconnect_count, err
+                )
+                await asyncio.sleep(0.5)
+            except aiohttp.ClientResponseError as err:
+                if err.status == 404:
+                    raise MediaNotFoundError(f"Radio stream not found: {url}") from err
+                if err.status == 403:
+                    raise ProviderPermissionDenied(f"Radio stream access denied: {url}") from err
+                raise ProviderUnavailableError(
+                    f"Radio stream returned HTTP {err.status}: {err}"
+                ) from err
 
-            while True:
-                try:
-                    yield await resp.content.readexactly(meta_int)
-                    meta_byte = await resp.content.readexactly(1)
-                    if meta_byte == b"\x00":
-                        continue
-                    meta_length = ord(meta_byte) * 16
-                    meta_data = await resp.content.readexactly(meta_length)
-                    self._parse_icy_metadata(meta_data, streamdetails)
-                except asyncio.exceptions.IncompleteReadError:
-                    break
+        self.logger.warning(
+            "ICY radio stream reached max reconnects (%d) for %s", max_reconnects, url
+        )
 
     async def get_reconnecting_radio_stream(self, url: str) -> AsyncGenerator[bytes]:
         """
