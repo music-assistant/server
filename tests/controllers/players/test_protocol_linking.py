@@ -1693,6 +1693,13 @@ class TestJoinActiveNativeSession:
     """
 
     @staticmethod
+    def _mark_native_playing(player: MockPlayer) -> None:
+        """Put the player into a live native playback session."""
+        player._attr_playback_state = PlaybackState.PLAYING
+        player._cache.clear()
+        player.set_active_output_protocol("native")
+
+    @staticmethod
     def _link_airplay(native_player: MockPlayer, airplay_id: str) -> None:
         """Link an AirPlay protocol player to a native player."""
         native_player.set_linked_output_protocols(
@@ -1836,7 +1843,7 @@ class TestJoinActiveNativeSession:
 
         controller, players = self._build_topology(mock_mass)
         # Parent A is already playing natively.
-        players["sonos_a"].set_active_output_protocol("native")
+        self._mark_native_playing(players["sonos_a"])
 
         protocol_members, native_members, _, _ = controller._translate_members_for_protocols(
             parent_player=players["sonos_a"],
@@ -1883,6 +1890,43 @@ class TestJoinActiveNativeSession:
         assert native_members == []
         assert protocol_domain == "airplay"
 
+    def test_idle_parent_with_stale_native_protocol_honors_child_preferred(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A stopped parent (active protocol lingers briefly) does not force the native-join path."""
+
+        def _get_raw(
+            player_id: str, key: str, default: str | int | None = None
+        ) -> str | int | None:
+            if key == CONF_PREFERRED_OUTPUT_PROTOCOL and player_id == "sonos_b":
+                return "airplay_b"
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            return default if default is not None else "auto"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
+
+        controller, players = self._build_topology(mock_mass)
+        # Parent A stopped: active protocol still reads "native" but playback is idle.
+        players["sonos_a"].set_active_output_protocol("native")
+        assert players["sonos_a"].state.playback_state == PlaybackState.IDLE
+
+        protocol_members, native_members, _, protocol_domain = (
+            controller._translate_members_for_protocols(
+                parent_player=players["sonos_a"],
+                player_ids=["sonos_b"],
+                parent_protocol_player=None,
+                parent_protocol_domain=None,
+            )
+        )
+
+        # No live session to join, so the child's preference applies.
+        assert protocol_members == ["airplay_b"]
+        assert native_members == []
+        assert protocol_domain == "airplay"
+
     def test_native_active_parent_airplay_only_child_uses_protocol(
         self, mock_mass: MagicMock
     ) -> None:
@@ -1903,7 +1947,7 @@ class TestJoinActiveNativeSession:
 
         controller, players = self._build_topology(mock_mass)
         self._add_airplay_only_child(controller, players, mock_mass)
-        players["sonos_a"].set_active_output_protocol("native")
+        self._mark_native_playing(players["sonos_a"])
 
         protocol_members, native_members, _, protocol_domain = (
             controller._translate_members_for_protocols(
@@ -1931,7 +1975,7 @@ class TestJoinActiveNativeSession:
         """
         controller, players = self._build_topology(mock_mass)
         self._add_airplay_only_child(controller, players, mock_mass)
-        players["sonos_a"].set_active_output_protocol("native")
+        self._mark_native_playing(players["sonos_a"])
 
         # No preferred_output_protocol override - the WiiM resolves via the common-protocol path.
         protocol_members, native_members, _, protocol_domain = (
@@ -1956,7 +2000,7 @@ class TestJoinActiveNativeSession:
         """
         controller, players = self._build_topology(mock_mass)
         self._add_airplay_only_child(controller, players, mock_mass)
-        players["sonos_a"].set_active_output_protocol("native")
+        self._mark_native_playing(players["sonos_a"])
 
         # AirPlay-only child first (forces AirPlay), then the natively-groupable Sonos child.
         protocol_members, native_members, _, protocol_domain = (

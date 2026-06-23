@@ -1687,6 +1687,9 @@ class ProtocolLinkingMixin:
         """
         if not (
             parent_player.active_output_protocol == "native"
+            # the active protocol lingers for a few seconds after stop, so confirm the
+            # parent actually holds a live session before adopting its native grouping
+            and parent_player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
             and not parent_protocol_domain
             and self._can_use_native_grouping(
                 child_player, parent_player, parent_supports_native_grouping
