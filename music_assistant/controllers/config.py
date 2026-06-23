@@ -95,6 +95,7 @@ from music_assistant.constants import (
     CONF_ENTRY_VOLUME_NORMALIZATION,
     CONF_EXPOSE_PLAYER_TO_HA,
     CONF_HIDE_IN_UI,
+    CONF_LINKED_PROTOCOL_IDS,
     CONF_MUTE_CONTROL,
     CONF_ONBOARD_DONE,
     CONF_PLAYER_DSP,
@@ -106,6 +107,7 @@ from music_assistant.constants import (
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_PROTOCOL_CATEGORY_PREFIX,
     CONF_PROTOCOL_KEY_SPLITTER,
+    CONF_PROTOCOL_PARENT_ID,
     CONF_PROVIDERS,
     CONF_SERVER_ID,
     CONF_SMART_FADES_MODE,
@@ -1592,6 +1594,12 @@ class ConfigController:
                 )
                 changed = True
 
+        # Clear self-referential protocol links: a player whose protocol_parent_id or
+        # linked_protocol_ids pointed at its own id was hidden as its own protocol child.
+        # TODO: remove after 2.10 release
+        if self._migrate_self_referential_protocol_links():
+            changed = True
+
         # Drop the persisted schedule for the metadata maintenance tasks that were hardcoded
         # to run at 04:00 local. They are now registered under new ("_v2") task ids with a
         # randomized full-day schedule (to avoid spiking the shared MusicBrainz mirror), so the
@@ -1705,6 +1713,31 @@ class ConfigController:
                     player_id,
                 )
         return True
+
+    def _migrate_self_referential_protocol_links(self) -> bool:
+        """Clear protocol links that point a player at its own id."""
+        all_player_configs = self._data.get(CONF_PLAYERS, {})
+        if not isinstance(all_player_configs, dict):
+            return False
+        changed = False
+        for player_id, player_cfg in all_player_configs.items():
+            if not isinstance(player_cfg, dict):
+                continue
+            values = player_cfg.get("values")
+            if not isinstance(values, dict):
+                continue
+            repaired = False
+            if values.get(CONF_PROTOCOL_PARENT_ID) == player_id:
+                values[CONF_PROTOCOL_PARENT_ID] = None
+                repaired = True
+            linked = values.get(CONF_LINKED_PROTOCOL_IDS)
+            if isinstance(linked, list) and player_id in linked:
+                values[CONF_LINKED_PROTOCOL_IDS] = [pid for pid in linked if pid != player_id]
+                repaired = True
+            if repaired:
+                LOGGER.warning("Repaired self-referential protocol link for %s", player_id)
+                changed = True
+        return changed
 
     def _migrate_metadata_maintenance_schedule(self) -> bool:
         """Remove the orphaned persisted state for the pre-randomization metadata task ids."""
