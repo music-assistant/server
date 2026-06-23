@@ -9,7 +9,11 @@ import pytest
 from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
 from music_assistant_models.player import OutputProtocol, PlayerMedia
 
-from music_assistant.constants import ATTR_ENABLED, CONF_PLAYERS
+from music_assistant.constants import (
+    ATTR_ENABLED,
+    CONF_PLAYERS,
+    CONF_PREFERRED_OUTPUT_PROTOCOL,
+)
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.players import PlayerController
 from music_assistant.helpers.util import enrich_device_mac_address
@@ -1676,6 +1680,297 @@ class TestPlayerGrouping:
         assert "airplay_wiim" in protocol_members
         assert protocol_domain == "airplay"
         assert protocol_player == sonos_airplay
+
+
+class TestJoinActiveNativeSession:
+    """
+    Grouping a child onto a parent that is already playing natively.
+
+    A child's preferred output protocol must only steer protocol selection when the child
+    initiates its own playback. When the child joins a parent that already holds an active
+    native session, it should adopt native grouping if compatible, instead of forcing the
+    whole group onto the child's preferred protocol.
+    """
+
+    @staticmethod
+    def _link_airplay(native_player: MockPlayer, airplay_id: str) -> None:
+        """Link an AirPlay protocol player to a native player."""
+        native_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id=airplay_id,
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                    available=True,
+                )
+            ]
+        )
+
+    def _build_topology(
+        self, mock_mass: MagicMock
+    ) -> tuple[PlayerController, dict[str, MockPlayer]]:
+        """
+        Build parent Sonos A + child Sonos B, both AirPlay-capable and natively groupable.
+
+        The parent also exposes an AirPlay protocol player that supports SET_MEMBERS, so the
+        child's preferred AirPlay protocol *would* be selectable if it were given priority.
+        """
+        controller = PlayerController(mock_mass)
+        sonos_provider = MockProvider("sonos", instance_id="sonos_instance", mass=mock_mass)
+        airplay_provider = MockProvider("airplay", instance_id="airplay_instance", mass=mock_mass)
+
+        sonos_a = MockPlayer(
+            sonos_provider,
+            "sonos_a",
+            "Office",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        sonos_a._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        sonos_a._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        sonos_a._attr_can_group_with = {"sonos_b"}
+        sonos_a._cache.clear()
+
+        sonos_b = MockPlayer(
+            sonos_provider,
+            "sonos_b",
+            "Bathroom",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:02"},
+        )
+        sonos_b._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        sonos_b._attr_can_group_with = {"sonos_a"}
+        sonos_b._cache.clear()
+
+        airplay_a = MockPlayer(
+            airplay_provider,
+            "airplay_a",
+            "Office (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:01"},
+        )
+        airplay_a._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        airplay_a._attr_can_group_with = {"airplay_b"}
+        airplay_a._cache.clear()
+
+        airplay_b = MockPlayer(
+            airplay_provider,
+            "airplay_b",
+            "Bathroom (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:02"},
+        )
+        airplay_b._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        airplay_b._attr_can_group_with = {"airplay_a"}
+        airplay_b._cache.clear()
+
+        self._link_airplay(sonos_a, "airplay_a")
+        self._link_airplay(sonos_b, "airplay_b")
+
+        mock_mass.players = controller
+        players = {
+            "sonos_a": sonos_a,
+            "sonos_b": sonos_b,
+            "airplay_a": airplay_a,
+            "airplay_b": airplay_b,
+        }
+        controller._players = dict(players)
+        for player in players.values():
+            player.update_state(signal_event=False)
+        return controller, players
+
+    def _add_airplay_only_child(
+        self, controller: PlayerController, players: dict[str, MockPlayer], mock_mass: MagicMock
+    ) -> None:
+        """
+        Add a WiiM child that can only group via AirPlay (no native grouping with Sonos).
+
+        Different provider instance and absent from the parent's can_group_with, so
+        _can_use_native_grouping returns False for it.
+        """
+        wiim_provider = MockProvider("wiim", instance_id="wiim_instance", mass=mock_mass)
+        airplay_provider = MockProvider("airplay", instance_id="airplay_instance", mass=mock_mass)
+        wiim_c = MockPlayer(
+            wiim_provider,
+            "wiim_c",
+            "Bedroom",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:03"},
+        )
+        wiim_c._attr_supported_features.add(PlayerFeature.PLAY_MEDIA)
+        wiim_c._cache.clear()
+        airplay_c = MockPlayer(
+            airplay_provider,
+            "airplay_c",
+            "Bedroom (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:03"},
+        )
+        airplay_c._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        airplay_c._attr_can_group_with = {"airplay_a"}
+        airplay_c._cache.clear()
+        self._link_airplay(wiim_c, "airplay_c")
+        # Allow the parent's AirPlay protocol to group with the new AirPlay child.
+        players["airplay_a"]._attr_can_group_with = {"airplay_b", "airplay_c"}
+        players["airplay_a"]._cache.clear()
+        controller._players["wiim_c"] = wiim_c
+        controller._players["airplay_c"] = airplay_c
+        wiim_c.update_state(signal_event=False)
+        airplay_c.update_state(signal_event=False)
+
+    def test_native_active_parent_ignores_child_preferred_protocol(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A child joining a natively-playing parent groups natively, not via preferred AirPlay."""
+
+        def _get_raw(
+            player_id: str, key: str, default: str | int | None = None
+        ) -> str | int | None:
+            if key == CONF_PREFERRED_OUTPUT_PROTOCOL and player_id == "sonos_b":
+                return "airplay_b"
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            return default if default is not None else "auto"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
+
+        controller, players = self._build_topology(mock_mass)
+        # Parent A is already playing natively.
+        players["sonos_a"].set_active_output_protocol("native")
+
+        protocol_members, native_members, _, _ = controller._translate_members_for_protocols(
+            parent_player=players["sonos_a"],
+            player_ids=["sonos_b"],
+            parent_protocol_player=None,
+            parent_protocol_domain=None,
+        )
+
+        # Native grouping is used; the child's AirPlay preference is ignored on join.
+        assert native_members == ["sonos_b"]
+        assert protocol_members == []
+
+    def test_fresh_group_still_honors_child_preferred_protocol(self, mock_mass: MagicMock) -> None:
+        """When the parent is not playing, the child's preferred protocol still steers selection."""
+
+        def _get_raw(
+            player_id: str, key: str, default: str | int | None = None
+        ) -> str | int | None:
+            if key == CONF_PREFERRED_OUTPUT_PROTOCOL and player_id == "sonos_b":
+                return "airplay_b"
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            return default if default is not None else "auto"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
+
+        controller, players = self._build_topology(mock_mass)
+        # Parent A has no active session (active_output_protocol stays None).
+        assert players["sonos_a"].active_output_protocol is None
+
+        protocol_members, native_members, _, protocol_domain = (
+            controller._translate_members_for_protocols(
+                parent_player=players["sonos_a"],
+                player_ids=["sonos_b"],
+                parent_protocol_player=None,
+                parent_protocol_domain=None,
+            )
+        )
+
+        # Same topology as the active-native case, but here the preference applies.
+        assert protocol_members == ["airplay_b"]
+        assert native_members == []
+        assert protocol_domain == "airplay"
+
+    def test_native_active_parent_airplay_only_child_uses_protocol(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """An AirPlay-only child (cannot group natively) still joins via its preferred protocol."""
+
+        def _get_raw(
+            player_id: str, key: str, default: str | int | None = None
+        ) -> str | int | None:
+            if key == CONF_PREFERRED_OUTPUT_PROTOCOL and player_id == "wiim_c":
+                return "airplay_c"
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            return default if default is not None else "auto"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw)
+
+        controller, players = self._build_topology(mock_mass)
+        self._add_airplay_only_child(controller, players, mock_mass)
+        players["sonos_a"].set_active_output_protocol("native")
+
+        protocol_members, native_members, _, protocol_domain = (
+            controller._translate_members_for_protocols(
+                parent_player=players["sonos_a"],
+                player_ids=["wiim_c"],
+                parent_protocol_player=None,
+                parent_protocol_domain=None,
+            )
+        )
+
+        # No native path exists for the WiiM, so it falls back to AirPlay grouping.
+        assert protocol_members == ["airplay_c"]
+        assert native_members == []
+        assert protocol_domain == "airplay"
+
+    def test_native_active_parent_protocol_only_child_switches_via_common_protocol(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """
+        A child with no native path (and no explicit preference) still forces the switch.
+
+        Even without a configured preferred protocol, a child that can only reach the group via
+        a shared protocol (here AirPlay, which the natively-playing parent also supports) is
+        grouped via that protocol - moving the group onto it.
+        """
+        controller, players = self._build_topology(mock_mass)
+        self._add_airplay_only_child(controller, players, mock_mass)
+        players["sonos_a"].set_active_output_protocol("native")
+
+        # No preferred_output_protocol override - the WiiM resolves via the common-protocol path.
+        protocol_members, native_members, _, protocol_domain = (
+            controller._translate_members_for_protocols(
+                parent_player=players["sonos_a"],
+                player_ids=["wiim_c"],
+                parent_protocol_player=None,
+                parent_protocol_domain=None,
+            )
+        )
+
+        assert protocol_members == ["airplay_c"]
+        assert native_members == []
+        assert protocol_domain == "airplay"
+
+    def test_native_active_parent_keeps_mixed_batch_cohesive(self, mock_mass: MagicMock) -> None:
+        """
+        Once a protocol is forced for the group, a later native-capable child joins it too.
+
+        When an AirPlay-only child forces the group onto AirPlay, a subsequent natively-groupable
+        child adopts that same protocol rather than splitting off into a native sub-group.
+        """
+        controller, players = self._build_topology(mock_mass)
+        self._add_airplay_only_child(controller, players, mock_mass)
+        players["sonos_a"].set_active_output_protocol("native")
+
+        # AirPlay-only child first (forces AirPlay), then the natively-groupable Sonos child.
+        protocol_members, native_members, _, protocol_domain = (
+            controller._translate_members_for_protocols(
+                parent_player=players["sonos_a"],
+                player_ids=["wiim_c", "sonos_b"],
+                parent_protocol_player=None,
+                parent_protocol_domain=None,
+            )
+        )
+
+        assert native_members == []
+        assert set(protocol_members) == {"airplay_c", "airplay_b"}
+        assert protocol_domain == "airplay"
 
 
 class TestCanGroupWith:

@@ -1662,6 +1662,45 @@ class ProtocolLinkingMixin:
                 return parent_output_protocol, child_protocol
         return None, None
 
+    def _try_join_active_native_session(
+        self,
+        child_player: Player,
+        parent_player: Player,
+        parent_protocol_domain: str | None,
+        parent_supports_native_grouping: bool,
+        native_members: list[str],
+    ) -> bool:
+        """
+        Add the child to native_members if it can join the parent's active native session.
+
+        A child's preferred output protocol must only steer protocol selection when the child
+        initiates its own playback; when it joins a parent that is already playing natively it
+        should adopt native grouping if compatible, rather than forcing the whole group onto
+        the child's preferred protocol. Skipped once a protocol has been selected for the group,
+        so mixed batches stay cohesive on a single protocol.
+
+        :param child_player: The player being added to the group.
+        :param parent_player: The parent player being joined.
+        :param parent_protocol_domain: The protocol domain already selected for the group, if any.
+        :param parent_supports_native_grouping: Whether the parent can group natively.
+        :param native_members: The native members list to append to when the child joins.
+        """
+        if not (
+            parent_player.active_output_protocol == "native"
+            and not parent_protocol_domain
+            and self._can_use_native_grouping(
+                child_player, parent_player, parent_supports_native_grouping
+            )
+        ):
+            return False
+        native_members.append(child_player.player_id)
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Joining parent's active native session for %s",
+            child_player.state.name,
+        )
+        return True
+
     def _translate_members_for_protocols(
         self,
         parent_player: Player,
@@ -1673,6 +1712,9 @@ class ProtocolLinkingMixin:
         Translate member IDs to protocol or native IDs.
 
         Selection priority when grouping:
+        0. If the parent is already playing natively and the child can be grouped
+           natively, join that native session (a child joining an existing group must
+           not force the whole group onto its own preferred output protocol)
         1. Try child's preferred output protocol (from player settings)
         2. Try parent's active output protocol (if any and child supports it)
         3. Try native grouping (if parent and child are compatible)
@@ -1708,6 +1750,18 @@ class ProtocolLinkingMixin:
                 child_player.state.type,
                 [p.protocol_domain for p in child_player.output_protocols],
             )
+
+            # Priority 0: The parent is already playing natively and the child can join
+            # that native session directly - adopt it before considering the child's own
+            # preferred output protocol.
+            if self._try_join_active_native_session(
+                child_player,
+                parent_player,
+                parent_protocol_domain,
+                parent_supports_native_grouping,
+                native_members,
+            ):
+                continue
 
             # Priority 1: Try child's preferred output protocol
             # (only if no active protocol or if it matches the active protocol)
