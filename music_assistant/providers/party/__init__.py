@@ -24,7 +24,6 @@ from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackSta
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.queue_item import QueueItem
 
-from music_assistant.constants import DEFAULT_PORT
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.models.plugin import PluginProvider
 
@@ -514,8 +513,8 @@ class PartyPlugin(PluginProvider):
                 f"https://app.music-assistant.io/?remote_id={remote_access.remote_id}&join={code}"
             )
 
-        base_url_value = self.mass.webserver.config.get_value("base_url")
-        base_url = str(base_url_value) if base_url_value else f"http://localhost:{DEFAULT_PORT}"
+        base_url = self.mass.webserver.base_url
+        assert base_url  # for type-checker only
         return f"{base_url}/?join={code}"
 
     async def get_party_player(self) -> str | None:

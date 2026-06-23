@@ -54,7 +54,7 @@
   "common.config_entries.volume_normalization.description": "Omogočite normalizacijo glasnosti na podlagi standarda EBU-R128 brez vpliva na dinamični razpon",
   "common.config_entries.volume_normalization.label": "Omogočite normalizacijo glasnosti (na podlagi standarda EBU-R128)",
   "common.config_entries.volume_normalization_fixed_gain_tracks.label": "Fiksno\/povratno prilagajanje ojačitve za skladbe",
-  "common.config_entries.volume_normalization_target.description": "Prilagodite povprečno (zaznano) glasnost na to ciljno raven. Privzeta vrednost je -17 LUFS\n\n**OPOZORILO:** Če nastavite previsoko raven, lahko pride do izrezovanja!",
+  "common.config_entries.volume_normalization_target.description": "Prilagodite povprečno (zaznano) glasnost na to ciljno raven. Privzeta vrednost je -14 LUFS\n\n**OPOZORILO:** Če nastavite previsoko raven, lahko pride do izrezovanja!",
   "common.config_entries.volume_normalization_target.label": "Ciljna raven za normalizacijo glasnosti",
   "common.media.albums.name": "Albumi",
   "common.media.artists.name": "Izvajalci",

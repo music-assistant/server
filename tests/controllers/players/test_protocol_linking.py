@@ -10,6 +10,7 @@ from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFe
 from music_assistant_models.player import OutputProtocol, PlayerMedia
 
 from music_assistant.constants import ATTR_ENABLED, CONF_PLAYERS
+from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.players import PlayerController
 from music_assistant.helpers.util import enrich_device_mac_address
 from music_assistant.models.player import DeviceInfo, Player
@@ -5003,6 +5004,229 @@ class TestUniversalPlayerReplacement:
             "dlna_cached",
         }
 
+    def test_replace_keeps_universal_when_all_links_refused(self, mock_mass: MagicMock) -> None:
+        """
+        Keep the universal player when no link could migrate.
+
+        If the native player already has an active link from the same protocol
+        domain as every protocol on the universal player, each `_add_protocol_link`
+        call refuses and leaves the protocol's parent unchanged. The universal player
+        must NOT be permanently unregistered in that case, otherwise it disappears
+        from the UI on restart.
+        """
+        controller = PlayerController(mock_mass)
+        up_provider = create_mock_universal_provider(mock_mass)
+
+        config_store: dict[str, object] = {
+            "players/cast_1": {"enabled": True},
+            "players/up_old": {"enabled": True},
+            "players/spb_old": {"enabled": True},
+            "players/spb_new": {"enabled": True},
+        }
+
+        def config_get(key: str, default: object = None) -> object:
+            return config_store.get(key, default)
+
+        def config_set(key: str, value: object) -> None:
+            config_store[key] = value
+
+        def config_remove(key: str) -> None:
+            config_store.pop(key, None)
+
+        scheduled_tasks: list[Awaitable[object]] = []
+
+        def capture_task(task: Awaitable[object], *_args: Any, **_kwargs: Any) -> None:
+            scheduled_tasks.append(task)
+
+        mock_mass.config.get = MagicMock(side_effect=config_get)
+        mock_mass.config.set = MagicMock(side_effect=config_set)
+        mock_mass.config.remove = MagicMock(side_effect=config_remove)
+        mock_mass.players = controller
+        mock_mass.player_queues = MagicMock()
+        mock_mass.call_later = MagicMock()
+        mock_mass.loop = MagicMock()
+        mock_mass.create_task = MagicMock(side_effect=capture_task)
+
+        universal = UniversalPlayer(
+            provider=up_provider,
+            player_id="up_old",
+            name="Soundbar (Universal)",
+            device_info=DeviceInfo(model="Test", manufacturer="Test"),
+            protocol_player_ids=["spb_old"],
+        )
+        universal._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, "AA:BB:CC:DD:EE:FF")
+        universal._cache.clear()
+        universal.update_state(signal_event=False)
+        universal.set_initialized()
+
+        cast_provider = MockProvider("cast", mass=mock_mass)
+        native = MockPlayer(
+            cast_provider,
+            "cast_1",
+            "Soundbar",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        native.set_initialized()
+
+        sendspin_provider = MockProvider("sendspin", mass=mock_mass)
+        spb_old = MockPlayer(
+            sendspin_provider,
+            "spb_old",
+            "Soundbar (Sendspin)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        spb_old.set_initialized()
+        spb_new = MockPlayer(
+            sendspin_provider,
+            "spb_new",
+            "Soundbar (Sendspin v2)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        spb_new.set_initialized()
+
+        controller._players = {
+            "up_old": universal,
+            "cast_1": native,
+            "spb_old": spb_old,
+            "spb_new": spb_new,
+        }
+
+        controller._add_protocol_link(universal, spb_old, "sendspin")
+        controller._add_protocol_link(native, spb_new, "sendspin")
+
+        controller._check_replace_universal_player(native)
+
+        unregister_tasks = [t for t in scheduled_tasks if "unregister" in repr(t)]
+        assert unregister_tasks == []
+        assert "up_old" in controller._players
+        assert spb_old.protocol_parent_id == "up_old"
+        assert any(
+            link.output_protocol_id == "spb_old" for link in universal.linked_output_protocols
+        )
+
+    def test_replace_keeps_universal_when_some_links_refused(self, mock_mass: MagicMock) -> None:
+        """
+        Keep the universal player when only some of its links could migrate.
+
+        The native player already owns the sendspin domain, so the universal player's
+        sendspin link is refused while its airplay link migrates. The universal player
+        must be kept (holding the refused link) instead of being unregistered, which
+        would orphan the refused protocol during cleanup.
+        """
+        controller = PlayerController(mock_mass)
+        up_provider = create_mock_universal_provider(mock_mass)
+
+        config_store: dict[str, object] = {
+            "players/cast_1": {"enabled": True},
+            "players/up_old": {"enabled": True},
+            "players/spb_old": {"enabled": True},
+            "players/spb_new": {"enabled": True},
+            "players/ap_old": {"enabled": True},
+        }
+
+        def config_get(key: str, default: object = None) -> object:
+            return config_store.get(key, default)
+
+        def config_set(key: str, value: object) -> None:
+            config_store[key] = value
+
+        def config_remove(key: str) -> None:
+            config_store.pop(key, None)
+
+        scheduled_tasks: list[Awaitable[object]] = []
+
+        def capture_task(task: Awaitable[object], *_args: Any, **_kwargs: Any) -> None:
+            scheduled_tasks.append(task)
+
+        mock_mass.config.get = MagicMock(side_effect=config_get)
+        mock_mass.config.set = MagicMock(side_effect=config_set)
+        mock_mass.config.remove = MagicMock(side_effect=config_remove)
+        mock_mass.players = controller
+        mock_mass.player_queues = MagicMock()
+        mock_mass.call_later = MagicMock()
+        mock_mass.loop = MagicMock()
+        mock_mass.create_task = MagicMock(side_effect=capture_task)
+
+        universal = UniversalPlayer(
+            provider=up_provider,
+            player_id="up_old",
+            name="Soundbar (Universal)",
+            device_info=DeviceInfo(model="Test", manufacturer="Test"),
+            protocol_player_ids=["spb_old", "ap_old"],
+        )
+        universal._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, "AA:BB:CC:DD:EE:FF")
+        universal._cache.clear()
+        universal.update_state(signal_event=False)
+        universal.set_initialized()
+
+        cast_provider = MockProvider("cast", mass=mock_mass)
+        native = MockPlayer(
+            cast_provider,
+            "cast_1",
+            "Soundbar",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        native.set_initialized()
+
+        sendspin_provider = MockProvider("sendspin", mass=mock_mass)
+        spb_old = MockPlayer(
+            sendspin_provider,
+            "spb_old",
+            "Soundbar (Sendspin)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        spb_old.set_initialized()
+        spb_new = MockPlayer(
+            sendspin_provider,
+            "spb_new",
+            "Soundbar (Sendspin v2)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        spb_new.set_initialized()
+
+        airplay_provider = MockProvider("airplay", mass=mock_mass)
+        ap_old = MockPlayer(
+            airplay_provider,
+            "ap_old",
+            "Soundbar (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap_old.set_initialized()
+
+        controller._players = {
+            "up_old": universal,
+            "cast_1": native,
+            "spb_old": spb_old,
+            "spb_new": spb_new,
+            "ap_old": ap_old,
+        }
+
+        controller._add_protocol_link(universal, spb_old, "sendspin")
+        controller._add_protocol_link(universal, ap_old, "airplay")
+        controller._add_protocol_link(native, spb_new, "sendspin")
+
+        controller._check_replace_universal_player(native)
+
+        unregister_tasks = [t for t in scheduled_tasks if "unregister" in repr(t)]
+        assert unregister_tasks == []
+        assert "up_old" in controller._players
+        # The refused sendspin link stays owned by the universal player.
+        assert spb_old.protocol_parent_id == "up_old"
+        assert any(
+            link.output_protocol_id == "spb_old" for link in universal.linked_output_protocols
+        )
+        # The airplay link migrated to the native player and left the universal player.
+        assert ap_old.protocol_parent_id == "cast_1"
+        assert any(link.output_protocol_id == "ap_old" for link in native.linked_output_protocols)
+        assert all(
+            link.output_protocol_id != "ap_old" for link in universal.linked_output_protocols
+        )
+
 
 class TestEndToEndDuplicateProtocol:
     """
@@ -7011,3 +7235,75 @@ class TestUniversalPlayerCurrentMedia:
         universal = _create_universal_player(mock_mass, "up_1", "Universal", [])
         universal.set_active_output_protocol("native")
         assert universal.current_media is None
+
+
+class TestSelfReferentialProtocolLinks:
+    """
+    Tests for the self-link bug when a Sendspin device changes player type.
+
+    A Sendspin device keeps a stable client_id (the MA player_id) across reflashes.
+    When it first registers as a protocol player it gets wrapped in a universal
+    player that caches that id as one of its protocols. If the device later
+    reconnects as a non-protocol player (e.g. its roles changed to display-only)
+    with the same id, the replace logic could link it to itself, hiding it.
+    """
+
+    def test_add_protocol_link_refuses_self(self, mock_mass: MagicMock) -> None:
+        """A player must never become its own protocol parent."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("sendspin", mass=mock_mass)
+        player = MockPlayer(provider, "esp_client", "ESP", player_type=PlayerType.PROTOCOL)
+        mock_mass.players = controller
+        controller._players = {"esp_client": player}
+
+        controller._add_protocol_link(player, player, "sendspin")
+
+        assert player.protocol_parent_id is None
+        assert all(
+            link.output_protocol_id != "esp_client" for link in player.linked_output_protocols
+        )
+
+    def test_type_change_replaces_universal_without_self_link(self, mock_mass: MagicMock) -> None:
+        """Replacing a universal player with the same-id native player must not self-link."""
+        universal = _create_universal_player(
+            mock_mass, "upespclient", "ESP", protocol_player_ids=["esp_client"]
+        )
+        display_provider = MockProvider("sendspin", mass=mock_mass)
+        display_player = MockPlayer(
+            display_provider, "esp_client", "ESP", player_type=PlayerType.DISPLAY
+        )
+
+        store: dict[str, Any] = {"players/esp_client": {"enabled": True}}
+        mock_mass.config.get.side_effect = lambda key, default=None: store.get(key, default)
+        mock_mass.config.set.side_effect = lambda key, value: store.__setitem__(key, value)
+        mock_mass.create_task = MagicMock()
+        mock_mass.players = controller = PlayerController(mock_mass)
+        controller._players = {"upespclient": universal, "esp_client": display_player}
+
+        controller._check_replace_universal_player(display_player)
+
+        assert display_player.protocol_parent_id is None
+        assert store.get("players/esp_client/values/protocol_parent_id") != "esp_client"
+        assert "esp_client" not in store.get("players/esp_client/values/linked_protocol_ids", [])
+
+    async def test_migrate_clears_persisted_self_referential_link(self) -> None:
+        """Config migration scrubs a self-referential link left by an older version."""
+        config = ConfigController.__new__(ConfigController)
+        config._data = {
+            CONF_PLAYERS: {
+                "esp_client": {
+                    "provider": "sendspin",
+                    "player_id": "esp_client",
+                    "values": {
+                        "protocol_parent_id": "esp_client",
+                        "linked_protocol_ids": ["esp_client"],
+                    },
+                }
+            }
+        }
+        with patch.object(config, "_async_save", AsyncMock()):
+            await config._migrate()
+
+        values = config._data[CONF_PLAYERS]["esp_client"]["values"]
+        assert values["protocol_parent_id"] is None
+        assert "esp_client" not in values["linked_protocol_ids"]

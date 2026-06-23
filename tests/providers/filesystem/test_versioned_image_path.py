@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 
@@ -54,3 +55,13 @@ class TestVersionedImagePath:
             mock_resolve.return_value = MagicMock(absolute_path="/music/track.flac")
             await provider.resolve_image("Moby Dick/track.flac")
         mock_resolve.assert_awaited_once_with("Moby Dick/track.flac")
+
+    @pytest.mark.asyncio
+    async def test_resolve_image_missing_file_raises_media_not_found(self) -> None:
+        """A removed image file surfaces as a typed MediaNotFoundError with chaining."""
+        provider = _create_provider()
+        with patch.object(provider, "resolve", new_callable=AsyncMock) as mock_resolve:
+            mock_resolve.side_effect = FileNotFoundError
+            with pytest.raises(MediaNotFoundError) as exc_info:
+                await provider.resolve_image("Moby Dick/folder.jpg?cs=123")
+        assert isinstance(exc_info.value.__cause__, FileNotFoundError)

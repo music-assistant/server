@@ -30,7 +30,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamMetadata
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.compare import compare_strings, create_safe_string
 from music_assistant.helpers.tags import split_artists
 from music_assistant.helpers.util import parse_title_and_version
 
@@ -81,6 +81,7 @@ class RadioArtworkMixin:
         self,
         artist_name: str,
         track_name: str,
+        album_name: str | None = None,
     ) -> tuple[MediaItemMetadata | None, str | None, str | None, str | None]:
         """
         Search for track/artist metadata by name.
@@ -90,6 +91,7 @@ class RadioArtworkMixin:
 
         :param artist_name: Artist name to search for.
         :param track_name: Track title to search for.
+        :param album_name: Album announced by the stream, used to refine which artwork is chosen.
         :returns: Tuple of (metadata, source_description, corrected_artist, corrected_track).
         """
         # Clean track name by stripping version suffixes and featuring credits
@@ -132,6 +134,13 @@ class RadioArtworkMixin:
         # Prefer single artwork (exact track art), then fall back to album artwork
         singles = [rg for rg in mb_release_groups if rg.primary_type == "Single"]
         albums = [rg for rg in mb_release_groups if rg.primary_type == "Album"]
+
+        # When the station told us the album, move a matching release group to the front so
+        # the cover reflects the broadcast release rather than an arbitrary one. This only
+        # reorders within each type; singles still take precedence over albums.
+        if album_name:
+            singles = self._prioritize_release_groups(singles, album_name)
+            albums = self._prioritize_release_groups(albums, album_name)
 
         for mb_release_group in singles:
             if result := await self._get_release_group_artwork(mb_release_group):
@@ -277,6 +286,7 @@ class RadioArtworkMixin:
         artist_name: str,
         track_name: str,
         fallback_image_url: str | None = None,
+        album_name: str | None = None,
     ) -> tuple[str | None, str | None, str | None]:
         """
         Look up artwork by artist and track name.
@@ -288,6 +298,7 @@ class RadioArtworkMixin:
         :param artist_name: Artist name to search for.
         :param track_name: Track title to search for.
         :param fallback_image_url: Fallback image URL if no artwork found.
+        :param album_name: Album announced by the stream, used to refine which artwork is chosen.
         :returns: Tuple of (image_url, corrected_artist, corrected_track).
         """
         if " / " in artist_name:
@@ -299,7 +310,10 @@ class RadioArtworkMixin:
         if any(phrase in artist_name.lower() for phrase in AD_DETECTION_PHRASES):
             return fallback_image_url, None, None
 
-        cache_key = f"{artist_name.lower()}|{track_name.lower()}"
+        # album_name influences which release group's artwork is chosen, so it must be
+        # part of the cache key, else two albums for the same track would alias.
+        album_key = create_safe_string(album_name) if album_name else ""
+        cache_key = f"{artist_name.lower()}|{track_name.lower()}|{album_key}"
         cached_result = await self.mass.cache.get(
             key=cache_key,
             category=CACHE_CATEGORY_RADIO_ARTWORK,
@@ -331,6 +345,7 @@ class RadioArtworkMixin:
             ) = await self.get_track_metadata_by_name(
                 artist_name=artist_name,
                 track_name=track_name,
+                album_name=album_name,
             )
             # Use corrected artist/track for logging if available (handles swapped metadata)
             log_artist = corrected_artist or artist_name
@@ -386,10 +401,12 @@ class RadioArtworkMixin:
             fallback_url = streamdetails.stream_metadata.image_url
             original_artist = streamdetails.stream_metadata.artist
             original_title = streamdetails.stream_metadata.title
+            album = streamdetails.stream_metadata.album
             image_url, corrected_artist, corrected_track = await self.get_image_url_by_name(
                 artist_name=original_artist,
                 track_name=original_title,
                 fallback_image_url=fallback_url,
+                album_name=album,
             )
             # Use corrected artist/track if metadata was swapped
             final_artist = corrected_artist or original_artist
@@ -402,6 +419,7 @@ class RadioArtworkMixin:
                 streamdetails.stream_metadata = StreamMetadata(
                     title=final_title,
                     artist=final_artist,
+                    album=album,
                     image_url=image_url,
                 )
                 streamdetails.stream_metadata_last_updated = time()
@@ -409,6 +427,28 @@ class RadioArtworkMixin:
                     self.mass.player_queues.signal_update(streamdetails.queue_id)
         except MusicAssistantError:
             pass
+
+    @staticmethod
+    def _prioritize_release_groups(
+        release_groups: list[MusicBrainzReleaseGroup], album_name: str
+    ) -> list[MusicBrainzReleaseGroup]:
+        """
+        Return the release groups reordered with album-name matches first.
+
+        :param release_groups: Release groups to reorder.
+        :param album_name: Album name announced in the stream metadata.
+        """
+        announced = create_safe_string(album_name)
+        if not announced or len(release_groups) < 2:
+            return release_groups
+
+        # loose substring match either way, so an original album still wins when the
+        # station announces a compilation whose title embeds the original album name
+        def matches(release_group: MusicBrainzReleaseGroup) -> bool:
+            title = create_safe_string(release_group.title)
+            return bool(title) and (title in announced or announced in title)
+
+        return sorted(release_groups, key=lambda rg: not matches(rg))
 
     async def _get_release_group_artwork(
         self, mb_release_group: MusicBrainzReleaseGroup

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import pytest
 from music_assistant_models.media_items import Playlist, Track
@@ -167,7 +167,7 @@ class TestSmartShuffle:
 class _FakeLock:
     """No-op re-entrant async context manager standing in for the player lock."""
 
-    async def __aenter__(self) -> _FakeLock:
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *exc_info: object) -> bool:

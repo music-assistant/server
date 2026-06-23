@@ -228,7 +228,7 @@ def parse_track(
         provider=provider.domain,
         name=cast("str", normalize_unicode(name)),
         version=version,
-        duration=attributes.get("durationInMillis", 0) / 1000,
+        duration=int(attributes.get("durationInMillis", 0) / 1000),
         provider_mappings={
             ProviderMapping(
                 item_id=track_id,

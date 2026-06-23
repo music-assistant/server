@@ -63,7 +63,7 @@
   "common.config_entries.volume_normalization.description": "Povolit normalizaci hlasitosti na základě standardu EBU-R128 bez ovlivnění dynamického rozsahu",
   "common.config_entries.volume_normalization.label": "Povolení normalizace hlasitosti (na základě EBU-R128)",
   "common.config_entries.volume_normalization_fixed_gain_tracks.label": "Pevné\/záložní korekce zesílení pro audio stopy",
-  "common.config_entries.volume_normalization_target.description": "Upravit průměrnou (vnímanou) hlasitost na tuto cílovou úroveň, výchozí je -17 LUFS \n\n **UPOZORNĚNÍ:** Nastavení příliš vysoké úrovně může způsobit oříznutí signálu!",
+  "common.config_entries.volume_normalization_target.description": "Upravit průměrnou (vnímanou) hlasitost na tuto cílovou úroveň, výchozí je -14 LUFS \n\n **UPOZORNĚNÍ:** Nastavení příliš vysoké úrovně může způsobit oříznutí signálu!",
   "common.config_entries.volume_normalization_target.label": "Cílová úroveň pro normalizaci hlasitosti",
   "common.media.afrobeats.name": "Afrobeats (západoafrická městská\/popová hudba)",
   "common.media.albums.name": "Alba",

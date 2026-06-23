@@ -357,6 +357,57 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             len(self._clap_prompt_order),
         )
 
+    async def unload(self, is_removed: bool = False) -> None:
+        """Release the CLAP model."""
+        self._clap_model = None
+        self._clap_text_embeddings = None
+        await super().unload(is_removed)
+
+    async def cancel(self, session_id: str) -> None:
+        """Cancel pending CLAP inferences and free per-window buffers."""
+        session = self._sessions.get(session_id)
+        if isinstance(session, SonicSessionData):
+            for task in session.clap_inference_tasks:
+                if not task.done():
+                    task.cancel()
+            session.clap_target_buffers.clear()
+        await super().cancel(session_id)
+
+    async def process_pcm_chunk(
+        self,
+        session_id: str,
+        pcm_chunk: bytes,
+    ) -> None:
+        """
+        Accumulate PCM and run feature extraction once a 10-second block is full.
+
+        :param session_id: The analysis session ID.
+        :param pcm_chunk: Raw PCM audio data.
+        """
+        if session_id not in self._sessions:
+            return
+        session = self._sessions[session_id]
+        assert isinstance(session, SonicSessionData)
+        session.pcm_buffer.extend(pcm_chunk)
+        af = session.audio_format
+        if len(session.pcm_buffer) >= session.block_bytes:
+            block_bytes = bytes(session.pcm_buffer[: session.block_bytes])
+            del session.pcm_buffer[: session.block_bytes]
+            pre_audio, post_audio, bf = await self._run_offloaded(
+                _decode_resample_extract,
+                af,
+                block_bytes,
+                session.overlap,
+                ANALYSIS_SAMPLE_RATE,
+                session.resampler,
+            )
+            session.total_samples += len(pre_audio)
+            session.peak_absolute = max(session.peak_absolute, float(np.max(np.abs(pre_audio))))
+            self._dispatch_clap_to_targets(session, pre_audio, af.sample_rate)
+            session.overlap = post_audio[-OVERLAP_SAMPLES:].copy()
+            if bf is not None:
+                merge_block_features(session.accumulated, bf)
+
     def _load_clap(
         self,
     ) -> tuple[Any, Any, list[tuple[str, tuple[str, str]]]]:
@@ -401,12 +452,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             )
             return None
         return cached_embeddings
-
-    async def unload(self, is_removed: bool = False) -> None:
-        """Release the CLAP model."""
-        self._clap_model = None
-        self._clap_text_embeddings = None
-        await super().unload(is_removed)
 
     async def _start_analysis(
         self,
@@ -482,51 +527,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             len(target_starts),
         )
         return True
-
-    async def cancel(self, session_id: str) -> None:
-        """Cancel pending CLAP inferences and free per-window buffers."""
-        session = self._sessions.get(session_id)
-        if isinstance(session, SonicSessionData):
-            for task in session.clap_inference_tasks:
-                if not task.done():
-                    task.cancel()
-            session.clap_target_buffers.clear()
-        await super().cancel(session_id)
-
-    async def process_pcm_chunk(
-        self,
-        session_id: str,
-        pcm_chunk: bytes,
-    ) -> None:
-        """
-        Accumulate PCM and run feature extraction once a 10-second block is full.
-
-        :param session_id: The analysis session ID.
-        :param pcm_chunk: Raw PCM audio data.
-        """
-        if session_id not in self._sessions:
-            return
-        session = self._sessions[session_id]
-        assert isinstance(session, SonicSessionData)
-        session.pcm_buffer.extend(pcm_chunk)
-        af = session.audio_format
-        if len(session.pcm_buffer) >= session.block_bytes:
-            block_bytes = bytes(session.pcm_buffer[: session.block_bytes])
-            del session.pcm_buffer[: session.block_bytes]
-            pre_audio, post_audio, bf = await self._run_offloaded(
-                _decode_resample_extract,
-                af,
-                block_bytes,
-                session.overlap,
-                ANALYSIS_SAMPLE_RATE,
-                session.resampler,
-            )
-            session.total_samples += len(pre_audio)
-            session.peak_absolute = max(session.peak_absolute, float(np.max(np.abs(pre_audio))))
-            self._dispatch_clap_to_targets(session, pre_audio, af.sample_rate)
-            session.overlap = post_audio[-OVERLAP_SAMPLES:].copy()
-            if bf is not None:
-                merge_block_features(session.accumulated, bf)
 
     def _dispatch_clap_to_targets(
         self, session: SonicSessionData, audio: np.ndarray, source_sr: int

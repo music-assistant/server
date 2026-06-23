@@ -317,7 +317,7 @@ class AudibleHelper:
             book.metadata.chapters = chapters
             # Update duration from chapters if available (more accurate)
             try:
-                duration = sum(chapter.get("length_ms", 0) for chapter in chapters_data) / 1000
+                duration = int(sum(chapter.get("length_ms", 0) for chapter in chapters_data) / 1000)
                 if duration > 0:
                     book.duration = duration
             except Exception as exc:
@@ -345,7 +345,7 @@ class AudibleHelper:
             chapters = await self._fetch_chapters(asin=asin)
             if chapters:
                 try:
-                    duration = sum(chapter.get("length_ms", 0) for chapter in chapters) / 1000
+                    duration = int(sum(chapter.get("length_ms", 0) for chapter in chapters) / 1000)
                 except Exception as exc:
                     self.logger.warning(f"Error calculating duration for ASIN {asin}: {exc}")
 

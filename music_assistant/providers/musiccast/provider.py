@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from aiohttp.client_exceptions import ClientError
 from aiomusiccast.musiccast_device import MusicCastDevice
@@ -82,10 +82,10 @@ class MusicCastProvider(PlayerProvider):
 
     # poll upnp playback information, but not too often. see "_update_player_attributes"
     # player_id: UpnpUpdateHelper
-    upnp_update_helper: dict[str, UpnpUpdateHelper] = {}
+    upnp_update_helper: ClassVar[dict[str, UpnpUpdateHelper]] = {}
 
     # str here is the device id, NOT the player_id
-    update_player_locks: dict[str, asyncio.Lock] = {}
+    update_player_locks: ClassVar[dict[str, asyncio.Lock]] = {}
 
     def __init__(
         self,

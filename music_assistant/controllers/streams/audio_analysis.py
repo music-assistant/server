@@ -236,6 +236,11 @@ class AudioAnalysisController:
             if isinstance(prov, AudioAnalysisProvider) and prov.available
         ]
 
+    @property
+    def smart_fades_provider_available(self) -> bool:
+        """Return whether the smart fades audio analysis provider is loaded and available."""
+        return any(prov.domain == SMART_FADES_ANALYSIS_DOMAIN for prov in self.providers)
+
     async def start_analysis(
         self,
         audio_buffer: AudioBuffer,

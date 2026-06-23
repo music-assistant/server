@@ -393,6 +393,13 @@ ad_pattern = re.compile(r"((ad|advertisement)_)|^AD\s\d+$|ADBREAK", flags=re.IGN
 title_artist_order_pattern = re.compile(r"(?P<title>.+)\sBy:\s(?P<artist>.+)", flags=re.IGNORECASE)
 # German format used by some stations: "Track" von Artist
 german_von_pattern = re.compile(r'^"(?P<title>[^"]+)"\s+von\s+(?P<artist>.+)$', flags=re.IGNORECASE)
+# English format used by some stations: "Track" by Artist from "Album" (album optional).
+# Title and album are quote-delimited, so the non-greedy artist plus the anchored,
+# quoted album group keep "by"/"from" inside the artist name from being mis-split.
+english_by_pattern = re.compile(
+    r'^"(?P<title>[^"]+)"\s+by\s+(?P<artist>.+?)(?:\s+from\s+"(?P<album>[^"]*)")?$',
+    flags=re.IGNORECASE,
+)
 multi_space_pattern = re.compile(r"\s{2,}")
 end_junk_pattern = re.compile(r"(.+?)(\s\W+)$")
 
@@ -702,17 +709,42 @@ def multi_strip(line: str) -> str:
     ).rstrip()
 
 
+def parse_quoted_stream_title(line: str) -> tuple[str, str, str | None] | None:
+    """
+    Parse stream titles that name the track in natural language with a quoted title.
+
+    Recognises '"Track" by Artist from "Album"' (album optional) and the German
+    '"Track" von Artist'.
+
+    :param line: Raw (uncleaned) stream title.
+    :returns: Tuple of (title, artist, album), or None when the line is not in one of
+        these formats. ``album`` is None when the station omits it.
+    """
+    stripped = line.strip()
+    if match := english_by_pattern.match(stripped):
+        title = multi_strip(match.group("title"))
+        artist = multi_strip(match.group("artist")).strip('"')
+        album_raw = match.group("album")
+        album = multi_strip(album_raw).strip('"') if album_raw else None
+        if title and artist:
+            return title, artist, album or None
+    if match := german_von_pattern.match(stripped):
+        title = multi_strip(match.group("title"))
+        artist = multi_strip(match.group("artist")).strip('"')
+        if title and artist:
+            return title, artist, None
+    return None
+
+
 def clean_stream_title(line: str) -> str:
     """Strip junk text from radio streamtitle."""
     title: str = ""
     artist: str = ""
 
     if not keyword_pattern.search(line):
-        if german_match := german_von_pattern.match(line.strip()):
-            title = multi_strip(german_match.group("title"))
-            artist = multi_strip(german_match.group("artist")).strip('"')
-            if title and artist:
-                return f"{artist} - {title}"
+        if parsed := parse_quoted_stream_title(line):
+            track_name, artist_name, _ = parsed
+            return f"{artist_name} - {track_name}"
         return multi_strip(line)
 
     if match := title_pattern.search(line):

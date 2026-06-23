@@ -204,7 +204,7 @@
   "common.config_entries.volume_normalization.description": "Омогућите нормализацију јачине звука на основу стандарда „EBU-R128“ без утицаја на динамички опсег",
   "common.config_entries.volume_normalization.label": "Омогући нормализацију јачине звука (засновано на „EBU-R128“)",
   "common.config_entries.volume_normalization_fixed_gain_tracks.label": "Фиксно\/резервно подешавање појачања за нумере",
-  "common.config_entries.volume_normalization_target.description": "Подесите просечну (опажену) гласноћу на овај циљни ниво, подразумевана вредност је -17 „LUFS“\n\n **УПОЗОРЕЊЕ:** Постављање превисоког нивоа може да доведе до одсецања!",
+  "common.config_entries.volume_normalization_target.description": "Подесите просечну (опажену) гласноћу на овај циљни ниво, подразумевана вредност је -14 „LUFS“\n\n **УПОЗОРЕЊЕ:** Постављање превисоког нивоа може да доведе до одсецања!",
   "common.config_entries.volume_normalization_target.label": "Циљни ниво за нормализацију јачине звука",
   "common.media.afrobeats.name": "Афробитс (западноафричка урбана\/поп музика)",
   "common.media.albums.name": "Албуми",

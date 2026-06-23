@@ -78,11 +78,13 @@ class ArtistsController(MediaControllerBase[Artist]):
         self,
         favorite_only: bool = False,
         album_artists_only: bool = False,
-        artist_type: ArtistType = ArtistType.SINGER,
+        artist_type: ArtistType | None = None,
     ) -> int:
         """Return the total number of items in the library."""
         sql_query = f"SELECT item_id FROM {self.db_table}"
-        query_parts = [f"artist_type = '{artist_type}'"]
+        query_parts = []
+        if artist_type:
+            query_parts.append(f"artist_type = '{artist_type}'")
         if favorite_only:
             query_parts.append("favorite = 1")
         if album_artists_only:
