@@ -109,7 +109,12 @@ from .constants import (
     TRACK_EXTENSIONS,
     IsChapterFile,
 )
-from .cue import CueSheetHandler, make_cue_track_id, parse_cue_track_id
+from .cue import (
+    CueSheetHandler,
+    cue_referenced_audio_stem,
+    make_cue_track_id,
+    parse_cue_track_id,
+)
 from .helpers import (
     FileSystemItem,
     get_absolute_path,
@@ -326,6 +331,9 @@ class LocalFileSystemProvider(MusicProvider):
                 except InvalidDataError as err:
                     self.logger.warning("Unable to parse CUE sheet %s: %s", item.relative_path, err)
                     continue
+                # also hide the audio file named in the CUE (may differ from its stem)
+                if companion_stem := cue_referenced_audio_stem(item, cue_sheet):
+                    cue_stems.add(companion_stem)
                 for cue_track in cue_sheet.tracks:
                     items.append(
                         ItemMapping(
@@ -440,6 +448,18 @@ class LocalFileSystemProvider(MusicProvider):
                 cue_stems=cue_stems,
                 root_scan_errors=root_scan_errors,
             )
+            # a CUE may name an audio file other than its own; hide that companion too
+            if self.media_content_type == "music":
+                for cue_item in (
+                    *unchanged_cue_items,
+                    *(item for item, _ in items_to_process if item.ext in CUE_EXTENSIONS),
+                ):
+                    try:
+                        cue_sheet = await self._cue.load_cue_sheet(cue_item)
+                    except InvalidDataError:
+                        continue
+                    if companion_stem := cue_referenced_audio_stem(cue_item, cue_sheet):
+                        cue_stems.add(companion_stem)
             # drop CUE companion audio: absorbed into CUE tracks and not tracked in
             # provider_mappings, so they would otherwise flag as changed every sync
             items_to_process = [

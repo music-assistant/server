@@ -71,6 +71,22 @@ def make_cue_track_id(cue_relative_path: str, track_number: int) -> str:
     return f"{cue_relative_path}{CUE_TRACK_ID_DELIMITER}{track_number:02d}"
 
 
+def cue_referenced_audio_stem(cue_item: FileSystemItem, cue_sheet: CueSheet) -> str | None:
+    """
+    Return the absolute path (without extension) of the CUE's referenced audio file.
+
+    Returns None if the CUE names no file. The named file may differ from the CUE's
+    own filename.
+
+    :param cue_item: The CUE file's FileSystemItem.
+    :param cue_sheet: The parsed CUE sheet.
+    """
+    if not cue_sheet.file_path:
+        return None
+    companion = os.path.join(os.path.dirname(cue_item.absolute_path), cue_sheet.file_path)
+    return companion.rsplit(".", 1)[0]
+
+
 def parse_cue_track_id(item_id: str) -> tuple[str, int] | None:
     """Return (cue_relative_path, track_number) if item_id is a CUE track id, else None."""
     if CUE_TRACK_ID_DELIMITER not in item_id:
