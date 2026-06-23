@@ -1517,6 +1517,7 @@
   "provider.squeezelite.config_entries.visualization.label": "Visualization type",
   "provider.squeezelite.manifest.description": "Stream music to Squeezelite and some legacy Squeezebox players on your local network using the slimproto protocol.",
   "provider.subsonic_scrobble.manifest.description": "Scrobbles tracks played in Music Assistant to your local Subsonic server for history and stats.",
+  "provider.sverigesradio.manifest.description": "Listen to Sweden’s public service radio — live national and local channels.",
   "provider.sync_group.config_entries.allowed_members.description": "Limit which players can join this group. Leave empty to allow any sync-compatible player. This can be used to reduce the list of players that show up for joining in case you have a lot of players.",
   "provider.sync_group.config_entries.allowed_members.label": "Allowed members",
   "provider.sync_group.config_entries.dynamic_members.description": "Allow (un)joining members dynamically, so the group more or less behaves the same like manually syncing players together, with the main difference being that the group player will hold the queue.",
