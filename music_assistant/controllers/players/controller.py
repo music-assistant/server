@@ -3803,6 +3803,16 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             ):
                 await target_player.play()
                 return
+            # No active protocol target: if the player natively supports pause and the active
+            # (external) source can be paused, unpause the player directly instead of
+            # restarting the source.
+            if (
+                active_source
+                and active_source.can_play_pause
+                and PlayerFeature.PAUSE in player.state.supported_features
+            ):
+                await player.play()
+                return
 
         # player is not paused: try to resume the player
         # Note: We handle resume inline here without calling _handle_cmd_resume
@@ -3853,17 +3863,24 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             )
             raise PlayerCommandFailed(msg)
         # Delegate to active protocol player if one is active
-        if not (
-            target_player := self._get_control_target(
-                player, PlayerFeature.PAUSE, require_active=True
-            )
+        if target_player := self._get_control_target(
+            player, PlayerFeature.PAUSE, require_active=True
         ):
-            # if player(protocol) does not support pause, we need to send stop
-            self.logger.debug(
-                "Player/protocol %s does not support pause, using STOP instead",
-                player.state.name,
-            )
-            await self._handle_cmd_stop(player.player_id)
+            await target_player.pause()
             return
-        # handle command on player(protocol) directly
-        await target_player.pause()
+        # No active protocol target: if the player natively supports pause and the active
+        # (external) source can be paused, forward the command to the player itself instead
+        # of stopping it (mirrors the external-source handling in cmd_seek/cmd_next_track).
+        if (
+            active_source
+            and active_source.can_play_pause
+            and PlayerFeature.PAUSE in player.state.supported_features
+        ):
+            await player.pause()
+            return
+        # player/protocol does not support pause: fall back to stop
+        self.logger.debug(
+            "Player/protocol %s does not support pause, using STOP instead",
+            player.state.name,
+        )
+        await self._handle_cmd_stop(player.player_id)

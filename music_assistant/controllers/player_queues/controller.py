@@ -24,6 +24,7 @@ import shortuuid
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
+    CrossfadeMode,
     EventType,
     MediaType,
     PlaybackState,
@@ -67,6 +68,9 @@ from music_assistant.constants import (
     ATTR_ACTIVE_PLAYLIST,
     ATTR_ANNOUNCEMENT_IN_PROGRESS,
     ATTR_PLAY_ACTION_IN_PROGRESS,
+    CONF_CROSSFADE_MODE,
+    CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_VOLUME_NORMALIZATION,
     MASS_LOGO_ONLINE,
     PLAYBACK_REPORT_INTERVAL_SECONDS,
     PLAYLIST_MEDIA_TYPES,
@@ -245,6 +249,38 @@ class PlayerQueuesController(CoreController):
             ),
         )
 
+    def get_queue_config_entries(self) -> list[ConfigEntry]:
+        """
+        Return the per-queue config entries.
+
+        The crossfade_mode select's options and default depend on whether smart fades are
+        available: the smart option is disabled (shown but not selectable) and the default falls
+        back to standard crossfade when smart fades can't be used on this server.
+        """
+        smart_fades_available = self.mass.streams.smart_fades_available
+        crossfade_mode_entry = ConfigEntry(
+            key=CONF_CROSSFADE_MODE,
+            type=ConfigEntryType.STRING,
+            options=[
+                ConfigValueOption(CrossfadeMode.STANDARD_CROSSFADE.value),
+                ConfigValueOption(
+                    CrossfadeMode.SMART_CROSSFADE.value, disabled=not smart_fades_available
+                ),
+            ],
+            default_value=(
+                CrossfadeMode.SMART_CROSSFADE.value
+                if smart_fades_available
+                else CrossfadeMode.STANDARD_CROSSFADE.value
+            ),
+            category="playback",
+            requires_reload=True,
+        )
+        return [
+            CONF_ENTRY_CROSSFADE_DURATION,
+            crossfade_mode_entry,
+            CONF_ENTRY_VOLUME_NORMALIZATION,
+        ]
+
     def __iter__(self) -> Iterator[PlayerQueue]:
         """Iterate over (available) players."""
         return iter(self._queues.values())
@@ -304,22 +340,22 @@ class PlayerQueuesController(CoreController):
             shuffle=shuffle_enabled,
         )
 
-    @api_command("player_queues/dont_stop_the_music")
-    def set_dont_stop_the_music(self, queue_id: str, dont_stop_the_music_enabled: bool) -> None:
-        """Configure Don't stop the music setting on the queue."""
+    @api_command("player_queues/autoplay")
+    def set_autoplay(self, queue_id: str, autoplay_enabled: bool) -> None:
+        """Configure Autoplay setting on the queue."""
         providers_available_with_similar_tracks = any(
             ProviderFeature.SIMILAR_TRACKS in provider.supported_features
             for provider in self.mass.music.providers
         )
-        if dont_stop_the_music_enabled and not providers_available_with_similar_tracks:
+        if autoplay_enabled and not providers_available_with_similar_tracks:
             raise UnsupportedFeaturedException(
-                "Don't stop the music is not supported by any of the available music providers"
+                "Autoplay is not supported by any of the available music providers"
             )
         queue = self._queues[queue_id]
-        queue.dont_stop_the_music_enabled = dont_stop_the_music_enabled
+        queue.autoplay_enabled = autoplay_enabled
         # if this happens to be the last track in the queue, fill the radio source
         if (
-            queue.dont_stop_the_music_enabled
+            queue.autoplay_enabled
             and queue.enqueued_media_items
             and queue.current_index is not None
             and (queue.items - queue.current_index) <= 1
@@ -329,6 +365,11 @@ class PlayerQueuesController(CoreController):
             task_id = f"fill_radio_tracks_{queue_id}"
             self.mass.call_later(5, self._fill_radio_tracks, queue_id, task_id=task_id)
         self.signal_update(queue_id=queue_id)
+
+    @api_command("player_queues/dont_stop_the_music", alias=True)
+    def set_dont_stop_the_music(self, queue_id: str, dont_stop_the_music_enabled: bool) -> None:
+        """Backwards-compatible alias for the autoplay command, used by older clients."""
+        self.set_autoplay(queue_id, dont_stop_the_music_enabled)
 
     @api_command("player_queues/repeat")
     def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
@@ -347,6 +388,26 @@ class PlayerQueuesController(CoreController):
             # ensure to (re)queue the next track because it might have changed
             # note that we only do this if the player has loaded the current track
             # if not, we wait until it has loaded to prevent conflicts
+            if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
+                self._enqueue_next_item(queue_id, next_item)
+
+    @api_command("player_queues/crossfade")
+    def set_crossfade(self, queue_id: str, crossfade_enabled: bool) -> None:
+        """Enable or disable crossfade on the queue."""
+        queue = self._queues[queue_id]
+        if queue.crossfade_enabled == crossfade_enabled:
+            return  # no change
+        queue.crossfade_enabled = crossfade_enabled
+        # refresh the derived smart-fades indicator so the update we signal reflects the new state
+        queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
+        self.signal_update(queue_id)
+        if (
+            queue.state == PlaybackState.PLAYING
+            and queue.index_in_buffer is not None
+            and queue.index_in_buffer == queue.current_index
+        ):
+            # re-enqueue the next track so the new crossfade behaviour applies to the
+            # upcoming transition (only when the player has already loaded the current track)
             if next_item := self.get_next_item(queue_id, queue.index_in_buffer):
                 self._enqueue_next_item(queue_id, next_item)
 
@@ -985,7 +1046,10 @@ class PlayerQueuesController(CoreController):
 
         target_queue.repeat_mode = source_queue.repeat_mode
         target_queue.shuffle_enabled = source_queue.shuffle_enabled
-        target_queue.dont_stop_the_music_enabled = source_queue.dont_stop_the_music_enabled
+        target_queue.crossfade_enabled = source_queue.crossfade_enabled
+        # refresh the derived smart-fades indicator for the target's own config/availability
+        target_queue.smart_fades_active = self.mass.streams.is_smart_fades_active(target_queue)
+        target_queue.autoplay_enabled = source_queue.autoplay_enabled
         target_queue.radio_source = source_queue.radio_source
         target_queue.is_dynamic = source_queue.is_dynamic
         target_queue.enqueued_media_items = source_queue.enqueued_media_items
@@ -1049,7 +1113,7 @@ class PlayerQueuesController(CoreController):
                 active=False,
                 display_name=player.state.name,
                 available=player.state.available,
-                dont_stop_the_music_enabled=False,
+                autoplay_enabled=False,
                 items=0,
             )
 
@@ -1835,7 +1899,7 @@ class PlayerQueuesController(CoreController):
                         )
 
                 # Save requested media item to play on the queue so we can use it as a source
-                # for Don't stop the music. Use FIFO list to keep track of the last 10 played items
+                # for Autoplay. Use FIFO list to keep track of the last 10 played items
                 # Skip ItemMapping and BrowseFolder - only queue full MediaItemType objects
                 if not isinstance(
                     media_item, (ItemMapping, BrowseFolder)
@@ -2337,7 +2401,7 @@ class PlayerQueuesController(CoreController):
                 current_item = queue.current_item
                 if current_item is None:
                     return  # guard
-                retries = max(120, (current_item.duration or 0) + 10)
+                retries = max(120, int(current_item.duration or 0) + 10)
                 for _ in range(retries):
                     # the queue can drain to empty while we sleep (e.g. all remaining
                     # items skipped as unplayable); stop waiting once it has no current item
@@ -2675,6 +2739,7 @@ class PlayerQueuesController(CoreController):
         # basic properties
         queue.display_name = player.state.name
         queue.available = player.state.available
+        queue.smart_fades_active = self.mass.streams.is_smart_fades_active(queue)
         queue.items = len(self._queue_items[queue_id])
 
         queue.state = (
@@ -2829,19 +2894,19 @@ class PlayerQueuesController(CoreController):
 
         # watch dynamic radio items refill if needed
         if "current_item_id" in changed_keys:
-            # auto enable radio mode if dont stop the music is enabled
+            # auto enable radio mode if autoplay is enabled
             if (
-                queue.dont_stop_the_music_enabled
+                queue.autoplay_enabled
                 and queue.enqueued_media_items
                 and queue.current_index is not None
                 and (queue.items - queue.current_index) <= 1
             ):
-                # We have received the last item in the queue and Don't stop the music is enabled
+                # We have received the last item in the queue and Autoplay is enabled
                 # set the played media item(s) as radio items (which will refill the queue)
                 # note that this will fail if there are no media items for which we have
                 # a dynamic radio source.
                 self.logger.debug(
-                    "End of queue detected and Don't stop the music is enabled for %s"
+                    "End of queue detected and Autoplay is enabled for %s"
                     " - setting enqueued media items as radio source: %s",
                     queue.display_name,
                     ", ".join([x.uri for x in queue.enqueued_media_items]),  # type: ignore[misc]  # uri set in __post_init__

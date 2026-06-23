@@ -809,6 +809,20 @@ async def test_recommendations_returns_feed_and_wishlist(provider: BandcampProvi
         assert [f.name for f in folders] == ["Bandcamp Feed", "Wishlist"]
         assert feed_track in folders[0].items
         assert wishlist_album in folders[1].items
+        # Both folders must be playable; browsing their slug resolves to tracks
+        # (see test_browse_feed_returns_tracks and the existing wishlist browse tests).
+        assert all(f.is_playable for f in folders)
+
+
+async def test_browse_feed_returns_tracks(provider: BandcampProvider) -> None:
+    """Test browsing the feed slug resolves to the feed tracks (the play path for the folder)."""
+    feed_track = Mock()
+    with patch.object(provider, "_get_feed_tracks", new_callable=AsyncMock) as mock_feed:
+        mock_feed.return_value = [feed_track]
+
+        result = await provider.browse("bandcamp_test://feed")
+
+        assert result == [feed_track]
 
 
 async def test_recommendations_no_identity(provider: BandcampProvider) -> None:

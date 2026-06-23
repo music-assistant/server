@@ -54,7 +54,7 @@
   "common.config_entries.volume_normalization.description": "다이나믹 레인지에 영향을 주지 않고 EBU-R128 표준에 기반한 볼륨 노멀라이제이션 활성화",
   "common.config_entries.volume_normalization.label": "볼륨 노멀라이즈 활성화(EBU-R128 기반)",
   "common.config_entries.volume_normalization_fixed_gain_tracks.label": "트랙에 대한 고정\/폴백 게인 조정",
-  "common.config_entries.volume_normalization_target.description": "평균(감지) 음량을 이 목표 레벨로 조정합니다. 기본값은 -17 LUFS입니다. \n\n **경고:** 레벨을 너무 높게 설정하면 클리핑이 발생할 수 있습니다!",
+  "common.config_entries.volume_normalization_target.description": "평균(감지) 음량을 이 목표 레벨로 조정합니다. 기본값은 -14 LUFS입니다. \n\n **경고:** 레벨을 너무 높게 설정하면 클리핑이 발생할 수 있습니다!",
   "common.config_entries.volume_normalization_target.label": "볼륨 노멀라이즈 목표 수준",
   "common.media.albums.name": "앨범",
   "common.media.artists.name": "아티스트",

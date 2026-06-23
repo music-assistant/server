@@ -35,7 +35,7 @@ from .ffmpeg import get_ffmpeg_stream
 from .process import AsyncProcess, communicate
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import CoreConfig, PlayerConfig
+    from music_assistant_models.config_entries import CoreConfig, PlayerQueueConfig
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -714,12 +714,12 @@ def parse_loudnorm(raw_stderr: bytes | str) -> float | None:
 
 def get_normalization_mode(
     core_config: CoreConfig,
-    player_config: PlayerConfig,
+    queue_config: PlayerQueueConfig,
     streamdetails: StreamDetails,
 ) -> VolumeNormalizationMode:
-    """Get the volume normalization mode for a given player and stream."""
-    if not player_config.get_value(CONF_VOLUME_NORMALIZATION):
-        # disabled for this player
+    """Get the volume normalization mode for a given queue and stream."""
+    if not queue_config.get_value(CONF_VOLUME_NORMALIZATION):
+        # disabled for this queue
         return VolumeNormalizationMode.DISABLED
     if streamdetails.media_type == MediaType.AUDIO_SOURCE:
         # live/realtime: upstream producer owns loudness, no measurement to converge on

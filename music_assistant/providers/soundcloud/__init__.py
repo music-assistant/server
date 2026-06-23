@@ -110,7 +110,7 @@ class SoundcloudMusicProvider(MusicProvider):
 
     _user_id: str = ""
     _soundcloud: SoundcloudAsyncAPI = None
-    _me: dict[str, Any] = {}
+    _me: dict[str, Any]
 
     async def handle_async_init(self) -> None:
         """Set up the Soundcloud provider."""
@@ -564,7 +564,7 @@ class SoundcloudMusicProvider(MusicProvider):
             provider=self.domain,
             name=name,
             version=version,
-            duration=track_obj["duration"] / 1000,
+            duration=int(track_obj["duration"] / 1000),
             provider_mappings={
                 ProviderMapping(
                     item_id=track_id,

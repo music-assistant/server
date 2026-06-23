@@ -4,6 +4,25 @@
     "description": "Configuration of the core player queue management module"
   },
   "config_entries": {
+    "crossfade_duration": {
+      "label": "Standard crossfade duration",
+      "description": "Duration in seconds for the standard crossfade between tracks."
+    },
+    "crossfade_mode": {
+      "label": "Crossfade mode",
+      "description": "The crossfade type to use when crossfade is enabled. Smart crossfade beat-matches tracks and needs the smart fades analysis provider on a capable system; it falls back to standard when unavailable.",
+      "options": {
+        "standard_crossfade": "Standard crossfade",
+        "smart_crossfade": "Smart crossfade (beat-matched)"
+      },
+      "disabled_reasons": {
+        "smart_crossfade": "Not available on this server: smart crossfade needs the smart fades analysis provider and a larger audio buffer (balanced or higher)."
+      }
+    },
+    "volume_normalization": {
+      "label": "Enable volume normalization (EBU-R128 based)",
+      "description": "Enable volume normalization based on the EBU-R128 standard without affecting dynamic range"
+    },
     "default_enqueue_select_artist": {
       "label": "Items to select when you play a (in-library) artist.",
       "options": {

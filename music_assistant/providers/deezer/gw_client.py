@@ -8,7 +8,7 @@ cookie based on the api_token.
 import json
 from collections.abc import Mapping
 from http.cookies import BaseCookie, Morsel
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from aiohttp import ClientSession, ClientTimeout
 from music_assistant_models.errors import MediaNotFoundError
@@ -41,7 +41,7 @@ class GWClient:
     _license_expiration_timestamp: int
     _user_id: int
     session: ClientSession
-    formats: list[dict[str, str]] = [
+    formats: ClassVar[list[dict[str, str]]] = [
         {"cipher": "BF_CBC_STRIPE", "format": "MP3_128"},
     ]
     user_country: str

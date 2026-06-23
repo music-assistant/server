@@ -38,6 +38,7 @@ class MetadataReader:
         self.logger = logger
         self.on_metadata = on_metadata
         self._reader_task: asyncio.Task[None] | None = None
+        self._background_tasks: set[asyncio.Task[None]] = set()
         self._stop = False
         self._current_metadata: dict[str, Any] = {}
         self._fd: int | None = None
@@ -212,7 +213,15 @@ class MetadataReader:
                         self.logger.debug("Error decoding base64 data: %s", err)
 
             # Process the metadata item
-            asyncio.create_task(self._process_metadata_item(type_str, code_str, data))
+            task = asyncio.create_task(self._process_metadata_item(type_str, code_str, data))
+            self._background_tasks.add(task)
+
+            def _on_task_done(t: asyncio.Task[None]) -> None:
+                self._background_tasks.discard(t)
+                if not t.cancelled() and (exc := t.exception()):
+                    self.logger.debug("Background task failed", exc_info=exc)
+
+            task.add_done_callback(_on_task_done)
 
         except Exception as err:
             self.logger.debug("Error parsing XML item: %s", err)
