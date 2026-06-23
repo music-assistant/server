@@ -701,7 +701,13 @@ class StreamsAudio:
                 async with self._connect_radio_stream(
                     url, allow_redirects=True, headers=HTTP_HEADERS_ICY, timeout=timeout
                 ) as resp:
-                    meta_int = int(resp.headers["icy-metaint"])
+                    # surface a non-200 (e.g. on reconnect) as a ClientResponseError so the
+                    # terminal/HTTP handling below applies instead of failing on the header
+                    resp.raise_for_status()
+                    meta_int_str = resp.headers.get("icy-metaint")
+                    if not meta_int_str:
+                        raise InvalidDataError(f"No icy-metaint header for radio stream: {url}")
+                    meta_int = int(meta_int_str)
                     # readexactly raises IncompleteReadError when the server closes the
                     # connection mid-frame; that (and the network errors below) drops us
                     # out to the reconnect handler so a live stream survives the blip.
@@ -716,6 +722,14 @@ class StreamsAudio:
             except asyncio.CancelledError:
                 self.logger.debug("ICY radio stream cancelled for %s", url)
                 raise
+            except aiohttp.ClientResponseError as err:
+                if err.status == 404:
+                    raise MediaNotFoundError(f"Radio stream not found: {url}") from err
+                if err.status == 403:
+                    raise ProviderPermissionDenied(f"Radio stream access denied: {url}") from err
+                raise ProviderUnavailableError(
+                    f"Radio stream returned HTTP {err.status}: {err}"
+                ) from err
             except (
                 asyncio.IncompleteReadError,
                 aiohttp.ClientConnectionError,
@@ -731,18 +745,6 @@ class StreamsAudio:
                     "ICY radio stream disconnected (reconnect #%d): %s", reconnect_count, err
                 )
                 await asyncio.sleep(0.5)
-            except aiohttp.ClientResponseError as err:
-                if err.status == 404:
-                    raise MediaNotFoundError(f"Radio stream not found: {url}") from err
-                if err.status == 403:
-                    raise ProviderPermissionDenied(f"Radio stream access denied: {url}") from err
-                raise ProviderUnavailableError(
-                    f"Radio stream returned HTTP {err.status}: {err}"
-                ) from err
-
-        self.logger.warning(
-            "ICY radio stream reached max reconnects (%d) for %s", max_reconnects, url
-        )
 
     async def get_reconnecting_radio_stream(self, url: str) -> AsyncGenerator[bytes]:
         """

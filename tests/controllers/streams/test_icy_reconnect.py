@@ -6,8 +6,10 @@ import asyncio
 from typing import Any
 from unittest.mock import MagicMock
 
+import aiohttp
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -34,10 +36,14 @@ class _FakeContent:
 class _FakeConnCtx:
     """Async context manager yielding a fake ICY response."""
 
-    def __init__(self, frames: list[bytes | Exception]) -> None:
+    def __init__(self, frames: list[bytes | Exception], status: int = 200) -> None:
         self._resp = MagicMock()
         self._resp.headers = {"icy-metaint": str(_META_INT)}
         self._resp.content = _FakeContent(frames)
+        if status >= 400:
+            self._resp.raise_for_status.side_effect = aiohttp.ClientResponseError(
+                MagicMock(), (), status=status
+            )
 
     async def __aenter__(self) -> Any:
         return self._resp
@@ -88,3 +94,19 @@ async def test_icy_stream_reconnects_after_disconnect(monkeypatch: pytest.Monkey
 
     assert chunks == [b"AAAA", b"BBBB"]
     assert connect_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_icy_stream_raises_on_http_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 404 response is terminal and surfaces as MediaNotFoundError, not a reconnect."""
+    audio = StreamsAudio(MagicMock())
+
+    monkeypatch.setattr(
+        audio, "_connect_radio_stream", lambda *_a, **_k: _FakeConnCtx([], status=404)
+    )
+
+    with pytest.raises(MediaNotFoundError):
+        async for _chunk in audio.get_icy_radio_stream(
+            "http://example.test/radio.mp3", _radio_streamdetails()
+        ):
+            pass
