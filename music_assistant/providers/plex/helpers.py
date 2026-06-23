@@ -6,7 +6,7 @@ import asyncio
 import dataclasses
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 import requests
 from music_assistant_models.enums import ImageType, MediaType, ProviderFeature
@@ -67,18 +67,6 @@ LIBRARY_TYPE_TO_MEDIA_TYPES: dict[str, tuple[MediaType, ...]] = {
     LIBRARY_TYPE_AUDIOBOOKS: (MediaType.AUDIOBOOK,),
     LIBRARY_TYPE_PODCASTS: (MediaType.PODCAST, MediaType.PODCAST_EPISODE),
 }
-
-
-def get_supported_features(
-    values: dict[str, Any] | None,
-) -> set[ProviderFeature]:
-    """Return supported features adjusted for the selected library type."""
-    library_type = str((values or {}).get(CONF_LIBRARY_TYPE, LIBRARY_TYPE_MUSIC))
-    if library_type == LIBRARY_TYPE_AUDIOBOOKS:
-        return AUDIOBOOK_FEATURES.copy()
-    if library_type == LIBRARY_TYPE_PODCASTS:
-        return PODCAST_FEATURES.copy()
-    return SUPPORTED_FEATURES.copy()
 
 
 @dataclass(frozen=True)

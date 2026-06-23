@@ -466,9 +466,12 @@ class ConfigController:
             LOGGER.exception(msg)
             return []
 
-        supported_features, provider = self._resolve_supported_features(
-            prov_mod, instance_id, values
-        )
+        # add dynamic optional config entries that depend on features
+        if instance_id and (provider := self.mass.get_provider(instance_id)):
+            supported_features = provider.supported_features
+        else:
+            provider = None
+            supported_features = getattr(prov_mod, "SUPPORTED_FEATURES", set())
         extra_entries = self._build_sync_entries(manifest, supported_features, provider)
 
         all_entries = [
@@ -479,49 +482,6 @@ class ConfigController:
             ),
         ]
         return _with_translation_owner(all_entries, f"provider.{provider_domain}", action, values)
-
-    def _resolve_supported_features(
-        self,
-        prov_mod: ProviderModuleType,
-        instance_id: str | None,
-        values: dict[str, ConfigValueType] | None,
-    ) -> tuple[builtins.set[ProviderFeature], Any]:
-        """Determine the supported feature set based on form values or loaded provider."""
-        if instance_id and (provider := self.mass.get_provider(instance_id)):
-            # When the user is editing a loaded provider and the form contains a new
-            # library_type, prefer the dynamic feature set from the form so sync
-            # options match the selected type rather than the old loaded type.
-            new_library_type = (values or {}).get("library_type")
-            if (
-                new_library_type is not None
-                and hasattr(provider, "_get_library_type")
-                and new_library_type != provider._get_library_type()
-            ):
-                raw_features = getattr(prov_mod, "get_supported_features", None)
-                if callable(raw_features):
-                    supported_features: set[ProviderFeature] = cast(
-                        "set[ProviderFeature]", raw_features(values)
-                    )
-                else:
-                    supported_features = provider.supported_features
-            else:
-                supported_features = provider.supported_features
-        else:
-            provider = None
-            # Prefer a dynamic callable that can react to intermediate form
-            # values (e.g. library type selector). Fall back to static set.
-            raw_features = getattr(prov_mod, "get_supported_features", None)
-            if raw_features is None:
-                raw_features = getattr(prov_mod, "SUPPORTED_FEATURES", None)
-            if raw_features is None:
-                supported_features = set()
-            elif callable(raw_features):
-                supported_features = cast("set[ProviderFeature]", raw_features(values))
-            elif isinstance(raw_features, set):
-                supported_features = raw_features
-            else:
-                supported_features = set()
-        return supported_features, provider
 
     def _build_sync_entries(
         self,

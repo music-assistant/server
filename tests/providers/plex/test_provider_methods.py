@@ -12,9 +12,8 @@ import pytest
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MediaNotFoundError
 
-import music_assistant.providers.plex as plex_module
 from music_assistant.providers.plex import PlexProvider
-from music_assistant.providers.plex.helpers import get_supported_features
+from music_assistant.providers.plex.helpers import SUPPORTED_FEATURES
 
 LIBRARY_TYPE_AUDIOBOOKS = "audiobooks"
 LIBRARY_TYPE_MUSIC = "music"
@@ -53,7 +52,7 @@ def _make_provider(library_type: str = LIBRARY_TYPE_MUSIC) -> Any:
     mock_manifest.type = "music"
     mock_manifest.domain = "plex"
 
-    provider = PlexProvider(mock_mass, mock_manifest, mock_config)
+    provider = PlexProvider(mock_mass, mock_manifest, mock_config, SUPPORTED_FEATURES)
     provider._baseurl = "http://localhost:32400"
     provider._plex_server = MagicMock()
     provider._plex_library = MagicMock()
@@ -351,12 +350,12 @@ class TestStreamDetailsGuards:
             )
 
 
-class TestGetSupportedFeatures:
-    """Tests for the dynamic get_supported_features function."""
+class TestSupportedFeaturesProperty:
+    """The supported_features property reflects the configured library type."""
 
     def test_music_returns_all_music_features(self) -> None:
-        """When library_type is music, all music features are returned."""
-        result = get_supported_features({"library_type": "music"})
+        """A music library exposes the full music feature set."""
+        result = _make_provider(LIBRARY_TYPE_MUSIC).supported_features
 
         assert ProviderFeature.LIBRARY_ARTISTS in result
         assert ProviderFeature.LIBRARY_ALBUMS in result
@@ -366,8 +365,8 @@ class TestGetSupportedFeatures:
         assert ProviderFeature.LIBRARY_PODCASTS not in result
 
     def test_audiobooks_returns_only_audiobook_features(self) -> None:
-        """When library_type is audiobooks, only audiobook features are returned."""
-        result = get_supported_features({"library_type": "audiobooks"})
+        """An audiobooks library narrows the feature set to audiobooks."""
+        result = _make_provider(LIBRARY_TYPE_AUDIOBOOKS).supported_features
 
         assert ProviderFeature.LIBRARY_AUDIOBOOKS in result
         assert ProviderFeature.BROWSE in result
@@ -379,8 +378,8 @@ class TestGetSupportedFeatures:
         assert ProviderFeature.LIBRARY_PODCASTS not in result
 
     def test_podcasts_returns_only_podcast_features(self) -> None:
-        """When library_type is podcasts, only podcast features are returned."""
-        result = get_supported_features({"library_type": "podcasts"})
+        """A podcasts library narrows the feature set to podcasts."""
+        result = _make_provider(LIBRARY_TYPE_PODCASTS).supported_features
 
         assert ProviderFeature.LIBRARY_PODCASTS in result
         assert ProviderFeature.BROWSE in result
@@ -390,36 +389,6 @@ class TestGetSupportedFeatures:
         assert ProviderFeature.LIBRARY_TRACKS not in result
         assert ProviderFeature.LIBRARY_PLAYLISTS not in result
         assert ProviderFeature.LIBRARY_AUDIOBOOKS not in result
-
-    def test_default_none_returns_music_features(self) -> None:
-        """When values is None, music features are returned as default."""
-        result = get_supported_features(None)
-
-        assert ProviderFeature.LIBRARY_ARTISTS in result
-        assert ProviderFeature.LIBRARY_ALBUMS in result
-        assert ProviderFeature.LIBRARY_TRACKS in result
-
-    def test_default_empty_dict_returns_music_features(self) -> None:
-        """When values is an empty dict, music features are returned as default."""
-        result = get_supported_features({})
-
-        assert ProviderFeature.LIBRARY_ARTISTS in result
-        assert ProviderFeature.LIBRARY_ALBUMS in result
-        assert ProviderFeature.LIBRARY_TRACKS in result
-
-    def test_exposed_on_provider_module(self) -> None:
-        """get_supported_features must be reachable on the provider package module.
-
-        The config controller resolves dynamic features via
-        ``getattr(prov_mod, "get_supported_features")`` on the provider's
-        package module, so it has to be re-exported there (not only in helpers).
-        """
-        module_func = getattr(plex_module, "get_supported_features", None)
-
-        assert callable(module_func)
-        assert module_func({"library_type": "audiobooks"}) == get_supported_features(
-            {"library_type": "audiobooks"}
-        )
 
 
 # ---------------------------------------------------------------------------

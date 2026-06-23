@@ -109,20 +109,16 @@ from music_assistant.providers.plex.helpers import (
     extract_library_name,
     get_favorite_from_rating,
     get_section_info,
-    get_supported_features,
     get_thumbnail_images,
 )
 
 # Public surface of the provider package. With mypy's no_implicit_reexport,
-# names imported into this module (e.g. CONF_LIBRARY_ID from .constants,
-# get_supported_features from .helpers) are only re-exported when listed here.
-# get_supported_features is read by the config controller (via getattr on this
-# module) to resolve features dynamically from in-progress config values.
+# names imported into this module (e.g. CONF_LIBRARY_ID from .constants) are
+# only re-exported when listed here.
 __all__ = [
     "CONF_LIBRARY_ID",
     "PlexProvider",
     "get_config_entries",
-    "get_supported_features",
     "setup",
 ]
 
