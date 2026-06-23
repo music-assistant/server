@@ -10,6 +10,7 @@ from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFe
 from music_assistant_models.player import OutputProtocol, PlayerMedia
 
 from music_assistant.constants import ATTR_ENABLED, CONF_PLAYERS
+from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.players import PlayerController
 from music_assistant.helpers.util import enrich_device_mac_address
 from music_assistant.models.player import DeviceInfo, Player
@@ -7234,3 +7235,75 @@ class TestUniversalPlayerCurrentMedia:
         universal = _create_universal_player(mock_mass, "up_1", "Universal", [])
         universal.set_active_output_protocol("native")
         assert universal.current_media is None
+
+
+class TestSelfReferentialProtocolLinks:
+    """
+    Tests for the self-link bug when a Sendspin device changes player type.
+
+    A Sendspin device keeps a stable client_id (the MA player_id) across reflashes.
+    When it first registers as a protocol player it gets wrapped in a universal
+    player that caches that id as one of its protocols. If the device later
+    reconnects as a non-protocol player (e.g. its roles changed to display-only)
+    with the same id, the replace logic could link it to itself, hiding it.
+    """
+
+    def test_add_protocol_link_refuses_self(self, mock_mass: MagicMock) -> None:
+        """A player must never become its own protocol parent."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("sendspin", mass=mock_mass)
+        player = MockPlayer(provider, "esp_client", "ESP", player_type=PlayerType.PROTOCOL)
+        mock_mass.players = controller
+        controller._players = {"esp_client": player}
+
+        controller._add_protocol_link(player, player, "sendspin")
+
+        assert player.protocol_parent_id is None
+        assert all(
+            link.output_protocol_id != "esp_client" for link in player.linked_output_protocols
+        )
+
+    def test_type_change_replaces_universal_without_self_link(self, mock_mass: MagicMock) -> None:
+        """Replacing a universal player with the same-id native player must not self-link."""
+        universal = _create_universal_player(
+            mock_mass, "upespclient", "ESP", protocol_player_ids=["esp_client"]
+        )
+        display_provider = MockProvider("sendspin", mass=mock_mass)
+        display_player = MockPlayer(
+            display_provider, "esp_client", "ESP", player_type=PlayerType.DISPLAY
+        )
+
+        store: dict[str, Any] = {"players/esp_client": {"enabled": True}}
+        mock_mass.config.get.side_effect = lambda key, default=None: store.get(key, default)
+        mock_mass.config.set.side_effect = lambda key, value: store.__setitem__(key, value)
+        mock_mass.create_task = MagicMock()
+        mock_mass.players = controller = PlayerController(mock_mass)
+        controller._players = {"upespclient": universal, "esp_client": display_player}
+
+        controller._check_replace_universal_player(display_player)
+
+        assert display_player.protocol_parent_id is None
+        assert store.get("players/esp_client/values/protocol_parent_id") != "esp_client"
+        assert "esp_client" not in store.get("players/esp_client/values/linked_protocol_ids", [])
+
+    async def test_migrate_clears_persisted_self_referential_link(self) -> None:
+        """Config migration scrubs a self-referential link left by an older version."""
+        config = ConfigController.__new__(ConfigController)
+        config._data = {
+            CONF_PLAYERS: {
+                "esp_client": {
+                    "provider": "sendspin",
+                    "player_id": "esp_client",
+                    "values": {
+                        "protocol_parent_id": "esp_client",
+                        "linked_protocol_ids": ["esp_client"],
+                    },
+                }
+            }
+        }
+        with patch.object(config, "_async_save", AsyncMock()):
+            await config._migrate()
+
+        values = config._data[CONF_PLAYERS]["esp_client"]["values"]
+        assert values["protocol_parent_id"] is None
+        assert "esp_client" not in values["linked_protocol_ids"]
