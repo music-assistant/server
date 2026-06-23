@@ -29,7 +29,7 @@ jobs:
   upload:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install Lokalise CLI
         # pin the installer and CLI to a tagged release (don't run a script off a moving branch)
         run: curl -sfL https://raw.githubusercontent.com/lokalise/lokalise-cli-2-go/v3.1.4/install.sh | sh -s -- -b ./bin v3.1.4

@@ -9,11 +9,11 @@
       "description": "The name of the share/service you'd like to connect to on the remote host, For example 'media'."
     },
     "username": {
-      "label": "Username",
+      "label": "[%key:common::config_entries::username::label%]",
       "description": "The username to authenticate to the remote server. Leave as 'guest' or empty for anonymous access."
     },
     "password": {
-      "label": "Password",
+      "label": "[%key:common::config_entries::password::label%]",
       "description": "The password to authenticate to the remote server. Leave empty for anonymous/guest access."
     },
     "subfolder": {
@@ -44,8 +44,5 @@
   },
   "manifest": {
     "description": "Play music and audiobooks stored on SMB connected network drives."
-  },
-  "errors": {
-    "unresolvable_host": "Unable to resolve {0}, make sure the address is resolvable."
   }
 }

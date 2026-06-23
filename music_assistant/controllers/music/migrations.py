@@ -651,6 +651,28 @@ async def migrate_database(  # noqa: PLR0915
                     {"metadata": serialize_to_json(metadata)},
                 )
 
+    if prev_version <= 41:
+        # add playback_speed column to playlog (per-item speed for audiobooks/episodes)
+        try:
+            await database.execute(
+                f"ALTER TABLE {DB_TABLE_PLAYLOG} "
+                "ADD COLUMN playback_speed REAL NOT NULL DEFAULT 1.0"
+            )
+        except Exception as err:
+            if "duplicate column" not in str(err):
+                raise
+
+    if prev_version <= 42:
+        # add translation_key/translation_params columns to the playlist table so localizable
+        # builtin/provider playlist names (incl. parameterized ones like Spotify's per-account
+        # "Liked Songs") survive the library round-trip; existing rows backfill on the next sync.
+        for column in ("[translation_key] TEXT", "[translation_params] json"):
+            try:
+                await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLISTS} ADD COLUMN {column}")
+            except Exception as err:
+                if "duplicate column" not in str(err):
+                    raise
+
     # save changes
     await database.commit()
 

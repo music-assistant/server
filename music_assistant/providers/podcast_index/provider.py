@@ -105,18 +105,21 @@ class PodcastIndexProvider(MusicProvider):
                     provider=self.domain,
                     path=f"{base}{BROWSE_TRENDING}",
                     name="Trending Podcasts",
+                    translation_key="trending_podcasts",
                 ),
                 BrowseFolder(
                     item_id=BROWSE_RECENT,
                     provider=self.domain,
                     path=f"{base}{BROWSE_RECENT}",
                     name="Recent Episodes",
+                    translation_key="recent_episodes",
                 ),
                 BrowseFolder(
                     item_id=BROWSE_CATEGORIES,
                     provider=self.domain,
                     path=f"{base}{BROWSE_CATEGORIES}",
                     name="Categories",
+                    translation_key="categories",
                 ),
             ]
 

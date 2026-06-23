@@ -47,7 +47,7 @@ async def setup(
         msg = f"Unable to resolve {server}, make sure the address is resolvable."
         raise SetupFailedError(
             msg,
-            translation_key="provider.filesystem_nfs.errors.host_unresolvable",
+            translation_key="host_unresolvable",
             translation_args=[server],
         )
     # check if export path is valid
@@ -66,7 +66,8 @@ async def get_config_entries(
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider.
+    """
+    Return Config entries to setup this provider.
 
     :param mass: The MusicAssistant instance.
     :param instance_id: id of an existing provider instance (None if new instance setup).

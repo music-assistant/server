@@ -5,6 +5,13 @@
       "description": "When a provider with AI support is available, use it to write a natural-language description for each smart playlist. Falls back to a plain rules summary when no AI provider is available."
     }
   },
+  "media": {
+    "recommendations": {
+      "smart_playlists": {
+        "name": "Smart Playlists"
+      }
+    }
+  },
   "manifest": {
     "description": "Create dynamic or fixed playlists based on rules like genres, artists, albums, favorites and similar tracks."
   },

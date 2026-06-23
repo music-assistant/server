@@ -1,4 +1,5 @@
-"""Adaptor for converting BBC Sounds objects to Music Assistant media items.
+"""
+Adaptor for converting BBC Sounds objects to Music Assistant media items.
 
 Many Sounds API endpoints return containers of "PlayableObjects" which can be a
 range of different types. The auntie-sounds library detects these differing
@@ -10,7 +11,7 @@ This adaptor maps those objects to the most sensible type for MA.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, tzinfo
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from music_assistant_models.enums import ContentType, ImageType, MediaType, StreamType
 from music_assistant_models.media_items import (
@@ -88,7 +89,7 @@ class ImageProvider:
         "https://cdn.jsdelivr.net/gh/kieranhogg/auntie-sounds@main/src/sounds/icons/solid"
     )
 
-    ICON_MAPPING = {
+    ICON_MAPPING: ClassVar[dict[str, str]] = {
         "listen_live": "listen_live",
         "continue_listening": "continue",
         "editorial_collection": "editorial",
@@ -200,7 +201,8 @@ class BaseConverter(ABC):
         return self.context.provider._get_provider_mapping(item_id)
 
     def _get_attr(self, obj: Any, attr_path: str, default: Any = None) -> Any:
-        """Get (optionally-nested) attribute from object.
+        """
+        Get (optionally-nested) attribute from object.
 
         Supports e.g. _get_attr(object, "thing.other_thing")
         """
@@ -698,6 +700,7 @@ class BrowseConverter(BaseConverter):
         return BrowseFolder(
             item_id="schedule",
             name="Schedule",
+            translation_key="schedule",
             provider=self.context.provider_domain,
             path=self._build_path("schedule"),
         )

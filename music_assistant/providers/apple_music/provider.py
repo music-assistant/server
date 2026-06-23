@@ -91,6 +91,7 @@ class AppleMusicProvider(MusicProvider):
                     provider=self.instance_id,
                     path=f"{self.instance_id}://stations",
                     name="Radio Stations",
+                    translation_key="radio_stations",
                 )
             )
             return items

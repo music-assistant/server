@@ -15,7 +15,8 @@ class VolumeHandler(WamPlayerFeatureBase):
     @retry_command()
     @handle_pywam_errors
     async def set_volume(self, volume_level: int) -> None:
-        """Set the volume level on the speaker.
+        """
+        Set the volume level on the speaker.
 
         :param volume_level: Volume level (0-100).
         """
@@ -24,7 +25,8 @@ class VolumeHandler(WamPlayerFeatureBase):
     @retry_command()
     @handle_pywam_errors
     async def set_mute(self, muted: bool) -> None:
-        """Mute or unmute the speaker.
+        """
+        Mute or unmute the speaker.
 
         :param muted: True to mute, False to unmute.
         """

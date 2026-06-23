@@ -355,37 +355,6 @@ class HueAudioAnalyzer:
         """
         self._pending_spectrum.append((timestamp_us, bins))
 
-    def _advance_spectrum(self, now_us: int) -> None:
-        """Drain due spectrum frames and update saturation per drained frame."""
-        while self._pending_spectrum and self._pending_spectrum[0][0] <= now_us:
-            _, bins = self._pending_spectrum.popleft()
-            self._consume_spectrum_frame(bins)
-
-    def _consume_spectrum_frame(self, bins: list[int]) -> None:
-        """Normalize ``bins`` into ``self._spectrum`` and step bass saturation."""
-        if not bins:
-            self._spectrum = []
-            return
-        spectrum: list[float] = []
-        for b in bins:
-            norm = max(0, min(65535, b)) / 65535.0
-            if norm < _SPECTRUM_BIN_NOISE_GATE:
-                spectrum.append(0.0)
-                continue
-            spectrum.append(min(1.0, norm**_SPECTRUM_GAMMA))
-        self._spectrum = spectrum
-        # Bass energy → saturation via transient detection. Slow baseline
-        # tracks the sustained level, so only bass HITS above the baseline
-        # push saturation up.
-        bass_count = min(_BASS_SAT_BINS, len(spectrum))
-        bass_energy = sum(spectrum[:bass_count]) / bass_count if bass_count else 0.0
-        self._bass_baseline += (bass_energy - self._bass_baseline) * _BASS_BASELINE_SMOOTHING
-        bass_transient = max(0.0, bass_energy - self._bass_baseline)
-        swing = self._mode.bass_saturation_scale * min(1.0, bass_transient * _BASS_TRANSIENT_SCALE)
-        sat_target = _BASS_SAT_MIN + (_BASS_SAT_MAX - _BASS_SAT_MIN) * swing
-        sat_alpha = _BASS_SAT_RISE if sat_target > self._bass_saturation else _BASS_SAT_DECAY
-        self._bass_saturation += (sat_target - self._bass_saturation) * sat_alpha
-
     def apply_peak(self, strength: int, timestamp_us: int) -> None:
         """
         Queue an onset peak for the renderer.
@@ -401,34 +370,6 @@ class HueAudioAnalyzer:
             return
         boost = normalized * _PEAK_BOOST_SCALE
         self._pending_peaks.append((timestamp_us, boost))
-
-    def _consume_peaks(self, now_us: int) -> float:
-        """
-        Drain due peaks and return the decayed peak-boost contribution.
-
-        Side effects: promotes pending peaks (keeping the strongest) and
-        advances ``_peak_palette_position`` once per consumed onset so the
-        fallback render branch (no beat schedule) scrolls colours on every
-        hit. The return value is the active brightness lift after a linear
-        fade over ``_PEAK_BOOST_DECAY_US``; peaks scheduled in the future
-        contribute nothing yet.
-        """
-        while self._pending_peaks and self._pending_peaks[0][0] <= now_us:
-            ts, boost = self._pending_peaks.popleft()
-            if self._peak_set_at_us is None or boost >= self._peak_boost:
-                self._peak_boost = boost
-                self._peak_set_at_us = ts
-            self._peak_palette_position += self._mode.palette_advance
-        if self._peak_set_at_us is None:
-            return 0.0
-        elapsed = now_us - self._peak_set_at_us
-        if elapsed < 0:
-            return 0.0
-        if elapsed >= _PEAK_BOOST_DECAY_US:
-            self._peak_set_at_us = None
-            self._peak_boost = 0.0
-            return 0.0
-        return self._peak_boost * (1.0 - elapsed / _PEAK_BOOST_DECAY_US)
 
     def push_beats(self, beats: list[BeatTiming]) -> None:
         """
@@ -490,6 +431,65 @@ class HueAudioAnalyzer:
         pulse = self._compute_pulse(now_us, prior, next_beat, segment)
         colors = self._per_channel_colors(palette, prior, next_beat, now_us, segment)
         return self._fill_per_channel(colors, base_brightness * pulse, channel_mults)
+
+    def _advance_spectrum(self, now_us: int) -> None:
+        """Drain due spectrum frames and update saturation per drained frame."""
+        while self._pending_spectrum and self._pending_spectrum[0][0] <= now_us:
+            _, bins = self._pending_spectrum.popleft()
+            self._consume_spectrum_frame(bins)
+
+    def _consume_spectrum_frame(self, bins: list[int]) -> None:
+        """Normalize ``bins`` into ``self._spectrum`` and step bass saturation."""
+        if not bins:
+            self._spectrum = []
+            return
+        spectrum: list[float] = []
+        for b in bins:
+            norm = max(0, min(65535, b)) / 65535.0
+            if norm < _SPECTRUM_BIN_NOISE_GATE:
+                spectrum.append(0.0)
+                continue
+            spectrum.append(min(1.0, norm**_SPECTRUM_GAMMA))
+        self._spectrum = spectrum
+        # Bass energy → saturation via transient detection. Slow baseline
+        # tracks the sustained level, so only bass HITS above the baseline
+        # push saturation up.
+        bass_count = min(_BASS_SAT_BINS, len(spectrum))
+        bass_energy = sum(spectrum[:bass_count]) / bass_count if bass_count else 0.0
+        self._bass_baseline += (bass_energy - self._bass_baseline) * _BASS_BASELINE_SMOOTHING
+        bass_transient = max(0.0, bass_energy - self._bass_baseline)
+        swing = self._mode.bass_saturation_scale * min(1.0, bass_transient * _BASS_TRANSIENT_SCALE)
+        sat_target = _BASS_SAT_MIN + (_BASS_SAT_MAX - _BASS_SAT_MIN) * swing
+        sat_alpha = _BASS_SAT_RISE if sat_target > self._bass_saturation else _BASS_SAT_DECAY
+        self._bass_saturation += (sat_target - self._bass_saturation) * sat_alpha
+
+    def _consume_peaks(self, now_us: int) -> float:
+        """
+        Drain due peaks and return the decayed peak-boost contribution.
+
+        Side effects: promotes pending peaks (keeping the strongest) and
+        advances ``_peak_palette_position`` once per consumed onset so the
+        fallback render branch (no beat schedule) scrolls colours on every
+        hit. The return value is the active brightness lift after a linear
+        fade over ``_PEAK_BOOST_DECAY_US``; peaks scheduled in the future
+        contribute nothing yet.
+        """
+        while self._pending_peaks and self._pending_peaks[0][0] <= now_us:
+            ts, boost = self._pending_peaks.popleft()
+            if self._peak_set_at_us is None or boost >= self._peak_boost:
+                self._peak_boost = boost
+                self._peak_set_at_us = ts
+            self._peak_palette_position += self._mode.palette_advance
+        if self._peak_set_at_us is None:
+            return 0.0
+        elapsed = now_us - self._peak_set_at_us
+        if elapsed < 0:
+            return 0.0
+        if elapsed >= _PEAK_BOOST_DECAY_US:
+            self._peak_set_at_us = None
+            self._peak_boost = 0.0
+            return 0.0
+        return self._peak_boost * (1.0 - elapsed / _PEAK_BOOST_DECAY_US)
 
     def _current_segment(
         self, now_us: int

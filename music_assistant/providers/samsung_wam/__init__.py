@@ -14,7 +14,8 @@ class SpeakerStatusFilter(logging.Filter):
     """Suppress high-frequency SpeakerStatus events unless verbose logging is enabled."""
 
     def __init__(self, provider_logger: logging.Logger, name: str = "") -> None:
-        """Initialize the filter.
+        """
+        Initialize the filter.
 
         :param provider_logger: The logger instance attached to the provider.
         :param name: Optional name for the filter.
@@ -47,7 +48,8 @@ if TYPE_CHECKING:
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
-    """Set up and return a new Samsung WAM provider instance.
+    """
+    Set up and return a new Samsung WAM provider instance.
 
     :param mass: The MusicAssistant instance.
     :param manifest: The provider manifest.

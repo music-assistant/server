@@ -1,4 +1,5 @@
-"""MusicCast Handling for Music Assistant.
+"""
+MusicCast Handling for Music Assistant.
 
 This is largely taken from the MusicCast integration in HomeAssistant,
 https://github.com/home-assistant/core/tree/dev/homeassistant/components/yamaha_musiccast
@@ -34,7 +35,8 @@ if TYPE_CHECKING:
 
 
 def random_uuid_hex() -> str:
-    """Generate a random UUID hex.
+    """
+    Generate a random UUID hex.
 
     This uuid should not be used for cryptographically secure
     operations.
@@ -54,7 +56,8 @@ class MusicCastPlayerState(Enum):
 
 
 class MusicCastZoneDevice:
-    """Zone device.
+    """
+    Zone device.
 
     A physical device may have different zones, though only a single zone
     can be used for net playback (but the other ones can be synced internally).
@@ -93,7 +96,8 @@ class MusicCastZoneDevice:
 
     @property
     def source_id(self) -> str:
-        """ID of the current input source.
+        """
+        ID of the current input source.
 
         Internal source name.
         """
@@ -161,7 +165,8 @@ class MusicCastZoneDevice:
 
     @property
     def is_network_server(self) -> bool:
-        """Return only true if the current entity is a network server.
+        """
+        Return only true if the current entity is a network server.
 
         I.e. not a main zone with an attached zone2.
         """
@@ -195,7 +200,8 @@ class MusicCastZoneDevice:
 
     @property
     def is_server(self) -> bool:
-        """Return whether the media player is the server/host of the group.
+        """
+        Return whether the media player is the server/host of the group.
 
         If the media player is not part of a group, False is returned.
         """
@@ -218,7 +224,8 @@ class MusicCastZoneDevice:
 
     @property
     def is_client(self) -> bool:
-        """Return whether the media player is the client of a group.
+        """
+        Return whether the media player is the client of a group.
 
         If the media player is not part of a group, False is returned.
         """
@@ -226,7 +233,8 @@ class MusicCastZoneDevice:
 
     @property
     def musiccast_zone_entity(self) -> MusicCastZoneDevice:
-        """Return the musiccast entity of the physical device.
+        """
+        Return the musiccast entity of the physical device.
 
         It is possible that multiple zones use MusicCast as client at the same time.
         In this case the first one is returned.
@@ -368,7 +376,8 @@ class MusicCastZoneDevice:
         )
 
     async def join_players(self, group_members: list[MusicCastZoneDevice]) -> None:
-        """Add all clients given in entities to the group of the server.
+        """
+        Add all clients given in entities to the group of the server.
 
         Creates a new group if necessary. Used for join service.
         """
@@ -409,7 +418,8 @@ class MusicCastZoneDevice:
         await self._group_update()
 
     async def unjoin_player(self) -> None:
-        """Leave the group.
+        """
+        Leave the group.
 
         Stops the distribution if device is server. Used for unjoin service.
         """
@@ -422,7 +432,8 @@ class MusicCastZoneDevice:
     # Internal client functions
 
     async def _client_join(self, group_id: str, server: MusicCastZoneDevice) -> bool:
-        """Let the client join a group.
+        """
+        Let the client join a group.
 
         If this client is a server, the server will stop distributing.
         If the client is part of a different group,
@@ -467,7 +478,8 @@ class MusicCastZoneDevice:
         return True
 
     async def _client_leave_group(self, force: bool = False) -> None:
-        """Make self leave the group.
+        """
+        Make self leave the group.
 
         Should only be called for clients.
         """
@@ -493,7 +505,8 @@ class MusicCastZoneDevice:
     # Internal server functions
 
     async def _server_close_group(self) -> None:
-        """Close group of self.
+        """
+        Close group of self.
 
         Should only be called for servers.
         """
@@ -524,7 +537,8 @@ class MusicCastZoneDevice:
 
 
 class MusicCastPhysicalDevice:
-    """Physical MusicCast device.
+    """
+    Physical MusicCast device.
 
     May contain multiple zone devices, but at least one, main.
     """
@@ -541,7 +555,8 @@ class MusicCastPhysicalDevice:
         self.controller.physical_devices.append(self)
 
     async def async_init(self) -> bool:
-        """Async init.
+        """
+        Async init.
 
         Returns true if initial fetch was successful.
         """
@@ -571,7 +586,8 @@ class MusicCastPhysicalDevice:
             self.device.device.disable_polling()
 
     async def fetch(self) -> None:
-        """Fetch device information.
+        """
+        Fetch device information.
 
         Should be called regularly, e.g. every 60s, in case some udp info
         goes missing.
@@ -599,7 +615,8 @@ class MusicCastPhysicalDevice:
 
 
 class MusicCastController:
-    """MusicCastController.
+    """
+    MusicCastController.
 
     Holds information of full known MC network.
     """

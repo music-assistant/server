@@ -54,7 +54,8 @@ async def get_spotify_token(
     refresh_token: str,
     session_name: str = "spotify",
 ) -> dict[str, Any]:
-    """Refresh Spotify access token using refresh token.
+    """
+    Refresh Spotify access token using refresh token.
 
     :param http_session: aiohttp client session.
     :param client_id: Spotify client ID.
@@ -93,7 +94,8 @@ async def pkce_auth_flow(
     session_id: str,
     client_id: str,
 ) -> str:
-    """Perform Spotify PKCE auth flow and return refresh token.
+    """
+    Perform Spotify PKCE auth flow and return refresh token.
 
     :param mass: MusicAssistant instance.
     :param session_id: Session ID for the authentication helper.

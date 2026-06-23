@@ -26,7 +26,8 @@ if TYPE_CHECKING:
 async def get_podcastparser_dict(
     *, session: aiohttp.ClientSession, feed_url: str, max_episodes: int = 0
 ) -> dict[str, Any]:
-    """Get feed parsed by podcastparser by providing the url.
+    """
+    Get feed parsed by podcastparser by providing the url.
 
     max_episodes = 0 does not limit the returned episodes.
     """
@@ -64,7 +65,8 @@ def parse_podcast(
     domain: str,
     mass_item_id: str | None = None,
 ) -> Podcast:
-    """Podcast -> Mass Podcast.
+    """
+    Podcast -> Mass Podcast.
 
     The item_id is the feed url by default, or the optional mass_item_id instead.
     """
@@ -143,7 +145,8 @@ def parse_podcast_episode(
     domain: str,
     mass_item_id: str | None = None,
 ) -> PodcastEpisode | None:
-    """Podcast Episode -> Mass Podcast Episode.
+    """
+    Podcast Episode -> Mass Podcast Episode.
 
     The item_id is {prov_podcast_id} {guid_or_stream_url} by default, or the optional mass_item_id
     instead. The podcast_cover is used, if the episode should not have its own cover.

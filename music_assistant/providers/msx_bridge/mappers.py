@@ -162,7 +162,8 @@ def map_tracks_to_msx_playlist(
     provider: MSXBridgeProvider,
     device_param: str = "",
 ) -> MsxContent:
-    """Map a list of MA Track objects to an MSX Content page for playlist playback.
+    """
+    Map a list of MA Track objects to an MSX Content page for playlist playback.
 
     MSX ``playlist:{URL}`` loads a standard Content Root Object.
     Each item uses ``action: "audio:{URL}"`` so MSX can play them sequentially.

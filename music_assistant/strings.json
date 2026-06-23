@@ -1,10 +1,24 @@
 {
   "config_entries": {
     "username": {
-      "label": "Username"
+      "label": "Username",
+      "description": "The username to authenticate to the remote server."
     },
     "password": {
-      "label": "Password"
+      "label": "Password",
+      "description": "The password to authenticate to the remote server."
+    },
+    "suffix_version": {
+      "label": "Suffix version to track names",
+      "description": "Whether to add the version as suffix to track names, e.g. 'Amazing Track (Live)'."
+    },
+    "scrobble_users": {
+      "label": "Scrobble for users",
+      "description": "Only register scrobbles for the selected users. Leave empty to scrobble for all users."
+    },
+    "scrobble_players": {
+      "label": "Scrobble for players",
+      "description": "Only register scrobbles for the selected players. Leave empty to scrobble for all players."
     },
     "announce_volume": {
       "label": "Volume for Announcements",
@@ -35,10 +49,6 @@
     "crossfade_different_sample_rates": {
       "label": "Allow crossfades between tracks of different sample rates",
       "description": "Enable this option to allow crossfades between tracks that have different sample rates (e.g. 44.1kHz to 48kHz). \n\n Disable this option if you experience audio glitches during transitions between tracks."
-    },
-    "crossfade_duration": {
-      "label": "Crossfade duration",
-      "description": "Duration in seconds of the crossfade between tracks (if enabled)"
     },
     "enable_icy_metadata": {
       "label": "Try to inject metadata into stream (ICY)",
@@ -198,15 +208,6 @@
         "384000||24": "384kHz / 24 bits"
       }
     },
-    "smart_fades_mode": {
-      "label": "Enable Smart Fades",
-      "description": "Select the crossfade mode to use when transitioning between tracks.\n\n- 'Smart Crossfade': Uses beat matching and EQ filters to create smooth transitions between tracks.\n- 'Standard Crossfade': Regular crossfade that crossfades the last/first x-seconds of a track.",
-      "options": {
-        "disabled": "Disabled",
-        "smart_crossfade": "Smart Crossfade",
-        "standard_crossfade": "Standard Crossfade"
-      }
-    },
     "sync_adjust": {
       "label": "Audio synchronization delay correction",
       "description": "If this player is playing audio synced with other players and you always hear the audio too early or late on this player, you can shift the audio a bit."
@@ -218,13 +219,9 @@
     "unofficial_provider_note": {
       "label": "This is an unofficial integration that is not affiliated with, supported by, or endorsed by the music service. It relies on interfaces that are not officially supported and may stop working at any time. Use of this provider may also be subject to the service's terms of use."
     },
-    "volume_normalization": {
-      "label": "Enable volume normalization (EBU-R128 based)",
-      "description": "Enable volume normalization based on the EBU-R128 standard without affecting dynamic range"
-    },
     "volume_normalization_target": {
       "label": "Target level for volume normalization",
-      "description": "Adjust average (perceived) loudness to this target level, default is -17 LUFS\n\n**WARNING:** Setting the level too high may result in clipping!"
+      "description": "Adjust average (perceived) loudness to this target level, default is -14 LUFS\n\n**WARNING:** Setting the level too high may result in clipping!"
     },
     "zeroconf_interfaces": {
       "label": "Mdns/Zeroconf discovery interface(s)",
@@ -282,25 +279,6 @@
         "auto": "Auto-select"
       }
     },
-    "smart_crossfade_unavailable": {
-      "label": "Smart Crossfade is unavailable because this system has limited memory. It requires more RAM than is currently available for audio buffering."
-    },
-    "volume_normalization_radio": {
-      "label": "Volume normalization method for radio streams"
-    },
-    "volume_normalization_tracks": {
-      "label": "Volume normalization method for tracks"
-    },
-    "volume_normalization_fixed_gain_radio": {
-      "label": "Fixed/fallback gain adjustment for radio streams"
-    },
-    "volume_normalization_fixed_gain_tracks": {
-      "label": "Fixed/fallback gain adjustment for tracks"
-    },
-    "publish_ip": {
-      "label": "Published IP address",
-      "description": "This IP address is communicated to players where to find this server.\nMake sure that this IP can be reached by players on the local network, otherwise audio streaming will not work."
-    },
     "bind_port": {
       "label": "TCP Port",
       "description": "The TCP port to run the server. Make sure that this server can be reached on the given IP and TCP port by players on the local network."
@@ -309,9 +287,27 @@
       "label": "Bind to IP/interface",
       "description": "Start the stream server on this specific interface. \nUse 0.0.0.0 to bind to all interfaces (both IPv4 and IPv6), which is the default. \nThis is an advanced setting that should normally not be adjusted in regular setups."
     },
-    "background_scan_concurrency": {
-      "label": "Background analysis concurrency",
-      "description": "Maximum number of tracks analyzed concurrently during the nightly background scan. Default 1 (serial). Increase only if your hardware can handle concurrent torch/ffmpeg work."
+    "content_type": {
+      "options": {
+        "audiobooks": "Audiobooks",
+        "music": "Music",
+        "podcasts": "Podcasts"
+      }
+    },
+    "mass_player_id": {
+      "options": {
+        "__auto__": "Auto (prefer playing player)"
+      },
+      "label": "Connected Music Assistant Player"
+    },
+    "clear_auth": {
+      "label": "Reset authentication",
+      "action_label": "Reset authentication",
+      "description": "Clear the current authentication details."
+    },
+    "verify_ssl": {
+      "label": "Verify SSL",
+      "description": "Whether or not to verify the certificate of SSL/TLS connections."
     }
   },
   "config_categories": {
@@ -335,7 +331,13 @@
     "protocol_general": "General",
     "audio_analysis": "Audio Analysis",
     "presets": "Presets",
-    "settings": "Settings"
+    "settings": "Settings",
+    "features": "Features",
+    "status": "Status",
+    "discover": "Discover",
+    "debug": "Debug",
+    "server": "Server",
+    "recommendations": "Recommendations"
   },
   "media": {
     "genre": {
@@ -576,32 +578,6 @@
         "description": "Meditation music is music performed to aid in the practice of meditation. It can have a specific religious content, but also more recently has been associated with modern composers who use meditation techniques in their process of composition, or who compose such music with no particular religious group as a focus. The concept also includes music performed as an act of meditation."
       }
     },
-    "playlist": {
-      "all_favorite_tracks": {
-        "name": "All favorited tracks"
-      },
-      "random_artist": {
-        "name": "Random Artist (from library)"
-      },
-      "random_album": {
-        "name": "Random Album (from library)"
-      },
-      "random_tracks": {
-        "name": "500 Random tracks (from library)"
-      },
-      "recently_played": {
-        "name": "Recently played tracks"
-      },
-      "recently_added_tracks": {
-        "name": "Recently added tracks"
-      },
-      "infinite_mix": {
-        "name": "Infinite Mix (library)"
-      },
-      "infinite_mix_favorites": {
-        "name": "Infinite Mix (favorites)"
-      }
-    },
     "folder": {
       "artists": {
         "name": "Artists"
@@ -618,6 +594,9 @@
       "radios": {
         "name": "Radio"
       },
+      "radio_stations": {
+        "name": "Radio Stations"
+      },
       "audiobooks": {
         "name": "Audiobooks"
       },
@@ -632,6 +611,87 @@
       },
       "recommendations": {
         "name": "Recommendations"
+      },
+      "rock": {
+        "name": "Rock"
+      },
+      "jazz": {
+        "name": "Jazz"
+      },
+      "classical": {
+        "name": "Classical"
+      },
+      "electronic": {
+        "name": "Electronic"
+      },
+      "hiphop": {
+        "name": "Hip-Hop"
+      },
+      "rnb": {
+        "name": "R&B"
+      },
+      "chill": {
+        "name": "Chill"
+      },
+      "party": {
+        "name": "Party"
+      },
+      "relax": {
+        "name": "Relax"
+      },
+      "romantic": {
+        "name": "Romantic"
+      },
+      "sad": {
+        "name": "Sad"
+      },
+      "in_the_mood": {
+        "name": "In the Mood"
+      },
+      "workout": {
+        "name": "Workout"
+      },
+      "focus": {
+        "name": "Focus"
+      },
+      "background": {
+        "name": "Background"
+      },
+      "driving": {
+        "name": "Driving"
+      },
+      "morning": {
+        "name": "Morning"
+      },
+      "evening": {
+        "name": "Evening"
+      },
+      "80s": {
+        "name": "80s"
+      },
+      "90s": {
+        "name": "90s"
+      },
+      "2000s": {
+        "name": "2000s"
+      },
+      "retro": {
+        "name": "Retro"
+      },
+      "winter": {
+        "name": "Winter"
+      },
+      "summer": {
+        "name": "Summer"
+      },
+      "autumn": {
+        "name": "Autumn"
+      },
+      "spring": {
+        "name": "Spring"
+      },
+      "newyear": {
+        "name": "New Year"
       }
     },
     "recommendations": {
@@ -656,15 +716,6 @@
       "audiobooks": {
         "name": "Audiobooks"
       },
-      "made_for_you": {
-        "name": "Made for you"
-      },
-      "recommended_albums": {
-        "name": "Recommended albums"
-      },
-      "recommended_artists": {
-        "name": "Recommended artists"
-      },
       "episodes_recently_added": {
         "name": "Newest Podcast Episodes"
       },
@@ -673,20 +724,6 @@
       },
       "most_played_albums": {
         "name": "Most Played Albums"
-      },
-      "discover_similar_artists": {
-        "name": "Discover Similar Artists"
-      },
-      "discover_similar_tracks": {
-        "name": "Discover Similar Tracks"
-      },
-      "global_top_artists": {
-        "name": "Global Top Artists",
-        "subtitle": "Most popular artists worldwide"
-      },
-      "global_top_tracks": {
-        "name": "Global Top Tracks",
-        "subtitle": "Most popular tracks worldwide"
       },
       "recently_played": {
         "name": "Recently played",
@@ -732,23 +769,6 @@
         "name": "Favorite Radio stations"
       }
     }
-  },
-  "background_task": {
-    "sync_provider_artists": "Sync Artists for {0}",
-    "sync_provider_albums": "Sync Albums for {0}",
-    "sync_provider_tracks": "Sync Tracks for {0}",
-    "sync_provider_playlists": "Sync Playlists for {0}",
-    "sync_provider_radios": "Sync Radios for {0}",
-    "sync_provider_audiobooks": "Sync Audiobooks for {0}",
-    "sync_provider_podcasts": "Sync Podcasts for {0}",
-    "cache_database_cleanup": "Cache database cleanup",
-    "correct_provider_mappings": "Correct provider mappings",
-    "database_cleanup": "Database cleanup",
-    "refresh_lastfm_recommendations": "Refresh Last.fm recommendations",
-    "scan_genre_mappings": "Scan genre mappings",
-    "add_playlist_tracks": "Add items to playlist {0}",
-    "remove_playlist_tracks": "Remove items from playlist {0}",
-    "import_playlist_matching": "Import playlist {0}"
   },
   "player_options": {
     "adaptive_drc": {
@@ -863,6 +883,9 @@
     "insufficient_permissions": "You do not have permission to perform this action.",
     "invalid_token": "The access token is invalid or has expired.",
     "resource_busy": "This resource is currently in use elsewhere.",
-    "rate_limited": "Rate limit reached. Please try again later."
+    "rate_limited": "Rate limit reached. Please try again later.",
+    "host_unresolvable": "Unable to resolve {0}, make sure the address is resolvable.",
+    "connection_timeout": "Connection timed out: {0}.",
+    "connect_failed": "Failed to connect to {0}."
   }
 }

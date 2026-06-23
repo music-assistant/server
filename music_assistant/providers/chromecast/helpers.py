@@ -28,7 +28,8 @@ DEFAULT_PORT = 8009
 
 @dataclass
 class ChromecastInfo:
-    """Class to hold all data about a chromecast for creating connections.
+    """
+    Class to hold all data about a chromecast for creating connections.
 
     This also has the same attributes as the mDNS fields by zeroconf.
     """
@@ -127,7 +128,12 @@ def get_multizone_info(
                     continue
                 if group["multichannel_group"] and (udn := group.get("uuid")):
                     uuid = UUID(udn.replace("-", ""))
-                    multichannel_groups.add(uuid)
+                    # new firmware drops cast_port and renames elected_leader to leader
+                    is_leader = (
+                        group.get("elected_leader") == "self" or group.get("leader") == "self"
+                    )
+                    if group.get("cast_port") or not is_leader:
+                        multichannel_groups.add(uuid)
     except urllib.error.HTTPError, urllib.error.URLError, OSError, KeyError, ValueError:
         pass
     return (dynamic_groups, multichannel_groups)
@@ -136,7 +142,8 @@ def get_multizone_info(
 def get_mac_address(
     services: set[HostServiceInfo | MDNSServiceInfo], zconf: Zeroconf, timeout: int = 10
 ) -> str | None:
-    """Get MAC address from Chromecast eureka_info API.
+    """
+    Get MAC address from Chromecast eureka_info API.
 
     :param services: Set of zeroconf service info.
     :param zconf: Zeroconf instance.

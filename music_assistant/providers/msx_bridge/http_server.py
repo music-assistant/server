@@ -66,7 +66,8 @@ def _strip_known_extension(value: str) -> str:
 
 
 def _sort_album_tracks(tracks: list[Any]) -> list[Any]:
-    """Sort album tracks deterministically.
+    """
+    Sort album tracks deterministically.
 
     MA sorts by (disc_number, track_number) but tracks with identical values
     get non-deterministic ordering between calls. Adding name as a tiebreaker
@@ -198,7 +199,8 @@ class MSXHTTPServer:
 
     @web.middleware
     async def _cors_middleware(self, request: web.Request, handler: Any) -> web.StreamResponse:
-        """Add CORS headers to all responses.
+        """
+        Add CORS headers to all responses.
 
         Wildcard CORS is intentional: this server runs on LAN (default port 8099).
         The web player (/web) and MSX plugin (/msx/plugin.html) are served from the
@@ -1110,7 +1112,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         media: Any,
         duration: int = 0,
     ) -> web.StreamResponse:
-        """Unified method to stream audio from MA to MSX via ffmpeg.
+        """
+        Unified method to stream audio from MA to MSX via ffmpeg.
 
         Supports three modes based on provider configuration:
         1. Independent (default): Each player gets its own ffmpeg stream
@@ -1200,7 +1203,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         out_format: AudioFormat,
         headers: dict[str, str],
     ) -> web.StreamResponse:
-        """Serve audio from a shared group stream.
+        """
+        Serve audio from a shared group stream.
 
         Multiple players in a group read from the same SharedGroupStream,
         which has a single ffmpeg producer.
@@ -1438,7 +1442,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         )
 
     async def _handle_ws(self, request: web.Request) -> web.WebSocketResponse:
-        """WebSocket for push playback — clients subscribe by player_id.
+        """
+        WebSocket for push playback — clients subscribe by player_id.
 
         Uses the same player_id derivation (device_id or IP) as content and
         stream endpoints so broadcast_stop reaches the correct client.
@@ -2105,7 +2110,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         return None
 
     def _get_prefix(self, request: web.Request) -> str:
-        """Build URL prefix for JSON content, using our known port.
+        """
+        Build URL prefix for JSON content, using our known port.
 
         Uses aiohttp's parsed URL host (IPv6-safe, no port) and substitutes
         self.port. Note: host is still derived from the Host header; a crafted
