@@ -189,7 +189,7 @@ class CueSheetHandler:
             raise MediaNotFoundError(msg)
 
         audio_item = await provider.resolve(audio_relative_path)
-        tags = await async_parse_tags(audio_item.absolute_path)
+        tags = await async_parse_tags(audio_item.absolute_path, audio_item.file_size)
         total_duration = tags.duration or 0.0
         if total_duration <= 0:
             msg = f"Could not determine duration for audio file of CUE sheet: {cue_item.relative_path}"
