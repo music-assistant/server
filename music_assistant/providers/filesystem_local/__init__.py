@@ -791,7 +791,12 @@ class LocalFileSystemProvider(MusicProvider):
         a string with an http(s) URL or local path that is accessible from the server.
         """
         # drop the cache-busting suffix appended by _versioned_image_path
-        file_item = await self.resolve(path.split("?cs=", 1)[0])
+        try:
+            file_item = await self.resolve(path.split("?cs=", 1)[0])
+        except FileNotFoundError as err:
+            # the referenced image file was removed from disk; surface a typed
+            # not-found so the image layer treats it as a missing image
+            raise MediaNotFoundError(f"Image not found: {path}") from err
         return file_item.absolute_path
 
     async def check_write_access(self) -> None:
