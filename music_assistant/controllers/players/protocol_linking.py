@@ -1662,6 +1662,48 @@ class ProtocolLinkingMixin:
                 return parent_output_protocol, child_protocol
         return None, None
 
+    def _parent_has_live_native_session(self, parent_player: Player) -> bool:
+        """
+        Return True when the parent currently holds a live native playback session.
+
+        The active output protocol lingers for a few seconds after stop, so a non-idle
+        playback state is required to distinguish a real session from a just-stopped one.
+        """
+        return parent_player.active_output_protocol == "native" and (
+            parent_player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+        )
+
+    def _order_members_for_native_join(
+        self,
+        player_ids: list[str],
+        parent_player: Player,
+        parent_supports_native_grouping: bool,
+    ) -> list[str]:
+        """
+        Order members so a live native session can be joined without splitting the group.
+
+        When the parent already holds a live native session, children that cannot group
+        natively are evaluated first: they may force a shared protocol for the whole group,
+        and processing them before the native-capable children lets those join that same
+        protocol instead of being stranded in a separate native sub-group. The order is left
+        untouched when the parent is not playing natively, so fresh-group selection is unchanged.
+
+        :param player_ids: The member IDs to be added, in their original order.
+        :param parent_player: The parent player being joined.
+        :param parent_supports_native_grouping: Whether the parent can group natively.
+        """
+        if not self._parent_has_live_native_session(parent_player):
+            return player_ids
+        return sorted(
+            player_ids,
+            key=lambda pid: bool(
+                (child := self.get_player(pid))
+                and self._can_use_native_grouping(
+                    child, parent_player, parent_supports_native_grouping
+                )
+            ),
+        )
+
     def _try_join_active_native_session(
         self,
         child_player: Player,
@@ -1686,10 +1728,7 @@ class ProtocolLinkingMixin:
         :param native_members: The native members list to append to when the child joins.
         """
         if not (
-            parent_player.active_output_protocol == "native"
-            # the active protocol lingers for a few seconds after stop, so confirm the
-            # parent actually holds a live session before adopting its native grouping
-            and parent_player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+            self._parent_has_live_native_session(parent_player)
             and not parent_protocol_domain
             and self._can_use_native_grouping(
                 child_player, parent_player, parent_supports_native_grouping
@@ -1730,6 +1769,9 @@ class ProtocolLinkingMixin:
         native_members: list[str] = []
         parent_supports_native_grouping = (
             PlayerFeature.SET_MEMBERS in parent_player.supported_features
+        )
+        player_ids = self._order_members_for_native_join(
+            player_ids, parent_player, parent_supports_native_grouping
         )
 
         self.logger.log(

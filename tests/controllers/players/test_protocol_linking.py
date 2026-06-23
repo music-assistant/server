@@ -1991,22 +1991,28 @@ class TestJoinActiveNativeSession:
         assert native_members == []
         assert protocol_domain == "airplay"
 
-    def test_native_active_parent_keeps_mixed_batch_cohesive(self, mock_mass: MagicMock) -> None:
+    @pytest.mark.parametrize(
+        "member_order",
+        [["wiim_c", "sonos_b"], ["sonos_b", "wiim_c"]],
+    )
+    def test_native_active_parent_keeps_mixed_batch_cohesive(
+        self, mock_mass: MagicMock, member_order: list[str]
+    ) -> None:
         """
-        Once a protocol is forced for the group, a later native-capable child joins it too.
+        A mixed batch stays cohesive on one protocol regardless of member order.
 
-        When an AirPlay-only child forces the group onto AirPlay, a subsequent natively-groupable
-        child adopts that same protocol rather than splitting off into a native sub-group.
+        When an AirPlay-only child forces the group onto AirPlay, the natively-groupable Sonos
+        child adopts that same protocol rather than splitting off into a native sub-group -
+        whether it is added before or after the AirPlay-only child.
         """
         controller, players = self._build_topology(mock_mass)
         self._add_airplay_only_child(controller, players, mock_mass)
         self._mark_native_playing(players["sonos_a"])
 
-        # AirPlay-only child first (forces AirPlay), then the natively-groupable Sonos child.
         protocol_members, native_members, _, protocol_domain = (
             controller._translate_members_for_protocols(
                 parent_player=players["sonos_a"],
-                player_ids=["wiim_c", "sonos_b"],
+                player_ids=member_order,
                 parent_protocol_player=None,
                 parent_protocol_domain=None,
             )
