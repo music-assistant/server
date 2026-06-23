@@ -28,12 +28,9 @@ PACKAGE_ROOT = REPO_ROOT / "music_assistant"
 BASELINE_PATH = REPO_ROOT / "scripts" / "lint_baselines" / "naive_datetime_usage.txt"
 
 # The helper module itself is the one legitimate place to call datetime.now()/utcnow().
-# spotify_connect/events.py is a standalone librespot ``--onevent`` subprocess script that must not
-# import the music_assistant package, so it cannot use the helpers and stays on the stdlib.
 EXCLUDED_FILES = frozenset(
     {
         PACKAGE_ROOT / "helpers" / "datetime.py",
-        PACKAGE_ROOT / "providers" / "spotify_connect" / "events.py",
     }
 )
 

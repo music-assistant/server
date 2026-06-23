@@ -54,7 +54,7 @@ from music_assistant_models.enums import (
     ProviderType,
     RepeatMode,
 )
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFailed
 from music_assistant_models.media_items import Album, Artist, is_track
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
@@ -184,6 +184,60 @@ class SendspinBasePlayer(Player):
         self._refresh_client_info(sendspin_client, hello_payload=initial_hello)
         self._subscribe_client_callbacks()
 
+    def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
+        """Event callback registered to the sendspin client."""
+        match event:
+            case ClientGroupChangedEvent(new_group=new_group):
+                if self.unsub_group_event_cb is not None:
+                    self.unsub_group_event_cb()
+                self.unsub_group_event_cb = new_group.add_event_listener(self.group_event_cb)
+                self._on_group_changed(new_group)
+                self.update_state()
+
+    def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
+        """Event callback registered to the sendspin group this player belongs to."""
+        if self.synced_to is not None:
+            # Only handle group events as the leader, except for:
+            # - GroupMemberRemovedEvent: to handle being removed from a group
+            # - GroupStateChangedEvent: to update playback state when leader stops/disconnects
+            if not isinstance(event, (GroupMemberRemovedEvent, GroupStateChangedEvent)):
+                return
+        match event:
+            case GroupStateChangedEvent(state=state):
+                match state:
+                    case PlaybackStateType.PLAYING:
+                        self._attr_playback_state = PlaybackState.PLAYING
+                    case PlaybackStateType.PAUSED:
+                        self._attr_playback_state = PlaybackState.PAUSED
+                    case PlaybackStateType.STOPPED:
+                        self._attr_playback_state = PlaybackState.IDLE
+                        self._attr_elapsed_time = 0
+                        self._attr_elapsed_time_last_updated = time.time()
+                        self._on_group_stopped()
+                self.update_state()
+            case GroupMemberAddedEvent(client_id=client_id):
+                is_group_leader = (
+                    bool(group.clients) and group.clients[0].client_id == self.player_id
+                )
+                if is_group_leader and (
+                    not self._attr_group_members or self._attr_group_members[0] != self.player_id
+                ):
+                    self._attr_group_members = [self.player_id, *self._attr_group_members]
+                if client_id not in self._attr_group_members:
+                    self._attr_group_members.append(client_id)
+                    self.update_state()
+                self._schedule_membership_sync(group)
+            case GroupMemberRemovedEvent(client_id=client_id):
+                self.mass.create_task(self._handle_group_member_removed(group, client_id))
+                self._schedule_membership_sync(group)
+            case GroupDeletedEvent():
+                pass
+
+    async def on_unload(self) -> None:
+        """Handle logic when the player is unloaded from the Player controller."""
+        await super().on_unload()
+        self._unsubscribe_client_callbacks()
+
     def _subscribe_client_callbacks(self) -> None:
         """Subscribe to client and group events for the currently bound client."""
         self.api.disconnect_behaviour = DisconnectBehaviour.UNGROUP
@@ -282,16 +336,6 @@ class SendspinBasePlayer(Player):
                 return role
         return None
 
-    def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
-        """Event callback registered to the sendspin client."""
-        match event:
-            case ClientGroupChangedEvent(new_group=new_group):
-                if self.unsub_group_event_cb is not None:
-                    self.unsub_group_event_cb()
-                self.unsub_group_event_cb = new_group.add_event_listener(self.group_event_cb)
-                self._on_group_changed(new_group)
-                self.update_state()
-
     def _on_group_changed(self, new_group: SendspinGroup) -> None:
         """
         Handle group change logic.
@@ -315,45 +359,6 @@ class SendspinBasePlayer(Player):
         # GroupMemberAddedEvent or GroupMemberRemovedEvent will be fired before this
         # so group members are already up to date at this point
         self._schedule_membership_sync(new_group)
-
-    def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
-        """Event callback registered to the sendspin group this player belongs to."""
-        if self.synced_to is not None:
-            # Only handle group events as the leader, except for:
-            # - GroupMemberRemovedEvent: to handle being removed from a group
-            # - GroupStateChangedEvent: to update playback state when leader stops/disconnects
-            if not isinstance(event, (GroupMemberRemovedEvent, GroupStateChangedEvent)):
-                return
-        match event:
-            case GroupStateChangedEvent(state=state):
-                match state:
-                    case PlaybackStateType.PLAYING:
-                        self._attr_playback_state = PlaybackState.PLAYING
-                    case PlaybackStateType.PAUSED:
-                        self._attr_playback_state = PlaybackState.PAUSED
-                    case PlaybackStateType.STOPPED:
-                        self._attr_playback_state = PlaybackState.IDLE
-                        self._attr_elapsed_time = 0
-                        self._attr_elapsed_time_last_updated = time.time()
-                        self._on_group_stopped()
-                self.update_state()
-            case GroupMemberAddedEvent(client_id=client_id):
-                is_group_leader = (
-                    bool(group.clients) and group.clients[0].client_id == self.player_id
-                )
-                if is_group_leader and (
-                    not self._attr_group_members or self._attr_group_members[0] != self.player_id
-                ):
-                    self._attr_group_members = [self.player_id, *self._attr_group_members]
-                if client_id not in self._attr_group_members:
-                    self._attr_group_members.append(client_id)
-                    self.update_state()
-                self._schedule_membership_sync(group)
-            case GroupMemberRemovedEvent(client_id=client_id):
-                self.mass.create_task(self._handle_group_member_removed(group, client_id))
-                self._schedule_membership_sync(group)
-            case GroupDeletedEvent():
-                pass
 
     def _on_group_stopped(self) -> None:
         """Handle the group transitioning to STOPPED state."""
@@ -408,11 +413,6 @@ class SendspinBasePlayer(Player):
             # Someone else left our group
             self._attr_group_members.remove(client_id)
             self.update_state()
-
-    async def on_unload(self) -> None:
-        """Handle logic when the player is unloaded from the Player controller."""
-        await super().on_unload()
-        self._unsubscribe_client_callbacks()
 
 
 class SendspinPlayer(SendspinBasePlayer):
@@ -859,7 +859,13 @@ class SendspinPlayer(SendspinBasePlayer):
             if artwork_url is not None:
                 # Fetch from the resolved URL so the bytes match artwork_url, even when
                 # radio now-playing art differs from the queue item's own image.
-                image_data = await self.mass.metadata.get_thumbnail(artwork_url, provider="builtin")
+                try:
+                    image_data = await self.mass.metadata.get_thumbnail(
+                        artwork_url, provider="builtin"
+                    )
+                except MediaNotFoundError:
+                    # artwork file was removed from disk; skip rather than crash the send
+                    image_data = None
                 if isinstance(image_data, bytes):
                     # decode through the guard so undecodable art (e.g. SVG) is skipped, not crashed
                     image = await self._decode_artwork(image_data)
@@ -893,9 +899,13 @@ class SendspinPlayer(SendspinBasePlayer):
             if artist_artwork_url is not None:
                 # Fetch bytes from the already-resolved URL to avoid the secondary
                 # provider lookup that get_image_data_for_item triggers for ItemMappings.
-                artist_image_data = await self.mass.metadata.get_thumbnail(
-                    artist_artwork_url, provider="builtin"
-                )
+                try:
+                    artist_image_data = await self.mass.metadata.get_thumbnail(
+                        artist_artwork_url, provider="builtin"
+                    )
+                except MediaNotFoundError:
+                    # artwork file was removed from disk; skip rather than crash the send
+                    artist_image_data = None
                 if isinstance(artist_image_data, bytes):
                     artist_image = await self._decode_artwork(artist_image_data)
                     if (

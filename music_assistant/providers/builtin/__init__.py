@@ -445,27 +445,6 @@ class BuiltinProvider(MusicProvider):
                 break
         self.mass.config.set(key, stored_items)
 
-    @staticmethod
-    def _get_playlist_image_url(playlist: Playlist) -> str | None:
-        """Return the playlist-level image URL to persist in the M3U header."""
-        return playlist.image.path if playlist.image else None
-
-    async def _update_playlist_metadata(
-        self, playlist_id: str, new_name: str, image_url: str | None
-    ) -> None:
-        """Update the name and image of a playlist in its M3U file."""
-        if playlist_id in BUILTIN_PLAYLISTS:
-            # builtin playlists are not editable
-            return
-        m3u_data = await self._read_m3u_file(playlist_id)
-        if not m3u_data:
-            return
-        existing_items = parse_m3u(m3u_data)
-        try:
-            await self._write_m3u_file(playlist_id, new_name, list(existing_items), image_url)
-        except OSError as err:
-            self.logger.warning("Failed to update playlist metadata: %s", err)
-
     async def add_radio(self, url: str, name: str, image_url: str | None = None) -> Radio:
         """
         Add a radio station.
@@ -747,6 +726,124 @@ class BuiltinProvider(MusicProvider):
         )
         update_current_task_progress_from_index(total, total, "Matching complete")
 
+    async def parse_item(
+        self,
+        url: str,
+        force_refresh: bool = False,
+        force_radio: bool = False,
+    ) -> Track | Radio:
+        """Parse plain URL to MediaItem of type Radio or Track."""
+        media_info = await self._get_media_info(url, force_refresh)
+        is_radio = media_info.get("icyname") or not media_info.duration
+        provider_mappings = {
+            ProviderMapping(
+                item_id=url,
+                provider_domain=self.domain,
+                provider_instance=self.instance_id,
+                audio_format=AudioFormat(
+                    content_type=ContentType.try_parse(media_info.format),
+                    sample_rate=media_info.sample_rate,
+                    bit_depth=media_info.bits_per_sample,
+                    bit_rate=media_info.bit_rate,
+                ),
+            )
+        }
+        media_item: Track | Radio
+        if is_radio or force_radio:
+            # treat as radio
+            media_item = Radio(
+                item_id=url,
+                provider=self.domain,
+                name=media_info.get("icyname")
+                or media_info.get("programtitle")
+                or media_info.title
+                or url,
+                provider_mappings=provider_mappings,
+            )
+        else:
+            media_item = Track(
+                item_id=url,
+                provider=self.domain,
+                name=media_info.title or url,
+                duration=int(media_info.duration or 0),
+                artists=UniqueList(
+                    [await self.get_artist(artist) for artist in media_info.artists]
+                ),
+                provider_mappings=provider_mappings,
+            )
+
+        if media_info.has_cover_image:
+            media_item.metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=url,
+                        provider=self.domain,
+                        remotely_accessible=False,
+                    )
+                ]
+            )
+        return media_item
+
+    async def resolve_image(self, path: str) -> str | bytes:
+        """
+        Resolve an image from an image path.
+
+        This either returns (a generator to get) raw bytes of the image or
+        a string with an http(s) URL or local path that is accessible from the server.
+        """
+        if path == "logo.png":
+            return MASS_LOGO
+        if path in ("fanart.jpg", "fallback_fanart.jpeg"):
+            return VARIOUS_ARTISTS_FANART
+        if path.startswith(f"{GENRE_ICONS_DIR_NAME}/"):
+            icon_name = path[len(GENRE_ICONS_DIR_NAME) + 1 :]
+            if not is_safe_name(icon_name):
+                raise FileNotFoundError(f"Invalid genre icon reference: {path}")
+            return str(RESOURCES_DIR.joinpath(GENRE_ICONS_DIR_NAME, icon_name))
+        return path
+
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+        """Get streamdetails for a track/radio."""
+        media_info = await self._get_media_info(item_id)
+        is_radio = media_info.get("icy-name") or not media_info.duration
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=item_id,
+            audio_format=AudioFormat(
+                content_type=ContentType.try_parse(media_info.format),
+                sample_rate=media_info.sample_rate,
+                bit_depth=media_info.bits_per_sample,
+                channels=media_info.channels,
+            ),
+            media_type=MediaType.RADIO if is_radio else MediaType.TRACK,
+            stream_type=StreamType.HTTP,
+            path=item_id,
+            can_seek=not is_radio,
+            allow_seek=not is_radio,
+        )
+
+    @staticmethod
+    def _get_playlist_image_url(playlist: Playlist) -> str | None:
+        """Return the playlist-level image URL to persist in the M3U header."""
+        return playlist.image.path if playlist.image else None
+
+    async def _update_playlist_metadata(
+        self, playlist_id: str, new_name: str, image_url: str | None
+    ) -> None:
+        """Update the name and image of a playlist in its M3U file."""
+        if playlist_id in BUILTIN_PLAYLISTS:
+            # builtin playlists are not editable
+            return
+        m3u_data = await self._read_m3u_file(playlist_id)
+        if not m3u_data:
+            return
+        existing_items = parse_m3u(m3u_data)
+        try:
+            await self._write_m3u_file(playlist_id, new_name, list(existing_items), image_url)
+        except OSError as err:
+            self.logger.warning("Failed to update playlist metadata: %s", err)
+
     async def _match_track_by_metadata(
         self,
         item: PlaylistItem,
@@ -934,83 +1031,6 @@ class BuiltinProvider(MusicProvider):
             return 1
         return 0
 
-    async def parse_item(
-        self,
-        url: str,
-        force_refresh: bool = False,
-        force_radio: bool = False,
-    ) -> Track | Radio:
-        """Parse plain URL to MediaItem of type Radio or Track."""
-        media_info = await self._get_media_info(url, force_refresh)
-        is_radio = media_info.get("icyname") or not media_info.duration
-        provider_mappings = {
-            ProviderMapping(
-                item_id=url,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                audio_format=AudioFormat(
-                    content_type=ContentType.try_parse(media_info.format),
-                    sample_rate=media_info.sample_rate,
-                    bit_depth=media_info.bits_per_sample,
-                    bit_rate=media_info.bit_rate,
-                ),
-            )
-        }
-        media_item: Track | Radio
-        if is_radio or force_radio:
-            # treat as radio
-            media_item = Radio(
-                item_id=url,
-                provider=self.domain,
-                name=media_info.get("icyname")
-                or media_info.get("programtitle")
-                or media_info.title
-                or url,
-                provider_mappings=provider_mappings,
-            )
-        else:
-            media_item = Track(
-                item_id=url,
-                provider=self.domain,
-                name=media_info.title or url,
-                duration=int(media_info.duration or 0),
-                artists=UniqueList(
-                    [await self.get_artist(artist) for artist in media_info.artists]
-                ),
-                provider_mappings=provider_mappings,
-            )
-
-        if media_info.has_cover_image:
-            media_item.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=url,
-                        provider=self.domain,
-                        remotely_accessible=False,
-                    )
-                ]
-            )
-        return media_item
-
-    async def resolve_image(self, path: str) -> str | bytes:
-        """
-        Resolve an image from an image path.
-
-        This either returns (a generator to get) raw bytes of the image or
-        a string with an http(s) URL or local path that is accessible from the server.
-        """
-        if path == "logo.png":
-            return MASS_LOGO
-        if path in ("fanart.jpg", "fallback_fanart.jpeg"):
-            return VARIOUS_ARTISTS_FANART
-        if path.startswith(f"{GENRE_ICONS_DIR_NAME}/"):
-            icon_name = path[len(GENRE_ICONS_DIR_NAME) + 1 :]
-            if not is_safe_name(icon_name):
-                raise FileNotFoundError(f"Invalid genre icon reference: {path}")
-            return str(RESOURCES_DIR.joinpath(GENRE_ICONS_DIR_NAME, icon_name))
-        return path
-
     async def _resolve_url(self, url: str) -> str:
         """
         Resolve a URL to the actual stream URL.
@@ -1054,26 +1074,6 @@ class BuiltinProvider(MusicProvider):
             url, media_info.raw, provider=self.instance_id, category=CACHE_CATEGORY_MEDIA_INFO
         )
         return media_info
-
-    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Get streamdetails for a track/radio."""
-        media_info = await self._get_media_info(item_id)
-        is_radio = media_info.get("icy-name") or not media_info.duration
-        return StreamDetails(
-            provider=self.instance_id,
-            item_id=item_id,
-            audio_format=AudioFormat(
-                content_type=ContentType.try_parse(media_info.format),
-                sample_rate=media_info.sample_rate,
-                bit_depth=media_info.bits_per_sample,
-                channels=media_info.channels,
-            ),
-            media_type=MediaType.RADIO if is_radio else MediaType.TRACK,
-            stream_type=StreamType.HTTP,
-            path=item_id,
-            can_seek=not is_radio,
-            allow_seek=not is_radio,
-        )
 
     @use_cache(expiration=120, category=CACHE_CATEGORY_PLAYLISTS)
     async def _get_builtin_playlist_random_favorite_tracks(self) -> list[Track]:

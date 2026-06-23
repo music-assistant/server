@@ -9,7 +9,7 @@ import time
 from collections.abc import AsyncGenerator, Callable
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 from music_assistant_models.enums import (
     ContentType,
@@ -1718,7 +1718,7 @@ class YandexYnisonProvider(PluginProvider):
     # Currently only RADIO (personal wave, genre stations).
     # Add "WAVE" here if/when Yandex supports it via the same
     # rotor_station_tracks API.
-    _RADIO_ENTITY_TYPES = {"RADIO"}
+    _RADIO_ENTITY_TYPES: ClassVar[set[str]] = {"RADIO"}
 
     def _maybe_prefetch(
         self,

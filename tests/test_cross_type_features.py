@@ -252,7 +252,7 @@ async def test_plugin_search_default_stub_contract() -> None:
     """PluginProvider.search returns empty unless SEARCH is declared, then raises NotImplementedError."""
 
     class _StubPlugin(PluginProvider):
-        _features: set[ProviderFeature] = set()
+        _features: set[ProviderFeature]
 
         @property
         def supported_features(self) -> set[ProviderFeature]:

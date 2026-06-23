@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from aiohttp import ClientError
 from music_assistant_models.errors import (
@@ -36,7 +36,7 @@ class LastFMAPIClient:
 
     # Map known Last.fm API error codes to MA exceptions. Unmapped codes raise
     # InvalidDataError which callers treat as a recoverable empty response.
-    _ERROR_MAP: dict[int, type[MusicAssistantError]] = {
+    _ERROR_MAP: ClassVar[dict[int, type[MusicAssistantError]]] = {
         4: AuthenticationFailed,
         10: InvalidToken,
         26: InvalidToken,

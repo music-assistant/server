@@ -376,6 +376,145 @@ class HomeAssistantProvider(PluginProvider):
             self._listen_task.cancel()
         await self.hass.disconnect()
 
+    async def get_device_by_connection(
+        self,
+        connection_value: str,
+        connection_type: str = "mac",
+    ) -> Device | None:
+        """
+        Get device details from Home Assistant by connection type and value.
+
+        :param connection_value: The connection value (e.g. MAC address).
+        :param connection_type: The connection type (default: 'mac').
+        """
+        devices = await self.hass.get_device_registry()
+        for device in devices:
+            for connection in device.get("connections", []):
+                if (
+                    len(connection) == 2
+                    and connection[0] == connection_type
+                    and connection[1].lower() == connection_value.lower()
+                ):
+                    return device
+        return None
+
+    async def get_user_details(self, ha_user_id: str) -> tuple[str | None, str | None, str | None]:
+        """
+        Get user username, display name and avatar URL from Home Assistant.
+
+        Looks up the user in config/auth/list for username, and the person entity
+        for display name and picture URL.
+
+        :param ha_user_id: Home Assistant user ID.
+        :return: Tuple of (username, display_name, avatar_url) or all None if not found.
+        """
+        try:
+            username: str | None = None
+            display_name: str | None = None
+            avatar_url: str | None = None
+
+            # Get username from config/auth/list (admin endpoint, we have admin access)
+            try:
+                users = await self.hass.send_command("config/auth/list")
+                for user in users or []:
+                    if user.get("id") == ha_user_id:
+                        username = user.get("username")
+                        # Also get name as fallback display name
+                        if not display_name:
+                            display_name = user.get("name")
+                        break
+            except Exception as err:
+                self.logger.log(VERBOSE_LOG_LEVEL, "Failed to get HA user list: %s", err)
+
+            # Get external URL for building avatar URL
+            ha_url: str | None = None
+            try:
+                network_urls = await self.hass.send_command("network/url")
+                if network_urls:
+                    ha_url = network_urls.get("external") or network_urls.get("internal")
+            except Exception as err:
+                self.logger.log(VERBOSE_LOG_LEVEL, "Failed to get HA network URLs: %s", err)
+
+            # Find person linked to this HA user ID for display name and avatar
+            try:
+                persons = await self.hass.send_command("person/list")
+                # person/list returns {storage: [...], config: [...]}
+                all_persons = (persons.get("storage") or []) + (persons.get("config") or [])
+                for person in all_persons:
+                    if person.get("user_id") == ha_user_id:
+                        # Person name takes priority for display name
+                        if person_name := person.get("name"):
+                            display_name = person_name
+                        if (person_picture := person.get("picture")) and ha_url:
+                            avatar_url = f"{ha_url.rstrip('/')}{person_picture}"
+                        break
+            except Exception as err:
+                self.logger.log(VERBOSE_LOG_LEVEL, "Failed to get HA person details: %s", err)
+
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "get_user_details for %s: username=%s, display_name=%s, avatar_url=%s",
+                ha_user_id,
+                username,
+                display_name,
+                avatar_url,
+            )
+            return username, display_name, avatar_url
+        except Exception as err:
+            self.logger.warning("Failed to get HA user details: %s", err)
+            return None, None, None
+
+    async def resolve_image(self, path: str) -> bytes:
+        """Resolve an image from an image path."""
+        ha_url, headers, http_session = self._get_ha_http()
+        async with http_session.get(f"{ha_url}{path}", headers=headers) as response:
+            response.raise_for_status()
+            return await response.read()
+
+    async def ai_query(self, query: str) -> str:
+        """Handle an AI query via Home Assistant's ai_task service."""
+        entity_id = self.config.get_value(CONF_AI_TASK_ENTITY)
+        result = await self.hass.send_command(
+            "call_service",
+            domain="ai_task",
+            service="generate_data",
+            service_data={
+                "task_name": "music_assistant",
+                "instructions": query,
+                "entity_id": str(entity_id),
+            },
+            return_response=True,
+        )
+        response = result.get("response", {}) if isinstance(result, dict) else {}
+        data = response.get("data") if isinstance(response, dict) else None
+        if not data:
+            msg = f"AI Task returned no data in response: {result}"
+            raise MusicAssistantError(msg)
+        return str(data)
+
+    async def get_tts_message(self, message: str, language: str | None = None) -> StreamDetails:
+        """Handle text-to-speech via Home Assistant's REST API."""
+        if (entity_id := self.config.get_value(CONF_TTS_ENTITY)) is None:
+            raise UnsupportedFeaturedException("TTS entity is not configured")
+        ha_url, headers, http_session = self._get_ha_http()
+        payload: dict[str, str] = {"engine_id": str(entity_id), "message": message}
+        if language:
+            payload["language"] = language
+        async with http_session.post(
+            f"{ha_url}/api/tts_get_url", headers=headers, json=payload
+        ) as response:
+            response.raise_for_status()
+            data = await response.json()
+        url = str(data["url"])
+        return StreamDetails(
+            provider=self.instance_id,
+            item_id=url,
+            audio_format=AudioFormat(content_type=ContentType.MP3),
+            media_type=MediaType.SOUND_EFFECT,
+            stream_type=StreamType.HTTP,
+            path=url,
+        )
+
     async def _hass_listener(self) -> None:
         """Start listening on the HA websockets."""
         try:
@@ -512,28 +651,6 @@ class HomeAssistantProvider(PluginProvider):
             service_data={"value": volume_level},
         )
 
-    async def get_device_by_connection(
-        self,
-        connection_value: str,
-        connection_type: str = "mac",
-    ) -> Device | None:
-        """
-        Get device details from Home Assistant by connection type and value.
-
-        :param connection_value: The connection value (e.g. MAC address).
-        :param connection_type: The connection type (default: 'mac').
-        """
-        devices = await self.hass.get_device_registry()
-        for device in devices:
-            for connection in device.get("connections", []):
-                if (
-                    len(connection) == 2
-                    and connection[0] == connection_type
-                    and connection[1].lower() == connection_value.lower()
-                ):
-                    return device
-        return None
-
     def _update_control_from_state_msg(self, entity_id: str, state: CompressedState) -> None:
         """Update PlayerControl from state(update) message."""
         if self._player_controls is None:
@@ -555,123 +672,6 @@ class HomeAssistantProvider(PluginProvider):
             if player_control.supports_mute and "is_volume_muted" in attributes:
                 player_control.volume_muted = attributes.get("is_volume_muted")
         self.mass.players.update_player_control(entity_id)
-
-    async def get_user_details(self, ha_user_id: str) -> tuple[str | None, str | None, str | None]:
-        """
-        Get user username, display name and avatar URL from Home Assistant.
-
-        Looks up the user in config/auth/list for username, and the person entity
-        for display name and picture URL.
-
-        :param ha_user_id: Home Assistant user ID.
-        :return: Tuple of (username, display_name, avatar_url) or all None if not found.
-        """
-        try:
-            username: str | None = None
-            display_name: str | None = None
-            avatar_url: str | None = None
-
-            # Get username from config/auth/list (admin endpoint, we have admin access)
-            try:
-                users = await self.hass.send_command("config/auth/list")
-                for user in users or []:
-                    if user.get("id") == ha_user_id:
-                        username = user.get("username")
-                        # Also get name as fallback display name
-                        if not display_name:
-                            display_name = user.get("name")
-                        break
-            except Exception as err:
-                self.logger.log(VERBOSE_LOG_LEVEL, "Failed to get HA user list: %s", err)
-
-            # Get external URL for building avatar URL
-            ha_url: str | None = None
-            try:
-                network_urls = await self.hass.send_command("network/url")
-                if network_urls:
-                    ha_url = network_urls.get("external") or network_urls.get("internal")
-            except Exception as err:
-                self.logger.log(VERBOSE_LOG_LEVEL, "Failed to get HA network URLs: %s", err)
-
-            # Find person linked to this HA user ID for display name and avatar
-            try:
-                persons = await self.hass.send_command("person/list")
-                # person/list returns {storage: [...], config: [...]}
-                all_persons = (persons.get("storage") or []) + (persons.get("config") or [])
-                for person in all_persons:
-                    if person.get("user_id") == ha_user_id:
-                        # Person name takes priority for display name
-                        if person_name := person.get("name"):
-                            display_name = person_name
-                        if (person_picture := person.get("picture")) and ha_url:
-                            avatar_url = f"{ha_url.rstrip('/')}{person_picture}"
-                        break
-            except Exception as err:
-                self.logger.log(VERBOSE_LOG_LEVEL, "Failed to get HA person details: %s", err)
-
-            self.logger.log(
-                VERBOSE_LOG_LEVEL,
-                "get_user_details for %s: username=%s, display_name=%s, avatar_url=%s",
-                ha_user_id,
-                username,
-                display_name,
-                avatar_url,
-            )
-            return username, display_name, avatar_url
-        except Exception as err:
-            self.logger.warning("Failed to get HA user details: %s", err)
-            return None, None, None
-
-    async def resolve_image(self, path: str) -> bytes:
-        """Resolve an image from an image path."""
-        ha_url, headers, http_session = self._get_ha_http()
-        async with http_session.get(f"{ha_url}{path}", headers=headers) as response:
-            response.raise_for_status()
-            return await response.read()
-
-    async def ai_query(self, query: str) -> str:
-        """Handle an AI query via Home Assistant's ai_task service."""
-        entity_id = self.config.get_value(CONF_AI_TASK_ENTITY)
-        result = await self.hass.send_command(
-            "call_service",
-            domain="ai_task",
-            service="generate_data",
-            service_data={
-                "task_name": "music_assistant",
-                "instructions": query,
-                "entity_id": str(entity_id),
-            },
-            return_response=True,
-        )
-        response = result.get("response", {}) if isinstance(result, dict) else {}
-        data = response.get("data") if isinstance(response, dict) else None
-        if not data:
-            msg = f"AI Task returned no data in response: {result}"
-            raise MusicAssistantError(msg)
-        return str(data)
-
-    async def get_tts_message(self, message: str, language: str | None = None) -> StreamDetails:
-        """Handle text-to-speech via Home Assistant's REST API."""
-        if (entity_id := self.config.get_value(CONF_TTS_ENTITY)) is None:
-            raise UnsupportedFeaturedException("TTS entity is not configured")
-        ha_url, headers, http_session = self._get_ha_http()
-        payload: dict[str, str] = {"engine_id": str(entity_id), "message": message}
-        if language:
-            payload["language"] = language
-        async with http_session.post(
-            f"{ha_url}/api/tts_get_url", headers=headers, json=payload
-        ) as response:
-            response.raise_for_status()
-            data = await response.json()
-        url = str(data["url"])
-        return StreamDetails(
-            provider=self.instance_id,
-            item_id=url,
-            audio_format=AudioFormat(content_type=ContentType.MP3),
-            media_type=MediaType.SOUND_EFFECT,
-            stream_type=StreamType.HTTP,
-            path=url,
-        )
 
     def _get_ha_http(self) -> tuple[str, dict[str, str], ClientSession]:
         """Return HA base URL (without trailing /api), auth headers, and the HTTP session."""

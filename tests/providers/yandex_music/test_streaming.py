@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest.mock
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
 import pytest
 from aiohttp import ClientPayloadError, ServerDisconnectedError
@@ -452,7 +452,7 @@ class _MockResponse:
         if self._error is not None:
             raise self._error
 
-    async def __aenter__(self) -> _MockResponse:
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *args: object) -> None:

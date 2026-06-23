@@ -207,28 +207,6 @@ class AirPlayReceiverProvider(PluginProvider):
         # Always start the daemon - we always have a default player configured
         self._setup_shairport_daemon()
 
-    async def _stop_shairport_daemon(self) -> None:
-        """
-        Stop the shairport-sync daemon without unloading the provider.
-
-        This allows the provider to restart shairport-sync later when needed.
-        """
-        # Stop metadata reader
-        if self._metadata_reader:
-            await self._metadata_reader.stop()
-            self._metadata_reader = None
-
-        # Stop shairport-sync process
-        if self._runner_task and not self._runner_task.done():
-            self._runner_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._runner_task
-            self._runner_task = None
-
-        # Reset the shairport process reference
-        self._shairport_proc = None
-        self._shairport_started.clear()
-
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
         self._stop_called = True
@@ -292,51 +270,6 @@ class AirPlayReceiverProvider(PluginProvider):
     def active_player_id(self) -> str | None:
         """Return the currently active player ID for this plugin."""
         return self._active_player_id
-
-    def _get_target_player_id(self) -> str | None:
-        """
-        Determine the target player ID for playback.
-
-        Returns the player ID to use based on the following priority:
-        1. If a player was explicitly selected (source selected on a player), use that
-        2. If default is 'auto': prefer playing player, then first available
-        3. If a specific default player is configured, use that
-
-        :return: The player ID to use for playback, or None if no player available.
-        """
-        # If there's an active player (source was selected on a player), use it
-        if self._active_player_id:
-            # Validate that the active player still exists
-            if self.mass.players.get_player(self._active_player_id):
-                return self._active_player_id
-            # Active player no longer exists, clear it
-            self._active_player_id = None
-
-        # Handle auto selection
-        if self._default_player_id == PLAYER_ID_AUTO:
-            all_players = list(self.mass.players.all_players(False, False))
-            # First, try to find a playing player
-            for player in all_players:
-                if player.state.playback_state == PlaybackState.PLAYING:
-                    self.logger.debug("Auto-selecting playing player: %s", player.display_name)
-                    return player.player_id
-            # Fallback to first available player
-            if all_players:
-                first_player = all_players[0]
-                self.logger.debug(
-                    "Auto-selecting first available player: %s", first_player.display_name
-                )
-                return first_player.player_id
-            # No player available
-            return None
-
-        # Use the specific default player if configured and it still exists
-        if self.mass.players.get_player(self._default_player_id):
-            return self._default_player_id
-        self.logger.warning(
-            "Configured default player '%s' no longer exists", self._default_player_id
-        )
-        return None
 
     async def on_source_selected(
         self,
@@ -404,6 +337,92 @@ class AirPlayReceiverProvider(PluginProvider):
         self._active_session_id = None
         if self._in_use_by_queue == queue_id:
             self._in_use_by_queue = None
+
+    async def resolve_image(self, path: str) -> bytes:
+        """
+        Resolve an image from an image path.
+
+        This returns raw bytes of the cover art image received from AirPlay metadata.
+
+        :param path: The image path including the current cover art content hash suffix.
+        """
+        if not (self._metadata_reader and self._metadata_reader.cover_art_bytes):
+            return b""
+        current_hash = hashlib.md5(
+            self._metadata_reader.cover_art_bytes, usedforsecurity=False
+        ).hexdigest()[:8]
+        # Only serve when the suffix matches the current artwork's hash, so a
+        # stale request can't cache new bytes under an old hash key.
+        if path == f"cover_art_{current_hash}":
+            return self._metadata_reader.cover_art_bytes
+        return b""
+
+    async def _stop_shairport_daemon(self) -> None:
+        """
+        Stop the shairport-sync daemon without unloading the provider.
+
+        This allows the provider to restart shairport-sync later when needed.
+        """
+        # Stop metadata reader
+        if self._metadata_reader:
+            await self._metadata_reader.stop()
+            self._metadata_reader = None
+
+        # Stop shairport-sync process
+        if self._runner_task and not self._runner_task.done():
+            self._runner_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._runner_task
+            self._runner_task = None
+
+        # Reset the shairport process reference
+        self._shairport_proc = None
+        self._shairport_started.clear()
+
+    def _get_target_player_id(self) -> str | None:
+        """
+        Determine the target player ID for playback.
+
+        Returns the player ID to use based on the following priority:
+        1. If a player was explicitly selected (source selected on a player), use that
+        2. If default is 'auto': prefer playing player, then first available
+        3. If a specific default player is configured, use that
+
+        :return: The player ID to use for playback, or None if no player available.
+        """
+        # If there's an active player (source was selected on a player), use it
+        if self._active_player_id:
+            # Validate that the active player still exists
+            if self.mass.players.get_player(self._active_player_id):
+                return self._active_player_id
+            # Active player no longer exists, clear it
+            self._active_player_id = None
+
+        # Handle auto selection
+        if self._default_player_id == PLAYER_ID_AUTO:
+            all_players = list(self.mass.players.all_players(False, False))
+            # First, try to find a playing player
+            for player in all_players:
+                if player.state.playback_state == PlaybackState.PLAYING:
+                    self.logger.debug("Auto-selecting playing player: %s", player.display_name)
+                    return player.player_id
+            # Fallback to first available player
+            if all_players:
+                first_player = all_players[0]
+                self.logger.debug(
+                    "Auto-selecting first available player: %s", first_player.display_name
+                )
+                return first_player.player_id
+            # No player available
+            return None
+
+        # Use the specific default player if configured and it still exists
+        if self.mass.players.get_player(self._default_player_id):
+            return self._default_player_id
+        self.logger.warning(
+            "Configured default player '%s' no longer exists", self._default_player_id
+        )
+        return None
 
     def _clear_active_player(self) -> None:
         """
@@ -763,22 +782,3 @@ class AirPlayReceiverProvider(PluginProvider):
                     remotely_accessible=False,
                 )
                 self._stream_metadata.image_url = self.mass.metadata.get_image_url(image)
-
-    async def resolve_image(self, path: str) -> bytes:
-        """
-        Resolve an image from an image path.
-
-        This returns raw bytes of the cover art image received from AirPlay metadata.
-
-        :param path: The image path including the current cover art content hash suffix.
-        """
-        if not (self._metadata_reader and self._metadata_reader.cover_art_bytes):
-            return b""
-        current_hash = hashlib.md5(
-            self._metadata_reader.cover_art_bytes, usedforsecurity=False
-        ).hexdigest()[:8]
-        # Only serve when the suffix matches the current artwork's hash, so a
-        # stale request can't cache new bytes under an old hash key.
-        if path == f"cover_art_{current_hash}":
-            return self._metadata_reader.cover_art_bytes
-        return b""

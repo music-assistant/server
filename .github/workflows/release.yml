@@ -39,8 +39,8 @@ on:
 
 env:
   BASE_IMAGE_VERSION_STABLE: "1.5.3"
-  BASE_IMAGE_VERSION_BETA: "1.5.3"
-  BASE_IMAGE_VERSION_NIGHTLY: "1.5.3"
+  BASE_IMAGE_VERSION_BETA: "1.5.4"
+  BASE_IMAGE_VERSION_NIGHTLY: "1.5.4"
 
 permissions:
   contents: read
@@ -68,6 +68,9 @@ jobs:
   preflight-checks:
     name: Run tests and linting before release
     needs: determine-branch
+    permissions:
+      contents: read
+      pull-requests: read
     uses: ./.github/workflows/test.yml
     with:
       ref: ${{ needs.determine-branch.outputs.branch }}

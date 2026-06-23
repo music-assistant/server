@@ -11,11 +11,17 @@ from music_assistant_models.media_items import (
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.metadata import MetaDataController
+from music_assistant.providers.musicbrainz import MusicBrainzReleaseGroup
 
 
 def _artist(name: str) -> Artist | ItemMapping:
     """Build a minimal artist ItemMapping with the given name."""
     return ItemMapping(item_id=name, provider="library", name=name)
+
+
+def _release_group(title: str) -> MusicBrainzReleaseGroup:
+    """Build a minimal release group with the given title."""
+    return MusicBrainzReleaseGroup(id=title, title=title)
 
 
 def _controller() -> MetaDataController:
@@ -94,3 +100,43 @@ class TestGetThumbImage:
         """Metadata without any images yields None."""
         ctrl = _controller()
         assert ctrl._get_thumb_image(MediaItemMetadata()) is None
+
+
+class TestPrioritizeReleaseGroups:
+    """`_prioritize_release_groups` floats announced-album matches to the front."""
+
+    def test_matching_album_moves_first(self) -> None:
+        """The release group whose title matches the announced album sorts first."""
+        groups = [_release_group("Some Album"), _release_group("Greatest Hits")]
+        result = MetaDataController._prioritize_release_groups(groups, "Greatest Hits")
+        assert [rg.title for rg in result] == ["Greatest Hits", "Some Album"]
+
+    def test_announced_substring_of_title_matches(self) -> None:
+        """A shorter announced album still matches a longer release-group title."""
+        groups = [_release_group("Some Album"), _release_group("Greatest Hits Vol. 1")]
+        result = MetaDataController._prioritize_release_groups(groups, "Greatest Hits")
+        assert result[0].title == "Greatest Hits Vol. 1"
+
+    def test_title_substring_of_announced_matches(self) -> None:
+        """A shorter release-group title still matches a longer announced album."""
+        groups = [_release_group("Live in Tokyo"), _release_group("Hits")]
+        result = MetaDataController._prioritize_release_groups(groups, "Greatest Hits")
+        assert result[0].title == "Hits"
+
+    def test_no_match_preserves_order(self) -> None:
+        """Without any album match the original order is kept (stable sort)."""
+        groups = [_release_group("First"), _release_group("Second")]
+        result = MetaDataController._prioritize_release_groups(groups, "Unrelated")
+        assert [rg.title for rg in result] == ["First", "Second"]
+
+    def test_single_group_returned_unchanged(self) -> None:
+        """A list with fewer than two groups short-circuits and is returned as-is."""
+        groups = [_release_group("Only One")]
+        result = MetaDataController._prioritize_release_groups(groups, "Only One")
+        assert result is groups
+
+    def test_album_normalizing_to_empty_returns_unchanged(self) -> None:
+        """An album name that normalizes to an empty string leaves the order untouched."""
+        groups = [_release_group("First"), _release_group("Second")]
+        result = MetaDataController._prioritize_release_groups(groups, "!!!")
+        assert result is groups

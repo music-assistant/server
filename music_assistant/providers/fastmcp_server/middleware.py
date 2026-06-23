@@ -23,7 +23,7 @@ permission set therefore cannot reach a now-disabled tool.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from fastmcp.exceptions import NotFoundError, PromptError, ResourceError, ToolError
 from fastmcp.server.middleware import Middleware
@@ -138,7 +138,7 @@ class TagFilterMiddleware(Middleware):  # type: ignore[misc, unused-ignore]
 
     # Error class chosen so the SDK reports the failure under the right RPC
     # method (tools/resources/prompts) rather than always as a tool error.
-    _ERROR_BY_KIND: dict[ComponentKind, type[Exception]] = {
+    _ERROR_BY_KIND: ClassVar[dict[ComponentKind, type[Exception]]] = {
         "tool": ToolError,
         "resource": ResourceError,
         "prompt": PromptError,

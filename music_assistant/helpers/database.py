@@ -26,7 +26,7 @@ class _UnsetType:
 
     _instance: _UnsetType | None = None
 
-    def __new__(cls) -> _UnsetType:
+    def __new__(cls) -> _UnsetType:  # noqa: PYI034  # singleton sentinel always returns the one instance, not Self
         """Create singleton instance."""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
