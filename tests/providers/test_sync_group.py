@@ -547,6 +547,64 @@ class TestSetMembersDoesNotRegisterIncompatible:
         mass.players._handle_set_members.assert_not_awaited()
 
 
+class TestSetMembersRemovesExternalJoiner:
+    """Regression: a member joined to the leader outside MA must be removable."""
+
+    @pytest.mark.asyncio
+    async def test_external_joiner_removal_forwards_to_leader(self) -> None:
+        """
+        Removing an external joiner must forward straight to the sync leader.
+
+        A player grouped directly to the sync leader (e.g. via the Sonos app)
+        appears in group_members via the leader's live state but is not in the
+        group's tracked member list, so it must not be silently skipped.
+        """
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        # the leader's live native group includes an external joiner the group
+        # itself never registered
+        leader.state.group_members = ["leader", "external_x"]
+        external = _make_mock_player("external_x", provider_domain="sonos")
+
+        mass.players.get_player = _player_lookup({"leader": leader, "external_x": external})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader"]
+
+        await sgp.set_members(player_ids_to_remove=["external_x"])
+
+        # the removal must be forwarded to the sync leader
+        mass.players._handle_set_members.assert_awaited_once()
+        call = mass.players._handle_set_members.await_args
+        assert call.args[0] is leader
+        assert call.kwargs.get("player_ids_to_remove") == ["external_x"]
+        # the group's tracked member list is untouched (external was never in it)
+        assert sgp._attr_group_members == ["leader"]
+
+    @pytest.mark.asyncio
+    async def test_tracked_member_removal_uses_managed_path(self) -> None:
+        """A member the group actually manages is removed via the managed path."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+
+        leader = _make_mock_player("leader", provider_domain="sonos")
+        leader.state.group_members = ["leader", "member_b"]
+        member_b = _make_mock_player("member_b", provider_domain="sonos")
+
+        mass.players.get_player = _player_lookup({"leader": leader, "member_b": member_b})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "member_b"]
+
+        await sgp.set_members(player_ids_to_remove=["member_b"])
+
+        # tracked member is dropped from the internal list and forwarded
+        assert "member_b" not in sgp._attr_group_members
+        mass.players._handle_set_members.assert_awaited_once()
+        call = mass.players._handle_set_members.await_args
+        assert call.kwargs.get("player_ids_to_remove") == ["member_b"]
+
+
 def _make_sync_group_with_filters(
     mass: MagicMock,
     allowed_members: list[str] | None = None,
