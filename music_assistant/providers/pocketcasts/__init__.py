@@ -207,125 +207,6 @@ class PocketCastsProvider(MusicProvider):
         self._client = PocketCastsClient(self.mass.http_session, self.logger)
         await self._client.login(str(email), str(password))
 
-    def _convert_podcast(self, podcast_data: dict[str, Any]) -> Podcast:
-        """
-        Convert raw Pocket Casts podcast data to a Podcast object.
-
-        :param podcast_data: Raw podcast data from the subscribed-list or full-podcast endpoint.
-        """
-        uuid = podcast_data["uuid"]
-        return Podcast(
-            item_id=uuid,
-            provider=self.instance_id,
-            name=podcast_data.get("title", ""),
-            provider_mappings={
-                ProviderMapping(
-                    item_id=uuid,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                )
-            },
-            metadata=MediaItemMetadata(
-                description=podcast_data.get("description"),
-                images=UniqueList(
-                    [
-                        MediaItemImage(
-                            type=ImageType.THUMB,
-                            path=f"https://static.pocketcasts.com/discover/images/280/{uuid}.jpg",
-                            provider=self.instance_id,
-                            remotely_accessible=True,
-                        )
-                    ]
-                ),
-            ),
-        )
-
-    def _convert_episode(
-        self, episode_data: dict[str, Any], podcast_uuid: str
-    ) -> PodcastEpisode | None:
-        """
-        Convert Pocket Casts episode data to a PodcastEpisode object.
-
-        Returns None when the data has no episode UUID to key on.
-
-        :param episode_data: Raw episode data dict from the API.
-        :param podcast_uuid: The UUID of the parent podcast.
-        """
-        episode_uuid = episode_data.get("uuid")
-        if not episode_uuid:
-            return None
-
-        # this is fed by two endpoints with different field schemas: the full-podcast JSON
-        # uses snake_case (file_type) while /user/episode uses camelCase (fileType,
-        # episodeNumber). Neither carries show notes or episode artwork, so the description is
-        # left empty and the parent podcast image is used for every episode.
-        item_id = f"{podcast_uuid}:{episode_uuid}"
-        file_type = episode_data.get("fileType") or episode_data.get("file_type", "audio/mpeg")
-        episode_item = PodcastEpisode(
-            item_id=item_id,
-            provider=self.instance_id,
-            name=episode_data.get("title", "Unknown Episode"),
-            podcast=ItemMapping(
-                media_type=MediaType.PODCAST,
-                item_id=podcast_uuid,
-                provider=self.instance_id,
-                name="",
-            ),
-            position=episode_data.get("episodeNumber", 0),
-            provider_mappings={
-                ProviderMapping(
-                    item_id=item_id,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    audio_format=AudioFormat(content_type=ContentType.try_parse(file_type)),
-                    url=episode_data.get("url", ""),
-                )
-            },
-        )
-        if episode_data.get("duration"):
-            episode_item.duration = int(episode_data["duration"])
-        if title := episode_data.get("title"):
-            episode_item.metadata.label = title
-        episode_item.metadata.images = UniqueList(
-            [
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=f"https://static.pocketcasts.com/discover/images/280/{podcast_uuid}.jpg",
-                    provider=self.instance_id,
-                    remotely_accessible=True,
-                )
-            ]
-        )
-        return episode_item
-
-    def _enrich_episode_with_status(
-        self,
-        episode_item: PodcastEpisode,
-        episode_data: dict[str, Any],
-        in_progress_map: dict[str | None, dict[str, Any]],
-        history_map: dict[str | None, dict[str, Any]],
-    ) -> None:
-        """
-        Apply playback status to a PodcastEpisode from the in-progress/history data.
-
-        :param episode_item: The episode object to enrich in place.
-        :param episode_data: Raw episode data dict from the API.
-        :param in_progress_map: UUID-keyed map of in-progress episode data.
-        :param history_map: UUID-keyed map of listen-history episode data.
-        """
-        episode_uuid = episode_data.get("uuid")
-        # history is "recently played", not "completed" - rely on the entry's real progress,
-        # never on mere history membership. Both fields are always set so the library sync can
-        # clear a stale completed/resume value (it only updates when both are non-None).
-        status_data = in_progress_map.get(episode_uuid) or history_map.get(episode_uuid) or {}
-        played_up_to = status_data.get("playedUpTo", 0)
-        duration = status_data.get("duration") or episode_data.get("duration", 0)
-        completed = status_data.get("playingStatus") == 3 or (
-            duration > 0 and (played_up_to / duration) > FULLY_PLAYED_THRESHOLD
-        )
-        episode_item.fully_played = completed
-        episode_item.resume_position_ms = 0 if completed else played_up_to * 1000
-
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Get all podcasts from the user's library."""
         for podcast_data in await self._client.get_subscribed_podcasts():
@@ -390,64 +271,6 @@ class PocketCastsProvider(MusicProvider):
                     episode_item, episode_data, in_progress_map, history_map
                 )
                 yield episode_item
-
-    async def _get_special_folder_episodes(
-        self, folder_name: str
-    ) -> list[MediaItemType | BrowseFolder]:
-        """
-        Get episodes for a special browse folder.
-
-        :param folder_name: Name of the special folder (up_next, new_releases, etc.)
-        """
-        folder_getters = {
-            "up_next": self._client.get_up_next_episodes,
-            "new_releases": self._client.get_new_releases,
-            "in_progress": self._client.get_in_progress_episodes,
-            "starred": self._client.get_starred_episodes,
-            "history": self._client.get_history,
-        }
-        episode_list = await folder_getters[folder_name]()
-
-        items: list[MediaItemType | BrowseFolder] = []
-        for episode_data in episode_list:
-            # the podcast reference is a string on some endpoints and an object on others
-            podcast_field = episode_data.get("podcast")
-            podcast_uuid: str | None
-            if isinstance(podcast_field, str):
-                podcast_uuid = podcast_field
-            elif isinstance(podcast_field, dict):
-                podcast_uuid = podcast_field.get("uuid")
-            else:
-                podcast_uuid = episode_data.get("podcastUuid")
-
-            if podcast_uuid and (episode_item := self._convert_episode(episode_data, podcast_uuid)):
-                items.append(episode_item)
-        return items
-
-    def _create_browse_folders(self) -> list[BrowseFolder]:
-        """Create special browse folders for root level."""
-        folders = [
-            ("up_next", "Up Next"),
-            ("new_releases", "New Releases"),
-            ("in_progress", "In Progress"),
-            ("starred", "Starred"),
-            ("history", "History"),
-        ]
-        return [
-            BrowseFolder(
-                item_id=folder_id,
-                provider=self.instance_id,
-                path=f"{self.instance_id}://{folder_id}",
-                name=name,
-                image=MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=BROWSE_FOLDER_ICONS[folder_id],
-                    provider=self.instance_id,
-                    remotely_accessible=True,
-                ),
-            )
-            for folder_id, name in folders
-        ]
 
     async def browse(self, path: str) -> list[MediaItemType | BrowseFolder]:
         """
@@ -626,6 +449,183 @@ class PocketCastsProvider(MusicProvider):
                 self._announced_episodes.add(episode_uuid)
                 await self._announce_playback_start(podcast_uuid, episode_uuid, media_item)
             await self._client.update_episode_progress(podcast_uuid, episode_uuid, position)
+
+    def _convert_podcast(self, podcast_data: dict[str, Any]) -> Podcast:
+        """
+        Convert raw Pocket Casts podcast data to a Podcast object.
+
+        :param podcast_data: Raw podcast data from the subscribed-list or full-podcast endpoint.
+        """
+        uuid = podcast_data["uuid"]
+        return Podcast(
+            item_id=uuid,
+            provider=self.instance_id,
+            name=podcast_data.get("title", ""),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=uuid,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+            metadata=MediaItemMetadata(
+                description=podcast_data.get("description"),
+                images=UniqueList(
+                    [
+                        MediaItemImage(
+                            type=ImageType.THUMB,
+                            path=f"https://static.pocketcasts.com/discover/images/280/{uuid}.jpg",
+                            provider=self.instance_id,
+                            remotely_accessible=True,
+                        )
+                    ]
+                ),
+            ),
+        )
+
+    def _convert_episode(
+        self, episode_data: dict[str, Any], podcast_uuid: str
+    ) -> PodcastEpisode | None:
+        """
+        Convert Pocket Casts episode data to a PodcastEpisode object.
+
+        Returns None when the data has no episode UUID to key on.
+
+        :param episode_data: Raw episode data dict from the API.
+        :param podcast_uuid: The UUID of the parent podcast.
+        """
+        episode_uuid = episode_data.get("uuid")
+        if not episode_uuid:
+            return None
+
+        # this is fed by two endpoints with different field schemas: the full-podcast JSON
+        # uses snake_case (file_type) while /user/episode uses camelCase (fileType,
+        # episodeNumber). Neither carries show notes or episode artwork, so the description is
+        # left empty and the parent podcast image is used for every episode.
+        item_id = f"{podcast_uuid}:{episode_uuid}"
+        file_type = episode_data.get("fileType") or episode_data.get("file_type", "audio/mpeg")
+        episode_item = PodcastEpisode(
+            item_id=item_id,
+            provider=self.instance_id,
+            name=episode_data.get("title", "Unknown Episode"),
+            podcast=ItemMapping(
+                media_type=MediaType.PODCAST,
+                item_id=podcast_uuid,
+                provider=self.instance_id,
+                name="",
+            ),
+            position=episode_data.get("episodeNumber", 0),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=item_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(content_type=ContentType.try_parse(file_type)),
+                    url=episode_data.get("url", ""),
+                )
+            },
+        )
+        if episode_data.get("duration"):
+            episode_item.duration = int(episode_data["duration"])
+        if title := episode_data.get("title"):
+            episode_item.metadata.label = title
+        episode_item.metadata.images = UniqueList(
+            [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=f"https://static.pocketcasts.com/discover/images/280/{podcast_uuid}.jpg",
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            ]
+        )
+        return episode_item
+
+    def _enrich_episode_with_status(
+        self,
+        episode_item: PodcastEpisode,
+        episode_data: dict[str, Any],
+        in_progress_map: dict[str | None, dict[str, Any]],
+        history_map: dict[str | None, dict[str, Any]],
+    ) -> None:
+        """
+        Apply playback status to a PodcastEpisode from the in-progress/history data.
+
+        :param episode_item: The episode object to enrich in place.
+        :param episode_data: Raw episode data dict from the API.
+        :param in_progress_map: UUID-keyed map of in-progress episode data.
+        :param history_map: UUID-keyed map of listen-history episode data.
+        """
+        episode_uuid = episode_data.get("uuid")
+        # history is "recently played", not "completed" - rely on the entry's real progress,
+        # never on mere history membership. Both fields are always set so the library sync can
+        # clear a stale completed/resume value (it only updates when both are non-None).
+        status_data = in_progress_map.get(episode_uuid) or history_map.get(episode_uuid) or {}
+        played_up_to = status_data.get("playedUpTo", 0)
+        duration = status_data.get("duration") or episode_data.get("duration", 0)
+        completed = status_data.get("playingStatus") == 3 or (
+            duration > 0 and (played_up_to / duration) > FULLY_PLAYED_THRESHOLD
+        )
+        episode_item.fully_played = completed
+        episode_item.resume_position_ms = 0 if completed else played_up_to * 1000
+
+    async def _get_special_folder_episodes(
+        self, folder_name: str
+    ) -> list[MediaItemType | BrowseFolder]:
+        """
+        Get episodes for a special browse folder.
+
+        :param folder_name: Name of the special folder (up_next, new_releases, etc.)
+        """
+        folder_getters = {
+            "up_next": self._client.get_up_next_episodes,
+            "new_releases": self._client.get_new_releases,
+            "in_progress": self._client.get_in_progress_episodes,
+            "starred": self._client.get_starred_episodes,
+            "history": self._client.get_history,
+        }
+        episode_list = await folder_getters[folder_name]()
+
+        items: list[MediaItemType | BrowseFolder] = []
+        for episode_data in episode_list:
+            # the podcast reference is a string on some endpoints and an object on others
+            podcast_field = episode_data.get("podcast")
+            podcast_uuid: str | None
+            if isinstance(podcast_field, str):
+                podcast_uuid = podcast_field
+            elif isinstance(podcast_field, dict):
+                podcast_uuid = podcast_field.get("uuid")
+            else:
+                podcast_uuid = episode_data.get("podcastUuid")
+
+            if podcast_uuid and (episode_item := self._convert_episode(episode_data, podcast_uuid)):
+                items.append(episode_item)
+        return items
+
+    def _create_browse_folders(self) -> list[BrowseFolder]:
+        """Create special browse folders for root level."""
+        folders = [
+            ("up_next", "Up Next"),
+            ("new_releases", "New Releases"),
+            ("in_progress", "In Progress"),
+            ("starred", "Starred"),
+            ("history", "History"),
+        ]
+        return [
+            BrowseFolder(
+                item_id=folder_id,
+                provider=self.instance_id,
+                path=f"{self.instance_id}://{folder_id}",
+                name=name,
+                image=MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=BROWSE_FOLDER_ICONS[folder_id],
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                ),
+            )
+            for folder_id, name in folders
+        ]
 
     async def _announce_playback_start(
         self, podcast_uuid: str, episode_uuid: str, episode: PodcastEpisode
