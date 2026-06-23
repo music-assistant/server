@@ -76,7 +76,13 @@ def parse_cue_track_id(item_id: str) -> tuple[str, int] | None:
     if CUE_TRACK_ID_DELIMITER not in item_id:
         return None
     cue_path, track_num_str = item_id.rsplit(CUE_TRACK_ID_DELIMITER, 1)
-    return cue_path, int(track_num_str)
+    if not cue_path:
+        return None
+    try:
+        track_num = int(track_num_str)
+    except ValueError:
+        return None
+    return cue_path, track_num
 
 
 def _cue_sheet_from_dict(data: dict[str, Any]) -> CueSheet:
