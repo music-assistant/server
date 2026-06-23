@@ -36,26 +36,36 @@ VOLUME_CONTROL_SOFTWARE = "software"
 DEFAULT_PLAYER_VOLUME = 25  # initial volume for new players (percent)
 DEFAULT_BUFFER_FRAMES = 1024  # sounddevice blocksize for macOS/ALSA PortAudio output (frames)
 
-# --- Audio taper curve (dr-lex 60dB exponential, with linear roll-off) ------
+# --- Audio taper curve (dr-lex exponential, with linear roll-off) -----------
 #
 # y = a * e^(b*x) gives constant dB-per-slider-step ("audio taper" /
 # logarithmic potentiometer behavior), unlike a plain linear-amplitude
 # mapping (y = x) where the bottom of the slider is wildly more sensitive
 # than the top. See https://www.dr-lex.be/info-stuff/volumecontrols.html
 #
-# a/b are chosen for a 60dB range: y(1.0) = 1.0 (0dB), and the exponential
-# alone would approach y -> a (-60dB) as x -> 0. Below _TAPER_ROLLOFF_X, a
-# linear ramp to (0, 0) is used instead so volume_pct=0 is true silence
-# rather than asymptotic toward -60dB.
+# a = 10**(-range_dB/20) sets the amplitude floor; b = ln(1/a) ensures
+# y(1.0) = 1.0 (0dB) at full volume. Below _TAPER_ROLLOFF_X, a linear ramp
+# to (0, 0) is used so volume_pct=0 is true silence rather than asymptoting
+# toward the floor.
+#
+# Reference values for common dB ranges (pick one _TAPER_A and comment out
+# the rest; _TAPER_B recalculates automatically):
+#
+#   Range   _TAPER_A   _TAPER_B   MA 70% =    Notes
+#   40 dB   0.01       ~4.605     -12 dB      receiver / outdoor speakers (current)
+#   50 dB   0.003162   ~5.757     -15 dB      medium-range setups
+#   60 dB   0.001      ~6.908     -18 dB      consumer headphones / desktop speakers
+#   70 dB   0.000316   ~8.059     -21 dB      high-dynamic-range hi-fi systems
 #
 # Used both for PA hardware volume (pa_simple.PAVolumeController, after a
 # cube-root step to counteract PA's own cubic volume curve) and for the
 # software PCM-scaling fallback path, so the same slider position sounds
 # the same regardless of which volume-control mode is active.
-# _TAPER_A: Final = 0.001  # 10**(-60/20) -- amplitude at the -60dB reference point
-# 40dB range (better for receiver/outdoor speakers):
-_TAPER_A: Final = 0.01  # 10**(-40/20)
-_TAPER_B: Final = math.log(1.0 / _TAPER_A)  # ~6.908, gives 60dB range over x in [0, 1]
+_TAPER_A: Final = 0.01  # 10**(-40/20) — 40dB range, suits receiver/outdoor setups
+# _TAPER_A: Final = 0.003162  # 10**(-50/20) — 50dB range
+# _TAPER_A: Final = 0.001     # 10**(-60/20) — 60dB range, suits headphones/desktop
+# _TAPER_A: Final = 0.000316  # 10**(-70/20) — 70dB range, hi-fi high dynamic range
+_TAPER_B: Final = math.log(1.0 / _TAPER_A)  # recalculates automatically from _TAPER_A
 _TAPER_ROLLOFF_X: Final = 0.10  # below 10% slider, linear ramp to true silence
 
 
@@ -63,7 +73,7 @@ def volume_pct_to_amplitude(volume_pct: int) -> float:
     """
     Map a 0-100 volume percentage to a linear amplitude scale factor.
 
-    Uses the dr-lex 60dB exponential audio taper (y = a*e^(b*x)) for
+    Uses the dr-lex exponential audio taper (y = a*e^(b*x)) for
     volume_pct >= 10, giving constant dB change per slider step. Below 10%,
     a linear ramp to (0, 0) ensures volume_pct=0 produces true silence.
     """

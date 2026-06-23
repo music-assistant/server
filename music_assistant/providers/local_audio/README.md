@@ -87,7 +87,9 @@ ALSA hw: device / CoreAudio Device
 
 ### Volume Control
 
-The MA volume slider (0-100) is mapped to an amplitude scale factor via an exponential "audio taper" curve (`volume_pct_to_amplitude` in `constants.py`, based on the [dr-lex 60dB taper](https://www.dr-lex.be/info-stuff/volumecontrols.html)): a constant dB change per slider step from 10% to 100% (covering roughly -54dB to 0dB), with a linear ramp to true silence below 10%. This avoids the classic "linear volume slider" problem where the bottom of the range is wildly more sensitive than the top and the top of the range barely changes the loudness at all. The same taper is used for both the hardware and software volume paths below, so a given slider position sounds the same regardless of which path is active.
+The MA volume slider (0-100) is mapped to an amplitude scale factor via an exponential "audio taper" curve (`volume_pct_to_amplitude` in `constants.py`, based on the [dr-lex taper](https://www.dr-lex.be/info-stuff/volumecontrols.html)): a constant dB change per slider step from 10% to 100%, with a linear ramp to true silence below 10%. This avoids the classic "linear volume slider" problem where the bottom of the range is wildly more sensitive than the top and the top barely changes the loudness at all. The same taper is used for both the hardware and software volume paths below, so a given slider position sounds the same regardless of which path is active.
+
+The taper's dynamic range is configurable via `_TAPER_A` in `constants.py` — the default is **40dB** (`_TAPER_A = 0.01`), suited for receiver-driven and outdoor speaker setups (MA 70% ≈ -12dB). A 60dB range (`_TAPER_A = 0.001`) is more appropriate for headphones or desktop speakers. See `constants.py` for a reference table of common options.
 
 **Linux PulseAudio/PipeWire backend**: Volume and mute are applied as native PulseAudio sink volume, via a shared `libpulse` connection (`PAVolumeController`). The taper's output amplitude is converted to a PA volume percentage via a cube root — PA's own volume percentage represents `amplitude**3` on its internal cubic curve, so the cube root is the inverse step needed to make PA apply the *taper's* amplitude rather than its own.
 
@@ -121,7 +123,7 @@ The ALSA direct backend always uses 16-bit int PCM (PortAudio `int16` dtype) reg
 | `sendspin_bridge.py` | Bridge manager and per-device bridge (PA on Linux PulseAudio, sounddevice on Linux ALSA and macOS); also owns remap-sink topology lifecycle |
 | `pa_simple.py` | ctypes wrapper around `libpulse-simple`/`libpulse` for direct PCM output, PA sink/module hardware volume control, and module load/unload; PA sink enumeration via `pactl`; ALSA device enumeration via PortAudio *(Linux only)* |
 | `remap_topology.py` | Computes the per-zone and full-channel passthrough `module-remap-sink` topology for multi-channel cards *(Linux PulseAudio only)* |
-| `constants.py` | Shared constants (UUID namespace, buffer sizes, backend selector values) and the `volume_pct_to_amplitude` audio taper used by both the hardware and software volume paths |
+| `constants.py` | Shared constants (UUID namespace, buffer sizes, backend selector values) and the `volume_pct_to_amplitude` audio taper used by both the hardware and software volume paths; taper range is configurable via `_TAPER_A` (default 40dB, suited for receiver/outdoor setups) |
 | `manifest.json` | Provider metadata and dependencies |
 | `strings.json` | Localized config entry labels/descriptions (audio backend selector and its options) |
 
