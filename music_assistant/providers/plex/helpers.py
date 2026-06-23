@@ -81,7 +81,8 @@ class PlexSectionInfo:
 
 
 def _library_tracks_progress(section: PlexLibrarySection) -> bool:
-    """Check if a music section stores per-track progress (resumable content).
+    """
+    Check if a music section stores per-track progress (resumable content).
 
     Uses the ``enableTrackOffsets`` library preference ("Store track progress"
     advanced setting). When enabled, Plex treats tracks as resumable content,
@@ -121,7 +122,8 @@ def _library_tracks_progress(section: PlexLibrarySection) -> bool:
 
 
 def extract_library_name(conf_value: str) -> str:
-    """Extract the library name from a config value that may include server name.
+    """
+    Extract the library name from a config value that may include server name.
 
     Config values from get_config_entries include the server prefix:
     '<server name> / <library name>'. When typed manually by the user,

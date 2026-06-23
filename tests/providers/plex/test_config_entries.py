@@ -29,7 +29,8 @@ def _make_mock_mass(
 
 
 async def test_get_config_entries_no_recursion_with_multiple_plex_instances() -> None:
-    """Calling get_config_entries should not recurse when multiple plex instances exist.
+    """
+    Calling get_config_entries should not recurse when multiple plex instances exist.
 
     Regression test: using get_provider_configs(include_values=True) caused
     infinite recursion because each call triggered get_config_entries for all

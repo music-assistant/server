@@ -21,6 +21,15 @@
       "description": "The library to connect to (e.g. Music)",
       "action_label": "Select Plex Music Library"
     },
+    "library_type": {
+      "label": "Library Type",
+      "description": "Select whether this Plex library should be treated as Music, Audiobooks, or Podcasts.",
+      "options": {
+        "music": "Music",
+        "audiobooks": "Audiobooks",
+        "podcasts": "Podcasts"
+      }
+    },
     "import_collections": {
       "label": "Import Collections",
       "description": "Import collections (tracks, albums, or artists) as playlists"
