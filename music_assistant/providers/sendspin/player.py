@@ -620,12 +620,20 @@ class SendspinPlayer(SendspinBasePlayer):
                         self.mass.player_queues.set_repeat(queue.queue_id, RepeatMode.ALL)
             case ControllerShuffleEvent(shuffle=shuffle) if queue:
                 await self.mass.player_queues.set_shuffle(queue.queue_id, shuffle_enabled=shuffle)
-            case ControllerSeekEvent(position_ms=position_ms) if queue:
-                await self.mass.player_queues.seek(queue.queue_id, position_ms // 1000)
-            case ControllerSeekRelativeEvent(offset_ms=offset_ms) if queue and queue.current_item:
+            case ControllerSeekEvent(position_ms=position_ms) if (
+                queue and queue.current_item and queue.current_item.duration
+            ):
+                # Clamp in case track duration changed after we advertised the seek range.
+                duration_ms = int(queue.current_item.duration * 1000)
+                await self.mass.player_queues.seek(
+                    queue.queue_id, max(0, min(position_ms, duration_ms)) // 1000
+                )
+            case ControllerSeekRelativeEvent(offset_ms=offset_ms) if (
+                queue and queue.current_item and queue.current_item.duration
+            ):
                 # Clamp current position + offset to the 0..duration range.
                 target_ms = int(queue.corrected_elapsed_time * 1000) + offset_ms
-                duration_ms = int((queue.current_item.duration or 0) * 1000)
+                duration_ms = int(queue.current_item.duration * 1000)
                 await self.mass.player_queues.seek(
                     queue.queue_id, max(0, min(target_ms, duration_ms)) // 1000
                 )
