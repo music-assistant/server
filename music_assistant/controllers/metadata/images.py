@@ -276,7 +276,7 @@ class ImageProxyMixin:
         except (MediaNotFoundError, OSError) as err:
             # normalize a missing/unreadable image into one typed error so callers
             # (and not just the HTTP imageproxy handler) can handle it uniformly
-            raise MediaNotFoundError(f"Image not found: {path}") from err
+            raise MediaNotFoundError(f"Image not found or unreadable: {path}") from err
         if base64:
             enc_image = b64encode(thumbnail_bytes).decode()
             return f"data:{_IMAGEPROXY_CONTENT_TYPES[content_format]};base64,{enc_image}"
