@@ -1018,6 +1018,16 @@ class PlayerQueuesController(CoreController):
             # propagate before we hand the queue over to the target player.
             group_id = target_player.state.active_group or target_player.state.synced_to
             assert group_id is not None  # checked in if condition above
+            # For an ad-hoc sync group (target is a sync member of a regular leader),
+            # ungroup the target itself so only it is freed - ungrouping the leader would
+            # transfer leadership to a remaining member and recurse back into this method.
+            # For a virtual group player (active_group), release the group so its static
+            # members are handled correctly.
+            ungroup_target = (
+                target_queue_id
+                if target_player.state.synced_to and not target_player.state.active_group
+                else group_id
+            )
             async with self.mass.players.wait_for_player_update(
                 target_queue_id,
                 attribute_name=(
@@ -1026,7 +1036,7 @@ class PlayerQueuesController(CoreController):
                 attribute_value=None,
                 timeout=5,
             ):
-                await self.mass.players.cmd_ungroup(group_id)
+                await self.mass.players.cmd_ungroup(ungroup_target)
 
         # capture source state before stopping (stop resets these)
         source_items = self._queue_items[source_queue_id]
