@@ -811,7 +811,7 @@
   "provider.fastmcp_server.config_entries.open_connect.label": "Open Connect Wizard",
   "provider.fastmcp_server.config_entries.require_auth.description": "Reject unauthenticated MCP clients. Strongly recommended — with auth disabled, every MCP client on the network can drive playback.",
   "provider.fastmcp_server.config_entries.require_auth.label": "Require authentication",
-  "provider.fastmcp_server.config_entries.require_confirmation.description": "Ask the MCP client to confirm before running destructive tools (clear_queue, remove_tracks, remove_from_library, remove_from_favorites). If the client doesn't support elicitation, the call falls through to the permission flag.",
+  "provider.fastmcp_server.config_entries.require_confirmation.description": "Ask the MCP client to confirm before running destructive tools (clear_queue, remove_item, remove_tracks, remove_from_library, remove_from_favorites). If the client doesn't support elicitation, the call falls through to the permission flag.",
   "provider.fastmcp_server.config_entries.require_confirmation.label": "Confirm destructive operations",
   "provider.fastmcp_server.manifest.description": "Exposes Music Assistant as a Model Context Protocol (MCP) server for Claude, Codex, and other MCP-aware LLM clients.",
   "provider.filesystem_local.config_entries.content_type.description": "The type of content to expect in the media folder(s)",

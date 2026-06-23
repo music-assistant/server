@@ -69,6 +69,33 @@ async def test_clear_queue_blocked_when_user_declines(mock_mass: MagicMock) -> N
     mock_mass.player_queues.clear.assert_not_called()
 
 
+async def test_remove_item_runs_when_user_accepts(mock_mass: MagicMock) -> None:
+    """User accepts the elicitation prompt → remove_item dispatches to MA."""
+    mock_mass.player_queues.delete_item = MagicMock()
+    mcp = _server(mock_mass, require_confirmation=True)
+
+    async with Client(mcp, elicitation_handler=_accepter()) as client:
+        await client.call_tool(
+            "queue_remove_item",
+            {"queue_id": "q1", "item_ids": ["item-1"]},
+        )
+    mock_mass.player_queues.delete_item.assert_called_once_with("q1", "item-1")
+
+
+async def test_remove_item_blocked_when_user_declines(mock_mass: MagicMock) -> None:
+    """User declines → tool raises ToolError, no MA call is made."""
+    mock_mass.player_queues.delete_item = MagicMock()
+    mcp = _server(mock_mass, require_confirmation=True)
+
+    async with Client(mcp, elicitation_handler=_decliner()) as client:
+        with pytest.raises(ToolError):
+            await client.call_tool(
+                "queue_remove_item",
+                {"queue_id": "q1", "item_ids": ["item-1"]},
+            )
+    mock_mass.player_queues.delete_item.assert_not_called()
+
+
 async def test_no_confirmation_when_disabled(mock_mass: MagicMock) -> None:
     """With require_confirmation=False, elicitation is skipped entirely."""
     mock_mass.player_queues.clear = MagicMock()

@@ -14,7 +14,7 @@
     },
     "require_confirmation": {
       "label": "Confirm destructive operations",
-      "description": "Ask the MCP client to confirm before running destructive tools (clear_queue, remove_tracks, remove_from_library, remove_from_favorites). If the client doesn't support elicitation, the call falls through to the permission flag."
+      "description": "Ask the MCP client to confirm before running destructive tools (clear_queue, remove_item, remove_tracks, remove_from_library, remove_from_favorites). If the client doesn't support elicitation, the call falls through to the permission flag."
     },
     "enforce_audience": {
       "label": "Enforce token audience (RFC 8707)",

@@ -34,6 +34,7 @@ _BUILDERS = [
 # Spec-mandated destructive tools per the C5 mapping table.
 _DESTRUCTIVE_NAMES = {
     "queue_clear_queue",
+    "queue_remove_item",
     "playlists_remove_tracks",
     "media_remove_from_favorites",
     "media_remove_from_library",

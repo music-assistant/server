@@ -168,6 +168,9 @@ def mock_mass(mock_user: MagicMock) -> MagicMock:
     mass.player_queues.set_shuffle = AsyncMock()
     mass.player_queues.transfer_queue = AsyncMock()
     mass.player_queues.clear = MagicMock()
+    mass.player_queues.delete_item = MagicMock()
+    mass.player_queues.move_item = MagicMock()
+    mass.player_queues.move_item_end = MagicMock()
 
     mass.players = MagicMock()
     mass.players.all_players = MagicMock(return_value=[])
