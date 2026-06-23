@@ -883,6 +883,8 @@ class ProtocolLinkingMixin:
 
             cached_only_ids = known_protocol_ids - active_protocol_ids
             preserved_protocol_ids = moved_protocol_ids | cached_only_ids
+            # A device that kept its id across a type change lists itself here.
+            preserved_protocol_ids.discard(native_player.player_id)
             self._migrate_protocol_ids_to_parent(native_player, preserved_protocol_ids)
             self._remove_protocol_ids_from_parent(player, preserved_protocol_ids)
             native_player.update_state()
@@ -920,6 +922,9 @@ class ProtocolLinkingMixin:
         self, native_player: Player, protocol_player: Player, protocol_domain: str
     ) -> None:
         """Add a protocol link from native player to protocol player."""
+        # Never link a player to itself (hides it as its own protocol child).
+        if native_player.player_id == protocol_player.player_id:
+            return
         # Guard: refuse to replace an existing active link from the same domain.
         # This prevents a second instance of the same protocol (e.g., two AirPlay
         # instances on the same host) from silently replacing the first one.
