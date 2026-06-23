@@ -59,44 +59,6 @@ class PocketCastsClient:
             raise LoginFailed("No token in Pocket Casts login response")
         self.logger.info("Successfully logged in to Pocket Casts")
 
-    def _headers(self) -> dict[str, str]:
-        if not self.token:
-            raise LoginFailed("Not logged in to Pocket Casts")
-        return {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
-
-    @throttle_with_retries
-    async def _request(
-        self, method: str, url: str, *, auth: bool = True, **kwargs: Any
-    ) -> dict[str, Any]:
-        """
-        Perform a request against the Pocket Casts API and return the decoded JSON body.
-
-        :param method: The HTTP method to use.
-        :param url: The full request URL.
-        :param auth: Whether to send the authorization header.
-        """
-        headers = self._headers() if auth else None
-        try:
-            async with self.session.request(method, url, headers=headers, **kwargs) as response:
-                if response.status in (401, 403):
-                    raise LoginFailed(f"Pocket Casts authentication failed ({response.status})")
-                if response.status == 429 or response.status >= 500:
-                    # transient: let the throttler back off and retry
-                    raise ResourceTemporarilyUnavailable(
-                        f"Pocket Casts temporarily unavailable ({response.status})",
-                        backoff_time=parse_retry_after(response.headers.get("Retry-After")),
-                    )
-                if response.status != 200:
-                    text = await response.text()
-                    raise ProviderUnavailableError(
-                        f"Pocket Casts request to {url} failed ({response.status}): {text}"
-                    )
-                return cast("dict[str, Any]", await response.json(loads=json_loads))
-        except aiohttp.ClientError as err:
-            raise ResourceTemporarilyUnavailable(
-                f"Network error contacting Pocket Casts: {err}"
-            ) from err
-
     async def get_subscribed_podcasts(self) -> list[dict[str, Any]]:
         """Return the user's subscribed podcasts."""
         data = await self._request("POST", f"{API_BASE_URL}/user/podcast/list")
@@ -362,3 +324,41 @@ class PocketCastsClient:
         await self._request(
             "POST", f"{API_BASE_URL}/user/podcast/unsubscribe", json={"uuid": podcast_uuid}
         )
+
+    def _headers(self) -> dict[str, str]:
+        if not self.token:
+            raise LoginFailed("Not logged in to Pocket Casts")
+        return {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
+
+    @throttle_with_retries
+    async def _request(
+        self, method: str, url: str, *, auth: bool = True, **kwargs: Any
+    ) -> dict[str, Any]:
+        """
+        Perform a request against the Pocket Casts API and return the decoded JSON body.
+
+        :param method: The HTTP method to use.
+        :param url: The full request URL.
+        :param auth: Whether to send the authorization header.
+        """
+        headers = self._headers() if auth else None
+        try:
+            async with self.session.request(method, url, headers=headers, **kwargs) as response:
+                if response.status in (401, 403):
+                    raise LoginFailed(f"Pocket Casts authentication failed ({response.status})")
+                if response.status == 429 or response.status >= 500:
+                    # transient: let the throttler back off and retry
+                    raise ResourceTemporarilyUnavailable(
+                        f"Pocket Casts temporarily unavailable ({response.status})",
+                        backoff_time=parse_retry_after(response.headers.get("Retry-After")),
+                    )
+                if response.status != 200:
+                    text = await response.text()
+                    raise ProviderUnavailableError(
+                        f"Pocket Casts request to {url} failed ({response.status}): {text}"
+                    )
+                return cast("dict[str, Any]", await response.json(loads=json_loads))
+        except aiohttp.ClientError as err:
+            raise ResourceTemporarilyUnavailable(
+                f"Network error contacting Pocket Casts: {err}"
+            ) from err
