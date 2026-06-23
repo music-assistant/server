@@ -1716,8 +1716,11 @@ class ConfigController:
 
     def _migrate_self_referential_protocol_links(self) -> bool:
         """Clear protocol links that point a player at its own id."""
+        all_player_configs = self._data.get(CONF_PLAYERS, {})
+        if not isinstance(all_player_configs, dict):
+            return False
         changed = False
-        for player_id, player_cfg in self._data.get(CONF_PLAYERS, {}).items():
+        for player_id, player_cfg in all_player_configs.items():
             if not isinstance(player_cfg, dict):
                 continue
             values = player_cfg.get("values")
