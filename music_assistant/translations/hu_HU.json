@@ -65,7 +65,7 @@
   "common.config_entries.volume_normalization.description": "Engedélyezi a hangerő-normalizálást az EBU-R128 szabvány alapján a dinamikatartomány befolyásolása nélkül",
   "common.config_entries.volume_normalization.label": "Hangerő-normalizálás engedélyezése (EBU-R128 alapú)",
   "common.config_entries.volume_normalization_fixed_gain_tracks.label": "Fix\/tartalék erősítés-beállítás a zeneszámokhoz",
-  "common.config_entries.volume_normalization_target.description": "Az átlagos (észlelt) hangerő beállítása erre a célszintre, az alapértelmezett érték -17 LUFS\n\n**FIGYELMEZTETÉS:** A szint túl magas beállítása torzítást okozhat!",
+  "common.config_entries.volume_normalization_target.description": "Az átlagos (észlelt) hangerő beállítása erre a célszintre, az alapértelmezett érték -14 LUFS\n\n**FIGYELMEZTETÉS:** A szint túl magas beállítása torzítást okozhat!",
   "common.config_entries.volume_normalization_target.label": "Célszint a hangerő-normalizáláshoz",
   "common.media.afrobeats.name": "Afrobeats (nyugat-afrikai urban\/pop zene)",
   "common.media.albums.name": "Albumok",

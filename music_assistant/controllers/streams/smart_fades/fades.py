@@ -66,34 +66,6 @@ class SmartFade(ABC):
         self.filters = []
         self.logger = logger
 
-    @abstractmethod
-    def _build(
-        self,
-        fade_out_bytes_len: int,
-        fade_in_bytes_len: int,
-        pcm_format: AudioFormat,
-    ) -> None:
-        """Build the filter chain and assign ``self.timing_info``."""
-        ...
-
-    def _get_ffmpeg_filters(
-        self,
-        input_fadein_label: str = "[1]",
-        input_fadeout_label: str = "[0]",
-    ) -> list[str]:
-        """Get FFmpeg filters for smart fades."""
-        if not self.filters:
-            raise RuntimeError("SmartFade not built — call Mixer.build() first")
-        filters = []
-        _cur_fadein_label = input_fadein_label
-        _cur_fadeout_label = input_fadeout_label
-        for audio_filter in self.filters:
-            filter_strings = audio_filter.apply(_cur_fadein_label, _cur_fadeout_label)
-            filters.extend(filter_strings)
-            _cur_fadein_label = f"[{audio_filter.output_fadein_label}]"
-            _cur_fadeout_label = f"[{audio_filter.output_fadeout_label}]"
-        return filters
-
     async def apply(
         self,
         fade_out_part: bytes,
@@ -228,6 +200,34 @@ class SmartFade(ABC):
         chain = " → ".join(repr(f) for f in self.filters)
         return f"<{self.__class__.__name__}: {len(self.filters)} filters> {chain}"
 
+    @abstractmethod
+    def _build(
+        self,
+        fade_out_bytes_len: int,
+        fade_in_bytes_len: int,
+        pcm_format: AudioFormat,
+    ) -> None:
+        """Build the filter chain and assign ``self.timing_info``."""
+        ...
+
+    def _get_ffmpeg_filters(
+        self,
+        input_fadein_label: str = "[1]",
+        input_fadeout_label: str = "[0]",
+    ) -> list[str]:
+        """Get FFmpeg filters for smart fades."""
+        if not self.filters:
+            raise RuntimeError("SmartFade not built — call Mixer.build() first")
+        filters = []
+        _cur_fadein_label = input_fadein_label
+        _cur_fadeout_label = input_fadeout_label
+        for audio_filter in self.filters:
+            filter_strings = audio_filter.apply(_cur_fadein_label, _cur_fadeout_label)
+            filters.extend(filter_strings)
+            _cur_fadein_label = f"[{audio_filter.output_fadein_label}]"
+            _cur_fadeout_label = f"[{audio_filter.output_fadeout_label}]"
+        return filters
+
 
 class SmartCrossFade(SmartFade):
     """Smart fades class that implements a Smart Fade mode."""
@@ -241,7 +241,8 @@ class SmartCrossFade(SmartFade):
         fade_out_analysis: AudioAnalysisData,
         fade_in_analysis: AudioAnalysisData,
     ) -> None:
-        """Initialize SmartFades with analysis data.
+        """
+        Initialize SmartFades with analysis data.
 
         :param logger: Logger for debug output.
         :param fade_out_analysis: Analysis data for the outgoing track.
@@ -768,37 +769,6 @@ class StandardCrossFade(SmartFade):
         self.trailing_silence_bytes: int = 0
         self.crossfade_size: int = 0
 
-    def _build(
-        self,
-        fade_out_bytes_len: int,
-        fade_in_bytes_len: int,
-        pcm_format: AudioFormat,
-    ) -> None:
-        """Build the standard crossfade filter chain and assign ``self.timing_info``."""
-        fade_out_seconds = fade_out_bytes_len / pcm_format.pcm_sample_size
-        fade_in_seconds = fade_in_bytes_len / pcm_format.pcm_sample_size
-        # clamp CF to fit shorter inputs (defensive — normally full buffers)
-        effective_cf = min(self.crossfade_duration, fade_out_seconds, fade_in_seconds)
-        # Quantize the overlap to a whole number of PCM frames and drive both the
-        # byte slice (in apply) and the acrossfade length from this one integer.
-        # apply slices the buffers on frame boundaries, so a fractional effective_cf
-        # leaves the rendered buffer a fraction of a sample short of the acrossfade
-        # duration — and acrossfade then silently produces no output at all.
-        frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
-        crossfade_bytes = int(pcm_format.pcm_sample_size * effective_cf)
-        self.crossfade_size = crossfade_bytes // frame_size * frame_size
-        crossfade_samples = self.crossfade_size // frame_size
-        effective_cf = self.crossfade_size / pcm_format.pcm_sample_size
-        self.timing_info = CrossfadeTimingInfo(
-            pre_crossfade_duration=max(0.0, fade_out_seconds - effective_cf),
-            crossfade_duration=effective_cf,
-            fadein_trimmed_duration=0.0,
-            post_crossfade_duration=max(0.0, fade_in_seconds - effective_cf),
-        )
-        self.filters = [
-            CrossfadeFilter(logger=self.logger, crossfade_samples=crossfade_samples),
-        ]
-
     async def apply(
         self,
         fade_out_part: bytes,
@@ -873,3 +843,34 @@ class StandardCrossFade(SmartFade):
         else:
             async for chunk in post_crossfade:
                 yield chunk
+
+    def _build(
+        self,
+        fade_out_bytes_len: int,
+        fade_in_bytes_len: int,
+        pcm_format: AudioFormat,
+    ) -> None:
+        """Build the standard crossfade filter chain and assign ``self.timing_info``."""
+        fade_out_seconds = fade_out_bytes_len / pcm_format.pcm_sample_size
+        fade_in_seconds = fade_in_bytes_len / pcm_format.pcm_sample_size
+        # clamp CF to fit shorter inputs (defensive — normally full buffers)
+        effective_cf = min(self.crossfade_duration, fade_out_seconds, fade_in_seconds)
+        # Quantize the overlap to a whole number of PCM frames and drive both the
+        # byte slice (in apply) and the acrossfade length from this one integer.
+        # apply slices the buffers on frame boundaries, so a fractional effective_cf
+        # leaves the rendered buffer a fraction of a sample short of the acrossfade
+        # duration — and acrossfade then silently produces no output at all.
+        frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
+        crossfade_bytes = int(pcm_format.pcm_sample_size * effective_cf)
+        self.crossfade_size = crossfade_bytes // frame_size * frame_size
+        crossfade_samples = self.crossfade_size // frame_size
+        effective_cf = self.crossfade_size / pcm_format.pcm_sample_size
+        self.timing_info = CrossfadeTimingInfo(
+            pre_crossfade_duration=max(0.0, fade_out_seconds - effective_cf),
+            crossfade_duration=effective_cf,
+            fadein_trimmed_duration=0.0,
+            post_crossfade_duration=max(0.0, fade_in_seconds - effective_cf),
+        )
+        self.filters = [
+            CrossfadeFilter(logger=self.logger, crossfade_samples=crossfade_samples),
+        ]

@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
 from music_assistant_models.media_items import Artist, ProviderMapping, SearchResults
 
-from music_assistant.controllers.media.artists import ArtistsController
-from music_assistant.controllers.media.tracks import TracksController
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.music.media.artists import ArtistsController
+from music_assistant.controllers.music.media.tracks import TracksController
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.metadata_provider import MetadataProvider
 from music_assistant.models.music_provider import MusicProvider
@@ -232,9 +232,12 @@ async def test_global_search_includes_plugin_providers_with_search() -> None:
     controller.get_unique_providers = Mock(return_value=["m_a"])  # type: ignore[method-assign]
     controller.search_library = AsyncMock(return_value=SearchResults())  # type: ignore[method-assign]
     controller._search_provider = AsyncMock(return_value=SearchResults())  # type: ignore[method-assign]
-    controller._sort_search_result = Mock(side_effect=lambda _query, items: items)  # type: ignore[method-assign]
 
-    await controller.search("foo", media_types=[MediaType.TRACK], limit=5)
+    with patch(
+        "music_assistant.controllers.music.controller.sort_search_result",
+        side_effect=lambda _query, items: items,
+    ):
+        await controller.search("foo", media_types=[MediaType.TRACK], limit=5)
 
     queried_provider_ids = sorted(
         call.args[1] for call in controller._search_provider.await_args_list
@@ -249,7 +252,7 @@ async def test_plugin_search_default_stub_contract() -> None:
     """PluginProvider.search returns empty unless SEARCH is declared, then raises NotImplementedError."""
 
     class _StubPlugin(PluginProvider):
-        _features: set[ProviderFeature] = set()
+        _features: set[ProviderFeature]
 
         @property
         def supported_features(self) -> set[ProviderFeature]:

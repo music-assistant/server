@@ -161,7 +161,10 @@ async def get_config_entries(
         ConfigEntry(
             key="label_text",
             type=ConfigEntryType.LABEL,
-            label=f"Successfully signed in as {values.get(CONF_DISPLAY_NAME)} {str(values.get(CONF_EMAIL, '')).replace('@', '(at)')}.",
+            translation_params=[
+                str(values.get(CONF_DISPLAY_NAME)),
+                str(values.get(CONF_EMAIL, "")).replace("@", "(at)"),
+            ],
             hidden=not authenticated,
         ),
         ConfigEntry(
@@ -228,7 +231,8 @@ class ARDAudiothek(MusicProvider):
     """ARD Audiothek Music provider."""
 
     async def get_client(self) -> Client:
-        """Wrap the client creation procedure to recreate client.
+        """
+        Wrap the client creation procedure to recreate client.
 
         This happens when the token is expired or user credentials are updated.
         """
@@ -347,7 +351,8 @@ class ARDAudiothek(MusicProvider):
         media_types: list[MediaType],
         limit: int = 5,
     ) -> SearchResults:
-        """Perform search on musicprovider.
+        """
+        Perform search on musicprovider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include.
@@ -413,7 +418,8 @@ class ARDAudiothek(MusicProvider):
         )
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
-        """Retrieve library/subscribed podcasts from the provider.
+        """
+        Retrieve library/subscribed podcasts from the provider.
 
         Minified podcast information is enough.
         """
@@ -428,7 +434,8 @@ class ARDAudiothek(MusicProvider):
             yield await self.get_podcast(show["subscribedProgramSet"]["coreId"])
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse through the ARD Audiothek.
+        """
+        Browse through the ARD Audiothek.
 
         This supports browsing through Podcasts and Radio stations.
         :param path: The path to browse, (e.g. provider_id://artists).

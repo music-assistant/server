@@ -25,7 +25,7 @@
       "description": "Manually check whether {0} scan confirmation is completed."
     },
     "clear_auth": {
-      "label": "Reset authentication"
+      "label": "[%key:common::config_entries::clear_auth::label%]"
     }
   },
   "manifest": {

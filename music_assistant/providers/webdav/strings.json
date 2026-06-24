@@ -4,9 +4,9 @@
       "label": "Content type",
       "description": "The type of content stored on this WebDAV server",
       "options": {
-        "music": "Music",
-        "audiobooks": "Audiobooks",
-        "podcasts": "Podcasts"
+        "music": "[%key:common::config_entries::content_type::options::music%]",
+        "audiobooks": "[%key:common::config_entries::content_type::options::audiobooks%]",
+        "podcasts": "[%key:common::config_entries::content_type::options::podcasts%]"
       }
     },
     "url": {
@@ -14,11 +14,11 @@
       "description": "The base URL of your WebDAV server (e.g., https://example.com/webdav)"
     },
     "username": {
-      "label": "Username",
+      "label": "[%key:common::config_entries::username::label%]",
       "description": "Username for WebDAV authentication (leave empty for no authentication)"
     },
     "password": {
-      "label": "Password",
+      "label": "[%key:common::config_entries::password::label%]",
       "description": "Password for WebDAV authentication"
     },
     "verify_ssl": {
@@ -28,8 +28,5 @@
   },
   "manifest": {
     "description": "Stream music and audiobooks stored on any WebDAV-compatible server"
-  },
-  "errors": {
-    "connection_timeout": "WebDAV connection timeout: {0}"
   }
 }

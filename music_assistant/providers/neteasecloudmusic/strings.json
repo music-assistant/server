@@ -28,7 +28,16 @@
       "description": "Manually check whether scan confirmation completed."
     },
     "clear_auth": {
-      "label": "Reset authentication"
+      "label": "[%key:common::config_entries::clear_auth::label%]"
+    }
+  },
+  "media": {
+    "playlist": {
+      "heart_mode": { "name": "Heart Mode" },
+      "personal_fm": { "name": "Personal FM" }
+    },
+    "recommendations": {
+      "personal_radio": { "name": "Personal Radio" }
     }
   },
   "manifest": {

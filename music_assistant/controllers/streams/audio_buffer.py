@@ -18,11 +18,15 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ContentType, MediaType, VolumeNormalizationMode
+from music_assistant_models.enums import (
+    ContentType,
+    MediaType,
+    VolumeNormalizationMode,
+)
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import CONF_SMART_FADES_MODE, MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.constants import (
     BUFFER_SIZE_MAP,
     CONF_BUFFER_SIZE,
@@ -33,7 +37,6 @@ from music_assistant.controllers.streams.constants import (
     BufferSize,
 )
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
-from music_assistant.models.smart_fades import SmartFadesMode
 
 if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
@@ -96,6 +99,7 @@ class AudioBuffer:
         self._inactivity_task: asyncio.Task[None] | None = None
         self._cancelled = False
         self._producer_error: Exception | None = None
+        self._background_tasks: set[asyncio.Task[None]] = set()
         self.ready = asyncio.Event()
         self._chunk_callbacks: list[ChunkCallback] = []
         self._cancel_callbacks: list[CancelCallback] = []
@@ -391,16 +395,11 @@ class AudioBuffer:
 
         # determine ready threshold: how many seconds of audio must be buffered
         # before signaling ready for playback
-        smart_fades_mode = (
-            SmartFadesMode(
-                mass.config.get_raw_player_config_value(
-                    streamdetails.queue_id, CONF_SMART_FADES_MODE, SmartFadesMode.DISABLED
-                )
-            )
-            if streamdetails.queue_id and streamdetails.media_type == MediaType.TRACK
-            else SmartFadesMode.DISABLED
+        queue = mass.player_queues.get(streamdetails.queue_id) if streamdetails.queue_id else None
+        crossfade_enabled = bool(
+            queue and queue.crossfade_enabled and streamdetails.media_type == MediaType.TRACK
         )
-        if smart_fades_mode != SmartFadesMode.DISABLED:
+        if crossfade_enabled:
             ready_threshold = 8
         elif streamdetails.volume_normalization_mode == VolumeNormalizationMode.DYNAMIC:
             # radio streams are continuous so the normalization will converge quickly,
@@ -636,7 +635,9 @@ class AudioBuffer:
             if exc is not None and isinstance(exc, Exception):
                 self._producer_error = exc
                 loop = asyncio.get_running_loop()
-                loop.create_task(self._notify_on_producer_error())
+                task = loop.create_task(self._notify_on_producer_error())
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
 
         task.add_done_callback(_on_producer_done)
 
@@ -645,14 +646,22 @@ class AudioBuffer:
             loop = asyncio.get_running_loop()
             self._inactivity_task = loop.create_task(self._monitor_inactivity())
 
-    async def _monitor_inactivity(self) -> None:
-        """Clear the buffer if inactive for 5 minutes."""
-        inactivity_timeout = 60 * 5
-        check_interval = 30
+    async def _monitor_inactivity(
+        self, inactivity_timeout: float = 300, check_interval: float = 30
+    ) -> None:
+        """
+        Clear the buffer once it has been inactive for inactivity_timeout seconds.
+
+        :param inactivity_timeout: Seconds without access before the buffer is released.
+        :param check_interval: Seconds between inactivity checks.
+        """
         while True:
             await asyncio.sleep(check_interval)
             time_since_access = time.time() - self._last_access_time
-            if len(self._chunks) > 0 and time_since_access > inactivity_timeout:
+            # break on inactivity regardless of how many chunks remain: a rolling buffer
+            # that has drained to empty (e.g. an abandoned radio stream) must still release
+            # its resources and stop this monitor, otherwise the task loops forever
+            if time_since_access > inactivity_timeout:
                 LOGGER.log(
                     VERBOSE_LOG_LEVEL,
                     "AudioBuffer: No activity for %.1fs, clearing (%s chunks)",

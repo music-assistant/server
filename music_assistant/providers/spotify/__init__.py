@@ -174,7 +174,7 @@ async def get_config_entries(
             key="dev_label_text",
             type=ConfigEntryType.LABEL,
             label=dev_label_text,
-            category="Developer Token",
+            category="developer_token",
             # Show only when global auth is complete
             hidden=not global_authenticated,
         ),
@@ -185,7 +185,7 @@ async def get_config_entries(
             required=False,
             default_value="",
             value=values.get(CONF_CLIENT_ID, "") if values else "",
-            category="Developer Token",
+            category="developer_token",
             # Show only when global auth is complete
             hidden=not global_authenticated or dev_authenticated,
         ),
@@ -202,7 +202,7 @@ async def get_config_entries(
             key=CONF_ACTION_AUTH_DEV,
             type=ConfigEntryType.ACTION,
             action=CONF_ACTION_AUTH_DEV,
-            category="Developer Token",
+            category="developer_token",
             # Show only when global is authenticated and dev is NOT authenticated
             # The client_id dependency is checked at action time, not visibility
             hidden=not global_authenticated or dev_authenticated,
@@ -212,7 +212,7 @@ async def get_config_entries(
             type=ConfigEntryType.ACTION,
             action=CONF_ACTION_CLEAR_AUTH_DEV,
             required=False,
-            category="Developer Token",
+            category="developer_token",
             # Show when dev token is set
             hidden=not global_authenticated or not dev_authenticated,
         ),

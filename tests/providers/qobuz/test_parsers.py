@@ -407,7 +407,8 @@ class TestParseTrack:
         assert result.artists[0].name == "Unknown Artist"
 
     async def test_parse_track_missing_performers_key(self, mock_provider: QobuzProvider) -> None:
-        """Test parsing track with no performer, no album artist, and no performers key.
+        """
+        Test parsing track with no performer, no album artist, and no performers key.
 
         The performers-string fallback gracefully handles missing key
         via .get("performers", "").

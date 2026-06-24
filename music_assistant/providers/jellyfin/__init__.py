@@ -230,7 +230,8 @@ class JellyfinProvider(MusicProvider):
         media_types: list[MediaType],
         limit: int = 20,
     ) -> SearchResults:
-        """Perform search on the Jellyfin library.
+        """
+        Perform search on the Jellyfin library.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include. All types if None.

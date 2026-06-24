@@ -24,7 +24,9 @@ if TYPE_CHECKING:
 SUPPORTED_FEATURES: set[ProviderFeature] = set()
 
 # Smart Fades runs on-device ML (torch) inference; gate it to capable hardware.
-# 4GB matches the Balanced buffer threshold, the minimum buffer smart crossfade needs.
+# 4GB nominal, matching the Balanced buffer threshold (the minimum buffer smart crossfade
+# needs). The gate applies meets_memory_target()'s tolerance, so a genuine 4GB host (which
+# reports ~3.8GB after the kernel/firmware reservation) still passes.
 MIN_RAM_GB = 4.0
 MIN_CPU_CORES = 2
 # Below the recommended thresholds the provider still runs, but we surface an
