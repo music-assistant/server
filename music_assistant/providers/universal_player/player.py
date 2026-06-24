@@ -14,11 +14,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant.constants import CONF_PREFERRED_OUTPUT_PROTOCOL
+from music_assistant_models.enums import PlaybackState, PlayerFeature
+
+from music_assistant.constants import EXTERNAL_SOURCES
 from music_assistant.models.player import DeviceInfo, Player
 
+from .constants import EXTERNAL_SOURCE_PROTOCOLS
+
 if TYPE_CHECKING:
-    from music_assistant_models.enums import PlayerFeature
+    from music_assistant_models.player import PlayerMedia, PlayerSource
 
     from .provider import UniversalPlayerProvider
 
@@ -62,43 +66,101 @@ class UniversalPlayer(Player):
     @property
     def available(self) -> bool:
         """Return if the player is currently available."""
-        # A universal player is available if any of its linked protocol players are available
         return any(
             (p := self.mass.players.get_player(pid)) and p.available
             for pid in self._protocol_player_ids
         )
 
-    def _get_control_target(
-        self, required_feature: PlayerFeature, require_active: bool = False
-    ) -> Player | None:
-        """Get the best player to send control commands to.
+    @property
+    def supported_features(self) -> set[PlayerFeature]:
+        """Return the supported features of the player."""
+        if ext_player := self._get_external_source_protocol_player():
+            return ext_player.supported_features
+        return self._attr_supported_features
 
-        Prefers the active output protocol, otherwise uses the first available
-        protocol player that supports the needed feature.
-        """
-        # If we have an active protocol, use that
-        if (
-            self.active_output_protocol
-            and self.active_output_protocol != "native"
-            and (protocol_player := self.mass.players.get_player(self.active_output_protocol))
-            and required_feature in protocol_player.supported_features
-        ):
-            return protocol_player
-
-        # If require_active is set, and no active protocol found, return None
-        if require_active:
-            return None
-
-        # Otherwise, use the first available linked protocol
-        for protocol_player_id in self._protocol_player_ids:
-            if (
-                (protocol_player := self.mass.players.get_player(protocol_player_id))
-                and protocol_player.available
-                and required_feature in protocol_player.supported_features
-            ):
-                return protocol_player
-
+    @property
+    def active_source(self) -> str | None:
+        """Return the active source of the player."""
+        if ext_player := self._get_external_source_protocol_player():
+            return ext_player.active_source
         return None
+
+    @property
+    def playback_state(self) -> PlaybackState:
+        """Return the current playback state of the player."""
+        if ext_player := self._get_external_source_protocol_player():
+            return ext_player.playback_state
+        return self._attr_playback_state
+
+    @property
+    def elapsed_time(self) -> float | None:
+        """Return the elapsed time in (fractional) seconds of the current track."""
+        if ext_player := self._get_external_source_protocol_player():
+            return ext_player.elapsed_time
+        return None
+
+    @property
+    def elapsed_time_last_updated(self) -> float | None:
+        """Return when the elapsed time was last updated."""
+        if ext_player := self._get_external_source_protocol_player():
+            return ext_player.elapsed_time_last_updated
+        return None
+
+    @property
+    def current_media(self) -> PlayerMedia | None:
+        """Return the current media being played by the player."""
+        if ext_player := self._get_external_source_protocol_player():
+            return ext_player.current_media
+        if protocol_player := self._get_active_output_protocol_player():
+            # while playing through an output protocol player, surface its raw current_media
+            # so consumers of this player's raw value (e.g. a sync group mirroring its leader)
+            # can resolve the active queue item. Reading the protocol player's .state here would
+            # route back through this player's __final_current_media and lose the queue item id.
+            return protocol_player.current_media
+        return None
+
+    @property
+    def source_list(self) -> list[PlayerSource]:
+        """Return list of available sources for this player."""
+        if ext_player := self._get_external_source_protocol_player():
+            # if an external source is active, show sources from that protocol player
+            return ext_player.source_list
+        return super().source_list
+
+    async def stop(self) -> None:
+        """Handle STOP command on the player."""
+        if ext_player := self._get_external_source_protocol_player():
+            # power off the protocol player to fully stop external apps (e.g. quit cast app)
+            if PlayerFeature.POWER in ext_player.supported_features:
+                await ext_player.power(False)
+            else:
+                await ext_player.stop()
+
+    async def play(self) -> None:
+        """Handle PLAY command on the player."""
+        if ext_player := self._get_external_source_protocol_player():
+            await ext_player.play()
+
+    async def pause(self) -> None:
+        """Handle PAUSE command on the player."""
+        if ext_player := self._get_external_source_protocol_player():
+            await ext_player.pause()
+
+    async def next_track(self) -> None:
+        """Handle NEXT_TRACK command on the player."""
+        if ext_player := self._get_external_source_protocol_player():
+            await ext_player.next_track()
+
+    async def previous_track(self) -> None:
+        """Handle PREVIOUS_TRACK command on the player."""
+        if ext_player := self._get_external_source_protocol_player():
+            await ext_player.previous_track()
+
+    async def seek(self, position: int) -> None:
+        """Handle SEEK command on the player."""
+        if ext_player := self._get_external_source_protocol_player():
+            await ext_player.seek(position)
+            self.mass.players.trigger_player_update(ext_player.player_id, debounce_delay=2)
 
     def add_protocol_player(self, protocol_player_id: str) -> None:
         """Add a protocol player to this universal player."""
@@ -110,37 +172,35 @@ class UniversalPlayer(Player):
         if protocol_player_id in self._protocol_player_ids:
             self._protocol_player_ids.remove(protocol_player_id)
 
-    def _get_preferred_protocol_player(self) -> Player | None:
-        """
-        Get the preferred protocol player for this universal player.
-
-        Selection priority:
-        1. Active output protocol (if set and available)
-        2. User's preferred output protocol (from settings), fallback to highest
-           priority if preferred is not available
-        """
-        # 1. Active output protocol takes precedence
-        if (
-            self.active_output_protocol
-            and self.active_output_protocol != "native"
-            and (protocol_player := self.mass.players.get_player(self.active_output_protocol))
-            and protocol_player.available
-        ):
-            return protocol_player
-
-        # 2. User's preferred output protocol (with fallback to highest priority)
-        preferred = self.mass.config.get_raw_player_config_value(
-            self.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
-        )
-        if preferred and (protocol_player := self.mass.players.get_player(str(preferred))):
-            if protocol_player.available:
-                return protocol_player
-
-        # Fallback: if user's preferred protocol is not available,
-        # use the highest priority available protocol
-        for protocol in sorted(self.linked_output_protocols, key=lambda x: x.priority):
-            if protocol_player := self.mass.players.get_player(protocol.output_protocol_id):
-                if protocol_player.available:
-                    return protocol_player
-
+    def _get_active_output_protocol_player(self) -> Player | None:
+        """Return the protocol player currently selected as this player's output, if any."""
+        if self.active_output_protocol and self.active_output_protocol != "native":
+            return self.mass.players.get_player(self.active_output_protocol)
         return None
+
+    def _get_external_source_protocol_player(self) -> Player | None:
+        """
+        Return a chromecast or dlna protocol player that has an external source active.
+
+        Prefers chromecast over dlna because dlna metadata tends to be less reliable.
+        """
+        if self.active_output_protocol:
+            # if an output protocol is active, don't consider external sources
+            return None
+        result: Player | None = None
+        for pid in self._protocol_player_ids:
+            protocol_player = self.mass.players.get_player(pid)
+            if not protocol_player or not protocol_player.available:
+                continue
+            if protocol_player.provider.domain not in EXTERNAL_SOURCE_PROTOCOLS:
+                continue
+            if (
+                protocol_player.active_source
+                and protocol_player.active_source.lower() in EXTERNAL_SOURCES
+                and protocol_player.playback_state != PlaybackState.IDLE
+            ):
+                # chromecast is preferred, return immediately
+                if protocol_player.provider.domain == "chromecast":
+                    return protocol_player
+                result = result or protocol_player
+        return result

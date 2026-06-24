@@ -8,6 +8,7 @@ import itertools
 import time
 from collections.abc import AsyncGenerator, Callable, Coroutine, Sequence
 from contextlib import suppress
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import aioaudiobookshelf as aioabs
@@ -95,6 +96,8 @@ from music_assistant_models.media_items.media_item import RecommendationFolder
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails
 
 from music_assistant.constants import PLAYBACK_REPORT_INTERVAL_SECONDS, PlaylistPlayableItem
+from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.providers.audiobookshelf.parsers import (
     parse_audiobook,
@@ -168,64 +171,44 @@ async def get_config_entries(
         ConfigEntry(
             key="label",
             type=ConfigEntryType.LABEL,
-            label="Please provide the address of your Audiobookshelf instance. To authenticate "
-            "you have two options: "
-            "a) Provide username AND password. Leave the API key empty. "
-            "b) Provide ONLY an API key.",
         ),
         ConfigEntry(
             key=CONF_URL,
             type=ConfigEntryType.STRING,
-            label="Server",
             required=True,
-            description="The URL of the Audiobookshelf server to connect to. For example "
-            "https://abs.domain.tld/ or http://192.168.1.4:13378/",
         ),
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
-            label="Username",
             required=False,
-            description="The username to authenticate to the remote server.",
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Password",
             required=False,
-            description="The password to authenticate to the remote server.",
         ),
         ConfigEntry(
             key=CONF_API_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="API key _instead_ of user/ password. (ABS version >= 2.26)",
             required=False,
-            description="Instead of using a username and password, "
-            "you may provide an API key (ABS version >= 2.26). "
-            "Please consult the docs.",
         ),
         ConfigEntry(
             key=CONF_OLD_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="old token",
             required=False,
             hidden=True,
         ),
         ConfigEntry(
             key=CONF_VERIFY_SSL,
             type=ConfigEntryType.BOOLEAN,
-            label="Verify SSL",
             required=False,
-            description="Whether or not to verify the certificate of SSL/TLS connections.",
             advanced=True,
             default_value=True,
         ),
         ConfigEntry(
             key=CONF_HIDE_EMPTY_PODCASTS,
             type=ConfigEntryType.BOOLEAN,
-            label="Hide empty podcasts.",
             required=False,
-            description="This will skip podcasts with no episodes associated.",
             advanced=True,
             default_value=False,
         ),
@@ -295,7 +278,12 @@ class Audiobookshelf(MusicProvider):
                 )
             await self._client_socket.init_client()
         except AbsLoginError as exc:
-            raise LoginFailed(f"Login to abs instance at {base_url} failed.") from exc
+            raise LoginFailed(
+                f"Login to abs instance at {base_url} failed.",
+                translation_key="login_failed",
+                translation_owner=self.translation_owner,
+                translation_args=[base_url],
+            ) from exc
 
         if token_old is not None and token_api is None:
             # Log Message that the old token won't work
@@ -412,7 +400,8 @@ for more details.
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
-        """Get supported features.
+        """
+        Get supported features.
 
         ABS supports multiple libraries, but they must be of the same media type. If we only
         have a single library of a media type, mapping the playlist creation is unambiguous.
@@ -455,7 +444,7 @@ for more details.
         user = await self._client.get_my_user()
         await self._set_playlog_from_user(user)
 
-    async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
+    async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
         """Retrieve playlists from abs."""
         for playlist_dict, media_type in zip(
             [
@@ -536,7 +525,8 @@ for more details.
                         token=self._client.token,
                         base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                         media_progress=progress,
-                        add_cover=bool(item.library_item.media.cover_path or False),
+                        cover_path=item.library_item.media.cover_path,
+                        cover_version=item.library_item.updated_at,
                     )
                 )
         for cnt, item in enumerate(playlist_items):
@@ -546,7 +536,8 @@ for more details.
 
     @handle_refresh_token
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
-        """Create a playlist in ABS.
+        """
+        Create a playlist in ABS.
 
         This method may only be called, if we have not more than one library per media item in ABS.
         """
@@ -634,7 +625,8 @@ for more details.
 
     @handle_refresh_token
     async def library_add(self, item: MediaItemType) -> bool:
-        """Add library item.
+        """
+        Add library item.
 
         This method is only called, if this item in question is not part of your library
         yet, e.g. a "top 500 mix playlist". This doesn't exist in ABS.
@@ -645,8 +637,9 @@ for more details.
         )
         return False
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
-        """Retrieve library/subscribed podcasts from the provider.
+    async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
+        """
+        Retrieve library/subscribed podcasts from the provider.
 
         Minified podcast information is enough.
         """
@@ -696,10 +689,9 @@ for more details.
             base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
         )
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
-        """Get all podcast episodes of podcast.
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
+        """
+        Get all podcast episodes of podcast.
 
         Adds progress information.
         """
@@ -725,7 +717,8 @@ for more details.
                 token=self._client.token,
                 base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                 media_progress=progress,
-                add_cover=bool(abs_podcast.media.cover_path or False),
+                cover_path=abs_podcast.media.cover_path,
+                cover_version=abs_podcast.updated_at,
             )
             yield mass_episode
             episode_cnt += 1
@@ -754,14 +747,16 @@ for more details.
                     token=self._client.token,
                     base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
                     media_progress=progress,
-                    add_cover=bool(abs_podcast.media.cover_path or False),
+                    cover_path=abs_podcast.media.cover_path,
+                    cover_version=abs_podcast.updated_at,
                 )
 
             episode_cnt += 1
         raise MediaNotFoundError("Episode not found")
 
-    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook, None]:
-        """Get Audiobook libraries.
+    async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
+        """
+        Get Audiobook libraries.
 
         Need expanded version for chapters.
         """
@@ -800,7 +795,8 @@ for more details.
 
     @handle_refresh_token
     async def get_audiobook(self, prov_audiobook_id: str) -> Audiobook:
-        """Get a single audiobook.
+        """
+        Get a single audiobook.
 
         Progress is added here.
         """
@@ -833,7 +829,8 @@ for more details.
         session_helper: SessionHelper,
         media_type: MediaType,
     ) -> StreamDetails:
-        """Streamdetails audiobook.
+        """
+        Streamdetails audiobook.
 
         We always use a custom stream type, also for single file, such
         that we can handle an ffmpeg error and refresh our tokens.
@@ -959,15 +956,39 @@ for more details.
         raise web.HTTPFound(location=stream_url)
 
     @handle_refresh_token
-    async def get_resume_position(self, item_id: str, media_type: MediaType) -> tuple[bool, int]:
+    async def get_resume_position(
+        self, item_id: str, media_type: MediaType
+    ) -> tuple[bool, int, datetime | None]:
         """Return finished:bool, position_ms: int."""
         # this method is called _before_ get_stream_details, so the playback session
         # is created here.
         session = await self._get_playback_session(mass_item_id=item_id)
-        finished = session.current_time > session.duration - PLAYBACK_REPORT_INTERVAL_SECONDS
-        self.logger.debug("Resume position: obtained.")
-        return finished, int(session.current_time * 1000)
 
+        item_ids = item_id.split(" ")
+        abs_item_id = item_ids[0]
+        episode_id = item_ids[1] if len(item_ids) == 2 else None
+        progress = await self._client.get_my_media_progress(
+            item_id=abs_item_id, episode_id=episode_id
+        )
+        # only the progress object has a timestamp of the progress (not the session)
+        # last_update is in ms epoch
+        # If there is an open session, that session might have the old progress time,
+        # whereas the explicit progress call above gives the most recent time.
+        timestamp = from_utc_timestamp(progress.last_update / 1000) if progress else None
+        current_time = (
+            progress.current_time
+            if progress is not None and progress.current_time is not None
+            else session.current_time
+        )
+        finished = current_time > session.duration - PLAYBACK_REPORT_INTERVAL_SECONDS
+        self.logger.debug("Resume position %s: obtained.", current_time)
+        return (
+            finished,
+            int(current_time * 1000),
+            timestamp,
+        )
+
+    @use_cache(3600, base_class=RecommendationFolder, allow_expired_cache=True)
     @handle_refresh_token
     async def recommendations(self) -> list[RecommendationFolder]:
         """Get recommendations."""
@@ -1104,9 +1125,11 @@ for more details.
                             podcast_id = entity.id_
                             if entity.recent_episode is None:
                                 continue
-                            _add_cover = False
+                            _cover_path = None
+                            _cover_version = None
                             if isinstance(entity, ShelfLibraryItemMinifiedPodcast):
-                                _add_cover = bool(entity.media.cover_path or False)
+                                _cover_path = entity.media.cover_path
+                                _cover_version = entity.updated_at
                             # we only have a PodcastEpisode here, with limited information
                             item = parse_podcast_episode(
                                 episode=entity.recent_episode,
@@ -1115,7 +1138,8 @@ for more details.
                                 domain=self.domain,
                                 token=self._client.token,
                                 base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
-                                add_cover=_add_cover,
+                                cover_path=_cover_path,
+                                cover_version=_cover_version,
                             )
                         if item is not None:
                             items.append(item)
@@ -1188,7 +1212,8 @@ for more details.
         media_item: MediaItemType,
         is_playing: bool = False,
     ) -> None:
-        """Update progress in Audiobookshelf.
+        """
+        Update progress in Audiobookshelf.
 
         In our case media_type may have 3 values:
             - PODCAST
@@ -1307,7 +1332,8 @@ for more details.
 
     @handle_refresh_token
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse for audiobookshelf.
+        """
+        Browse for audiobookshelf.
 
         Generates this view:
         Library_Name_A (Audiobooks)
@@ -1745,7 +1771,8 @@ for more details.
     async def _socket_abs_user_item_progress_updated(
         self, id_: str, progress: MediaProgress
     ) -> None:
-        """To update continue listening.
+        """
+        To update continue listening.
 
         ABS reports every 15s and immediately on play state change.
         This callback is called per item if a progress is changed:
@@ -1850,7 +1877,8 @@ for more details.
         return known_ids
 
     async def _set_playlog_from_user(self, user: User) -> None:
-        """Update on user callback.
+        """
+        Update on user callback.
 
         User holds also all media progresses specific to that user.
 

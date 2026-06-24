@@ -4,14 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import BrowseFolder, Playlist, ProviderMapping
 
+from music_assistant.providers.apple_music.helpers.utils import is_library_id
+from music_assistant.providers.apple_music.parsers import parse_playlist
+
 if TYPE_CHECKING:
-    from music_assistant.providers.apple_music import AppleMusicProvider
+    from music_assistant.providers.apple_music.provider import AppleMusicProvider
 
 ROOT_PLAYLIST_FOLDER_ID = "p.playlistsroot"
 # Apple exposes the entire playlist hierarchy under this synthetic root. We walk the
@@ -72,7 +75,7 @@ async def _fetch_playlist_folder_children(
     apple_folder_id = folder_id or ROOT_PLAYLIST_FOLDER_ID
     endpoint = f"me/library/playlist-folders/{apple_folder_id}/children"
     try:
-        children = await provider._get_all_items(endpoint)
+        children = await provider.api_client.get_all_items(endpoint)
     except MediaNotFoundError:
         children = []
     folders: list[AppleMusicPlaylistFolder] = []
@@ -93,15 +96,15 @@ async def _fetch_playlist_folder_children(
             )
         elif child_type == "library-playlists":
             playlist_entries.append(child)
-            if provider.is_library_id(child_id):
+            if is_library_id(child_id):
                 library_playlist_ids.append(child_id)
-    ratings: dict[str, Any] = {}
+    ratings: dict[str, bool] = {}
     if library_playlist_ids:
-        ratings = await provider._get_ratings(library_playlist_ids, MediaType.PLAYLIST)
+        ratings = await provider.api_client.get_ratings(library_playlist_ids, MediaType.PLAYLIST)
     playlists: list[Playlist] = []
     for playlist_entry in playlist_entries:
-        playlist_id = playlist_entry.get("id")
-        is_favourite = ratings.get(playlist_id)
+        playlist_id = cast("str", playlist_entry.get("id"))
+        is_favourite = ratings.get(playlist_id, False)
         attributes = playlist_entry.get("attributes") or {}
         play_params = attributes.get("playParams") or {}
         global_id = play_params.get("globalId")
@@ -109,7 +112,7 @@ async def _fetch_playlist_folder_children(
         # Start with the original entry, potentially modify it below
         playlist_obj = playlist_entry
 
-        if attributes.get("hasCatalog") and global_id and not provider.is_library_id(global_id):
+        if attributes.get("hasCatalog") and global_id and not is_library_id(global_id):
             try:
                 playlist = await provider.get_playlist(global_id, is_favourite)
             except MediaNotFoundError:
@@ -121,14 +124,15 @@ async def _fetch_playlist_folder_children(
             else:
                 playlists.append(_apply_library_id(playlist, playlist_id, provider))
                 continue
-        playlists.append(provider._parse_playlist(playlist_obj, is_favourite))
+        playlists.append(parse_playlist(provider, playlist_obj, is_favourite))
     playlists.sort(key=lambda item: (item.name or "").casefold())
     folders.sort(key=lambda folder: folder.name.casefold())
     return folders, playlists
 
 
 def _playlist_without_global_id(playlist_obj: dict[str, Any]) -> dict[str, Any]:
-    """Return a shallow copy without a catalog ID.
+    """
+    Return a shallow copy without a catalog ID.
 
     Some folders report `hasCatalog=True` but their catalog playlist fetch fails.
     When that happens we strip the bogus `globalId` so downstream parsing sticks
@@ -146,7 +150,8 @@ def _playlist_without_global_id(playlist_obj: dict[str, Any]) -> dict[str, Any]:
 def _apply_library_id(
     playlist: Playlist, library_id: str, provider: AppleMusicProvider
 ) -> Playlist:
-    """Return a copy of `playlist` that always points to the library endpoint.
+    """
+    Return a copy of `playlist` that always points to the library endpoint.
 
     `get_playlist` is cached, so mutating the original object would leak those
     changes to other consumers of the cached catalog playlist.  Instead we clone

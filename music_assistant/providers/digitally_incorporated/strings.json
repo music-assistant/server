@@ -1,0 +1,15 @@
+{
+  "config_entries": {
+    "listen_key": {
+      "label": "Listen Key",
+      "description": "Your premium listen key. Get this from your account settings."
+    },
+    "enabled_networks": {
+      "label": "Enabled Networks",
+      "description": "Select which networks to enable"
+    }
+  },
+  "manifest": {
+    "description": "Stream curated internet radio from DI.FM, RadioTunes, RockRadio, JazzRadio, ClassicalRadio, and ZenRadio."
+  }
+}

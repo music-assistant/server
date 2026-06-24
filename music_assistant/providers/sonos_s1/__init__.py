@@ -17,6 +17,7 @@ from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 from soco.discovery import scan_network
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
+from music_assistant.helpers.util import format_ip_for_url
 
 from .constants import CONF_HOUSEHOLD_ID, CONF_NETWORK_SCAN
 from .provider import SonosPlayerProvider
@@ -60,18 +61,12 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_NETWORK_SCAN,
             type=ConfigEntryType.BOOLEAN,
-            label="Enable network scan for discovery",
             default_value=False,
-            description="Enable network scan for discovery of players. \n"
-            "Can be used if (some of) your players are not automatically discovered.\n"
-            "Should normally not be needed",
         ),
         ConfigEntry(
             key=CONF_HOUSEHOLD_ID,
             type=ConfigEntryType.STRING,
-            label="Household ID",
             default_value=household_ids[0] if household_ids else None,
-            description="Household ID for the Sonos (S1) system. Will be auto detected if empty.",
             advanced=True,
             required=False,
         ),
@@ -93,7 +88,9 @@ async def discover_household_ids(mass: MusicAssistant, prefer_s1: bool = True) -
 
     all_sonos_ips = await asyncio.to_thread(get_all_sonos_ips)
     for ip_address in all_sonos_ips:
-        async with mass.http_session.get(f"http://{ip_address}:1400/status/zp") as resp:
+        async with mass.http_session.get(
+            f"http://{format_ip_for_url(ip_address)}:1400/status/zp"
+        ) as resp:
             if resp.status == 200:
                 data = await resp.text()
                 if prefer_s1 and "<SWGen>2</SWGen>" in data:

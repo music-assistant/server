@@ -1,10 +1,9 @@
 """Test Tidal Streaming Manager."""
 
-import base64
 from collections.abc import Coroutine
 from sqlite3 import OperationalError
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from music_assistant_models.enums import ContentType, ExternalID, StreamType
@@ -39,8 +38,6 @@ def provider_mock() -> Mock:
     provider.mass.cache.set = AsyncMock()
     provider.mass.cache.delete = AsyncMock()
     provider.mass.music.tracks.get_library_item_by_prov_id = AsyncMock(return_value=None)
-    provider.mass.streams.base_url = "http://localhost:8095"
-    provider.mass.streams.register_dynamic_route = Mock(return_value=Mock())
 
     return provider
 
@@ -120,30 +117,117 @@ async def test_get_stream_details_hires(
 async def test_get_stream_details_with_dash_manifest(
     streaming_manager: TidalStreamingManager, provider_mock: Mock, mock_track: Mock
 ) -> None:
-    """Test get_stream_details with DASH manifest serves via HTTP route, not data: URI."""
+    """Test get_stream_details with DASH manifest served via HTTP route."""
     provider_mock.get_track.return_value = mock_track
-    manifest_xml = b"<MPD>dummy manifest</MPD>"
-    manifest_b64 = base64.b64encode(manifest_xml).decode()
     provider_mock.api.get.return_value = {
         "manifestMimeType": "application/dash+xml",
-        "manifest": manifest_b64,
+        "manifest": "bWFuaWZlc3REYXRh",
         "audioQuality": "HIGH",
         "sampleRate": 44100,
         "bitDepth": 16,
     }
+    # Mock the stream server's dynamic route registration
+    provider_mock.mass.streams.register_dynamic_route = Mock(return_value=lambda: None)
+    provider_mock.mass.streams.base_url = "http://localhost:8097"
 
     stream_details = await streaming_manager.get_stream_details("123")
 
     assert isinstance(stream_details.path, str)
-    assert stream_details.path.startswith("http://localhost:8095/tidal-dash/")
-    assert stream_details.path.endswith(".mpd")
-    assert "data:" not in stream_details.path
-
-    # Route must be registered with the streams server.
+    assert stream_details.path.startswith("http://localhost:8097/tidal-dash/")
+    assert "base64" not in stream_details.path
+    # Verify the route was registered
     provider_mock.mass.streams.register_dynamic_route.assert_called_once()
-    call_args = provider_mock.mass.streams.register_dynamic_route.call_args
-    assert call_args[0][0].startswith("/tidal-dash/")
-    assert call_args[1]["method"] == "GET"
+    # Verify cleanup was scheduled with duration-based TTL (180s track + 300s buffer = 480s)
+    provider_mock.mass.call_later.assert_called_with(
+        480,
+        streaming_manager._remove_dash_route,
+        "/tidal-dash/a3aca34e43c1737c7738507842972fa9",
+        task_id="tidal-dash-cleanup-a3aca34e43c1737c7738507842972fa9",
+    )
+
+
+async def test_get_stream_details_with_dash_manifest_handler(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock, mock_track: Mock
+) -> None:
+    """Test the DASH manifest handler returns correct body and content type."""
+    provider_mock.get_track.return_value = mock_track
+    provider_mock.api.get.return_value = {
+        "manifestMimeType": "application/dash+xml",
+        "manifest": "bWFuaWZlc3REYXRh",
+        "audioQuality": "HIGH",
+        "sampleRate": 44100,
+        "bitDepth": 16,
+    }
+    # Capture the registered handler
+    register_mock = Mock()
+    provider_mock.mass.streams.register_dynamic_route = register_mock
+    provider_mock.mass.streams.base_url = "http://localhost:8097"
+
+    await streaming_manager.get_stream_details("123")
+
+    # Extract the handler that was registered as second argument
+    handler = register_mock.call_args[0][1]
+    response = await handler(Mock())
+
+    assert response.body == b"manifestData"  # base64 decoded
+    assert response.content_type == "application/dash+xml"
+    # Verify Cache-Control header is set to prevent proxy caching
+    assert response.headers.get("Cache-Control") == "no-cache"
+
+
+async def test_get_stream_details_with_dash_manifest_duplicate_registration(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock, mock_track: Mock
+) -> None:
+    """Test cleanup is still scheduled when reusing an already-registered route."""
+    provider_mock.get_track.return_value = mock_track
+    provider_mock.api.get.return_value = {
+        "manifestMimeType": "application/dash+xml",
+        "manifest": "bWFuaWZlc3REYXRh",
+        "audioQuality": "HIGH",
+        "sampleRate": 44100,
+        "bitDepth": 16,
+    }
+    # First call succeeds, second raises RuntimeError (duplicate route)
+    provider_mock.mass.streams.register_dynamic_route = Mock(
+        side_effect=[None, RuntimeError("duplicate")]
+    )
+    provider_mock.mass.streams.base_url = "http://localhost:8097"
+    # call_later must count calls
+    call_later_mock = Mock()
+    provider_mock.mass.call_later = call_later_mock
+
+    # Call get_stream_details twice (same track → same manifest hash)
+    await streaming_manager.get_stream_details("123")
+    await streaming_manager.get_stream_details("123")
+
+    # route registration was attempted twice
+    assert provider_mock.mass.streams.register_dynamic_route.call_count == 2
+    # cleanup was scheduled both times (not skipped on duplicate)
+    assert call_later_mock.call_count == 2
+
+
+async def test_remove_dash_route(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock
+) -> None:
+    """Test _remove_dash_route calls unregister on the stream server."""
+    unregister_mock = Mock()
+    provider_mock.mass.streams.unregister_dynamic_route = unregister_mock
+
+    streaming_manager._remove_dash_route("/tidal-dash/abc123")
+
+    unregister_mock.assert_called_once_with("/tidal-dash/abc123", method="GET")
+
+
+async def test_remove_dash_route_handles_runtime_error(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock
+) -> None:
+    """Test _remove_dash_route silently swallows RuntimeError."""
+    provider_mock.mass.streams.unregister_dynamic_route = Mock(
+        side_effect=RuntimeError("not found")
+    )
+
+    # Should not raise
+    streaming_manager._remove_dash_route("/tidal-dash/abc123")
 
 
 async def test_get_stream_details_with_codec(
@@ -248,7 +332,7 @@ async def test_get_track_by_isrc_cache_miss_lookup_success(
 
     # Verify API call
     provider_mock.api.get.assert_called_with(
-        "/tracks",
+        "tracks",
         params={"filter[isrc]": "US1234567890"},
         base_url=provider_mock.api.OPEN_API_URL,
     )
@@ -566,93 +650,3 @@ async def test_async_update_provider_mapping_audio_format_unexpected_error_logs_
     )
 
     provider_mock.logger.exception.assert_called()
-
-
-async def test_get_stream_details_dash_schedules_cleanup_task(
-    streaming_manager: TidalStreamingManager, provider_mock: Mock, mock_track: Mock
-) -> None:
-    """Verify a cleanup task is scheduled to unregister the DASH manifest route."""
-    provider_mock.get_track.return_value = mock_track
-    manifest_b64 = base64.b64encode(b"<MPD/>").decode()
-    provider_mock.api.get.return_value = {
-        "manifestMimeType": "application/dash+xml",
-        "manifest": manifest_b64,
-        "audioQuality": "HIGH",
-        "sampleRate": 44100,
-        "bitDepth": 16,
-    }
-
-    captured: list[Any] = []
-    provider_mock.mass.create_task = Mock(side_effect=captured.append)
-
-    await streaming_manager.get_stream_details("123")
-
-    # create_task is called twice: once for the mapping update, once for route cleanup.
-    assert provider_mock.mass.create_task.call_count == 2
-
-
-async def test_make_manifest_handler_serves_manifest_bytes() -> None:
-    """Verify _make_manifest_handler returns an async handler that serves the given bytes."""
-    manifest_bytes = b"<MPD>test manifest</MPD>"
-    logger = Mock()
-    handler = TidalStreamingManager._make_manifest_handler(manifest_bytes, logger, "track_42")
-
-    response = await handler(MagicMock())
-
-    assert response.body == manifest_bytes
-    assert "dash+xml" in response.content_type
-    logger.debug.assert_called()
-
-
-async def test_async_unregister_manifest_route_calls_unregister(
-    streaming_manager: TidalStreamingManager,
-) -> None:
-    """Verify the route unregister callable is called after the delay."""
-    unregister = Mock()
-    with patch("music_assistant.providers.tidal.streaming.asyncio.sleep", new_callable=AsyncMock):
-        await streaming_manager._async_unregister_manifest_route(
-            unregister, "/tidal-dash/test.mpd", 300.0
-        )
-    unregister.assert_called_once()
-
-
-async def test_get_stream_details_playback_info_cache_hit(
-    streaming_manager: TidalStreamingManager, provider_mock: Mock, mock_track: Mock
-) -> None:
-    """Verify no API call is made when playback info is already cached."""
-    provider_mock.get_track.return_value = mock_track
-    provider_mock.mass.cache.get.return_value = {
-        "manifestMimeType": "application/vnd.tidal.bts",
-        "urls": ["https://cdn.tidal.com/stream.flac"],
-        "audioQuality": "LOSSLESS",
-        "sampleRate": 44100,
-        "bitDepth": 16,
-    }
-
-    stream_details = await streaming_manager.get_stream_details("123")
-
-    assert stream_details.path == "https://cdn.tidal.com/stream.flac"
-    provider_mock.api.get.assert_not_called()
-    provider_mock.mass.cache.set.assert_not_called()
-
-
-async def test_get_stream_details_playback_info_cache_miss_sets_cache(
-    streaming_manager: TidalStreamingManager, provider_mock: Mock, mock_track: Mock
-) -> None:
-    """Verify the API response is stored in cache on a cache miss."""
-    provider_mock.get_track.return_value = mock_track
-    provider_mock.mass.cache.get.return_value = None
-    api_response = {
-        "manifestMimeType": "application/vnd.tidal.bts",
-        "urls": ["https://cdn.tidal.com/stream.flac"],
-        "audioQuality": "LOSSLESS",
-        "sampleRate": 44100,
-        "bitDepth": 16,
-    }
-    provider_mock.api.get.return_value = api_response
-
-    await streaming_manager.get_stream_details("123")
-
-    provider_mock.mass.cache.set.assert_called_once()
-    set_call = provider_mock.mass.cache.set.call_args
-    assert set_call[0][1] == api_response  # second positional arg is the data

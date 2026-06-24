@@ -1,0 +1,15 @@
+{
+  "type": "plugin",
+  "domain": "yandex_smarthome",
+  "name": "Yandex Smart Home",
+  "description": "Expose Music Assistant players to Yandex Alice via Yandex Smart Home API.",
+  "codeowners": ["@trudenboy"],
+  "credits": [
+    "[dext0r/yandex_smart_home](https://github.com/dext0r/yandex_smart_home)"
+  ],
+  "requirements": ["ya-passport-auth==1.3.0"],
+  "documentation": "https://github.com/trudenboy/ma-provider-yandex-smarthome",
+  "stage": "beta",
+  "multi_instance": false,
+  "builtin": false
+}

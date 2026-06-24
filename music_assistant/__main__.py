@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import logging
 import os
+import resource
 import signal
 import subprocess
 import sys
@@ -133,6 +134,7 @@ def setup_logger(data_path: str, level: str = "DEBUG") -> logging.Logger:
     logging.getLogger("charset_normalizer").setLevel(logging.WARNING)
     logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
     logging.getLogger("numba").setLevel(logging.WARNING)
+    logging.getLogger("torio._extension.utils").setLevel(logging.WARNING)
 
     # Add a filter to suppress slow callback warnings from buffered audio streaming
     # These warnings are expected when audio buffers fill up and producers wait for consumers
@@ -230,6 +232,17 @@ def main() -> None:
 
     # setup logger
     logger = setup_logger(data_dir, log_level)
+
+    # Raise the open-file soft limit to the hard limit so the concurrent provider
+    # imports at startup can't exhaust it (default soft=1024 in HAOS add-on containers).
+    # Skip when the hard limit is unlimited (e.g. macOS), which setrlimit won't apply.
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if hard != resource.RLIM_INFINITY and soft < hard:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+        except (ValueError, OSError) as err:
+            LOGGER.warning("Could not raise open-file limit: %s", err)
+
     mass = MusicAssistant(data_dir, cache_dir, safe_mode)
 
     # enable alpine subprocess workaround
@@ -241,6 +254,7 @@ def main() -> None:
         activate_log_queue_handler()
         if dev_mode or log_level == "DEBUG":
             loop.set_debug(True)
+            loop.slow_callback_duration = 0.2
         loop.set_exception_handler(_global_loop_exception_handler)
 
         stop_event = asyncio.Event()

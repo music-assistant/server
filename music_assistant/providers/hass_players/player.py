@@ -22,7 +22,6 @@ from music_assistant.constants import (
     CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3,
     HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES,
     create_output_codec_config_entry,
-    create_sample_rates_config_entry,
 )
 from music_assistant.helpers.datetime import from_iso_string
 from music_assistant.helpers.tags import async_parse_tags
@@ -119,6 +118,16 @@ class HomeAssistantPlayer(Player):
         # Set dynamic features (PAUSE, NEXT_PREVIOUS, SEEK) via shared helper
         self._update_hass_features(hass_supported_features)
 
+        # Derive supported sample rates from ESPHome's reported formats when available
+        esphome_formats: list[ESPHomeSupportedAudioFormat] | None = self.extra_data.get(
+            "esphome_supported_audio_formats"
+        )
+        if esphome_formats:
+            rates = sorted(
+                {(fmt["sample_rate"], (fmt["sample_bytes"] or 2) * 8) for fmt in esphome_formats}
+            )
+            self._attr_supported_sample_rates = rates or [(48000, 16)]
+
         self._update_attributes(hass_state["attributes"])
 
     @property
@@ -134,29 +143,15 @@ class HomeAssistantPlayer(Player):
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         base_entries = [*DEFAULT_PLAYER_CONFIG_ENTRIES]
-        if self.extra_data.get("esphome_supported_audio_formats"):
+        supported_formats: list[ESPHomeSupportedAudioFormat] | None = self.extra_data.get(
+            "esphome_supported_audio_formats"
+        )
+        if supported_formats:
             # optimized config for new ESPHome mediaplayer
-            supported_sample_rates: list[int] = []
-            supported_bit_depths: list[int] = []
-            codec: str | None = None
-            supported_formats: list[ESPHomeSupportedAudioFormat] = self.extra_data[
-                "esphome_supported_audio_formats"
-            ]
             # sort on purpose field, so we prefer the media pipeline
             # but allows fallback to announcements pipeline if no media pipeline is available
             supported_formats.sort(key=lambda x: x["purpose"])
-            for supported_format in supported_formats:
-                codec = supported_format["format"]
-                if supported_format["sample_rate"] not in supported_sample_rates:
-                    supported_sample_rates.append(supported_format["sample_rate"])
-                bit_depth = (supported_format["sample_bytes"] or 2) * 8
-                if bit_depth not in supported_bit_depths:
-                    supported_bit_depths.append(bit_depth)
-            if not supported_sample_rates or not supported_bit_depths:
-                # esphome device with no media pipeline configured
-                # simply use the default config of the media pipeline
-                supported_sample_rates = [48000]
-                supported_bit_depths = [16]
+            codec = supported_formats[0]["format"] if supported_formats else None
 
             config_entries = [
                 *base_entries,
@@ -170,11 +165,6 @@ class HomeAssistantPlayer(Player):
             config_entries.extend(
                 [
                     CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN,
-                    create_sample_rates_config_entry(
-                        supported_sample_rates=supported_sample_rates,
-                        supported_bit_depths=supported_bit_depths,
-                        hidden=True,
-                    ),
                     # although the Voice PE supports announcements,
                     # it does not support volume for announcements
                     *HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES,

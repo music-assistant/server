@@ -11,6 +11,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.BROWSE,
+    ProviderFeature.RECOMMENDATIONS,
 }
 
 # Config keys
@@ -25,6 +26,7 @@ CACHE_EMPTY_RESULTS = 300  # 5 minutes - avoid hammering API for genuinely empty
 
 # Browse path slugs
 BROWSE_COLLECTION = "collection"
+BROWSE_FEED = "feed"
 BROWSE_WISHLIST = "wishlist"
 BROWSE_FOLLOWING = "following"
 BROWSE_FANS = "fans"

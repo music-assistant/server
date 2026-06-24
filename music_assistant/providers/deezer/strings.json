@@ -1,0 +1,33 @@
+{
+  "config_entries": {
+    "access_token": {
+      "label": "Access token",
+      "description": "You need to authenticate on Deezer.",
+      "action_label": "Authenticate with Deezer"
+    },
+    "arl_token": {
+      "label": "Arl token",
+      "description": "See https://www.dumpmedia.com/deezplus/deezer-arl.html"
+    }
+  },
+  "media": {
+    "recommendations": {
+      "made_for_you": { "name": "Made for you" },
+      "recommended_albums": { "name": "Recommended albums" },
+      "recommended_artists": { "name": "Recommended artists" },
+      "mood_flows": { "name": "Deezer Mood Flows" },
+      "genre_flows": { "name": "Deezer Genre Flows" },
+      "radios": { "name": "Deezer Radios" }
+    },
+    "playlist": {
+      "flow": { "name": "Flow" },
+      "top_charts": { "name": "Top Charts" },
+      "radio_station": { "name": "Radio: {0}" },
+      "mood_flow": { "name": "Flow: {0}" },
+      "recommended_tracks": { "name": "Recommended tracks" }
+    }
+  },
+  "manifest": {
+    "description": "Stream Deezer’s full music catalogue in CD-quality (FLAC) audio."
+  }
+}

@@ -19,6 +19,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.providers.emby.const import (
     AUDIO_STREAM_BIT_DEPTH,
+    AUDIO_STREAM_BIT_RATE,
     AUDIO_STREAM_CHANNELS,
     AUDIO_STREAM_CODEC,
     AUDIO_STREAM_SAMPLE_RATE,
@@ -26,15 +27,19 @@ from music_assistant.providers.emby.const import (
     ITEM_KEY_ALBUM_NAME,
     ITEM_KEY_ARTIST_ITEMS,
     ITEM_KEY_CONTAINER,
+    ITEM_KEY_GENRES,
     ITEM_KEY_ID,
     ITEM_KEY_IMAGE_TAGS,
     ITEM_KEY_INDEX_NUMBER,
     ITEM_KEY_MEDIA_STREAMS,
     ITEM_KEY_NAME,
     ITEM_KEY_PARENT_INDEX_NUMBER,
+    ITEM_KEY_PRIMARY_IMAGE_ITEM_ID,
     ITEM_KEY_PRODUCTION_YEAR,
     ITEM_KEY_RUNTIME_TICKS,
     ITEM_KEY_TYPE,
+    ITEM_KEY_USER_DATA,
+    USER_DATA_KEY_IS_FAVORITE,
 )
 
 if TYPE_CHECKING:
@@ -89,10 +94,9 @@ def parse_track(
     )
 
     duration = int(item.get(ITEM_KEY_RUNTIME_TICKS, 0) / 10000000)  # Convert ticks to seconds
-    media_streams = item.get(ITEM_KEY_MEDIA_STREAMS, [{}])
-    audio_stream = next((dict(s) for s in media_streams if s.get(ITEM_KEY_TYPE) == "Audio"), {})
     track_number = int(item.get(ITEM_KEY_INDEX_NUMBER, 0))
     disc_number = int(item.get(ITEM_KEY_PARENT_INDEX_NUMBER, 0))
+    audio_format = parse_stream_details(item)
 
     track = Track(
         item_id=track_id,
@@ -108,13 +112,7 @@ def parse_track(
                 item_id=track_id,
                 provider_domain=provider.domain,
                 provider_instance=instance_id,
-                audio_format=AudioFormat(
-                    content_type=ContentType.try_parse(str(item.get(ITEM_KEY_CONTAINER))),
-                    codec_type=ContentType.try_parse(str(audio_stream.get(AUDIO_STREAM_CODEC))),
-                    sample_rate=int(audio_stream.get(AUDIO_STREAM_SAMPLE_RATE, 44100)),
-                    bit_depth=int(audio_stream.get(AUDIO_STREAM_BIT_DEPTH, 16)),
-                    channels=int(audio_stream.get(AUDIO_STREAM_CHANNELS, 2)),
-                ),
+                audio_format=audio_format,
             )
         },
     )
@@ -129,9 +127,15 @@ def parse_track(
                 type=ImageType.THUMB,
                 path=image_url,
                 provider=instance_id,
-                remotely_accessible=True,
+                remotely_accessible=False,
             )
         )
+
+    user_data = item.get(ITEM_KEY_USER_DATA, {})
+    track.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+
+    if genres := item.get(ITEM_KEY_GENRES):
+        track.metadata.genres = set(genres)
 
     return track
 
@@ -168,9 +172,15 @@ def parse_artist(
                 type=ImageType.THUMB,
                 path=image_url,
                 provider=instance_id,
-                remotely_accessible=True,
+                remotely_accessible=False,
             )
         )
+
+    user_data = item.get(ITEM_KEY_USER_DATA, {})
+    artist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+
+    if genres := item.get(ITEM_KEY_GENRES):
+        artist.metadata.genres = set(genres)
 
     return artist
 
@@ -223,8 +233,9 @@ def parse_album(
     )
 
     # Extract images
-    if image_id := item.get("PrimaryImageItemId"):
-        image_url = f"{provider._base_url}Items/{image_id}/Images/Primary"
+    image_item_id = item.get(ITEM_KEY_PRIMARY_IMAGE_ITEM_ID)
+    if image_item_id or "Primary" in item.get(ITEM_KEY_IMAGE_TAGS, {}):
+        image_url = f"{provider._base_url}Items/{image_item_id or album_id}/Images/Primary"
         if album.metadata.images is None:
             album.metadata.images = UniqueList[MediaItemImage]()
         album.metadata.images.append(
@@ -232,9 +243,15 @@ def parse_album(
                 type=ImageType.THUMB,
                 path=image_url,
                 provider=instance_id,
-                remotely_accessible=True,
+                remotely_accessible=False,
             )
         )
+
+    user_data = item.get(ITEM_KEY_USER_DATA, {})
+    album.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+
+    if genres := item.get(ITEM_KEY_GENRES):
+        album.metadata.genres = set(genres)
 
     return album
 
@@ -270,8 +287,28 @@ def parse_playlist(
                 type=ImageType.THUMB,
                 path=image_url,
                 provider=instance_id,
-                remotely_accessible=True,
+                remotely_accessible=False,
             )
         )
 
+    user_data = item.get(ITEM_KEY_USER_DATA, {})
+    playlist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
+
     return playlist
+
+
+def parse_stream_details(
+    item: dict[str, Any],
+) -> AudioFormat:
+    """Parse Emby media stream details into an AudioFormat."""
+    media_streams = item.get(ITEM_KEY_MEDIA_STREAMS, [{}])
+    audio_stream = next((dict(s) for s in media_streams if s.get(ITEM_KEY_TYPE) == "Audio"), {})
+
+    return AudioFormat(
+        content_type=ContentType.try_parse(str(item.get(ITEM_KEY_CONTAINER))),
+        codec_type=ContentType.try_parse(str(audio_stream.get(AUDIO_STREAM_CODEC))),
+        sample_rate=int(audio_stream.get(AUDIO_STREAM_SAMPLE_RATE, 44100)),
+        bit_depth=int(audio_stream.get(AUDIO_STREAM_BIT_DEPTH, 16)),
+        channels=int(audio_stream.get(AUDIO_STREAM_CHANNELS, 2)),
+        bit_rate=audio_stream.get(AUDIO_STREAM_BIT_RATE),
+    )

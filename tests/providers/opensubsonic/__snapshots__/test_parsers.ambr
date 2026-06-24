@@ -1,9 +1,172 @@
 # serializer version: 1
+# name: test_lyrics[lyrics.lyrics]
+  dict({
+    'album': dict({
+      'available': True,
+      'external_ids': list([
+      ]),
+      'image': None,
+      'is_playable': True,
+      'item_id': 'e8a0685e3f3ec6f251649af2b58b8617',
+      'media_type': 'album',
+      'name': 'Live at The Casbah - 2005-04-29',
+      'provider': 'xx-instance-id-xx',
+      'sort_name': 'live at the casbah - 2005-04-29',
+      'translation_key': None,
+      'uri': 'xx-instance-id-xx://album/e8a0685e3f3ec6f251649af2b58b8617',
+      'version': '',
+      'year': None,
+    }),
+    'artists': list([
+      dict({
+        'available': True,
+        'external_ids': list([
+        ]),
+        'image': None,
+        'is_playable': True,
+        'item_id': '97e0398acf63f9fb930d7d4ce209a52b',
+        'media_type': 'artist',
+        'name': 'The New Deal',
+        'provider': 'xx-instance-id-xx',
+        'sort_name': 'new deal, the',
+        'translation_key': None,
+        'uri': 'xx-instance-id-xx://artist/97e0398acf63f9fb930d7d4ce209a52b',
+        'version': '',
+        'year': None,
+      }),
+      dict({
+        'available': True,
+        'external_ids': list([
+        ]),
+        'image': None,
+        'is_playable': True,
+        'item_id': 'ar-1',
+        'media_type': 'artist',
+        'name': 'Artist 1',
+        'provider': 'xx-instance-id-xx',
+        'sort_name': 'artist 1',
+        'translation_key': None,
+        'uri': 'xx-instance-id-xx://artist/ar-1',
+        'version': '',
+        'year': None,
+      }),
+      dict({
+        'available': True,
+        'external_ids': list([
+        ]),
+        'image': None,
+        'is_playable': True,
+        'item_id': 'ar-2',
+        'media_type': 'artist',
+        'name': 'Artist 2',
+        'provider': 'xx-instance-id-xx',
+        'sort_name': 'artist 2',
+        'translation_key': None,
+        'uri': 'xx-instance-id-xx://artist/ar-2',
+        'version': '',
+        'year': None,
+      }),
+    ]),
+    'date_added': None,
+    'disc_number': 1,
+    'duration': 178,
+    'external_ids': list([
+      list([
+        'musicbrainz_recordingid',
+        '189002e7-3285-4e2e-92a3-7f6c30d407a2',
+      ]),
+    ]),
+    'favorite': True,
+    'is_playable': True,
+    'item_id': '082f435a363c32c57d5edb6a678a28d4',
+    'last_played': 0,
+    'media_type': 'track',
+    'metadata': dict({
+      'chapters': None,
+      'collections': None,
+      'copyright': None,
+      'description': None,
+      'description_language': None,
+      'explicit': True,
+      'genres': list([
+        'East coast',
+        'Hip-Hop',
+      ]),
+      'grouping': None,
+      'images': None,
+      'label': None,
+      'languages': None,
+      'last_refresh': None,
+      'links': None,
+      'lrc_lyrics': None,
+      'lyrics': '''
+        Let us have peace, let us have life
+        Let us escape the cruel night
+        Let us have time, let the sun shine
+        Let us beware the deadly sign
+        The day is coming
+        Armageddon's near
+        Inferno's coming
+        Can we survive the blitzkrieg?
+        The blitzkrieg
+        The blitzkrieg
+        Save us from fate, save us from hate
+        Save ourselves before it's too late
+        Come to our need, hear our plea
+        Save ourselves before the earth bleeds
+        The day is dawning
+        The time is near
+        Aliens calling
+        Can we survive the blitzkrieg?
+      ''',
+      'mood': 'slow',
+      'performers': list([
+        'Artist 3',
+        'Artist 4',
+        'Artist 5',
+      ]),
+      'popularity': None,
+      'preview': None,
+      'release_date': None,
+      'review': None,
+      'style': None,
+    }),
+    'name': '"polar expedition"',
+    'position': None,
+    'provider': 'xx-instance-id-xx',
+    'provider_mappings': list([
+      dict({
+        'audio_format': dict({
+          'bit_depth': 16,
+          'bit_rate': 880,
+          'channels': 2,
+          'codec_type': '?',
+          'content_type': 'flac',
+          'output_format_str': 'flac',
+          'sample_rate': 44100,
+        }),
+        'available': True,
+        'details': None,
+        'in_library': None,
+        'is_unique': None,
+        'item_id': '082f435a363c32c57d5edb6a678a28d4',
+        'provider_domain': 'opensubsonic',
+        'provider_instance': 'xx-instance-id-xx',
+        'url': None,
+      }),
+    ]),
+    'sort_name': 'Polar expedition',
+    'track_number': 4,
+    'uri': 'xx-instance-id-xx://track/082f435a363c32c57d5edb6a678a28d4',
+    'version': '',
+  })
+# ---
 # name: test_parse_albums[no-artist.album]
   dict({
     'album_type': 'unknown',
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -13,8 +176,10 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -58,7 +223,6 @@
           }),
         ]),
         'sort_name': 'unknown]',
-        'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/fake_artist_unknown',
         'version': '',
       }),
@@ -76,8 +240,10 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': list([
         'East coast',
@@ -88,6 +254,7 @@
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
@@ -131,7 +298,6 @@
       }),
     ]),
     'sort_name': 'lagerfeuer (8-bit)',
-    'translation_key': None,
     'uri': 'opensubsonic://album/ad0f112b6dcf83de5e9cae85d07f0d35',
     'version': '',
     'year': 2007,
@@ -142,6 +308,7 @@
     'album_type': 'unknown',
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -151,8 +318,10 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -196,7 +365,6 @@
           }),
         ]),
         'sort_name': 'unknown]',
-        'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/fake_artist_unknown',
         'version': '',
       }),
@@ -214,8 +382,10 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'Download the full release here (creative commons). These cripsy beats are ripe with thumping funk and techno influences, sample wizardry and daring shuffles. Composed with the help of unique sound plugins which were especially programmed to measure Comfort Fit’s needs and wishes, we think the chances aren’t bad that you’ll fall for the unique sound signature, bounce and elegance of this unusual Hip Hop production. Ltj bukem / Good looking Rec., UK: "Really love this music." Velanche / XLR8R, UK: "Awesome job he\'s done... overall production is dope." Kwesi / BBE Music, UK: "Wooooooowwwww... WHAT THE FUCK! THIS IS WHAT',
+      'description_language': None,
       'explicit': None,
       'genres': list([
         'East coast',
@@ -226,12 +396,14 @@
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
         dict({
           'path': 'http://localhost:8989/play/art/0f8c3cbd6b0b22c3b5402141351ac812/album/21/thumb34.jpg',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -275,7 +447,6 @@
       }),
     ]),
     'sort_name': 'lagerfeuer (8-bit)',
-    'translation_key': None,
     'uri': 'opensubsonic://album/ad0f112b6dcf83de5e9cae85d07f0d35',
     'version': '',
     'year': 2007,
@@ -347,8 +518,10 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': list([
         'East coast',
@@ -359,6 +532,7 @@
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
@@ -402,7 +576,6 @@
       }),
     ]),
     'sort_name': 'lagerfeuer (8-bit)',
-    'translation_key': None,
     'uri': 'opensubsonic://album/ad0f112b6dcf83de5e9cae85d07f0d35',
     'version': '',
     'year': 2007,
@@ -474,8 +647,10 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'Download the full release here (creative commons). These cripsy beats are ripe with thumping funk and techno influences, sample wizardry and daring shuffles. Composed with the help of unique sound plugins which were especially programmed to measure Comfort Fit’s needs and wishes, we think the chances aren’t bad that you’ll fall for the unique sound signature, bounce and elegance of this unusual Hip Hop production. Ltj bukem / Good looking Rec., UK: "Really love this music." Velanche / XLR8R, UK: "Awesome job he\'s done... overall production is dope." Kwesi / BBE Music, UK: "Wooooooowwwww... WHAT THE FUCK! THIS IS WHAT',
+      'description_language': None,
       'explicit': None,
       'genres': list([
         'East coast',
@@ -486,12 +661,14 @@
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
         dict({
           'path': 'http://localhost:8989/play/art/0f8c3cbd6b0b22c3b5402141351ac812/album/21/thumb34.jpg',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -535,7 +712,6 @@
       }),
     ]),
     'sort_name': 'lagerfeuer (8-bit)',
-    'translation_key': None,
     'uri': 'opensubsonic://album/ad0f112b6dcf83de5e9cae85d07f0d35',
     'version': '',
     'year': 2007,
@@ -607,8 +783,10 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': list([
         'East coast',
@@ -619,6 +797,7 @@
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
@@ -662,7 +841,6 @@
       }),
     ]),
     'sort_name': 'lagerfeuer (8-bit)',
-    'translation_key': None,
     'uri': 'opensubsonic://album/ad0f112b6dcf83de5e9cae85d07f0d35',
     'version': 'Deluxe Edition',
     'year': 2007,
@@ -734,8 +912,10 @@
     'media_type': 'album',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'Download the full release here (creative commons). These cripsy beats are ripe with thumping funk and techno influences, sample wizardry and daring shuffles. Composed with the help of unique sound plugins which were especially programmed to measure Comfort Fit’s needs and wishes, we think the chances aren’t bad that you’ll fall for the unique sound signature, bounce and elegance of this unusual Hip Hop production. Ltj bukem / Good looking Rec., UK: "Really love this music." Velanche / XLR8R, UK: "Awesome job he\'s done... overall production is dope." Kwesi / BBE Music, UK: "Wooooooowwwww... WHAT THE FUCK! THIS IS WHAT',
+      'description_language': None,
       'explicit': None,
       'genres': list([
         'East coast',
@@ -746,12 +926,14 @@
         dict({
           'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
         dict({
           'path': 'http://localhost:8989/play/art/0f8c3cbd6b0b22c3b5402141351ac812/album/21/thumb34.jpg',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -795,7 +977,6 @@
       }),
     ]),
     'sort_name': 'lagerfeuer (8-bit)',
-    'translation_key': None,
     'uri': 'opensubsonic://album/ad0f112b6dcf83de5e9cae85d07f0d35',
     'version': 'Deluxe Edition',
     'year': 2007,
@@ -803,6 +984,7 @@
 # ---
 # name: test_parse_artists[no-sort-name.artist]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
       list([
@@ -816,8 +998,10 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -825,12 +1009,14 @@
         dict({
           'path': 'ar-37ec820ca7193e17040c98f7da7c4b51_0',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
         dict({
           'path': 'https://demo.org/image.jpg',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -874,13 +1060,13 @@
       }),
     ]),
     'sort_name': '2 mello',
-    'translation_key': None,
     'uri': 'opensubsonic://artist/37ec820ca7193e17040c98f7da7c4b51',
     'version': '',
   })
 # ---
 # name: test_parse_artists[no-sort-name.artist].1
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
       list([
@@ -894,8 +1080,10 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'Empty biography',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -903,18 +1091,21 @@
         dict({
           'path': 'ar-37ec820ca7193e17040c98f7da7c4b51_0',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
         dict({
           'path': 'https://demo.org/image.jpg',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
         dict({
           'path': 'http://localhost:8989/play/art/f20070e8e11611cc53542a38801d60fa/artist/2/thumb34.jpg',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -958,13 +1149,13 @@
       }),
     ]),
     'sort_name': '2 mello',
-    'translation_key': None,
     'uri': 'opensubsonic://artist/37ec820ca7193e17040c98f7da7c4b51',
     'version': '',
   })
 # ---
 # name: test_parse_artists[spec-artistid3.artist]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
       list([
@@ -978,8 +1169,10 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -987,12 +1180,14 @@
         dict({
           'path': 'ar-37ec820ca7193e17040c98f7da7c4b51_0',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
         dict({
           'path': 'https://demo.org/image.jpg',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -1036,13 +1231,13 @@
       }),
     ]),
     'sort_name': 'Mello (2)',
-    'translation_key': None,
     'uri': 'opensubsonic://artist/37ec820ca7193e17040c98f7da7c4b51',
     'version': '',
   })
 # ---
 # name: test_parse_artists[spec-artistid3.artist].1
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
       list([
@@ -1056,8 +1251,10 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'Empty biography',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1065,18 +1262,21 @@
         dict({
           'path': 'ar-37ec820ca7193e17040c98f7da7c4b51_0',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
         dict({
           'path': 'https://demo.org/image.jpg',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
         dict({
           'path': 'http://localhost:8989/play/art/f20070e8e11611cc53542a38801d60fa/artist/2/thumb34.jpg',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -1120,13 +1320,13 @@
       }),
     ]),
     'sort_name': 'Mello (2)',
-    'translation_key': None,
     'uri': 'opensubsonic://artist/37ec820ca7193e17040c98f7da7c4b51',
     'version': '',
   })
 # ---
 # name: test_parse_artists[spec-sample.artist]
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
     ]),
@@ -1136,8 +1336,10 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1145,6 +1347,7 @@
         dict({
           'path': 'ar-100000002',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
@@ -1188,13 +1391,13 @@
       }),
     ]),
     'sort_name': 'synthetic',
-    'translation_key': None,
     'uri': 'opensubsonic://artist/100000002',
     'version': '',
   })
 # ---
 # name: test_parse_artists[spec-sample.artist].1
   dict({
+    'artist_type': 'singer',
     'date_added': None,
     'external_ids': list([
     ]),
@@ -1204,8 +1407,10 @@
     'media_type': 'artist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'Empty biography',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1213,12 +1418,14 @@
         dict({
           'path': 'ar-100000002',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
         dict({
           'path': 'http://localhost:8989/play/art/f20070e8e11611cc53542a38801d60fa/artist/2/thumb34.jpg',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': True,
           'type': 'thumb',
         }),
@@ -1262,7 +1469,6 @@
       }),
     ]),
     'sort_name': 'synthetic',
-    'translation_key': None,
     'uri': 'opensubsonic://artist/100000002',
     'version': '',
   })
@@ -1280,8 +1486,10 @@
     'media_type': 'podcast_episode',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'The history of The History of Rome...Why the Western Empire Fell when it did...Some thoughts on the future...Thank you, goodnight.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1289,6 +1497,7 @@
         dict({
           'path': 'pd-5',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
@@ -1318,8 +1527,10 @@
       'media_type': 'podcast',
       'metadata': dict({
         'chapters': None,
+        'collections': None,
         'copyright': None,
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
+        'description_language': None,
         'explicit': None,
         'genres': None,
         'grouping': None,
@@ -1327,6 +1538,7 @@
           dict({
             'path': 'pd-5',
             'provider': 'xx-instance-id-xx',
+            'proxy_id': None,
             'remotely_accessible': False,
             'type': 'thumb',
           }),
@@ -1401,7 +1613,6 @@
     ]),
     'resume_position_ms': None,
     'sort_name': '179- the end',
-    'translation_key': None,
     'uri': 'opensubsonic://podcast_episode/pd-5$!$pe-1860',
     'version': '',
   })
@@ -1419,8 +1630,10 @@
     'media_type': 'podcast_episode',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'The history of The History of Rome...Why the Western Empire Fell when it did...Some thoughts on the future...Thank you, goodnight.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1428,6 +1641,7 @@
         dict({
           'path': 'pd-5',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
@@ -1457,8 +1671,10 @@
       'media_type': 'podcast',
       'metadata': dict({
         'chapters': None,
+        'collections': None,
         'copyright': None,
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
+        'description_language': None,
         'explicit': None,
         'genres': None,
         'grouping': None,
@@ -1466,6 +1682,7 @@
           dict({
             'path': 'pd-5',
             'provider': 'xx-instance-id-xx',
+            'proxy_id': None,
             'remotely_accessible': False,
             'type': 'thumb',
           }),
@@ -1540,7 +1757,6 @@
     ]),
     'resume_position_ms': None,
     'sort_name': '179- the end',
-    'translation_key': None,
     'uri': 'opensubsonic://podcast_episode/pd-5$!$pe-1860',
     'version': '',
   })
@@ -1558,8 +1774,10 @@
     'media_type': 'podcast_episode',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'The history of The History of Rome...Why the Western Empire Fell when it did...Some thoughts on the future...Thank you, goodnight.',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1567,6 +1785,7 @@
         dict({
           'path': 'pd-5',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
@@ -1596,8 +1815,10 @@
       'media_type': 'podcast',
       'metadata': dict({
         'chapters': None,
+        'collections': None,
         'copyright': None,
         'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
+        'description_language': None,
         'explicit': None,
         'genres': None,
         'grouping': None,
@@ -1605,6 +1826,7 @@
           dict({
             'path': 'pd-5',
             'provider': 'xx-instance-id-xx',
+            'proxy_id': None,
             'remotely_accessible': False,
             'type': 'thumb',
           }),
@@ -1679,7 +1901,6 @@
     ]),
     'resume_position_ms': None,
     'sort_name': '179- the end',
-    'translation_key': None,
     'uri': 'opensubsonic://podcast_episode/pd-5$!$pe-1860',
     'version': '',
   })
@@ -1690,14 +1911,17 @@
     'external_ids': list([
     ]),
     'favorite': False,
+    'is_dynamic': False,
     'is_editable': True,
     'is_playable': True,
     'item_id': 'Mi8xNzQzNzg5NTk5MzM1LTE3NDM3ODk1OTkzMzUubTN1',
     'media_type': 'playlist',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1705,6 +1929,7 @@
         dict({
           'path': 'al-2250',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
@@ -1753,6 +1978,7 @@
       'track',
     ]),
     'translation_key': None,
+    'translation_params': None,
     'uri': 'opensubsonic://playlist/Mi8xNzQzNzg5NTk5MzM1LTE3NDM3ODk1OTkzMzUubTN1',
     'version': '',
   })
@@ -1768,8 +1994,10 @@
     'media_type': 'podcast',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1777,6 +2005,7 @@
         dict({
           'path': 'pd-5',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
@@ -1838,8 +2067,10 @@
     'media_type': 'podcast',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': 'A weekly podcast tracing the rise, decline and fall of the Roman Empire. Now complete!',
+      'description_language': None,
       'explicit': None,
       'genres': None,
       'grouping': None,
@@ -1847,6 +2078,7 @@
         dict({
           'path': 'pd-5',
           'provider': 'xx-instance-id-xx',
+          'proxy_id': None,
           'remotely_accessible': False,
           'type': 'thumb',
         }),
@@ -1917,6 +2149,7 @@
     }),
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -1926,8 +2159,10 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -1971,7 +2206,6 @@
           }),
         ]),
         'sort_name': 'unknown]',
-        'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/fake_artist_unknown',
         'version': '',
       }),
@@ -1992,8 +2226,10 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -2045,7 +2281,6 @@
     ]),
     'sort_name': 'Polar expedition',
     'track_number': 0,
-    'translation_key': None,
     'uri': 'xx-instance-id-xx://track/082f435a363c32c57d5edb6a678a28d4',
     'version': '',
   })
@@ -2053,75 +2288,135 @@
 # name: test_parse_track[missing-items.track].1
   dict({
     'album': dict({
-      'artist': 'pornophonique',
-      'artistId': '97e0398acf63f9fb930d7d4ce209a52b',
+      'album_type': 'unknown',
       'artists': list([
         dict({
-          'id': 'ar-1',
+          'available': True,
+          'external_ids': list([
+          ]),
+          'image': None,
+          'is_playable': True,
+          'item_id': '97e0398acf63f9fb930d7d4ce209a52b',
+          'media_type': 'artist',
+          'name': 'pornophonique',
+          'provider': 'xx-instance-id-xx',
+          'sort_name': 'pornophonique',
+          'translation_key': None,
+          'uri': 'xx-instance-id-xx://artist/97e0398acf63f9fb930d7d4ce209a52b',
+          'version': '',
+          'year': None,
+        }),
+        dict({
+          'available': True,
+          'external_ids': list([
+          ]),
+          'image': None,
+          'is_playable': True,
+          'item_id': 'ar-1',
+          'media_type': 'artist',
           'name': 'Artist 1',
+          'provider': 'xx-instance-id-xx',
+          'sort_name': 'artist 1',
+          'translation_key': None,
+          'uri': 'xx-instance-id-xx://artist/ar-1',
+          'version': '',
+          'year': None,
         }),
         dict({
-          'id': 'ar-2',
+          'available': True,
+          'external_ids': list([
+          ]),
+          'image': None,
+          'is_playable': True,
+          'item_id': 'ar-2',
+          'media_type': 'artist',
           'name': 'Artist 2',
+          'provider': 'xx-instance-id-xx',
+          'sort_name': 'artist 2',
+          'translation_key': None,
+          'uri': 'xx-instance-id-xx://artist/ar-2',
+          'version': '',
+          'year': None,
         }),
       ]),
-      'coverArt': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
-      'created': '2023-03-10T02:19:35.784818075Z',
-      'discTitles': list([
-        dict({
-          'disc': 0,
-          'title': 'Disc 0 title',
-        }),
-        dict({
-          'disc': 2,
-          'title': 'Disc 1 title',
-        }),
+      'date_added': None,
+      'external_ids': list([
+        list([
+          'musicbrainz_albumid',
+          '189002e7-3285-4e2e-92a3-7f6c30d407a2',
+        ]),
       ]),
-      'displayArtist': 'Artist 1 feat. Artist 2',
-      'duration': 1954,
-      'explicitStatus': 'explicit',
-      'genre': 'Hip-Hop',
-      'genres': list([
-        dict({
-          'name': 'Hip-Hop',
-        }),
-        dict({
-          'name': 'East coast',
-        }),
-      ]),
-      'id': 'e8a0685e3f3ec6f251649af2b58b8617',
-      'isCompilation': False,
-      'moods': list([
-        'slow',
-        'cool',
-      ]),
-      'musicBrainzId': '189002e7-3285-4e2e-92a3-7f6c30d407a2',
+      'favorite': True,
+      'is_playable': True,
+      'item_id': 'e8a0685e3f3ec6f251649af2b58b8617',
+      'media_type': 'album',
+      'metadata': dict({
+        'chapters': None,
+        'collections': None,
+        'copyright': None,
+        'description': None,
+        'description_language': None,
+        'explicit': None,
+        'genres': list([
+          'East coast',
+          'Hip-Hop',
+        ]),
+        'grouping': None,
+        'images': list([
+          dict({
+            'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
+            'provider': 'xx-instance-id-xx',
+            'proxy_id': None,
+            'remotely_accessible': False,
+            'type': 'thumb',
+          }),
+        ]),
+        'label': None,
+        'languages': None,
+        'last_refresh': None,
+        'links': None,
+        'lrc_lyrics': None,
+        'lyrics': None,
+        'mood': 'slow',
+        'performers': None,
+        'popularity': None,
+        'preview': None,
+        'release_date': None,
+        'review': None,
+        'style': None,
+      }),
       'name': 'Live at The Casbah - 2005-04-29',
-      'originalReleaseDate': dict({
-        'day': 10,
-        'month': 3,
-        'year': 2001,
-      }),
-      'playCount': 97,
-      'played': '2023-03-28T00:45:13Z',
-      'releaseDate': dict({
-        'day': 10,
-        'month': 3,
-        'year': 2001,
-      }),
-      'releaseTypes': list([
-        'Album',
-        'Remixes',
+      'position': None,
+      'provider': 'opensubsonic',
+      'provider_mappings': list([
+        dict({
+          'audio_format': dict({
+            'bit_depth': 16,
+            'bit_rate': 0,
+            'channels': 2,
+            'codec_type': '?',
+            'content_type': '?',
+            'output_format_str': '?',
+            'sample_rate': 44100,
+          }),
+          'available': True,
+          'details': None,
+          'in_library': None,
+          'is_unique': None,
+          'item_id': 'e8a0685e3f3ec6f251649af2b58b8617',
+          'provider_domain': 'opensubsonic',
+          'provider_instance': 'xx-instance-id-xx',
+          'url': None,
+        }),
       ]),
-      'songCount': 8,
-      'sortName': 'lagerfeuer (8-bit)',
-      'starred': '2023-03-22T01:51:06Z',
-      'userRating': 4,
+      'sort_name': 'lagerfeuer (8-bit)',
+      'uri': 'opensubsonic://album/e8a0685e3f3ec6f251649af2b58b8617',
       'version': 'Deluxe Edition',
       'year': 2007,
     }),
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -2131,8 +2426,10 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -2176,7 +2473,6 @@
           }),
         ]),
         'sort_name': 'unknown]',
-        'translation_key': None,
         'uri': 'xx-instance-id-xx://artist/fake_artist_unknown',
         'version': '',
       }),
@@ -2197,8 +2493,10 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -2250,9 +2548,8 @@
     ]),
     'sort_name': 'Polar expedition',
     'track_number': 0,
-    'translation_key': None,
     'uri': 'xx-instance-id-xx://track/082f435a363c32c57d5edb6a678a28d4',
-    'version': '',
+    'version': 'Deluxe Edition',
   })
 # ---
 # name: test_parse_track[navi-various.track]
@@ -2275,6 +2572,7 @@
     }),
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -2284,8 +2582,10 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -2329,7 +2629,6 @@
           }),
         ]),
         'sort_name': 'new deal, the',
-        'translation_key': None,
         'uri': 'opensubsonic://artist/MA-NAVIDROME-The New Deal',
         'version': '',
       }),
@@ -2350,8 +2649,10 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -2403,7 +2704,6 @@
     ]),
     'sort_name': 'Polar expedition',
     'track_number': 0,
-    'translation_key': None,
     'uri': 'xx-instance-id-xx://track/082f435a363c32c57d5edb6a678a28d4',
     'version': '',
   })
@@ -2411,75 +2711,135 @@
 # name: test_parse_track[navi-various.track].1
   dict({
     'album': dict({
-      'artist': 'pornophonique',
-      'artistId': '97e0398acf63f9fb930d7d4ce209a52b',
+      'album_type': 'unknown',
       'artists': list([
         dict({
-          'id': 'ar-1',
+          'available': True,
+          'external_ids': list([
+          ]),
+          'image': None,
+          'is_playable': True,
+          'item_id': '97e0398acf63f9fb930d7d4ce209a52b',
+          'media_type': 'artist',
+          'name': 'pornophonique',
+          'provider': 'xx-instance-id-xx',
+          'sort_name': 'pornophonique',
+          'translation_key': None,
+          'uri': 'xx-instance-id-xx://artist/97e0398acf63f9fb930d7d4ce209a52b',
+          'version': '',
+          'year': None,
+        }),
+        dict({
+          'available': True,
+          'external_ids': list([
+          ]),
+          'image': None,
+          'is_playable': True,
+          'item_id': 'ar-1',
+          'media_type': 'artist',
           'name': 'Artist 1',
+          'provider': 'xx-instance-id-xx',
+          'sort_name': 'artist 1',
+          'translation_key': None,
+          'uri': 'xx-instance-id-xx://artist/ar-1',
+          'version': '',
+          'year': None,
         }),
         dict({
-          'id': 'ar-2',
+          'available': True,
+          'external_ids': list([
+          ]),
+          'image': None,
+          'is_playable': True,
+          'item_id': 'ar-2',
+          'media_type': 'artist',
           'name': 'Artist 2',
+          'provider': 'xx-instance-id-xx',
+          'sort_name': 'artist 2',
+          'translation_key': None,
+          'uri': 'xx-instance-id-xx://artist/ar-2',
+          'version': '',
+          'year': None,
         }),
       ]),
-      'coverArt': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
-      'created': '2023-03-10T02:19:35.784818075Z',
-      'discTitles': list([
-        dict({
-          'disc': 0,
-          'title': 'Disc 0 title',
-        }),
-        dict({
-          'disc': 2,
-          'title': 'Disc 1 title',
-        }),
+      'date_added': None,
+      'external_ids': list([
+        list([
+          'musicbrainz_albumid',
+          '189002e7-3285-4e2e-92a3-7f6c30d407a2',
+        ]),
       ]),
-      'displayArtist': 'Artist 1 feat. Artist 2',
-      'duration': 1954,
-      'explicitStatus': 'explicit',
-      'genre': 'Hip-Hop',
-      'genres': list([
-        dict({
-          'name': 'Hip-Hop',
-        }),
-        dict({
-          'name': 'East coast',
-        }),
-      ]),
-      'id': 'e8a0685e3f3ec6f251649af2b58b8617',
-      'isCompilation': False,
-      'moods': list([
-        'slow',
-        'cool',
-      ]),
-      'musicBrainzId': '189002e7-3285-4e2e-92a3-7f6c30d407a2',
+      'favorite': True,
+      'is_playable': True,
+      'item_id': 'e8a0685e3f3ec6f251649af2b58b8617',
+      'media_type': 'album',
+      'metadata': dict({
+        'chapters': None,
+        'collections': None,
+        'copyright': None,
+        'description': None,
+        'description_language': None,
+        'explicit': None,
+        'genres': list([
+          'East coast',
+          'Hip-Hop',
+        ]),
+        'grouping': None,
+        'images': list([
+          dict({
+            'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
+            'provider': 'xx-instance-id-xx',
+            'proxy_id': None,
+            'remotely_accessible': False,
+            'type': 'thumb',
+          }),
+        ]),
+        'label': None,
+        'languages': None,
+        'last_refresh': None,
+        'links': None,
+        'lrc_lyrics': None,
+        'lyrics': None,
+        'mood': 'slow',
+        'performers': None,
+        'popularity': None,
+        'preview': None,
+        'release_date': None,
+        'review': None,
+        'style': None,
+      }),
       'name': 'Live at The Casbah - 2005-04-29',
-      'originalReleaseDate': dict({
-        'day': 10,
-        'month': 3,
-        'year': 2001,
-      }),
-      'playCount': 97,
-      'played': '2023-03-28T00:45:13Z',
-      'releaseDate': dict({
-        'day': 10,
-        'month': 3,
-        'year': 2001,
-      }),
-      'releaseTypes': list([
-        'Album',
-        'Remixes',
+      'position': None,
+      'provider': 'opensubsonic',
+      'provider_mappings': list([
+        dict({
+          'audio_format': dict({
+            'bit_depth': 16,
+            'bit_rate': 0,
+            'channels': 2,
+            'codec_type': '?',
+            'content_type': '?',
+            'output_format_str': '?',
+            'sample_rate': 44100,
+          }),
+          'available': True,
+          'details': None,
+          'in_library': None,
+          'is_unique': None,
+          'item_id': 'e8a0685e3f3ec6f251649af2b58b8617',
+          'provider_domain': 'opensubsonic',
+          'provider_instance': 'xx-instance-id-xx',
+          'url': None,
+        }),
       ]),
-      'songCount': 8,
-      'sortName': 'lagerfeuer (8-bit)',
-      'starred': '2023-03-22T01:51:06Z',
-      'userRating': 4,
+      'sort_name': 'lagerfeuer (8-bit)',
+      'uri': 'opensubsonic://album/e8a0685e3f3ec6f251649af2b58b8617',
       'version': 'Deluxe Edition',
       'year': 2007,
     }),
     'artists': list([
       dict({
+        'artist_type': 'singer',
         'date_added': None,
         'external_ids': list([
         ]),
@@ -2489,8 +2849,10 @@
         'media_type': 'artist',
         'metadata': dict({
           'chapters': None,
+          'collections': None,
           'copyright': None,
           'description': None,
+          'description_language': None,
           'explicit': None,
           'genres': None,
           'grouping': None,
@@ -2534,7 +2896,6 @@
           }),
         ]),
         'sort_name': 'new deal, the',
-        'translation_key': None,
         'uri': 'opensubsonic://artist/MA-NAVIDROME-The New Deal',
         'version': '',
       }),
@@ -2555,8 +2916,10 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -2608,9 +2971,8 @@
     ]),
     'sort_name': 'Polar expedition',
     'track_number': 0,
-    'translation_key': None,
     'uri': 'xx-instance-id-xx://track/082f435a363c32c57d5edb6a678a28d4',
-    'version': '',
+    'version': 'Deluxe Edition',
   })
 # ---
 # name: test_parse_track[no-version.track]
@@ -2697,8 +3059,10 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -2750,7 +3114,6 @@
     ]),
     'sort_name': 'Polar expedition',
     'track_number': 4,
-    'translation_key': None,
     'uri': 'xx-instance-id-xx://track/082f435a363c32c57d5edb6a678a28d4',
     'version': '',
   })
@@ -2758,70 +3121,130 @@
 # name: test_parse_track[no-version.track].1
   dict({
     'album': dict({
-      'artist': 'pornophonique',
-      'artistId': '97e0398acf63f9fb930d7d4ce209a52b',
+      'album_type': 'unknown',
       'artists': list([
         dict({
-          'id': 'ar-1',
+          'available': True,
+          'external_ids': list([
+          ]),
+          'image': None,
+          'is_playable': True,
+          'item_id': '97e0398acf63f9fb930d7d4ce209a52b',
+          'media_type': 'artist',
+          'name': 'pornophonique',
+          'provider': 'xx-instance-id-xx',
+          'sort_name': 'pornophonique',
+          'translation_key': None,
+          'uri': 'xx-instance-id-xx://artist/97e0398acf63f9fb930d7d4ce209a52b',
+          'version': '',
+          'year': None,
+        }),
+        dict({
+          'available': True,
+          'external_ids': list([
+          ]),
+          'image': None,
+          'is_playable': True,
+          'item_id': 'ar-1',
+          'media_type': 'artist',
           'name': 'Artist 1',
+          'provider': 'xx-instance-id-xx',
+          'sort_name': 'artist 1',
+          'translation_key': None,
+          'uri': 'xx-instance-id-xx://artist/ar-1',
+          'version': '',
+          'year': None,
         }),
         dict({
-          'id': 'ar-2',
+          'available': True,
+          'external_ids': list([
+          ]),
+          'image': None,
+          'is_playable': True,
+          'item_id': 'ar-2',
+          'media_type': 'artist',
           'name': 'Artist 2',
+          'provider': 'xx-instance-id-xx',
+          'sort_name': 'artist 2',
+          'translation_key': None,
+          'uri': 'xx-instance-id-xx://artist/ar-2',
+          'version': '',
+          'year': None,
         }),
       ]),
-      'coverArt': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
-      'created': '2023-03-10T02:19:35.784818075Z',
-      'discTitles': list([
-        dict({
-          'disc': 0,
-          'title': 'Disc 0 title',
-        }),
-        dict({
-          'disc': 2,
-          'title': 'Disc 1 title',
-        }),
+      'date_added': None,
+      'external_ids': list([
+        list([
+          'musicbrainz_albumid',
+          '189002e7-3285-4e2e-92a3-7f6c30d407a2',
+        ]),
       ]),
-      'displayArtist': 'Artist 1 feat. Artist 2',
-      'duration': 1954,
-      'explicitStatus': 'explicit',
-      'genre': 'Hip-Hop',
-      'genres': list([
-        dict({
-          'name': 'Hip-Hop',
-        }),
-        dict({
-          'name': 'East coast',
-        }),
-      ]),
-      'id': 'e8a0685e3f3ec6f251649af2b58b8617',
-      'isCompilation': False,
-      'moods': list([
-        'slow',
-        'cool',
-      ]),
-      'musicBrainzId': '189002e7-3285-4e2e-92a3-7f6c30d407a2',
+      'favorite': True,
+      'is_playable': True,
+      'item_id': 'e8a0685e3f3ec6f251649af2b58b8617',
+      'media_type': 'album',
+      'metadata': dict({
+        'chapters': None,
+        'collections': None,
+        'copyright': None,
+        'description': None,
+        'description_language': None,
+        'explicit': None,
+        'genres': list([
+          'East coast',
+          'Hip-Hop',
+        ]),
+        'grouping': None,
+        'images': list([
+          dict({
+            'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
+            'provider': 'xx-instance-id-xx',
+            'proxy_id': None,
+            'remotely_accessible': False,
+            'type': 'thumb',
+          }),
+        ]),
+        'label': None,
+        'languages': None,
+        'last_refresh': None,
+        'links': None,
+        'lrc_lyrics': None,
+        'lyrics': None,
+        'mood': 'slow',
+        'performers': None,
+        'popularity': None,
+        'preview': None,
+        'release_date': None,
+        'review': None,
+        'style': None,
+      }),
       'name': 'Live at The Casbah - 2005-04-29',
-      'originalReleaseDate': dict({
-        'day': 10,
-        'month': 3,
-        'year': 2001,
-      }),
-      'playCount': 97,
-      'played': '2023-03-28T00:45:13Z',
-      'releaseDate': dict({
-        'day': 10,
-        'month': 3,
-        'year': 2001,
-      }),
-      'releaseTypes': list([
-        'Album',
-        'Remixes',
+      'position': None,
+      'provider': 'opensubsonic',
+      'provider_mappings': list([
+        dict({
+          'audio_format': dict({
+            'bit_depth': 16,
+            'bit_rate': 0,
+            'channels': 2,
+            'codec_type': '?',
+            'content_type': '?',
+            'output_format_str': '?',
+            'sample_rate': 44100,
+          }),
+          'available': True,
+          'details': None,
+          'in_library': None,
+          'is_unique': None,
+          'item_id': 'e8a0685e3f3ec6f251649af2b58b8617',
+          'provider_domain': 'opensubsonic',
+          'provider_instance': 'xx-instance-id-xx',
+          'url': None,
+        }),
       ]),
-      'songCount': 8,
-      'sortName': 'lagerfeuer (8-bit)',
-      'starred': '2023-03-22T01:51:06Z',
-      'userRating': 4,
+      'sort_name': 'lagerfeuer (8-bit)',
+      'uri': 'opensubsonic://album/e8a0685e3f3ec6f251649af2b58b8617',
+      'version': '',
       'year': 2007,
     }),
     'artists': list([
@@ -2890,8 +3313,10 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -2943,7 +3368,6 @@
     ]),
     'sort_name': 'Polar expedition',
     'track_number': 4,
-    'translation_key': None,
     'uri': 'xx-instance-id-xx://track/082f435a363c32c57d5edb6a678a28d4',
     'version': '',
   })
@@ -3032,8 +3456,10 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -3085,7 +3511,6 @@
     ]),
     'sort_name': 'Polar expedition',
     'track_number': 4,
-    'translation_key': None,
     'uri': 'xx-instance-id-xx://track/082f435a363c32c57d5edb6a678a28d4',
     'version': '',
   })
@@ -3093,70 +3518,129 @@
 # name: test_parse_track[spec-child.track].1
   dict({
     'album': dict({
-      'artist': 'pornophonique',
-      'artistId': '97e0398acf63f9fb930d7d4ce209a52b',
+      'album_type': 'unknown',
       'artists': list([
         dict({
-          'id': 'ar-1',
+          'available': True,
+          'external_ids': list([
+          ]),
+          'image': None,
+          'is_playable': True,
+          'item_id': '97e0398acf63f9fb930d7d4ce209a52b',
+          'media_type': 'artist',
+          'name': 'pornophonique',
+          'provider': 'xx-instance-id-xx',
+          'sort_name': 'pornophonique',
+          'translation_key': None,
+          'uri': 'xx-instance-id-xx://artist/97e0398acf63f9fb930d7d4ce209a52b',
+          'version': '',
+          'year': None,
+        }),
+        dict({
+          'available': True,
+          'external_ids': list([
+          ]),
+          'image': None,
+          'is_playable': True,
+          'item_id': 'ar-1',
+          'media_type': 'artist',
           'name': 'Artist 1',
+          'provider': 'xx-instance-id-xx',
+          'sort_name': 'artist 1',
+          'translation_key': None,
+          'uri': 'xx-instance-id-xx://artist/ar-1',
+          'version': '',
+          'year': None,
         }),
         dict({
-          'id': 'ar-2',
+          'available': True,
+          'external_ids': list([
+          ]),
+          'image': None,
+          'is_playable': True,
+          'item_id': 'ar-2',
+          'media_type': 'artist',
           'name': 'Artist 2',
+          'provider': 'xx-instance-id-xx',
+          'sort_name': 'artist 2',
+          'translation_key': None,
+          'uri': 'xx-instance-id-xx://artist/ar-2',
+          'version': '',
+          'year': None,
         }),
       ]),
-      'coverArt': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
-      'created': '2023-03-10T02:19:35.784818075Z',
-      'discTitles': list([
-        dict({
-          'disc': 0,
-          'title': 'Disc 0 title',
-        }),
-        dict({
-          'disc': 2,
-          'title': 'Disc 1 title',
-        }),
+      'date_added': None,
+      'external_ids': list([
+        list([
+          'musicbrainz_albumid',
+          '189002e7-3285-4e2e-92a3-7f6c30d407a2',
+        ]),
       ]),
-      'displayArtist': 'Artist 1 feat. Artist 2',
-      'duration': 1954,
-      'explicitStatus': 'explicit',
-      'genre': 'Hip-Hop',
-      'genres': list([
-        dict({
-          'name': 'Hip-Hop',
-        }),
-        dict({
-          'name': 'East coast',
-        }),
-      ]),
-      'id': 'e8a0685e3f3ec6f251649af2b58b8617',
-      'isCompilation': False,
-      'moods': list([
-        'slow',
-        'cool',
-      ]),
-      'musicBrainzId': '189002e7-3285-4e2e-92a3-7f6c30d407a2',
+      'favorite': True,
+      'is_playable': True,
+      'item_id': 'e8a0685e3f3ec6f251649af2b58b8617',
+      'media_type': 'album',
+      'metadata': dict({
+        'chapters': None,
+        'collections': None,
+        'copyright': None,
+        'description': None,
+        'description_language': None,
+        'explicit': None,
+        'genres': list([
+          'East coast',
+          'Hip-Hop',
+        ]),
+        'grouping': None,
+        'images': list([
+          dict({
+            'path': 'al-ad0f112b6dcf83de5e9cae85d07f0d35_640a93a8',
+            'provider': 'xx-instance-id-xx',
+            'proxy_id': None,
+            'remotely_accessible': False,
+            'type': 'thumb',
+          }),
+        ]),
+        'label': None,
+        'languages': None,
+        'last_refresh': None,
+        'links': None,
+        'lrc_lyrics': None,
+        'lyrics': None,
+        'mood': 'slow',
+        'performers': None,
+        'popularity': None,
+        'preview': None,
+        'release_date': None,
+        'review': None,
+        'style': None,
+      }),
       'name': 'Live at The Casbah - 2005-04-29',
-      'originalReleaseDate': dict({
-        'day': 10,
-        'month': 3,
-        'year': 2001,
-      }),
-      'playCount': 97,
-      'played': '2023-03-28T00:45:13Z',
-      'releaseDate': dict({
-        'day': 10,
-        'month': 3,
-        'year': 2001,
-      }),
-      'releaseTypes': list([
-        'Album',
-        'Remixes',
+      'position': None,
+      'provider': 'opensubsonic',
+      'provider_mappings': list([
+        dict({
+          'audio_format': dict({
+            'bit_depth': 16,
+            'bit_rate': 0,
+            'channels': 2,
+            'codec_type': '?',
+            'content_type': '?',
+            'output_format_str': '?',
+            'sample_rate': 44100,
+          }),
+          'available': True,
+          'details': None,
+          'in_library': None,
+          'is_unique': None,
+          'item_id': 'e8a0685e3f3ec6f251649af2b58b8617',
+          'provider_domain': 'opensubsonic',
+          'provider_instance': 'xx-instance-id-xx',
+          'url': None,
+        }),
       ]),
-      'songCount': 8,
-      'sortName': 'lagerfeuer (8-bit)',
-      'starred': '2023-03-22T01:51:06Z',
-      'userRating': 4,
+      'sort_name': 'lagerfeuer (8-bit)',
+      'uri': 'opensubsonic://album/e8a0685e3f3ec6f251649af2b58b8617',
       'version': 'Deluxe Edition',
       'year': 2007,
     }),
@@ -3226,8 +3710,10 @@
     'media_type': 'track',
     'metadata': dict({
       'chapters': None,
+      'collections': None,
       'copyright': None,
       'description': None,
+      'description_language': None,
       'explicit': True,
       'genres': list([
         'East coast',
@@ -3279,8 +3765,21 @@
     ]),
     'sort_name': 'Polar expedition',
     'track_number': 4,
-    'translation_key': None,
     'uri': 'xx-instance-id-xx://track/082f435a363c32c57d5edb6a678a28d4',
-    'version': '',
+    'version': 'Deluxe Edition',
   })
+# ---
+# name: test_structured_lyrics[no-sync.structured-lyrics]
+  '''
+  It's bugging me
+  Grating me
+  And twisting me around...
+  '''
+# ---
+# name: test_structured_lyrics[structured.structured-lyrics]
+  '''
+  [59:59.90]It's bugging me
+  [00:01.90]Grating me
+  [00:02.90]And twisting me around...
+  '''
 # ---

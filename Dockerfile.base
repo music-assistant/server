@@ -1,10 +1,15 @@
 # syntax=docker/dockerfile:1
 
+# Python version is centralized in .python-version at repo root.
+# Workflows read that file and pass it here via --build-arg PYTHON_VERSION=...
+# The default below is a safety net for manual `docker build` without --build-arg.
+ARG PYTHON_VERSION=3.14
+
 # BASE docker image for music assistant container
 # This image forms the base for the final image and is not meant to be used directly
 # NOTE that the dev add-on is also based on this base image
 
-FROM python:3.13-slim-bookworm AS ffmpeg-builder
+FROM python:${PYTHON_VERSION}-slim-bookworm AS ffmpeg-builder
 
 # Enable non-free and contrib repositories for FDK-AAC and other codecs
 RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
@@ -102,7 +107,7 @@ RUN set -x \
 ##################################################################################################
 
 # PyAV wheel builder - builds PyAV against the custom FFmpeg
-FROM python:3.13-slim-bookworm AS pyav-builder
+FROM python:${PYTHON_VERSION}-slim-bookworm AS pyav-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ python3-dev pkg-config && rm -rf /var/lib/apt/lists/*
@@ -124,7 +129,7 @@ RUN PYAV_VERSION=$(python -c "import json; reqs=json.load(open('/tmp/sendspin_ma
 
 ##################################################################################################
 
-FROM python:3.13-slim-bookworm
+FROM python:${PYTHON_VERSION}-slim-bookworm
 
 # Enable non-free and contrib repositories for codec libraries
 RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
@@ -159,6 +164,8 @@ RUN set -x \
         libavfilter8 \
         # libsndfile needed for librosa audio file support (smartfades)
         libsndfile1 \
+        # libchromaprint needed for AcoustID fingerprinting (acoustid_lookup)
+        libchromaprint1 \
         # Audio codec runtime libraries (needed for FFmpeg)
         libfdk-aac2 \
         libmp3lame0 \
@@ -186,6 +193,12 @@ RUN set -x \
         liblzma5 \
         # Snapcast dependencies
         libasound2 \
+        # PortAudio for local audio output (sounddevice)
+        libportaudio2 \
+        # Allows pipewire devices to be detected when running in docker container. (local audio)
+        pipewire-alsa \
+        # Allows pulse audio devices to be detected using pactl. (local audio)
+        pulseaudio-utils \
         libvorbisidec1 \
         libflac12 \
         libavahi-client3 \
@@ -194,7 +207,15 @@ RUN set -x \
         libconfig9 \
         libpopt0 \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f \
+        /usr/bin/parecord \
+        /usr/bin/paplay \
+        /usr/bin/parec \
+        /usr/bin/pamon \
+        /usr/bin/pacat \
+        /usr/bin/pasuspender \
+        /usr/bin/pacmd
 
 # Install Snapcast 0.34.0 from GitHub releases (requires at least 0.27)
 ARG SNAPCAST_VERSION=0.34.0
@@ -209,6 +230,25 @@ RUN set -x \
     && wget -q "https://github.com/badaix/snapcast/releases/download/v${SNAPCAST_VERSION}/snapclient_${SNAPCAST_VERSION}-1_${SNAPCAST_ARCH}_bookworm.deb" -O /tmp/snapclient.deb \
     && dpkg -i /tmp/snapserver.deb /tmp/snapclient.deb \
     && rm /tmp/snapserver.deb /tmp/snapclient.deb
+
+# Install go-librespot (used by the Spotify Connect provider) from GitHub releases.
+# The release binaries statically link libvorbis/libogg/libFLAC, so the only dynamic
+# dependency is libasound2 (already installed above for Snapcast).
+# The pinned SHA256 per arch is verified before extraction; bump both when changing the version.
+ARG GO_LIBRESPOT_VERSION=0.7.4
+RUN set -x \
+    && if [ "$TARGETARCH" = "arm64" ]; then \
+        GO_LIBRESPOT_ARCH="arm64"; \
+        GO_LIBRESPOT_SHA256="62b6c7ebee6abb1f59fa3cf20a9374dd5e8c5c1ca5dab329dd312f66b59faa8d"; \
+    else \
+        GO_LIBRESPOT_ARCH="x86_64"; \
+        GO_LIBRESPOT_SHA256="ee521eed02100ee4aa9919a147304aed5afc908c5a0c99f515c3da0aed89acf7"; \
+    fi \
+    && wget -q "https://github.com/devgianlu/go-librespot/releases/download/v${GO_LIBRESPOT_VERSION}/go-librespot_linux_${GO_LIBRESPOT_ARCH}.tar.gz" -O /tmp/go-librespot.tar.gz \
+    && echo "${GO_LIBRESPOT_SHA256}  /tmp/go-librespot.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/go-librespot.tar.gz -C /usr/local/bin go-librespot \
+    && chmod +x /usr/local/bin/go-librespot \
+    && rm /tmp/go-librespot.tar.gz
 
 # Copy FFmpeg binaries and libraries from builder stage
 COPY --from=ffmpeg-builder /usr/local/bin/ffmpeg /usr/local/bin/

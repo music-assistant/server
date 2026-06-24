@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import AsyncGenerator
+from contextlib import suppress
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import aiofiles
@@ -14,63 +18,67 @@ import shortuuid
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.streams.smart_fades.filters import (
     CrossfadeFilter,
+    FadeInTrimFilter,
+    FadeOutTrimFilter,
     Filter,
     FrequencySweepFilter,
-    TimeStretchFilter,
-    TrimFilter,
+    GradualTimeStretchFilter,
 )
-from music_assistant.helpers.process import communicate
+from music_assistant.controllers.streams.smart_fades.helpers import (
+    MIN_EFFECTIVE_FADE_BUFFER,
+    SMART_CROSSFADE_DURATION,
+    compute_gradual_tempo_steps,
+    detect_effective_audio_end,
+    extrapolate_downbeats,
+    generate_synthetic_timestamps,
+)
+from music_assistant.helpers.audio import iter_pcm_slices
+from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import remove_file
-from music_assistant.models.smart_fades import (
-    SmartFadesAnalysis,
-)
+from music_assistant.models.audio_analysis import AudioAnalysisData
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
 
-SMART_CROSSFADE_DURATION = 45
+
+class SmartFadeNotApplicable(Exception):
+    """Raised when the tracks cannot yield a smart crossfade and the caller should fall back."""
+
+
+@dataclass(slots=True)
+class CrossfadeTimingInfo:
+    """Timing breakdown of a crossfade mix output: PRE | CF | POST."""
+
+    pre_crossfade_duration: float = 0.0
+    crossfade_duration: float = 0.0
+    fadein_trimmed_duration: float = 0.0
+    post_crossfade_duration: float = 0.0
 
 
 class SmartFade(ABC):
     """Abstract base class for Smart Fades."""
 
     filters: list[Filter]
+    timing_info: CrossfadeTimingInfo
 
     def __init__(self, logger: logging.Logger) -> None:
         """Initialize SmartFade base class."""
         self.filters = []
         self.logger = logger
 
-    @abstractmethod
-    def _build(self) -> None:
-        """Build the smart fades filter chain."""
-        ...
-
-    def _get_ffmpeg_filters(
-        self,
-        input_fadein_label: str = "[1]",
-        input_fadeout_label: str = "[0]",
-    ) -> list[str]:
-        """Get FFmpeg filters for smart fades."""
-        if not self.filters:
-            self._build()
-        filters = []
-        _cur_fadein_label = input_fadein_label
-        _cur_fadeout_label = input_fadeout_label
-        for audio_filter in self.filters:
-            filter_strings = audio_filter.apply(_cur_fadein_label, _cur_fadeout_label)
-            filters.extend(filter_strings)
-            _cur_fadein_label = f"[{audio_filter.output_fadein_label}]"
-            _cur_fadeout_label = f"[{audio_filter.output_fadeout_label}]"
-        return filters
-
     async def apply(
         self,
         fade_out_part: bytes,
-        fade_in_part: bytes,
+        fade_in_part: bytes | AsyncGenerator[bytes],
         pcm_format: AudioFormat,
-    ) -> bytes:
-        """Apply the smart fade to the given PCM audio parts."""
+    ) -> AsyncGenerator[bytes]:
+        """
+        Apply the smart fade, yielding PCM audio chunks as they become available.
+
+        :param fade_out_part: Raw PCM bytes for the outgoing track's tail.
+        :param fade_in_part: Raw PCM bytes or async generator for the incoming track's head.
+        :param pcm_format: Audio format of both input parts and the output.
+        """
         # Write the fade_out_part to a temporary file
         fadeout_filename = f"/tmp/{shortuuid.random(20)}.pcm"  # noqa: S108
         async with aiofiles.open(fadeout_filename, "wb") as outfile:
@@ -133,14 +141,53 @@ class SmartFade(ABC):
         )
         self.logger.log(VERBOSE_LOG_LEVEL, "FFmpeg command args: %s", " ".join(args))
 
+        got_output = False
+        stderr_lines: list[str] = []
         try:
-            # Execute the enhanced smart fade with full buffer
-            _, raw_crossfade_output, stderr = await communicate(args, fade_in_part)
+            proc = AsyncProcess(args, stdin=True, stdout=True, stderr=True, name="smartfade")
+            async with proc:
 
-            if raw_crossfade_output:
-                return raw_crossfade_output
-            stderr_msg = stderr.decode() if stderr else "(no stderr output)"
-            raise RuntimeError(f"Smart crossfade failed. FFmpeg stderr: {stderr_msg}")
+                async def _feed_stdin() -> None:
+                    if isinstance(fade_in_part, bytes):
+                        await proc.write(fade_in_part)
+                    else:
+                        async for fade_chunk in fade_in_part:
+                            await proc.write(fade_chunk)
+                    await proc.write_eof()
+
+                async def _drain_stderr() -> None:
+                    """Read stderr to prevent pipe deadlock."""
+                    async for line in proc.iter_stderr():
+                        stderr_lines.append(line)
+
+                feed_task = asyncio.create_task(_feed_stdin())
+                stderr_task = asyncio.create_task(_drain_stderr())
+                try:
+                    async for chunk in proc.iter_any():
+                        got_output = True
+                        yield chunk
+                finally:
+                    if not feed_task.done():
+                        feed_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await feed_task
+                    # Bounded wait on stderr_task so its output is still captured
+                    # for error reporting on the happy/error paths, but we don't
+                    # hang on consumer abort — ffmpeg is still alive then and
+                    # stderr won't EOF until proc.close() closes stdin, which
+                    # only runs via the async-with __aexit__ *after* this finally.
+                    # wait_for cancels stderr_task on timeout so cleanup proceeds.
+                    with suppress(TimeoutError, asyncio.CancelledError):
+                        await asyncio.wait_for(stderr_task, timeout=2)
+
+            if proc.returncode != 0:
+                stderr_msg = "; ".join(stderr_lines) if stderr_lines else "(no stderr)"
+                raise RuntimeError(f"Crossfade FFmpeg failed (rc={proc.returncode}): {stderr_msg}")
+            if not got_output:
+                msg = "Crossfade FFmpeg produced no output"
+                if stderr_lines:
+                    msg += f": {'; '.join(stderr_lines)}"
+                raise RuntimeError(msg)
         finally:
             # Always cleanup temp file, even if ffmpeg fails
             await remove_file(fadeout_filename)
@@ -153,6 +200,34 @@ class SmartFade(ABC):
         chain = " → ".join(repr(f) for f in self.filters)
         return f"<{self.__class__.__name__}: {len(self.filters)} filters> {chain}"
 
+    @abstractmethod
+    def _build(
+        self,
+        fade_out_bytes_len: int,
+        fade_in_bytes_len: int,
+        pcm_format: AudioFormat,
+    ) -> None:
+        """Build the filter chain and assign ``self.timing_info``."""
+        ...
+
+    def _get_ffmpeg_filters(
+        self,
+        input_fadein_label: str = "[1]",
+        input_fadeout_label: str = "[0]",
+    ) -> list[str]:
+        """Get FFmpeg filters for smart fades."""
+        if not self.filters:
+            raise RuntimeError("SmartFade not built — call Mixer.build() first")
+        filters = []
+        _cur_fadein_label = input_fadein_label
+        _cur_fadeout_label = input_fadeout_label
+        for audio_filter in self.filters:
+            filter_strings = audio_filter.apply(_cur_fadein_label, _cur_fadeout_label)
+            filters.extend(filter_strings)
+            _cur_fadein_label = f"[{audio_filter.output_fadein_label}]"
+            _cur_fadeout_label = f"[{audio_filter.output_fadeout_label}]"
+        return filters
+
 
 class SmartCrossFade(SmartFade):
     """Smart fades class that implements a Smart Fade mode."""
@@ -163,31 +238,70 @@ class SmartCrossFade(SmartFade):
     def __init__(
         self,
         logger: logging.Logger,
-        fade_out_analysis: SmartFadesAnalysis,
-        fade_in_analysis: SmartFadesAnalysis,
+        fade_out_analysis: AudioAnalysisData,
+        fade_in_analysis: AudioAnalysisData,
     ) -> None:
-        """Initialize SmartFades with analysis data.
-
-        Args:
-            fade_out_analysis: Analysis data for the outgoing track
-            fade_in_analysis: Analysis data for the incoming track
-            logger: Optional logger for debug output
         """
+        Initialize SmartFades with analysis data.
+
+        :param logger: Logger for debug output.
+        :param fade_out_analysis: Analysis data for the outgoing track.
+        :param fade_in_analysis: Analysis data for the incoming track.
+        """
+        if (
+            fade_out_analysis.bpm is None
+            or fade_in_analysis.bpm is None
+            or fade_out_analysis.beats is None
+            or fade_in_analysis.beats is None
+        ):
+            raise ValueError("AudioAnalysisData must have bpm and beats set for smart crossfade")
         self.fade_out_analysis = fade_out_analysis
         self.fade_in_analysis = fade_in_analysis
+        # Store validated non-optional fields for type narrowing
+        self.fade_out_bpm: float = fade_out_analysis.bpm
+        self.fade_in_bpm: float = fade_in_analysis.bpm
+        self.fade_in_beats: npt.NDArray[np.float32] = fade_in_analysis.beats
+        self.fade_in_downbeats: npt.NDArray[np.float32] = (
+            fade_in_analysis.downbeats
+            if fade_in_analysis.downbeats is not None
+            else fade_in_analysis.beats
+        )
+        # Store raw full-track beat grids; the shift to buffer-local coordinates
+        # happens in _setup_fadeout_window where the actual buffer length is known
+        self.fade_out_beats: npt.NDArray[np.float32] = fade_out_analysis.beats
+        self.fade_out_downbeats: npt.NDArray[np.float32] = (
+            fade_out_analysis.downbeats
+            if fade_out_analysis.downbeats is not None
+            else np.array([], dtype=np.float32)
+        )
+        # Only beats within the buffered head are usable for alignment decisions
+        self.fade_in_beats = self.fade_in_beats[self.fade_in_beats <= SMART_CROSSFADE_DURATION]
+        self.fade_in_downbeats = self.fade_in_downbeats[
+            self.fade_in_downbeats <= SMART_CROSSFADE_DURATION
+        ]
+        self.effective_end: float = SMART_CROSSFADE_DURATION
+        self.tempo_steps: list[tuple[float, float]] = []
         super().__init__(logger)
 
-    def _build(self) -> None:
-        """Build the smart fades filter chain."""
+    def _build(
+        self,
+        fade_out_bytes_len: int,
+        fade_in_bytes_len: int,
+        pcm_format: AudioFormat,
+    ) -> None:
+        """Build the smart fades filter chain and assign ``self.timing_info``."""
+        self.timing_info = CrossfadeTimingInfo()
+        self._setup_fadeout_window(fade_out_bytes_len, pcm_format)
+
         # Calculate tempo factor for time stretching
-        bpm_ratio = self.fade_in_analysis.bpm / self.fade_out_analysis.bpm
+        bpm_ratio = self.fade_in_bpm / self.fade_out_bpm
         bpm_diff_percent = abs(1.0 - bpm_ratio) * 100
 
         # Extrapolate downbeats for better bar calculation
         self.extrapolated_fadeout_downbeats = extrapolate_downbeats(
-            self.fade_out_analysis.downbeats,
-            tempo_factor=1.0,
-            bpm=self.fade_out_analysis.bpm,
+            self.fade_out_downbeats,
+            buffer_size=self.effective_end,
+            bpm=self.fade_out_bpm,
         )
 
         # Additional verbose logging to debug rare failures
@@ -207,38 +321,51 @@ class SmartCrossFade(SmartFade):
         # Calculate initial crossfade duration (may be adjusted later for downbeat alignment)
         crossfade_duration = self._calculate_crossfade_duration(crossfade_bars=crossfade_bars)
 
-        # Add time stretch filter if needed
-        if (
+        # Add gradual time stretch filter if needed
+        stretch_eligible = (
             0.1 < bpm_diff_percent <= self.time_stretch_bpm_percentage_threshold
             and crossfade_bars > 4
-        ):
-            self.filters.append(TimeStretchFilter(logger=self.logger, stretch_ratio=bpm_ratio))
-            # Re-extrapolate downbeats with actual tempo factor for time-stretched audio
-            self.extrapolated_fadeout_downbeats = extrapolate_downbeats(
-                self.fade_out_analysis.downbeats,
-                tempo_factor=bpm_ratio,
-                bpm=self.fade_out_analysis.bpm,
-            )
+        )
+        if stretch_eligible:
+            self._apply_gradual_time_stretch(bpm_ratio, bpm_diff_percent, crossfade_duration)
 
-        if fadein_start_pos and fadein_start_pos + crossfade_duration <= SMART_CROSSFADE_DURATION:
-            self.filters.append(TrimFilter(logger=self.logger, fadein_start_pos=fadein_start_pos))
+        if (
+            fadein_start_pos is not None
+            and fadein_start_pos + crossfade_duration <= SMART_CROSSFADE_DURATION
+        ):
+            self.filters.append(
+                FadeInTrimFilter(logger=self.logger, fadein_start_pos=fadein_start_pos)
+            )
+            self.timing_info.fadein_trimmed_duration = fadein_start_pos
         else:
             self.logger.log(
                 VERBOSE_LOG_LEVEL,
-                "Skipping beat alignment: not enough audio after trim (%.1fs + %.1fs > %.1fs)",
+                "Skipping beat alignment: not enough audio after trim (%s + %.1fs > %.1fs)",
                 fadein_start_pos,
                 crossfade_duration,
                 SMART_CROSSFADE_DURATION,
             )
 
-        # Adjust crossfade duration to align with outgoing track's downbeats
+        # Adjust crossfade duration to align with outgoing track's downbeats.
+        # When stretching, only consider downbeats after the stretch window
+        # to ensure the outgoing track has reached the target tempo.
+        crossfade_start = self.effective_end - crossfade_duration
         crossfade_duration = self._adjust_crossfade_to_downbeats(
             crossfade_duration=crossfade_duration,
             fadein_start_pos=fadein_start_pos,
+            # only consider downbeats after the stretch window when stretching is active,
+            # so the CF starts where the track has already reached the target tempo
+            min_downbeat_pos=crossfade_start if self.tempo_steps else 0.0,
         )
 
+        # Compensate crossfade duration for time-stretch compression.
+        # Gate on tempo_steps (not stretch_eligible) so a guard-skipped stretch
+        # doesn't apply a compensation for a stretch that never ran.
+        if self.tempo_steps:
+            crossfade_duration = crossfade_duration / bpm_ratio
+
         # 90 BPM -> 1500Hz, 140 BPM -> 2500Hz
-        avg_bpm = (self.fade_out_analysis.bpm + self.fade_in_analysis.bpm) / 2
+        avg_bpm = (self.fade_out_bpm + self.fade_in_bpm) / 2
         crossover_freq = int(np.clip(1500 + (avg_bpm - 90) * 20, 1500, 2500))
 
         # Adjust for BPM mismatch
@@ -258,9 +385,17 @@ class SmartCrossFade(SmartFade):
 
         # Create lowpass filter on the outgoing track (unfiltered → low-pass)
         # Extended lowpass effect to gradually remove bass frequencies
-        fadeout_eq_duration = min(max(crossfade_duration * 2.5, 8.0), SMART_CROSSFADE_DURATION)
-        # The crossfade always happens at the END of the buffer
-        fadeout_eq_start = max(0, SMART_CROSSFADE_DURATION - fadeout_eq_duration)
+        fadeout_eq_duration = min(max(crossfade_duration * 2.5, 8.0), self.effective_end)
+        # The crossfade always happens at the END of the audible tail
+        fadeout_eq_start = max(0.0, self.effective_end - fadeout_eq_duration)
+        if self.tempo_steps:
+            # post-rubberband filters run on OUTPUT time: remap the schedule so the
+            # sweep still completes exactly when the rendered tail ends
+            rendered_end = self.effective_end - self._stretch_savings_until(self.effective_end)
+            fadeout_eq_start -= self._stretch_savings_until(fadeout_eq_start)
+            # defensive floor keeping the sweep non-degenerate; cannot bind given
+            # the 5% stretch cap and the 10s minimum audible tail
+            fadeout_eq_duration = max(rendered_end - fadeout_eq_start, 1.0)
         fadeout_sweep = FrequencySweepFilter(
             logger=self.logger,
             sweep_type="lowpass",
@@ -296,21 +431,155 @@ class SmartCrossFade(SmartFade):
         )
         self.filters.append(crossfade_filter)
 
+        fade_out_seconds = self.effective_end - self._stretch_savings_until(self.effective_end)
+        fade_in_seconds = fade_in_bytes_len / pcm_format.pcm_sample_size
+        # clamp CF to fit shorter inputs (defensive — normally full buffers)
+        self.timing_info.crossfade_duration = min(
+            crossfade_duration,
+            fade_out_seconds,
+            max(0.0, fade_in_seconds - self.timing_info.fadein_trimmed_duration),
+        )
+        self.timing_info.pre_crossfade_duration = max(
+            0.0, fade_out_seconds - self.timing_info.crossfade_duration
+        )
+        self.timing_info.post_crossfade_duration = max(
+            0.0,
+            fade_in_seconds
+            - self.timing_info.fadein_trimmed_duration
+            - self.timing_info.crossfade_duration,
+        )
+
+    def _setup_fadeout_window(
+        self,
+        fade_out_bytes_len: int,
+        pcm_format: AudioFormat,
+    ) -> None:
+        """
+        Compute the effective audio end of the fade-out tail and prepare the filter chain.
+
+        Sets ``self.effective_end``, optionally appends a ``FadeOutTrimFilter``
+        (first in the chain, since this runs before any other filter is added),
+        converts ``self.fade_out_beats`` / ``self.fade_out_downbeats`` from
+        full-track to buffer-local coordinates using the actual buffer length,
+        and masks them to the audible window.  Raises ``ValueError`` when the
+        tail is too short to be useful so the caller can fall back to a standard
+        crossfade.
+
+        :param fade_out_bytes_len: Raw byte count of the fade-out holdback buffer.
+        :param pcm_format: PCM format used to convert bytes to seconds.
+        """
+        buffer_duration = min(
+            float(SMART_CROSSFADE_DURATION),
+            fade_out_bytes_len / pcm_format.pcm_sample_size,
+        )
+        self.effective_end = detect_effective_audio_end(
+            self.fade_out_analysis.rms_energy,
+            self.fade_out_analysis.duration,
+            buffer_duration,
+        )
+        if self.effective_end < MIN_EFFECTIVE_FADE_BUFFER:
+            raise SmartFadeNotApplicable(
+                f"outgoing tail is mostly silent ({self.effective_end:.1f}s audible)"
+            )
+        # Sub-half-second slack is not worth trimming: RMS bin granularity is
+        # ~0.1-0.2s for typical track lengths, so finer precision is illusory
+        if self.effective_end < buffer_duration - 0.5:
+            self.filters.append(
+                FadeOutTrimFilter(
+                    logger=self.logger,
+                    fadeout_end_pos=self.effective_end,
+                    trimmed_seconds=buffer_duration - self.effective_end,
+                )
+            )
+        else:
+            # Without the trim the rendered stream still ends at buffer_duration,
+            # so the anchor must follow it or every schedule lands early
+            self.effective_end = buffer_duration
+
+        # Shift fade-out beats from full-track to buffer-local coordinates using the
+        # ACTUAL buffer length: the holdback yield loop leaves up to ~1s less than the
+        # constant 45s depending on chunk boundaries, and effective_end above is in real
+        # buffer coordinates — a constant-45 shift would misalign every beat by the difference
+        buffer_offset = max(0.0, (self.fade_out_analysis.duration or 0.0) - buffer_duration)
+        self.fade_out_beats = self.fade_out_beats - buffer_offset
+        self.fade_out_downbeats = self.fade_out_downbeats - buffer_offset
+
+        # Mask fade-out beats to the audible buffer window; negative timestamps are
+        # beats before the buffer, beats past effective_end sit in the silent tail
+        beat_mask = (self.fade_out_beats >= 0.0) & (self.fade_out_beats <= self.effective_end)
+        self.fade_out_beats = self.fade_out_beats[beat_mask]
+        db_mask = (self.fade_out_downbeats >= 0.0) & (self.fade_out_downbeats <= self.effective_end)
+        self.fade_out_downbeats = self.fade_out_downbeats[db_mask]
+
+    def _apply_gradual_time_stretch(
+        self,
+        bpm_ratio: float,
+        bpm_diff_percent: float,
+        crossfade_duration: float,
+    ) -> None:
+        """Apply gradual time stretch in the 10s window before the crossfade."""
+        stretch_duration = 10.0
+        crossfade_start = self.effective_end - crossfade_duration
+        # A crossfade consuming the whole audible tail leaves no room for a
+        # pre-fade tempo ramp
+        if crossfade_start <= 0:
+            return
+        stretch_start = max(0.0, crossfade_start - stretch_duration)
+        stretch_end = crossfade_start
+
+        # Collect timing points within the stretch window
+        beat_mask = (self.fade_out_beats >= stretch_start) & (self.fade_out_beats <= stretch_end)
+        db_mask = (self.extrapolated_fadeout_downbeats >= stretch_start) & (
+            self.extrapolated_fadeout_downbeats <= stretch_end
+        )
+        window_beats = self.fade_out_beats[beat_mask] - stretch_start
+        window_downbeats = self.extrapolated_fadeout_downbeats[db_mask] - stretch_start
+
+        # >3% BPM diff: beat-level stepping (more steps = smoother)
+        # <=3%: downbeat-level stepping, fall back to beats if too few
+        if bpm_diff_percent > 3.0:
+            stretch_timestamps = window_beats
+        elif len(window_downbeats) >= 2:
+            stretch_timestamps = window_downbeats
+        else:
+            stretch_timestamps = window_beats
+
+        # Fall back to synthetic timestamps when < 2 real timestamps
+        if len(stretch_timestamps) < 2:
+            stretch_timestamps = generate_synthetic_timestamps(
+                stretch_end - stretch_start, self.fade_out_bpm
+            )
+
+        tempo_steps = compute_gradual_tempo_steps(
+            start_ratio=1.0,
+            end_ratio=bpm_ratio,
+            downbeats=stretch_timestamps,
+        )
+        if not tempo_steps:
+            tempo_steps = [(0.0, bpm_ratio)]
+
+        # Shift timestamps back to buffer-relative coordinates for FFmpeg
+        tempo_steps = [(ts + stretch_start, ratio) for ts, ratio in tempo_steps]
+
+        self.tempo_steps = tempo_steps
+        self.filters.append(GradualTimeStretchFilter(self.logger, tempo_steps))
+
     def _calculate_crossfade_duration(self, crossfade_bars: int) -> float:
         """Calculate final crossfade duration based on musical bars and BPM."""
         # Calculate crossfade duration based on incoming track's BPM
         beats_per_bar = 4
-        seconds_per_beat = 60.0 / self.fade_in_analysis.bpm
+        seconds_per_beat = 60.0 / self.fade_in_bpm
         musical_duration = crossfade_bars * beats_per_bar * seconds_per_beat
 
-        # Apply buffer constraint
-        actual_duration = min(musical_duration, SMART_CROSSFADE_DURATION)
+        # Cap at the audible fade-out room so crossfade_start never goes negative
+        # downstream (effective_end <= SMART_CROSSFADE_DURATION always)
+        actual_duration = min(musical_duration, self.effective_end)
 
         # Log if we had to constrain the duration
-        if musical_duration > SMART_CROSSFADE_DURATION:
+        if musical_duration > actual_duration:
             self.logger.log(
                 VERBOSE_LOG_LEVEL,
-                "Constraining crossfade duration from %.1fs to %.1fs (buffer limit)",
+                "Constraining crossfade duration from %.1fs to %.1fs (audible tail limit)",
                 musical_duration,
                 actual_duration,
             )
@@ -319,8 +588,8 @@ class SmartCrossFade(SmartFade):
 
     def _calculate_optimal_crossfade_bars(self) -> int:
         """Calculate optimal crossfade bars that fit in available buffer."""
-        bpm_in = self.fade_in_analysis.bpm
-        bpm_out = self.fade_out_analysis.bpm
+        bpm_in = self.fade_in_bpm
+        bpm_out = self.fade_out_bpm
         bpm_diff_percent = abs(1.0 - bpm_in / bpm_out) * 100
 
         # Calculate ideal bars based on BPM compatibility
@@ -360,8 +629,8 @@ class SmartCrossFade(SmartFade):
         beats_per_bar = 4
 
         def calculate_beat_positions(
-            fade_out_beats: npt.NDArray[np.float64],
-            fade_in_beats: npt.NDArray[np.float64],
+            fade_out_beats: npt.NDArray[np.float32],
+            fade_in_beats: npt.NDArray[np.float32],
             num_beats: int,
         ) -> float | None:
             """Calculate start positions from beat arrays."""
@@ -373,17 +642,17 @@ class SmartCrossFade(SmartFade):
 
         # Try downbeats first for most musical timing
         downbeat_positions = calculate_beat_positions(
-            self.extrapolated_fadeout_downbeats, self.fade_in_analysis.downbeats, crossfade_bars
+            self.extrapolated_fadeout_downbeats, self.fade_in_downbeats, crossfade_bars
         )
-        if downbeat_positions:
+        if downbeat_positions is not None:
             return downbeat_positions
 
         # Try regular beats if downbeats insufficient
         required_beats = crossfade_bars * beats_per_bar
         beat_positions = calculate_beat_positions(
-            self.fade_out_analysis.beats, self.fade_in_analysis.beats, required_beats
+            self.fade_out_beats, self.fade_in_beats, required_beats
         )
-        if beat_positions:
+        if beat_positions is not None:
             return beat_positions
 
         # Fallback: No beat alignment possible
@@ -394,6 +663,7 @@ class SmartCrossFade(SmartFade):
         self,
         crossfade_duration: float,
         fadein_start_pos: float | None,
+        min_downbeat_pos: float = 0.0,
     ) -> float:
         """Adjust crossfade duration to align with outgoing track's downbeats."""
         # If we don't have downbeats or beat alignment is disabled, return original duration
@@ -401,15 +671,15 @@ class SmartCrossFade(SmartFade):
             return crossfade_duration
 
         # Calculate where the crossfade would start in the buffer
-        ideal_start_pos = SMART_CROSSFADE_DURATION - crossfade_duration
+        ideal_start_pos = self.effective_end - crossfade_duration
 
         # Debug logging
         self.logger.log(
             VERBOSE_LOG_LEVEL,
-            "Downbeat adjustment - ideal_start=%.2fs (buffer=%.1fs - crossfade=%.2fs), "
+            "Downbeat adjustment - ideal_start=%.2fs (effective_end=%.1fs - crossfade=%.2fs), "
             "fadein_start=%.2fs",
             ideal_start_pos,
-            SMART_CROSSFADE_DURATION,
+            self.effective_end,
             crossfade_duration,
             fadein_start_pos,
         )
@@ -419,6 +689,8 @@ class SmartCrossFade(SmartFade):
         later_downbeat = None
 
         for downbeat in self.extrapolated_fadeout_downbeats:
+            if downbeat < min_downbeat_pos:
+                continue
             if downbeat <= ideal_start_pos:
                 earlier_downbeat = downbeat
             elif downbeat > ideal_start_pos and later_downbeat is None:
@@ -427,7 +699,7 @@ class SmartCrossFade(SmartFade):
 
         # Try earlier downbeat first (longer crossfade)
         if earlier_downbeat is not None:
-            adjusted_duration = float(SMART_CROSSFADE_DURATION - earlier_downbeat)
+            adjusted_duration = float(self.effective_end - earlier_downbeat)
             if fadein_start_pos + adjusted_duration <= SMART_CROSSFADE_DURATION:
                 if abs(adjusted_duration - crossfade_duration) > 0.1:
                     self.logger.log(
@@ -442,7 +714,7 @@ class SmartCrossFade(SmartFade):
 
         # Try later downbeat (shorter crossfade)
         if later_downbeat is not None:
-            adjusted_duration = float(SMART_CROSSFADE_DURATION - later_downbeat)
+            adjusted_duration = float(self.effective_end - later_downbeat)
             if fadein_start_pos + adjusted_duration <= SMART_CROSSFADE_DURATION:
                 if abs(adjusted_duration - crossfade_duration) > 0.1:
                     self.logger.log(
@@ -463,146 +735,142 @@ class SmartCrossFade(SmartFade):
         )
         return crossfade_duration
 
+    def _stretch_savings_until(self, t: float) -> float:
+        """
+        Seconds removed from the rendered stream by the piecewise stretch up to input time t.
+
+        Negative when the stretch slows the tail down (the rendered stream is lengthened).
+
+        :param t: Input-time position (seconds) up to which to integrate savings.
+        """
+        savings = 0.0
+        # rubberband is initialized at the FIRST step's ratio from t=0, so the
+        # span before the first step already runs stretched (no-op for multi-step
+        # ramps, whose first step has ratio 1.0)
+        if self.tempo_steps and self.tempo_steps[0][0] > 0.0:
+            first_ts, first_ratio = self.tempo_steps[0]
+            span_end = min(first_ts, t)
+            savings += span_end * (1.0 - 1.0 / first_ratio)
+        for i, (ts, ratio) in enumerate(self.tempo_steps):
+            if ts >= t:
+                break
+            seg_end = min(self.tempo_steps[i + 1][0] if i + 1 < len(self.tempo_steps) else t, t)
+            savings += (seg_end - ts) * (1.0 - 1.0 / ratio)
+        return savings
+
 
 class StandardCrossFade(SmartFade):
     """Standard crossfade class that implements a standard crossfade mode."""
 
     def __init__(self, logger: logging.Logger, crossfade_duration: float = 10.0) -> None:
         """Initialize StandardCrossFade with crossfade duration."""
-        self.crossfade_duration = crossfade_duration
         super().__init__(logger)
-
-    def _build(self) -> None:
-        """Build the standard crossfade filter chain."""
-        self.filters = [
-            CrossfadeFilter(logger=self.logger, crossfade_duration=self.crossfade_duration),
-        ]
+        self.crossfade_duration = crossfade_duration
+        self.trailing_silence_bytes: int = 0
+        self.crossfade_size: int = 0
 
     async def apply(
-        self, fade_out_part: bytes, fade_in_part: bytes, pcm_format: AudioFormat
-    ) -> bytes:
-        """Apply the standard crossfade to the given PCM audio parts."""
-        # We need to override the default apply here, since standard crossfade only needs to be
-        # applied to the overlapping parts, not the full buffers.
-        crossfade_size = int(pcm_format.pcm_sample_size * self.crossfade_duration)
+        self,
+        fade_out_part: bytes,
+        fade_in_part: bytes | AsyncGenerator[bytes],
+        pcm_format: AudioFormat,
+    ) -> AsyncGenerator[bytes]:
+        """
+        Apply standard crossfade, yielding PCM audio chunks.
+
+        Only the overlapping portions are crossfaded, not the full buffers.
+        """
+        # crossfade_size legitimately ends up 0 for a silent/tiny buffer, so guard on
+        # the filter chain (set in _build) to still fail fast on apply-before-build,
+        # consistent with SmartFade._get_ffmpeg_filters()
+        if not self.filters:
+            raise RuntimeError("SmartFade not built — call Mixer.build() first")
+        if self.trailing_silence_bytes:
+            fade_out_part = fade_out_part[: len(fade_out_part) - self.trailing_silence_bytes]
+        # frame-aligned overlap computed once in _build, so it exactly matches the
+        # acrossfade `ns=` length the filter was built with
+        crossfade_size = self.crossfade_size
+        if crossfade_size == 0:
+            # nothing to blend — concatenate without spawning ffmpeg
+            for pcm_slice in iter_pcm_slices(fade_out_part, pcm_format, 1000):
+                yield pcm_slice
+            if isinstance(fade_in_part, bytes):
+                for pcm_slice in iter_pcm_slices(fade_in_part, pcm_format, 1000):
+                    yield pcm_slice
+            else:
+                async for chunk in fade_in_part:
+                    for pcm_slice in iter_pcm_slices(chunk, pcm_format, 1000):
+                        yield pcm_slice
+            return
         # Pre-crossfade: outgoing track minus the crossfaded portion
-        pre_crossfade = fade_out_part[:-crossfade_size]
-        # Post-crossfade: incoming track minus the crossfaded portion
-        post_crossfade = fade_in_part[crossfade_size:]
-        # Adjust portions to exact crossfade size
-        adjusted_fade_in_part = fade_in_part[:crossfade_size]
-        adjusted_fade_out_part = fade_out_part[-crossfade_size:]
-        # Adjust the duration to match actual sizes
-        self.crossfade_duration = min(
-            len(adjusted_fade_in_part) / pcm_format.pcm_sample_size,
-            len(adjusted_fade_out_part) / pcm_format.pcm_sample_size,
+        split = len(fade_out_part) - crossfade_size
+        pre_crossfade = fade_out_part[:split]
+        adjusted_fade_out_part = fade_out_part[split:]
+
+        # Collect only the crossfade portion from fade_in, keep the rest as a generator
+        if isinstance(fade_in_part, bytes):
+            adjusted_fade_in_part = fade_in_part[:crossfade_size]
+            post_crossfade: bytes | AsyncGenerator[bytes] = fade_in_part[crossfade_size:]
+        else:
+            # read exactly crossfade_size bytes from the generator
+            buf = bytearray()
+            async for chunk in fade_in_part:
+                buf.extend(chunk)
+                if len(buf) >= crossfade_size:
+                    break
+            adjusted_fade_in_part = bytes(buf[:crossfade_size])
+            # anything beyond crossfade_size plus the remaining generator is post_crossfade
+            leftover = bytes(buf[crossfade_size:])
+
+            async def _post_crossfade() -> AsyncGenerator[bytes]:
+                if leftover:
+                    for pcm_slice in iter_pcm_slices(leftover, pcm_format, 1000):
+                        yield pcm_slice
+                async for remaining_chunk in fade_in_part:
+                    for pcm_slice in iter_pcm_slices(remaining_chunk, pcm_format, 1000):
+                        yield pcm_slice
+
+            post_crossfade = _post_crossfade()
+
+        # Yield pre-crossfade, crossfaded section, and post-crossfade
+        for pcm_slice in iter_pcm_slices(pre_crossfade, pcm_format, 1000):
+            yield pcm_slice
+        async for chunk in super().apply(adjusted_fade_out_part, adjusted_fade_in_part, pcm_format):
+            yield chunk
+        if isinstance(post_crossfade, bytes):
+            for pcm_slice in iter_pcm_slices(post_crossfade, pcm_format, 1000):
+                yield pcm_slice
+        else:
+            async for chunk in post_crossfade:
+                yield chunk
+
+    def _build(
+        self,
+        fade_out_bytes_len: int,
+        fade_in_bytes_len: int,
+        pcm_format: AudioFormat,
+    ) -> None:
+        """Build the standard crossfade filter chain and assign ``self.timing_info``."""
+        fade_out_seconds = fade_out_bytes_len / pcm_format.pcm_sample_size
+        fade_in_seconds = fade_in_bytes_len / pcm_format.pcm_sample_size
+        # clamp CF to fit shorter inputs (defensive — normally full buffers)
+        effective_cf = min(self.crossfade_duration, fade_out_seconds, fade_in_seconds)
+        # Quantize the overlap to a whole number of PCM frames and drive both the
+        # byte slice (in apply) and the acrossfade length from this one integer.
+        # apply slices the buffers on frame boundaries, so a fractional effective_cf
+        # leaves the rendered buffer a fraction of a sample short of the acrossfade
+        # duration — and acrossfade then silently produces no output at all.
+        frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
+        crossfade_bytes = int(pcm_format.pcm_sample_size * effective_cf)
+        self.crossfade_size = crossfade_bytes // frame_size * frame_size
+        crossfade_samples = self.crossfade_size // frame_size
+        effective_cf = self.crossfade_size / pcm_format.pcm_sample_size
+        self.timing_info = CrossfadeTimingInfo(
+            pre_crossfade_duration=max(0.0, fade_out_seconds - effective_cf),
+            crossfade_duration=effective_cf,
+            fadein_trimmed_duration=0.0,
+            post_crossfade_duration=max(0.0, fade_in_seconds - effective_cf),
         )
-        # Crossfaded portion: user's configured duration
-        crossfaded_section = await super().apply(
-            adjusted_fade_out_part, adjusted_fade_in_part, pcm_format
-        )
-        # Full result: everything concatenated
-        return pre_crossfade + crossfaded_section + post_crossfade
-
-
-# HELPER METHODS
-def get_bpm_diff_percentage(bpm1: float, bpm2: float) -> float:
-    """Calculate BPM difference percentage between two BPM values."""
-    return abs(1.0 - bpm1 / bpm2) * 100
-
-
-def extrapolate_downbeats(
-    downbeats: npt.NDArray[np.float64],
-    tempo_factor: float,
-    buffer_size: float = SMART_CROSSFADE_DURATION,
-    bpm: float | None = None,
-) -> npt.NDArray[np.float64]:
-    """Extrapolate downbeats based on actual intervals when detection is incomplete.
-
-    This is needed when we want to perform beat alignment in an 'atmospheric' outro
-    that does not have any detected downbeats.
-
-    Args:
-        downbeats: Array of detected downbeat positions in seconds
-        tempo_factor: Tempo adjustment factor for time stretching
-        buffer_size: Maximum buffer size in seconds
-        bpm: Optional BPM for validation when extrapolating with only 2 downbeats
-    """
-    # Handle case with exactly 2 downbeats (with BPM validation)
-    if len(downbeats) == 2 and bpm is not None:
-        interval = float(downbeats[1] - downbeats[0])
-
-        # Expected interval for this BPM (assuming 4/4 time signature)
-        expected_interval = (60.0 / bpm) * 4
-
-        # Only extrapolate if interval matches BPM within 15% tolerance
-        if abs(interval - expected_interval) / expected_interval < 0.15:
-            # Adjust detected downbeats for time stretching first
-            adjusted_downbeats = downbeats / tempo_factor
-            last_downbeat = adjusted_downbeats[-1]
-
-            # If the last downbeat is close to the buffer end, no extrapolation needed
-            if last_downbeat >= buffer_size - 5:
-                return adjusted_downbeats
-
-            # Adjust the interval for time stretching
-            adjusted_interval = interval / tempo_factor
-
-            # Extrapolate forward from last adjusted downbeat using adjusted interval
-            extrapolated = []
-            current_pos = last_downbeat + adjusted_interval
-            max_extrapolation_distance = 125.0  # Don't extrapolate more than 25s
-
-            while (
-                current_pos < buffer_size
-                and (current_pos - last_downbeat) <= max_extrapolation_distance
-            ):
-                extrapolated.append(current_pos)
-                current_pos += adjusted_interval
-
-            if extrapolated:
-                # Combine adjusted detected downbeats and extrapolated downbeats
-                return np.concatenate([adjusted_downbeats, np.array(extrapolated)])
-
-            return adjusted_downbeats
-        # else: interval doesn't match BPM, fall through to return original
-
-    if len(downbeats) < 2:
-        # Need at least 2 downbeats to extrapolate
-        return downbeats / tempo_factor
-
-    # Adjust detected downbeats for time stretching first
-    adjusted_downbeats = downbeats / tempo_factor
-    last_downbeat = adjusted_downbeats[-1]
-
-    # If the last downbeat is close to the buffer end, no extrapolation needed
-    if last_downbeat >= buffer_size - 5:
-        return adjusted_downbeats
-
-    # Calculate intervals from ORIGINAL downbeats (before time stretching)
-    intervals = np.diff(downbeats)
-    median_interval = float(np.median(intervals))
-    std_interval = float(np.std(intervals))
-
-    # Only extrapolate if intervals are consistent (low standard deviation)
-    if std_interval > 0.2:
-        return adjusted_downbeats
-
-    # Adjust the interval for time stretching
-    # When slowing down (tempo_factor < 1.0), intervals get longer
-    adjusted_interval = median_interval / tempo_factor
-
-    # Extrapolate forward from last adjusted downbeat using adjusted interval
-    extrapolated = []
-    current_pos = last_downbeat + adjusted_interval
-    max_extrapolation_distance = 25.0  # Don't extrapolate more than 25s
-
-    while current_pos < buffer_size and (current_pos - last_downbeat) <= max_extrapolation_distance:
-        extrapolated.append(current_pos)
-        current_pos += adjusted_interval
-
-    if extrapolated:
-        # Combine adjusted detected downbeats and extrapolated downbeats
-        return np.concatenate([adjusted_downbeats, np.array(extrapolated)])
-
-    return adjusted_downbeats
+        self.filters = [
+            CrossfadeFilter(logger=self.logger, crossfade_samples=crossfade_samples),
+        ]

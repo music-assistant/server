@@ -1,11 +1,10 @@
 """DLNA Player Provider."""
 
 import asyncio
+from typing import TYPE_CHECKING
 
 from async_upnp_client.aiohttp import AiohttpSessionRequester
-from async_upnp_client.client import UpnpRequester
 from async_upnp_client.client_factory import UpnpFactory
-from async_upnp_client.utils import CaseInsensitiveDict
 from music_assistant_models.player import DeviceInfo
 
 from music_assistant.constants import CONF_PLAYERS
@@ -13,6 +12,10 @@ from music_assistant.models.player_provider import PlayerProvider
 
 from .helpers import DLNANotifyServer
 from .player import DLNAPlayer
+
+if TYPE_CHECKING:
+    from async_upnp_client.client import UpnpRequester
+    from async_upnp_client.utils import CaseInsensitiveDict
 
 
 class DLNAPlayerProvider(PlayerProvider):

@@ -8,6 +8,7 @@ import os
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
+from pathlib import Path
 
 from music_assistant.helpers.compare import compare_strings
 
@@ -26,7 +27,8 @@ IGNORE_DIRS = (
 
 @dataclass
 class FileSystemItem:
-    """Representation of an item (file or directory) on the filesystem.
+    """
+    Representation of an item (file or directory) on the filesystem.
 
     - filename: Name (not path) of the file (or directory).
     - relative_path: Relative path to the item on this filesystem provider.
@@ -68,7 +70,7 @@ class FileSystemItem:
     @property
     def parent_name(self) -> str:
         """Return parent name of this item."""
-        return os.path.basename(self.parent_path)
+        return Path(self.parent_path).name
 
     @property
     def relative_parent_path(self) -> str:
@@ -77,7 +79,8 @@ class FileSystemItem:
 
     @classmethod
     def from_dir_entry(cls, entry: os.DirEntry[str], base_path: str) -> FileSystemItem:
-        """Create FileSystemItem from os.DirEntry. NOT Async friendly.
+        """
+        Create FileSystemItem from os.DirEntry. NOT Async friendly.
 
         :raises OSError: If the file cannot be stat'd (e.g., invalid filename encoding).
         """
@@ -135,7 +138,8 @@ def tokenize(input_str: str, delimiters: str) -> list[str]:
 
 
 def _dir_contains_album_name(id3_album_name: str, directory_name: str) -> bool:
-    """Check if a directory name contains an album name.
+    """
+    Check if a directory name contains an album name.
 
     This function tokenizes both input strings using different delimiters and
     checks if the album name is a substring of the directory name.
@@ -235,14 +239,20 @@ def recursive_iter(
     base_path: str,
     supported_extensions: set[str],
     log: logging.Logger,
+    scan_errors: list[OSError] | None = None,
 ) -> Iterator[FileSystemItem]:
-    """Recursively traverse directory entries yielding supported files.
+    """
+    Recursively traverse directory entries yielding supported files.
 
     :param path: The directory path to scan.
     :param base_path: The root base path for constructing relative paths.
     :param supported_extensions: Set of file extensions to include (lowercase, no dot).
     :param log: Logger instance to use for warnings/debug messages.
+    :param scan_errors: Optional list populated with OSErrors raised while scanning
+        the provider's root base path. Callers treat a non-empty list as "provider
+        unreachable" and abort the sync.
     """
+    is_root = path == base_path
     try:
         scan_iter = os.scandir(path)
     except OSError as err:
@@ -251,11 +261,22 @@ def recursive_iter(
                 "Skipping directory '%s' - unsupported characters in path",
                 path,
             )
-        else:
-            log.warning("Unable to scan directory %s: %s", path, err)
+            return
+        log.warning("Unable to scan directory %s: %s", path, err)
+        if is_root and scan_errors is not None:
+            scan_errors.append(err)
         return
     with scan_iter:
-        for item in scan_iter:
+        while True:
+            try:
+                item = next(scan_iter)
+            except StopIteration:
+                break
+            except OSError as err:
+                log.warning("Error while scanning directory %s: %s", path, err)
+                if is_root and scan_errors is not None:
+                    scan_errors.append(err)
+                return
             if item.name in IGNORE_DIRS or item.name.startswith((".", "_")):
                 continue
             try:
@@ -267,9 +288,17 @@ def recursive_iter(
                         "Skipping '%s' - unsupported characters in name",
                         item.name,
                     )
+                else:
+                    log.debug("Skipping entry %s due to OS error: %s", item.path, err)
                 continue
             if is_dir:
-                yield from recursive_iter(item.path, base_path, supported_extensions, log)
+                yield from recursive_iter(
+                    item.path,
+                    base_path,
+                    supported_extensions,
+                    log,
+                    scan_errors,
+                )
             elif is_file:
                 if "." not in item.name:
                     continue

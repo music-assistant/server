@@ -8,10 +8,13 @@ from typing import TYPE_CHECKING, Any, cast
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
+    RateLimited,
     ResourceTemporarilyUnavailable,
 )
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
+
+from .constants import BASE_URL, BASE_URL_V2
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -23,10 +26,6 @@ if TYPE_CHECKING:
 
 class TidalAPIClient:
     """Client for interacting with Tidal API."""
-
-    BASE_URL: str = "https://api.tidal.com/v1"
-    BASE_URL_V2: str = "https://api.tidal.com/v2"
-    OPEN_API_URL: str = "https://openapi.tidal.com/v2"
 
     # Define throttler here for use by the client
     throttler = ThrottlerManager(rate_limit=1, period=2)
@@ -75,7 +74,7 @@ class TidalAPIClient:
         """Send PUT data to Tidal API."""
         # Special handling for mixes which use V2
         if "mixes" in endpoint and "base_url" not in kwargs:
-            kwargs["base_url"] = self.BASE_URL_V2
+            kwargs["base_url"] = BASE_URL_V2
 
         if as_form:
             kwargs.setdefault("headers", {})["Content-Type"] = "application/x-www-form-urlencoded"
@@ -92,7 +91,7 @@ class TidalAPIClient:
         kwargs["json"] = data
         return cast("dict[str, Any]", await self._request("DELETE", endpoint, **kwargs))
 
-    @throttle_with_retries  # type: ignore[type-var]
+    @throttle_with_retries
     async def _request(
         self, method: str, endpoint: str, **kwargs: Any
     ) -> dict[str, Any] | tuple[dict[str, Any], str]:
@@ -101,7 +100,7 @@ class TidalAPIClient:
             raise LoginFailed("Failed to authenticate with Tidal")
 
         # Prepare URL
-        base_url = kwargs.pop("base_url", self.BASE_URL)
+        base_url = kwargs.pop("base_url", BASE_URL)
         url = f"{base_url}/{endpoint}"
 
         # Prepare Headers
@@ -139,9 +138,7 @@ class TidalAPIClient:
             raise MediaNotFoundError(f"Item not found: {response.url}")
         if response.status == 429:
             retry_after = int(response.headers.get("Retry-After", 30))
-            raise ResourceTemporarilyUnavailable(
-                "Tidal Rate limit reached", backoff_time=retry_after
-            )
+            raise RateLimited("Tidal Rate limit reached", backoff_time=retry_after)
         if response.status >= 400:
             text = await response.text()
             self.logger.error("API error: %s - %s", response.status, text)
@@ -167,7 +164,7 @@ class TidalAPIClient:
         limit: int = 50,
         cursor_based: bool = False,
         **kwargs: Any,
-    ) -> AsyncGenerator[Any, None]:
+    ) -> AsyncGenerator[Any]:
         """Paginate through all items from a Tidal API endpoint."""
         offset = 0
         cursor = None
