@@ -438,8 +438,7 @@ class MusicCastPlayer(Player):
 
         # disallow set members (i.e. a zone to become a group leader) if it is currently grouped to the main zone
         if self.zone_device.source_id == MC_SOURCE_MAIN_SYNC:
-            with suppress(KeyError):
-                self._attr_supported_features.remove(PlayerFeature.SET_MEMBERS)
+            self._attr_supported_features.discard(PlayerFeature.SET_MEMBERS)
         else:
             self._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
 
