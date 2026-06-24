@@ -34,6 +34,7 @@ def _make_provider() -> tuple[SonicAnalysisProvider, AsyncMock, AsyncMock]:
     mass = MagicMock()
     mass.streams.audio_analysis.set_audio_analysis = set_aa_mock
     mass.streams.audio_analysis.get_audio_analysis_version = AsyncMock(return_value=None)
+    mass.streams.audio_analysis.record_analysis_failure = AsyncMock()
     mass.create_task = MagicMock(side_effect=lambda coro: coro.close() or MagicMock())
 
     manifest = MagicMock()

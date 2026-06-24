@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -471,7 +472,7 @@ async def test_finalize_swallows_recorder_error() -> None:
         side_effect=AudioAnalysisError("boom")
     )
     aa = cast("MagicMock", provider.mass.streams.audio_analysis)
-    aa.record_analysis_failure = AsyncMock(side_effect=RuntimeError("db down"))
+    aa.record_analysis_failure = AsyncMock(side_effect=sqlite3.OperationalError("db down"))
 
     await provider.start_analysis("sx", streamdetails, MagicMock())
     # Must not raise despite the recorder failing.

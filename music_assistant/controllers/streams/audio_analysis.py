@@ -240,7 +240,7 @@ class AudioAnalysisController:
             # then re-logs "Could not initialize NNPACK" to stderr on every conv op. The fp32
             # conv fallback is used on those hosts regardless, so disabling it only removes
             # the log spam.
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(RuntimeError):
                 torch.backends.nnpack.set_flags(False)  # type: ignore[no-untyped-call]
         # Cap concurrent analysis offloads to half the cores so analysis (live or background)
         # never occupies the whole box and starves playback/the host — slow and steady on any
@@ -887,6 +887,8 @@ class AudioAnalysisController:
                 try:
                     streamdetails = await music_prov.get_stream_details(item_id, MediaType.TRACK)
                 except Exception as err:
+                    # Provider method with an open-ended failure surface; any failure
+                    # just skips this scan candidate.
                     self.logger.debug("Skipping %s: stream details failed: %s", item_id, err)
                     return
 
@@ -1179,6 +1181,8 @@ class AudioAnalysisController:
                 ):
                     provider_ids.add(provider.instance_id)
             except Exception as err:
+                # provider.start_analysis is provider-implemented; skip the one that
+                # fails to start and keep the rest of the session going.
                 self.logger.warning(
                     "Failed to start analysis on provider %s: %s", provider.name, err
                 )
@@ -1260,6 +1264,8 @@ class AudioAnalysisController:
                 )
                 return prov_id
             except Exception as err:
+                # process_pcm_chunk is provider-implemented (torch/numpy/ffmpeg); evict
+                # the provider that fails on a chunk rather than crashing the session.
                 self.logger.warning("Error processing PCM chunk on provider %s: %s", prov_id, err)
                 return prov_id
             return None
@@ -1337,6 +1343,6 @@ class AudioAnalysisController:
                 )
                 or DEFAULT_BACKGROUND_SCAN_CONCURRENCY
             )
-        except Exception:
+        except ValueError, TypeError:
             value = DEFAULT_BACKGROUND_SCAN_CONCURRENCY
         return max(1, min(value, 16))

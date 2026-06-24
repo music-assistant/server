@@ -79,7 +79,7 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
         """Abort an in-progress loudness analysis session."""
         data = self._data.pop(session_id, None)
         if data:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(OSError):
                 await data.ffmpeg.close()
         await super().cancel(session_id)
 
@@ -139,6 +139,9 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
         try:
             await data.ffmpeg.wait()
         except Exception as err:
+            # ffmpeg.wait() can surface process/pipe errors plus anything the ebur128
+            # subprocess raises; broad so a failed measurement degrades to "no result"
+            # rather than crashing finalize.
             self.logger.debug("Loudness analysis ffmpeg failed: %s", err)
             await data.ffmpeg.close()
             return None
@@ -188,7 +191,7 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
         if data.eof_sent:
             return
         data.eof_sent = True
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(OSError):
             await data.ffmpeg.write_eof()
 
 
