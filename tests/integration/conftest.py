@@ -59,7 +59,9 @@ async def group_players(mass: MusicAssistant, leader: Player, members: list[Play
     await asyncio.sleep(0.5)
     for member in members:
         await mass.players.cmd_group(member.player_id, leader.player_id)
-    await wait_for(lambda: len(leader.state.group_members) >= 1 + len(members))
+    assert await wait_for(lambda: len(leader.state.group_members) >= 1 + len(members)), (
+        f"group did not form: {leader.state.group_members}"
+    )
 
 
 async def play_test_track(mass: MusicAssistant, queue_id: str, track_id: str = "0_0_0") -> None:

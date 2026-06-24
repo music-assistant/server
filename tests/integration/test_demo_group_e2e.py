@@ -28,7 +28,7 @@ def _mirrors_uri(player: Player, uri: str) -> bool:
 async def test_demo_group_mirrors_current_media(e2e_mass: MusicAssistant) -> None:
     """A grouped set of demo players all report the sync leader's current media."""
     # hermetic boot: only the fake demo players exist (no real LAN devices discovered)
-    assert [p.player_id for p in e2e_mass.players] == ["demo_0", "demo_1", "demo_2"]
+    assert sorted(p.player_id for p in e2e_mass.players) == ["demo_0", "demo_1", "demo_2"]
 
     players = demo_players(e2e_mass)
     assert len(players) >= 3
