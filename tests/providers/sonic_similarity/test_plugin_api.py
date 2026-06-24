@@ -214,7 +214,8 @@ class TestParseWeights:
 
 
 class TestSimilarityPresets:
-    """Structural invariants over the SIMILARITY_PRESETS weight dicts.
+    """
+    Structural invariants over the SIMILARITY_PRESETS weight dicts.
 
     Each preset is a hand-edited dict; these guard against a typo (a dropped,
     misspelled or extra key, or an out-of-range value) shipping as a runtime
