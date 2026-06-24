@@ -883,7 +883,7 @@ class SmartPlaylistProvider(PluginProvider):
         for t in tracks:
             if t.metadata and t.metadata.genres:
                 continue
-            for mapping in t.provider_mappings:
+            for mapping in t.provider_mappings or ():
                 if mapping.provider_domain == "library" and str(mapping.item_id).isdigit():
                     track_id = int(mapping.item_id)
                     if track_id not in track_id_to_tracks:
