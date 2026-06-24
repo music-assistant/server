@@ -847,8 +847,8 @@ class SonicSimilarityPlugin(PluginProvider):
         """Encode a free-text query as a unit vector, or None when unusable.
 
         Returns None when the encoder is unavailable, the query is empty, or the
-        result collapses to a zero vector (which the cosine index cannot rank) —
-        e.g. when ``exclude`` matches ``query``.
+        embedding is degenerate (zero norm, which the cosine index cannot rank) —
+        including when ``exclude`` cancels ``query``.
 
         :param query: Free-text query.
         :param exclude: Optional text to steer the query embedding away from.
