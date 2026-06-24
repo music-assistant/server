@@ -948,6 +948,22 @@ class LocalAudioBridgeManager:
                 existing_names.add(spec.sink_name)
                 loaded_any = True
 
+            # Pin the master sink to 100% so it never attenuates remap sinks
+            # feeding through it. The master has no bridge of its own (it's
+            # skipped from player registration), so _reset_sink_volume() is
+            # never called for it from a bridge's start() path — we have to
+            # do it here explicitly. Without this, module-device-restore or
+            # any other PA client can leave the master at an arbitrary volume,
+            # stacking an extra hidden attenuation on top of every remap sink.
+            with suppress(Exception):
+                await self.mass.loop.run_in_executor(
+                    None,
+                    controller.set_sink_volume,
+                    master_sink_name,
+                    100,
+                    channels,
+                )
+
         if loaded_any:
             # module-device-restore may restore a persisted per-sink-name
             # volume asynchronously shortly after sink creation, which can
