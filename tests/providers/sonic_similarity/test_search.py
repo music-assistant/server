@@ -184,7 +184,7 @@ class TestSearch:
         """Encoded query → CLAP matches → resolved Track objects in SearchResults.tracks."""
         plugin = make_plugin(clap_enabled=True)
         plugin._clap_index.__len__ = MagicMock(return_value=5)
-        vector = np.zeros((1024,), dtype=np.float32)
+        vector = np.full((1024,), 0.1, dtype=np.float32)
         plugin._text_encoder = _make_mock_encoder(vector)
         plugin._clap_index.search = AsyncMock(
             return_value=[
@@ -208,7 +208,7 @@ class TestSearch:
         """An unresolvable item is silently dropped; the rest pass through."""
         plugin = make_plugin(clap_enabled=True)
         plugin._clap_index.__len__ = MagicMock(return_value=5)
-        vector = np.zeros((1024,), dtype=np.float32)
+        vector = np.full((1024,), 0.1, dtype=np.float32)
         plugin._text_encoder = _make_mock_encoder(vector)
         plugin._clap_index.search = AsyncMock(
             return_value=[
@@ -236,7 +236,7 @@ class TestSearch:
         """The limit kwarg is forwarded as the k argument to CLAP index search."""
         plugin = make_plugin(clap_enabled=True)
         plugin._clap_index.__len__ = MagicMock(return_value=20)
-        vector = np.zeros((1024,), dtype=np.float32)
+        vector = np.full((1024,), 0.1, dtype=np.float32)
         plugin._text_encoder = _make_mock_encoder(vector)
         plugin._clap_index.search = AsyncMock(return_value=[])
         mock_mass.music.tracks.get = AsyncMock()

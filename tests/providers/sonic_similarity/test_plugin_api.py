@@ -110,6 +110,11 @@ class TestFormatTextQuery:
         assert format_text_query("upbeat dance music") == "upbeat dance music"
         assert format_text_query("Music for studying") == "Music for studying"
 
+    def test_matches_word_not_substring(self) -> None:
+        """The skip guard matches the word 'music', not substrings like 'musician'."""
+        assert format_text_query("musician") == "musician music"
+        assert format_text_query("musical theatre") == "musical theatre music"
+
     def test_strips_whitespace(self) -> None:
         """Surrounding whitespace is trimmed before framing."""
         assert format_text_query("  jazzy  ") == "jazzy music"

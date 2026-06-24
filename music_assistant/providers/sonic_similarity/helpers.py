@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import numpy as np
@@ -11,19 +12,22 @@ from music_assistant.providers.sonic_similarity.constants import SIMILARITY_PRES
 from music_assistant.providers.sonic_similarity.models import SimilarParams
 from music_assistant.providers.sonic_similarity.similarity import ScoredCandidate
 
+_MUSIC_WORD = re.compile(r"\bmusic\b", re.IGNORECASE)
+
 
 def format_text_query(query: str) -> str:
     """Frame a bare text query toward CLAP's training captions.
 
     CLAP's text encoder was trained on audio captions, so a light ``<query> music``
     suffix lands the embedding closer to how tracks were captioned and measurably
-    sharpens retrieval. The suffix is skipped when the query already mentions music
-    to avoid ``rock music music``.
+    sharpens retrieval. The suffix is skipped when the query already contains the
+    word "music" (case-insensitive) to avoid ``rock music music``; an empty or
+    whitespace-only query returns an empty string.
 
     :param query: Raw user query.
     """
     cleaned = query.strip()
-    if not cleaned or "music" in cleaned.lower():
+    if not cleaned or _MUSIC_WORD.search(cleaned):
         return cleaned
     return f"{cleaned} music"
 

@@ -844,34 +844,45 @@ class SonicSimilarityPlugin(PluginProvider):
     async def _embed_text_query(
         self, query: str, exclude: str | None = None, exclude_weight: float = 1.0
     ) -> np.ndarray | None:
-        """Encode a free-text query through the CLAP text encoder, or None if unavailable.
+        """Encode a free-text query as a unit vector, or None when unusable.
 
-        :param query: Free-text query; framed toward CLAP's caption form before encoding.
-        :param exclude: Optional text to push away from. CLAP ignores literal negation
-            ("not loud" ~= "loud"), so exclusion is done in embedding space by
-            subtracting the exclude direction. Each side is unit-normalised first so
-            neither term dominates by raw magnitude.
-        :param exclude_weight: Strength of the exclusion subtraction.
+        Returns None when the encoder is unavailable, the query is empty, or the
+        result collapses to a zero vector (which the cosine index cannot rank) —
+        e.g. when ``exclude`` matches ``query``.
+
+        :param query: Free-text query.
+        :param exclude: Optional text to steer the query embedding away from.
+        :param exclude_weight: Strength of the exclusion.
         """
         encoder = await self._get_text_encoder()
         if encoder is None:
             return None
-        prompts = [format_text_query(query)]
-        if exclude:
-            prompts.append(format_text_query(exclude))
+        keep_text = format_text_query(query)
+        if not keep_text:
+            return None
+        # CLAP ignores literal negation ("not loud" ~= "loud"), so exclusion is a
+        # vector subtraction. Each side is unit-normalised first so the exclude term
+        # steers by direction, not by raw magnitude.
+        exclude_text = format_text_query(exclude) if exclude else ""
+        prompts = [keep_text, exclude_text] if exclude_text else [keep_text]
         embeddings = await asyncio.to_thread(encoder.get_text_embeddings, prompts)
 
-        def _unit(index: int) -> np.ndarray:
+        def _unit(index: int) -> np.ndarray | None:
             vec = embeddings[index].detach().cpu().numpy().astype(np.float32).reshape(-1)
             norm = float(np.linalg.norm(vec))
-            return cast("np.ndarray", vec / norm if norm else vec)
+            return cast("np.ndarray", vec / norm) if norm else None
 
         keep = _unit(0)
-        if not exclude:
+        if keep is None:
+            return None
+        if not exclude_text:
             return keep
-        result = keep - exclude_weight * _unit(1)
+        neg = _unit(1)
+        if neg is None:
+            return keep
+        result = keep - exclude_weight * neg
         norm = float(np.linalg.norm(result))
-        return result / norm if norm else result
+        return cast("np.ndarray", result / norm) if norm else None
 
     async def _handle_status(self) -> dict[str, Any]:
         """Return current analysis status."""
@@ -1406,8 +1417,7 @@ class SonicSimilarityPlugin(PluginProvider):
         """Return tracks closest to a natural-language query in CLAP's joint space.
 
         :param query: Free-text query (e.g. "super dancy disco track").
-        :param exclude: Optional text to push results away from (e.g. "vocals").
-            CLAP ignores literal "not", so this is applied as a vector subtraction.
+        :param exclude: Optional text to steer results away from (e.g. "vocals").
         :param exclude_weight: Strength of the exclusion, clamped to [0, 2].
         :param limit: Max matches to return.
         :param resolve: When True, include track name and artist for each item.
@@ -1416,6 +1426,13 @@ class SonicSimilarityPlugin(PluginProvider):
             return {
                 "analyzed": False,
                 "reason": "clap_index_empty",
+                "query": query,
+                "items": [],
+            }
+        if not format_text_query(query):
+            return {
+                "analyzed": False,
+                "reason": "empty_query",
                 "query": query,
                 "items": [],
             }
