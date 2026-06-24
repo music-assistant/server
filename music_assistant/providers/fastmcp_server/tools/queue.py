@@ -21,26 +21,6 @@ if TYPE_CHECKING:
 MAX_QUEUE_ITEMS = 500
 
 
-def _move_queue_item(mass: MusicAssistant, queue_id: str, item_id: str, pos_shift: int) -> None:
-    """Move a queue row, surfacing MA errors as ``ToolError``."""
-    try:
-        mass.player_queues.move_item(queue_id, item_id, pos_shift)
-    except IndexError as exc:
-        raise ToolError(str(exc)) from exc
-    except InvalidDataError as exc:
-        raise ToolError(str(exc)) from exc
-
-
-def _move_queue_item_to_end(mass: MusicAssistant, queue_id: str, item_id: str) -> None:
-    """Move a queue row to the end, surfacing MA errors as ``ToolError``."""
-    try:
-        mass.player_queues.move_item_end(queue_id, item_id)
-    except IndexError as exc:
-        raise ToolError(str(exc)) from exc
-    except InvalidDataError as exc:
-        raise ToolError(str(exc)) from exc
-
-
 def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = True) -> FastMCP:
     """Construct the ``queue/*`` sub-server."""
     sub: FastMCP = FastMCP(name="queue")
@@ -202,7 +182,10 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
             enabled=require_confirmation,
         )
         for item_id in item_ids:
-            mass.player_queues.delete_item(queue_id, item_id)
+            try:
+                mass.player_queues.delete_item(queue_id, item_id)
+            except InvalidDataError as exc:
+                raise ToolError(str(exc)) from exc
 
     @sub.tool(
         tags={Tag.EDIT_QUEUE},
@@ -229,7 +212,10 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
             slot (default), ``0`` to insert after the currently playing item
             (play next).
         """
-        _move_queue_item(mass, queue_id, item_id, pos_shift)
+        try:
+            mass.player_queues.move_item(queue_id, item_id, pos_shift)
+        except (IndexError, InvalidDataError) as exc:
+            raise ToolError(str(exc)) from exc
 
     @sub.tool(
         tags={Tag.EDIT_QUEUE},
@@ -253,6 +239,9 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
         :param item_id: ``item_id`` from ``QueueItemBrief`` returned by
             ``get_active_queue``.
         """
-        _move_queue_item_to_end(mass, queue_id, item_id)
+        try:
+            mass.player_queues.move_item_end(queue_id, item_id)
+        except (IndexError, InvalidDataError) as exc:
+            raise ToolError(str(exc)) from exc
 
     return sub

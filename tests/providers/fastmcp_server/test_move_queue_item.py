@@ -2,23 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 from music_assistant_models.errors import InvalidDataError
-
-from music_assistant.providers.fastmcp_server.tools.queue import build_queue_server
-
-
-@pytest.fixture
-def mounted_queue(mock_mass: Any) -> FastMCP:
-    """Build a root FastMCP with the queue sub-server mounted."""
-    mcp: FastMCP = FastMCP(name="test")
-    mcp.mount(build_queue_server(mock_mass), namespace="queue")
-    return mcp
 
 
 async def test_move_item_forwards_pos_shift(mounted_queue: FastMCP, mock_mass: MagicMock) -> None:

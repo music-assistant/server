@@ -377,6 +377,18 @@ def mounted_debug_with_events(mock_mass: MagicMock, fake_event_emitter: Any) -> 
 
 
 @pytest.fixture
+def mounted_queue(mock_mass: Any) -> Any:
+    """Root FastMCP with the queue sub-server mounted."""
+    from fastmcp import FastMCP
+
+    from music_assistant.providers.fastmcp_server.tools.queue import build_queue_server
+
+    mcp = FastMCP(name="test")
+    mcp.mount(build_queue_server(mock_mass, require_confirmation=False), namespace="queue")
+    return mcp
+
+
+@pytest.fixture
 def mounted_config(mock_mass: Any) -> Any:
     """Root FastMCP with the config sub-server mounted, all config tags visible."""
     import contextlib
