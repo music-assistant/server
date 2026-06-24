@@ -65,9 +65,13 @@ def build_queue_server(mass: MusicAssistant, *, require_confirmation: bool = Tru
             on every call.
         :param queue_id: Alias for ``player_id`` — provide either one.
         """
+        # ponytail: alias covers agents mislabeling player_id as queue_id; when MA's
+        # queue_id genuinely differs, this still needs a player_id-shaped value.
         target = player_id or queue_id
         if not target:
-            raise ToolError("Provide player_id (the PlayerBrief.player_id to inspect).")
+            raise ToolError(
+                "Provide player_id or queue_id (PlayerBrief.player_id for the player to inspect)."
+            )
         queue = mass.player_queues.get_active_queue(target)
         if queue is None:
             return None
