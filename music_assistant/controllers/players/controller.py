@@ -2363,7 +2363,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         :param player: The player to check.
         """
         state = player.state
-        if state.active_group or state.synced_to:
+        # a self-referential active_group/synced_to is not a real parent (mirror the
+        # != self guard in Player.__final_current_media), so it must not skip resolution
+        parent_id = state.active_group or state.synced_to
+        if parent_id and parent_id != player.player_id:
             return True
         return state.type == PlayerType.PROTOCOL and player.protocol_parent_id is not None
 
