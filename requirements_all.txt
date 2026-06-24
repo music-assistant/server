@@ -102,5 +102,5 @@ xmltodict==1.0.4
 ya-passport-auth==1.4.1
 yandex-music==3.0.0
 ytmusicapi==1.12.1
-zeroconf==0.149.12
+zeroconf==0.149.16
 zvuk-music[async]==0.6.1
