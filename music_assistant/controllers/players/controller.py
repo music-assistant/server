@@ -73,7 +73,6 @@ from music_assistant.constants import (
     ATTR_MUTE_LOCK,
     ATTR_POWER_CONTROL,
     ATTR_PREVIOUS_VOLUME,
-    ATTR_SLEEP_TIMER_EXPIRES_AT,
     ATTR_SUPPORTED_FEATURES,
     ATTR_VOLUME_CONTROL,
     CONF_AUTO_PLAY,
@@ -169,7 +168,6 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         self._state_update_subscribers: list[
             Callable[[Player, dict[str, tuple[Any, Any]]], None]
         ] = []
-        self._sleep_timer_expires_at: dict[str, float] = {}
 
     @contextlib.asynccontextmanager
     async def get_player_lock(
@@ -265,9 +263,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         for handle in self._pending_protocol_evaluations.values():
             handle.cancel()
         self._pending_protocol_evaluations.clear()
-        for player_id in self._sleep_timer_expires_at:
-            self.mass.cancel_timer(self._sleep_timer_task_id(player_id))
-        self._sleep_timer_expires_at.clear()
+        for player in self._players.values():
+            if player.sleep_timer_expires_at is not None:
+                self.mass.cancel_timer(self._sleep_timer_task_id(player.player_id))
 
     async def on_provider_loaded(self, provider: PlayerProvider) -> None:
         """Handle logic when a provider is loaded."""
@@ -499,7 +497,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         :param player_id: Player ID to check.
         """
         player = self._get_player_with_redirect(player_id)
-        return self._sleep_timer_expires_at.get(player.player_id)
+        return player.sleep_timer_expires_at
 
     @api_command("players/sleep_timer/set")
     def set_sleep_timer(self, player_id: str, seconds: int) -> float:
@@ -513,10 +511,15 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             msg = "Sleep timer duration must be greater than zero seconds"
             raise InvalidDataError(msg)
         player = self._get_player_with_redirect(player_id)
-        expires_at = time.time() + seconds
-        self._sleep_timer_expires_at[player.player_id] = expires_at
-        player.extra_attributes[ATTR_SLEEP_TIMER_EXPIRES_AT] = expires_at
+        try:
+            # guard against absurd durations that overflow the float timestamp math
+            expires_at = time.time() + seconds
+        except OverflowError:
+            msg = "Sleep timer duration is too large to schedule"
+            raise InvalidDataError(msg) from None
+        player._attr_sleep_timer_expires_at = expires_at
         player.update_state()
+        self._signal_sleep_timer_updated(player, expires_at)
         self.mass.call_later(
             seconds,
             self._handle_sleep_timer_expired,
@@ -3471,9 +3474,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         :param player: Player to clear the timer for.
         """
         self.mass.cancel_timer(self._sleep_timer_task_id(player.player_id))
-        self._sleep_timer_expires_at.pop(player.player_id, None)
-        if player.extra_attributes.pop(ATTR_SLEEP_TIMER_EXPIRES_AT, None) is not None:
+        if player.sleep_timer_expires_at is not None:
+            player._attr_sleep_timer_expires_at = None
             player.update_state()
+            self._signal_sleep_timer_updated(player, None)
 
     async def _handle_sleep_timer_expired(self, player_id: str) -> None:
         """
@@ -3482,14 +3486,27 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         :param player_id: Player ID whose sleep timer expired.
         """
         player = self.get_player(player_id)
-        if player is None:
-            self._sleep_timer_expires_at.pop(player_id, None)
+        if player is None or player.sleep_timer_expires_at is None:
             return
-        if not self._sleep_timer_expires_at.pop(player_id, None):
-            return
-        player.extra_attributes.pop(ATTR_SLEEP_TIMER_EXPIRES_AT, None)
+        player._attr_sleep_timer_expires_at = None
         player.update_state()
+        self._signal_sleep_timer_updated(player, None)
         await self.cmd_stop(player_id)
+
+    def _signal_sleep_timer_updated(self, player: Player, expires_at: float | None) -> None:
+        """
+        Signal a sleep timer change for the player on the event bus.
+
+        :param player: Player whose sleep timer changed.
+        :param expires_at: New expiry timestamp, or None when the timer was cleared.
+        """
+        if player.state.type == PlayerType.PROTOCOL:
+            return
+        self.mass.signal_event(
+            EventType.PLAYER_SLEEP_TIMER_UPDATED,
+            object_id=player.player_id,
+            data=expires_at,
+        )
 
     @staticmethod
     def _sleep_timer_task_id(player_id: str) -> str:

@@ -111,6 +111,7 @@ class Player(ABC):
     _attr_enabled_by_default: bool = True
     _attr_needs_setup: bool = False
     _attr_supported_sample_rates: list[tuple[int, int]] | None = None
+    _attr_sleep_timer_expires_at: float | None = None
 
     def __init__(self, provider: PlayerProvider, player_id: str) -> None:
         """Initialize the Player."""
@@ -368,6 +369,11 @@ class Player(ABC):
     def active_sound_mode(self) -> str | None:
         """Return active sound mode of this player."""
         return self._attr_active_sound_mode
+
+    @property
+    def sleep_timer_expires_at(self) -> float | None:
+        """Return the unix timestamp at which the active sleep timer stops playback."""
+        return self._attr_sleep_timer_expires_at
 
     @cached_property
     def sound_mode_list(self) -> UniqueList[PlayerSoundMode]:
@@ -1591,6 +1597,7 @@ class Player(ABC):
             output_protocols=self.output_protocols,
             active_output_protocol=self.__attr_active_output_protocol,
             needs_setup=self.needs_setup,
+            sleep_timer_expires_at=self.sleep_timer_expires_at,
         )
 
         # track stop called state
