@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
 from typing import Any, cast
 
@@ -30,6 +30,8 @@ from music_assistant_models.media_items import (
     Artist,
     Audiobook,
     AudioFormat,
+    BrowseFolder,
+    ItemMapping,
     MediaItemImage,
     MediaItemType,
     Playlist,
@@ -226,6 +228,52 @@ class SpotifyProvider(MusicProvider):
         async for item in self._get_all_items("me/playlists", use_global_session=True):
             if item and item["id"]:
                 yield parse_playlist(item, self)
+
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Browse Spotify items, including curated sections (new releases, genres & moods).
+
+        :param path: The path to browse (e.g. provider_id:// or provider_id://new-releases).
+        """
+        path_parts = path.split("://")[1].split("/") if "://" in path else []
+        subpath = path_parts[0] if path_parts else None
+        sub_subpath = path_parts[1] if len(path_parts) > 1 else None
+        locale = self.mass.metadata.locale
+
+        if subpath == "new-releases":
+            return await self._get_new_releases()
+
+        if subpath == "categories" and sub_subpath:
+            return await self._get_category_playlists(sub_subpath, locale)
+
+        if subpath == "categories":
+            return await self._get_categories(locale)
+
+        # For root path, add curated folders on top of standard library folders.
+        # At the root the path always ends in "://", so curated paths can be appended directly.
+        if not subpath:
+            curated: list[BrowseFolder] = [
+                BrowseFolder(
+                    item_id="new-releases",
+                    provider=self.instance_id,
+                    path=f"{path}new-releases",
+                    name="New Releases",
+                    translation_key="new_releases",
+                    is_playable=True,
+                ),
+                BrowseFolder(
+                    item_id="categories",
+                    provider=self.instance_id,
+                    path=f"{path}categories",
+                    name="Genres & Moods",
+                    translation_key="genres_and_moods",
+                    is_playable=False,
+                ),
+            ]
+            standard = await super().browse(path)
+            return [*curated, *standard]
+
+        return await super().browse(path)
 
     @use_cache()
     async def search(
@@ -1004,6 +1052,56 @@ class SpotifyProvider(MusicProvider):
 
     def _get_liked_songs_playlist_id(self) -> str:
         return f"{LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX}-{self.instance_id}"
+
+    @use_cache(86400, allow_expired_cache=True)  # 24h; serve stale + refresh in background
+    async def _get_new_releases(self) -> list[Album]:
+        """Get Spotify's curated 'new releases' albums."""
+        try:
+            result = await self._get_data("browse/new-releases", limit=50)
+        except MediaNotFoundError:
+            return []
+        return [
+            parse_album(item, self)
+            for item in result.get("albums", {}).get("items", [])
+            if item and item.get("id")
+        ]
+
+    @use_cache(86400 * 7, allow_expired_cache=True)  # 7d; serve stale + refresh in background
+    async def _get_categories(self, locale: str) -> list[BrowseFolder]:
+        """Get Spotify's curated browse categories (genres & moods) as browse folders."""
+        try:
+            result = await self._get_data("browse/categories", locale=locale, limit=50)
+        except MediaNotFoundError:
+            return []
+        return [
+            BrowseFolder(
+                item_id=cat["id"],
+                provider=self.instance_id,
+                path=f"{self.instance_id}://categories/{cat['id']}",
+                name=cat["name"],
+                is_playable=False,
+            )
+            for cat in result.get("categories", {}).get("items", [])
+            if cat and cat.get("id") and cat.get("name")
+        ]
+
+    @use_cache(86400, allow_expired_cache=True)  # 24h; serve stale + refresh in background
+    async def _get_category_playlists(self, category_id: str, locale: str) -> list[Playlist]:
+        """Get the playlists for a single Spotify browse category."""
+        try:
+            result = await self._get_data(
+                f"browse/categories/{category_id}/playlists",
+                locale=locale,
+                limit=50,
+                use_global_session=True,
+            )
+        except MediaNotFoundError:
+            return []
+        return [
+            parse_playlist(item, self)
+            for item in result.get("playlists", {}).get("items", [])
+            if item and item.get("id") and item.get("name")
+        ]
 
     async def _get_liked_songs_playlist(self) -> Playlist:
         if self._sp_user is None:
