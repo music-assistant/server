@@ -1242,7 +1242,7 @@ async def test_enrich_tracks_with_db_genres_adds_missing_genres() -> None:
 
     genres = track_no_genres.metadata.genres
     assert genres == {"Rock", "Alternative"}
-    mass.music.genres.get_genres_for_media_item.assert_called_once()
+    mass.music.genres.get_genres_for_media_item.assert_called_once()  # type: ignore[unreachable]
 
 
 @pytest.mark.asyncio
@@ -1434,7 +1434,7 @@ async def test_enrich_tracks_with_db_genres_handles_duplicate_item_ids() -> None
 
     # Both tracks should have been enriched
     assert track1.metadata.genres == {"Rock", "Alternative"}
-    genres2 = track2.metadata.genres
+    genres2 = track2.metadata.genres  # type: ignore[unreachable]
     assert genres2 == {"Rock", "Alternative"}
 
 
