@@ -72,7 +72,8 @@ CAST_FALLBACK_STATIC_DELAY = 330
 
 
 def get_cast_model_static_delay(manufacturer: str, model: str) -> int:
-    """Look up the default static delay for a Cast device model.
+    """
+    Look up the default static delay for a Cast device model.
 
     :param manufacturer: Device manufacturer (e.g., "Google Inc.").
     :param model: Device model name (e.g., "Google Nest Mini").

@@ -30,7 +30,8 @@ class NicovideoTrackConverter(NicovideoConverterBase):
     """Handles track conversion for nicovideo."""
 
     def convert_by_activity(self, activity: Activity) -> Track | None:
-        """Convert an Activity object from feed into a Track.
+        """
+        Convert an Activity object from feed into a Track.
 
         This is a lightweight conversion optimized for feed display,
         using only the information available in the activity data.
@@ -202,7 +203,8 @@ class NicovideoTrackConverter(NicovideoConverterBase):
         return track
 
     def _create_audio_format_from_watch_data(self, watch_data: WatchData) -> AudioFormat | None:
-        """Create AudioFormat from WatchData audio information.
+        """
+        Create AudioFormat from WatchData audio information.
 
         Args:
             watch_data: WatchData object containing media information.
@@ -411,7 +413,8 @@ class NicovideoTrackConverter(NicovideoConverterBase):
         return images
 
     def is_video_available(self, video: EssentialVideo | WatchVideo) -> bool:
-        """Check if a video is available for playback.
+        """
+        Check if a video is available for playback.
 
         Args:
             video: Either EssentialVideo or WatchVideo object.

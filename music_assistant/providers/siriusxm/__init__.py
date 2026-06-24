@@ -271,7 +271,8 @@ class SiriusXMProvider(MusicProvider):
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse this provider's items.
+        """
+        Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
         """

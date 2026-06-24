@@ -1,4 +1,5 @@
-"""WebRTC DTLS Certificate Management.
+"""
+WebRTC DTLS Certificate Management.
 
 This module provides persistent DTLS certificate management for WebRTC connections.
 The certificate is generated once and stored persistently, enabling client-side
@@ -10,7 +11,7 @@ from __future__ import annotations
 import base64
 import logging
 import stat
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,6 +19,8 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
+
+from music_assistant.helpers.datetime import utc
 
 if TYPE_CHECKING:
     from aiortc import RTCConfiguration, RTCPeerConnection
@@ -34,14 +37,15 @@ CERT_RENEWAL_THRESHOLD_DAYS = 30
 
 
 def _generate_certificate() -> tuple[ec.EllipticCurvePrivateKey, x509.Certificate]:
-    """Generate a new ECDSA certificate for WebRTC DTLS.
+    """
+    Generate a new ECDSA certificate for WebRTC DTLS.
 
     :return: Tuple of (private_key, certificate).
     """
     # Generate ECDSA key (SECP256R1 - same as aiortc default)
     private_key = ec.generate_private_key(ec.SECP256R1())
 
-    now = datetime.now(UTC)
+    now = utc()
     not_before = now - timedelta(days=1)
     not_after = now + timedelta(days=CERT_VALIDITY_DAYS)
 
@@ -66,7 +70,8 @@ def _save_certificate(
     private_key: ec.EllipticCurvePrivateKey,
     cert: x509.Certificate,
 ) -> None:
-    """Save certificate and private key to disk.
+    """
+    Save certificate and private key to disk.
 
     :param storage_path: Directory to store the files.
     :param private_key: The EC private key.
@@ -92,7 +97,8 @@ def _save_certificate(
 def _load_certificate(
     storage_path: str,
 ) -> tuple[ec.EllipticCurvePrivateKey, x509.Certificate] | None:
-    """Load certificate and private key from disk.
+    """
+    Load certificate and private key from disk.
 
     :param storage_path: Directory containing the files.
     :return: Tuple of (private_key, certificate) or None if files don't exist.
@@ -121,12 +127,13 @@ def _load_certificate(
 
 
 def _is_certificate_valid(cert: x509.Certificate) -> bool:
-    """Check if certificate is still valid with enough time remaining.
+    """
+    Check if certificate is still valid with enough time remaining.
 
     :param cert: The X.509 certificate to check.
     :return: True if certificate is valid and has sufficient time remaining.
     """
-    now = datetime.now(UTC)
+    now = utc()
     not_after = cert.not_valid_after_utc
 
     if now >= not_after:
@@ -206,7 +213,8 @@ def create_peer_connection_with_certificate(
     certificate: RTCCertificate,
     configuration: RTCConfiguration | None = None,
 ) -> RTCPeerConnection:
-    """Create an RTCPeerConnection with a custom persistent certificate.
+    """
+    Create an RTCPeerConnection with a custom persistent certificate.
 
     :param certificate: The RTCCertificate to use for DTLS.
     :param configuration: Optional RTCConfiguration with ICE servers.

@@ -327,7 +327,8 @@ async def test_provider_error_during_chunk_processing_evicts_provider(
     mock_provider: MagicMock,
     mock_mass: MagicMock,
 ) -> None:
-    """Provider that raises in process_pcm_chunk is evicted from the session.
+    """
+    Provider that raises in process_pcm_chunk is evicted from the session.
 
     The first chunk processes successfully. The second chunk's exception
     triggers eviction. The third chunk is not delivered. The provider's
@@ -479,7 +480,8 @@ async def test_provider_start_analysis_uses_media_type_for_version_gating() -> N
 
 @pytest.mark.asyncio
 async def test_finalize_swallows_finalize_exception_and_cleans_up() -> None:
-    """Verify provider._sessions is cleaned up even when _finalize raises.
+    """
+    Verify provider._sessions is cleaned up even when _finalize raises.
 
     The finalize wrapper catches _finalize exceptions and logs ERROR; it must
     not propagate them to the controller, and must still pop the session.

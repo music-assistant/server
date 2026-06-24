@@ -84,32 +84,6 @@ class SmartFadesProvider(AudioAnalysisProvider):
             self._spectral_centroid,
         ) = await asyncio.to_thread(self._initialize_models)
 
-    def _initialize_models(self) -> tuple[Any, ...]:
-        """Initialize ML models (runs in a thread to avoid blocking the event loop)."""
-        beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
-        # torch aarch64 wheels advertise fbgemm in supported_engines but its kernels are x86-only.
-        preference = ("qnnpack", "fbgemm") if is_arm() else ("fbgemm", "qnnpack")
-        supported_engines = torch.backends.quantized.supported_engines
-        quantized_engine = next((e for e in preference if e in supported_engines), None)
-        if quantized_engine is not None and torch.backends.quantized.engine != quantized_engine:
-            torch.backends.quantized.engine = quantized_engine
-        beat_this_model.model = torch.ao.quantization.quantize_dynamic(  # type: ignore[no-untyped-call]
-            beat_this_model.model, {torch.nn.Linear}, dtype=torch.qint8
-        )
-        beat_this_post_processor = DBNDownBeatTracker(
-            beats_per_bar=[3, 4], min_bpm=55, max_bpm=215, fps=50
-        )
-        skey_vqt, skey_chromanet, skey_crop = load_skey_components(device=self._device)
-        spectral_centroid = SpectralCentroid(sample_rate=ANALYSIS_SAMPLE_RATE, hop_length=512)
-        return (
-            beat_this_model,
-            beat_this_post_processor,
-            skey_vqt,
-            skey_chromanet,
-            skey_crop,
-            spectral_centroid,
-        )
-
     async def process_pcm_chunk(
         self,
         session_id: str,
@@ -151,6 +125,32 @@ class SmartFadesProvider(AudioAnalysisProvider):
             data.musical_key_feature_blocks.clear()
             data.features.reset()
         await super().cancel(session_id)
+
+    def _initialize_models(self) -> tuple[Any, ...]:
+        """Initialize ML models (runs in a thread to avoid blocking the event loop)."""
+        beat_this_model = Spect2Frames(checkpoint_path="small0", device=self._device)
+        # torch aarch64 wheels advertise fbgemm in supported_engines but its kernels are x86-only.
+        preference = ("qnnpack", "fbgemm") if is_arm() else ("fbgemm", "qnnpack")
+        supported_engines = torch.backends.quantized.supported_engines
+        quantized_engine = next((e for e in preference if e in supported_engines), None)
+        if quantized_engine is not None and torch.backends.quantized.engine != quantized_engine:
+            torch.backends.quantized.engine = quantized_engine
+        beat_this_model.model = torch.ao.quantization.quantize_dynamic(  # type: ignore[no-untyped-call]
+            beat_this_model.model, {torch.nn.Linear}, dtype=torch.qint8
+        )
+        beat_this_post_processor = DBNDownBeatTracker(
+            beats_per_bar=[3, 4], min_bpm=55, max_bpm=215, fps=50
+        )
+        skey_vqt, skey_chromanet, skey_crop = load_skey_components(device=self._device)
+        spectral_centroid = SpectralCentroid(sample_rate=ANALYSIS_SAMPLE_RATE, hop_length=512)
+        return (
+            beat_this_model,
+            beat_this_post_processor,
+            skey_vqt,
+            skey_chromanet,
+            skey_crop,
+            spectral_centroid,
+        )
 
     async def _start_analysis(
         self,

@@ -92,23 +92,6 @@ class AudioAnalysisProvider(Provider):
         return True
 
     @abstractmethod
-    async def _start_analysis(
-        self,
-        session_id: str,
-        streamdetails: StreamDetails,
-        audio_format: AudioFormat,
-    ) -> bool:
-        """
-        Provider-specific initialization for a new analysis session.
-
-        Return False to reject the session (e.g. unsupported format).
-
-        :param session_id: The analysis session ID.
-        :param streamdetails: The stream details for the item being analyzed.
-        :param audio_format: PCM format of the audio stream.
-        """
-
-    @abstractmethod
     async def process_pcm_chunk(
         self,
         session_id: str,
@@ -122,17 +105,6 @@ class AudioAnalysisProvider(Provider):
 
         :param session_id: The analysis session ID.
         :param pcm_chunk: Raw PCM audio data.
-        """
-
-    @abstractmethod
-    async def _finalize(self, session_id: str) -> AudioAnalysisData | None:
-        """
-        Compute and return the analysis for this session (or None to skip).
-
-        The base class persists the returned value via set_audio_analysis() and
-        then fires post_analysis(). Return None to skip both.
-
-        :param session_id: The analysis session ID.
         """
 
     async def finalize(self, session_id: str) -> None:
@@ -192,6 +164,34 @@ class AudioAnalysisProvider(Provider):
         for session_id in list(self._sessions):
             await self.cancel(session_id)
         await super().unload(is_removed)
+
+    @abstractmethod
+    async def _start_analysis(
+        self,
+        session_id: str,
+        streamdetails: StreamDetails,
+        audio_format: AudioFormat,
+    ) -> bool:
+        """
+        Provider-specific initialization for a new analysis session.
+
+        Return False to reject the session (e.g. unsupported format).
+
+        :param session_id: The analysis session ID.
+        :param streamdetails: The stream details for the item being analyzed.
+        :param audio_format: PCM format of the audio stream.
+        """
+
+    @abstractmethod
+    async def _finalize(self, session_id: str) -> AudioAnalysisData | None:
+        """
+        Compute and return the analysis for this session (or None to skip).
+
+        The base class persists the returned value via set_audio_analysis() and
+        then fires post_analysis(). Return None to skip both.
+
+        :param session_id: The analysis session ID.
+        """
 
     async def _run_offloaded(self, func: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
         """

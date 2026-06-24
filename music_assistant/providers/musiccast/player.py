@@ -75,7 +75,8 @@ if TYPE_CHECKING:
 
 
 def get_player_option_translation_key(mc_key: str) -> str:
-    """Get translation key for player option.
+    """
+    Get translation key for player option.
 
     MC key has format like 'zone_ENHANCER' or 'zone_TONE_CONTROL_bass'
     """
@@ -91,7 +92,8 @@ def get_player_option_translation_key(mc_key: str) -> str:
 
 @dataclass
 class MusicCastMacAddresses(DataClassDictMixin):
-    """MusicCastMacAddresses.
+    """
+    MusicCastMacAddresses.
 
     The MAC addresses lack the colons.
     """
@@ -112,7 +114,8 @@ class MusicCastNetworkStatus(DataClassDictMixin):
 
 @dataclass(kw_only=True)
 class UpnpUpdateHelper:
-    """UpnpUpdateHelper.
+    """
+    UpnpUpdateHelper.
 
     See _update_player_attributes.
     """
@@ -132,7 +135,8 @@ class MusicCastPlayer(Player):
         physical_device: MusicCastPhysicalDevice,
         zone_device: MusicCastZoneDevice,
     ) -> None:
-        """Init MC Player.
+        """
+        Init MC Player.
 
         Keep reference to physical and zone device.
         """
@@ -619,7 +623,8 @@ class MusicCastPlayer(Player):
             ...
 
     async def _handle_zone_grouping(self, zone_player: MusicCastZoneDevice) -> None:
-        """Handle zone grouping.
+        """
+        Handle zone grouping.
 
         If a device has multiple zones, only a single zone can be net controlled.
         If another zone wants to join the group, the current net zone has to switch
@@ -908,7 +913,8 @@ class MusicCastPlayer(Player):
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
-        """Set multiple members.
+        """
+        Set multiple members.
 
         This function is called on the server.
         """

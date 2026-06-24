@@ -326,7 +326,8 @@ class BBCSoundsProvider(MusicProvider):
     async def _update_on_demand_stream_metadata(
         self, stream_details: StreamDetails, elapsed_time: int
     ) -> None:
-        """Get the currently playing segment (song) for on-demand episodes.
+        """
+        Get the currently playing segment (song) for on-demand episodes.
 
         Called by the callback function in StreamDetails.
         """
@@ -682,7 +683,8 @@ class BBCSoundsProvider(MusicProvider):
         ]
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse this provider's items.
+        """
+        Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
         """

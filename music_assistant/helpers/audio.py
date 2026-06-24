@@ -35,7 +35,7 @@ from .ffmpeg import get_ffmpeg_stream
 from .process import AsyncProcess, communicate
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import CoreConfig, PlayerConfig
+    from music_assistant_models.config_entries import CoreConfig, PlayerQueueConfig
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -58,7 +58,8 @@ _MIME_TYPE_OVERRIDES: Final[dict[str, str]] = {
 
 
 def get_mime_type(format_str: str) -> str:
-    """Get the proper IANA MIME type for a given audio format string.
+    """
+    Get the proper IANA MIME type for a given audio format string.
 
     :param format_str: The audio format string (e.g. "mp3", "flac",
         "pcm;codec=pcm;rate=44100;bitrate=16;channels=2").
@@ -70,7 +71,8 @@ def get_mime_type(format_str: str) -> str:
 
 
 def parse_pcm_info(content_type: str) -> tuple[int, int, int]:
-    """Parse PCM info from a codec/content_type string.
+    """
+    Parse PCM info from a codec/content_type string.
 
     :param content_type: Content type string like "pcm;codec=pcm;rate=44100;bitrate=16;channels=2".
     """
@@ -92,7 +94,8 @@ def iter_pcm_slices(
     pcm_format: AudioFormat,
     target_duration_ms: int = 100,
 ) -> Iterator[bytes]:
-    """Yield frame-aligned PCM slices of approximately ``target_duration_ms``.
+    """
+    Yield frame-aligned PCM slices of approximately ``target_duration_ms``.
 
     Large PCM buffers (e.g. crossfade segments or full-track reads) are split
     into fixed-size sub-chunks so that downstream consumers get predictable
@@ -127,7 +130,8 @@ def iter_pcm_slices(
 
 
 def align_audio_to_frame_boundary(audio_data: bytes, pcm_format: AudioFormat) -> bytes:
-    """Align audio data to frame boundaries by truncating incomplete frames.
+    """
+    Align audio data to frame boundaries by truncating incomplete frames.
 
     :param audio_data: Raw PCM audio data to align.
     :param pcm_format: AudioFormat of the audio data.
@@ -149,7 +153,8 @@ async def strip_silence(
     pcm_format: AudioFormat,
     reverse: bool = False,
 ) -> bytes:
-    """Strip silence from begin or end of pcm audio using ffmpeg.
+    """
+    Strip silence from begin or end of pcm audio using ffmpeg.
 
     :param audio_data: Raw PCM audio data.
     :param pcm_format: AudioFormat of the audio data.
@@ -286,7 +291,8 @@ def get_parts_from_position(
     parts: list[MultiPartPath],
     seek_position: int,
 ) -> tuple[list[MultiPartPath], int]:
-    """Get the remaining parts list from a timestamp.
+    """
+    Get the remaining parts list from a timestamp.
 
     Arguments:
     parts: The list of  parts
@@ -579,7 +585,8 @@ def calculate_content_length(
 
 
 def get_output_format_key(fmt: AudioFormat) -> str:
-    """Get a stable key representing the output encoding parameters.
+    """
+    Get a stable key representing the output encoding parameters.
 
     :param fmt: The output audio format.
     """
@@ -666,7 +673,8 @@ def get_bit_rate(fmt: AudioFormat) -> int:
 
 
 def is_grouping_preventing_dsp(player: Player) -> bool:
-    """Check if grouping is preventing DSP from being applied to this leader/PlayerGroup.
+    """
+    Check if grouping is preventing DSP from being applied to this leader/PlayerGroup.
 
     If this returns True, no DSP should be applied to the player.
     This function will not check if the Player is in a group, the caller should do that first.
@@ -706,12 +714,12 @@ def parse_loudnorm(raw_stderr: bytes | str) -> float | None:
 
 def get_normalization_mode(
     core_config: CoreConfig,
-    player_config: PlayerConfig,
+    queue_config: PlayerQueueConfig,
     streamdetails: StreamDetails,
 ) -> VolumeNormalizationMode:
-    """Get the volume normalization mode for a given player and stream."""
-    if not player_config.get_value(CONF_VOLUME_NORMALIZATION):
-        # disabled for this player
+    """Get the volume normalization mode for a given queue and stream."""
+    if not queue_config.get_value(CONF_VOLUME_NORMALIZATION):
+        # disabled for this queue
         return VolumeNormalizationMode.DISABLED
     if streamdetails.media_type == MediaType.AUDIO_SOURCE:
         # live/realtime: upstream producer owns loudness, no measurement to converge on

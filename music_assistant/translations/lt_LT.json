@@ -65,7 +65,7 @@
   "common.config_entries.volume_normalization.description": "Įgalinti garsumo normalizavimą pagal EBU-R128 standartą nepaveikiant dinaminio diapazono",
   "common.config_entries.volume_normalization.label": "Įgalinti garsumo normalizavimą (EBU-R128 pagrindu)",
   "common.config_entries.volume_normalization_fixed_gain_tracks.label": "Fiksuotas\/atsarginis takelių stiprinimo reguliavimas",
-  "common.config_entries.volume_normalization_target.description": "Nustatykite vidutinį (suvokiamą) garsumą iki šio tikslinio lygio, numatytoji reikšmė yra -17 LUFS \n \n **ĮSPĖJIMAS:** Nustačius per didelį lygį, gali kilti garsų iškraipymas!",
+  "common.config_entries.volume_normalization_target.description": "Nustatykite vidutinį (suvokiamą) garsumą iki šio tikslinio lygio, numatytoji reikšmė yra -14 LUFS \n \n **ĮSPĖJIMAS:** Nustačius per didelį lygį, gali kilti garsų iškraipymas!",
   "common.config_entries.volume_normalization_target.label": "Tikslinis tūrio normalizavimo lygis",
   "common.media.afrobeats.name": "Afrobitai (Vakarų Afrikos miesto \/ popmuzika)",
   "common.media.albums.name": "Albumai",

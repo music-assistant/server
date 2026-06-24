@@ -168,82 +168,6 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             )
         return result
 
-    async def _add_library_item(self, item: Audiobook, overwrite_existing: bool = False) -> int:
-        """Add a new record to the database."""
-        db_id = await self.mass.music.database.insert(
-            self.db_table,
-            {
-                "name": item.name,
-                "sort_name": item.sort_name,
-                "version": item.version,
-                "favorite": item.favorite,
-                "metadata": serialize_to_json(item.metadata),
-                "external_ids": serialize_to_json(item.external_ids),
-                "publisher": item.publisher,
-                "authors": serialize_to_json(item.authors),
-                "narrators": serialize_to_json(item.narrators),
-                "duration": item.duration,
-                "search_name": create_safe_string(item.name, True, True),
-                "search_sort_name": create_safe_string(item.sort_name or "", True, True),
-                "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
-            },
-        )
-        # update/set provider_mappings table
-        await self.set_provider_mappings(db_id, item.provider_mappings)
-        self.logger.debug("added %s to database (id: %s)", item.name, db_id)
-        await self._set_playlog(db_id, item)
-        return db_id
-
-    async def _update_library_item(
-        self, item_id: str | int, update: Audiobook, overwrite: bool = False
-    ) -> None:
-        """Update existing record in the database."""
-        db_id = int(item_id)  # ensure integer
-        cur_item = await self.get_library_item(db_id)
-        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
-        if not overwrite and update.metadata.images is not None:
-            # audiobooks have no image picker, so keep the cover in sync with the
-            # provider instead of accumulating merged entries
-            metadata.images = update.metadata.images
-        cur_item.external_ids.update(update.external_ids)
-        name = update.name if overwrite else cur_item.name
-        sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
-        await self.mass.music.database.update(
-            self.db_table,
-            {"item_id": db_id},
-            {
-                "name": name,
-                "sort_name": sort_name,
-                "version": update.version if overwrite else cur_item.version or update.version,
-                "metadata": serialize_to_json(metadata),
-                "external_ids": serialize_to_json(
-                    update.external_ids if overwrite else cur_item.external_ids
-                ),
-                "publisher": cur_item.publisher or update.publisher,
-                "authors": serialize_to_json(
-                    update.authors if overwrite else cur_item.authors or update.authors
-                ),
-                "narrators": serialize_to_json(
-                    update.narrators if overwrite else cur_item.narrators or update.narrators
-                ),
-                "duration": update.duration if overwrite else cur_item.duration or update.duration,
-                "search_name": create_safe_string(name, True, True),
-                "search_sort_name": create_safe_string(sort_name or "", True, True),
-                "timestamp_added": int(update.date_added.timestamp())
-                if update.date_added
-                else UNSET,
-            },
-        )
-        # update/set provider_mappings table
-        provider_mappings = (
-            update.provider_mappings
-            if overwrite
-            else {*update.provider_mappings, *cur_item.provider_mappings}
-        )
-        await self.set_provider_mappings(db_id, provider_mappings, overwrite)
-        self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
-        await self._set_playlog(db_id, update)
-
     async def radio_mode_base_tracks(
         self,
         item: Audiobook,
@@ -323,6 +247,130 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 await self.add_provider_mappings(db_audiobook.item_id, match)
                 cur_provider_domains.add(provider.domain)
 
+    async def collections(
+        self,
+    ) -> list[AudiobookCollection]:
+        """Get all available audiobook collections."""
+        # key is the collections' title
+        collections_dict: dict[str, list[Audiobook]] = {}
+        audiobooks_with_collections = await self.get_library_items_by_query(
+            extra_query_parts=[
+                "WHERE json_extract(audiobooks.metadata, '$.collections') IS NOT NULL "
+                "AND json_extract(audiobooks.metadata, '$.collections') != '[]'",
+            ],
+        )
+        for audiobook in audiobooks_with_collections:
+            if audiobook.metadata.collections is None:
+                # this should never happen
+                continue
+            for collection_info in audiobook.metadata.collections:
+                audiobook_list = collections_dict.get(collection_info.title, [])
+                audiobook_list.append(audiobook)
+                collections_dict[collection_info.title] = audiobook_list
+
+        result: list[AudiobookCollection] = []
+        # Sort collections, first by number then alphabetically
+        for collection_title, audiobook_list in collections_dict.items():
+            audiobooks_with_number: list[tuple[Audiobook, float]] = []
+            audiobooks_with_string: list[tuple[Audiobook, str]] = []
+            audiobooks_with_none: list[Audiobook] = []
+            for audiobook in audiobook_list:
+                assert audiobook.metadata.collections is not None  # for type checking
+                collection_info = next(
+                    x for x in audiobook.metadata.collections if x.title == collection_title
+                )
+                if collection_info.sequence is None:
+                    audiobooks_with_none.append(audiobook)
+                    continue
+                try:
+                    sort_by = float(collection_info.sequence)
+                    audiobooks_with_number.append((audiobook, sort_by))
+                except ValueError:
+                    audiobooks_with_string.append((audiobook, str(collection_info.sequence)))
+            final_list = [x[0] for x in sorted(audiobooks_with_number, key=lambda x: x[1])]
+            final_list.extend([x[0] for x in sorted(audiobooks_with_string, key=lambda x: x[1])])
+            final_list.extend(audiobooks_with_none)
+
+            result.append(AudiobookCollection(title=collection_title, audiobooks=final_list))
+
+        return result
+
+    async def _add_library_item(self, item: Audiobook, overwrite_existing: bool = False) -> int:
+        """Add a new record to the database."""
+        db_id = await self.mass.music.database.insert(
+            self.db_table,
+            {
+                "name": item.name,
+                "sort_name": item.sort_name,
+                "version": item.version,
+                "favorite": item.favorite,
+                "metadata": serialize_to_json(item.metadata),
+                "external_ids": serialize_to_json(item.external_ids),
+                "publisher": item.publisher,
+                "authors": serialize_to_json(item.authors),
+                "narrators": serialize_to_json(item.narrators),
+                "duration": item.duration,
+                "search_name": create_safe_string(item.name, True, True),
+                "search_sort_name": create_safe_string(item.sort_name or "", True, True),
+                "timestamp_added": int(item.date_added.timestamp()) if item.date_added else UNSET,
+            },
+        )
+        # update/set provider_mappings table
+        await self.set_provider_mappings(db_id, item.provider_mappings)
+        self.logger.debug("added %s to database (id: %s)", item.name, db_id)
+        await self._set_playlog(db_id, item)
+        return db_id
+
+    async def _update_library_item(
+        self, item_id: str | int, update: Audiobook, overwrite: bool = False
+    ) -> None:
+        """Update existing record in the database."""
+        db_id = int(item_id)  # ensure integer
+        cur_item = await self.get_library_item(db_id)
+        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+        if not overwrite and update.metadata.images is not None:
+            # audiobooks have no image picker, so keep the cover in sync with the
+            # provider instead of accumulating merged entries
+            metadata.images = update.metadata.images
+        cur_item.external_ids.update(update.external_ids)
+        name = update.name if overwrite else cur_item.name
+        sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
+        await self.mass.music.database.update(
+            self.db_table,
+            {"item_id": db_id},
+            {
+                "name": name,
+                "sort_name": sort_name,
+                "version": update.version if overwrite else cur_item.version or update.version,
+                "metadata": serialize_to_json(metadata),
+                "external_ids": serialize_to_json(
+                    update.external_ids if overwrite else cur_item.external_ids
+                ),
+                "publisher": cur_item.publisher or update.publisher,
+                "authors": serialize_to_json(
+                    update.authors if overwrite else cur_item.authors or update.authors
+                ),
+                "narrators": serialize_to_json(
+                    update.narrators if overwrite else cur_item.narrators or update.narrators
+                ),
+                "duration": update.duration if overwrite else cur_item.duration or update.duration,
+                "search_name": create_safe_string(name, True, True),
+                "search_sort_name": create_safe_string(sort_name or "", True, True),
+                "timestamp_added": int(update.date_added.timestamp())
+                if update.date_added
+                else UNSET,
+            },
+        )
+        # update/set provider_mappings table
+        provider_mappings = (
+            update.provider_mappings
+            if overwrite
+            else {*update.provider_mappings, *cur_item.provider_mappings}
+        )
+        await self.set_provider_mappings(db_id, provider_mappings, overwrite)
+        self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
+        await self._set_playlog(db_id, update)
+
     async def _set_playlog(self, db_id: int, media_item: Audiobook) -> None:
         """Update/set the playlog table for the given audiobook db item_id."""
         # Get user(s)
@@ -393,56 +441,3 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
                 },
                 allow_replace=True,
             )
-
-    async def collections(
-        self,
-    ) -> list[AudiobookCollection]:
-        """
-        Get all available audiobook collections.
-
-        :param limit: Maximum number of items to return.
-        :param offset: Number of items to skip.
-        """
-        # key is the collections' title
-        collections_dict: dict[str, list[Audiobook]] = {}
-        audiobooks_with_collections = await self.get_library_items_by_query(
-            extra_query_parts=[
-                "WHERE json_extract(audiobooks.metadata, '$.collections') IS NOT NULL "
-                "AND json_extract(audiobooks.metadata, '$.collections') != '[]'",
-            ],
-        )
-        for audiobook in audiobooks_with_collections:
-            if audiobook.metadata.collections is None:
-                # this should never happen
-                continue
-            for collection_info in audiobook.metadata.collections:
-                audiobook_list = collections_dict.get(collection_info.title, [])
-                audiobook_list.append(audiobook)
-                collections_dict[collection_info.title] = audiobook_list
-
-        result: list[AudiobookCollection] = []
-        # Sort collections, first by number then alphabetically
-        for collection_title, audiobook_list in collections_dict.items():
-            audiobooks_with_number: list[tuple[Audiobook, float]] = []
-            audiobooks_with_string: list[tuple[Audiobook, str]] = []
-            audiobooks_with_none: list[Audiobook] = []
-            for audiobook in audiobook_list:
-                assert audiobook.metadata.collections is not None  # for type checking
-                collection_info = next(
-                    x for x in audiobook.metadata.collections if x.title == collection_title
-                )
-                if collection_info.sequence is None:
-                    audiobooks_with_none.append(audiobook)
-                    continue
-                try:
-                    sort_by = float(collection_info.sequence)
-                    audiobooks_with_number.append((audiobook, sort_by))
-                except ValueError:
-                    audiobooks_with_string.append((audiobook, str(collection_info.sequence)))
-            final_list = [x[0] for x in sorted(audiobooks_with_number, key=lambda x: x[1])]
-            final_list.extend([x[0] for x in sorted(audiobooks_with_string, key=lambda x: x[1])])
-            final_list.extend(audiobooks_with_none)
-
-            result.append(AudiobookCollection(title=collection_title, audiobooks=final_list))
-
-        return result

@@ -1,4 +1,5 @@
-"""Queue synchronisation logic for Plex remote control.
+"""
+Queue synchronisation logic for Plex remote control.
 
 Handles background queue loading, MA→Plex sync, and MA event handlers.
 """
@@ -41,7 +42,8 @@ class QueueSyncMixin:
         async def _send_timeline_to_server(self) -> None: ...
 
     def _collect_synced_keys(self, player_id: str) -> list[str]:
-        """Return Plex item_id keys for every track currently in the MA queue.
+        """
+        Return Plex item_id keys for every track currently in the MA queue.
 
         :param player_id: The Music Assistant player ID.
         :return: Ordered list of Plex item IDs matching the current MA queue.
@@ -53,7 +55,8 @@ class QueueSyncMixin:
         return synced_keys
 
     def _remember_synced_queue(self, player_id: str, keys: list[str] | None = None) -> list[str]:
-        """Snapshot the current MA queue keys as the last state synced to Plex.
+        """
+        Snapshot the current MA queue keys as the last state synced to Plex.
 
         :param player_id: The Music Assistant player ID.
         :param keys: Pre-collected keys to store (avoids recomputing); collected if None.
@@ -67,7 +70,8 @@ class QueueSyncMixin:
     def _reorder_tracks_for_playback(
         self, tracks: list[Any], start_index: int
     ) -> tuple[list[Any], dict[int, int]]:
-        """Reorder tracks to start from a specific index and update item ID mappings.
+        """
+        Reorder tracks to start from a specific index and update item ID mappings.
 
         :param tracks: List of tracks to reorder.
         :param start_index: Index of the track to start from.
@@ -95,7 +99,8 @@ class QueueSyncMixin:
         selected_offset: int,
         shuffle: bool,
     ) -> None:
-        """Load remaining tracks from play queue in the background.
+        """
+        Load remaining tracks from play queue in the background.
 
         :param player_id: The Music Assistant player ID.
         :param playqueue: The Plex play queue.
@@ -174,7 +179,8 @@ class QueueSyncMixin:
             LOGGER.exception(f"Error loading remaining queue tracks: {e}")
 
     async def _replace_entire_queue(self, player_id: str, playqueue: PlayQueue) -> None:
-        """Replace the entire MA queue from a Plex play queue.
+        """
+        Replace the entire MA queue from a Plex play queue.
 
         :param player_id: The Music Assistant player ID.
         :param playqueue: The Plex play queue to load.
@@ -206,7 +212,8 @@ class QueueSyncMixin:
     async def _replace_remaining_queue(
         self, player_id: str, playqueue: PlayQueue, current_index: int
     ) -> None:
-        """Replace only items after the current track.
+        """
+        Replace only items after the current track.
 
         :param player_id: The Music Assistant player ID.
         :param playqueue: The Plex play queue to load.
@@ -322,7 +329,8 @@ class QueueSyncMixin:
             LOGGER.exception(f"Error creating Plex PlayQueue: {e}")
 
     async def _sync_initial_queue_to_plex(self) -> None:
-        """Mirror an already-loaded MA queue to a Plex PlayQueue on startup.
+        """
+        Mirror an already-loaded MA queue to a Plex PlayQueue on startup.
 
         When the plugin starts the MA player may already have an active queue. Creating
         the matching Plex PlayQueue immediately makes that queue visible and controllable
