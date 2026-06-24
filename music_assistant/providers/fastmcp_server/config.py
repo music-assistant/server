@@ -213,7 +213,7 @@ def build_config_entries(
             "Edit queue",
             False,
             "edit_permissions",
-            "Move queue items, save queue as playlist.",
+            "Enqueue media, move queue items, save queue as playlist.",
         ),
         _bool(
             CONF_EDIT_PLAYLISTS,

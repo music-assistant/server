@@ -37,7 +37,7 @@ async def test_add_to_queue_accepts_valid_options(
             await client.call_tool(
                 "queue_add_to_queue", {"queue_id": "q1", "uri": "spotify://track/1", "option": opt}
             )
-        mock_mass.player_queues.play_media.assert_called_once_with(
+        mock_mass.player_queues.play_media.assert_awaited_once_with(
             "q1", "spotify://track/1", option=QueueOption(opt)
         )
 
@@ -60,6 +60,6 @@ async def test_add_to_queue_defaults_to_add(mounted_queue: FastMCP, mock_mass: M
     mock_mass.player_queues.play_media.reset_mock()
     async with Client(mounted_queue) as client:
         await client.call_tool("queue_add_to_queue", {"queue_id": "q1", "uri": "spotify://track/1"})
-    mock_mass.player_queues.play_media.assert_called_once_with(
+    mock_mass.player_queues.play_media.assert_awaited_once_with(
         "q1", "spotify://track/1", option=QueueOption.ADD
     )
