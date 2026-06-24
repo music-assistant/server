@@ -34,6 +34,84 @@ class AirPlay2Stream(AirPlayProtocol):
     Audio is fed via stdin, commands via a named pipe.
     """
 
+    async def start(self, start_ntp: int) -> None:
+        """Start cliap2 process."""
+        assert self.player.airplay_discovery_info is not None  # for type checker
+        cli_binary = await get_cli_binary(self.player.protocol)
+        player_id = self.player.player_id
+
+        txt_kv: str = ""
+        for key, value in self.player.airplay_discovery_info.decoded_properties.items():
+            txt_kv += f'"{key}={value}" '
+
+        # cliap2 is the binary that handles the actual streaming to the player
+        # this binary leverages from the AirPlay2 support in OwnTone
+        # https://github.com/music-assistant/cliairplay
+
+        # Get AirPlay credentials if available (for Apple devices that require pairing)
+        airplay_credentials: str | None = None
+        airplay_password: str | None = None
+        if creds := self.player.config.get_value(CONF_AIRPLAY_CREDENTIALS):
+            airplay_credentials = str(creds)
+            if ap2_password := self.player.config.get_value(CONF_AP2PASSWORD):
+                airplay_password = str(ap2_password)
+
+        # Get the provider's DACP ID for remote control callbacks
+        prov = cast("AirPlayProvider", self.prov)
+
+        cli_args = [
+            cli_binary,
+            "--name",
+            self.player.display_name,
+            "--hostname",
+            str(self.player.airplay_discovery_info.server),
+            "--address",
+            str(self.player.address),
+            "--port",
+            str(self.player.airplay_discovery_info.port),
+            "--txt",
+            txt_kv,
+            "--ntpstart",
+            str(start_ntp),
+            "--volume",
+            str(self.player.volume_level),
+            "--loglevel",
+            str(self._cli_loglevel),
+            "--dacp_id",
+            prov.dacp_id,
+            "--pipe",
+            "-",  # Use stdin for audio input
+            "--command_pipe",
+            self.commands_pipe.path,
+            "--latency",
+            str(self.player.output_buffer_duration_ms),
+            "--session_establishment_latency",
+            str(self.player.session_establishment_latency_ms),
+        ]
+
+        # Add credentials for authenticated AirPlay devices (Apple TV, HomePod, etc.)
+        # Native HAP pairing format: 192 hex chars = client_private_key(128) + server_public_key(64)
+        if airplay_credentials:
+            if len(airplay_credentials) == 192:
+                cli_args += ["--auth", airplay_credentials]
+                if airplay_password:
+                    cli_args += ["--password", airplay_password]
+            else:
+                self.player.logger.warning(
+                    "Invalid credentials length: %d (expected 192)",
+                    len(airplay_credentials),
+                )
+
+        self.player.logger.debug(
+            "Starting cliap2 process for player %s with args: %s",
+            player_id,
+            cli_args,
+        )
+        self._cli_proc = AsyncProcess(cli_args, stdin=True, stderr=True, name="cliap2")
+        await self._cli_proc.start()
+        # start reading the stderr of the cliap2 process from another task
+        self._cli_proc.attach_stderr_reader(self.mass.create_task(self._stderr_reader()))
+
     @property
     def _session_establishment_ms(self) -> int | None:
         """
@@ -145,84 +223,6 @@ class AirPlay2Stream(AirPlayProtocol):
             logger.log(VERBOSE_LOG_LEVEL, line[31:])
         else:
             logger.error(line)
-
-    async def start(self, start_ntp: int) -> None:
-        """Start cliap2 process."""
-        assert self.player.airplay_discovery_info is not None  # for type checker
-        cli_binary = await get_cli_binary(self.player.protocol)
-        player_id = self.player.player_id
-
-        txt_kv: str = ""
-        for key, value in self.player.airplay_discovery_info.decoded_properties.items():
-            txt_kv += f'"{key}={value}" '
-
-        # cliap2 is the binary that handles the actual streaming to the player
-        # this binary leverages from the AirPlay2 support in OwnTone
-        # https://github.com/music-assistant/cliairplay
-
-        # Get AirPlay credentials if available (for Apple devices that require pairing)
-        airplay_credentials: str | None = None
-        airplay_password: str | None = None
-        if creds := self.player.config.get_value(CONF_AIRPLAY_CREDENTIALS):
-            airplay_credentials = str(creds)
-            if ap2_password := self.player.config.get_value(CONF_AP2PASSWORD):
-                airplay_password = str(ap2_password)
-
-        # Get the provider's DACP ID for remote control callbacks
-        prov = cast("AirPlayProvider", self.prov)
-
-        cli_args = [
-            cli_binary,
-            "--name",
-            self.player.display_name,
-            "--hostname",
-            str(self.player.airplay_discovery_info.server),
-            "--address",
-            str(self.player.address),
-            "--port",
-            str(self.player.airplay_discovery_info.port),
-            "--txt",
-            txt_kv,
-            "--ntpstart",
-            str(start_ntp),
-            "--volume",
-            str(self.player.volume_level),
-            "--loglevel",
-            str(self._cli_loglevel),
-            "--dacp_id",
-            prov.dacp_id,
-            "--pipe",
-            "-",  # Use stdin for audio input
-            "--command_pipe",
-            self.commands_pipe.path,
-            "--latency",
-            str(self.player.output_buffer_duration_ms),
-            "--session_establishment_latency",
-            str(self.player.session_establishment_latency_ms),
-        ]
-
-        # Add credentials for authenticated AirPlay devices (Apple TV, HomePod, etc.)
-        # Native HAP pairing format: 192 hex chars = client_private_key(128) + server_public_key(64)
-        if airplay_credentials:
-            if len(airplay_credentials) == 192:
-                cli_args += ["--auth", airplay_credentials]
-                if airplay_password:
-                    cli_args += ["--password", airplay_password]
-            else:
-                self.player.logger.warning(
-                    "Invalid credentials length: %d (expected 192)",
-                    len(airplay_credentials),
-                )
-
-        self.player.logger.debug(
-            "Starting cliap2 process for player %s with args: %s",
-            player_id,
-            cli_args,
-        )
-        self._cli_proc = AsyncProcess(cli_args, stdin=True, stderr=True, name="cliap2")
-        await self._cli_proc.start()
-        # start reading the stderr of the cliap2 process from another task
-        self._cli_proc.attach_stderr_reader(self.mass.create_task(self._stderr_reader()))
 
     async def _stderr_reader(self) -> None:
         """Monitor stderr for the running CLIap2 process."""

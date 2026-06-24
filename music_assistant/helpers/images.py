@@ -20,6 +20,7 @@ import aiofiles
 from aiohttp.client_exceptions import ClientError
 from PIL import Image, UnidentifiedImageError
 
+from music_assistant.constants import APPLICATION_NAME
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.models.metadata_provider import MetadataProvider
@@ -134,7 +135,8 @@ _IMAGEPROXY_V2_PREFIX = "/imageproxy/"
 
 
 def _extract_imageproxy_params(url: str) -> tuple[str, str] | None:
-    """Extract (path, provider) from a *legacy* /imageproxy?... URL.
+    """
+    Extract (path, provider) from a *legacy* /imageproxy?... URL.
 
     :param url: The URL to check for imageproxy format.
     :return: Tuple of (path, provider) if this is an imageproxy URL, None otherwise.
@@ -162,7 +164,8 @@ def _extract_imageproxy_params(url: str) -> tuple[str, str] | None:
 
 
 def _extract_imageproxy_id(url: str) -> str | None:
-    """Return the 64-hex image_id from a /imageproxy/<id> URL, or None.
+    """
+    Return the 64-hex image_id from a /imageproxy/<id> URL, or None.
 
     The path must match the canonical shape `/imageproxy/<id>` (optionally
     with a single trailing slash) — extra segments are rejected so this
@@ -182,7 +185,8 @@ def _extract_imageproxy_id(url: str) -> str | None:
 
 
 def player_image_url(mass: MusicAssistant, url: str | None) -> str | None:
-    """Rewrite a public-webserver imageproxy URL to the internal streams server.
+    """
+    Rewrite an imageproxy URL for consumption by a (physical) player.
 
     :param mass: The MusicAssistant instance.
     :param url: Image URL as produced for frontend/API consumers.
@@ -191,14 +195,22 @@ def player_image_url(mass: MusicAssistant, url: str | None) -> str | None:
         return url
     webserver_base = mass.webserver.base_url
     if webserver_base and url.startswith(f"{webserver_base}/imageproxy"):
-        return mass.streams.base_url + url[len(webserver_base) :]
+        # players may not be able to reach the webserver, so serve from the streams
+        # server, and force jpeg (= flatten transparency) as players such as legacy
+        # AirPlay receivers cannot be assumed to handle PNG alpha
+        url = mass.streams.base_url + url[len(webserver_base) :]
+        parsed = urllib.parse.urlparse(url)
+        query = urllib.parse.parse_qs(parsed.query)
+        query["fmt"] = ["jpeg"]
+        return parsed._replace(query=urllib.parse.urlencode(query, doseq=True)).geturl()
     return url
 
 
 async def get_image_data(
     mass: MusicAssistant, path_or_url: str, provider: str, *, _depth: int = 0
 ) -> bytes:
-    """Retrieve image data from a path or URL.
+    """
+    Retrieve image data from a path or URL.
 
     :param mass: The MusicAssistant instance.
     :param path_or_url: The image path, URL, or base64 data URI.
@@ -251,8 +263,7 @@ async def get_image_data(
             msg = f"Invalid imageproxy URL (missing path): {path_or_url}"
             raise FileNotFoundError(msg)
         try:
-            async with mass.http_session_no_ssl.get(path_or_url, raise_for_status=True) as resp:
-                return await resp.read()
+            return await _fetch_remote_image(mass, path_or_url)
         except ClientError as err:
             msg = f"Failed to fetch image from {path_or_url}: {err}"
             raise FileNotFoundError(msg) from err
@@ -273,6 +284,24 @@ async def get_image_data(
     raise FileNotFoundError(msg)
 
 
+async def _fetch_remote_image(mass: MusicAssistant, url: str) -> bytes:
+    """
+    Fetch raw image bytes over HTTP.
+
+    :param mass: The MusicAssistant instance.
+    :param url: The (http/https) image URL to fetch.
+    """
+    # Bot-protected CDNs (e.g. Akamai) reject our normal self-identifying User-Agent,
+    # and even regular browser User-Agents, while still serving well-known fetch tools.
+    # We keep identifying as Music Assistant but carry a Wget compatibility token, which
+    # such CDNs allowlist, so artwork is served on the first (and only) request.
+    user_agent = f"{APPLICATION_NAME}/{mass.version} (Wget/1.24.5; +https://music-assistant.io)"
+    async with mass.http_session_no_ssl.get(
+        url, raise_for_status=True, headers={"User-Agent": user_agent}
+    ) as resp:
+        return await resp.read()
+
+
 async def get_image_thumb(
     mass: MusicAssistant,
     path_or_url: str,
@@ -281,7 +310,8 @@ async def get_image_thumb(
     image_format: str = "PNG",
     flatten_transparency: bool = False,
 ) -> bytes:
-    """Get (optimized) thumbnail from image url.
+    """
+    Get (optimized) thumbnail from image url.
 
     Uses a two-tier cache (in-memory FIFO + on-disk) keyed by a hash of
     provider + path so that repeated requests never trigger ffmpeg or
@@ -355,7 +385,8 @@ async def _generate_and_cache_thumb(
     cache_filepath: str,
     flatten_transparency: bool = False,
 ) -> bytes:
-    """Generate a thumbnail, persist it on disk, and return the bytes.
+    """
+    Generate a thumbnail, persist it on disk, and return the bytes.
 
     :param mass: The MusicAssistant instance.
     :param path_or_url: Path or URL to the source image.
@@ -419,7 +450,8 @@ async def _generate_and_cache_thumb(
 
 
 async def cleanup_thumb_cache(cache_path: str, max_size_bytes: int) -> int:
-    """Remove oldest cached thumbnails when total size exceeds the limit.
+    """
+    Remove oldest cached thumbnails when total size exceeds the limit.
 
     :param cache_path: The base cache directory (mass.cache_path).
     :param max_size_bytes: Maximum allowed total size in bytes.

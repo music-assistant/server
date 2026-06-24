@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import datetime
 import random
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -19,14 +18,19 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import CONF_USERNAME
 from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.providers.lastfm_recommendations.constants import (
     CACHE_CATEGORY_RESOLVED_ITEMS,
+    CACHE_CATEGORY_TOP_GENRES,
     CACHE_EXPIRATION_SECONDS,
     CONF_ENABLE_GENRE,
     CONF_ENABLE_GEO,
     CONF_ENABLE_GLOBAL_CHARTS,
     CONF_ENABLE_PERSONALIZED,
     CONF_GEO_COUNTRY,
+    GENRE_ARTISTS_LIMIT,
+    GENRE_ARTISTS_PERIOD,
     LIBRARY_MATCH_SCAN_LIMIT,
     RECENT_TRACKS_SCAN_LIMIT,
     RESOLUTION_BUFFER_LARGE,
@@ -34,10 +38,12 @@ from music_assistant.providers.lastfm_recommendations.constants import (
     SIMILAR_ITEMS_BUFFER,
     SIMILAR_ITEMS_PER_SEED,
     SIMILAR_TRACKS_BUFFER,
+    TAGS_PER_ARTIST,
     TARGET_ITEM_COUNT,
     TOP_ARTISTS_LIMIT,
+    TOP_GENRES_CACHE_EXPIRATION_SECONDS,
+    TOP_GENRES_LIMIT,
     TOP_ITEMS_TO_TAKE,
-    TOP_TAGS_LIMIT,
     TOP_TRACKS_LIMIT,
 )
 from music_assistant.providers.lastfm_recommendations.parsers import (
@@ -81,6 +87,10 @@ class LastFMRecommendationManager:
 
         await self.mass.cache.clear(
             category_filter=CACHE_CATEGORY_RESOLVED_ITEMS,
+            provider_filter=self.provider.instance_id,
+        )
+        await self.mass.cache.clear(
+            category_filter=CACHE_CATEGORY_TOP_GENRES,
             provider_filter=self.provider.instance_id,
         )
 
@@ -188,21 +198,27 @@ class LastFMRecommendationManager:
                 artist_info if isinstance(artist_info, str) else artist_info.get("name", "")
             )
             if name and artist_name:
-                search_query = f"{artist_name} {name}"
+                # Last.fm track names carry scrobbled version suffixes ("- 2006 Remaster");
+                # strip those so variants of an owned track still match
+                clean_name, _ = parse_title_and_version(name, strip_for_search=True)
+                # "Artist - Title" format so the tracks controller searches both fields
+                search_query = f"{artist_name} - {clean_name}"
                 track_results = await self.mass.music.tracks.library_items(
                     search=search_query, limit=LIBRARY_MATCH_SCAN_LIMIT
                 )
                 # Match both title and artist; a title-only check would treat a same-named
-                # track by a different artist as owned.
+                # track by a different artist as owned. Differing recording MBIDs identify
+                # genuinely different tracks, so those never count as a match.
                 track_match = next(
                     (
                         track
                         for track in track_results
-                        if compare_strings(name, track.name, strict=False)
+                        if compare_strings(clean_name, track.name, strict=False)
                         and any(
                             compare_strings(artist_name, track_artist.name, strict=False)
                             for track_artist in track.artists
                         )
+                        and not (mbid and track.mbid and track.mbid != mbid)
                     ),
                     None,
                 )
@@ -247,7 +263,7 @@ class LastFMRecommendationManager:
         random_count = target_count - TOP_ITEMS_TO_TAKE
 
         # Hourly seed keeps the sampled remainder stable within the hour and rotates it each hour.
-        now = datetime.datetime.now(tz=datetime.UTC)
+        now = utc()
         seed = f"{now.date().isoformat()}_{now.hour}_{seed_suffix}"
         rng = random.Random(seed)
         random_items = rng.sample(remaining, min(random_count, len(remaining)))
@@ -398,7 +414,8 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_similar_artists",
                     name="Discover Similar Artists",
-                    translation_key="recommendations.discover_similar_artists",
+                    translation_key="discover_similar_artists",
+                    translation_params=[str(len(top_artists))],
                     provider=self.provider.instance_id,
                     items=UniqueList(similar_artists[:TARGET_ITEM_COUNT]),
                     subtitle=f"Based on your top {len(top_artists)} artists",
@@ -419,7 +436,8 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_similar_tracks",
                     name="Discover Similar Tracks",
-                    translation_key="recommendations.discover_similar_tracks",
+                    translation_key="discover_similar_tracks",
+                    translation_params=[str(len(top_tracks))],
                     provider=self.provider.instance_id,
                     items=UniqueList(similar_tracks[:TARGET_ITEM_COUNT]),
                     subtitle=f"Based on your top {len(top_tracks)} tracks",
@@ -444,7 +462,7 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_chart_top_artists",
                     name="Global Top Artists",
-                    translation_key="recommendations.global_top_artists",
+                    translation_key="global_top_artists",
                     provider=self.provider.instance_id,
                     items=UniqueList(top_artists),
                     subtitle="Most popular artists worldwide",
@@ -463,7 +481,7 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_chart_top_tracks",
                     name="Global Top Tracks",
-                    translation_key="recommendations.global_top_tracks",
+                    translation_key="global_top_tracks",
                     provider=self.provider.instance_id,
                     items=UniqueList(top_tracks),
                     subtitle="Most popular tracks worldwide",
@@ -472,26 +490,20 @@ class LastFMRecommendationManager:
 
     async def _get_genre_based_recommendations(self) -> AsyncIterator[RecommendationFolder]:
         """
-        Yield genre-based recommendation folders derived from the user's top Last.fm tag.
+        Yield genre-based recommendation folders derived from the user's top genres.
 
         Requires a username to be configured.
         """
         if not self.provider.config.get_value(CONF_ENABLE_GENRE):
             return
 
-        username = self.provider.config.get_value(CONF_USERNAME)
-        if not username or not isinstance(username, str):
-            return
-
-        top_tags = await self.api.get_user_top_tags(username, limit=TOP_TAGS_LIMIT)
-        if not top_tags:
+        top_genres = await self._get_top_genres()
+        if not top_genres:
             return
 
         # cycle through the user's top genres day by day so the genre rows vary
-        day_index = datetime.datetime.now(tz=datetime.UTC).date().toordinal()
-        tag_name = top_tags[day_index % len(top_tags)].get("name")
-        if not tag_name:
-            return
+        day_index = utc().date().toordinal()
+        tag_name = top_genres[day_index % len(top_genres)]
 
         # Over-fetch so there's enough left after library filtering and resolution failures.
         genre_artists_raw = await self.api.get_tag_top_artists(
@@ -499,7 +511,7 @@ class LastFMRecommendationManager:
         )
         if genre_artists_raw:
             # Drop items already in the library using a cheap DB lookup, before the
-            # expensive MusicBrainz + provider resolution step.
+            # expensive provider resolution step.
             non_library_artists_raw = [
                 artist_data
                 for artist_data in genre_artists_raw
@@ -522,9 +534,11 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_genre_artists",
                     name=f"Discover {tag_name.title()} Artists",
+                    translation_key="genre_artists",
+                    translation_params=[tag_name.title()],
                     provider=self.provider.instance_id,
                     items=UniqueList(genre_artists),
-                    subtitle="Top artists in your most played genre",
+                    subtitle="Top artists in your top genres",
                     icon="mdi-account-music",
                 )
 
@@ -556,9 +570,11 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_genre_albums",
                     name=f"Discover {tag_name.title()} Albums",
+                    translation_key="genre_albums",
+                    translation_params=[tag_name.title()],
                     provider=self.provider.instance_id,
                     items=UniqueList(genre_albums),
-                    subtitle="Top albums in your most played genre",
+                    subtitle="Top albums in your top genres",
                     icon="mdi-album",
                 )
 
@@ -590,11 +606,80 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_genre_tracks",
                     name=f"Discover {tag_name.title()} Tracks",
+                    translation_key="genre_tracks",
+                    translation_params=[tag_name.title()],
                     provider=self.provider.instance_id,
                     items=UniqueList(genre_tracks),
-                    subtitle="Top tracks in your most played genre",
+                    subtitle="Top tracks in your top genres",
                     icon="mdi-music",
                 )
+
+    async def _get_top_genres(self) -> list[str]:
+        """Return the user's top genres, most prominent first, derived from their listening."""
+        username = self.provider.config.get_value(CONF_USERNAME)
+        if not username or not isinstance(username, str):
+            return []
+
+        # Deriving genres costs a request per top artist, so cache the result.
+        cached = await self.mass.cache.get(
+            key="top_genres",
+            category=CACHE_CATEGORY_TOP_GENRES,
+            provider=self.provider.instance_id,
+        )
+        if isinstance(cached, list):
+            return cached
+
+        top_artists = await self.api.get_user_top_artists(
+            username, period=GENRE_ARTISTS_PERIOD, limit=GENRE_ARTISTS_LIMIT
+        )
+        if not top_artists:
+            return []
+
+        # Last.fm has no genre data, so an artist's top community tags stand in for its genre.
+        # The user's genres are those tags aggregated across their most played artists, weighted
+        # by how much they play each (playcount) and how strongly each tag applies (count 0-100).
+        tag_lists = await asyncio.gather(
+            *[
+                self.api.get_artist_top_tags(
+                    artist.get("name", ""), artist.get("mbid"), limit=TAGS_PER_ARTIST
+                )
+                for artist in top_artists
+            ]
+        )
+
+        scores: dict[str, float] = {}
+        display_names: dict[str, str] = {}
+        for artist, tags in zip(top_artists, tag_lists, strict=True):
+            try:
+                artist_weight = float(artist.get("playcount", 0))
+            except TypeError, ValueError:
+                continue
+            if artist_weight <= 0:
+                continue
+            for tag in tags:
+                name = tag.get("name", "")
+                if not name:
+                    continue
+                try:
+                    tag_count = float(tag.get("count", 0))
+                except TypeError, ValueError:
+                    continue
+                key = name.lower()
+                scores[key] = scores.get(key, 0.0) + artist_weight * tag_count / 100
+                display_names.setdefault(key, name)
+
+        ranked = sorted(scores, key=lambda key: scores[key], reverse=True)
+        top_genres = [display_names[key] for key in ranked[:TOP_GENRES_LIMIT]]
+
+        if top_genres:
+            await self.mass.cache.set(
+                "top_genres",
+                top_genres,
+                category=CACHE_CATEGORY_TOP_GENRES,
+                provider=self.provider.instance_id,
+                expiration=TOP_GENRES_CACHE_EXPIRATION_SECONDS,
+            )
+        return top_genres
 
     async def _get_geo_based_recommendations(self) -> AsyncIterator[RecommendationFolder]:
         """Yield geography-based recommendation folders for the configured country."""
@@ -617,6 +702,8 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_geo_artists",
                     name=f"Top artists for {country}",
+                    translation_key="geo_artists",
+                    translation_params=[country],
                     provider=self.provider.instance_id,
                     items=UniqueList(geo_artists),
                     subtitle=f"Most popular artists in {country}",
@@ -635,6 +722,8 @@ class LastFMRecommendationManager:
                 yield RecommendationFolder(
                     item_id=f"{self.provider.instance_id}_geo_tracks",
                     name=f"Top tracks for {country}",
+                    translation_key="geo_tracks",
+                    translation_params=[country],
                     provider=self.provider.instance_id,
                     items=UniqueList(geo_tracks),
                     subtitle=f"Most popular tracks in {country}",
@@ -801,7 +890,7 @@ class LastFMRecommendationManager:
         unique_similar.sort(key=lambda x: float(x.get("match", 0)), reverse=True)
 
         # Resolve a small buffer beyond the target so resolution failures and owned-copy
-        # exclusion still leave enough to fill the row, while capping MusicBrainz ISRC lookups.
+        # exclusion still leave enough to fill the row, while capping provider searches.
         top_tracks_data = unique_similar[:SIMILAR_TRACKS_BUFFER]
 
         resolved_tracks = await asyncio.gather(

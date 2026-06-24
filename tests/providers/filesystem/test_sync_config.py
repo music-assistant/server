@@ -26,7 +26,8 @@ def _create_provider(
     sync_audiobooks: bool = True,
     sync_podcasts: bool = True,
 ) -> LocalFileSystemProvider:
-    """Create a LocalFileSystemProvider with mocked dependencies.
+    """
+    Create a LocalFileSystemProvider with mocked dependencies.
 
     :param content_type: The media content type ("music", "audiobooks", "podcasts").
     :param sync_tracks: Whether the tracks sync checkbox is enabled.

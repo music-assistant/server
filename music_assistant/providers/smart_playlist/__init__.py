@@ -1,4 +1,5 @@
-"""Smart Playlist Plugin Provider for Music Assistant.
+"""
+Smart Playlist Plugin Provider for Music Assistant.
 
 Allows creating rule-based playlists (dynamic or fixed) from library tracks,
 filtered by genres, artists, albums, favorites, popularity and similar tracks.
@@ -102,14 +103,28 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_AI_DESCRIPTIONS,
             type=ConfigEntryType.BOOLEAN,
-            label="Generate descriptions with AI",
-            description="When a provider with AI support is available, use it to write a "
-            "natural-language description for each smart playlist. Falls back to a plain "
-            "rules summary when no AI provider is available.",
             required=False,
             default_value=True,
         ),
     )
+
+
+def _filter_by_explicit(tracks: list[Track], explicit_rule: bool | None) -> list[Track]:
+    """
+    Filter tracks based on the explicit content rule.
+
+    :param tracks: List of tracks to filter.
+    :param explicit_rule: True = only explicit tracks, False = exclude explicit tracks,
+                          None = no filter.
+    :return: Filtered list of tracks.
+    """
+    if explicit_rule is True:
+        # Only include tracks explicitly marked as explicit
+        return [t for t in tracks if t.metadata.explicit is True]
+    if explicit_rule is False:
+        # Exclude tracks explicitly marked as explicit; pass through unknown
+        return [t for t in tracks if t.metadata.explicit is not True]
+    return tracks
 
 
 class SmartPlaylistProvider(PluginProvider):
@@ -219,6 +234,7 @@ class SmartPlaylistProvider(PluginProvider):
                 item_id="smart_playlists",
                 provider=self.domain,
                 name="Smart Playlists",
+                translation_key="smart_playlists",
                 items=playlists,  # type: ignore[arg-type]
             )
         ]
@@ -232,7 +248,8 @@ class SmartPlaylistProvider(PluginProvider):
         return self._build_playlist(resolved_id, rules)
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
-        """Evaluate rules and return tracks.
+        """
+        Evaluate rules and return tracks.
 
         Returns a full batch on page 0; empty list on subsequent pages. Dynamic playlists
         return a bounded buffer (``DYNAMIC_PLAYLIST_SAMPLE_SIZE``) cached for
@@ -327,7 +344,8 @@ class SmartPlaylistProvider(PluginProvider):
         rules: dict[str, Any],
         is_dynamic: bool = True,
     ) -> Playlist:
-        """Create a new smart playlist with the given rules.
+        """
+        Create a new smart playlist with the given rules.
 
         :param name: Name for the new playlist.
         :param rules: Dictionary of SmartPlaylistRules fields.
@@ -336,7 +354,12 @@ class SmartPlaylistProvider(PluginProvider):
         """
         if not is_safe_name(name):
             msg = f"{name} is not a valid playlist name"
-            raise InvalidDataError(msg)
+            raise InvalidDataError(
+                msg,
+                translation_key="invalid_name",
+                translation_owner=self.translation_owner,
+                translation_args=[name],
+            )
 
         parsed_rules = SmartPlaylistRules.from_dict(rules)
         parsed_rules.is_dynamic = is_dynamic
@@ -358,7 +381,8 @@ class SmartPlaylistProvider(PluginProvider):
         rules: dict[str, Any],
         count: int | None = None,
     ) -> Playlist:
-        """Evaluate rules once and create a static (non-dynamic) builtin playlist.
+        """
+        Evaluate rules once and create a static (non-dynamic) builtin playlist.
 
         :param name: Name for the new playlist.
         :param rules: Dictionary of SmartPlaylistRules fields.
@@ -367,7 +391,12 @@ class SmartPlaylistProvider(PluginProvider):
         """
         if not is_safe_name(name):
             msg = f"{name} is not a valid playlist name"
-            raise InvalidDataError(msg)
+            raise InvalidDataError(
+                msg,
+                translation_key="invalid_name",
+                translation_owner=self.translation_owner,
+                translation_args=[name],
+            )
 
         parsed_rules = SmartPlaylistRules.from_dict(rules)
         self._validate_rules(parsed_rules)
@@ -397,7 +426,8 @@ class SmartPlaylistProvider(PluginProvider):
         return final_playlist
 
     async def get_smart_playlist_rules(self, playlist_id: str) -> dict[str, Any] | None:
-        """Return the smart playlist rules for the given playlist id.
+        """
+        Return the smart playlist rules for the given playlist id.
 
         :param playlist_id: Provider playlist id (UUID) or library DB id (integer string).
         :return: Rules dict or None if not found.
@@ -415,7 +445,8 @@ class SmartPlaylistProvider(PluginProvider):
         playlist_id: str,
         rules: dict[str, Any],
     ) -> None:
-        """Update the rules for an existing smart playlist.
+        """
+        Update the rules for an existing smart playlist.
 
         :param playlist_id: Provider playlist id (UUID) or library DB id (integer string).
         :param rules: Updated SmartPlaylistRules fields as dict.
@@ -456,7 +487,8 @@ class SmartPlaylistProvider(PluginProvider):
         ]
 
     async def count_tracks(self, rules: dict[str, Any]) -> dict[str, Any]:
-        """Return the track count and approximate total duration for the given rules.
+        """
+        Return the track count and approximate total duration for the given rules.
 
         :param rules: SmartPlaylistRules fields as dict.
         :return: Dict with ``count`` (int) and ``duration_seconds`` (int).
@@ -474,7 +506,8 @@ class SmartPlaylistProvider(PluginProvider):
         rules: dict[str, Any],
         limit: int = 20,
     ) -> list[dict[str, Any]]:
-        """Return a preview of tracks matching the given rules.
+        """
+        Return a preview of tracks matching the given rules.
 
         :param rules: SmartPlaylistRules fields as dict.
         :param limit: Maximum number of preview tracks to return.
@@ -600,6 +633,9 @@ class SmartPlaylistProvider(PluginProvider):
                     and t.metadata.popularity >= rules.min_popularity
                 ]
 
+            # Apply explicit filter in library mode
+            tracks = _filter_by_explicit(tracks, rules.explicit)
+
             if rules.year_from is not None or rules.year_to is not None:
                 tracks = [
                     t
@@ -676,6 +712,9 @@ class SmartPlaylistProvider(PluginProvider):
             ]
         if rules.favorites_only:
             tracks = [t for t in tracks if t.favorite]
+
+        # Apply explicit filter in seed/discover mode post-filtering
+        tracks = _filter_by_explicit(tracks, rules.explicit)
 
         if has_genre_filter:
             await self._enrich_tracks_with_db_genres(tracks)

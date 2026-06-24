@@ -2,6 +2,7 @@
 
 import logging
 import pathlib
+from typing import TYPE_CHECKING
 
 import aiofiles
 import pytest
@@ -17,7 +18,6 @@ from libopensonic.media import (
     PodcastEpisode,
     StructuredLyrics,
 )
-from syrupy.assertion import SnapshotAssertion
 
 from music_assistant.providers.opensubsonic.parsers import (
     parse_album,
@@ -28,6 +28,9 @@ from music_assistant.providers.opensubsonic.parsers import (
     parse_structured_lyrics,
     parse_track,
 )
+
+if TYPE_CHECKING:
+    from syrupy.assertion import SnapshotAssertion
 
 FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures"
 ARTIST_FIXTURES = list(FIXTURES_DIR.glob("artists/*.artist.json"))

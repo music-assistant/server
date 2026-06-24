@@ -75,7 +75,8 @@ if TYPE_CHECKING:
 
 
 def get_player_option_translation_key(mc_key: str) -> str:
-    """Get translation key for player option.
+    """
+    Get translation key for player option.
 
     MC key has format like 'zone_ENHANCER' or 'zone_TONE_CONTROL_bass'
     """
@@ -91,7 +92,8 @@ def get_player_option_translation_key(mc_key: str) -> str:
 
 @dataclass
 class MusicCastMacAddresses(DataClassDictMixin):
-    """MusicCastMacAddresses.
+    """
+    MusicCastMacAddresses.
 
     The MAC addresses lack the colons.
     """
@@ -112,7 +114,8 @@ class MusicCastNetworkStatus(DataClassDictMixin):
 
 @dataclass(kw_only=True)
 class UpnpUpdateHelper:
-    """UpnpUpdateHelper.
+    """
+    UpnpUpdateHelper.
 
     See _update_player_attributes.
     """
@@ -127,12 +130,13 @@ class MusicCastPlayer(Player):
 
     def __init__(
         self,
-        provider: "MusicCastProvider",
+        provider: MusicCastProvider,
         player_id: str,
         physical_device: MusicCastPhysicalDevice,
         zone_device: MusicCastZoneDevice,
     ) -> None:
-        """Init MC Player.
+        """
+        Init MC Player.
 
         Keep reference to physical and zone device.
         """
@@ -619,7 +623,8 @@ class MusicCastPlayer(Player):
             ...
 
     async def _handle_zone_grouping(self, zone_player: MusicCastZoneDevice) -> None:
-        """Handle zone grouping.
+        """
+        Handle zone grouping.
 
         If a device has multiple zones, only a single zone can be net controlled.
         If another zone wants to join the group, the current net zone has to switch
@@ -740,7 +745,7 @@ class MusicCastPlayer(Player):
             _was_unavailable = not self._attr_available
             try:
                 await self.physical_device.fetch()
-            except (MusicCastConnectionException, MusicCastGroupException):
+            except MusicCastConnectionException, MusicCastGroupException:
                 await self._set_player_unavailable()
                 return
             except ClientError:
@@ -908,7 +913,8 @@ class MusicCastPlayer(Player):
         player_ids_to_add: list[str] | None = None,
         player_ids_to_remove: list[str] | None = None,
     ) -> None:
-        """Set multiple members.
+        """
+        Set multiple members.
 
         This function is called on the server.
         """
@@ -1005,7 +1011,7 @@ class MusicCastPlayer(Player):
                 source_name,
             ) in self.zone_device.source_mapping.items():
                 if source_id in allowed_sources:
-                    source_options.append(ConfigValueOption(title=source_name, value=source_id))
+                    source_options.append(ConfigValueOption(source_id, title=source_name))
             if len(source_options) == 0:
                 # this should never happen
                 self.logger.error(
@@ -1019,42 +1025,25 @@ class MusicCastPlayer(Player):
                     ConfigEntry(
                         key=CONF_PLAYER_HANDLE_SOURCE_DISABLED,
                         type=ConfigEntryType.BOOLEAN,
-                        label="Disable zone handling completely.",
                         default_value=False,
-                        description="This disables zone handling completely. Other options "
-                        "will be ignored. Enable should you encounter playback issues while "
-                        "e.g. playing to main. You can also hide the player from the UI "
-                        "by taking advantage of 'Hide the player in the user interface' "
-                        "dropdown.",
                     ),
                     ConfigEntry(
                         key=CONF_PLAYER_SWITCH_SOURCE_NON_NET,
-                        label="Switch to this non-net source when leaving a group.",
                         type=ConfigEntryType.STRING,
                         options=source_options,
                         default_value=source_options[0].value,
-                        description="The zone will switch to this source when leaving a  group."
-                        " It must be an input which doesn't require network connectivity.",
                     ),
                     ConfigEntry(
                         key=CONF_PLAYER_TURN_OFF_ON_LEAVE,
                         type=ConfigEntryType.BOOLEAN,
-                        label="Turn off the zone when it leaves a group.",
                         default_value=False,
-                        description="Turn off the zone when it leaves a group.",
                     ),
                 ]
 
         auto_advance_entry = ConfigEntry(
             key=CONF_PLAYER_AUTO_ADVANCE,
             type=ConfigEntryType.BOOLEAN,
-            label="Auto-advance queue when the device stops at end of track",
             default_value=True,
-            description="Yamaha receivers occasionally drop the queued next track and "
-            "stop playback. With this enabled, MA detects the stop and advances the "
-            "queue. As a side effect, a user-initiated stop within the last 4 seconds "
-            "of a track will also advance to the next item; disable if you prefer the "
-            "device's stop behaviour to always be respected.",
         )
 
         return base_entries + zone_entries + [auto_advance_entry] + PLAYER_CONFIG_ENTRIES

@@ -1,4 +1,5 @@
-"""Helper module for parsing the Youtube Music API.
+"""
+Helper module for parsing the Youtube Music API.
 
 This helpers file is an async wrapper around the excellent ytmusicapi package.
 While the ytmusicapi package does an excellent job at parsing the Youtube Music results,
@@ -9,13 +10,16 @@ This also nicely separates the parsing logic from the Youtube Music provider log
 import asyncio
 from http.cookies import SimpleCookie
 from time import time
-from typing import Any
+from typing import Any, Literal
 
 import ytmusicapi
 from ytmusicapi import LikeStatus
 from ytmusicapi.exceptions import YTMusicError
 
 from music_assistant.providers.ytmusic.constants import YTMRecommendationIcons
+
+# subset of ytmusicapi's accepted search filters that we use
+YTMSearchFilter = Literal["artists", "albums", "songs", "playlists"]
 
 
 async def get_artist(
@@ -319,7 +323,7 @@ async def get_song_radio_tracks(
 
 
 async def search(
-    query: str, ytm_filter: str | None = None, limit: int = 20, language: str = "en"
+    query: str, ytm_filter: YTMSearchFilter | None = None, limit: int = 20, language: str = "en"
 ) -> list[dict[str, Any]]:
     """Async wrapper around the ytmusicapi search function."""
 

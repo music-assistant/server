@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import pathlib
+import threading
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 
@@ -23,7 +24,8 @@ def caplog_fixture(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture
 
 
 def _create_mock_zeroconf() -> MagicMock:
-    """Create a mock AsyncZeroconf that prevents real network I/O.
+    """
+    Create a mock AsyncZeroconf that prevents real network I/O.
 
     Uses spec=AsyncZeroconf to ensure the mock only has valid attributes,
     preventing it from being mistakenly registered as an API handler.
@@ -44,7 +46,8 @@ def _create_mock_zeroconf() -> MagicMock:
 
 @pytest.fixture
 async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
-    """Start a Music Assistant in test mode.
+    """
+    Start a Music Assistant in test mode.
 
     :param tmp_path: Temporary directory for test data.
     """
@@ -75,6 +78,12 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
             "music_assistant.controllers.discovery.controller.AsyncServiceBrowser",
             return_value=mock_browser,
         ),
+        # Booting the server runs an ffmpeg presence check; mock it so tests can boot
+        # without the binary. Tests that actually spawn ffmpeg still use the real one.
+        patch(
+            "music_assistant.controllers.streams.controller.check_ffmpeg_version",
+            new=AsyncMock(),
+        ),
     ):
         await mass_instance.start()
 
@@ -86,7 +95,8 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
 
 @pytest.fixture
 async def mass_minimal(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
-    """Create a minimal Music Assistant instance without starting the full server.
+    """
+    Create a minimal Music Assistant instance without starting the full server.
 
     Only initializes the event loop and config controller.
     Useful for testing individual controllers without the overhead of the webserver.
@@ -103,11 +113,8 @@ async def mass_minimal(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]
     mass_instance = MusicAssistant(str(storage_path), str(cache_path))
 
     mass_instance.loop = asyncio.get_running_loop()
-    mass_instance.loop_thread_id = (
-        getattr(mass_instance.loop, "_thread_id", None)
-        if hasattr(mass_instance.loop, "_thread_id")
-        else id(mass_instance.loop)
-    )
+    # fixture runs on the event loop thread, like MusicAssistant.start()
+    mass_instance.loop_thread_id = threading.get_ident()
 
     mass_instance.config = ConfigController(mass_instance)
     await mass_instance.config.setup()

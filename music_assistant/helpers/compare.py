@@ -331,8 +331,8 @@ def compare_audiobook(
     ):
         return False
 
-    def _audiobook_artist_name(value: str | Artist) -> str:
-        return value.name if isinstance(value, Artist) else value
+    def _audiobook_artist_name(value: str | Artist | ItemMapping) -> str:
+        return value.name if isinstance(value, Artist | ItemMapping) else value
 
     # compare narrator(s) — different narrators indicate different recordings and must not be merged
     if base_item.narrators and compare_item.narrators:

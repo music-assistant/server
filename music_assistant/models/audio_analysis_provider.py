@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from .provider import Provider
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from typing import Any
+
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.media_items import AudioFormat
@@ -17,6 +21,8 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.audio_analysis import AudioAnalysisData
+
+_T = TypeVar("_T")
 
 
 @dataclass
@@ -86,23 +92,6 @@ class AudioAnalysisProvider(Provider):
         return True
 
     @abstractmethod
-    async def _start_analysis(
-        self,
-        session_id: str,
-        streamdetails: StreamDetails,
-        audio_format: AudioFormat,
-    ) -> bool:
-        """
-        Provider-specific initialization for a new analysis session.
-
-        Return False to reject the session (e.g. unsupported format).
-
-        :param session_id: The analysis session ID.
-        :param streamdetails: The stream details for the item being analyzed.
-        :param audio_format: PCM format of the audio stream.
-        """
-
-    @abstractmethod
     async def process_pcm_chunk(
         self,
         session_id: str,
@@ -116,17 +105,6 @@ class AudioAnalysisProvider(Provider):
 
         :param session_id: The analysis session ID.
         :param pcm_chunk: Raw PCM audio data.
-        """
-
-    @abstractmethod
-    async def _finalize(self, session_id: str) -> AudioAnalysisData | None:
-        """
-        Compute and return the analysis for this session (or None to skip).
-
-        The base class persists the returned value via set_audio_analysis() and
-        then fires post_analysis(). Return None to skip both.
-
-        :param session_id: The analysis session ID.
         """
 
     async def finalize(self, session_id: str) -> None:
@@ -186,3 +164,73 @@ class AudioAnalysisProvider(Provider):
         for session_id in list(self._sessions):
             await self.cancel(session_id)
         await super().unload(is_removed)
+
+    @abstractmethod
+    async def _start_analysis(
+        self,
+        session_id: str,
+        streamdetails: StreamDetails,
+        audio_format: AudioFormat,
+    ) -> bool:
+        """
+        Provider-specific initialization for a new analysis session.
+
+        Return False to reject the session (e.g. unsupported format).
+
+        :param session_id: The analysis session ID.
+        :param streamdetails: The stream details for the item being analyzed.
+        :param audio_format: PCM format of the audio stream.
+        """
+
+    @abstractmethod
+    async def _finalize(self, session_id: str) -> AudioAnalysisData | None:
+        """
+        Compute and return the analysis for this session (or None to skip).
+
+        The base class persists the returned value via set_audio_analysis() and
+        then fires post_analysis(). Return None to skip both.
+
+        :param session_id: The analysis session ID.
+        """
+
+    async def _run_offloaded(self, func: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+        """
+        Run a blocking analysis function in a worker thread, bounded by the CPU cap.
+
+        The AudioAnalysisController caps how many of these run at once (half the cores) so
+        analysis never occupies the whole box; when no cap is configured this is a plain
+        asyncio.to_thread call. Route all CPU-heavy analysis work through this.
+
+        The permit is held until the worker thread actually finishes, even if the awaiting
+        coroutine is cancelled (e.g. a provider evicted on timeout, or a cancelled session):
+        asyncio.to_thread cannot stop a running thread, so releasing on cancellation would let
+        extra threads keep running and exceed the cap on exactly the hosts it protects.
+
+        :param func: The blocking callable to run off the event loop.
+        :param args: Positional arguments passed to func.
+        :param kwargs: Keyword arguments passed to func.
+        """
+        semaphore = self.mass.streams.audio_analysis.analysis_semaphore
+        if not isinstance(semaphore, asyncio.Semaphore):
+            return await asyncio.to_thread(func, *args, **kwargs)
+
+        def _release(done: asyncio.Future[_T]) -> None:
+            semaphore.release()
+            # Retrieve any exception so a cancelled awaiter doesn't leave it unretrieved.
+            if not done.cancelled():
+                done.exception()
+
+        await semaphore.acquire()
+        try:
+            future: asyncio.Future[_T] = asyncio.ensure_future(
+                asyncio.to_thread(func, *args, **kwargs)
+            )
+        except Exception:
+            # Scheduling the worker failed (e.g. the loop is shutting down) — release the
+            # permit we just took so it isn't leaked, which would shrink the cap over time.
+            semaphore.release()
+            raise
+        future.add_done_callback(_release)
+        # shield: if this coroutine is cancelled, the thread (and the permit) lives on until
+        # the work completes, rather than freeing the permit while the thread still runs.
+        return await asyncio.shield(future)

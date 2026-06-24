@@ -105,30 +105,27 @@ async def get_config_entries(
     async with aiofiles.open(json_path) as f:
         country_codes = orjson.loads(await f.read())
 
-    language_options = [ConfigValueOption(val, key.lower()) for key, val in country_codes.items()]
+    language_options = [
+        ConfigValueOption(key.lower(), title=val) for key, val in country_codes.items()
+    ]
     return (
         CONF_ENTRY_LIBRARY_SYNC_PODCASTS_HIDDEN,
         ConfigEntry(
             key=CONF_LOCALE,
             type=ConfigEntryType.STRING,
-            label="Country",
             required=True,
             options=language_options,
         ),
         ConfigEntry(
             key=CONF_NUM_EPISODES,
             type=ConfigEntryType.INTEGER,
-            label="Maximum number of episodes. 0 for unlimited.",
             required=False,
-            description="Maximum number of episodes. 0 for unlimited.",
             default_value=0,
         ),
         ConfigEntry(
             key=CONF_EXPLICIT,
             type=ConfigEntryType.BOOLEAN,
-            label="Include explicit results",
             required=False,
-            description="Whether or not to include explicit content results in search.",
             default_value=True,
         ),
     )
@@ -231,7 +228,8 @@ class ITunesPodcastsProvider(MusicProvider):
         return podcast_list
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
-        """Get library podcasts.
+        """
+        Get library podcasts.
 
         We use get_library_podcasts to sync all feeds which have been added to the MA library
         by the user via the search function. The provider itself does not offer a real library.
@@ -316,7 +314,8 @@ class ITunesPodcastsProvider(MusicProvider):
         raise MediaNotFoundError("Episode not found")
 
     async def recommendations(self) -> list[RecommendationFolder]:
-        """Get recommendations.
+        """
+        Get recommendations.
 
         This provider uses a list of top podcasts for the configured country.
         """
@@ -336,10 +335,12 @@ class ITunesPodcastsProvider(MusicProvider):
     async def _get_episode_stream_url(self, podcast_id: str, guid_or_stream_url: str) -> str | None:
         podcast = await self._cache_get_podcast(podcast_id)
         episodes = podcast.get("episodes", [])
-        for cnt, episode in enumerate(episodes):
+        for episode in episodes:
             episode_enclosures = episode.get("enclosures", [])
             if len(episode_enclosures) < 1:
-                raise MediaNotFoundError
+                # episode without an enclosure carries no stream; skip it instead of
+                # aborting the lookup for the (potentially later) requested episode
+                continue
             stream_url: str | None = episode_enclosures[0].get("url", None)
             guid = episode.get("guid")
             if guid is not None and len(guid.split(" ")) == 1:

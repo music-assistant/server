@@ -1,4 +1,5 @@
-"""The Musicbrainz Metadata provider for Music Assistant.
+"""
+The Musicbrainz Metadata provider for Music Assistant.
 
 At this time only used for retrieval of ID's but to be expanded to fetch metadata too.
 """
@@ -406,17 +407,6 @@ class MusicbrainzProvider(MetadataProvider):
             return None
         return MediaItemMetadata(links=links)
 
-    @staticmethod
-    def _link_type_for_relation(relation: MusicBrainzRelation) -> LinkType | None:
-        if link_type := URL_RELATION_TYPE_MAPPING.get(relation.type):
-            return link_type
-        if relation.type == "social network" and relation.url:
-            url_lower = relation.url.resource.lower()
-            for host, link_type in SOCIAL_HOST_MAPPING:
-                if host in url_lower:
-                    return link_type
-        return None
-
     async def get_recording_details(self, recording_id: str) -> MusicBrainzRecording:
         """Get Recording details by providing a MusicBrainz Recording Id."""
         if result := await self.get_data(f"recording/{recording_id}?inc=artists+releases+isrcs"):
@@ -429,13 +419,24 @@ class MusicbrainzProvider(MetadataProvider):
         msg = "Invalid MusicBrainz recording ID provided"
         raise InvalidDataError(msg)
 
+    @use_cache(86400 * 30)
     async def get_isrcs_for_recording(self, recording_id: str) -> list[str]:
         """
         Get ISRCs for a MusicBrainz Recording ID.
 
-        :param recording_id: MusicBrainz recording ID.
-        :return: List of ISRCs, or empty list if not found or on error.
+        :param recording_id: MusicBrainz recording ID, or a track ID as
+            handed out by e.g. Last.fm.
+        :return: List of ISRCs, or empty list if not found.
         """
+        # the search response includes the ISRCs, so either ID kind costs one call
+        safe_id = re.sub(LUCENE_SPECIAL, r"\\\1", recording_id)
+        query = f"rid:{safe_id} OR tid:{safe_id}"
+        if (result := await self.get_data("recording", query=query)) and (
+            recordings := result.get("recordings")
+        ):
+            return recordings[0].get("isrcs") or []
+        # merged (redirected) recording MBIDs are absent from the search
+        # index but still resolve via direct lookup
         with suppress(InvalidDataError):
             recording = await self.get_recording_details(recording_id)
             return recording.isrcs or []
@@ -537,7 +538,8 @@ class MusicbrainzProvider(MetadataProvider):
     async def get_release_group_by_track_name(
         self, artist_name: str, track_name: str
     ) -> tuple[MusicBrainzArtist, list[MusicBrainzReleaseGroup]] | None:
-        """Find release groups for a track by searching MusicBrainz recordings.
+        """
+        Find release groups for a track by searching MusicBrainz recordings.
 
         Returns matching release groups sorted by release date,
         prioritizing the earliest original recording to find the correct releases.
@@ -614,10 +616,47 @@ class MusicbrainzProvider(MetadataProvider):
         recording, artist, _ = matches[0]
         return (MusicBrainzArtist.from_raw(artist), [])
 
+    @use_cache(86400 * 30)  # Cache for 30 days
+    @throttle_with_retries
+    async def get_data(self, endpoint: str, **kwargs: str) -> Any:
+        """Get data from api."""
+        url = f"https://musicbrainz-mirror.music-assistant.io/ws/2/{endpoint}"
+        headers = {
+            "User-Agent": f"Music Assistant/{self.mass.version} (https://music-assistant.io)"
+        }
+        kwargs["fmt"] = "json"
+        async with (
+            self.mass.http_session.get(url, headers=headers, params=kwargs) as response,
+        ):
+            # handle rate limiter
+            if response.status == 429:
+                backoff_time = int(response.headers.get("Retry-After", 0))
+                raise RateLimited("Rate Limiter", backoff_time=backoff_time)
+            # handle temporary server error
+            if response.status in (502, 503):
+                raise ResourceTemporarilyUnavailable(backoff_time=30)
+            # handle 404 not found
+            if response.status in (400, 401, 404):
+                return None
+            response.raise_for_status()
+            return await response.json(loads=json_loads)
+
+    @staticmethod
+    def _link_type_for_relation(relation: MusicBrainzRelation) -> LinkType | None:
+        if link_type := URL_RELATION_TYPE_MAPPING.get(relation.type):
+            return link_type
+        if relation.type == "social network" and relation.url:
+            url_lower = relation.url.resource.lower()
+            for host, link_type in SOCIAL_HOST_MAPPING:
+                if host in url_lower:
+                    return link_type
+        return None
+
     def _get_release_groups_with_dates(
         self, recording: dict[str, Any], track_name: str
     ) -> list[tuple[MusicBrainzReleaseGroup, str]]:
-        """Collect release groups for a recording with their release dates.
+        """
+        Collect release groups for a recording with their release dates.
 
         Filters out compilations and other secondary-type releases.
         For singles, only includes those where the title matches the track name.
@@ -677,28 +716,3 @@ class MusicbrainzProvider(MetadataProvider):
                 seen[rg_id] = (mb_rg, release_date)
 
         return list(seen.values())
-
-    @use_cache(86400 * 30)  # Cache for 30 days
-    @throttle_with_retries
-    async def get_data(self, endpoint: str, **kwargs: str) -> Any:
-        """Get data from api."""
-        url = f"https://musicbrainz-mirror.music-assistant.io/ws/2/{endpoint}"
-        headers = {
-            "User-Agent": f"Music Assistant/{self.mass.version} (https://music-assistant.io)"
-        }
-        kwargs["fmt"] = "json"
-        async with (
-            self.mass.http_session.get(url, headers=headers, params=kwargs) as response,
-        ):
-            # handle rate limiter
-            if response.status == 429:
-                backoff_time = int(response.headers.get("Retry-After", 0))
-                raise RateLimited("Rate Limiter", backoff_time=backoff_time)
-            # handle temporary server error
-            if response.status in (502, 503):
-                raise ResourceTemporarilyUnavailable(backoff_time=30)
-            # handle 404 not found
-            if response.status in (400, 401, 404):
-                return None
-            response.raise_for_status()
-            return await response.json(loads=json_loads)

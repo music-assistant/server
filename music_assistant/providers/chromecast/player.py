@@ -80,6 +80,7 @@ class ChromecastPlayer(Player):
         self.mz_controller: MultizoneController | None = None
         self.on_app_status_changed: Callable[[str | None], None] | None = None
         self.last_poll = 0.0
+        self.last_multichannel_check = 0.0
         self.flow_meta_checksum: str | None = None
         # set static variables
         self._attr_supported_features = {
@@ -129,20 +130,6 @@ class ChromecastPlayer(Player):
     async def async_setup(self) -> None:
         """Start the chromecast socket client (must be called after __init__)."""
         await asyncio.to_thread(self.cc.start)
-
-    @staticmethod
-    def _is_google_device(cast_info: ChromecastInfo) -> bool:
-        """Check if a device is a Google device with native Cast support.
-
-        Google devices (Chromecast, Nest, Google Home) have native Cast support
-        and should be exposed as PlayerType.PLAYER. Non-Google devices with Cast
-        support should be exposed as PlayerType.PROTOCOL.
-        """
-        if not cast_info.manufacturer:
-            # If no manufacturer, check model name for Google devices
-            model = cast_info.model_name.lower() if cast_info.model_name else ""
-            return any(google in model for google in ("chromecast", "google", "nest", "home"))
-        return cast_info.manufacturer.lower() in ("google", "google inc.")
 
     async def get_config_entries(
         self,
@@ -288,6 +275,44 @@ class ChromecastPlayer(Player):
         else:
             await asyncio.to_thread(self.cc.disconnect, 10)
 
+    ### Callbacks from Chromecast Statuslistener
+
+    def on_new_cast_status(self, status: CastStatus) -> None:
+        """Handle updated CastStatus (called from pychromecast socket thread)."""
+        if status is None or self.mass.closing:
+            return
+        # Dispatch to event loop for thread-safe attribute mutation
+        self.mass.loop.call_soon_threadsafe(self._handle_cast_status, status)
+
+    def on_new_media_status(self, status: MediaStatus) -> None:
+        """Handle updated MediaStatus (called from pychromecast socket thread)."""
+        if self.mass.closing:
+            return
+        # Dispatch to event loop for thread-safe attribute mutation
+        self.mass.loop.call_soon_threadsafe(self._handle_media_status, status)
+
+    def on_new_connection_status(self, status: ConnectionStatus) -> None:
+        """Handle updated ConnectionStatus (called from pychromecast socket thread)."""
+        if self.mass.closing:
+            return
+        # Dispatch to event loop for thread-safe attribute mutation
+        self.mass.loop.call_soon_threadsafe(self._handle_connection_status, status)
+
+    @staticmethod
+    def _is_google_device(cast_info: ChromecastInfo) -> bool:
+        """
+        Check if a device is a Google device with native Cast support.
+
+        Google devices (Chromecast, Nest, Google Home) have native Cast support
+        and should be exposed as PlayerType.PLAYER. Non-Google devices with Cast
+        support should be exposed as PlayerType.PROTOCOL.
+        """
+        if not cast_info.manufacturer:
+            # If no manufacturer, check model name for Google devices
+            model = cast_info.model_name.lower() if cast_info.model_name else ""
+            return any(google in model for google in ("chromecast", "google", "nest", "home"))
+        return cast_info.manufacturer.lower() in ("google", "google inc.")
+
     def _on_player_media_updated(self) -> None:
         """Handle callback when the current media of the player is updated."""
         if self.powered is False:
@@ -402,17 +427,11 @@ class ChromecastPlayer(Player):
         except TimeoutError:
             self.logger.warning("Timed out waiting for app launch on %s", self.display_name)
             raise PlayerUnavailableError(
-                f"Timed out launching app on {self.display_name}"
+                f"Timed out launching app on {self.display_name}",
+                translation_key="app_launch_timeout",
+                translation_owner=self.translation_owner,
+                translation_args=[self.display_name],
             ) from None
-
-    ### Callbacks from Chromecast Statuslistener
-
-    def on_new_cast_status(self, status: CastStatus) -> None:
-        """Handle updated CastStatus (called from pychromecast socket thread)."""
-        if status is None or self.mass.closing:
-            return
-        # Dispatch to event loop for thread-safe attribute mutation
-        self.mass.loop.call_soon_threadsafe(self._handle_cast_status, status)
 
     def _handle_cast_status(self, status: CastStatus) -> None:
         """Process CastStatus on the event loop thread."""
@@ -457,13 +476,6 @@ class ChromecastPlayer(Player):
                 self.on_app_status_changed(status.app_id)
             except Exception:
                 self.logger.exception("Error in app status callback for %s", self.display_name)
-
-    def on_new_media_status(self, status: MediaStatus) -> None:
-        """Handle updated MediaStatus (called from pychromecast socket thread)."""
-        if self.mass.closing:
-            return
-        # Dispatch to event loop for thread-safe attribute mutation
-        self.mass.loop.call_soon_threadsafe(self._handle_media_status, status)
 
     def _handle_media_status(self, status: MediaStatus) -> None:  # noqa: PLR0915
         """Process MediaStatus on the event loop thread."""
@@ -559,13 +571,6 @@ class ChromecastPlayer(Player):
                     child._attr_active_source = self.active_source
                     child.update_state()
         self.update_state()
-
-    def on_new_connection_status(self, status: ConnectionStatus) -> None:
-        """Handle updated ConnectionStatus (called from pychromecast socket thread)."""
-        if self.mass.closing:
-            return
-        # Dispatch to event loop for thread-safe attribute mutation
-        self.mass.loop.call_soon_threadsafe(self._handle_connection_status, status)
 
     def _handle_connection_status(self, status: ConnectionStatus) -> None:
         """Process ConnectionStatus on the event loop thread."""

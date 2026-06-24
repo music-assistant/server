@@ -96,7 +96,8 @@ def format_to_option_value(fmt: SupportedAudioFormat) -> str:
 
 
 def option_value_to_format(value: str) -> tuple[AudioCodec, SendspinAudioFormat] | None:
-    """Parse option value back to (AudioCodec, SendspinAudioFormat).
+    """
+    Parse option value back to (AudioCodec, SendspinAudioFormat).
 
     :param value: Option value in format "codec:sample_rate:bit_depth:channels".
     :return: Tuple of (AudioCodec, SendspinAudioFormat) or None if parsing fails.
@@ -110,7 +111,7 @@ def option_value_to_format(value: str) -> tuple[AudioCodec, SendspinAudioFormat]
             channels=int(channels_str),
         )
         return (codec, audio_format)
-    except (ValueError, KeyError):
+    except ValueError, KeyError:
         return None
 
 
@@ -182,6 +183,60 @@ class SendspinBasePlayer(Player):
         self._attr_power_control = PLAYER_CONTROL_NONE
         self._refresh_client_info(sendspin_client, hello_payload=initial_hello)
         self._subscribe_client_callbacks()
+
+    def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
+        """Event callback registered to the sendspin client."""
+        match event:
+            case ClientGroupChangedEvent(new_group=new_group):
+                if self.unsub_group_event_cb is not None:
+                    self.unsub_group_event_cb()
+                self.unsub_group_event_cb = new_group.add_event_listener(self.group_event_cb)
+                self._on_group_changed(new_group)
+                self.update_state()
+
+    def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
+        """Event callback registered to the sendspin group this player belongs to."""
+        if self.synced_to is not None:
+            # Only handle group events as the leader, except for:
+            # - GroupMemberRemovedEvent: to handle being removed from a group
+            # - GroupStateChangedEvent: to update playback state when leader stops/disconnects
+            if not isinstance(event, (GroupMemberRemovedEvent, GroupStateChangedEvent)):
+                return
+        match event:
+            case GroupStateChangedEvent(state=state):
+                match state:
+                    case PlaybackStateType.PLAYING:
+                        self._attr_playback_state = PlaybackState.PLAYING
+                    case PlaybackStateType.PAUSED:
+                        self._attr_playback_state = PlaybackState.PAUSED
+                    case PlaybackStateType.STOPPED:
+                        self._attr_playback_state = PlaybackState.IDLE
+                        self._attr_elapsed_time = 0
+                        self._attr_elapsed_time_last_updated = time.time()
+                        self._on_group_stopped()
+                self.update_state()
+            case GroupMemberAddedEvent(client_id=client_id):
+                is_group_leader = (
+                    bool(group.clients) and group.clients[0].client_id == self.player_id
+                )
+                if is_group_leader and (
+                    not self._attr_group_members or self._attr_group_members[0] != self.player_id
+                ):
+                    self._attr_group_members = [self.player_id, *self._attr_group_members]
+                if client_id not in self._attr_group_members:
+                    self._attr_group_members.append(client_id)
+                    self.update_state()
+                self._schedule_membership_sync(group)
+            case GroupMemberRemovedEvent(client_id=client_id):
+                self.mass.create_task(self._handle_group_member_removed(group, client_id))
+                self._schedule_membership_sync(group)
+            case GroupDeletedEvent():
+                pass
+
+    async def on_unload(self) -> None:
+        """Handle logic when the player is unloaded from the Player controller."""
+        await super().on_unload()
+        self._unsubscribe_client_callbacks()
 
     def _subscribe_client_callbacks(self) -> None:
         """Subscribe to client and group events for the currently bound client."""
@@ -281,16 +336,6 @@ class SendspinBasePlayer(Player):
                 return role
         return None
 
-    def event_cb(self, client: SendspinClient, event: ClientEvent) -> None:
-        """Event callback registered to the sendspin client."""
-        match event:
-            case ClientGroupChangedEvent(new_group=new_group):
-                if self.unsub_group_event_cb is not None:
-                    self.unsub_group_event_cb()
-                self.unsub_group_event_cb = new_group.add_event_listener(self.group_event_cb)
-                self._on_group_changed(new_group)
-                self.update_state()
-
     def _on_group_changed(self, new_group: SendspinGroup) -> None:
         """
         Handle group change logic.
@@ -314,45 +359,6 @@ class SendspinBasePlayer(Player):
         # GroupMemberAddedEvent or GroupMemberRemovedEvent will be fired before this
         # so group members are already up to date at this point
         self._schedule_membership_sync(new_group)
-
-    def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
-        """Event callback registered to the sendspin group this player belongs to."""
-        if self.synced_to is not None:
-            # Only handle group events as the leader, except for:
-            # - GroupMemberRemovedEvent: to handle being removed from a group
-            # - GroupStateChangedEvent: to update playback state when leader stops/disconnects
-            if not isinstance(event, (GroupMemberRemovedEvent, GroupStateChangedEvent)):
-                return
-        match event:
-            case GroupStateChangedEvent(state=state):
-                match state:
-                    case PlaybackStateType.PLAYING:
-                        self._attr_playback_state = PlaybackState.PLAYING
-                    case PlaybackStateType.PAUSED:
-                        self._attr_playback_state = PlaybackState.PAUSED
-                    case PlaybackStateType.STOPPED:
-                        self._attr_playback_state = PlaybackState.IDLE
-                        self._attr_elapsed_time = 0
-                        self._attr_elapsed_time_last_updated = time.time()
-                        self._on_group_stopped()
-                self.update_state()
-            case GroupMemberAddedEvent(client_id=client_id):
-                is_group_leader = (
-                    bool(group.clients) and group.clients[0].client_id == self.player_id
-                )
-                if is_group_leader and (
-                    not self._attr_group_members or self._attr_group_members[0] != self.player_id
-                ):
-                    self._attr_group_members = [self.player_id, *self._attr_group_members]
-                if client_id not in self._attr_group_members:
-                    self._attr_group_members.append(client_id)
-                    self.update_state()
-                self._schedule_membership_sync(group)
-            case GroupMemberRemovedEvent(client_id=client_id):
-                self.mass.create_task(self._handle_group_member_removed(group, client_id))
-                self._schedule_membership_sync(group)
-            case GroupDeletedEvent():
-                pass
 
     def _on_group_stopped(self) -> None:
         """Handle the group transitioning to STOPPED state."""
@@ -407,11 +413,6 @@ class SendspinBasePlayer(Player):
             # Someone else left our group
             self._attr_group_members.remove(client_id)
             self.update_state()
-
-    async def on_unload(self) -> None:
-        """Handle logic when the player is unloaded from the Player controller."""
-        await super().on_unload()
-        self._unsubscribe_client_callbacks()
 
 
 class SendspinPlayer(SendspinBasePlayer):
@@ -710,7 +711,10 @@ class SendspinPlayer(SendspinBasePlayer):
                 await self.playback_session.cancel("cast app readiness failed")
             if isinstance(exc, TimeoutError):
                 raise PlayerCommandFailed(
-                    f"Cast app on {self.display_name} did not report ready within 30s"
+                    f"Cast app on {self.display_name} did not report ready within 30s",
+                    translation_key="cast_app_not_ready",
+                    translation_owner=self.translation_owner,
+                    translation_args=[self.display_name],
                 ) from None
             raise
 
@@ -823,7 +827,10 @@ class SendspinPlayer(SendspinBasePlayer):
                 except TimeoutError:
                     stuck = [m.display_name for m, f in pending_cast if not f.done()]
                     raise PlayerCommandFailed(
-                        f"Cast app on {', '.join(stuck)} did not report ready within 30s"
+                        f"Cast app on {', '.join(stuck)} did not report ready within 30s",
+                        translation_key="cast_app_members_not_ready",
+                        translation_owner=self.translation_owner,
+                        translation_args=[", ".join(stuck)],
                     ) from None
         except BaseException:
             # Roll back Cast members we just added so a failed group operation
@@ -1281,8 +1288,6 @@ class SendspinPlayer(SendspinBasePlayer):
                 ConfigEntry(
                     key="cast_audio_unsupported",
                     type=ConfigEntryType.ALERT,
-                    label="Sendspin isn't supported on this Cast device. "
-                    "Use the standard Cast protocol instead.",
                     required=False,
                 )
             )
@@ -1292,24 +1297,18 @@ class SendspinPlayer(SendspinBasePlayer):
             supported_formats = player_role.get_supported_formats()
             if supported_formats:
                 format_options = [
-                    ConfigValueOption(
-                        title="Automatic (let client decide)",
-                        value=SENDSPIN_FORMAT_AUTOMATIC,
-                    ),
+                    ConfigValueOption(SENDSPIN_FORMAT_AUTOMATIC),
                 ]
                 for fmt in supported_formats:
                     format_options.append(
                         ConfigValueOption(
-                            title=format_to_display_string(fmt),
-                            value=format_to_option_value(fmt),
+                            format_to_option_value(fmt), title=format_to_display_string(fmt)
                         )
                     )
                 entries.append(
                     ConfigEntry(
                         key=CONF_PREFERRED_SENDSPIN_FORMAT,
                         type=ConfigEntryType.STRING,
-                        label="Preferred audio format",
-                        description="Select the audio format to use for playback on this player.",
                         category="protocol_generic",
                         default_value=SENDSPIN_FORMAT_AUTOMATIC,
                         options=format_options,
@@ -1325,12 +1324,6 @@ class SendspinPlayer(SendspinBasePlayer):
                 ConfigEntry(
                     key=CONF_SENDSPIN_STATIC_DELAY,
                     type=ConfigEntryType.INTEGER,
-                    label="Static playback delay (ms)",
-                    description=(
-                        "Offset in milliseconds to keep this player in sync with other players. "
-                        "Increase if audio plays too late, for example to compensate for latency "
-                        "from an amp, active speakers, or the OS."
-                    ),
                     required=False,
                     default_value=self.static_delay_default_ms,
                     range=(0, 5000),

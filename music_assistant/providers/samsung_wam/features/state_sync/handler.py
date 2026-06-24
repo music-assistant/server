@@ -47,7 +47,8 @@ class StateSyncHandler(WamPlayerFeatureBase):
     _terminating_wifi_stream: bool = False
 
     def apply_initial_state(self, attrs: WamSpeakerAttributes) -> None:
-        """Apply an initial state snapshot to the player.
+        """
+        Apply an initial state snapshot to the player.
 
         :param attrs: The speaker attributes to apply.
         """
@@ -130,11 +131,12 @@ class StateSyncHandler(WamPlayerFeatureBase):
                 playtime = float(response.data["playtime"])
                 self.player._attr_elapsed_time = playtime
                 self.player._attr_elapsed_time_last_updated = time.time()
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 self.logger.debug("Failed to parse playtime from response: %s", response.data)
 
     def on_speaker_event(self, event: Any = None) -> None:
-        """Handle a state update event broadcast by the speaker.
+        """
+        Handle a state update event broadcast by the speaker.
 
         :param event: The payload data emitted from the speaker.
         """
@@ -151,13 +153,14 @@ class StateSyncHandler(WamPlayerFeatureBase):
                 playtime = float(event.data["playtime"])
                 self.player._attr_elapsed_time = playtime
                 self.player._attr_elapsed_time_last_updated = time.time()
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 pass
 
         self.refresh_state(notify_provider=True)
 
     def refresh_state(self, notify_provider: bool = False) -> None:
-        """Re-apply current speaker state to the player.
+        """
+        Re-apply current speaker state to the player.
 
         :param notify_provider: Trigger an event signal if True.
         """
@@ -211,7 +214,8 @@ class StateSyncHandler(WamPlayerFeatureBase):
                 await self._reconnect_speaker()
 
     async def _terminate_wifi_stream(self, target_source: str) -> None:
-        """Terminate the audio stream after an external source switch.
+        """
+        Terminate the audio stream after an external source switch.
 
         :param target_source: The source the speaker should end up on (e.g. 'Bluetooth').
         """
@@ -257,7 +261,8 @@ class StateSyncHandler(WamPlayerFeatureBase):
 
     @staticmethod
     def suppress_speaker_status_events(speaker: Speaker) -> None:
-        """Replace the SpeakerStatus event handler with a no-op to prevent log noise.
+        """
+        Replace the SpeakerStatus event handler with a no-op to prevent log noise.
 
         :param speaker: The Speaker instance to patch.
         """

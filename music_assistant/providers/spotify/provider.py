@@ -216,7 +216,8 @@ class SpotifyProvider(MusicProvider):
                 yield audiobook
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
-        """Retrieve playlists from the provider.
+        """
+        Retrieve playlists from the provider.
 
         Note: We use the global session here because playlists like "Daily Mix"
         are only returned when using the non-dev (global) token.
@@ -260,93 +261,6 @@ class SpotifyProvider(MusicProvider):
                 break
 
         return searchresult
-
-    def _build_search_types(self, media_types: list[MediaType]) -> str:
-        """Build comma-separated search types string from media types."""
-        searchtypes = []
-        if MediaType.ARTIST in media_types:
-            searchtypes.append("artist")
-        if MediaType.ALBUM in media_types:
-            searchtypes.append("album")
-        if MediaType.TRACK in media_types:
-            searchtypes.append("track")
-        if MediaType.PLAYLIST in media_types:
-            searchtypes.append("playlist")
-        if MediaType.PODCAST in media_types:
-            searchtypes.append("show")
-        if MediaType.AUDIOBOOK in media_types and self.audiobooks_supported:
-            searchtypes.append("audiobook")
-        return ",".join(searchtypes)
-
-    def _process_search_results(
-        self, api_result: dict[str, Any], searchresult: SearchResults
-    ) -> int:
-        """
-        Process API search results and update searchresult object.
-
-        Returns the total number of items received.
-        """
-        items_received = 0
-
-        if "artists" in api_result:
-            artists = [
-                parse_artist(item, self)
-                for item in api_result["artists"]["items"]
-                if (item and item["id"] and item["name"])
-            ]
-            searchresult.artists = [*searchresult.artists, *artists]
-            items_received += len(api_result["artists"]["items"])
-
-        if "albums" in api_result:
-            albums = [
-                parse_album(item, self)
-                for item in api_result["albums"]["items"]
-                if (item and item["id"])
-            ]
-            searchresult.albums = [*searchresult.albums, *albums]
-            items_received += len(api_result["albums"]["items"])
-
-        if "tracks" in api_result:
-            tracks = [
-                parse_track(item, self)
-                for item in api_result["tracks"]["items"]
-                if (item and item["id"])
-            ]
-            searchresult.tracks = [*searchresult.tracks, *tracks]
-            items_received += len(api_result["tracks"]["items"])
-
-        if "playlists" in api_result:
-            playlists = [
-                parse_playlist(item, self)
-                for item in api_result["playlists"]["items"]
-                if (item and item["id"])
-            ]
-            searchresult.playlists = [*searchresult.playlists, *playlists]
-            items_received += len(api_result["playlists"]["items"])
-
-        if "shows" in api_result:
-            podcasts = []
-            for item in api_result["shows"]["items"]:
-                if not (item and item["id"]):
-                    continue
-                # Filter out audiobooks - they have a distinctive description format
-                description = item.get("description", "")
-                if description.startswith("Author(s):") and "Narrator(s):" in description:
-                    continue
-                podcasts.append(parse_podcast(item, self))
-            searchresult.podcasts = [*searchresult.podcasts, *podcasts]
-            items_received += len(api_result["shows"]["items"])
-
-        if "audiobooks" in api_result and self.audiobooks_supported:
-            audiobooks = [
-                parse_audiobook(item, self)
-                for item in api_result["audiobooks"]["items"]
-                if (item and item["id"])
-            ]
-            searchresult.audiobooks = [*searchresult.audiobooks, *audiobooks]
-            items_received += len(api_result["audiobooks"]["items"])
-
-        return items_received
 
     @use_cache()
     async def get_artist(self, prov_artist_id: str) -> Artist:
@@ -954,6 +868,93 @@ class SpotifyProvider(MusicProvider):
         self.logger.info("Successfully logged in to Spotify developer session")
         return auth_info
 
+    def _build_search_types(self, media_types: list[MediaType]) -> str:
+        """Build comma-separated search types string from media types."""
+        searchtypes = []
+        if MediaType.ARTIST in media_types:
+            searchtypes.append("artist")
+        if MediaType.ALBUM in media_types:
+            searchtypes.append("album")
+        if MediaType.TRACK in media_types:
+            searchtypes.append("track")
+        if MediaType.PLAYLIST in media_types:
+            searchtypes.append("playlist")
+        if MediaType.PODCAST in media_types:
+            searchtypes.append("show")
+        if MediaType.AUDIOBOOK in media_types and self.audiobooks_supported:
+            searchtypes.append("audiobook")
+        return ",".join(searchtypes)
+
+    def _process_search_results(
+        self, api_result: dict[str, Any], searchresult: SearchResults
+    ) -> int:
+        """
+        Process API search results and update searchresult object.
+
+        Returns the total number of items received.
+        """
+        items_received = 0
+
+        if "artists" in api_result:
+            artists = [
+                parse_artist(item, self)
+                for item in api_result["artists"]["items"]
+                if (item and item["id"] and item["name"])
+            ]
+            searchresult.artists = [*searchresult.artists, *artists]
+            items_received += len(api_result["artists"]["items"])
+
+        if "albums" in api_result:
+            albums = [
+                parse_album(item, self)
+                for item in api_result["albums"]["items"]
+                if (item and item["id"])
+            ]
+            searchresult.albums = [*searchresult.albums, *albums]
+            items_received += len(api_result["albums"]["items"])
+
+        if "tracks" in api_result:
+            tracks = [
+                parse_track(item, self)
+                for item in api_result["tracks"]["items"]
+                if (item and item["id"])
+            ]
+            searchresult.tracks = [*searchresult.tracks, *tracks]
+            items_received += len(api_result["tracks"]["items"])
+
+        if "playlists" in api_result:
+            playlists = [
+                parse_playlist(item, self)
+                for item in api_result["playlists"]["items"]
+                if (item and item["id"])
+            ]
+            searchresult.playlists = [*searchresult.playlists, *playlists]
+            items_received += len(api_result["playlists"]["items"])
+
+        if "shows" in api_result:
+            podcasts = []
+            for item in api_result["shows"]["items"]:
+                if not (item and item["id"]):
+                    continue
+                # Filter out audiobooks - they have a distinctive description format
+                description = item.get("description", "")
+                if description.startswith("Author(s):") and "Narrator(s):" in description:
+                    continue
+                podcasts.append(parse_podcast(item, self))
+            searchresult.podcasts = [*searchresult.podcasts, *podcasts]
+            items_received += len(api_result["shows"]["items"])
+
+        if "audiobooks" in api_result and self.audiobooks_supported:
+            audiobooks = [
+                parse_audiobook(item, self)
+                for item in api_result["audiobooks"]["items"]
+                if (item and item["id"])
+            ]
+            searchresult.audiobooks = [*searchresult.audiobooks, *audiobooks]
+            items_received += len(api_result["audiobooks"]["items"])
+
+        return items_received
+
     async def _setup_librespot_auth(self, access_token: str) -> None:
         """
         Set up librespot authentication with the given access token.
@@ -1011,7 +1012,9 @@ class SpotifyProvider(MusicProvider):
         liked_songs = Playlist(
             item_id=self._get_liked_songs_playlist_id(),
             provider=self.instance_id,
-            name=f"Liked Songs {self._sp_user['display_name']}",  # TODO to be translated
+            name=f"Liked Songs {self._sp_user['display_name']}",
+            translation_key="liked_songs",
+            translation_params=[self._sp_user["display_name"]],
             owner=self._sp_user["display_name"],
             provider_mappings={
                 ProviderMapping(
@@ -1236,7 +1239,7 @@ class SpotifyProvider(MusicProvider):
                 try:
                     error = await response.json(loads=json_loads)
                     message = error.get("error", {}).get("message") or response.reason
-                except (aiohttp.ContentTypeError, JSONDecodeError):
+                except aiohttp.ContentTypeError, JSONDecodeError:
                     message = (await response.text()) or response.reason
 
                 self.logger.debug(
@@ -1368,5 +1371,5 @@ class SpotifyProvider(MusicProvider):
             if e.status == 403:
                 return False  # Not available
             raise  # Re-raise other HTTP errors
-        except (MediaNotFoundError, ProviderUnavailableError):
+        except MediaNotFoundError, ProviderUnavailableError:
             return False

@@ -18,7 +18,8 @@ class GroupingCoordinator(WamProviderFeatureBase):
     """Manages group membership state across all registered players."""
 
     def __init__(self, provider: SamsungWamProvider) -> None:
-        """Initialize the group coordinator.
+        """
+        Initialize the group coordinator.
 
         :param provider: The SamsungWamProvider instance.
         """
@@ -55,7 +56,8 @@ class GroupingCoordinator(WamProviderFeatureBase):
                 self._child_to_leader[player.player_id] = synced_to
 
     def register_player(self, player: WamPlayer) -> None:
-        """Register a new player for group tracking.
+        """
+        Register a new player for group tracking.
 
         :param player: The WamPlayer to register.
         """
@@ -65,7 +67,8 @@ class GroupingCoordinator(WamProviderFeatureBase):
                 leader_player.state_sync.refresh_state()
 
     def unregister_player(self, player: WamPlayer) -> None:
-        """Unregister a player from group tracking.
+        """
+        Unregister a player from group tracking.
 
         :param player: The WamPlayer to unregister.
         """
@@ -82,7 +85,8 @@ class GroupingCoordinator(WamProviderFeatureBase):
         adds: list[str] | None = None,
         removes: list[str] | None = None,
     ) -> None:
-        """Handle group membership changes.
+        """
+        Handle group membership changes.
 
         :param leader_id: The target group leader.
         :param adds: List of member IDs to add.
@@ -97,7 +101,8 @@ class GroupingCoordinator(WamProviderFeatureBase):
         adds: list[str] | None,
         removes: list[str] | None,
     ) -> set[str]:
-        """Compute the new group membership set based on requested additions and removals.
+        """
+        Compute the new group membership set based on requested additions and removals.
 
         :param leader_id: The target group leader.
         :param adds: List of member IDs to add.
@@ -115,7 +120,8 @@ class GroupingCoordinator(WamProviderFeatureBase):
         return target_children
 
     async def _apply_group(self, leader_id: str, target_children: set[str]) -> None:
-        """Apply the desired group membership update for a leader player.
+        """
+        Apply the desired group membership update for a leader player.
 
         :param leader_id: The ID of the target group leader.
         :param target_children: The complete, desired set of child members.
@@ -159,7 +165,8 @@ class GroupingCoordinator(WamProviderFeatureBase):
     # --- Speaker Initiated ---
 
     def on_player_state_changed(self, player: WamPlayer) -> None:
-        """Detect and propagate external group membership changes for a player.
+        """
+        Detect and propagate external group membership changes for a player.
 
         Handles cases such as a speaker powering on already grouped, or groups
         being changed externally.
@@ -183,7 +190,8 @@ class GroupingCoordinator(WamProviderFeatureBase):
     # --- Internal Helpers ---
 
     def _update_player_membership(self, player_id: str, new_leader_id: str | None) -> None:
-        """Update the membership maps for a player's group change.
+        """
+        Update the membership maps for a player's group change.
 
         :param player_id: The player ID to update.
         :param new_leader_id: The new leader's ID, or None if the player is ungrouped.
@@ -194,7 +202,8 @@ class GroupingCoordinator(WamProviderFeatureBase):
             self._child_to_leader[player_id] = new_leader_id
 
     def _remove_player_from_all_groups(self, player_id: str) -> None:
-        """Remove a player from all membership maps.
+        """
+        Remove a player from all membership maps.
 
         :param player_id: The player ID to remove.
         """

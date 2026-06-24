@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -13,6 +12,10 @@ import soxr
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ContentType
 
+from music_assistant.helpers.util import (
+    system_meets_requirements,
+    verify_system_meets_requirements,
+)
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import (
     AnalysisSessionData,
@@ -20,11 +23,11 @@ from music_assistant.models.audio_analysis_provider import (
 )
 
 from .clap_prompts import (
-    CALIBRATION,
     PRECOMPUTED_EMBEDDINGS_PATH,
     SCALAR_PROMPT_PAIRS,
     hash_scalar_prompt_pairs,
     load_precomputed_prompt_embeddings,
+    score_scalars,
 )
 from .helpers import (
     BlockFeatures,
@@ -64,6 +67,16 @@ CLAP_WINDOW_COUNTS: dict[str, int] = {
 }
 
 CONF_CLAP_SAMPLING: str = "clap_sampling"
+
+# Sonic Analysis runs on-device CLAP inference; gate it to capable hardware.
+# 4GB nominal; the gate's tolerance (meets_memory_target) admits genuine 4GB hosts,
+# which report ~3.8GB after the kernel/firmware reservation.
+MIN_RAM_GB: float = 4.0
+MIN_CPU_CORES: int = 2
+# Below the recommended thresholds the provider still runs, but we surface an
+# informational notice (see get_config_entries) as it may be tight under load.
+RECOMMENDED_RAM_GB: float = 6.0
+RECOMMENDED_CPU_CORES: int = 4
 
 
 @dataclass
@@ -105,7 +118,8 @@ async def get_config_entries(
     action: str | None = None,  # noqa: ARG001
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider.
+    """
+    Return Config entries to setup this provider.
 
     :param mass: MusicAssistant instance.
     :param instance_id: id of an existing provider instance (None if new instance setup).
@@ -114,21 +128,22 @@ async def get_config_entries(
     """
     return (
         ConfigEntry(
+            key="resource_warning",
+            type=ConfigEntryType.ALERT,
+            required=False,
+            hidden=system_meets_requirements(
+                min_memory_gb=RECOMMENDED_RAM_GB,
+                min_cpu_cores=RECOMMENDED_CPU_CORES,
+            ),
+        ),
+        ConfigEntry(
             key=CONF_CLAP_SAMPLING,
             type=ConfigEntryType.STRING,
-            label="CLAP quality (windows per track)",
-            description=(
-                "Number of 7-second windows CLAP analyzes per track. "
-                "More windows produce more representative scalars at "
-                "linear CPU cost. Thorough is most useful for "
-                "instrumentalness, where vocals can be missed by a "
-                "single window."
-            ),
             default_value=CLAP_SAMPLING_FAST,
             options=[
-                ConfigValueOption("Fast (1 window)", CLAP_SAMPLING_FAST),
-                ConfigValueOption("Balanced (3 windows, 2.4x CPU)", CLAP_SAMPLING_BALANCED),
-                ConfigValueOption("Thorough (8 windows, 6.6x CPU)", CLAP_SAMPLING_THOROUGH),
+                ConfigValueOption(CLAP_SAMPLING_FAST),
+                ConfigValueOption(CLAP_SAMPLING_BALANCED),
+                ConfigValueOption(CLAP_SAMPLING_THOROUGH),
             ],
             required=False,
         ),
@@ -140,7 +155,8 @@ def compute_clap_target_starts(
     preset_n: int,
     source_sr: int,
 ) -> list[int]:
-    """Plan deterministic 7s window start offsets for the live CLAP path.
+    """
+    Plan deterministic 7s window start offsets for the live CLAP path.
 
     :param track_duration_s: Total track duration in seconds.
     :param preset_n: Configured window count (Fast/Balanced/Thorough → 1/3/8).
@@ -183,7 +199,8 @@ def _dispatch_clap_chunk(
     decoded_audio: np.ndarray,
     source_sr: int,
 ) -> list[np.ndarray]:
-    """Route a PCM chunk to active CLAP target windows; return any windows completed.
+    """
+    Route a PCM chunk to active CLAP target windows; return any windows completed.
 
     :param session: Active session; target buffers are mutated in place.
     :param decoded_audio: Mono float32 PCM chunk at source_sr.
@@ -220,7 +237,8 @@ def _dispatch_clap_chunk(
 
 
 def _pcm_bytes_to_audio(audio_format: AudioFormat, pcm_chunk: bytes) -> np.ndarray:
-    """Decode a raw PCM chunk to a mono float32 numpy array.
+    """
+    Decode a raw PCM chunk to a mono float32 numpy array.
 
     :param audio_format: The audio format describing the PCM data.
     :param pcm_chunk: Raw PCM audio data.
@@ -264,7 +282,8 @@ def _decode_resample_extract(
     *,
     is_last: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, BlockFeatures | None]:
-    """Decode PCM bytes, optionally resample, and extract block features in one offloaded call.
+    """
+    Decode PCM bytes, optionally resample, and extract block features in one offloaded call.
 
     :param audio_format: AudioFormat describing the PCM encoding of block_bytes.
     :param block_bytes: Raw PCM bytes for one analysis block (or the final tail).
@@ -312,13 +331,22 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         self._clap_prompt_order: list[tuple[str, tuple[str, str]]] = []
 
     async def handle_async_init(self) -> None:
-        """Load the CLAP model synchronously so provider.available gates analysis until ready.
+        """
+        Load the CLAP model synchronously so provider.available gates analysis until ready.
 
         Blocks the provider's setup until the model is loaded (first-run downloads
         ~500MB). On failure the exception propagates and the provider stays
         available=False, which the AudioAnalysisController already honors when
         scheduling work.
         """
+        verify_system_meets_requirements(
+            feature_name="Sonic Analysis",
+            min_memory_gb=MIN_RAM_GB,
+            min_cpu_cores=MIN_CPU_CORES,
+            require_ml_inference=True,
+        )
+        # Configure the inference runtime before loading the model (see the controller method).
+        self.mass.streams.audio_analysis.ensure_inference_runtime_configured()
         (
             self._clap_model,
             self._clap_text_embeddings,
@@ -328,6 +356,57 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             "CLAP model loaded; %d prompt pairs ready",
             len(self._clap_prompt_order),
         )
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Release the CLAP model."""
+        self._clap_model = None
+        self._clap_text_embeddings = None
+        await super().unload(is_removed)
+
+    async def cancel(self, session_id: str) -> None:
+        """Cancel pending CLAP inferences and free per-window buffers."""
+        session = self._sessions.get(session_id)
+        if isinstance(session, SonicSessionData):
+            for task in session.clap_inference_tasks:
+                if not task.done():
+                    task.cancel()
+            session.clap_target_buffers.clear()
+        await super().cancel(session_id)
+
+    async def process_pcm_chunk(
+        self,
+        session_id: str,
+        pcm_chunk: bytes,
+    ) -> None:
+        """
+        Accumulate PCM and run feature extraction once a 10-second block is full.
+
+        :param session_id: The analysis session ID.
+        :param pcm_chunk: Raw PCM audio data.
+        """
+        if session_id not in self._sessions:
+            return
+        session = self._sessions[session_id]
+        assert isinstance(session, SonicSessionData)
+        session.pcm_buffer.extend(pcm_chunk)
+        af = session.audio_format
+        if len(session.pcm_buffer) >= session.block_bytes:
+            block_bytes = bytes(session.pcm_buffer[: session.block_bytes])
+            del session.pcm_buffer[: session.block_bytes]
+            pre_audio, post_audio, bf = await self._run_offloaded(
+                _decode_resample_extract,
+                af,
+                block_bytes,
+                session.overlap,
+                ANALYSIS_SAMPLE_RATE,
+                session.resampler,
+            )
+            session.total_samples += len(pre_audio)
+            session.peak_absolute = max(session.peak_absolute, float(np.max(np.abs(pre_audio))))
+            self._dispatch_clap_to_targets(session, pre_audio, af.sample_rate)
+            session.overlap = post_audio[-OVERLAP_SAMPLES:].copy()
+            if bf is not None:
+                merge_block_features(session.accumulated, bf)
 
     def _load_clap(
         self,
@@ -374,19 +453,14 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             return None
         return cached_embeddings
 
-    async def unload(self, is_removed: bool = False) -> None:
-        """Release the CLAP model."""
-        self._clap_model = None
-        self._clap_text_embeddings = None
-        await super().unload(is_removed)
-
     async def _start_analysis(
         self,
         session_id: str,
         streamdetails: StreamDetails,
         audio_format: AudioFormat,
     ) -> bool:
-        """Initialize a new analysis session.
+        """
+        Initialize a new analysis session.
 
         :param session_id: Unique session ID from the controller.
         :param streamdetails: Stream details for the item being analyzed.
@@ -454,50 +528,6 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         )
         return True
 
-    async def cancel(self, session_id: str) -> None:
-        """Cancel pending CLAP inferences and free per-window buffers."""
-        session = self._sessions.get(session_id)
-        if isinstance(session, SonicSessionData):
-            for task in session.clap_inference_tasks:
-                if not task.done():
-                    task.cancel()
-            session.clap_target_buffers.clear()
-        await super().cancel(session_id)
-
-    async def process_pcm_chunk(
-        self,
-        session_id: str,
-        pcm_chunk: bytes,
-    ) -> None:
-        """Accumulate PCM and run feature extraction once a 10-second block is full.
-
-        :param session_id: The analysis session ID.
-        :param pcm_chunk: Raw PCM audio data.
-        """
-        if session_id not in self._sessions:
-            return
-        session = self._sessions[session_id]
-        assert isinstance(session, SonicSessionData)
-        session.pcm_buffer.extend(pcm_chunk)
-        af = session.audio_format
-        if len(session.pcm_buffer) >= session.block_bytes:
-            block_bytes = bytes(session.pcm_buffer[: session.block_bytes])
-            del session.pcm_buffer[: session.block_bytes]
-            pre_audio, post_audio, bf = await asyncio.to_thread(
-                _decode_resample_extract,
-                af,
-                block_bytes,
-                session.overlap,
-                ANALYSIS_SAMPLE_RATE,
-                session.resampler,
-            )
-            session.total_samples += len(pre_audio)
-            session.peak_absolute = max(session.peak_absolute, float(np.max(np.abs(pre_audio))))
-            self._dispatch_clap_to_targets(session, pre_audio, af.sample_rate)
-            session.overlap = post_audio[-OVERLAP_SAMPLES:].copy()
-            if bf is not None:
-                merge_block_features(session.accumulated, bf)
-
     def _dispatch_clap_to_targets(
         self, session: SonicSessionData, audio: np.ndarray, source_sr: int
     ) -> None:
@@ -536,12 +566,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             mean_emb = mean_emb / norm
         mean_sim = session.clap_sum_similarities / n
 
-        for idx, (scalar_name, _) in enumerate(self._clap_prompt_order):
-            pos_logit = float(mean_sim[idx * 2])
-            neg_logit = float(mean_sim[idx * 2 + 1])
-            a, b = CALIBRATION[scalar_name]
-            margin = pos_logit - neg_logit
-            setattr(analysis, scalar_name, 1.0 / (1.0 + math.exp(-(a * margin + b))))
+        for scalar_name, value in score_scalars(mean_sim).items():
+            setattr(analysis, scalar_name, value)
 
         _store_clap_embedding(analysis, mean_emb)
         self.logger.debug(
@@ -553,7 +579,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         )
 
     async def _finalize(self, session_id: str) -> AudioAnalysisData | None:
-        """Flush remaining PCM, collapse features, and return the analysis result.
+        """
+        Flush remaining PCM, collapse features, and return the analysis result.
 
         Returns the analysis for the base class to persist, or None to skip persistence.
 
@@ -568,7 +595,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         af = session.audio_format
 
         if session.pcm_buffer:
-            pre_audio, _post_audio, bf = await asyncio.to_thread(
+            pre_audio, _post_audio, bf = await self._run_offloaded(
                 _decode_resample_extract,
                 af,
                 bytes(session.pcm_buffer),
@@ -588,7 +615,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
             self.logger.debug("No feature blocks for session %s, skipping", session_id)
             return None
 
-        analysis = await asyncio.to_thread(
+        analysis = await self._run_offloaded(
             collapse_to_analysis, session.accumulated, ANALYSIS_SAMPLE_RATE
         )
 
@@ -614,7 +641,8 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         window_audio: np.ndarray,
         source_sr: int,
     ) -> tuple[np.ndarray, np.ndarray] | None:
-        """Run CLAP inference on a single 7-second window.
+        """
+        Run CLAP inference on a single 7-second window.
 
         :param window_audio: Mono float32 audio at source_sr.
         :param source_sr: Sample rate of window_audio.
@@ -643,7 +671,7 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         if self._clap_model is None:
             return
         try:
-            result = await asyncio.to_thread(
+            result = await self._run_offloaded(
                 self._single_window_inference_sync, window_audio, source_sr
             )
         except Exception as err:

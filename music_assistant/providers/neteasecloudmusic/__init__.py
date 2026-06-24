@@ -266,7 +266,7 @@ def _extract_code(payload: dict[str, Any]) -> int | None:
         raw_code = payload["data"].get("code")
     try:
         return int(raw_code) if raw_code is not None else None
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 
@@ -288,7 +288,8 @@ def _extract_cookie(payload: dict[str, Any]) -> str:
 
 
 def _with_pc_os_cookie(cookie: str) -> str:
-    """Return cookie string with os=pc for quality URL consistency.
+    """
+    Return cookie string with os=pc for quality URL consistency.
 
     Netease API may return lower-tier URLs for non-pc `os` cookies even for
     entitled accounts. This hint only stabilizes server-side format selection;
@@ -376,7 +377,7 @@ def _decode_qr_data_url(data_url: str) -> tuple[bytes, str] | None:
     mime_type = meta.replace("data:", "", 1)
     try:
         return (base64.b64decode(b64_data), mime_type)
-    except (ValueError, binascii.Error):
+    except ValueError, binascii.Error:
         return None
 
 
@@ -582,19 +583,13 @@ def _build_config_entries(values: dict[str, ConfigValueType]) -> tuple[ConfigEnt
         ConfigEntry(
             key=CONF_API_BASE_URL,
             type=ConfigEntryType.STRING,
-            label="API base URL",
             required=True,
             default_value=DEFAULT_API_BASE_URL,
             value=str(values.get(CONF_API_BASE_URL) or DEFAULT_API_BASE_URL),
-            description=(
-                "Base URL of your local NeteaseCloudMusicApi-compatible service "
-                "(for Home Assistant users, see companion add-on PR #16)."
-            ),
         ),
         ConfigEntry(
             key=CONF_QR_PAGE_URL,
             type=ConfigEntryType.STRING,
-            label="QR login page URL",
             required=False,
             hidden=not has_qr_pending or not qr_page_url,
             value=qr_page_url,
@@ -602,39 +597,33 @@ def _build_config_entries(values: dict[str, ConfigValueType]) -> tuple[ConfigEnt
         ConfigEntry(
             key=CONF_QUALITY,
             type=ConfigEntryType.STRING,
-            label="Preferred quality",
             default_value=QUALITY_EXHIGH,
             hidden=not is_verified,
             options=[
-                ConfigValueOption("Standard", QUALITY_STANDARD),
-                ConfigValueOption("Higher", QUALITY_HIGHER),
-                ConfigValueOption("Exhigh", QUALITY_EXHIGH),
-                ConfigValueOption("Lossless", QUALITY_LOSSLESS),
-                ConfigValueOption("Hi-Res", QUALITY_HIRES),
-                ConfigValueOption("JY Effect", QUALITY_JYEFFECT),
-                ConfigValueOption("JY Master", QUALITY_JYMASTER),
+                ConfigValueOption(QUALITY_STANDARD),
+                ConfigValueOption(QUALITY_HIGHER),
+                ConfigValueOption(QUALITY_EXHIGH),
+                ConfigValueOption(QUALITY_LOSSLESS),
+                ConfigValueOption(QUALITY_HIRES),
+                ConfigValueOption(QUALITY_JYEFFECT),
+                ConfigValueOption(QUALITY_JYMASTER),
             ],
         ),
         ConfigEntry(
             key=CONF_ACTION_START_QR_AUTH,
             type=ConfigEntryType.ACTION,
-            label="QR Login",
             action=CONF_ACTION_START_QR_AUTH,
-            description="Generate QR code and open login popup page.",
             hidden=is_verified,
         ),
         ConfigEntry(
             key=CONF_ACTION_CHECK_QR_AUTH,
             type=ConfigEntryType.ACTION,
-            label="Check QR status",
             action=CONF_ACTION_CHECK_QR_AUTH,
-            description="Manually check whether scan confirmation completed.",
             hidden=not has_qr_pending or is_verified,
         ),
         ConfigEntry(
             key=CONF_ACTION_CLEAR_AUTH,
             type=ConfigEntryType.ACTION,
-            label="Reset authentication",
             action=CONF_ACTION_CLEAR_AUTH,
             hidden=not (has_qr_pending or is_verified),
         ),
@@ -1048,13 +1037,18 @@ class NeteaseCloudMusicProvider(MusicProvider):
         return playlist
 
     def _build_dynamic_playlist(
-        self, item_id: str, name: str, image_url: str | None = None
+        self,
+        item_id: str,
+        name: str,
+        translation_key: str | None = None,
+        image_url: str | None = None,
     ) -> Playlist:
         """Create a dynamic playlist entry for radio-like flows."""
         playlist = Playlist(
             item_id=item_id,
             provider=self.instance_id,
             name=name,
+            translation_key=translation_key,
             provider_mappings={
                 ProviderMapping(
                     item_id=item_id,
@@ -1129,7 +1123,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         async def _fetch_quality(track_id: str) -> tuple[str, dict[str, Any] | None]:
             try:
                 quality_obj = await self._get_song_music_detail(track_id)
-            except (InvalidDataError, ResourceTemporarilyUnavailable):
+            except InvalidDataError, ResourceTemporarilyUnavailable:
                 return track_id, None
             return track_id, quality_obj if isinstance(quality_obj, dict) else None
 
@@ -1480,12 +1474,15 @@ class NeteaseCloudMusicProvider(MusicProvider):
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         if prov_playlist_id == _PLAYLIST_PERSONAL_FM_ID:
-            return self._build_dynamic_playlist(_PLAYLIST_PERSONAL_FM_ID, "Personal FM")
+            return self._build_dynamic_playlist(
+                _PLAYLIST_PERSONAL_FM_ID, "Personal FM", translation_key="personal_fm"
+            )
         if heart_parts := self._parse_heart_mode_playlist_id(prov_playlist_id):
             seed_song_id, source_playlist_id = heart_parts
             return self._build_dynamic_playlist(
                 f"{_PLAYLIST_HEART_MODE_PREFIX}:{seed_song_id}:{source_playlist_id}",
                 "Heart Mode",
+                translation_key="heart_mode",
             )
         if prov_playlist_id == _PLAYLIST_HEART_MODE_PREFIX:
             if playlist := await self._build_heart_mode_dynamic_playlist():
@@ -1809,6 +1806,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
         return self._build_dynamic_playlist(
             f"{_PLAYLIST_HEART_MODE_PREFIX}:{seed_song_id}:{playlist_id}",
             "Heart Mode",
+            translation_key="heart_mode",
             image_url=image_url,
         )
 
@@ -1854,6 +1852,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             item_id="recommended_radios",
             provider=self.instance_id,
             name="Personal Radio",
+            translation_key="personal_radio",
             icon="mdi:radio",
         )
         personal_fm_image_url: str | None = None
@@ -1885,6 +1884,7 @@ class NeteaseCloudMusicProvider(MusicProvider):
             self._build_dynamic_playlist(
                 _PLAYLIST_PERSONAL_FM_ID,
                 "Personal FM",
+                translation_key="personal_fm",
                 image_url=personal_fm_image_url,
             )
         )

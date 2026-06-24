@@ -121,7 +121,8 @@ async def test_secret_write_delegates_plaintext_and_never_logs_it(
 
 
 async def test_write_tools_use_interactive_timeout() -> None:
-    """Confirmation-gated writes must not use the 10s fast timeout.
+    """
+    Confirmation-gated writes must not use the 10s fast timeout.
 
     The elicitation round-trip + save+reload needs a human-scale window.
     Regression for a live timeout-mid-confirmation bug.
