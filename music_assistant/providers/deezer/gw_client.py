@@ -129,7 +129,7 @@ class GWClient:
         return cast("dict[str, Any]", result_json)
 
     # Content support descriptor for page.get — tells the API which module types to return
-    _PAGE_SUPPORT: dict[str, Any] = {
+    _PAGE_SUPPORT: ClassVar[dict[str, Any]] = {
         "grid": ["channel", "album", "playlist", "artist"],
         "horizontal-grid": ["channel", "album", "playlist", "artist"],
         "slideshow": ["album", "playlist"],
